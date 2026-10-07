@@ -23,6 +23,7 @@ import pytest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PY = os.path.join(APP_DIR, "close", "grid_api.py")
+DEADLINES_PY = os.path.join(APP_DIR, "close", "deadlines.py")
 REAL_MODELS = ("scope_model", "signoff_model", "period_grid_model", "readiness_model")
 GRID_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
 SITE_TZ = "Europe/London"
@@ -98,7 +99,13 @@ class _Site:
         # T52t (C-X1): what the stub close_event.reminders / deadlines
         # .period_deadlines return, so Y57/D57's lazy imports resolve.
         self.reminders = []
-        self.deadlines = {}
+        # deadlines.period_deadlines(keys, today): None -> the stub computes it
+        # with the REAL deadline_model from deadline_rules/holidays (D57).
+        self.deadlines = None
+        self.deadline_rules = []          # Close Deadline Rule rows (none declared)
+        self.holidays = set()             # Close Holiday dates
+        self.deadline_calls = []          # D57: (keys, today) per period_deadlines read
+        self.today = date(2025, 10, 6)    # frappe.utils.getdate()
         self.reminder_calls = []          # Y57: (keys, topic) per close_event.reminders read
         self.data["User"] = []            # Y57: the reminder senders' full names
         self.user_filters = []            # Y57: the filters of each User read
@@ -167,7 +174,8 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
-    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
+    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ,
+                                         getdate=lambda *a: site.today)
     frappe.db = types.SimpleNamespace(set_value=forbidden, commit=forbidden, sql=forbidden)
     frappe.get_doc = forbidden
     frappe.enqueue = forbidden
@@ -240,7 +248,19 @@ def _load_api(site):
 
     close_event.reminders = reminders
     deadlines = types.ModuleType("konsol.close.deadlines")
-    deadlines.period_deadlines = lambda keys, today: site.deadlines
+
+    def period_deadlines(keys, today):
+        site.deadline_calls.append((list(keys), today))
+        if site.deadlines is not None:
+            return site.deadlines
+        model = _model("deadline_model")
+        wanted = {(int(fy), int(fp)) for fy, fp in keys}
+        return {(r["fiscal_year"], r["fiscal_period"]): model.period_deadlines(
+                    site.deadline_rules, site.holidays, r["end_date"], today)
+                for r in site.rows if (r["fiscal_year"], r["fiscal_period"]) in wanted
+                and r["period_type"] == "Regular"}
+
+    deadlines.period_deadlines = period_deadlines
 
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
@@ -260,6 +280,11 @@ def _load_api(site):
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
     try:
+        # D57: the payload form is the REAL deadlines.as_payload.
+        real = importlib.util.spec_from_file_location("test_close_grid_api_deadlines", DEADLINES_PY)
+        real_deadlines = importlib.util.module_from_spec(real)
+        real.loader.exec_module(real_deadlines)
+        deadlines.as_payload = real_deadlines.as_payload
         spec = importlib.util.spec_from_file_location("konsol.close.grid_api", API_PY)
         api = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(api)
@@ -376,11 +401,12 @@ def test_a_clean_site_gives_four_rows_with_the_unowned_tb_a_problem():
     assert zzx["in_scope"] is False
     assert zzx["ownership"] == {"tone": "blocking", "label": "None for P09"}
     assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership for this period",
-                         "reminders": None}
+                         "reminders": None, "overdue": False}
     zza = rows["ZZA"]
     assert zza["problem"] is False, zza
     assert zza["ownership"]["label"] == "Full · 100%"
-    assert zza["tb"] == {"tone": "ok", "label": "Received", "reminders": None}
+    assert zza["tb"] == {"tone": "ok", "label": "Received", "reminders": None,
+                         "overdue": False}
     # Group currency comes from the root group only (data_area_id not set):
     # USD, not the sub-group's GBP; EUR->USD Closing is approved.
     assert zza["rate"] == {"tone": "ok", "label": "Approved"}
@@ -401,7 +427,7 @@ def test_other_periods_records_do_not_count():
     site.data["Trial Balance Submission"][0]["fiscal_period"] = 8
     rows = {r["entity"]: r for r in _call(site)["rows"]}
     assert rows["ZZA"]["tb"] == {"tone": "blocking", "label": "Missing",
-                                 "reminders": None}
+                                 "reminders": None, "overdue": False}
 
 
 def test_a_draft_rate_in_the_missing_list_reads_awaiting_approval():
@@ -554,7 +580,7 @@ def test_stub_close_carries_reminders_and_deadlines():
     assert close.deadlines is site.stub_modules["konsol.close.deadlines"]
     assert close.close_event.reminders([(2025, 9)]) == []
     assert close.close_event.reminders([(2025, 9)], topic="tb") == []
-    assert close.deadlines.period_deadlines([(2025, 9)], "2025-10-01") == {}
+    assert site.deadlines is None  # D57: the stub computes with the real deadline_model
     site.reminders = ["r"]
     site.deadlines = {"tb": "d"}
     assert close.close_event.reminders([(2025, 9)]) == ["r"]
@@ -609,7 +635,14 @@ def _reminded_site(n_extra=0):
 
 
 def _golden_site():
-    return _reminded_site()
+    """D57: plus a declared rule (TB 5, IC 7, sign-off 3, journals blank) on
+    2025-10-08 with no close run: ZZA (Missing) is overdue, the TB, IC and
+    sign-off dates are past, journals read "No due date declared", and
+    ``signoff_overdue`` is True."""
+    site = _reminded_site()
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=5, ic=7, signoff=3)]
+    site.today = date(2025, 10, 8)
+    return site
 
 
 def _sized_site(n):
@@ -641,7 +674,8 @@ def test_a_reminded_tb_cell_carries_count_last_at_and_the_latest_sender():
     assert rows["ZZA"]["tb"] == {
         "tone": "blocking", "label": "Missing",
         "reminders": {"count": 2, "last_at": "2025-10-06T10:00:00+01:00",
-                      "last_by": "zz-lead@example.com", "last_by_name": "Zed Lead"}}, rows["ZZA"]
+                      "last_by": "zz-lead@example.com", "last_by_name": "Zed Lead"},
+        "overdue": False}, rows["ZZA"]
     for code in ("ZZB", "ZZC", "ZZX"):
         assert rows[code]["tb"]["reminders"] is None, rows[code]
 
@@ -685,6 +719,8 @@ def test_reads_are_the_old_count_plus_two_whatever_the_entity_count():
         assert all(r["tb"]["reminders"]["count"] == 1 for r in result["rows"]), result
         reads = sum(site.get_all_calls.values()) + len(site.reminder_calls)
         assert reads == old + 2, (n, site.get_all_calls, site.reminder_calls)
+        # D57: plus one deadlines read (D55's 3 queries) and one latest run.
+        assert len(site.deadline_calls) == 1 and len(site.run_calls) == 1
         assert all(v == 1 for v in site.get_all_calls.values()), site.get_all_calls
 
 
@@ -757,3 +793,158 @@ def test_get_period_grid_matches_the_golden_fixture():
         golden = json.load(f)
     assert out == golden
     assert [r["entity"] for r in golden["rows"] if r["tb"]["reminders"]] == ["ZZA"]
+
+
+# --- D57: the period's four due dates, TB overdue and signoff_overdue (2.4) ------
+
+_DM = _model("deadline_model")
+WEEK = ("monday", "tuesday", "wednesday", "thursday", "friday")
+
+
+def _rule(valid_from, tb=0, ic=0, journals=0, signoff=0, week=WEEK):
+    """One Close Deadline Rule row (D53 fields), as deadlines.py reads it."""
+    rule = {"valid_from": valid_from, "tb_due_days": tb, "ic_due_days": ic,
+            "journals_due_days": journals, "signoff_due_days": signoff}
+    for wd in _DM.WEEKDAYS:
+        rule[wd] = 1 if wd in week else 0
+    return rule
+
+
+def _deadline_site(today, run=None):
+    """FY2025 P09 ends Sun 28 Sep (stub calendar). Mon-Fri, TB 5 -> Fri 3 Oct,
+    sign-off 10 -> Fri 10 Oct. ZZA Missing (TB for P08 only), ZZB/ZZC Received,
+    ZZX Not consolidated."""
+    site = _Site()
+    site.data["Trial Balance Submission"][0]["fiscal_period"] = 8
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=5, signoff=10)]
+    site.today = today
+    site.run_result = run
+    return site
+
+
+def _run(signoff_status):
+    return {"name": "AR-1", "status": "Green", "signoff_status": signoff_status,
+            "failed": 0, "errored": 0}
+
+
+def test_the_stub_deadlines_are_the_real_model_output():
+    got = _DM.period_deadlines([_rule(date(2025, 1, 1), tb=5, signoff=10)], set(),
+                               date(2025, 9, 28), date(2025, 10, 11))
+    assert got["tb"] == {"due": date(2025, 10, 3), "past": True, "text": "Due 2025-10-03"}
+    assert got["signoff"] == {"due": date(2025, 10, 10), "past": True,
+                              "text": "Due 2025-10-10"}
+
+
+def test_the_grid_carries_all_four_steps():
+    result = _call(_deadline_site(date(2025, 10, 6)))
+    assert result["deadlines"] == {
+        "tb": {"due": "2025-10-03", "past": True, "text": "Due 2025-10-03"},
+        "ic": {"due": None, "past": False, "text": "No due date declared"},
+        "journals": {"due": None, "past": False, "text": "No due date declared"},
+        "signoff": {"due": "2025-10-10", "past": False, "text": "Due 2025-10-10"},
+    }
+
+
+def test_a_past_tb_due_makes_the_missing_cell_overdue_and_no_other():
+    rows = _by_row(_call(_deadline_site(date(2025, 10, 6))))
+    assert rows["ZZA"]["tb"]["label"] == "Missing" and rows["ZZA"]["tb"]["overdue"] is True
+    for code in ("ZZB", "ZZC", "ZZX"):
+        assert rows[code]["tb"]["overdue"] is False, rows[code]
+
+
+def test_on_the_tb_due_date_nothing_is_overdue():
+    result = _call(_deadline_site(date(2025, 10, 3)))
+    assert result["deadlines"]["tb"]["past"] is False
+    assert all(r["tb"]["overdue"] is False for r in result["rows"])
+
+
+def test_every_tb_cell_carries_overdue():
+    for site in (_Site(), _deadline_site(date(2025, 10, 6))):
+        for row in _call(site)["rows"]:
+            assert row["tb"]["overdue"] in (True, False), row
+
+
+def test_a_past_signoff_date_with_no_run_is_signoff_overdue():
+    assert _call(_deadline_site(date(2025, 10, 11)))["signoff_overdue"] is True
+
+
+def test_a_past_signoff_date_unsigned_or_re_sign_is_overdue():
+    for status in ("Not Signed Off", "Re-sign Needed", None):
+        site = _deadline_site(date(2025, 10, 11), run=_run(status))
+        assert _call(site)["signoff_overdue"] is True, status
+
+
+def test_a_signed_run_is_never_signoff_overdue():
+    for status in ("Signed Off", "Acknowledged", "Overridden"):
+        site = _deadline_site(date(2025, 10, 11), run=_run(status))
+        assert _call(site)["signoff_overdue"] is False, status
+
+
+def test_before_the_signoff_date_is_not_signoff_overdue():
+    site = _deadline_site(date(2025, 10, 10))
+    result = _call(site)
+    assert result["deadlines"]["signoff"]["past"] is False
+    assert result["signoff_overdue"] is False
+
+
+def test_undeclared_deadlines_mean_no_overdue_anywhere():
+    """Failure path (#305-2.4-1): no rule -> the sentence on all four steps,
+    never a guessed date, and nothing overdue even long after the period."""
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = []
+    result = _call(site)
+    for step in ("tb", "ic", "journals", "signoff"):
+        assert result["deadlines"][step] == {"due": None, "past": False,
+                                             "text": "No due date declared"}, step
+    assert all(r["tb"]["overdue"] is False for r in result["rows"])
+    assert result["signoff_overdue"] is False
+
+
+def test_a_rule_with_blank_offsets_is_undeclared_per_step():
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=0, signoff=0, ic=4)]
+    result = _call(site)
+    assert result["deadlines"]["tb"]["text"] == "No due date declared"
+    assert result["deadlines"]["ic"]["past"] is True
+    assert result["signoff_overdue"] is False
+    assert all(r["tb"]["overdue"] is False for r in result["rows"])
+
+
+def test_deadlines_and_the_run_are_read_once_with_today():
+    site = _deadline_site(date(2025, 10, 6))
+    _call(site)
+    assert site.deadline_calls == [([(2025, 9)], date(2025, 10, 6))]
+    assert site.run_calls == [(2025, 9)]
+
+
+def test_the_deadlines_are_present_when_the_caller_sees_no_row():
+    site = _deadline_site(date(2025, 10, 11))
+    site.allowed = set()
+    result = _call(site)
+    assert result["rows"] == []
+    assert result["deadlines"]["tb"]["text"] == "Due 2025-10-03"
+    assert result["signoff_overdue"] is True
+
+
+def test_a_period_absent_from_the_deadline_read_throws():
+    """Failure path: the asked period is Regular, so the reader must return
+    it; its absence is an error, never "No due date declared"."""
+    site = _deadline_site(date(2025, 10, 6))
+    site.deadlines = {}
+    err = _call_raises(site)
+    assert isinstance(err, site.errors.ValidationError), err
+    assert "FY2025 P09" in str(err)
+
+
+def test_a_refused_period_reads_no_deadline_and_no_run():
+    site = _deadline_site(date(2025, 10, 6))
+    _call_raises(site, 2025, 13)
+    assert site.deadline_calls == [] and site.run_calls == []
+
+
+def test_the_golden_fixture_shows_overdue():
+    with open(GRID_FIXTURE) as f:
+        golden = json.load(f)
+    assert golden["signoff_overdue"] is True
+    assert golden["deadlines"]["journals"]["text"] == "No due date declared"
+    assert [r["entity"] for r in golden["rows"] if r["tb"]["overdue"]] == ["ZZA"]
