@@ -1882,8 +1882,10 @@ def test_o57_reads_grow_only_for_a_change_draft_and_nothing_is_written():
     _call_pending(desk_only)
     _call_pending(with_change)
     assert len(desk_only.reads) == 7, desk_only.reads
-    extra = with_change.reads[len(desk_only.reads):]
     assert len(with_change.reads) == 9, with_change.reads
+    extra = list(with_change.reads)
+    for read in desk_only.reads:
+        extra.remove(read)
     assert sorted(extra) == sorted([("get_all", "Ownership Period"),
                                     ("sql", "fiscal_period_rows")]), extra
     assert with_change.new_docs == [] and with_change.get_doc_calls == []

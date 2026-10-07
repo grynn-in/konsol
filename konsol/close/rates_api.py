@@ -45,7 +45,15 @@ reads it and sees ``not_approver`` on every item (#305-W2-10). The items are
 cut to ``entity_permissions.allowed_entity_codes()`` (#305-W2-10, W2-14),
 with a ``hidden`` count: a hidden entity's draft never appears in the
 response. Approving is the existing ``approval_api.approve``; this endpoint
-writes nothing.
+writes nothing. Each visible Ownership Period item carries ``effect`` (O57;
+story 4.2, C-O4): ``ownership_change.effect_for(doc)``, the structural
+before/after the approval would make, or None for a draft without
+``supersedes`` (a Desk "Record ownership" draft). That costs, per visible OP
+draft with ``supersedes``, one read of its predecessor, one fiscal calendar
+read and one ``signoff_gate.latest_signed_runs()``; a Desk draft costs none.
+Pending OP drafts are few (live, 7 Oct: 0). A predecessor that is no longer
+approved is refused with a sentence naming the draft, never shown with a
+guessed effect.
 
 ``get_ownership()`` (GET, E406) lists, for the period, the entities with a
 submitted trial balance but no ownership covering the period's start
@@ -296,7 +304,8 @@ OP = "Ownership Period"
 HER_FIELDS = ["name", "consolidation_group", "data_area_id", "main_account", "rate_date",
               "historical_rate", "owner", "creation"]
 OP_FIELDS = ["name", "consolidation_group", "data_area_id", "effective_date", "end_date",
-             "ownership_pct", "consolidation_method", "owner", "creation"]
+             "ownership_pct", "consolidation_method", "owner", "creation", "docstatus",
+             "supersedes"]
 
 
 def _iso(value):
@@ -340,8 +349,17 @@ def get_pending():
         doc["rate_date"] = _iso(doc.get("rate_date"))
         her.append(doc)
     ops = []
+    if ops_visible:
+        from konsol.close import ownership_change  # lazy (C-X1)
     for doc in ops_visible:
         doc = dict(doc)
+        # O57: the structural effect, read from the draft's ``supersedes``
+        # before the dates are formatted; None for a Desk draft.
+        try:
+            doc["effect"] = ownership_change.effect_for(doc)
+        except ValueError as e:
+            frappe.throw("The pending ownership change %s cannot be shown: %s. "
+                         "Correct or delete the draft in Desk." % (doc["name"], e))
         doc["created"] = _iso(doc.pop("creation", None))
         doc["effective_date"] = _iso(doc.get("effective_date"))
         doc["end_date"] = _iso(doc.get("end_date"))
