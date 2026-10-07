@@ -217,11 +217,22 @@ _MAIN_ACCOUNTS = [
 ]
 
 
+class _Row:
+    """Stand-in for a child-table row: Frappe's child Document exposes its
+    values through ``as_dict()``, not item access."""
+
+    def __init__(self, values):
+        self._values = dict(values)
+
+    def as_dict(self):
+        return dict(self._values)
+
+
 def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
          intercompany_declaration="", published=0, sql_log=None,
          statement_cta_account="", statement_result_account="", get_all_log=None,
          commentary_threshold_amount=0, commentary_threshold_percent=0,
-         commentary_threshold_combine=""):
+         commentary_threshold_combine="", deadline_rules=(), close_holidays=()):
     """``published`` is what the stubbed locking count of Published
     Intercompany Accounts answers; every ``frappe.db.sql`` call is appended
     to ``sql_log`` (when given) as ``(query, values)`` (C16, #305-W3-7).
@@ -268,6 +279,8 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
         doc.commentary_threshold_amount = commentary_threshold_amount
         doc.commentary_threshold_percent = commentary_threshold_percent
         doc.commentary_threshold_combine = commentary_threshold_combine
+        doc.deadline_rules = [_Row(r) for r in deadline_rules]
+        doc.close_holidays = [_Row(r) for r in close_holidays]
         doc.validate()
     finally:
         _m.frappe.throw = saved_throw
@@ -737,3 +750,136 @@ def test_combine_rule_without_both_values_is_refused():
         assert False, "expected a throw"
     except _Refused as e:
         assert "both" in str(e), str(e)
+
+
+# ---------------------------------------------------------------------------
+# konsol#305 D54 (#305-2.4-1, Deepak Pai 6 Oct; plan-w5b.md §4a, C-D1):
+# Close Settings gains a first "Policies" tab (existing fields unchanged, in
+# order) and a "Deadlines" tab holding the two child tables. A save runs
+# deadline_model.rule_problems (D52) and throws its sentences joined by <br>.
+# Blank tables are undeclared and save; nothing is defaulted.
+# ---------------------------------------------------------------------------
+
+import datetime as _dt
+
+_DEADLINE_MODEL = os.path.join(APP_DIR, "close", "deadline_model.py")
+_dm_spec = importlib.util.spec_from_file_location("deadline_model_for_settings_test", _DEADLINE_MODEL)
+_dm = importlib.util.module_from_spec(_dm_spec)
+_dm_spec.loader.exec_module(_dm)
+
+_EXISTING_ORDER = [
+    "close_order_section",
+    "first_close_fiscal_year",
+    "first_close_fiscal_period",
+    "approvals_section",
+    "self_approval",
+    "rates_section",
+    "rate_move_threshold",
+    "intercompany_section",
+    "intercompany_declaration",
+    "statements_section",
+    "statement_cta_account",
+    "statement_result_account",
+    "commentary_section",
+    "commentary_threshold_amount",
+    "commentary_threshold_percent",
+    "commentary_threshold_combine",
+]
+
+
+def test_policies_tab_is_first_and_keeps_existing_fields_in_order():
+    fields = _doc()["fields"]
+    first = fields[0]
+    assert first["fieldname"] == "policies_tab", first["fieldname"]
+    assert first["fieldtype"] == "Tab Break"
+    assert first["label"] == "Policies"
+    order = [f["fieldname"] for f in fields]
+    assert order[1:1 + len(_EXISTING_ORDER)] == _EXISTING_ORDER, order
+
+
+def test_deadlines_tab_follows_commentary_with_the_two_tables():
+    fields = _doc()["fields"]
+    order = [f["fieldname"] for f in fields]
+    by_name = {f["fieldname"]: f for f in fields}
+    assert order[order.index("commentary_threshold_combine") + 1:] == [
+        "deadlines_tab", "deadline_rules_section", "deadline_rules",
+        "holidays_section", "close_holidays"], order
+    assert by_name["deadlines_tab"]["fieldtype"] == "Tab Break"
+    assert by_name["deadlines_tab"]["label"] == "Deadlines"
+    assert by_name["deadline_rules_section"]["fieldtype"] == "Section Break"
+    assert by_name["deadline_rules_section"]["label"] == "Deadline Rules"
+    assert by_name["holidays_section"]["fieldtype"] == "Section Break"
+    assert by_name["holidays_section"]["label"] == "Holidays"
+    rules = by_name["deadline_rules"]
+    assert rules["fieldtype"] == "Table"
+    assert rules["options"] == "Close Deadline Rule"
+    assert rules["description"] == (
+        "A rule applies to every period that ends on or after its Valid From, until the "
+        "next rule. No rule = no due dates (shown as 'No due date declared'); nothing is assumed.")
+    holidays = by_name["close_holidays"]
+    assert holidays["fieldtype"] == "Table"
+    assert holidays["options"] == "Close Holiday"
+    assert holidays["description"] == "Days that are not counted as working days, group-wide."
+
+
+def test_no_field_is_reqd_or_defaulted():
+    for f in _doc()["fields"]:
+        assert not f.get("reqd"), f"{f['fieldname']} must not be reqd"
+        assert "default" not in f, f"{f['fieldname']} must have no default"
+
+
+def _rule(valid_from, **extra):
+    row = {"valid_from": valid_from, "change_reason": "ZZ test",
+           "monday": 1, "tuesday": 1, "wednesday": 1, "thursday": 1, "friday": 1,
+           "saturday": 0, "sunday": 0,
+           "tb_due_days": 5, "ic_due_days": 0, "journals_due_days": 0, "signoff_due_days": 0}
+    row.update(extra)
+    return row
+
+
+def _refusal(**kw):
+    try:
+        _run(None, None, _default_period_row, **kw)
+    except _Refused as e:
+        return str(e)
+    raise AssertionError("expected a throw")
+
+
+def test_empty_deadlines_tab_saves():
+    """Failure path: nothing declared is not a problem, and nothing is invented."""
+    _run(None, None, _default_period_row, deadline_rules=[], close_holidays=[])
+
+
+def test_one_rule_and_a_holiday_save():
+    _run(None, None, _default_period_row,
+         deadline_rules=[_rule(_dt.date(2025, 1, 1))],
+         close_holidays=[{"holiday_date": _dt.date(2025, 8, 4), "description": "ZZ"}])
+
+
+def test_duplicate_valid_from_throws_the_model_sentence():
+    rules = [_rule(_dt.date(2025, 1, 1)), _rule(_dt.date(2025, 1, 1))]
+    expected = _dm.rule_problems(rules, [])
+    assert expected == ["Two deadline rules start on 2025-01-01: keep one."], expected
+    assert _refusal(deadline_rules=rules) == expected[0]
+
+
+def test_duplicate_valid_from_as_stored_date_and_typed_string_throws():
+    """A loaded row reads a date; a row typed in the form arrives as a string.
+    Both name the same day, so the save is refused."""
+    msg = _refusal(deadline_rules=[_rule(_dt.date(2025, 1, 1)), _rule("2025-01-01")])
+    assert msg == "Two deadline rules start on 2025-01-01: keep one.", msg
+
+
+def test_duplicate_holiday_as_date_and_string_throws():
+    msg = _refusal(close_holidays=[{"holiday_date": _dt.date(2025, 8, 4)},
+                                   {"holiday_date": "2025-08-04"}])
+    assert msg == "2025-08-04 is listed twice as a holiday.", msg
+
+
+def test_several_problems_are_joined_with_br():
+    rules = [_rule(_dt.date(2025, 1, 1), monday=0, tuesday=0, wednesday=0, thursday=0, friday=0,
+                   tb_due_days=-1)]
+    holidays = [{"holiday_date": _dt.date(2025, 8, 4)}, {"holiday_date": _dt.date(2025, 8, 4)}]
+    expected = _dm.rule_problems(rules, holidays)
+    assert len(expected) == 3, expected
+    assert _refusal(deadline_rules=rules, close_holidays=holidays) == "<br>".join(expected)
