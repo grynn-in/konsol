@@ -15,6 +15,8 @@ Engineering calls (plan-w5b.md §3):
   is undeclared (an unset Int reads 0). The count stops after 3,660 calendar
   days with an error, never a guess.
 - C-D4: "overdue" is ``past`` AND the step still open; the caller decides it.
+  For IC and journals the "open" rule is ``ic_open`` / ``journals_open``
+  (#305-Q5-1, konsol#305 D57b).
 
 Rules are dicts carrying the "Close Deadline Rule" child fields; dates are
 ``datetime.date``.
@@ -100,6 +102,54 @@ def period_deadlines(rules, holidays, end_date, today):
         due = due_date(end_date, offset, working_days, holidays)
         out[step] = {"due": due, "past": today > due, "text": "Due %s" % due.isoformat()}
     return out
+
+
+# --- D57b: when the IC and journals steps are still open (#305-Q5-1) ---------
+# Decision #305-Q5-1 (Deepak Pai, 7 Oct 2026): the IC step is done when no
+# over-tolerance pair is open; the journals step is done when no Consolidation
+# Journal of the period is a draft or pending approval (docstatus 0). Overdue
+# shows for both. Rejected: Q5-2 (show the due date only). The grid decides
+# ``ic_overdue`` / ``journals_overdue`` = past AND open (C-D4) from these two
+# helpers only; no other surface re-derives them.
+
+#: ic_model states in which there is no reconciled pair to be open: no
+#: Published Intercompany Account (nothing to pair), or Close Settings declares
+#: no intercompany in this group. Their own setup line shows elsewhere.
+IC_NOTHING_TO_OPEN = ("not_configured", "not_applicable")
+#: ic_model states in which the warehouse could not be read.
+IC_UNREADABLE = ("error", "not_built")
+
+
+def ic_open(state, counts):
+    """True when at least one intercompany pair is over tolerance (#305-Q5-1).
+
+    ``state`` and ``counts`` are what ``ic_api.signoff_summary`` returns
+    (``ic_model.signoff_line``). An unreadable warehouse raises ValueError,
+    never False; so does a "checked" read without a readable
+    ``over_tolerance`` count, or an unknown state.
+    """
+    if state in IC_NOTHING_TO_OPEN:
+        return False
+    if state in IC_UNREADABLE:
+        raise ValueError("Intercompany could not be read (%s), so whether a pair is still "
+                         "over tolerance is unknown" % state)
+    if state != "checked":
+        raise ValueError("unknown intercompany state %r" % (state,))
+    count = (counts or {}).get("over_tolerance")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise ValueError("Intercompany was checked but its over-tolerance count is not "
+                         "readable: %r" % (count,))
+    return count > 0
+
+
+def journals_open(open_count):
+    """True when at least one Consolidation Journal of the period is a draft
+    or pending approval (docstatus 0) (#305-Q5-1). ``open_count`` must be a
+    non-negative int; anything else raises ValueError, never False."""
+    if isinstance(open_count, bool) or not isinstance(open_count, int) or open_count < 0:
+        raise ValueError("The count of draft or pending journals is not readable: %r"
+                         % (open_count,))
+    return open_count > 0
 
 
 def _repeated(values):
