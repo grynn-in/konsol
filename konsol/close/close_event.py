@@ -19,12 +19,17 @@
   affects, the rule ``period_status.assert_open_between`` gates on; that may
   be a Closing period. With no such period the approval is refused.
   Rejected: the period containing the approval date.
+- ``reminders(keys, topic=None)``: the one reader of ``reminder_sent``
+  events (Y53, C-R6). Every surface's reminder count comes from here, never
+  from Notification Log (purged after 180 days, M6).
 - ``entity_of(doc)``: the entity the trail scopes the event by (#305-W2-9).
   Group-level documents give None, so every trail reader sees them.
 
 A source test (test_close_event_writer.py) pins that nothing else writes,
 changes or deletes a Close Event.
 """
+import json
+
 import frappe
 
 from konsol import period_status
@@ -160,6 +165,38 @@ def latest_rejections(doctype, names):
             "actor": row["actor"],
             "at": row["at"],
         })
+    return result
+
+
+def reminders(keys, topic=None):
+    """The ``reminder_sent`` events of the periods ``keys`` (a list of
+    ``(fiscal_year, fiscal_period)``), each ``{name, fiscal_year,
+    fiscal_period, entity, actor, at, detail}`` with ``detail`` parsed into a
+    dict; only ``detail.topic == topic`` when ``topic`` is given (Y53).
+
+    No keys makes no read and returns ``[]``. A blank detail raises
+    ValueError naming the event: a reminder is never read as one to nobody.
+    """
+    wanted = {(int(fy), int(fp)) for fy, fp in keys}
+    if not wanted:
+        return []
+    rows = frappe.get_all(
+        "Close Event",
+        filters={"kind": "reminder_sent", "fiscal_year": ["in", sorted({fy for fy, _ in wanted})]},
+        fields=["name", "fiscal_year", "fiscal_period", "entity", "actor", "at", "detail"],
+        limit_page_length=0,
+    )
+    result = []
+    for row in rows:
+        if _key(row) not in wanted:
+            continue
+        raw = row.get("detail")
+        if not isinstance(raw, dict) and not (raw or "").strip():
+            raise ValueError(f"Close Event {row.get('name')} is a reminder with no detail")
+        detail = raw if isinstance(raw, dict) else json.loads(raw)
+        if topic is not None and detail.get("topic") != topic:
+            continue
+        result.append(dict(row, detail=detail))
     return result
 
 
