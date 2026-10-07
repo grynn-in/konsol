@@ -16,7 +16,9 @@ export const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 // R52l (review U3): the wording is built from these fixed tables, never
 // Intl, so the ICU build cannot change it (ICU 78 spells September "Sept").
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// R53d (#305-R52-3-1): exported so timefmt.js builds day-first instants
+// ("6 Oct, 10:00") from this same table — one month spelling app-wide.
+export const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /**
  * "2025-10-07" -> "Tue 7 Oct 2025". `who` names the caller in the error. A
