@@ -236,7 +236,77 @@ def test_reminded_text():
     assert entry["last_at"] is at
 
 
-def test_reminded_text_unknown_name_raises():
-    entry = {"count": 1, "last_at": datetime(2025, 10, 6), "last_by": "ghost@x"}
-    e = _raises(ValueError, M.reminded_text, entry, {}.get, str)
-    assert "ghost@x" in str(e)
+def test_reminded_text_sender_without_a_name_is_labelled_not_raised():
+    # review S3 failure path: a renamed or deleted sender (Close Event.actor is a
+    # Data field) used to raise and take down every reader. It is now a label.
+    at = datetime(2025, 10, 6, 14, 5)
+    fmt = lambda d: d.strftime("%-d %b %H:%M")
+    for names in ({}, {"ghost@x": ""}, {"ghost@x": None}):
+        entry = {"count": 1, "last_at": at, "last_by": "ghost@x"}
+        text = M.reminded_text(entry, names.get, fmt)
+        assert text == "Reminded 1× · last 6 Oct 14:05 by ghost@x (name not recorded)", text
+
+
+# --- sender_name (review S3) ---------------------------------------------------
+
+def test_sender_name_full_name():
+    assert M.sender_name("jane@x", {"jane@x": "Jane Doe"}) == "Jane Doe"
+
+
+def test_sender_name_missing_or_blank_is_labelled_never_blank():
+    for names in ({}, {"u@x": ""}, {"u@x": None}, {"u@x": "   "}, {"other@x": "Other"}):
+        out = M.sender_name("u@x", names)
+        assert out == "u@x (name not recorded)", (names, out)
+
+
+# --- visible_entries (review S3: the scoping loop copied into four readers) ----
+
+def _two_periods_two_topics_three_entities():
+    t0 = datetime(2025, 8, 1, 9, 0)
+    events = []
+    i = 0
+    for fp in (7, 8):
+        for topic in ("tb", "ic"):
+            for entity in ("ZZ01", "ZZ02", "ZZ03"):
+                i += 1
+                events.append(_ev("CE-%d" % i, t0 + timedelta(minutes=i), topic=topic,
+                                  entity=entity, actor="%s-%s@x" % (entity, topic), fp=fp))
+    # ZZ03 has no tb reminder in P08: only ic.
+    events = [e for e in events if not (e["fiscal_period"] == 8 and e["entity"] == "ZZ03"
+                                        and e["detail"]["topic"] == "tb")]
+    return M.summary(events)
+
+
+def test_visible_entries_keeps_only_the_topic_and_visible_entities():
+    summ = _two_periods_two_topics_three_entities()
+    out = M.visible_entries(summ, [(2025, 7), (2025, 8)], "tb", {"ZZ01"})
+    assert set(out) == {(2025, 7), (2025, 8)}
+    for key in out:
+        assert set(out[key]) == {"ZZ01"}, out[key]
+        assert out[key]["ZZ01"] is summ[(key[0], key[1], "ZZ01", "tb")]
+    assert out[(2025, 7)]["ZZ01"]["last_by"] == "ZZ01-tb@x"
+
+
+def test_visible_entries_every_key_present_even_when_empty():
+    summ = _two_periods_two_topics_three_entities()
+    out = M.visible_entries(summ, [(2025, 7), (2025, 9)], "tb", {"ZZ01"})
+    assert out[(2025, 9)] == {}
+    assert set(out) == {(2025, 7), (2025, 9)}  # P08 was not asked for
+    assert M.visible_entries({}, [(2025, 7)], "ic", None) == {(2025, 7): {}}
+    assert M.visible_entries(summ, [], "tb", None) == {}
+
+
+def test_visible_entries_none_is_unrestricted_and_empty_set_hides_all():
+    summ = _two_periods_two_topics_three_entities()
+    out = M.visible_entries(summ, [(2025, 8)], "tb", None)
+    assert set(out[(2025, 8)]) == {"ZZ01", "ZZ02"}  # ZZ03 has no tb in P08
+    out = M.visible_entries(summ, [(2025, 8)], "ic", None)
+    assert set(out[(2025, 8)]) == {"ZZ01", "ZZ02", "ZZ03"}
+    assert out[(2025, 8)]["ZZ03"]["last_by"] == "ZZ03-ic@x"
+    out = M.visible_entries(summ, [(2025, 7), (2025, 8)], "tb", set())
+    assert out == {(2025, 7): {}, (2025, 8): {}}
+
+
+def test_visible_entries_unknown_topic_raises():
+    summ = _two_periods_two_topics_three_entities()
+    _raises(ValueError, M.visible_entries, summ, [(2025, 7)], "x", None)
