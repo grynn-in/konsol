@@ -21,7 +21,7 @@
  *   (replies are not built), and each side's reminded text.
  * - Y65 (stories 1.5, 5.2; C-R1): each side of the panel shows remind.js's
  *   reminded text (`selectedPanel.remindA/B.text`). When `panel` says the
- *   side `canRemind` (the server's `can_remind` AND the side is not masked),
+ *   side `canRemind` (the server's per-side `can_remind_a`/`can_remind_b`: over tolerance and visible, #305-R52-2-1),
  *   a "Remind <entity>" button posts `remindBody(period, entity, "ic")`
  *   through the one function `remind(side)`. On success get_ic is re-read
  *   once; a refusal shows the server's sentence through `messageLines`
