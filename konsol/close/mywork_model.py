@@ -222,18 +222,27 @@ PERIOD_KEYS = ("code", "ended", "my_missing", "missing", "checks", "failed", "si
 #: ``{step: {"due" (date or ISO text, or None), "past", "text"}}``. Every
 #: period item carries ``due``: ``{"date" (ISO or None), "text", "overdue"}``
 #: when its step is known (``STEP_OF_SLUG``; IC fix items -> ``ic``), with
-#: ``overdue = past`` because the item exists only while its step is open
-#: (C-D4); None for an item with no step, or when the caller sent no
-#: deadlines (never a guessed date). A deadlines map that is not a map, lacks
-#: the item's step, or whose entry lacks a key raises ValueError.
+#: ``overdue = past`` for the tb and ic steps, because those items exist only
+#: while their step is open (C-D4); None for an item with no step, or when the
+#: caller sent no deadlines (never a guessed date). A deadlines map that is
+#: not a map, lacks the item's step, or whose entry lacks a key raises
+#: ValueError.
+#: R52a (review S1; D57 "the server decides ``signoff_overdue``; one source of
+#: truth"): a sign-off-step item is overdue only when the date has passed AND
+#: the period is not signed (``facts["signoff"]`` not in SIGNED_STATES), the
+#: grid's rule (grid_api.get_period_grid: ``past and not _signed(run)``).
 #: C-D6: the deadline step of each period-item slug; any other slug has none.
+#: R52a: "resign" carries the sign-off due; "close" carries none (sign-off is
+#: done and no "close" deadline exists), which narrows C-D6's "close" mapping.
 STEP_OF_SLUG = {"tb": "tb", "tbs-waiting": "tb", "signoff": "signoff",
-                "signoff-wait": "signoff", "close": "signoff"}
+                "signoff-wait": "signoff", "resign": "signoff"}
 DUE_KEYS = ("due", "past", "text")
 CHECK_STATES = ("not_run", "running", "stale", "failed", "current")
 KINDS = ("blocking", "todo", "waiting")
 
 #: Copied from assertion_run.SIGNED_STATES (assertion_run.py:224); not imported.
+#: Equal to signoff_model.SIGNED_STATES, which the grid's ``_signed`` reads
+#: (R52a asserts the two are equal).
 SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
 RE_SIGN_NEEDED = "Re-sign Needed"
 
@@ -326,7 +335,10 @@ def _due(key, facts, step):
     due = entry["due"]
     if due is not None and not isinstance(due, str):
         due = due.isoformat()
-    return {"date": due, "text": entry["text"], "overdue": bool(entry["past"])}
+    overdue = bool(entry["past"])
+    if step == "signoff":
+        overdue = overdue and facts["signoff"] not in SIGNED_STATES
+    return {"date": due, "text": entry["text"], "overdue": overdue}
 
 
 def _period_item(persona, key, facts, slug, kind, title, action):

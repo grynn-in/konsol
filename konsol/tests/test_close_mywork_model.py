@@ -1338,12 +1338,12 @@ def test_step_map_for_the_close_lead_and_group_accountant():
          {"tbs-waiting:2025-07": tb, "signoff:2025-07": signoff}),
         # Waiting on the sign-off gates -> signoff
         ("close_lead", {"gates_blocked": True}, {"signoff-wait:2025-07": signoff}),
-        # Close -> signoff
-        ("close_lead", {"signoff": "Signed Off"}, {"close:2025-07": signoff}),
-        # rates, re-sign, unowned and checks have no step
+        # R52a: Close has no step (sign-off is done, no "close" deadline exists)
+        ("close_lead", {"signoff": "Signed Off"}, {"close:2025-07": None}),
+        # R52a: Re-sign needed -> signoff; rates, unowned and checks have no step
         ("close_lead", {"rates_missing": 1, "signoff": "Re-sign Needed", "unowned": ["ZZX"],
                         "checks": "failed", "failed": 2},
-         {"rates:2025-07": None, "resign:2025-07": None, "unowned:2025-07": None,
+         {"rates:2025-07": None, "resign:2025-07": signoff, "unowned:2025-07": None,
           "checks-waiting:2025-07": None}),
         ("group_accountant", {"missing": ["ZZA"], "checks": "stale", "rates_missing": 1},
          {"tbs-waiting:2025-07": tb, "checks-run:2025-07": None, "rates:2025-07": None}),
@@ -1494,3 +1494,62 @@ def test_deadlines_that_are_not_a_map_raise():
     facts = dict(_period("FY2025 P07", my_missing=["ZZA"]), deadlines=[("tb", "2025-08-07")])
     with pytest.raises(ValueError, match="deadlines"):
         M.period_items("entity_accountant", {P07: facts}, FIRST)
+
+
+# --- R52a (konsol#305 story 2.4; review S1; D57): sign-off "overdue" agrees with the grid ---
+#
+# The grid decides ``signoff_overdue = past and not _signed(run)``
+# (grid_api.get_period_grid), ``_signed`` reading signoff_model.SIGNED_STATES.
+# My work's sign-off-step items must agree: a signed period is never overdue.
+# The "close" item carries no due (sign-off is done; no "close" deadline), and
+# "Re-sign needed" carries the sign-off due. Input: the REAL period_deadlines.
+
+_SM_PATH = os.path.join(APP_DIR, "close", "signoff_model.py")
+_sm_spec = importlib.util.spec_from_file_location("signoff_model_for_mywork_r52a", _SM_PATH)
+SM = importlib.util.module_from_spec(_sm_spec)
+_sm_spec.loader.exec_module(SM)
+
+_R52A_TODAY = date(2025, 9, 1)
+_R52A_RULES = [_rule(date(2025, 1, 1), signoff=8)]
+_R52A_SLUG = {"Signed Off": "close", "Re-sign Needed": "resign", "Not Signed Off": "signoff"}
+
+
+def _r52a_items(signoff):
+    deadlines = DM.period_deadlines(_R52A_RULES, set(), _END[P07], _R52A_TODAY)
+    per = {P07: dict(_period("FY2025 P07", signoff=signoff), deadlines=deadlines)}
+    return deadlines, {i["id"]: i for i in M.period_items("close_lead", per, FIRST)}
+
+
+def test_r52a_the_real_producer_puts_signoff_on_working_day_8_and_past():
+    d = DM.period_deadlines(_R52A_RULES, set(), _END[P07], _R52A_TODAY)
+    assert d["signoff"] == {"due": date(2025, 8, 12), "past": True, "text": "Due 2025-08-12"}
+
+
+def test_r52a_signed_off_close_item_carries_no_due():
+    # Failure path at 843cdf7: {'date': '2025-08-12', 'overdue': True} on a signed period.
+    _, items = _r52a_items("Signed Off")
+    assert items["close:2025-07"]["due"] is None
+
+
+def test_r52a_resign_item_carries_the_signoff_due_and_is_overdue():
+    # Failure path at 843cdf7: ``due None`` on resign.
+    _, items = _r52a_items("Re-sign Needed")
+    assert items["resign:2025-07"]["due"] == {"date": "2025-08-12", "text": "Due 2025-08-12",
+                                              "overdue": True}
+
+
+def test_r52a_not_signed_off_signoff_item_is_overdue():
+    _, items = _r52a_items("Not Signed Off")
+    assert items["signoff:2025-07"]["due"]["overdue"] is True
+
+
+def test_r52a_overdue_is_the_grids_expression_for_each_signoff_state():
+    for signoff, slug in _R52A_SLUG.items():
+        deadlines, items = _r52a_items(signoff)
+        grid = bool(deadlines["signoff"]["past"] and signoff not in SM.SIGNED_STATES)
+        due = items["%s:2025-07" % slug]["due"]
+        assert (due["overdue"] if due else False) == grid, signoff
+
+
+def test_r52a_signed_states_copy_matches_signoff_model():
+    assert M.SIGNED_STATES == SM.SIGNED_STATES
