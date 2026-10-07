@@ -9,7 +9,10 @@ partnerless rows, the counts, the W3-2 mask for a scoped caller and whether
 the caller may send back or remind. Each shown pair carries ``reminders_a`` /
 ``reminders_b`` (topic ic, konsol#305 Y60, C-R6): ``{count, last_at,
 last_by, last_by_name}`` or None; a masked side is always None, so a hidden
-entity's reminders never leave the server. Read-only.
+entity's reminders never leave the server. Each pair also carries
+``can_remind_a`` / ``can_remind_b`` (konsol#305 R53b, #305-R52-2-1): true
+only when the payload-level ``can_remind`` holds, the side is visible and the
+pair is over tolerance (``remind_model.ic_side_can_remind``). Read-only.
 
 ``send_back(fiscal_year, fiscal_period, entity_a, account_a, entity_b,
 account_b, reason)`` (POST, C04; #305-W3-1 option A) re-reads the pair from
@@ -33,6 +36,10 @@ comes before the write.
   ``close_event.reminders`` (topic ic) and, when a visible side was
   reminded, one more User read (Y60); ClickHouse 2 when configured, 0
   otherwise. Constant in pairs.
+
+``checked_rows(fiscal_year, fiscal_period)`` (R53b) gives remind_api's
+topic ic check the period's unmasked gold_ic_reconciliation rows, or the
+state's sentence when intercompany was not checked.
 
 ``setup_gap()``, ``tolerance_gap()``, ``open_fixes(keys)`` and
 ``signoff_summary(fiscal_year, fiscal_period)`` (C05) are module-level
@@ -281,6 +288,28 @@ def signoff_summary(fiscal_year, fiscal_period):
             "sent_back_open": None}
 
 
+def checked_rows(fiscal_year, fiscal_period):
+    """konsol#305 R53b: ``(rows, None)`` with the period's
+    gold_ic_reconciliation rows (every group, unmasked), or ``([], message)``
+    when intercompany was not checked: not configured, not applicable, the
+    W3-7 conflict (all decided before any warehouse read, as ``get_ic``), or
+    a warehouse failure. Never an empty list for "could not read". Not
+    whitelisted: the caller (remind_api) gates and applies scope."""
+    fy, fp = int(fiscal_year), int(fiscal_period)
+    published = published_count()
+    none = declared_none()
+    result = ic_model.state(published, declared_none=none)
+    if result["state"] != "checked":
+        return [], result["message"]
+    try:
+        rows = [_numbers(r, _PAIR_NUMBERS)
+                for r in ch_read.rows(_RECONCILIATION_SQL, {"fy": fy, "fp": fp})]
+    except Exception as e:  # noqa: BLE001 — any failure to read means "can't say"
+        error = {"not_built": ch_read.not_built(e), "text": _error_text(e)}
+        return [], ic_model.state(published, error, declared_none=none)["message"]
+    return rows, None
+
+
 def _warehouse(fy, fp):
     """``(rows, unmatched, error)``; on any failure no rows and the error."""
     params = {"fy": fy, "fp": fp}
@@ -416,6 +445,14 @@ def get_ic(fiscal_year, fiscal_period):
     # C-R1: Remind on the IC panel, as can_send_back (role, Open, checked).
     can_remind = bool(roles.intersection(remind_model.REMIND_ROLES)) and status == "Open" \
         and result["state"] == "checked"
+    # R53b (#305-R52-2-1): per side, only a visible side of a pair over
+    # tolerance; the same rule remind_api's topic ic refusal uses.
+    for group in groups:
+        for pair in group["pairs"]:
+            pair["can_remind_a"] = remind_model.ic_side_can_remind(
+                can_remind, pair["masked_a"], pair)
+            pair["can_remind_b"] = remind_model.ic_side_can_remind(
+                can_remind, pair["masked_b"], pair)
 
     return {
         "period": {"fiscal_year": fy, "fiscal_period": fp,
