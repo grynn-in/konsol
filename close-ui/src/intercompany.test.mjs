@@ -601,6 +601,7 @@ function balancesPayload(overrides) {
 			message: GAP_MESSAGE,
 		},
 		ambiguous_gap: null,
+		pending_gap: null,
 		hidden: 0,
 		entities: ["DE01", "FR01", "UK01"],
 		can_draft: true,
@@ -759,3 +760,72 @@ for (const key of ["gap", "ambiguous_gap"]) {
 		assert.doesNotThrow(() => icBalancesView({ ...goldenBalances(), [key]: null }));
 	});
 }
+
+// --- konsol#305 I54 (S8, #305-S8-1): a draft IC Balance with a rule blocks sign-off --
+//
+// The server's `pending_gap` (ic_balance_model.pending_gap via get_ic_balances)
+// names each draft whose pair has a matching unrealised-profit rule. dbt
+// eliminates only approved balances, so the screen shows the gap like the two
+// rule gaps, and marks each such draft row. Coordinator call: the row note
+// reads "approve, or delete the draft".
+
+const PENDING_NOTE = "Blocks sign-off: approve, or delete the draft";
+
+test("I54: icBalancesView shows the real pending_gap, naming the fixture's draft pair and its drafts", () => {
+	const golden = goldenBalances();
+	assert.ok(golden.pending_gap, "the golden fixture carries a pending gap");
+	const view = icBalancesView(golden);
+	assert.deepEqual(
+		view.pendingGap.pairs,
+		golden.pending_gap.pairs.map((p) => `${p.selling_entity} → ${p.buying_entity} (${p.names.join(", ")})`),
+	);
+	assert.deepEqual(view.pendingGap.pairs, ["UK01 → DE01 (ICB-UK01-DE01-2025-P7)"]);
+	assert.deepEqual(view.pendingGap.lines, [golden.pending_gap.message]);
+});
+
+test("I54: no pending gap is null (the declared \"no gap\")", () => {
+	assert.equal(icBalancesView({ ...goldenBalances(), pending_gap: null }).pendingGap, null);
+	assert.equal(icBalancesView(balancesPayload()).pendingGap, null);
+});
+
+test("Failure path — I54: a payload without `pending_gap` throws, naming it", () => {
+	const payload = goldenBalances();
+	delete payload.pending_gap;
+	assert.throws(() => icBalancesView(payload), /pending_gap/);
+});
+
+test("I54: the fixture's draft with a matching rule carries the blocks-sign-off note; the one with no rule does not", () => {
+	const golden = goldenBalances();
+	const view = icBalancesView(golden);
+	const byName = Object.fromEntries(view.rows.map((r) => [r.name, r]));
+	assert.equal(byName["ICB-UK01-DE01-2025-P7"].pendingNote, PENDING_NOTE);
+	// no matching rule: the undeclared gap covers it, not this note
+	assert.equal(byName["ICB-DE01-UK01-2025-P7"].pendingNote, null);
+	// every pending pair's drafts are noted
+	const noted = view.rows.filter((r) => r.pendingNote).map((r) => r.name).sort();
+	assert.deepEqual(noted, golden.pending_gap.pairs.flatMap((p) => p.names).sort());
+});
+
+test("Failure path — I54: an approved row, a draft with inventory 0 or below, and a draft with no rule carry no note", () => {
+	const golden = goldenBalances();
+	const ruled = golden.balances.find((b) => b.rules.length > 0);
+	const cases = [
+		{ ...ruled, status: "Approved" },
+		{ ...ruled, ending_inventory_from_ic: 0 },
+		{ ...ruled, ending_inventory_from_ic: -5 },
+		{ ...ruled, rules: [], missing_rule: true },
+	];
+	for (const row of cases) {
+		const [view] = icBalancesView({ ...golden, balances: [row] }).rows;
+		assert.equal(view.pendingNote, null, JSON.stringify(row));
+	}
+});
+
+test("I54: a draft with a rule whose inventory cannot be read IS noted (never guessed, as pending_gap)", () => {
+	const golden = goldenBalances();
+	const ruled = golden.balances.find((b) => b.rules.length > 0);
+	for (const inventory of ["x", null]) {
+		const [view] = icBalancesView({ ...golden, balances: [{ ...ruled, ending_inventory_from_ic: inventory }] }).rows;
+		assert.equal(view.pendingNote, PENDING_NOTE, String(inventory));
+	}
+});

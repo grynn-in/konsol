@@ -253,3 +253,28 @@ test("U8: saveBalance ignores a result for a period the user has left (whileCurr
 	const fn = src.slice(src.indexOf("async function saveBalance"));
 	assert.match(fn.slice(0, fn.indexOf("\n}\n")), /whileCurrent\(/);
 });
+
+// --- konsol#305 I54 (S8): the pending-draft gap ---------------------------------
+
+test("I54: the pending-draft gap is shown like ambiguousGap: a role=alert div naming the lines and pairs", () => {
+	const tpl = template(read());
+	const block = blockWithVIf(tpl, "div", /balancesView\.pendingGap/);
+	assert.ok(block, "a div's v-if tests balancesView.pendingGap");
+	const inner = tpl.slice(block.start, block.end);
+	assert.match(inner, /balancesView\.pendingGap\.lines/);
+	assert.match(inner, /balancesView\.pendingGap\.pairs/);
+	const opening = inner.slice(0, inner.indexOf(">") + 1);
+	const ambiguous = blockWithVIf(tpl, "div", /balancesView\.ambiguousGap/);
+	const ambOpening = tpl.slice(ambiguous.start, tpl.indexOf(">", ambiguous.start) + 1);
+	assert.equal(
+		opening.replace(/v-if="[^"]*"/, ""),
+		ambOpening.replace(/v-if="[^"]*"/, ""),
+		"the same markup (role, classes) as the ambiguous gap",
+	);
+});
+
+test("I54: a draft row whose pair has a rule shows its pendingNote, behind a v-if", () => {
+	const tpl = template(read());
+	assert.match(tpl, /v-if="row\.pendingNote"[^>]*>\s*\{\{\s*row\.pendingNote\s*\}\}/);
+	assert.doesNotMatch(tpl, /Blocks sign-off/, "the note text comes from intercompany.js, not the template");
+});
