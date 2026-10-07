@@ -493,14 +493,15 @@ def test_o57_her_items_never_carry_an_effect():
 
 def _o69_calendar():
     """FY2025 as live declares it: P00 Opening and P01 both start 1 Jan,
-    P13 Closing starts on P12's last day."""
+    P13 Closing starts on P12's last day. Every period is Open (R52h: the
+    rows carry the effective status, as fiscal_period_rows returns it)."""
     rows = [{"fiscal_year": 2025, "fiscal_period": 0, "period_type": "Opening",
-             "start_date": datetime.date(2025, 1, 1)}]
+             "start_date": datetime.date(2025, 1, 1), "status": "Open"}]
     for m in range(1, 13):
         rows.append({"fiscal_year": 2025, "fiscal_period": m, "period_type": "Regular",
-                     "start_date": datetime.date(2025, m, 1)})
+                     "start_date": datetime.date(2025, m, 1), "status": "Open"})
     rows.append({"fiscal_year": 2025, "fiscal_period": 13, "period_type": "Closing",
-                 "start_date": datetime.date(2025, 12, 31)})
+                 "start_date": datetime.date(2025, 12, 31), "status": "Open"})
     return rows
 
 
@@ -513,9 +514,9 @@ def _o69_draft(**k):
 
 def test_o69_regular_starts_maps_each_regular_first_day_to_its_period():
     starts = M.regular_period_by_start(_o69_calendar())
-    assert starts["2025-10-01"] == (2025, 10)
+    assert starts["2025-10-01"] == (2025, 10, "Open")
     # P00 Opening shares 1 Jan with P01: only the Regular one counts.
-    assert starts["2025-01-01"] == (2025, 1)
+    assert starts["2025-01-01"] == (2025, 1, "Open")
     # P13 Closing's first day is no Regular period's.
     assert "2025-12-31" not in starts
     assert len(starts) == 12
@@ -533,11 +534,6 @@ def test_o69_op_edit_is_the_drafts_node_period_pct_and_method():
     assert edit == {"consolidation_group": "G1", "entity": "ZZENT", "fiscal_year": 2025,
                     "fiscal_period": 10, "ownership_pct": 80.0,
                     "consolidation_method": "full"}
-
-
-def test_o69_op_edit_of_a_group_node_has_entity_none():
-    edit = M.op_edit(_o69_draft(data_area_id=""), M.regular_period_by_start(_o69_calendar()))
-    assert edit["entity"] is None and edit["consolidation_group"] == "G1"
 
 
 def test_o69_failure_path_a_desk_draft_without_supersedes_has_no_edit():
@@ -576,3 +572,104 @@ def test_o69_pending_items_pass_edit_through_and_never_invent_it():
     # The title and detail are unchanged.
     assert by["OP-ZZ-2025-10-01"]["title"] == "ZZENT in G1 from 2025-10-01"
     assert by["OP-ZZ-2025-10-01"]["detail"] == "80% · full"
+
+
+# --- R52h (review S7/U5): ``edit`` only where the form can load the draft --------
+# Coordinator ruling S7/U5: the server's ``op_edit`` is None wherever the
+# ownership change form cannot load the draft. The form's choices are
+# rates_api._change_choices (rates_api.py:508-548): nodes that name an entity,
+# and Regular periods whose effective status is Open.
+
+def _r52h_calendar(closed=(), statuses=None):
+    """``_o69_calendar`` (every period Open) with the periods in ``closed``
+    Closed and those in ``statuses`` set to the given status."""
+    rows = []
+    for r in _o69_calendar():
+        r = dict(r)
+        if r["fiscal_period"] in closed:
+            r["status"] = "Closed"
+        if statuses and r["fiscal_period"] in statuses:
+            r["status"] = statuses[r["fiscal_period"]]
+        rows.append(r)
+    return rows
+
+
+def _r52h_choices(calendar, nodes):
+    """The form's choices in _change_choices' shape, built from the same rows
+    by its rule (rates_api.py:508-548): ``nodes`` are the submitted
+    ``(consolidation_group, data_area_id)`` pairs; only those naming an
+    entity are offered; only Regular periods whose status is Open are."""
+    entities = sorted({(e, g) for g, e in nodes if e})
+    periods = [{"fiscal_year": int(r["fiscal_year"]), "fiscal_period": int(r["fiscal_period"]),
+                "start_date": M._iso_day(r["start_date"])}
+               for r in calendar
+               if r.get("period_type") == "Regular" and r.get("status") == "Open"]
+    return {"entities": [{"entity": e, "consolidation_group": g} for e, g in entities],
+            "periods": periods}
+
+
+def test_r52h_failure_path_a_group_node_draft_has_no_edit():
+    # Red at 843cdf7: {'consolidation_group': 'G1', 'entity': None, ...}.
+    starts = M.regular_period_by_start(_r52h_calendar())
+    assert M.op_edit(_o69_draft(data_area_id=None), starts) is None
+    assert M.op_edit(_o69_draft(data_area_id=""), starts) is None
+
+
+def test_r52h_a_draft_starting_a_closed_regular_period_has_no_edit():
+    starts = M.regular_period_by_start(_r52h_calendar(closed=(10,)))
+    assert M.op_edit(_o69_draft(), starts) is None
+
+
+def test_r52h_any_status_but_open_gives_no_edit_and_a_missing_one_is_never_open():
+    for status in ("Closed", "Locked", "Soft Closed", "", None):
+        starts = M.regular_period_by_start(_r52h_calendar(statuses={10: status}))
+        assert M.op_edit(_o69_draft(), starts) is None, status
+    rows = [dict(r) for r in _r52h_calendar()]
+    for r in rows:
+        if r["fiscal_period"] == 10:
+            del r["status"]
+    assert M.op_edit(_o69_draft(), M.regular_period_by_start(rows)) is None
+
+
+def test_r52h_an_open_entity_draft_is_unchanged():
+    edit = M.op_edit(_o69_draft(), M.regular_period_by_start(_r52h_calendar(closed=(9, 11))))
+    assert edit == {"consolidation_group": "G1", "entity": "ZZENT", "fiscal_year": 2025,
+                    "fiscal_period": 10, "ownership_pct": 80.0,
+                    "consolidation_method": "full"}
+
+
+def test_r52h_the_map_carries_each_regular_periods_status_from_one_read():
+    starts = M.regular_period_by_start(_r52h_calendar(closed=(3,)))
+    assert starts["2025-10-01"] == (2025, 10, "Open")
+    assert starts["2025-03-01"] == (2025, 3, "Closed")
+    assert starts["2025-01-01"] == (2025, 1, "Open")
+    assert "2025-12-31" not in starts
+    assert len(starts) == 12
+
+
+def test_r52h_edit_is_offered_exactly_where_the_forms_choices_hold_the_draft():
+    """Pins op_edit to _change_choices: for every node and every calendar
+    day, ``edit`` is not None exactly when the draft's (entity, period) is
+    one of the choices, and then names that choice."""
+    calendar = _r52h_calendar(closed=(1, 2, 3, 4, 5, 6), statuses={7: "Locked"})
+    nodes = [("G1", "ZZENT"), ("G1", None), ("G2", "ZZENT"), ("G2", "ZZTWO"), ("G3", "")]
+    choices = _r52h_choices(calendar, nodes)
+    starts = M.regular_period_by_start(calendar)
+    offered = 0
+    for group, entity in nodes:
+        for row in calendar:
+            day = M._iso_day(row["start_date"])
+            draft = _o69_draft(consolidation_group=group, data_area_id=entity, effective_date=day)
+            edit = M.op_edit(draft, starts)
+            node_ok = {"entity": entity, "consolidation_group": group} in choices["entities"]
+            period = [p for p in choices["periods"] if p["start_date"] == day]
+            if node_ok and period:
+                offered += 1
+                assert edit is not None, (group, entity, day)
+                assert (edit["entity"], edit["consolidation_group"]) == (entity, group)
+                assert (edit["fiscal_year"], edit["fiscal_period"]) == \
+                    (period[0]["fiscal_year"], period[0]["fiscal_period"])
+            else:
+                assert edit is None, (group, entity, day, edit)
+    # 3 entity nodes x P08..P12 (P00's day is P01's, which is Closed).
+    assert offered == 3 * 5, offered
