@@ -15,6 +15,14 @@ drawn.
   ``current``, ``later_exists`` (None or the earliest later submitted
   start), ``pending_exists`` (None or the draft names), ``period_rows`` and
   ``signed_keys``. ``change(ctx, pct, method)`` builds the model's change.
+- ``signed_keys`` (O64) maps each signed period's key, in key order, to its
+  signature ``{"run", "signed_on", "signed_by_name"}``:
+  ``latest_signed_runs`` is read once with ``signed_off_by`` and
+  ``signed_off_at``, and the signers' full names in one User read (none when
+  nothing is signed). A signer with no full name, no User or a blank
+  ``signed_off_by`` gives ``signed_by_name`` None, never the user id: the
+  model raises naming the run when it lists that period. Iterating the
+  mapping gives the keys, so the callers that pass it on are unchanged.
 - ``effect_for(doc)`` is the effect of a saved draft, read from the period
   its ``supersedes`` names. A draft without ``supersedes`` (a Desk draft)
   has no effect: None, never a guessed before/after.
@@ -80,9 +88,25 @@ def _node_periods(consolidation_group, entity):
 
 
 def _signed_keys():
+    """{(fy, fp): {"run", "signed_on", "signed_by_name"}} of every signed
+    period, in key order (O64): one signed-run read, one User read."""
     from konsol.close import signoff_gate
 
-    return sorted((int(fy), int(fp)) for fy, fp in signoff_gate.latest_signed_runs())
+    runs = {(int(fy), int(fp)): r for (fy, fp), r in
+            signoff_gate.latest_signed_runs(("signed_off_by", "signed_off_at")).items()}
+    signers = sorted({r.get("signed_off_by") for r in runs.values() if r.get("signed_off_by")})
+    names = {}
+    if signers:
+        names = {u["name"]: u.get("full_name") or None for u in frappe.get_all(
+            "User", filters={"name": ["in", signers]}, fields=["name", "full_name"],
+            limit_page_length=0)}
+    out = {}
+    for key in sorted(runs):
+        run = runs[key]
+        by = run.get("signed_off_by")
+        out[key] = {"run": run.get("name"), "signed_on": _iso(run.get("signed_off_at")),
+                    "signed_by_name": names.get(by) if by else None}
+    return out
 
 
 def context(consolidation_group, entity, fiscal_year, fiscal_period):

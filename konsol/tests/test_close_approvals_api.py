@@ -163,6 +163,11 @@ _DOCTYPE_LIST_ATTR = {
 }
 
 
+#: O64: who signed the stub's signed runs, and when.
+O64_LEAD_NAME = "Zz Lead"
+O64_SIGNED_AT = "2026-08-04 17:30:00"
+
+
 class _Site:
     def __init__(self):
         self.user = LEAD
@@ -187,6 +192,10 @@ class _Site:
         self.bds = []
         #: O58: the ``signoff_gate.latest_signed_runs()`` keys, {(fy, fp): run}.
         self.signed = {}
+        #: O64: {(fy, fp): (signed_off_by, signed_off_at)}; unlisted keys are
+        #: signed by LEAD at O64_SIGNED_AT. User full names by user id.
+        self.signers = {}
+        self.users = {LEAD: O64_LEAD_NAME}
         #: doctype -> None, or {"name", "workflow_state_field"}.
         self.workflows = {}
         #: workflow name -> ordered list of state names (idx order).
@@ -264,6 +273,9 @@ def _frappe(site):
             rows = [r for r in site.accounts if _match(r, filters)]
         elif doctype in _DOCTYPE_LIST_ATTR:
             rows = [r for r in getattr(site, _DOCTYPE_LIST_ATTR[doctype]) if _match(r, filters)]
+        elif doctype == "User":  # O64: the signers' full names
+            rows = [{"name": n, "full_name": f} for n, f in sorted(site.users.items())
+                    if _match({"name": n}, filters)]
         else:
             raise AssertionError("unexpected get_all on %s" % doctype)
         return [{f: r.get(f) for f in fields} for r in rows]
@@ -387,9 +399,16 @@ def _close_event(site):
 def _signoff_gate(site):
     mod = types.ModuleType("konsol.close.signoff_gate")
 
-    def latest_signed_runs():
+    def latest_signed_runs(fields=()):
         site.reads.append(("latest_signed_runs",))
-        return dict(site.signed)
+        out = {}
+        for (fy, fp), run in site.signed.items():
+            by, at = site.signers.get((fy, fp), (LEAD, O64_SIGNED_AT))
+            row = {"name": run, "fiscal_year": fy, "fiscal_period": fp,
+                   "signed_off_by": by, "signed_off_at": at}
+            out[(fy, fp)] = {f: row[f] for f in ("name", "fiscal_year", "fiscal_period")
+                             + tuple(fields)}
+        return out
 
     mod.latest_signed_runs = latest_signed_runs
     return mod
@@ -942,8 +961,14 @@ def test_o58_a_change_draft_carries_the_real_models_effect():
          "consolidation_method": "full"},
         {"name": O58_PRED, "effective_date": "2026-01-01", "end_date": None,
          "ownership_pct": 100.0, "consolidation_method": "full"},
-        [dict(p) for p in site.periods], [(2026, 7)])
+        [dict(p) for p in site.periods],
+        {(2026, 7): {"run": "RUN-1", "signed_on": "2026-08-04",
+                     "signed_by_name": O64_LEAD_NAME}})
     assert item["effect"] == expected
+    # O64: the predecessor's name, and who signed the re-sign period.
+    assert item["effect"]["current_name"] == O58_PRED
+    assert item["effect"]["resign_detail"] == [
+        {"period": "FY2026 P07", "signed_on": "2026-08-04", "signed_by_name": O64_LEAD_NAME}]
     assert item["effect"]["after"]["pct"] == 80.0
     assert item["effect"]["before"]["pct"] == 100.0
     assert item["effect"]["current_ends"] == "2026-06-30"
@@ -1024,3 +1049,4 @@ def test_o62_golden_op_queue_payload_equals_the_real_stub_site_call():
     ops = {i["name"]: i for i in result["items"] if i["doctype"] == OP}
     assert ops[O58_CHANGE]["effect"]["after"]["pct"] == 80.0
     assert ops[O58_DESK]["effect"] is None
+    assert ops[O58_CHANGE]["effect"]["resign_detail"][0]["signed_by_name"] == O64_LEAD_NAME

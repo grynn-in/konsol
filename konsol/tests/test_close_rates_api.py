@@ -99,6 +99,39 @@ class _Site:
         self.get_doc_calls = []  # what get_doc received
         self.new_docs = []  # every _FakeDoc built from a dict
         self.signed = []  # signoff_gate.latest_signed_runs() keys (O55)
+        #: O64: {(fy, fp): (signed_off_by, signed_off_at)} of a signed run;
+        #: unlisted keys are signed by LEAD at O64_SIGNED_AT.
+        self.signers = {}
+        self.users = {LEAD: O64_LEAD_NAME}  # User full names (O64)
+
+
+#: O64: who signed the stub's signed runs, and when.
+O64_LEAD_NAME = "Zz Lead"
+O64_SIGNED_AT = datetime(2025, 10, 4, 17, 30, 0)
+
+
+def _signed_runs(site, fields=()):
+    """The stub ``signoff_gate.latest_signed_runs(fields)``: one run per
+    signed key, with the requested columns, as the real one returns them."""
+    out = {}
+    for fy, fp in site.signed:
+        by, at = site.signers.get((fy, fp), (LEAD, O64_SIGNED_AT))
+        row = {"name": "ZZ-RUN-%d-%d" % (fy, fp), "fiscal_year": fy, "fiscal_period": fp,
+               "signed_off_by": by, "signed_off_at": at}
+        out[(fy, fp)] = {f: row[f] for f in ("name", "fiscal_year", "fiscal_period")
+                         + tuple(fields)}
+    return out
+
+
+def _o64_signatures(site):
+    """The signatures ``ownership_change.context`` should hand the model for
+    this site: written out independently of the code under test."""
+    out = {}
+    for fy, fp in sorted(site.signed):
+        by, at = site.signers.get((fy, fp), (LEAD, O64_SIGNED_AT))
+        out[(fy, fp)] = {"run": "ZZ-RUN-%d-%d" % (fy, fp), "signed_on": at.date().isoformat(),
+                         "signed_by_name": site.users.get(by) or None}
+    return out
 
 
 def _her(name, data_area_id="ZZA", group="CG1", account="4000", rate_date=None,
@@ -178,6 +211,9 @@ def _frappe(site):
             rows = [r for r in site.entities if _match(r, filters)]
         elif doctype == "Trial Balance Submission":
             rows = [r for r in site.tbs if _match(r, filters)]
+        elif doctype == "User":  # O64: the signers' full names
+            rows = [{"name": n, "full_name": f} for n, f in sorted(site.users.items())
+                    if _match({"name": n}, filters)]
         else:
             raise AssertionError("unexpected get_all on %s" % doctype)
         if pluck:
@@ -385,7 +421,7 @@ def _invoke(site, run, require_json_safe=True):
         # ownership_change_model.py), reading this stub site; only
         # signoff_gate's signed runs are stubbed.
         signoff_gate = types.ModuleType("konsol.close.signoff_gate")
-        signoff_gate.latest_signed_runs = lambda: {k: "ZZ-RUN" for k in site.signed}
+        signoff_gate.latest_signed_runs = lambda fields=(): _signed_runs(site, fields)
         sys.modules["konsol.close.signoff_gate"] = signoff_gate
         close.signoff_gate = signoff_gate
         close.ownership_change = _load_path(
@@ -1287,8 +1323,13 @@ def test_o55_the_effect_is_the_real_models_for_the_periods_start():
     current = result["current"]
     expected = model.effect({"entity": O55_LEAF, "effective_date": "2025-10-01",
                              "ownership_pct": "80", "consolidation_method": "full"},
-                            current, _o55_calendar(), sorted(site.signed))
+                            current, _o55_calendar(), _o64_signatures(site))
     assert result["effect"] == expected
+    # O64: who signed each re-sign period, and the predecessor's name.
+    assert result["effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert result["effect"]["resign_detail"] == [
+        {"period": "FY2025 P11", "signed_on": "2025-10-04", "signed_by_name": O64_LEAD_NAME},
+        {"period": "FY2025 P13", "signed_on": "2025-10-04", "signed_by_name": O64_LEAD_NAME}]
     assert "not previewed" in result["effect"]["not_shown"]
 
 
@@ -1783,6 +1824,18 @@ def test_o56_failure_path_editing_a_draft_into_another_period_is_refused():
     _no_save(site)
 
 
+def test_o64_failure_path_a_listed_run_without_a_signer_name_refuses_the_preview():
+    """A re-sign period whose signer has no full name is refused naming the
+    run: never shown with a user id or a blank (O64)."""
+    site = _o55_site()
+    site.users = {LEAD: ""}
+    err = _preview_raises(site)
+    assert type(err).__name__ == "ValidationError", err
+    assert "ZZ-RUN-2025-11" in str(err), err
+    assert LEAD not in str(err), err
+    _no_write(site)
+
+
 # --- O57: get_pending's OP drafts carry their structural effect (story 4.2,
 # 4.3; C-O4; #305-4.2-1, #305-Q1-1). The effect is computed by the REAL
 # ownership_change.effect_for (loaded in _invoke) and checked against the REAL
@@ -1836,8 +1889,10 @@ def test_o57_a_change_draft_carries_the_real_models_effect():
          "consolidation_method": "full"},
         {"name": "OP-ZZ5B1-1", "effective_date": "2025-01-01", "end_date": None,
          "ownership_pct": 100.0, "consolidation_method": "full"},
-        _o55_calendar(), sorted(site.signed))
+        _o55_calendar(), _o64_signatures(site))
     assert item["effect"] == expected
+    assert item["effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert [d["period"] for d in item["effect"]["resign_detail"]] == item["effect"]["resign"]
     assert item["effect"]["before"]["pct"] == 100.0 and item["effect"]["after"]["pct"] == 80.0
     assert item["effect"]["current_ends"] == "2025-09-30"
     assert item["effect"]["resign"] == ["FY2025 P11", "FY2025 P13"]
@@ -1885,12 +1940,14 @@ def test_o57_reads_grow_only_for_a_change_draft_and_nothing_is_written():
     _call_pending(desk_only)
     _call_pending(with_change)
     assert len(desk_only.reads) == 7, desk_only.reads
-    assert len(with_change.reads) == 9, with_change.reads
+    # O64: + one User read for the signers' full names.
+    assert len(with_change.reads) == 10, with_change.reads
     extra = list(with_change.reads)
     for read in desk_only.reads:
         extra.remove(read)
     assert sorted(extra) == sorted([("get_all", "Ownership Period"),
-                                    ("sql", "fiscal_period_rows")]), extra
+                                    ("sql", "fiscal_period_rows"),
+                                    ("get_all", "User")]), extra
     assert with_change.new_docs == [] and with_change.get_doc_calls == []
 
 
