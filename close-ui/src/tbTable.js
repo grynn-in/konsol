@@ -88,7 +88,7 @@ export const KNOWN_STATUSES = new Set([
 ]);
 
 // B27: times on the TB list read like the freshness bar (B09): "10:42" today,
-// "Sep 20, 10:42" otherwise, in the user's zone, which the caller passes in.
+// "20 Sep, 10:42" otherwise (#305-R52-3-1, day first), in the user's zone, which the caller passes in.
 // A zone-less server timestamp is refused (B09b), never read in the browser's
 // zone. B29: the formatter is timefmt.js's, shared with the freshness bar.
 const NOT_RECORDED = "not recorded";
