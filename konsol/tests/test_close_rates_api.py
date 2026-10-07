@@ -2764,3 +2764,95 @@ def test_r52q_failure_path_a_broken_draft_names_its_error_under_the_ownership_ke
     assert broken["ownership_effect_error"].startswith(
         "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken
     assert "effect" not in broken and "effect_error" not in broken, sorted(broken)
+
+
+# --- R53e (#305-R52-4, U10e; Deepak Pai 7 Oct): get_ownership sends one
+# ``can_change``, true exactly when ``save_ownership_change`` would admit the
+# caller: a role in the save's literal tuple (OWNERSHIP_SAVE_ROLES), and at
+# least one Open Regular period to start a change in (the save refuses any
+# other period). Never Ownership Period create permission (``can_record``),
+# which a DocPerm customisation can move. ``change`` is sent exactly when
+# ``can_change`` is true, so the form never mounts without its choices. ----
+
+
+def test_r53e_every_role_the_save_admits_gets_can_change_true():
+    for role in ("EPM Analyst", "EPM Admin", "System Manager"):
+        result = _o63_call(_o63_site(roles=(role,)))
+        assert result["can_change"] is True, role
+        assert result["change"] is not None, role
+
+
+def test_r53e_failure_path_a_viewer_gets_can_change_false_and_no_change():
+    site = _o63_site(roles=("EPM User",), user=VIEWER)
+    site.can_record = False
+    result = _o63_call(site)
+    assert result["can_change"] is False
+    assert result["change"] is None
+
+
+def test_r53e_failure_path_a_viewer_granted_op_create_still_gets_can_change_false():
+    """A role customisation granting Ownership Period create to the Viewer
+    moves ``can_record`` (the Desk link) but never ``can_change``: the save
+    would still refuse them."""
+    site = _o63_site(roles=("EPM User",), user=VIEWER)
+    site.can_record = True
+    result = _o63_call(site)
+    assert result["can_record"] is True
+    assert result["can_change"] is False
+    assert result["change"] is None
+
+
+def test_r53e_failure_path_an_analyst_without_op_create_still_gets_can_change_true():
+    """The other direction of the same customisation: the save admits the
+    Analyst by role, so the form is offered with its choices."""
+    site = _o63_site()
+    site.can_record = False
+    result = _o63_call(site)
+    assert result["can_record"] is False
+    assert result["can_change"] is True
+    assert [p["label"] for p in result["change"]["periods"]] == ["FY2025 P10", "FY2026 P01"]
+
+
+def test_r53e_failure_path_no_open_regular_period_gives_can_change_false():
+    """The save refuses a change starting in any period that is not an Open
+    Regular one, so with none open there is nothing the save would accept."""
+    site = _o63_site()
+    site.periods = [_o63_period(2025, 9, "Closed"), _o63_period(2025, 10, "Closed"),
+                    _o63_period(2025, 13, "Open", "Closing", date(2025, 12, 31))]
+    result = _o63_call(site)
+    assert result["can_change"] is False
+    assert result["change"] is None
+
+
+def test_r53e_the_golden_carries_can_change():
+    golden = _golden(O63_GOLDEN)
+    assert golden["can_change"] is True
+    assert golden["change"] is not None
+
+
+def test_r53e_the_servers_decision_fed_back_to_the_save():
+    """Where ``can_change`` is true the save admits the caller with a period
+    and node from ``change``; where it is false the save refuses by role."""
+    for roles, user in ((("EPM Analyst",), ANALYST), (("EPM Admin",), LEAD),
+                        (("System Manager",), LEAD), (("EPM User",), VIEWER)):
+        site = _o63_site(roles=roles, user=user)
+        site.can_record = True
+        result = _o63_call(site)
+        if result["can_change"]:
+            period = result["change"]["periods"][0]
+            node = result["change"]["entities"][0]
+            fresh = _o63_site(roles=roles, user=user)
+            saved = _invoke(fresh, lambda api: api.save_ownership_change(
+                period["fiscal_year"], period["fiscal_period"], node["consolidation_group"],
+                node["entity"], "80", "full"))
+            assert saved["docstatus"] == 0, roles
+            assert len(fresh.new_docs) == 1, roles
+        else:
+            fresh = _o63_site(roles=roles, user=user)
+            with pytest.raises(Exception) as info:
+                _invoke(fresh, lambda api: api.save_ownership_change(
+                    2025, 10, O55_GROUP, O55_LEAF, "80", "full"))
+            assert type(info.value).__name__ == "PermissionError", (roles, info.value)
+            assert fresh.new_docs == [], roles
+    # Both branches ran.
+    assert _o63_call(_o63_site(roles=("EPM User",), user=VIEWER))["can_change"] is False

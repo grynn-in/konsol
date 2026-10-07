@@ -62,6 +62,10 @@ submitted trial balance but no ownership covering the period's start
 (blocking, #305-W2-2) and the Active leaf entities out of scope for
 information, using the one scope rule in ``scope_model`` (G01) and never
 re-deriving it. A Viewer reads it with ``can_record`` False (#305-W2-10).
+``can_change`` (R53e; #305-R52-4, U10e) is true exactly when
+``save_ownership_change`` would admit the caller (``OWNERSHIP_SAVE_ROLES``,
+and at least one Open Regular period); ``can_record`` stays the Desk
+"Record ownership" link's test.
 Refuses an undeclared period, and a non-Regular one (R01h; the ownership
 screen covers Regular periods only, mirroring ``grid_api``'s refusal).
 ``blocking`` and ``out_of_scope`` are cut to ``allowed_entity_codes()``, with
@@ -69,7 +73,7 @@ a combined ``hidden`` count (W2-10, W2-14) and a ``blocking_hidden`` count
 (R01h) naming only the hidden blocking entities, so a caller can tell a
 hidden gap from a merely-hidden out-of-scope entity. The query is keyed to
 the period's start date; moving it to the period's end waits on G09/G04
-(W2-16, blocked). For a caller who may record (``can_record``) it also
+(W2-16, blocked). For a caller who may change (``can_change``) it also
 carries ``change`` (O63): the ownership change form's choices, the entities
 with their node's group and the Open Regular periods; ``None`` otherwise.
 
@@ -343,6 +347,7 @@ def _drafts(doctype, fields):
 #: literal; a test pins the two together). A pending Ownership Period item
 #: carries ``edit`` only for a caller holding one of them, so the client never
 #: decides editability (``get_ownership.can_record`` is a different test).
+#: R53e: ``get_ownership.can_change`` is decided by the same tuple.
 OWNERSHIP_SAVE_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
 
 
@@ -498,6 +503,13 @@ def get_ownership(fiscal_year, fiscal_period):
     ]
 
     can_record = bool(frappe.has_permission("Ownership Period", "create"))
+    # R53e (#305-R52-4, U10e): the form follows the save, never ``can_record``
+    # (a DocPerm customisation moves that one). True exactly when
+    # ``save_ownership_change`` would admit the caller: a role in its literal
+    # tuple, and an Open Regular period to start the change in (the save
+    # refuses every other period). Decided once; ``change`` follows it.
+    periods = _open_regular_periods(calendar)
+    can_change = bool(set(frappe.get_roles()) & set(OWNERSHIP_SAVE_ROLES)) and bool(periods)
     return {
         "period": {"fiscal_year": fy, "fiscal_period": fp},
         "start_date": start_iso,
@@ -507,11 +519,27 @@ def get_ownership(fiscal_year, fiscal_period):
         "can_record": can_record,
         "hidden": blocking_hidden + out_of_scope_hidden,
         "blocking_hidden": blocking_hidden,
-        "change": _change_choices(calendar, allowed) if can_record else None,
+        "can_change": can_change,
+        "change": _change_choices(periods, allowed) if can_change else None,
     }
 
 
-def _change_choices(calendar, allowed):
+def _open_regular_periods(calendar):
+    """Every Regular period whose effective status is Open, ``{"fiscal_year",
+    "fiscal_period", "label", "start_date"}`` (ISO), in calendar order: the
+    periods an ownership change may start in (O63; the save's openness rule,
+    ``ownership_change_model.problems`` rule 3). A missing status is never
+    read as Open."""
+    return [
+        {"fiscal_year": int(r["fiscal_year"]), "fiscal_period": int(r["fiscal_period"]),
+         "label": period_name(int(r["fiscal_year"]), int(r["fiscal_period"])),
+         "start_date": _iso(_ownership_date(r.get("start_date")))}
+        for r in sorted(calendar, key=lambda r: (int(r["fiscal_year"]), int(r["fiscal_period"])))
+        if r.get("period_type") == "Regular" and r.get("status") == "Open"
+    ]
+
+
+def _change_choices(periods, allowed):
     """O63 (story 4.2; #305-4.2-1; C-O2, C-O3; wireframe-4.2.md section 1):
     the ownership change form's choices, so every choice it offers has a
     server source.
@@ -531,9 +559,9 @@ def _change_choices(calendar, allowed):
       shape (ISO dates, ``end_date`` None when open-ended). It comes from the
       same nodes read, with more fields. Once a period is chosen, the
       preview's ``current`` wins (R52r).
-    - ``periods``: every Regular period whose effective status is Open,
-      ``{"fiscal_year", "fiscal_period", "label", "start_date"}`` (ISO), in
-      calendar order, from the calendar ``get_ownership`` already read.
+    - ``periods``: ``_open_regular_periods`` of the calendar
+      ``get_ownership`` already read (R53e: computed once there, since
+      ``can_change`` needs it too).
 
     Costs two reads (the submitted nodes, and the names of the visible
     entities on them), whatever the number of nodes; the name read is skipped
@@ -561,13 +589,6 @@ def _change_choices(calendar, allowed):
     entities = [{"entity": e, "entity_name": names.get(e), "consolidation_group": g,
                  "current": ownership_change._as_current(latest[(e, g)])}
                 for e, g in pairs]
-    periods = [
-        {"fiscal_year": int(r["fiscal_year"]), "fiscal_period": int(r["fiscal_period"]),
-         "label": period_name(int(r["fiscal_year"]), int(r["fiscal_period"])),
-         "start_date": _iso(_ownership_date(r.get("start_date")))}
-        for r in sorted(calendar, key=lambda r: (int(r["fiscal_year"]), int(r["fiscal_period"])))
-        if r.get("period_type") == "Regular" and r.get("status") == "Open"
-    ]
     return {"entities": entities, "periods": periods}
 
 
