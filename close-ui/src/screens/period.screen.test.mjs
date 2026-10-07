@@ -204,3 +204,33 @@ test("Y63 (C-R1): no Remind button on the grid: no REMIND, no remind POST, no Re
   assert.doesNotMatch(template(source), />\s*Remind\b/);
   assert.doesNotMatch(script(source), /\bpost\(/);
 });
+
+// --- konsol#305 D61: the deadlines strip and overdue cells -----------------
+
+test("D61: the deadlines strip renders gridView's deadlines above the grid, text binding, Overdue v-if gated", () => {
+  const tpl = template(read());
+  const m = tpl.match(/v-for="item in gridViewResult\.deadlines"/);
+  assert.ok(m, "the strip iterates gridViewResult.deadlines");
+  const stripAt = tpl.indexOf(m[0]);
+  const tableAt = tpl.indexOf("<table");
+  assert.ok(stripAt >= 0 && stripAt < tableAt, "the strip sits above the grid");
+  assert.match(tpl, /\{\{\s*item\.text\s*\}\}/);
+  assert.match(tpl, /<span\s+v-if="item\.overdue"[^>]*>\s*Overdue\s*<\/span>/);
+  assert.doesNotMatch(read(), /v-html/);
+});
+
+test("D61: an overdue TB cell shows an Overdue chip, v-if on row.tbOverdue, inside the TB cell", () => {
+  const tpl = template(read());
+  const chipAt = tpl.search(/\{\{\s*row\.tb\.label\s*\}\}/);
+  const rateAt = tpl.search(/\{\{\s*row\.rate\.label\s*\}\}/);
+  const m = tpl.match(/<span\s+v-if="row\.tbOverdue"[^>]*>\s*Overdue\s*<\/span>/);
+  assert.ok(m, "a v-if=\"row.tbOverdue\" chip reads Overdue");
+  const at = tpl.indexOf(m[0]);
+  assert.ok(at > chipAt && at < rateAt, "the chip sits in the TB cell");
+});
+
+test("D61 (one source of truth): Period.vue never derives overdue from a date or past flag", () => {
+  const source = read();
+  assert.doesNotMatch(source, /\.past\b/);
+  assert.doesNotMatch(source, /signoff_overdue|\.overdue\s*=/);
+});
