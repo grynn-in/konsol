@@ -499,7 +499,13 @@ export function pendingEmptyMessage(view) {
 }
 
 /** `get_ownership` payload -> `{blocking, outOfScopeCount, inScopeCount,
- * canRecord, hiddenCount, blockingHidden}`. `blocking` entries
+ * canRecord, canChange, hiddenCount, blockingHidden}`. `canRecord` drives
+ * only the Desk "Record ownership" link; `canChange` (R53f; #305-R52-4,
+ * U10e) is the server's `can_change`, true exactly when
+ * `save_ownership_change` would admit the caller, and is what mounts the
+ * Change ownership form. A payload without `can_change` throws, and so does
+ * `can_change` true without the `change` choices (the server sends them
+ * exactly when it is true). Never derived from `can_record` or a role. `blocking` entries
  * (`{entity, message, desk}`) are server-authored sentences and pass
  * through unchanged; the out-of-scope list is shown only as a count.
  * `blockingHidden` (R01h: `blocking_hidden`) is the subset of `hiddenCount`
@@ -507,11 +513,18 @@ export function pendingEmptyMessage(view) {
  * `ownershipEmptyMessage` needs that distinction, `hiddenCount` alone
  * cannot tell the two apart. */
 export function ownershipView(payload) {
+  if (typeof payload.can_change !== "boolean") {
+    throw new Error("ownershipView: get_ownership's payload has no can_change");
+  }
+  if (payload.can_change && (payload.change === null || typeof payload.change !== "object")) {
+    throw new Error("ownershipView: get_ownership says can_change but sends no change");
+  }
   return {
     blocking: payload.blocking || [],
     outOfScopeCount: (payload.out_of_scope || []).length,
     inScopeCount: payload.in_scope_count,
     canRecord: Boolean(payload.can_record),
+    canChange: payload.can_change,
     hiddenCount: payload.hidden || 0,
     blockingHidden: payload.blocking_hidden || 0,
   };
