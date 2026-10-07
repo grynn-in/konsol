@@ -143,6 +143,13 @@ class _Site:
         #: S13: User full names that exist, and every full-name read.
         self.full_names = {}
         self.user_name_reads = []
+        # T53t (C-X1): what the stub close_event.reminders / deadlines
+        # .period_deadlines return, so Y59/D59's lazy imports resolve.
+        self.reminders = []
+        self.deadlines = {}
+        #: T53t: called (if set) from inside the endpoint, while the stubs are
+        #: installed, so a test can prove a call-time lazy import resolves.
+        self.during_call = None
 
 
 def _frappe(site):
@@ -316,9 +323,14 @@ def _call(site):
 
     signoff_gate.shared_reads = shared_reads
     freshness_api = types.ModuleType("konsol.close.freshness_api")
-    freshness_api.current_freshness = lambda: {"state": "fresh", "as_of": site.as_of,
-                                               "pending": 0, "changed_since": [],
-                                               "last_failed": None}
+
+    def current_freshness():
+        if site.during_call is not None:
+            site.during_call()
+        return {"state": "fresh", "as_of": site.as_of, "pending": 0,
+                "changed_since": [], "last_failed": None}
+
+    freshness_api.current_freshness = current_freshness
     assertion_run = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     assertion_run.latest_close_run = _latest_close_run(site)
     assertion_run.TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
@@ -369,6 +381,14 @@ def _call(site):
 
     approvals_api.sent_back_for = sent_back_for
 
+    # T53t (C-X1): stub konsol.close.close_event (reminders, Y53) and
+    # konsol.close.deadlines (period_deadlines, D55), so mywork_api's lazy
+    # `from konsol.close import close_event, deadlines` (Y59, D59) resolves.
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.reminders = lambda keys, topic=None: site.reminders
+    deadlines = types.ModuleType("konsol.close.deadlines")
+    deadlines.period_deadlines = lambda keys, today: site.deadlines
+
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
         "konsol.group_chart": group_chart,
@@ -380,12 +400,15 @@ def _call(site):
         "konsol.close.ic_api": ic_api,
         "konsol.close.ic_balance_api": ic_balance_api,
         "konsol.close.approvals_api": approvals_api,
+        "konsol.close.close_event": close_event,
+        "konsol.close.deadlines": deadlines,
     }
     mods.update(stubs)
     for full, module in stubs.items():
         parent, _, leaf = full.rpartition(".")
         setattr(mods[parent], leaf, module)
 
+    site.stub_modules = mods
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
     try:
@@ -1425,3 +1448,32 @@ def test_period_items_name_the_year_not_the_bare_period_code():
     item = next(i for i in _call(site)["items"] if i["id"] == "signoff:2025-08")
     assert item["title"] == "Sign off FY2025 P08"
     assert item["period"]["code"] == "FY2025 P08"
+
+
+# --- T53t (C-X1): the loader carries close_event.reminders and deadlines ------
+
+def test_stub_close_carries_reminders_and_deadlines():
+    site = _Site()
+    seen = []
+
+    def lazy():
+        # A lazy import made while get_my_work runs, as Y59/D59 will make it.
+        from konsol.close import close_event, deadlines
+        seen.append((close_event.reminders([(2025, 7)]),
+                     close_event.reminders([(2025, 7)], topic="tb"),
+                     deadlines.period_deadlines([(2025, 7)], "2025-10-01")))
+
+    site.during_call = lazy
+    _call(site)
+    assert seen == [([], [], {})]
+    close = site.stub_modules["konsol.close"]
+    assert close.close_event is site.stub_modules["konsol.close.close_event"]
+    assert close.deadlines is site.stub_modules["konsol.close.deadlines"]
+
+    site2 = _Site()
+    site2.reminders = ["r"]
+    site2.deadlines = {"tb": "d"}
+    seen.clear()
+    site2.during_call = lazy
+    _call(site2)
+    assert seen == [(["r"], ["r"], {"tb": "d"})]
