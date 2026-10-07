@@ -626,3 +626,97 @@ test("O67 wiring: props editable + openEdit, opened once on mount, the preview w
   assert.match(tpl, /\{\{\s*editError\s*\}\}/);
   assert.doesNotMatch(js, /\.title\b|\.detail\b|problems\[[^\]]*\]\.(match|split|includes)/, "no title or sentence parsing");
 });
+
+// ---------------------------------------------------------------------------
+// konsol#305 R52r (review U4, U9, U12; wireframe-4.2.md section 1, confirmed
+// by Deepak Pai 7 Oct): "Currently" shows as soon as an entity is picked,
+// from get_ownership's change.entities[].current (R52j); once a fresh
+// preview arrives, the preview's `current` replaces it. The refusals are not
+// an alert inside the polite live region. Every input is locked while saving.
+// ---------------------------------------------------------------------------
+
+function currentHelpers() {
+  return load(["need", "entityOptions", "periodGroups", "currentText", "effectPanel", "shownCurrent"], {
+    ownershipEffectView,
+    dueDateText,
+  });
+}
+
+test("R52r: picking an entity carries its node's current period from the golden get_ownership (R52j)", () => {
+  const { entityOptions } = currentHelpers();
+  const opts = entityOptions(OWNERSHIP.change.entities);
+  assert.deepEqual(
+    opts.map((o) => [o.key, o.current.name]),
+    [
+      ["ZZ5B1|ECL_GROUP", "OP-ZZ5B1-1"],
+      ["ZZ5B1|ZZ_SUBGROUP", "OP-ZZ5B1-SUB"],
+      ["ZZ5B3|ECL_GROUP", "OP-ZZ5B3-1"],
+    ],
+  );
+});
+
+test("R52r failure path (red before R52r): picking ZZ5B1 shows the Currently line before any preview", () => {
+  const { entityOptions, currentText, shownCurrent } = currentHelpers();
+  const entity = entityOptions(OWNERSHIP.change.entities)[0];
+  const shown = shownCurrent(entity, null, false);
+  assert.equal(currentText(shown), "60 % · Equity · from Wed 1 Jan 2025 · open-ended (OP-ZZ5B1-1)");
+  const sub = entityOptions(OWNERSHIP.change.entities)[1];
+  assert.equal(currentText(shownCurrent(sub, null, false)), "60 % · Equity · from Wed 1 Jan 2025 · open-ended (OP-ZZ5B1-SUB)");
+  const three = entityOptions(OWNERSHIP.change.entities)[2];
+  assert.equal(currentText(shownCurrent(three, null, false)), "60 % · Equity · from Mon 1 Dec 2025 · open-ended (OP-ZZ5B3-1)");
+});
+
+test("R52r: a fresh preview's current replaces the entity's; no entity shows no line", () => {
+  const { entityOptions, currentText, effectPanel, shownCurrent } = currentHelpers();
+  const entity = entityOptions(OWNERSHIP.change.entities)[0];
+  const ok = effectPanel({ payload: PREVIEW_OK });
+  assert.equal(currentText(shownCurrent(entity, ok, true)), "100 % · full · from Wed 1 Jan 2025 · open-ended (OP-ZZ5B1-1)");
+  const refused = effectPanel({ payload: PREVIEW_REFUSED });
+  assert.equal(currentText(shownCurrent(entity, refused, true)), "100 % · full · from Wed 1 Jan 2025 · open-ended (OP-ZZ5B1-1)");
+  assert.equal(shownCurrent(null, ok, true), null, "no entity picked: no Currently line");
+  assert.equal(shownCurrent(null, null, false), null);
+});
+
+test("R52r failure path: a stale preview, an errored preview or a preview without a current never shows over the picked entity's", () => {
+  const { entityOptions, currentText, effectPanel, shownCurrent } = currentHelpers();
+  const three = entityOptions(OWNERSHIP.change.entities)[2];
+  const ok = effectPanel({ payload: PREVIEW_OK });
+  const line = "60 % · Equity · from Mon 1 Dec 2025 · open-ended (OP-ZZ5B3-1)";
+  assert.equal(currentText(shownCurrent(three, ok, false)), line, "the shown preview is for older inputs (another entity)");
+  const errored = effectPanel({ error: "You are not permitted to see ZZ5B9." });
+  assert.equal(currentText(shownCurrent(three, errored, true)), line);
+  const noCurrent = effectPanel({ payload: { ...PREVIEW_REFUSED, current: null } });
+  assert.equal(currentText(shownCurrent(three, noCurrent, true)), line);
+});
+
+test("R52r failure path: an entity choice without `current` throws naming it", () => {
+  const { entityOptions } = currentHelpers();
+  const { current, ...noCurrent } = OWNERSHIP.change.entities[0];
+  assert.throws(() => entityOptions([noCurrent]), /OwnershipChange: an entity choice has no current/);
+});
+
+test("R52r wiring: the Currently line is currentText(shownCurrent(selectedEntity, preview.panel, preview.fresh))", () => {
+  const js = script(read());
+  const block = js.match(/\nconst current = computed\(\(\) => \{[\s\S]*?\n\}\);\n/);
+  assert.ok(block, "the section declares the current computed");
+  assert.match(block[0], /shownCurrent\(selectedEntity\.value,\s*preview\.panel,\s*preview\.fresh\)/);
+  assert.match(block[0], /currentText\(/);
+  assert.doesNotMatch(block[0], /panel\.current/, "which current wins is shownCurrent's alone");
+});
+
+test("R52r (U9): the refusals list is no alert inside the polite live region", () => {
+  const tpl = template(read());
+  const region = tpl.indexOf('aria-live="polite"');
+  assert.ok(region > 0, "the effect panel is a polite live region");
+  const ul = tpl.match(/<ul\b[^>]*v-if="preview\.panel\.problems\.length"[^>]*>/);
+  assert.ok(ul, "the refusals list");
+  assert.doesNotMatch(ul[0], /role=/, "no role on the refusals list");
+});
+
+test("R52r (U12): every input and select is disabled while saving", () => {
+  const tags = inputTags(template(read()));
+  assert.equal(tags.length, 4, "entity, period, pct and method");
+  for (const tag of tags) {
+    assert.match(tag, /:disabled="saving"/, tag);
+  }
+});
