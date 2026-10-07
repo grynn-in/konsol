@@ -14,6 +14,10 @@ reminders (TB rows, the period grid, My work, the IC panel) load and call it.
 - ``summary`` gives "count and last" per (fy, fp, entity, topic) from
   ``reminder_sent`` events (C-R6). The latest is chosen by comparing
   datetimes in UTC, never text (review-w5 S13).
+- ``visible_entries`` keeps one topic's entries for the asked periods and the
+  entities the caller may see; ``sender_name`` names the sender, or labels a
+  sender with no recorded name instead of raising (review-w5b S3: one bad
+  sender never takes down a reader).
 """
 from datetime import datetime, timezone
 
@@ -131,15 +135,45 @@ def summary(events):
     return out
 
 
+def visible_entries(summary, keys, topic, visible):
+    """``{(fy, fp): {entity: entry}}`` from a ``summary`` result.
+
+    Every key in ``keys`` is present, ``{}`` when nothing was reminded (a
+    reader treats absent as "not reminded", so a key is never omitted). Only
+    ``topic`` is kept, and only entities in ``visible``; ``None`` means
+    unrestricted. A hidden entity's reminders, and who sent them, are dropped
+    here so they never leave the server.
+    """
+    _check_topic(topic)
+    out = {(int(fy), int(fp)): {} for fy, fp in keys}
+    for (fy, fp, entity, entry_topic), entry in summary.items():
+        if entry_topic != topic or (fy, fp) not in out:
+            continue
+        if visible is not None and entity not in visible:
+            continue
+        out[(fy, fp)][entity] = entry
+    return out
+
+
+def sender_name(actor, names):
+    """The sender's full name from ``names`` (``{user: full_name}``), or
+    ``"<actor> (name not recorded)"`` when the user has no full name or no
+    longer exists (``Close Event.actor`` is a Data field, so a renamed or
+    deleted user leaves the id dangling). Never raises, never blank."""
+    full_name = names.get(actor)
+    if isinstance(full_name, str) and full_name.strip():
+        return full_name
+    return "%s (name not recorded)" % actor
+
+
 def reminded_text(entry, name_of, format_at):
     """``"Reminded 2× · last <at> by <full name>"``.
 
-    ``name_of(user)`` gives a full name; None raises (never shows a raw id).
+    ``name_of(user)`` gives a full name or None; a missing name is shown
+    through ``sender_name`` as the labelled id, never raised.
     ``format_at(datetime)`` is the caller's formatting: the caller zones it.
     """
-    full_name = name_of(entry["last_by"])
-    if not full_name:
-        raise ValueError("No full name for user %r, who sent the last reminder."
-                         % entry["last_by"])
+    actor = entry["last_by"]
+    full_name = sender_name(actor, {actor: name_of(actor)})
     return "Reminded %d× · last %s by %s" % (int(entry["count"]), format_at(entry["last_at"]),
                                              full_name)
