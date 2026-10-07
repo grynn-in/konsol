@@ -1387,3 +1387,71 @@ def test_t55t_get_ic_matches_the_golden_fixture():
         golden = json.load(f)
     assert out == golden
     assert golden["can_remind"] is True and _all_pairs(golden)
+
+
+# --- R53b (#305-R52-2-1): each pair side says whether Remind is offered ---------
+#
+# ``can_remind_a`` / ``can_remind_b``: true only when the payload-level
+# ``can_remind`` holds, the side is visible and the pair is over tolerance
+# (remind_model.ic_side_can_remind, the rule remind_api's ic refusal shares).
+
+def test_r53b_every_pair_carries_both_side_flags():
+    for site in (_Site(), _ic_golden_site()):
+        for pair in _all_pairs(_call(site)):
+            assert "can_remind_a" in pair and "can_remind_b" in pair, pair
+
+
+def test_r53b_matched_and_within_tolerance_pairs_offer_neither_side():
+    """Failure path: Remind is never offered on a matched pair."""
+    out = _call(_Site())
+    assert out["can_remind"] is True
+    for ea, aa in (("UK01", "1820"), ("DE01", "1830")):
+        pair = _pair_of(out, ea, aa)
+        assert pair["match_status"] in ("matched", "within_tolerance"), pair
+        assert (pair["can_remind_a"], pair["can_remind_b"]) == (False, False), pair
+
+
+def test_r53b_fx_difference_offers_neither_side():
+    site = _Site()
+    site.ic_rows = [_pair("ROOT", "UK01", "1810", "DE01", "2810", "fx_difference")]
+    pair = _all_pairs(_call(site))[0]
+    assert (pair["can_remind_a"], pair["can_remind_b"]) == (False, False)
+
+
+def test_r53b_over_tolerance_offers_both_visible_sides():
+    pair = _pair_of(_call(_Site()), "UK01", "1810")
+    assert pair["match_status"] == "over_tolerance"
+    assert (pair["can_remind_a"], pair["can_remind_b"]) == (True, True)
+
+
+def test_r53b_over_tolerance_never_offers_the_masked_side():
+    """Failure path (W3-2): a scoped caller is offered Remind only on the
+    side they can see."""
+    for allowed, expected in (({"UK01"}, (True, False)), ({"DE01"}, (False, True))):
+        site = _Site()
+        site.allowed = allowed
+        pair = _pair_of(_call(site), "UK01", "1810")
+        assert (pair["masked_a"], pair["masked_b"]) == (not expected[0], not expected[1])
+        assert (pair["can_remind_a"], pair["can_remind_b"]) == expected, allowed
+
+
+def test_r53b_no_payload_can_remind_offers_no_side():
+    """Failure path: a Viewer, or a Closed period, is offered no side even
+    on an over-tolerance pair; the payload-level can_remind stays."""
+    viewer = _Site()
+    viewer.user, viewer.roles = VIEWER, {"EPM User"}
+    for site, fp in ((viewer, 7), (_Site(), 6)):
+        out = _call(site, 2025, fp)
+        assert out["can_remind"] is False
+        for pair in _all_pairs(out):
+            assert (pair["can_remind_a"], pair["can_remind_b"]) == (False, False), pair
+
+
+def test_r53b_the_side_flags_are_the_real_rule():
+    site = _Site()
+    site.allowed = {"UK01", "DE01"}
+    out = _call(site)
+    for pair in _all_pairs(out):
+        for side in ("a", "b"):
+            assert pair["can_remind_" + side] is REMIND_MODEL.ic_side_can_remind(
+                out["can_remind"], pair["masked_" + side], pair), (side, pair)

@@ -10,6 +10,11 @@ recipient (type Alert, never email) and one ``reminder_sent`` event through
 Loaded against a stub frappe (the ``_Site`` pattern of test_close_ic_api.py,
 copied, not imported). The real ``remind_model.py`` is loaded by path under
 its dotted name, so the refusals and recipients are the real producer's.
+
+R53b (#305-R52-2-1): topic ic reads the period's intercompany pairs through
+the REAL ``ic_api.checked_rows`` (loaded by path with the real ``ic_model``,
+``close_policy_model`` and ``timefmt``; only ``ch_read`` is a stub, as in
+test_close_ic_api.py), and refuses an entity with no over-tolerance pair.
 """
 import importlib.util
 import inspect
@@ -57,6 +62,13 @@ def _perm(user, entity="UK01", allow="Entity"):
     return {"user": user, "allow": allow, "for_value": entity}
 
 
+def _ic_row(group, ea, eb, status, difference="12.5", tolerance="5"):
+    """A gold_ic_reconciliation row as FORMAT JSON hands it back."""
+    return {"consolidation_group": group, "fiscal_year": 2025, "fiscal_period": 7,
+            "entity_a": ea, "account_a": "1810", "entity_b": eb, "account_b": "2810",
+            "difference": difference, "tolerance": tolerance, "match_status": status}
+
+
 class _Site:
     def __init__(self):
         self.user = LEAD
@@ -68,6 +80,17 @@ class _Site:
                       {"name": OFF, "enabled": 0}, {"name": LEAD, "enabled": 1}]
         self.tbs = []   # submitted Trial Balance Submissions: {data_area_id, fy, fp, docstatus}
         self.tbes = []  # submitted TB Exceptions, same keys
+        # R53b: the intercompany side (ic_api.checked_rows): Published
+        # Intercompany Accounts, the Close Settings declaration and the
+        # warehouse's gold_ic_reconciliation rows. UK01 is over tolerance
+        # with DE01; FR01 has only a matched pair.
+        self.published = 3
+        self.declaration = ""
+        self.ic_rows = [_ic_row("ROOT", "UK01", "DE01", "over_tolerance"),
+                        _ic_row("ROOT", "UK01", "FR01", "matched"),
+                        _ic_row("SUB", "FR01", "DE01", "within_tolerance")]
+        self.ch_error = None
+        self.ch_calls = []
         self.allowed = None
         self.insert_error = None
         self.reads = []
@@ -154,11 +177,44 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_doc = get_doc
     frappe.get_roles = lambda user=None: sorted(site.roles)
-    frappe.db = types.SimpleNamespace(exists=exists)
+    def count(doctype, filters=None, **k):
+        site.reads.append(("count", doctype, filters))
+        assert (doctype, filters) == ("Intercompany Account", {"status": "Published"})
+        return site.published
+
+    def table_exists(doctype, **k):
+        site.reads.append(("table_exists", doctype))
+        assert doctype == "Intercompany Account", doctype
+        return True
+
+    def get_single_value(doctype, field, **k):
+        site.reads.append(("single", doctype, field))
+        assert (doctype, field) == ("Close Settings", "intercompany_declaration")
+        return site.declaration
+
+    frappe.db = types.SimpleNamespace(exists=exists, count=count, table_exists=table_exists,
+                                      get_single_value=get_single_value)
     frappe.session = types.SimpleNamespace(user=site.user)
     frappe.utils = types.SimpleNamespace(get_fullname=lambda user=None: "Zz Lead"
-                                         if user == LEAD else "ZZ " + str(user))
+                                         if user == LEAD else "ZZ " + str(user),
+                                         get_system_timezone=lambda: "Europe/London")
     return frappe
+
+
+def _ch_read(site):
+    ch = types.ModuleType("konsol.close.ch_read")
+
+    def rows(sql, params=None):
+        site.ch_calls.append((sql, dict(params or {})))
+        if site.ch_error is not None:
+            raise site.ch_error
+        assert "gold_ic_reconciliation" in sql, sql
+        return [dict(r) for r in site.ic_rows]
+
+    ch.rows = rows
+    ch.not_built = lambda e: "UNKNOWN_TABLE" in str(e)
+    ch.error_names = lambda e: set()
+    return ch
 
 
 def _fiscal_calendar(site):
@@ -202,17 +258,28 @@ def _invoke(site, run):
     konsol.entity_permissions = entity_permissions
     close_event = _close_event(site)
     close.close_event = close_event
+    ch_read = _ch_read(site)
+    close.ch_read = ch_read
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.close_event",
-             "konsol.close.remind_model", "close_remind_api_under_test"]
+             "konsol.close.remind_model", "konsol.close.ch_read", "konsol.close.ic_model",
+             "konsol.close.close_policy_model", "konsol.close.timefmt",
+             "konsol.close.ic_api", "close_remind_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({"frappe": frappe, "konsol": konsol, "konsol.close": close,
                         "konsol.fiscal_calendar": fiscal_calendar,
                         "konsol.entity_permissions": entity_permissions,
-                        "konsol.close.close_event": close_event})
+                        "konsol.close.close_event": close_event,
+                        "konsol.close.ch_read": ch_read})
     try:
         close.remind_model = _load_path("konsol.close.remind_model",
                                         os.path.join(CLOSE_DIR, "remind_model.py"))
+        # R53b: the real ic_api (and the real pure modules it imports).
+        close.ic_model = _load_path("konsol.close.ic_model", os.path.join(CLOSE_DIR, "ic_model.py"))
+        close.close_policy_model = _load_path(
+            "konsol.close.close_policy_model", os.path.join(CLOSE_DIR, "close_policy_model.py"))
+        close.timefmt = _load_path("konsol.close.timefmt", os.path.join(CLOSE_DIR, "timefmt.py"))
+        close.ic_api = _load_path("konsol.close.ic_api", os.path.join(CLOSE_DIR, "ic_api.py"))
         api = _load_path("close_remind_api_under_test", API_PY)
         return run(api)
     finally:
@@ -406,6 +473,91 @@ def test_refusals_come_in_the_models_order():
     site.permissions = []
     err = _refused(site, fp=6)
     assert "is Closed" in str(err)
+
+
+# --- R53b (#305-R52-2-1): topic ic needs an over-tolerance pair on the entity ---
+
+IC_MODEL = _load_path("ic_model_for_remind_api_test", os.path.join(CLOSE_DIR, "ic_model.py"))
+sys.modules.pop("ic_model_for_remind_api_test", None)
+
+
+def test_r53b_ic_refused_for_an_entity_with_only_matched_pairs():
+    """Failure path: FR01's pairs are matched / within tolerance: refused
+    before any write (no Notification Log, no Close Event)."""
+    site = _Site()
+    site.permissions = [_perm(EA1, "FR01")]
+    err = _refused(site, entity="FR01", topic="ic")
+    assert str(err) == ("FR01 has no intercompany pair over tolerance in FY2025 P07: "
+                        "nothing to remind about.")
+    assert str(err) == REMIND_MODEL.ic_refusal("FR01", site.ic_rows, "FY2025 P07")
+    assert len(site.ch_calls) == 1 and "gold_ic_reconciliation" in site.ch_calls[0][0]
+    assert site.ch_calls[0][1] == {"fy": 2025, "fp": 7}
+
+
+def test_r53b_ic_refused_for_an_entity_with_no_pair_at_all():
+    site = _Site()
+    site.permissions = [_perm(EA1, "NL01")]
+    err = _refused(site, entity="NL01", topic="ic")
+    assert str(err) == ("NL01 has no intercompany pair over tolerance in FY2025 P07: "
+                        "nothing to remind about.")
+
+
+def test_r53b_ic_accepted_on_either_side_of_an_over_tolerance_pair():
+    for entity in ("UK01", "DE01"):
+        site = _Site()
+        site.permissions = [_perm(EA1, entity)]
+        out = _remind(site, entity=entity, topic="ic")
+        assert out == {"event": "CE-NEW-1", "recipients": 1}, entity
+        assert site.recorded[0]["detail"]["topic"] == "ic"
+
+
+def test_r53b_ic_not_configured_not_applicable_or_unreadable_is_refused():
+    """Failure path: no warehouse answer is never read as "no pair" or as
+    "go ahead"; the state's own sentence refuses, before any write."""
+    for setup in ("not_configured", "declared_none", "conflict", "error", "not_built"):
+        site = _Site()
+        if setup == "not_configured":
+            site.published = 0
+        elif setup in ("declared_none", "conflict"):
+            site.declaration = "None in this group"
+            site.published = 0 if setup == "declared_none" else 3
+        elif setup == "error":
+            site.ch_error = RuntimeError("ClickHouse down")
+        else:
+            site.ch_error = RuntimeError("UNKNOWN_TABLE gold_ic_reconciliation")
+        err = _refused(site, topic="ic")
+        assert str(err).endswith(" Nothing was reminded."), (setup, str(err))
+        if setup == "not_configured":
+            assert str(err) == IC_MODEL.NOT_CONFIGURED + " Nothing was reminded."
+            assert site.ch_calls == []
+        if setup == "declared_none":
+            assert str(err) == IC_MODEL.NOT_APPLICABLE + " Nothing was reminded."
+            assert site.ch_calls == []
+        if setup == "error":
+            assert str(err).startswith("Intercompany could not be checked: RuntimeError")
+        if setup == "not_built":
+            assert str(err) == IC_MODEL.NOT_BUILT + " Nothing was reminded."
+
+
+def test_r53b_earlier_refusals_come_first_and_read_no_warehouse():
+    """A closed period, or an entity the caller cannot see, refuses with its
+    own sentence and reads no intercompany pairs."""
+    site = _Site()
+    err = _refused(site, fp=6, entity="FR01", topic="ic")
+    assert "is Closed" in str(err)
+    assert site.ch_calls == []
+    site = _Site()
+    site.allowed = {"DE01"}
+    err = _refused(site, entity="FR01", topic="ic")
+    assert "not one of your entities" in str(err)
+    assert site.ch_calls == []
+
+
+def test_r53b_tb_reads_no_intercompany():
+    site = _Site()
+    _remind(site)
+    assert site.ch_calls == []
+    assert not [r for r in site.reads if r[0] in ("count", "single", "table_exists")]
 
 
 # --- the write is all or nothing ----------------------------------------------

@@ -310,3 +310,98 @@ def test_visible_entries_none_is_unrestricted_and_empty_set_hides_all():
 def test_visible_entries_unknown_topic_raises():
     summ = _two_periods_two_topics_three_entities()
     _raises(ValueError, M.visible_entries, summ, [(2025, 7)], "x", None)
+
+
+# --- R53b (#305-R52-2-1): Remind on IC only where the entity has an over-tolerance pair ---
+#
+# One rule, used by both ic_api.get_ic (per side ``can_remind_a``/``_b``) and
+# remind_api.remind (topic ic refuses an entity with no over-tolerance pair).
+# "Over tolerance" is gold_ic_reconciliation's ``over_tolerance`` match status:
+# ``fx_difference`` does not count against the tolerance (dbt), and
+# ``matched`` / ``within_tolerance`` have nothing to remind about.
+
+IC_MODEL_PY = os.path.join(APP_DIR, "close", "ic_model.py")
+_ic_spec = importlib.util.spec_from_file_location("ic_model_for_remind_model_test", IC_MODEL_PY)
+IC_MODEL = importlib.util.module_from_spec(_ic_spec)
+_ic_spec.loader.exec_module(IC_MODEL)
+
+NO_IC_PAIR = ("ZZ01 has no intercompany pair over tolerance in FY2025 P07: "
+              "nothing to remind about.")
+
+
+def _ic_row(ea, eb, status, group="ROOT"):
+    return {"consolidation_group": group, "entity_a": ea, "account_a": "1810",
+            "entity_b": eb, "account_b": "2810", "match_status": status}
+
+
+def test_r53b_the_ic_statuses_are_ic_models():
+    assert set(M.IC_MATCH_STATUSES) == set(IC_MODEL.MATCH_STATUSES)
+
+
+def test_r53b_a_matched_pair_offers_neither_side():
+    """Failure path: a matched pair never offers Remind, masked or not."""
+    row = _ic_row("ZZ01", "ZZ02", "matched")
+    for masked in (False, True):
+        assert M.ic_side_can_remind(True, masked, row) is False, masked
+
+
+def test_r53b_within_tolerance_and_fx_difference_offer_no_side():
+    for status in ("within_tolerance", "fx_difference"):
+        row = _ic_row("ZZ01", "ZZ02", status)
+        for masked in (False, True):
+            assert M.ic_side_can_remind(True, masked, row) is False, (status, masked)
+
+
+def test_r53b_over_tolerance_offers_the_visible_side_and_never_the_masked_side():
+    row = _ic_row("ZZ01", "ZZ02", "over_tolerance")
+    assert M.ic_side_can_remind(True, False, row) is True
+    assert M.ic_side_can_remind(True, True, row) is False
+
+
+def test_r53b_no_payload_can_remind_offers_no_side():
+    """Failure path: a Viewer, a closed period or an unchecked state (the
+    payload-level can_remind is False) never offers a side."""
+    row = _ic_row("ZZ01", "ZZ02", "over_tolerance")
+    for masked in (False, True):
+        assert M.ic_side_can_remind(False, masked, row) is False, masked
+
+
+def test_r53b_an_unknown_or_missing_status_raises():
+    """No silent fallback: an unreadable status is never read as "nothing
+    to remind about"."""
+    for status in ("x", None, ""):
+        e = _raises(ValueError, M.ic_side_can_remind, True, False,
+                    _ic_row("ZZ01", "ZZ02", status))
+        assert repr(status) in str(e), str(e)
+    row = _ic_row("ZZ01", "ZZ02", "matched")
+    del row["match_status"]
+    _raises(ValueError, M.ic_side_can_remind, True, False, row)
+    _raises(ValueError, M.ic_refusal, "ZZ01", [row], PERIOD)
+
+
+def test_r53b_ic_refusal_an_entity_with_only_matched_pairs():
+    rows = [_ic_row("ZZ01", "ZZ02", "matched"), _ic_row("ZZ03", "ZZ01", "within_tolerance"),
+            _ic_row("ZZ01", "ZZ04", "fx_difference")]
+    assert M.ic_refusal("ZZ01", rows, PERIOD) == NO_IC_PAIR
+
+
+def test_r53b_ic_refusal_no_pairs_at_all_or_only_other_entities_pairs():
+    assert M.ic_refusal("ZZ01", [], PERIOD) == NO_IC_PAIR
+    rows = [_ic_row("ZZ02", "ZZ03", "over_tolerance")]
+    assert M.ic_refusal("ZZ01", rows, PERIOD) == NO_IC_PAIR
+
+
+def test_r53b_ic_refusal_none_when_the_entity_is_on_either_side_of_an_over_tolerance_pair():
+    for row in (_ic_row("ZZ01", "ZZ02", "over_tolerance"),
+                _ic_row("ZZ02", "ZZ01", "over_tolerance")):
+        rows = [_ic_row("ZZ01", "ZZ03", "matched"), row]
+        assert M.ic_refusal("ZZ01", rows, PERIOD) is None, row
+
+
+def test_r53b_ic_refusal_any_group_over_tolerance_counts():
+    """The same pair matched in one group and over tolerance in another is
+    still open."""
+    rows = [_ic_row("ZZ01", "ZZ02", "matched", "ROOT"),
+            _ic_row("ZZ01", "ZZ02", "over_tolerance", "SUB")]
+    assert M.ic_refusal("ZZ01", rows, PERIOD) is None
+    assert M.ic_refusal("ZZ02", rows, PERIOD) is None
