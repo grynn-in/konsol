@@ -6,8 +6,9 @@
   with the margin of every unrealised-profit IC Elimination Rule that
   matches its pair (read-only: the rule is configured in Desk), the
   missing-rule gap and the ambiguous-rule gap (two or more rules on one
-  pair, F51b) over the shown balances, the hidden count, the Active
-  leaf entity codes for the draft form, and ``can_draft``.
+  pair, F51b) over the shown balances, the pending gap (a draft with a
+  matching rule, #305-S8-1) over the shown balances, the hidden count, the
+  Active leaf entity codes for the draft form, and ``can_draft``.
 - ``save_ic_balance(...)`` (POST): an Analyst or System Manager drafts a new
   balance or edits a draft's amounts. Never an Admin: under R2 the Admin
   approves (submits) in the existing Approvals queue, which already lists IC
@@ -20,7 +21,9 @@
 - ``rule_gaps(fy, fp, reads=None)`` (sign-off gate) and
   ``open_rule_gaps(reads=None)`` (My work): ``ic_balance_model.rule_gaps``
   (a list: the undeclared gap, then the ambiguous gap, F51b) over the
-  period's / every Open period's draft and approved balances. Not
+  period's / every Open period's draft and approved balances. The period
+  gate also appends ``ic_balance_model.pending_gap`` last (#305-S8-1: dbt
+  eliminates only approved balances); My work never sees it (C-S8-2). Not
   whitelisted: the callers gate and scope. Reads: IC Balance 1; IC
   Elimination Rule 1 only when a balance exists.
 - ``open_reads()`` (review-w5 S9): those two reads made once for every Open
@@ -122,26 +125,32 @@ def open_reads():
 
 def rule_gaps(fiscal_year, fiscal_period, reads=None):
     """The sign-off gate's rule gaps for one period (missing, then
-    ambiguous); ``[]`` when none applies. ``reads`` (``open_reads()``)
-    answers it with no read of its own."""
+    ambiguous, then the pending draft, #305-S8-1); ``[]`` when none applies.
+    ``reads`` (``open_reads()``) answers it with no read of its own."""
     key = (int(fiscal_year), int(fiscal_period))
     if reads is None:
         balances = _balances({"fiscal_year": key[0], "fiscal_period": key[1]})
         if not balances:
             return []
-        return ic_balance_model.rule_gaps(balances, _rules())
-    if key not in reads["keys"]:
-        raise ValueError("%s is not an Open period: the shared IC Balance reads "
-                         "cover the Open periods only." % period_name(*key))
-    balances = [b for b in reads["balances"] if _key_of(b) == key]
-    if not balances:
-        return []
-    return ic_balance_model.rule_gaps(balances, reads["rules"])
+        rules = _rules()
+    else:
+        if key not in reads["keys"]:
+            raise ValueError("%s is not an Open period: the shared IC Balance reads "
+                             "cover the Open periods only." % period_name(*key))
+        balances = [b for b in reads["balances"] if _key_of(b) == key]
+        if not balances:
+            return []
+        rules = reads["rules"]
+    gaps = ic_balance_model.rule_gaps(balances, rules)
+    pending = ic_balance_model.pending_gap(balances, rules)
+    if pending:
+        gaps.append(pending)
+    return gaps
 
 
 def open_rule_gaps(reads=None):
     """My work's rule gaps over every Open period's balances; ``[]`` when
-    none applies. ``reads`` (``open_reads()``) answers it with no read of
+    none applies. Never the pending gap (C-S8-2). ``reads`` (``open_reads()``) answers it with no read of
     its own."""
     if reads is None:
         reads = open_reads()
@@ -152,8 +161,8 @@ def open_rule_gaps(reads=None):
 
 @frappe.whitelist(methods=["GET"])
 def get_ic_balances(fiscal_year, fiscal_period):
-    """``{"period", "balances", "gap", "ambiguous_gap", "hidden", "entities",
-    "can_draft", "rules_desk"}``. Read-only."""
+    """``{"period", "balances", "gap", "ambiguous_gap", "pending_gap",
+    "hidden", "entities", "can_draft", "rules_desk"}``. Read-only."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     key = _period(fiscal_year, fiscal_period)
     row = _period_row(key)
@@ -169,6 +178,7 @@ def get_ic_balances(fiscal_year, fiscal_period):
         "balances": ic_balance_model.balance_rows(shown, rules),
         "gap": ic_balance_model.rule_gap(shown, rules),
         "ambiguous_gap": ic_balance_model.ambiguous_gap(shown, rules),
+        "pending_gap": ic_balance_model.pending_gap(shown, rules),
         "hidden": hidden,
         "entities": sorted(_entity_codes()),
         "can_draft": bool(roles.intersection(DRAFT_ROLES)) and status == "Open",
