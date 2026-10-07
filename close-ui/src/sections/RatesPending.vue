@@ -32,7 +32,8 @@
  * konsol#305 O61 (wireframe-4.2.md section 3, confirmed by Deepak Pai
  * 7 Oct): an Ownership Period draft carries `effect` (O57); the item shows
  * the read-only EFFECT IF APPROVED panel above Approve, built by rates.js's
- * `ownershipEffectView` (O59) — the screen computes no pct, method, date or
+ * `ownershipEffectView` (O59) through `opEffectView` (R52o; it also carries
+ * the server's `effect_error` sentence, R52i) — the screen computes no pct, method, date or
  * period itself. A Desk "Record ownership" draft arrives with `effect: null`
  * and says "Drafted in Desk: effect not previewed." instead, never an empty
  * panel. An effect `ownershipEffectView` refuses (a server regression)
@@ -50,7 +51,7 @@
 import { computed, reactive } from "vue";
 import { Button } from "frappe-ui";
 import { messageLines } from "../signoff.js";
-import { pendingEmptyMessage, pendingCreatedText, ownershipEffectView } from "../rates.js";
+import { pendingEmptyMessage, pendingCreatedText, opEffectView } from "../rates.js";
 import { userTimeZone } from "../timefmt.js";
 
 const props = defineProps({
@@ -104,19 +105,16 @@ function createdText(created) {
 	}
 }
 
-const DESK_DRAFT = "Drafted in Desk: effect not previewed.";
-
-/** O61: an item's effect panel. Null for a Historical Equity Rate;
- * `{desk}` for a Desk draft (`effect: null`); `{error}` when the effect is
- * missing or malformed; otherwise `{view}`. Section 3 shows Ownership and
- * Method as before → after and the current period's end as its own
- * "Ends" line, so the Covers row is left out here. */
-function opEffect(item) {
+/** O61/R52o: an item's effect panel. Null for a Historical Equity Rate;
+ * otherwise rates.js's one `opEffectView` (`{view}`, `{desk}`, or `{error}`
+ * carrying the server's `effect_error` sentence). A view it refuses (a
+ * missing key or a malformed effect: a server regression) shows its thrown
+ * sentence on this item only, never a guessed panel and never a blank
+ * screen (review S2). */
+function effectFor(item) {
 	if (item.doctype !== "Ownership Period") return null;
-	if (item.effect === null) return { desk: DESK_DRAFT };
 	try {
-		const view = ownershipEffectView(item.effect);
-		return { view: { ...view, rows: view.rows.filter((row) => row.label !== "Covers") } };
+		return opEffectView(item);
 	} catch (e) {
 		return { error: e.message };
 	}
@@ -125,7 +123,7 @@ function opEffect(item) {
 /** Each item's panel, keyed by name, computed once per payload. */
 const effects = computed(() => {
 	const out = {};
-	for (const item of (props.view && props.view.items) || []) out[item.name] = opEffect(item);
+	for (const item of (props.view && props.view.items) || []) out[item.name] = effectFor(item);
 	return out;
 });
 
@@ -232,7 +230,15 @@ function lines(text) {
 						{{ item.approve.message }}
 					</p>
 					<p v-else class="text-xs text-ink-gray-6">The Close Lead approves (R2)</p>
-					<Button v-if="canEdit(item)" size="sm" variant="subtle" @click="edit(item)">Edit</Button>
+					<Button
+						v-if="canEdit(item)"
+						size="sm"
+						variant="subtle"
+						:aria-label="`Edit ${item.name}`"
+						@click="edit(item)"
+					>
+						Edit
+					</Button>
 				</div>
 				<div
 					v-if="errors[item.name]"
