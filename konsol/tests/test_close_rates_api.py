@@ -2253,3 +2253,75 @@ def test_o63_reads_are_constant_in_the_number_of_nodes():
     _o63_call(big)
     assert len(small.reads) == 6, small.reads
     assert len(big.reads) == len(small.reads), big.reads
+
+
+# --- O68: save_ownership_change(name=<a hidden entity's draft>) never names that entity ---
+# The scope check in ``_ownership_preview`` covers the ``entity`` argument
+# only; the named draft's own entity is checked by one helper the preview
+# (O66) and the save share, so both give one sentence.
+
+O68_HIDDEN_SENTENCE = ("OP-ZZHIDDEN-D is not a draft you can edit here: pick a draft of ZZ5B1 "
+                       "in ECL_GROUP from 2025-10-01.")
+
+
+def _o68_site_with_hidden(docstatus=0):
+    site = _o55_site()
+    site.allowed = {O55_LEAF}
+    row, doc = _o56_draft(name="OP-ZZHIDDEN-D", entity="ZZHIDDEN", docstatus=docstatus)
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    return site, row
+
+
+def _o68_assert_hides(err):
+    text = str(err)
+    assert "ZZHIDDEN " not in text and "for ZZHIDDEN" not in text, text
+
+
+def test_o68_failure_path_saving_a_hidden_entitys_draft_never_names_it():
+    site, row = _o68_site_with_hidden()
+    err = _o56_save_raises(site, name=row["name"])
+    assert type(err).__name__ == "ValidationError", err
+    assert str(err) == O68_HIDDEN_SENTENCE, err
+    _o68_assert_hides(err)
+    _no_save(site)
+
+
+def test_o68_failure_path_a_hidden_approved_period_is_refused_with_the_same_sentence():
+    # Scope comes before status: "is approved" would confirm the hidden
+    # name exists as an approved period.
+    site, row = _o68_site_with_hidden(docstatus=1)
+    err = _o56_save_raises(site, name=row["name"])
+    assert str(err) == O68_HIDDEN_SENTENCE, err
+    _no_save(site)
+
+
+def test_o68_save_and_preview_give_one_sentence():
+    site, row = _o68_site_with_hidden()
+    err = _o56_save_raises(site, name=row["name"])
+    site2, _ = _o68_site_with_hidden()
+    result = _o66_preview(site2, name=row["name"])
+    assert result["problems"][0] == str(err)
+
+
+def test_o68_a_visible_other_nodes_draft_still_gets_the_edit_refusal():
+    site = _o55_site()
+    site.allowed = {O55_LEAF, "ZZOTHER"}
+    row, doc = _o56_draft(name="OP-ZZOTHER-D", entity="ZZOTHER")
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    err = _o56_save_raises(site, name=row["name"])
+    assert type(err).__name__ == "ValidationError", err
+    assert "OP-ZZOTHER-D is the change for ZZOTHER in ECL_GROUP from 2025-10-01" in str(err), err
+    _no_save(site)
+
+
+def test_o68_an_unscoped_caller_still_gets_the_edit_refusal():
+    # allowed None (no Entity permission at all) sees every entity.
+    site = _o55_site()
+    row, doc = _o56_draft(name="OP-ZZHIDDEN-D", entity="ZZHIDDEN")
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    err = _o56_save_raises(site, name=row["name"])
+    assert "OP-ZZHIDDEN-D is the change for ZZHIDDEN in ECL_GROUP" in str(err), err
+    _no_save(site)
