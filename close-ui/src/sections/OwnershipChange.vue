@@ -118,7 +118,7 @@ function periodGroups(periods) {
 			key: `${p.fiscal_year}/${p.fiscal_period}`,
 			fiscal_year: p.fiscal_year,
 			fiscal_period: p.fiscal_period,
-			label: `${p.label} (from ${p.start_date})`,
+			label: `${p.label} (from ${dueDateText(p.start_date, "OwnershipChange")})`,
 		});
 	}
 	return groups.sort((a, b) => b.year - a.year);

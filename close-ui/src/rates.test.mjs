@@ -10,7 +10,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { parseZoned } from "./timefmt.js";
-import { dueDateText } from "./dueDate.js";
 import {
   STATUS_LABELS,
   gridView,
@@ -821,10 +820,8 @@ function saveOwnershipChangeParams() {
 }
 
 const PERIOD = { fiscal_year: 2025, fiscal_period: 10 };
-// Dates are written by the shared dueDate.js wording (ICU may spell
-// September "Sept"), so the expectations use it too; the test pins WHICH
-// date goes where, the formatter's own test pins its wording.
-const D = (iso) => dueDateText(iso, "test");
+// Dates are written as literal strings in dueDate.js's pinned wording
+// (R52l): an expectation never comes from the function under test.
 const FORM = {
   consolidationGroup: "ECL_GROUP",
   entity: "ZZ5B1",
@@ -897,22 +894,22 @@ test("O59 ownershipEffectView: the wireframe panel from the REAL preview", () =>
     { label: "Method", before: "full", after: "full", unchanged: true },
     {
       label: "Covers",
-      before: `${D("2025-01-01")} → ${D("2025-09-30")}`,
-      after: `${D("2025-10-01")} → open-ended`,
+      before: `Wed 1 Jan 2025 → Tue 30 Sep 2025`,
+      after: `Wed 1 Oct 2025 → open-ended`,
       unchanged: false,
       note: "(now open-ended; ends on approval)",
     },
   ]);
-  assert.equal(view.currentEnds, D("2025-09-30"));
+  assert.equal(view.currentEnds, "Tue 30 Sep 2025");
   // wireframe-4.2.md §3: "Ends  <current_name> on <date>" (O65).
-  assert.equal(view.endsLine, `OP-ZZ5B1-1 on ${D("2025-09-30")}`);
+  assert.equal(view.endsLine, `OP-ZZ5B1-1 on Tue 30 Sep 2025`);
   assert.equal(view.firstPeriod, "FY2025 P10");
   assert.equal(view.periods, "FY2025 P10 onward (open-ended)");
   // wireframe-4.2.md §1: "FY2025 P11 (signed <date> by <name>)" (O65).
   // R52f: exactly one entry; the signed Closing P13 is never marked by the
   // approval, so the REAL preview no longer lists it.
   assert.deepEqual(view.resign, [
-    `FY2025 P11 (signed ${D("2025-10-04")} by Zz Lead)`,
+    `FY2025 P11 (signed Sat 4 Oct 2025 by Zz Lead)`,
   ]);
   assert.equal(view.resignNone, null);
   assert.equal(view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
@@ -936,9 +933,9 @@ test("O59 ownershipEffectView: a current period with an end date keeps it in the
     after: { ...PREVIEW.effect.after, to: "2026-03-31" },
   };
   const covers = ownershipEffectView(effect).rows[2];
-  assert.equal(covers.before, `${D("2025-01-01")} → ${D("2025-09-30")}`);
-  assert.equal(covers.after, `${D("2025-10-01")} → ${D("2026-03-31")}`);
-  assert.equal(covers.note, `(now to ${D("2026-03-31")}; ends on approval)`);
+  assert.equal(covers.before, `Wed 1 Jan 2025 → Tue 30 Sep 2025`);
+  assert.equal(covers.after, `Wed 1 Oct 2025 → Tue 31 Mar 2026`);
+  assert.equal(covers.note, `(now to Tue 31 Mar 2026; ends on approval)`);
 });
 
 test("O59 ownershipEffectView: failure path — an effect without resign throws", () => {
@@ -950,8 +947,8 @@ test("O65 ownershipEffectView: the approvals golden names its own predecessor an
   const ops = fixture("close_approvals_op_queue_payload.json").items.filter((i) => i.effect);
   assert.ok(ops.length, "the approvals golden carries an effect");
   const view = ownershipEffectView(ops[0].effect);
-  assert.equal(view.endsLine, `OP-ZZ58-1 on ${D("2026-06-30")}`);
-  assert.deepEqual(view.resign, [`FY2026 P07 (signed ${D("2026-08-04")} by Zz Lead)`]);
+  assert.equal(view.endsLine, `OP-ZZ58-1 on Tue 30 Jun 2026`);
+  assert.deepEqual(view.resign, [`FY2026 P07 (signed Tue 4 Aug 2026 by Zz Lead)`]);
 });
 
 test("O65 ownershipEffectView: failure path — a missing current_name or resign_detail throws", () => {
