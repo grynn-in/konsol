@@ -1101,14 +1101,17 @@ def test_failure_path_the_entity_accountant_is_refused_from_get_ownership():
 
 
 def test_ownership_query_count_is_constant_in_the_number_of_leaves():
+    # O63: a caller who may record also reads the submitted nodes for the
+    # change form (one more read; no node has an entity here, so no Entity
+    # name read). A Viewer's count stays 4 (test_o63_a_viewer_gets_change_none).
     small = _Site()
     small.entities = [_entity("ZZA"), _entity("ZZB"), _entity("ZZC")]
     big = _Site()
     big.entities = [_entity("ZZ%03d" % i) for i in range(30)]
     _call_ownership(small)
     _call_ownership(big)
-    assert len(small.reads) == 4, small.reads
-    assert len(big.reads) == 4, big.reads
+    assert len(small.reads) == 5, small.reads
+    assert len(big.reads) == 5, big.reads
 
 
 def test_an_epm_user_reads_ownership_with_can_record_false():
@@ -1901,3 +1904,133 @@ def test_o57_failure_path_a_hidden_draft_is_never_read_for_its_effect():
     assert site.reads.count(("get_all", "Ownership Period")) == 1, site.reads
     assert ("sql", "fiscal_period_rows") not in site.reads, site.reads
     assert O55_LEAF not in json.dumps(result)
+
+
+# --- O63: get_ownership carries the change form's choices (story 4.2;
+# #305-4.2-1; C-O2, C-O3; wireframe-4.2.md section 1). Entities come with
+# their node's own group (one item per node, never a guessed one); periods are
+# the Open Regular ones, read from the one calendar read. -------------------
+
+O63_GOLDEN = os.path.join(FIXTURES, "close_ownership_payload.json")
+O63_SUB = "ZZ_SUBGROUP"
+
+
+def _o63_period(fy, fp, status, period_type="Regular", start=None):
+    start = start or date(fy, fp, 1)
+    return {"fiscal_year": fy, "fiscal_period": fp, "period_code": "P%02d" % fp,
+            "period_label": "P%02d" % fp, "period_type": period_type,
+            "start_date": start, "end_date": start, "quarter": "", "status": status}
+
+
+def _o63_site(roles=("EPM Analyst",), user=ANALYST):
+    """FY2026 P01 is listed first in the stub calendar, so calendar order is
+    the endpoint's, not the stub's. FY2025 P09 is Closed, P13 is an Open
+    Closing period: neither is a choice. ZZ5B1 sits on two nodes (ECL_GROUP
+    and ZZ_SUBGROUP; ECL_GROUP twice, an older closed period and the current
+    one). ZZ5B2 has only a draft (C-O3: a first ownership stays in Desk).
+    ZZ5B3 has a submitted period that starts later. The group node's own
+    period has no entity."""
+    site = _Site()
+    site.user = user
+    site.roles = set(roles)
+    site.periods = [_o63_period(2026, 1, "Open"), _o63_period(2025, 9, "Closed"),
+                    _o63_period(2025, 10, "Open"),
+                    _o63_period(2025, 13, "Open", "Closing", date(2025, 12, 31))]
+    site.entities = [dict(_entity("ZZ5B1"), entity_name="ZZ Five B One"),
+                     dict(_entity("ZZ5B2"), entity_name="ZZ Five B Two"),
+                     dict(_entity("ZZ5B3"), entity_name="ZZ Five B Three")]
+    site.ops = [
+        _op("OP-ZZ5B1-0", data_area_id=O55_LEAF, group=O55_GROUP,
+            effective_date=date(2024, 1, 1), end_date=date(2024, 12, 31), docstatus=1),
+        _op("OP-ZZ5B1-1", data_area_id=O55_LEAF, group=O55_GROUP,
+            effective_date=date(2025, 1, 1), docstatus=1),
+        _op("OP-ZZ5B1-SUB", data_area_id=O55_LEAF, group=O63_SUB,
+            effective_date=date(2025, 1, 1), docstatus=1),
+        _op("OP-ZZ5B2-D", data_area_id="ZZ5B2", group=O55_GROUP,
+            effective_date=date(2025, 1, 1), docstatus=0),
+        _op("OP-ZZ5B3-1", data_area_id="ZZ5B3", group=O55_GROUP,
+            effective_date=date(2025, 12, 1), docstatus=1),
+        _op("OP-GROUP-1", data_area_id=None, group=O55_GROUP,
+            effective_date=date(2025, 1, 1), docstatus=1),
+    ]
+    site.tbs = [_tb("ZZ5B1", fp=10)]
+    return site
+
+
+def _o63_call(site):
+    return _call_ownership(site, 2025, 10)
+
+
+def test_o63_ownership_matches_the_golden_payload():
+    site = _o63_site()
+    result = _o63_call(site)
+    assert result == _golden(O63_GOLDEN), json.dumps(result, indent=1)
+
+
+def test_o63_change_entities_carry_their_nodes_group_one_item_per_node():
+    result = _o63_call(_o63_site())
+    assert result["change"]["entities"] == [
+        {"entity": "ZZ5B1", "entity_name": "ZZ Five B One", "consolidation_group": O55_GROUP},
+        {"entity": "ZZ5B1", "entity_name": "ZZ Five B One", "consolidation_group": O63_SUB},
+        {"entity": "ZZ5B3", "entity_name": "ZZ Five B Three",
+         "consolidation_group": O55_GROUP},
+    ]
+
+
+def test_o63_change_periods_are_only_the_open_regular_ones_in_calendar_order():
+    result = _o63_call(_o63_site())
+    assert result["change"]["periods"] == [
+        {"fiscal_year": 2025, "fiscal_period": 10, "label": "FY2025 P10",
+         "start_date": "2025-10-01"},
+        {"fiscal_year": 2026, "fiscal_period": 1, "label": "FY2026 P01",
+         "start_date": "2026-01-01"},
+    ]
+
+
+def test_o63_the_calendar_is_read_once():
+    site = _o63_site()
+    _o63_call(site)
+    assert site.reads.count(("sql", "fiscal_period_rows")) == 1, site.reads
+
+
+def test_o63_failure_path_a_viewer_gets_change_none_and_no_extra_read():
+    site = _o63_site(roles=("EPM User",), user=VIEWER)
+    site.can_record = False
+    result = _o63_call(site)
+    assert result["can_record"] is False
+    assert "change" in result and result["change"] is None
+    assert len(site.reads) == 4, site.reads
+
+
+def test_o63_failure_path_a_scoped_caller_never_sees_an_entity_outside_scope():
+    site = _o63_site()
+    site.allowed = {"ZZ5B3"}
+    result = _o63_call(site)
+    assert result["change"]["entities"] == [
+        {"entity": "ZZ5B3", "entity_name": "ZZ Five B Three",
+         "consolidation_group": O55_GROUP}]
+    # The existing hidden rule counts out-of-scope ZZ5B2 only; the change list
+    # adds nothing to it.
+    assert result["hidden"] == 1
+    assert "ZZ5B1" not in json.dumps(result)
+
+
+def test_o63_failure_path_an_entity_on_two_nodes_gives_two_items():
+    result = _o63_call(_o63_site())
+    groups = [e["consolidation_group"] for e in result["change"]["entities"]
+              if e["entity"] == "ZZ5B1"]
+    assert groups == [O55_GROUP, O63_SUB]
+
+
+def test_o63_reads_are_constant_in_the_number_of_nodes():
+    small = _o63_site()
+    big = _o63_site()
+    big.entities = big.entities + [dict(_entity("ZZN%02d" % i), entity_name="N%d" % i)
+                                   for i in range(20)]
+    big.ops = big.ops + [_op("OP-ZZN%02d" % i, data_area_id="ZZN%02d" % i,
+                             group=O55_GROUP, effective_date=date(2025, 1, 1), docstatus=1)
+                         for i in range(20)]
+    _o63_call(small)
+    _o63_call(big)
+    assert len(small.reads) == 6, small.reads
+    assert len(big.reads) == len(small.reads), big.reads
