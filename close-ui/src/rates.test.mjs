@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { parseZoned } from "./timefmt.js";
+import { dueDateText } from "./dueDate.js";
 import {
   STATUS_LABELS,
   gridView,
@@ -819,6 +820,10 @@ function saveOwnershipChangeParams() {
 }
 
 const PERIOD = { fiscal_year: 2025, fiscal_period: 10 };
+// Dates are written by the shared dueDate.js wording (ICU may spell
+// September "Sept"), so the expectations use it too; the test pins WHICH
+// date goes where, the formatter's own test pins its wording.
+const D = (iso) => dueDateText(iso, "test");
 const FORM = {
   consolidationGroup: "ECL_GROUP",
   entity: "ZZ5B1",
@@ -891,13 +896,13 @@ test("O59 ownershipEffectView: the wireframe panel from the REAL preview", () =>
     { label: "Method", before: "full", after: "full", unchanged: true },
     {
       label: "Covers",
-      before: "Wed 1 Jan 2025 → Tue 30 Sep 2025",
-      after: "Wed 1 Oct 2025 → open-ended",
+      before: `${D("2025-01-01")} → ${D("2025-09-30")}`,
+      after: `${D("2025-10-01")} → open-ended`,
       unchanged: false,
       note: "(now open-ended; ends on approval)",
     },
   ]);
-  assert.equal(view.currentEnds, "Tue 30 Sep 2025");
+  assert.equal(view.currentEnds, D("2025-09-30"));
   assert.equal(view.firstPeriod, "FY2025 P10");
   assert.equal(view.periods, "FY2025 P10 onward (open-ended)");
   assert.deepEqual(view.resign, ["FY2025 P11", "FY2025 P13"]);
@@ -923,9 +928,9 @@ test("O59 ownershipEffectView: a current period with an end date keeps it in the
     after: { ...PREVIEW.effect.after, to: "2026-03-31" },
   };
   const covers = ownershipEffectView(effect).rows[2];
-  assert.equal(covers.before, "Wed 1 Jan 2025 → Tue 30 Sep 2025");
-  assert.equal(covers.after, "Wed 1 Oct 2025 → Tue 31 Mar 2026");
-  assert.equal(covers.note, "(now to Tue 31 Mar 2026; ends on approval)");
+  assert.equal(covers.before, `${D("2025-01-01")} → ${D("2025-09-30")}`);
+  assert.equal(covers.after, `${D("2025-10-01")} → ${D("2026-03-31")}`);
+  assert.equal(covers.note, `(now to ${D("2026-03-31")}; ends on approval)`);
 });
 
 test("O59 ownershipEffectView: failure path — an effect without resign throws", () => {

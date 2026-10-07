@@ -77,6 +77,7 @@
 //   existed outside their scope; it is now `blocking.length + blockingHidden`.
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { dueDateText } from "./dueDate.js";
 
 export const STATUS_LABELS = {
   missing: "Missing",
@@ -507,4 +508,131 @@ export function ownershipEmptyMessage(view) {
 export function ownershipGapsCount(view) {
   if (!view) return null;
   return view.blocking.length + (view.blockingHidden || 0);
+}
+
+// ---------------------------------------------------------------------------
+// konsol#305 O59 (story 4.2; #305-4.2-1; wireframe-4.2.md, confirmed as drawn
+// by Deepak Pai 7 Oct): the ownership change form's POST body and the effect
+// panel. The effect is the server's (`ownership_change_model.effect`, reached
+// through `rates_api.preview_ownership_change` and `get_pending`'s OP items):
+// this view only lays it out. It never computes a pct, a method, a date or a
+// period, and every refusal beyond the two form checks below is the server's.
+// Dates are written with dueDate.js's one date wording.
+
+/** The server's own pct sentence (ownership_change_model.PCT_SENTENCE); the
+ * test pins it to the REAL preview's refusal. */
+const PCT_SENTENCE = "Ownership % must be a number from 0 to 100.";
+const NO_ENTITY = "Choose an entity.";
+const NO_SIGNED_PERIOD = "No signed period is affected.";
+const EFFECT_KEYS = ["before", "after", "current_ends", "first_period", "periods", "resign", "not_shown"];
+const SIDE_KEYS = ["pct", "method", "from", "to"];
+
+/** A form value -> a finite number in 0..100, or null. Blank, a bool, a
+ * partial number ("80abc"), NaN and infinity are not numbers here (the
+ * server's `_pct` rule). */
+function ownershipPctValue(value) {
+  if (typeof value === "boolean" || value === null || value === undefined) return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+  return n;
+}
+
+/**
+ * `(period, form)` -> `{body}` or `{error}` for
+ * `rates_api.save_ownership_change`. `period` is `{fiscal_year,
+ * fiscal_period}` (the first period affected; the server takes its first
+ * day, C-O2). `form` is `{consolidationGroup, entity, ownershipPct,
+ * consolidationMethod, name?}`; `name` is set only when editing a draft. The
+ * body carries exactly the endpoint's parameters: never `docstatus`,
+ * `supersedes`, `end_date` or a deal field. A blank entity and a bad pct are
+ * refused here, the pct with the server's own sentence; every other refusal
+ * is the server's.
+ */
+export function ownershipChangeBody(period, form) {
+  const entity = typeof form.entity === "string" ? form.entity.trim() : form.entity;
+  if (isBlank(entity)) {
+    return { error: NO_ENTITY };
+  }
+  const pct = ownershipPctValue(form.ownershipPct);
+  if (pct === null) {
+    return { error: PCT_SENTENCE };
+  }
+  const body = {
+    fiscal_year: period.fiscal_year,
+    fiscal_period: period.fiscal_period,
+    consolidation_group: form.consolidationGroup,
+    entity,
+    ownership_pct: pct,
+    consolidation_method: form.consolidationMethod,
+  };
+  if (!isBlank(form.name)) {
+    body.name = form.name;
+  }
+  return { body };
+}
+
+function requireKeys(obj, keys, where) {
+  for (const key of keys) {
+    if (!(key in obj)) {
+      throw new Error(`ownershipEffectView: the effect has no ${where}${key}`);
+    }
+  }
+}
+
+function effectDate(iso) {
+  return dueDateText(iso, "ownershipEffectView");
+}
+
+function effectEnd(iso) {
+  return iso === null ? "open-ended" : effectDate(iso);
+}
+
+/**
+ * The server's effect (`ownership_change_model.effect`) -> the wireframe's
+ * EFFECT panel: `{rows, currentEnds, firstPeriod, periods, resign,
+ * resignNone, notShown}`. `rows` are Ownership, Method and Covers, each
+ * `{label, before, after, unchanged}`; Covers' before side runs to
+ * `current_ends` and carries the note on the current period's end today.
+ * `resignNone` is "No signed period is affected." only when `resign` is
+ * empty. Throws on a missing key, a missing effect, or a date that is not
+ * ISO: never a guessed panel.
+ */
+export function ownershipEffectView(effect) {
+  if (!effect || typeof effect !== "object") {
+    throw new Error("ownershipEffectView: no effect was given");
+  }
+  requireKeys(effect, EFFECT_KEYS, "");
+  requireKeys(effect.before, SIDE_KEYS, "before.");
+  requireKeys(effect.after, SIDE_KEYS, "after.");
+  if (!Array.isArray(effect.resign)) {
+    throw new Error("ownershipEffectView: the effect's resign is not a list");
+  }
+  const { before, after } = effect;
+  const currentEnds = effectDate(effect.current_ends);
+  const nowEnds = before.to === null ? "now open-ended" : `now to ${effectDate(before.to)}`;
+  return {
+    rows: [
+      {
+        label: "Ownership",
+        before: `${formatPct(before.pct)} %`,
+        after: `${formatPct(after.pct)} %`,
+        unchanged: before.pct === after.pct,
+      },
+      { label: "Method", before: before.method, after: after.method, unchanged: before.method === after.method },
+      {
+        label: "Covers",
+        before: `${effectDate(before.from)} → ${currentEnds}`,
+        after: `${effectDate(after.from)} → ${effectEnd(after.to)}`,
+        unchanged: false,
+        note: `(${nowEnds}; ends on approval)`,
+      },
+    ],
+    currentEnds,
+    firstPeriod: effect.first_period,
+    periods: effect.periods,
+    resign: [...effect.resign],
+    resignNone: effect.resign.length ? null : NO_SIGNED_PERIOD,
+    notShown: effect.not_shown,
+  };
 }
