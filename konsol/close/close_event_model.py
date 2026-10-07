@@ -27,6 +27,9 @@ KINDS = (
     "tb_exception_declared", "tb_exception_cancelled",
     "ic_sent_back",
     "commentary_saved",
+    # konsol#305 Y51 (story 1.5, #305-1.5-1): a Remind sent; a period kind,
+    # no reason. Y54 writes detail {topic, recipients, subject}.
+    "reminder_sent",
 )
 YEAR_KINDS = ("year_closed", "year_locked", "year_reopened")
 REASON_REQUIRED = (
