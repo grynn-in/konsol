@@ -180,9 +180,13 @@ export function badgeFor(item) {
 // line: never "0×" or "0 of N". An item that is not a TB item carries no
 // `reminded` key at all and gets no line. Any other value throws.
 
+/** R52t (U13): the counted reminder's line when the browser gave no zone. */
+export const NO_ZONE_REMINDED = "Your browser reported no time zone, so the reminder time cannot be shown.";
+
 /**
  * `item` (A20's shape), `now` (a `Date`, injected) and `timeZone` → the
- * reminded line, or null.
+ * reminded line, or null. A falsy `timeZone` gives NO_ZONE_REMINDED for a
+ * counted reminder (no Intl call); `{reminded, of}` needs no zone.
  */
 export function remindedLine(item, now, timeZone) {
 	if (!Object.prototype.hasOwnProperty.call(item, "reminded")) return null;
@@ -191,7 +195,22 @@ export function remindedLine(item, now, timeZone) {
 	if (typeof reminded !== "object") {
 		throw new Error(`${item.id}: unreadable reminded value ${JSON.stringify(reminded)}.`);
 	}
-	if ("count" in reminded) return remindedText(reminded, now, timeZone);
+	if ("count" in reminded) {
+		if (timeZone) return remindedText(reminded, now, timeZone);
+		// R52t (U13): no zone is said on this item, never thrown by Intl over
+		// the whole screen. An unreadable entry still throws as remindedText
+		// would (same checks, same order); only the time needs the zone.
+		for (const key of ["count", "last_at", "last_by_name"]) {
+			if (!(key in reminded)) throw new Error(`Reminders entry is missing ${key}.`);
+		}
+		if (!Number.isInteger(reminded.count) || reminded.count < 1) {
+			throw new Error(`Reminders entry has an unreadable count: ${JSON.stringify(reminded.count)}.`);
+		}
+		if (typeof reminded.last_by_name !== "string" || !reminded.last_by_name) {
+			throw new Error("Reminders entry has no last_by_name.");
+		}
+		return NO_ZONE_REMINDED;
+	}
 	const { reminded: r, of } = reminded;
 	if (!Number.isInteger(r) || !Number.isInteger(of) || r < 1 || r > of) {
 		throw new Error(`${item.id}: unreadable reminded value ${JSON.stringify(reminded)}.`);
