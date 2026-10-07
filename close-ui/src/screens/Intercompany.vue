@@ -36,6 +36,9 @@
  *   server sends; it blocks sign-off (the gate, not this screen, decides).
  *   F51b: a pair two or more rules match (dbt eliminates it once per rule)
  *   shows the server's `ambiguous_gap` the same way, and its row is marked.
+ *   I54 (S8): a draft whose pair has a matching rule is not eliminated until
+ *   approved; the server's `pending_gap` is shown the same way, and each such
+ *   draft row carries the note from `icBalancesView`.
  *   An Analyst drafts or edits a draft through the ONE function
  *   `saveBalance()`, its body built by `icBalanceBody`; the form renders
  *   only when the server says `can_draft`. There is no approve here: the
@@ -508,6 +511,17 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 						>Keep one rule per pair in Desk</a>
 					</div>
 
+					<div
+						v-if="balancesView.pendingGap"
+						role="alert"
+						class="mb-4 rounded border border-outline-red-1 bg-surface-red-1 px-4 py-3 text-sm text-ink-gray-8"
+					>
+						<p v-for="(line, i) in balancesView.pendingGap.lines" :key="i">{{ line }}</p>
+						<ul class="mt-1 list-disc pl-5">
+							<li v-for="pair in balancesView.pendingGap.pairs" :key="pair">{{ pair }}</li>
+						</ul>
+					</div>
+
 					<p v-if="balancesView.hiddenNote" class="mb-3 text-xs text-ink-gray-5">{{ balancesView.hiddenNote }}</p>
 
 					<p
@@ -539,6 +553,7 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 											class="inline-block rounded px-2 py-0.5 text-xs font-medium"
 											:class="row.statusTone === 'ok' ? 'bg-surface-green-2 text-ink-green-4' : 'bg-surface-amber-2 text-ink-amber-4'"
 										>{{ row.statusText }}</span>
+										<p v-if="row.pendingNote" class="mt-1 text-xs text-ink-red-4">{{ row.pendingNote }}</p>
 									</td>
 									<td class="px-3 py-2 text-right">
 										<Button v-if="row.editable" variant="ghost" size="sm" @click="editBalance(row)">Edit</Button>
