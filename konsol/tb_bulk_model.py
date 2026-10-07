@@ -44,6 +44,23 @@ from konsol.tb_dimension_model import (
     is_dimension_column,
 )
 
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "close", "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 PARTNER = "partner_data_area_id"
 REQUIRED = ("data_area_id", "fiscal_year", "fiscal_period", "main_account", "debit", "credit", CURRENCY)
 #: The header as the refusals spell it.
@@ -384,11 +401,11 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
     elif not leaf:
         errors.append(f"{entity} is a group; trial balances belong to the entities under it")
     if period is None:
-        errors.append(f"FY{year} P{period_no} is not declared")
+        errors.append(f"{period_name(year, period_no)} is not declared")
     elif period["type"] not in postable_types:
-        errors.append(f"{period['code']} ({period['type']}) does not take trial balances on this site")
+        errors.append(f"{period_name(year, period_no)} ({period['type']}) does not take trial balances on this site")
     elif period["status"] != "Open":
-        errors.append(f"FY{year} P{period_no:02d} is {period['status'].lower()}")
+        errors.append(f"{period_name(year, period_no)} is {period['status'].lower()}")
     if existing:
         errors.append(f"{existing} is already submitted for this entity and period; cancel or amend it first")
     errors.extend(validate_rows(rows, known_accounts=known_accounts, entity=entity, known_entities=known_entities))

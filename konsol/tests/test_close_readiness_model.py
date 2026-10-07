@@ -339,6 +339,36 @@ def test_statement_accounts_gap_blocks_configuration_and_its_absence_is_ok():
     assert _by_code(clean, "configuration")["state"] == "ok"
 
 
+_IBM_SPEC = importlib.util.spec_from_file_location(
+    "close_readiness_model_test_ic_balance_model",
+    os.path.join(os.path.dirname(MODEL_PATH), "ic_balance_model.py"))
+IBM = importlib.util.module_from_spec(_IBM_SPEC)
+_IBM_SPEC.loader.exec_module(IBM)
+
+
+def _ic_rule_gap():
+    """#305 5.4: the real producer's gap for a draft ZZA → ZZX balance with no rule."""
+    return IBM.rule_gap([{"name": "B", "selling_entity": "ZZA", "buying_entity": "ZZX",
+                          "docstatus": 0}], [])
+
+
+def test_ic_rule_gap_blocks_configuration_unscoped_with_its_message():
+    gap = _ic_rule_gap()
+    result = _readiness(problems=_problems(config_gaps=[gap]), allowed=None)
+    configuration = _by_code(result, "configuration")
+    assert configuration["state"] == "blocked"
+    assert gap["message"] in configuration["detail"]
+
+
+def test_ic_rule_gap_scoped_has_a_plain_label_and_never_names_the_partner():
+    result = _readiness(problems=_problems(config_gaps=[_ic_rule_gap()]), allowed={"ZZA"})
+    configuration = _by_code(result, "configuration")
+    assert configuration["state"] == "blocked"
+    assert configuration["detail"] == (
+        "Unrealised-profit rule not declared: 1 entity, and 1 you cannot see")
+    assert "ZZX" not in json.dumps(result)
+
+
 def test_module_imports_no_frappe():
     tree = ast.parse(_src(M.__file__))
     for node in ast.walk(tree):
@@ -346,3 +376,30 @@ def test_module_imports_no_frappe():
             assert not any(a.name.startswith("frappe") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith("frappe")
+
+
+
+def _ic_rule_ambiguous_gap():
+    """F51b: the real producer's gap for a ZZA → ZZX balance two rules match."""
+    rules = [{"rule_id": r, "rule_type": "unrealized_profit", "margin_pct": 10,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"} for r in ("R1", "R2")]
+    return IBM.ambiguous_gap([{"name": "B", "selling_entity": "ZZA", "buying_entity": "ZZX",
+                               "docstatus": 0, "ending_inventory_from_ic": 40.0}], rules)
+
+
+def test_ic_rule_ambiguous_gap_blocks_configuration_unscoped_with_its_message():
+    gap = _ic_rule_ambiguous_gap()
+    configuration = _by_code(_readiness(problems=_problems(config_gaps=[gap]), allowed=None),
+                             "configuration")
+    assert configuration["state"] == "blocked"
+    assert gap["message"] in configuration["detail"]
+
+
+def test_ic_rule_ambiguous_gap_scoped_has_a_plain_label_and_never_names_the_partner():
+    result = _readiness(problems=_problems(config_gaps=[_ic_rule_ambiguous_gap()]),
+                        allowed={"ZZA"})
+    configuration = _by_code(result, "configuration")
+    assert configuration["state"] == "blocked"
+    assert configuration["detail"] == (
+        "More than one unrealised-profit rule per pair: 1 entity, and 1 you cannot see")
+    assert "ZZX" not in json.dumps(result)

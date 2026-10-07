@@ -22,7 +22,7 @@ KINDS = (
     "approved", "self_approved", "rejected", "approval_cancelled",
     "period_closed", "period_locked", "period_reopened",
     "year_closed", "year_locked", "year_reopened",
-    "signed_off", "signoff_voided",
+    "signed_off", "signoff_voided", "signoff_rejected",
     "tb_submitted", "tb_cancelled",
     "tb_exception_declared", "tb_exception_cancelled",
     "ic_sent_back",
@@ -32,6 +32,8 @@ YEAR_KINDS = ("year_closed", "year_locked", "year_reopened")
 REASON_REQUIRED = (
     "self_approved", "rejected", "period_reopened", "year_reopened",
     "tb_exception_declared", "signoff_voided", "ic_sent_back",
+    # #305-W5-1 (story 9.4, #157): the Close Lead rejects with a typed reason.
+    "signoff_rejected",
 )
 #: assertion_run.SIGNED_STATES that carry text (assertion_run.py:408-411, 593-620).
 SIGNOFF_NEEDS_REASON = ("Acknowledged", "Overridden")

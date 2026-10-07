@@ -30,7 +30,24 @@ sign:
   ``test_close_statement_model.py``'s balanced fixture), so no second flip
   is needed to keep "assets = liabilities + equity" true after 2a-ii.
 """
+import importlib.util as _importlib_util
+import os as _os
 from decimal import Decimal
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 _CENTS = Decimal("0.01")
 
@@ -224,7 +241,7 @@ _RESULT_NOT_PLACED = "Current-year result not placed (declare the current-year r
 
 
 def _period_label(key):
-    return "FY%s P%02d" % key
+    return period_name(*key)
 
 
 def _keys_up_to(period_rows, upto):

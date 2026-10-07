@@ -55,6 +55,13 @@
  * every journal. amended 3 Oct (E6-P1 option (c)): only the EPM Analyst and
  * System Manager draft or send (`canDraft`/`canSend` already fold this in).
  *
+ * - #305 story 6.5: `view.reversingIn` (journals approved in an earlier
+ *   period whose reversal posts into this one) renders as a read-only
+ *   "Reversing into this period" section with its server label ("Reverses
+ *   here from <code>"), the reversal posting's lines and its effect through
+ *   `effectView`. The original period's list shows "Reverses in FY2025 P07" in
+ *   the Duration column, as before.
+ *
  * The period comes from the URL (route.js, D5); nothing is kept in the
  * browser. Not built here, and not rendered as dead controls: the Partner
  * column, Evidence/attach, and "Still in force from earlier periods"
@@ -88,6 +95,7 @@ import { beforeAfter, statementView } from "../numbers.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_JOURNALS = "konsol.close.journal_api.get_journals";
 const SAVE_JOURNAL = "konsol.close.journal_api.save_journal";
@@ -113,7 +121,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 const what = computed(() => `the adjustments for ${periodName.value}`);
 const timeZone = userTimeZone();
@@ -675,6 +683,61 @@ function lines(text) {
 						</tbody>
 					</table>
 				</div>
+
+				<!-- #305 story 6.5: journals approved in an earlier period whose
+				     reversal posts into this one. Read-only: the warehouse build
+				     posts the reversal from the approved journal; label, lines and
+				     effect all come from get_journals. -->
+				<section v-if="view.reversingIn.length" aria-label="Reversing into this period" class="mt-6">
+					<h2 class="mb-2 text-sm font-semibold text-ink-gray-9">Reversing into this period</h2>
+					<p class="mb-2 text-xs text-ink-gray-5">Read-only: posted here from a journal approved in an earlier period.</p>
+					<details
+						v-for="item in view.reversingIn"
+						:key="item.name"
+						class="mb-2 rounded border border-outline-gray-2 px-3 py-2 text-sm"
+					>
+						<summary class="cursor-pointer">
+							<span class="font-medium text-ink-gray-9">{{ item.title }}</span>
+							<span class="ml-2 inline-block rounded bg-surface-gray-2 px-2 py-0.5 text-xs font-medium text-ink-gray-7">{{ item.label }}</span>
+							<span class="ml-2 font-mono text-ink-gray-8">{{ item.totalsText }}</span>
+							<span class="ml-2 text-xs text-ink-gray-6">{{ item.name }} · approved by {{ item.approved_by }} · {{ item.approvedAtText }}</span>
+						</summary>
+						<table class="mt-2 w-full text-left text-sm">
+							<thead class="text-xs uppercase tracking-wide text-ink-gray-6">
+								<tr>
+									<th class="py-1 font-medium">Entity</th>
+									<th class="py-1 font-medium">Account</th>
+									<th class="py-1 font-medium">Dr</th>
+									<th class="py-1 font-medium">Cr</th>
+									<th v-for="dim in declaredDimensions" :key="dim.key" class="py-1 font-medium">{{ dim.label }}</th>
+								</tr>
+							</thead>
+							<tbody>
+								<tr v-for="line in item.lines" :key="line.idx" class="border-t border-outline-gray-2">
+									<td class="py-1 text-ink-gray-8">{{ line.data_area_id }}</td>
+									<td class="py-1 text-ink-gray-8">{{ line.account_name || line.main_account }}</td>
+									<td class="py-1 font-mono text-ink-gray-8">{{ line.debit_amount || "" }}</td>
+									<td class="py-1 font-mono text-ink-gray-8">{{ line.credit_amount || "" }}</td>
+									<td v-for="dim in declaredDimensions" :key="dim.key" class="py-1 text-ink-gray-8">{{ dimValueText(line, dim.key) }}</td>
+								</tr>
+							</tbody>
+						</table>
+						<h3 class="mt-2 text-xs font-semibold uppercase tracking-wide text-ink-gray-6">Effect</h3>
+						<ul class="mt-1 space-y-1">
+							<li
+								v-for="(heading, i) in item.effectView.headings"
+								:key="i"
+								class="flex items-center justify-between gap-2"
+							>
+								<span class="text-ink-gray-7">{{ heading.label }}</span>
+								<span class="font-mono text-ink-gray-8">{{ heading.amountText }}</span>
+							</li>
+						</ul>
+						<p v-if="item.effectView.noHeadingText" class="mt-1 text-xs text-ink-gray-5">
+							{{ item.effectView.noHeadingText }}
+						</p>
+					</details>
+				</section>
 			</template>
 		</LoadState>
 
@@ -792,10 +855,10 @@ function lines(text) {
 						</ul>
 					</template>
 					<p
-						v-if="selectedEffect.noHeading && selectedJournal.docstatus !== 2"
+						v-if="selectedEffect.noHeadingText && selectedJournal.docstatus !== 2"
 						class="mt-1 text-xs text-ink-gray-5"
 					>
-						{{ selectedEffect.noHeading }} account(s) outside any heading.
+						{{ selectedEffect.noHeadingText }}
 					</p>
 				</template>
 			</section>

@@ -116,13 +116,33 @@ class _Site:
         self.ic_fixes = {}
         self.ic_calls = []
         self.ic_tolerance_gap = None
+        #: #305 5.4: the stubbed `ic_balance_api.open_rule_gaps` returns this list.
+        self.ic_rule_gaps = []
+        self.ic_rule_gap_calls = 0
         self.statement_gap = None
+        #: W5-2 (8.4): the stubbed signoff_gate.commentary_gap() answer.
+        self.commentary_gap = None
+        #: S9: every signoff_gate.commentary_gap / shared_reads call, the
+        #: shared reads each sign_off_problems call got, and each
+        #: open_rule_gap call's reads.
+        self.commentary_gap_calls = 0
+        self.shared_reads_calls = 0
+        self.shared = None
+        self.problem_shared = []
+        self.ic_rule_gap_reads = []
         self.approvals_waiting = {"count": 0}
         self.approvals_calls = []
         self.approvals_error = None
         self.sent_back_rows = []
         self.sent_back_calls = []
         self.sent_back_error = None
+        #: #305-W5-1 (story 9.4): Close Event rows as the database holds them
+        #: (detail JSON text, a naive ``at``), and every Close Event read.
+        self.close_events = []
+        self.close_event_reads = []
+        #: S13: User full names that exist, and every full-name read.
+        self.full_names = {}
+        self.user_name_reads = []
 
 
 def _frappe(site):
@@ -153,6 +173,11 @@ def _frappe(site):
         elif doctype == "Has Role":
             assert filters.get("role") == "Entity Accountant", filters
             rows = [_D(parent=u) for u in site.accountants]
+        elif doctype == "User" and "full_name" in (fields or ()):
+            # S13: the rejecter's full name; a user who no longer exists has no row.
+            site.user_name_reads.append(dict(filters))
+            rows = [_D(name=u, full_name=n) for u, n in sorted(site.full_names.items())
+                    if u in filters["name"][1]]
         elif doctype == "User":
             rows = [_D(name=u) for u in site.accountants if u in filters["name"][1]]
         elif doctype == "User Permission":
@@ -163,6 +188,11 @@ def _frappe(site):
             rows = sorted([r for r in site.runs
                            if (r.fiscal_year, r.fiscal_period) == (fy, fp)],
                           key=lambda r: r.creation, reverse=True)
+        elif doctype == "Close Event":
+            site.close_event_reads.append(dict(filters))
+            rows = [e for e in site.close_events
+                    if all(e.get(f) == c if not isinstance(c, list) else e.get(f) in c[1]
+                           for f, c in filters.items())]
         else:
             raise AssertionError("unexpected get_all(%r)" % doctype)
         if pluck:
@@ -257,10 +287,11 @@ def _call(site):
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
     signoff_gate = types.ModuleType("konsol.close.signoff_gate")
 
-    def sign_off_problems(fy, fp):
+    def sign_off_problems(fy, fp, shared=None):
         row = next(r for r in site.rows if (r["fiscal_year"], r["fiscal_period"]) == (fy, fp))
         assert row["period_type"] == "Regular", "only Regular periods are gated"
         site.problem_calls.append((fy, fp))
+        site.problem_shared.append(shared)
         return site.problems.get((fy, fp), {"config_gaps": [], "order": None, "completeness": None})
 
     signoff_gate.sign_off_problems = sign_off_problems
@@ -268,6 +299,22 @@ def _call(site):
     # so N47's `signoff_gate.statement_gap()` call resolves to this stub
     # rather than the real frappe-bound function.
     signoff_gate.statement_gap = lambda: site.statement_gap
+    def commentary_gap():
+        site.commentary_gap_calls += 1
+        return site.commentary_gap
+
+    signoff_gate.commentary_gap = commentary_gap
+
+    def shared_reads():
+        # S9: the real shape (signoff_gate.shared_reads): the commentary
+        # threshold as close_policy_model.commentary_threshold gives it, and
+        # ic_balance_api.open_reads' output (opaque here).
+        site.shared_reads_calls += 1
+        site.shared = {"commentary_threshold": {"threshold": None, "gap": site.commentary_gap},
+                       "ic_balances": {"keys": frozenset(), "balances": [], "rules": []}}
+        return site.shared
+
+    signoff_gate.shared_reads = shared_reads
     freshness_api = types.ModuleType("konsol.close.freshness_api")
     freshness_api.current_freshness = lambda: {"state": "fresh", "as_of": site.as_of,
                                                "pending": 0, "changed_since": [],
@@ -289,6 +336,16 @@ def _call(site):
         return dict(site.ic_fixes)
 
     ic_api.open_fixes = open_fixes
+
+    # #305 5.4: mywork_api imports konsol.close.ic_balance_api lazily.
+    ic_balance_api = types.ModuleType("konsol.close.ic_balance_api")
+
+    def open_rule_gaps(reads=None):
+        site.ic_rule_gap_calls += 1
+        site.ic_rule_gap_reads.append(reads)
+        return list(site.ic_rule_gaps)
+
+    ic_balance_api.open_rule_gaps = open_rule_gaps
 
     # A12: a stub `konsol.close.approvals_api` with a recording `queue_for`, so
     # My work reads the same queue A10 builds without running it for real.
@@ -321,6 +378,7 @@ def _call(site):
         "konsol.close.freshness_api": freshness_api,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
         "konsol.close.ic_api": ic_api,
+        "konsol.close.ic_balance_api": ic_balance_api,
         "konsol.close.approvals_api": approvals_api,
     }
     mods.update(stubs)
@@ -911,6 +969,36 @@ def test_ic_tolerance_gap_reaches_the_group_personas():
         assert gap["kind"] == "blocking", gap
 
 
+def _real_ic_rule_gaps(rules=()):
+    """#305 5.4: the real producer's gaps (ic_balance_model.rule_gaps)."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "close", "ic_balance_model.py")
+    spec = importlib.util.spec_from_file_location("ic_balance_model_for_mywork_api", path)
+    model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model)
+    return model.rule_gaps([{"name": "B", "selling_entity": "UK01", "buying_entity": "DE01",
+                             "docstatus": 0, "ending_inventory_from_ic": 40.0}], list(rules))
+
+
+def test_ic_rule_gap_reaches_the_group_personas():
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_rule_gaps = _real_ic_rule_gaps()
+        result = _call(site)
+        gap = _gap(result, "ic_rule")
+        assert gap is not None, (roles, _ids(result))
+        assert "UK01 → DE01" in gap["detail"], gap
+        assert gap["kind"] == "blocking" and gap["action"] == {"desk": "/app/ic-elimination-rule"}
+
+
+def test_entity_accountant_never_gets_the_ic_rule_gap_and_it_is_not_read():
+    site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
+    site.ic_rule_gaps = _real_ic_rule_gaps()
+    result = _call(site)
+    assert _gap(result, "ic_rule") is None, _ids(result)
+    assert site.ic_rule_gap_calls == 0
+
+
 def test_entity_accountant_gets_an_ic_fix_item_on_trial_balances():
     site = _Site(roles=("Entity Accountant",), allowed={"UK01"})
     site.ic_fixes = {(2025, 7): [_ic_fix()]}
@@ -1146,3 +1234,194 @@ def test_statement_gap_none_gives_no_item():
         result = _call(site)
         assert _gap(result, "statement_accounts") is None, (roles, _ids(result))
         _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
+
+
+# --- #305-W5-1 (story 9.4, #157): the preparer's "sent back" sign-off item ------
+#
+# The rows are the real producers' events (test_assertion_run_reject.py's
+# reject_signoff and sign_off_close), stored as the Close Event table holds
+# them: detail as JSON text (close_event_model.detail_json), a naive ``at``.
+
+_REJ_SPEC = importlib.util.spec_from_file_location(
+    "assertion_run_reject_for_mywork_api",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_assertion_run_reject.py"))
+_REJ = importlib.util.module_from_spec(_REJ_SPEC)
+_REJ_SPEC.loader.exec_module(_REJ)
+
+
+def _stored_event(event, name, at, fiscal_year=2025, fiscal_period=7):
+    return _D(name=name, kind=event["kind"], fiscal_year=fiscal_year,
+              fiscal_period=fiscal_period, actor=event.get("actor") or "acct@example.com",
+              at=at, reason=event["reason"],
+              detail=json.dumps(event["detail"], sort_keys=True))
+
+
+def _rejected_row(name="ZZ-CE-2", at=datetime(2025, 8, 20, 10, 0), **kw):
+    reject, frappe, _doc = _REJ.load()
+    reject("AR-1", "ZZA's TB is the draft")
+    return _stored_event(frappe.events[0], name, at, **kw)
+
+
+def _signed_row(name="ZZ-CE-3", at=datetime(2025, 8, 21, 9, 0), **kw):
+    module, frappe, _doc, _ = _REJ._amber._load(status="Green", warned=0)
+    module.sign_off_close("AR-1")
+    return _stored_event(frappe.events[0], name, at, **kw)
+
+
+def test_the_preparer_gets_the_sent_back_signoff_item_counted_under_checks():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [_rejected_row()]
+    result = _call(site)
+    item = next(i for i in result["items"] if i["id"] == "sent-back:signoff:2025-07")
+    assert item["kind"] == "todo" and item["action"] == {"screen": "checks"}
+    assert item["period"]["code"] == "FY2025 P07"
+    assert item["period"]["since"] == "2025-08-20"
+    assert "ZZA's TB is the draft" in item["detail"]
+    checks = [i for i in result["items"] if (i.get("action") or {}).get("screen") == "checks"]
+    assert result["counts"]["by_screen"]["checks"]["count"] == len(checks)
+    _assert_counts_add_up(result, "group_accountant")
+
+
+def test_a_later_signature_clears_it():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [_rejected_row(), _signed_row()]
+    assert "sent-back:signoff:2025-07" not in _ids(_call(site))
+
+
+def test_another_user_does_not_get_it():
+    site = _Site(roles=("EPM Admin",), user="zz-lead@example.com")
+    site.close_events = [_rejected_row()]
+    assert "sent-back:signoff:2025-07" not in _ids(_call(site))
+
+
+def test_the_viewer_reads_no_close_events():
+    site = _Site(roles=("EPM User",), user=_REJ.PREPARER)
+    site.close_events = [_rejected_row()]
+    result = _call(site)
+    assert result["items"] == []
+    assert site.close_event_reads == []
+
+
+def test_signatures_are_read_only_when_the_caller_has_a_rejection():
+    site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
+    site.close_events = [_rejected_row()]
+    _call(site)
+    assert site.close_event_reads == [
+        {"kind": "signoff_rejected", "fiscal_year": ["in", [2025]]}]
+
+
+# --- W5-2 (story 8.4): the commentary-threshold setup gap ---------------------
+#
+# signoff_gate.commentary_gap() is appended to policy_gaps for group personas
+# only, after the statement gap. The gap fed in is the REAL one
+# close_policy_model.commentary_threshold returns.
+
+
+def test_commentary_gap_reaches_the_group_personas():
+    gap = _model("close_policy_model").commentary_threshold(0, 0, "")["gap"]
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.commentary_gap = gap
+        result = _call(site)
+        item = _gap(result, "commentary_threshold")
+        assert item is not None, (roles, _ids(result))
+        assert item["detail"] == gap["message"], item
+        assert item["action"] == {"desk": "/app/close-settings"}, item
+        _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
+
+
+def test_entity_accountant_never_sees_the_commentary_gap():
+    gap = _model("close_policy_model").commentary_threshold(0, 0, "")["gap"]
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.commentary_gap = gap
+    result = _call(site)
+    assert _gap(result, "commentary_threshold") is None, _ids(result)
+
+
+
+def test_ic_rule_ambiguous_gap_reaches_the_group_personas():
+    """F51b / review S2: two rules on one pair is its own blocking item."""
+    rules = [{"rule_id": r, "rule_type": "unrealized_profit", "margin_pct": 10,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"} for r in ("R1", "R2")]
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.ic_rule_gaps = _real_ic_rule_gaps(rules)
+        result = _call(site)
+        gap = _gap(result, "ic_rule_ambiguous")
+        assert gap is not None, (roles, _ids(result))
+        assert "UK01 → DE01 (R1, R2)" in gap["detail"], gap
+        assert gap["kind"] == "blocking" and gap["action"] == {"desk": "/app/ic-elimination-rule"}
+        assert _gap(result, "ic_rule") is None
+
+
+# --- review-w5 S9: the shared settings are read once per request -------------
+
+
+def test_one_request_reads_the_shared_settings_once_for_every_open_period():
+    site = _Site()  # P07-P09 Open and started
+    _call(site)
+    assert site.problem_calls == [(2025, 7), (2025, 8), (2025, 9)]
+    assert site.shared_reads_calls == 1
+    assert site.problem_shared == [site.shared] * 3
+    assert site.ic_rule_gap_reads == [site.shared["ic_balances"]]
+    assert site.commentary_gap_calls == 0
+
+
+def test_the_commentary_gap_comes_from_the_shared_reads():
+    gap = _model("close_policy_model").commentary_threshold(0, 0, "")["gap"]
+    site = _Site()
+    site.commentary_gap = gap
+    item = _gap(_call(site), "commentary_threshold")
+    assert item is not None and item["detail"] == gap["message"]
+    assert site.commentary_gap_calls == 0 and site.shared_reads_calls == 1
+
+
+# --- review-w5 S13: bounded reads, the rejecter by full name -------------------
+
+
+def test_only_the_open_periods_rejections_are_read():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [_rejected_row("ZZ-CE-1", fiscal_period=5),          # Closed
+                         _rejected_row("ZZ-CE-2", fiscal_year=2024, fiscal_period=7),
+                         _rejected_row("ZZ-CE-3", fiscal_period=7)]
+    ids = _ids(_call(site))
+    assert site.close_event_reads[0] == {"kind": "signoff_rejected",
+                                         "fiscal_year": ["in", [2025]]}
+    assert [i for i in ids if i.startswith("sent-back:signoff")] == ["sent-back:signoff:2025-07"]
+
+
+def test_no_open_period_reads_no_close_event():
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.rows = [dict(r, status="Closed") for r in site.rows]
+    site.close_events = [_rejected_row()]
+    _call(site)
+    assert site.close_event_reads == []
+
+
+def test_the_rejecter_is_named_by_full_name_with_one_user_read():
+    row = _rejected_row()
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [row]
+    site.full_names = {row["actor"]: "Zara Lead"}
+    item = next(i for i in _call(site)["items"] if i["id"] == "sent-back:signoff:2025-07")
+    assert item["detail"].startswith("Zara Lead on 2025-08-20: "), item["detail"]
+    assert site.user_name_reads == [{"name": ["in", [row["actor"]]]}]
+
+
+def test_a_rejecter_who_no_longer_exists_is_named_by_id():
+    row = _rejected_row()
+    site = _Site(roles=("EPM Analyst",), user=_REJ.PREPARER)
+    site.close_events = [row]
+    item = next(i for i in _call(site)["items"] if i["id"] == "sent-back:signoff:2025-07")
+    assert item["detail"].startswith("%s on 2025-08-20: " % row["actor"]), item["detail"]
+
+
+def test_period_items_name_the_year_not_the_bare_period_code():
+    """Live ``period_code`` is "P08" alone (the site rows here carry it): a
+    My work title and its period code name the fiscal year (konsol#305
+    review-w5, period_name)."""
+    site = _Site()
+    site.problems[(2025, 8)] = {"config_gaps": [], "order": None, "completeness": None}
+    item = next(i for i in _call(site)["items"] if i["id"] == "signoff:2025-08")
+    assert item["title"] == "Sign off FY2025 P08"
+    assert item["period"]["code"] == "FY2025 P08"

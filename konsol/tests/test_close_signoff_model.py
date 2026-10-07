@@ -4,6 +4,7 @@ Configuration gaps and the order gate. Loaded by path; the module imports
 nothing from frappe or konsol.
 """
 import ast
+import json
 import importlib.util
 import os
 
@@ -168,18 +169,18 @@ def test_open_earlier_periods_block_and_the_oldest_is_named():
     states = _fy2025({7: ("Open", "Not signed off"), 8: ("Open", "Not signed off"),
                       9: ("Open", "Not signed off")})
     assert M.order_problem(states, FIRST, (2025, 9)) == {
-        "blocking": "P07",
-        "periods": ["P07", "P08"],
-        "message": "Sign off and close P07 first",
+        "blocking": "FY2025 P07",
+        "periods": ["FY2025 P07", "FY2025 P08"],
+        "message": "Sign off and close FY2025 P07 first",
     }
 
 
 def test_closed_but_re_sign_needed_blocks():
     states = _fy2025({8: ("Closed", "Re-sign Needed"), 9: ("Open", "Not signed off")})
     res = M.order_problem(states, FIRST, (2025, 9))
-    assert res["blocking"] == "P08"
-    assert res["periods"] == ["P08"]
-    assert res["message"] == "Re-sign P08 first"
+    assert res["blocking"] == "FY2025 P08"
+    assert res["periods"] == ["FY2025 P08"]
+    assert res["message"] == "Re-sign FY2025 P08 first"
 
 
 def test_history_periods_never_block():
@@ -206,8 +207,8 @@ def test_the_first_close_period_has_nothing_before_it():
 def test_open_p12_of_the_previous_year_blocks_p1_of_the_next():
     states = _fy2025({12: ("Open", "Not signed off")}) + [_state(2026, 1, "Open", "Not signed off")]
     res = M.order_problem(states, FIRST, (2026, 1))
-    assert res["blocking"] == "P12"
-    assert res["periods"] == ["P12"]
+    assert res["blocking"] == "FY2025 P12"
+    assert res["periods"] == ["FY2025 P12"]
 
 
 def test_previous_year_p12_before_first_close_does_not_block():
@@ -218,7 +219,7 @@ def test_previous_year_p12_before_first_close_does_not_block():
 def test_keys_as_lists_are_accepted():
     # States that went through JSON carry keys as lists.
     states = [dict(s, key=list(s["key"])) for s in _fy2025({8: ("Open", "Not signed off")})]
-    assert M.order_problem(states, FIRST, (2025, 9))["blocking"] == "P08"
+    assert M.order_problem(states, FIRST, (2025, 9))["blocking"] == "FY2025 P08"
 
 
 def test_order_with_undeclared_first_close_raises_not_guesses():
@@ -411,19 +412,19 @@ def test_completeness_needs_a_docstatus_not_a_default():
 
 def test_exception_then_tb_covers_both_periods():
     notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9)], [_doc("ZZA", 8)])
-    assert notes == ["ZZA: covers P08–P09"]
+    assert notes == ["ZZA: covers FY2025 P08–FY2025 P09"]
 
 
 def test_a_run_of_exceptions_is_covered_from_its_first_period():
     exc = [_doc("ZZA", 7), _doc("ZZA", 8)]
     notes = M.covers_notes((2025, 9), _monthly_year(), [_doc("ZZA", 9)], exc)
-    assert notes == ["ZZA: covers P07–P09"]
+    assert notes == ["ZZA: covers FY2025 P07–FY2025 P09"]
 
 
 def test_the_run_stops_at_a_period_with_a_tb():
     exc = [_doc("ZZA", 6), _doc("ZZA", 8)]
     tbs = [_doc("ZZA", 7), _doc("ZZA", 9)]
-    assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == ["ZZA: covers P08–P09"]
+    assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == ["ZZA: covers FY2025 P08–FY2025 P09"]
 
 
 def test_no_note_without_a_tb_in_the_target_or_an_exception_before_it():
@@ -454,7 +455,7 @@ def test_covers_notes_are_sorted_by_entity():
     tbs = [_doc("ZZB", 9), _doc("ZZA", 9)]
     exc = [_doc("ZZB", 8), _doc("ZZA", 8)]
     assert M.covers_notes((2025, 9), _monthly_year(), tbs, exc) == [
-        "ZZA: covers P08–P09", "ZZB: covers P08–P09"]
+        "ZZA: covers FY2025 P08–FY2025 P09", "ZZB: covers FY2025 P08–FY2025 P09"]
 
 
 # --- A41: a quarterly entity's quarter-end TB is labelled with its quarter -----
@@ -464,7 +465,7 @@ def test_quarterly_entity_quarter_end_tb_notes_the_full_quarter():
     # Q1 = P01-P03 (_monthly_year); ZZQ's single P03 TB covers the whole quarter.
     freq = {"ZZQ": "Quarterly"}
     notes = M.covers_notes((2025, 3), _monthly_year(), [_doc("ZZQ", 3)], [], frequencies=freq)
-    assert notes == ["ZZQ: quarterly — covers P01–P03"]
+    assert notes == ["ZZQ: quarterly — covers FY2025 P01–FY2025 P03"]
 
 
 def test_monthly_entity_gets_no_quarterly_note():
@@ -524,14 +525,39 @@ def _ic_checked(over, pairs=None):
             "sent_back_open": 0}
 
 
+def _load_close(name):
+    spec = importlib.util.spec_from_file_location(
+        name + "_for_signoff_model_test", os.path.join(os.path.dirname(MODEL_PATH), name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# W5-2 (story 8.4): the commentary-threshold lines are the REAL producers'
+# output — commentary_model.requirement over close_policy_model's threshold,
+# and the golden fixture statement_api.signoff_commentary wrote.
+CM = _load_close("commentary_model")
+CPM = _load_close("close_policy_model")
+_DECLARED = CPM.commentary_threshold(5000, 0, "")
+COMMENTARY_NONE = CM.requirement(_DECLARED, [])
+COMMENTARY_UNDECLARED = CM.requirement(CPM.commentary_threshold(0, 0, ""), None)
+COMMENTARY_UNKNOWN = CM.requirement(_DECLARED, [
+    {"consolidation_group": "ZZGRP", "state": "not_built",
+     "message": "ServerException (UNKNOWN_TABLE)", "statement": None, "texts": {}}])
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures",
+                       "close_signoff_commentary_required.json")) as _fh:
+    COMMENTARY_REQUIRED = json.load(_fh)
+
+
 def _summary(run=None, warned=(), on_behalf=(), exceptions=(), covers=(), previous=(),
              problems=None, can_override=False, period_status="Open", data_change=None,
-             intercompany=None):
+             intercompany=None, commentary=None):
     return M.summary(run, list(warned), list(on_behalf), list(exceptions), list(covers),
                      list(previous), problems if problems is not None else NO_PROBLEMS, can_override,
                      period_status=period_status,
                      data_change=data_change if data_change is not None else NO_CHANGE,
-                     intercompany=intercompany if intercompany is not None else NOT_CONFIGURED_IC)
+                     intercompany=intercompany if intercompany is not None else NOT_CONFIGURED_IC,
+                     commentary=commentary if commentary is not None else COMMENTARY_NONE)
 
 
 # --- A59: no checks and no signing on a Closed or Locked period ----------------
@@ -636,7 +662,7 @@ def test_amber_means_acknowledge_with_the_warned_names():
     s = _summary(run=_run("Amber", warned=2), warned=["assert_a", "assert_b"])
     assert s["action"] == "acknowledge"
     assert s["acknowledgements"] == {"names": ["assert_a", "assert_b"], "total": 2, "unlisted": 0,
-                                     "intercompany": None}
+                                     "intercompany": None, "commentary": None}
 
 
 def test_a_capped_name_list_says_how_many_more():
@@ -651,9 +677,9 @@ def test_an_unknown_warning_count_is_unknown_not_zero():
     run = _run("Amber")
     s = _summary(run=run, warned=["assert_a"])
     assert s["acknowledgements"] == {"names": ["assert_a"], "total": None, "unlisted": None,
-                                     "intercompany": None}
+                                     "intercompany": None, "commentary": None}
     assert _summary(run=None)["acknowledgements"] == {"names": [], "total": None, "unlisted": None,
-                                                       "intercompany": None}
+                                                       "intercompany": None, "commentary": None}
 
 
 def test_red_or_error_means_override_for_the_close_lead():
@@ -726,8 +752,8 @@ def test_exceptions_covers_and_previous_periods_are_listed():
     ]
     assert s["covers"] == ["ZZA: covers P08–P09"]
     assert s["previous"] == [
-        {"code": "P07", "status": "Closed", "signoff": "Acknowledged"},
-        {"code": "P08", "status": "Closed", "signoff": "Signed Off"},
+        {"code": "FY2025 P07", "status": "Closed", "signoff": "Acknowledged"},
+        {"code": "FY2025 P08", "status": "Closed", "signoff": "Signed Off"},
     ]
 
 
@@ -965,11 +991,11 @@ def test_ic_warning_pluralises_correctly():
 
 
 def test_effective_status_is_amber_only_for_a_green_run_with_over_tolerance_pairs():
-    assert M.effective_status("Green", _ic_checked(1)) == "Amber"
-    assert M.effective_status("Green", _ic_checked(0)) == "Green"
-    assert M.effective_status("Amber", _ic_checked(1)) == "Amber"
-    assert M.effective_status("Red", _ic_checked(1)) == "Red"
-    assert M.effective_status("Queued", _ic_checked(1)) == "Queued"
+    assert M.effective_status("Green", _ic_checked(1), COMMENTARY_NONE) == "Amber"
+    assert M.effective_status("Green", _ic_checked(0), COMMENTARY_NONE) == "Green"
+    assert M.effective_status("Amber", _ic_checked(1), COMMENTARY_NONE) == "Amber"
+    assert M.effective_status("Red", _ic_checked(1), COMMENTARY_NONE) == "Red"
+    assert M.effective_status("Queued", _ic_checked(1), COMMENTARY_NONE) == "Queued"
 
 
 def test_ic_problem_names_the_unchecked_states_only():
@@ -981,3 +1007,122 @@ def test_ic_problem_names_the_unchecked_states_only():
         assert problem["code"] == "ic_unchecked"
         assert problem["message"] == ic["message"] + (
             " Nothing can be signed until intercompany can be checked.")
+
+
+# --- W5-2 (story 8.4): headings above the commentary threshold make a Green
+# run Amber (Deepak, 6 Oct 2026, option 8.4-1; the #265 / #305-W3-8 path).
+# An undeclared threshold is never Amber (the setup gap blocks instead); a
+# line that could not be checked blocks signing, like intercompany (W3-P4).
+
+def test_commentary_required_reads_each_state():
+    assert COMMENTARY_REQUIRED["required_missing"] == 3
+    assert M.commentary_required(COMMENTARY_REQUIRED) == 3
+    assert M.commentary_required(COMMENTARY_NONE) == 0
+    assert M.commentary_required(COMMENTARY_UNDECLARED) == 0
+    assert M.commentary_required(COMMENTARY_UNKNOWN) is None
+
+
+def test_commentary_required_refuses_a_malformed_line():
+    bad = (None, "checked", {"state": "bogus"}, {"state": "checked"},
+           {"state": "checked", "required_missing": None})
+    for line in bad:
+        try:
+            M.commentary_required(line)
+        except ValueError:
+            continue
+        raise AssertionError("commentary_required accepted %r" % (line,))
+
+
+def test_commentary_states_are_commentary_models():
+    assert set(M.COMMENTARY_STATES) == {"undeclared", "checked", "unknown"}
+
+
+def test_commentary_warning_pluralises_and_is_none_at_zero():
+    assert M.commentary_warning(COMMENTARY_REQUIRED) == (
+        "Commentary: 3 headings above the threshold without commentary")
+    one = dict(COMMENTARY_REQUIRED, required_missing=1)
+    assert M.commentary_warning(one) == (
+        "Commentary: 1 heading above the threshold without commentary")
+    assert M.commentary_warning(COMMENTARY_NONE) is None
+    assert M.commentary_warning(COMMENTARY_UNDECLARED) is None
+    assert M.commentary_warning(COMMENTARY_UNKNOWN) is None
+
+
+def test_effective_status_is_amber_for_a_green_run_with_required_commentary():
+    assert M.effective_status("Green", NOT_CONFIGURED_IC, COMMENTARY_REQUIRED) == "Amber"
+    assert M.effective_status("Green", NOT_CONFIGURED_IC, COMMENTARY_NONE) == "Green"
+    assert M.effective_status("Green", NOT_CONFIGURED_IC, COMMENTARY_UNDECLARED) == "Green"
+    assert M.effective_status("Red", NOT_CONFIGURED_IC, COMMENTARY_REQUIRED) == "Red"
+
+
+def test_green_with_required_commentary_is_acknowledge():
+    s = _summary(run=_run("Green"), commentary=COMMENTARY_REQUIRED)
+    assert s["action"] == "acknowledge"
+    assert s["acknowledgements"]["commentary"] == (
+        "Commentary: 3 headings above the threshold without commentary")
+
+
+def test_green_with_nothing_required_signs_and_has_no_commentary_warning():
+    for line in (COMMENTARY_NONE, COMMENTARY_UNDECLARED):
+        s = _summary(run=_run("Green"), commentary=line)
+        assert s["action"] == "sign", line["state"]
+        assert s["acknowledgements"]["commentary"] is None
+
+
+def test_a_commentary_line_that_cannot_be_checked_blocks_signing():
+    s = _summary(run=_run("Green"), commentary=COMMENTARY_UNKNOWN)
+    assert s["action"] == "blocked"
+    assert COMMENTARY_UNKNOWN["message"] in s["label"]
+    assert "Nothing can be signed" in s["label"]
+
+
+def test_red_with_required_commentary_still_overrides_and_names_it():
+    s = _summary(run=_run("Red"), can_override=True, commentary=COMMENTARY_REQUIRED)
+    assert s["action"] == "override"
+    assert s["acknowledgements"]["commentary"].startswith("Commentary: 3 headings")
+
+
+def test_a_signed_run_with_required_commentary_stays_signed():
+    s = _summary(run=_run("Green", "Signed Off"), commentary=COMMENTARY_REQUIRED)
+    assert s["action"] == "signed"
+
+
+def test_summary_requires_the_commentary_line():
+    try:
+        M.summary(None, [], [], [], [], [], NO_PROBLEMS, False, period_status="Open",
+                  data_change=NO_CHANGE, intercompany=NOT_CONFIGURED_IC)
+    except TypeError as e:
+        assert "commentary" in str(e)
+    else:
+        raise AssertionError("summary ran without the commentary line")
+
+
+# --- review-w5: the order gate and earlier periods name the year ---------------
+# The live period_code is "P12" alone: FY2024 P12 and FY2025 P12 share it.
+
+
+def test_order_gate_names_the_year_of_a_p12_across_the_year_boundary():
+    states = [_state(2024, 12, "Open", "Not signed off"),
+              _state(2025, 1, "Closed", "Re-sign Needed"),
+              _state(2025, 12, "Open", "Not signed off")]
+    res = M.order_problem(states, (2024, 12), (2026, 1))
+    assert res == {
+        "blocking": "FY2024 P12",
+        "periods": ["FY2024 P12", "FY2025 P01", "FY2025 P12"],
+        "message": "Sign off and close FY2024 P12 first",
+    }
+
+
+def test_re_sign_message_names_the_year():
+    states = [_state(2024, 12, "Closed", "Re-sign Needed"), _state(2025, 12, "Open", "Not signed off")]
+    res = M.order_problem(states, (2024, 12), (2025, 12))
+    assert res["message"] == "Re-sign FY2024 P12 first"
+
+
+def test_earlier_periods_name_the_year_of_each_p12():
+    previous = [_state(2025, 12, "Closed", "Signed Off"), _state(2024, 12, "Open", "Not signed off")]
+    s = _summary(run=_run(), previous=previous)
+    assert s["previous"] == [
+        {"code": "FY2024 P12", "status": "Open", "signoff": "Not signed off"},
+        {"code": "FY2025 P12", "status": "Closed", "signoff": "Signed Off"},
+    ]

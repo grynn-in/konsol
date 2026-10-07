@@ -47,7 +47,7 @@ function deferred() {
 	return { promise, resolve, reject };
 }
 
-const SERVICES = ["load", "sign", "close", "reopen"];
+const SERVICES = ["load", "sign", "close", "reopen", "reject"];
 
 function start() {
 	const calls = Object.fromEntries(SERVICES.map((n) => [n, []]));
@@ -139,7 +139,9 @@ const CLOSE = { type: "CLOSE" };
 const REOPEN = { type: "REOPEN", reason: "Late journal from ZZ01" };
 const RETRY = { type: "RETRY" };
 const REFRESH = { type: "REFRESH" };
-const ALL = [SIGN, ACKNOWLEDGE, OVERRIDE, CONFIRM_ACK, CONFIRM_OVERRIDE, CANCEL, CLOSE, REOPEN, RETRY, REFRESH];
+// #305-W5-1 (story 9.4): the Close Lead's reject, with its typed reason.
+const REJECT = { type: "REJECT", reason: "ZZA's TB is the draft" };
+const ALL = [SIGN, ACKNOWLEDGE, OVERRIDE, CONFIRM_ACK, CONFIRM_OVERRIDE, CANCEL, CLOSE, REOPEN, RETRY, REFRESH, REJECT];
 const except = (...keep) => ALL.filter((e) => !keep.includes(e.type));
 
 // Drivers that walk the machine to a given state.
@@ -227,7 +229,7 @@ test("the machine declares only the documented events", () => {
 	};
 	walk(signoffMachine.root);
 	assert.deepEqual([...new Set(ids)].sort(), [
-		"ACKNOWLEDGE", "CANCEL", "CLOSE", "CONFIRM_ACK", "CONFIRM_OVERRIDE", "OVERRIDE", "REFRESH", "REOPEN", "RETRY", "SIGN",
+		"ACKNOWLEDGE", "CANCEL", "CLOSE", "CONFIRM_ACK", "CONFIRM_OVERRIDE", "OVERRIDE", "REFRESH", "REJECT", "REOPEN", "RETRY", "SIGN",
 	]);
 });
 
@@ -1031,4 +1033,102 @@ test("A65: the prefix must lead; the same words later in a message do not reload
 	await flush();
 	assert.equal(value(h.actor), '"review"');
 	assert.equal(h.calls.load.length, 1);
+});
+
+// ---- #305-W5-1 (story 9.4, #157): the Close Lead rejects a signature --------
+//
+//   signed     REJECT {reason}, non-blank, when the summary's can_reject is
+//              true → rejecting
+//   rejecting  nothing; done → loading (the run is Not signed again) and
+//              PERIOD_CHANGED {action: "reject"}; the A58 stale-run refusal →
+//              loading with the message; any other error → signed with it
+
+const SIGNED_LEAD_S = summaryOf("signed", { label: "Signed Off", can_reject: true });
+
+async function toRejecting(h, event = REJECT) {
+	await toLoaded(h, SIGNED_LEAD_S);
+	assert.equal(value(h.actor), '"signed"');
+	h.actor.send(event);
+	await flush();
+	assert.equal(value(h.actor), '"rejecting"');
+}
+
+test("reject: signed → REJECT → rejecting → loading, the run and the trimmed reason sent, PERIOD_CHANGED once", async () => {
+	const emitted = await withEmits(async (h) => {
+		await toRejecting(h, { type: "REJECT", reason: "  ZZA's TB is the draft  " });
+		assert.deepEqual(h.last("reject").input, { run: "RUN-A", reason: "ZZA's TB is the draft" });
+		h.last("reject").resolve({ signoff_status: "Not Signed Off" });
+		await flush();
+		assert.equal(value(h.actor), '"loading"');
+		assert.equal(h.calls.load.length, 2);
+		await toLoaded(h, SIGN_S);
+		assert.equal(value(h.actor), '"review"');
+	});
+	assert.deepEqual(emitted.map((e) => e.action), ["reject"]);
+});
+
+test("REJECT is refused without can_reject true (a Group Accountant or Viewer)", async () => {
+	for (const extra of [{}, { can_reject: false }, { can_reject: "true" }]) {
+		const h = start();
+		await toLoaded(h, summaryOf("signed", { label: "Signed Off", ...extra }));
+		assertRefuses(h, [REJECT], `signed(${JSON.stringify(extra)})`);
+	}
+});
+
+test("REJECT with a blank reason is refused", async () => {
+	const h = start();
+	await toLoaded(h, SIGNED_LEAD_S);
+	assertRefuses(h, BLANKS.map((reason) => ({ type: "REJECT", reason })), "signed");
+	assertRefuses(h, [{ type: "REJECT" }], "signed (no reason)");
+});
+
+test("REJECT is refused once the period is closed, even for the Close Lead", async () => {
+	const h = start();
+	await toLoaded(h, summaryOf("signed", { label: "Signed Off", can_reject: true, period_status: "Closed" }));
+	assert.equal(value(h.actor), '"closed"');
+	assertRefuses(h, [REJECT], "closed");
+});
+
+test("REJECT is refused in review: only a signed period can be rejected", async () => {
+	const h = start();
+	await toReview(h, summaryOf("sign", { can_reject: true }));
+	assertRefuses(h, [REJECT], "review");
+});
+
+test("rejecting refuses everything: a reject in flight is never abandoned", async () => {
+	const h = start();
+	await toRejecting(h);
+	assertRefuses(h, ALL, "rejecting");
+});
+
+test("a refused reject returns to signed with the server message, the summary kept, nothing emitted", async () => {
+	const emitted = await withEmits(async (h) => {
+		await toRejecting(h);
+		h.last("reject").reject(new Error("FY2025 P07 is Closed; reopen it to reject its sign-off."));
+		await flush();
+		assert.equal(value(h.actor), '"signed"');
+		const { context } = h.actor.getSnapshot();
+		assert.equal(context.error, "FY2025 P07 is Closed; reopen it to reject its sign-off.");
+		assert.deepEqual(context.summary, SIGNED_LEAD_S);
+	});
+	assert.deepEqual(emitted, []);
+});
+
+test("a stale-run refusal on reject reloads the summary, keeping the message", async () => {
+	const h = start();
+	await toRejecting(h);
+	h.last("reject").reject(new Error("The checks were re-run (now RUN-B, Red); review the new result before rejecting."));
+	await flush();
+	assert.equal(value(h.actor), '"loading"');
+	assert.match(h.actor.getSnapshot().context.error, /^The checks were re-run/);
+	assert.equal(h.calls.load.length, 2);
+});
+
+test("a screen that forgets the reject service fails visibly", async () => {
+	const actor = createActor(signoffMachine).start();
+	assert.equal(typeof actor, "object");
+	const { readFile } = await import("node:fs/promises");
+	const src = await readFile(new URL("./signoffMachine.js", import.meta.url), "utf8");
+	assert.match(src, /reject: notProvided\("reject"\)/);
+	actor.stop();
 });

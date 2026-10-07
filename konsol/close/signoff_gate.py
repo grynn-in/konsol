@@ -75,6 +75,30 @@ Reads the site and passes it through the pure models:
   intercompany is not configured or declared not applicable), the same
   shape as ``_policies``; My work calls this gate once per open period, so
   the same multiple applies there.
+- ``commentary_threshold()`` / ``commentary_gap()`` (#305-W5-2, story
+  8.4): the Close Settings commentary threshold through
+  ``close_policy_model.commentary_threshold``; ``sign_off_problems``
+  appends its gap right after the statement gap. ``commentary(fy, fp)`` ->
+  ``statement_api.signoff_commentary(fy, fp)``: the headings above the
+  threshold with no commentary, for the sign-off signature (Amber, the
+  #265 path), read only by get_signoff and sign_off_close.
+- ``sign_off_problems`` then extends with ``ic_balance_api.rule_gaps(fy, fp)``
+  (#305 5.4, W5-4): a draft or approved IC Balance of the period whose
+  entity pair no unrealised-profit IC Elimination Rule (margin above 0)
+  matches is an ``ic_unrealized_profit_rule_undeclared`` gap naming the
+  pairs and their ``entities``; a pair that two or more rules match is an
+  ``ic_unrealized_profit_rule_ambiguous`` gap naming the pairs and rules
+  (F51b: dbt applies every matching rule, so it eliminates twice). A
+  balance with ending inventory 0 or below needs no rule. One IC Balance
+  read, plus one rule read when a balance exists. Imported lazily.
+- ``shared_reads()`` (review-w5 S9): the reads every period's gate makes
+  alike, made once: ``{"commentary_threshold": commentary_threshold(),
+  "ic_balances": ic_balance_api.open_reads()}``. A request that gates
+  several periods (My work) calls it once and passes it to each
+  ``sign_off_problems(fy, fp, shared)``, which then reads neither the
+  commentary threshold (3 Close Settings reads) nor the IC Balances and
+  rules (1 + 1) again. No cache: the value lives as long as the caller
+  holds it. ``sign_off_problems`` with no ``shared`` reads them itself.
 - ``intercompany(fy, fp)`` -> ``ic_api.signoff_summary(fy, fp)``: the IC line
   for the sign-off signature (#305-W3-8). It never raises for a warehouse
   failure; a read failure comes back as its own ``"error"`` / ``"not_built"``
@@ -92,6 +116,23 @@ from konsol import fiscal_calendar
 from konsol.close import (
     close_policy_model, ic_api, period_model, scope_model, signoff_model, statement_model)
 from konsol.period_status import PeriodNotDeclared
+
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
 
 BLOCKED_TITLE = "Sign-off blocked"
 CLOSE_BLOCKED_TITLE = "Close blocked"
@@ -117,7 +158,7 @@ def _row(rows, key):
         if _key(row["fiscal_year"], row["fiscal_period"]) == key:
             return row
     frappe.throw(
-        "FY%d P%02d is not declared: create it in EPM Fiscal Year." % key, PeriodNotDeclared
+        "%s is not declared: create it in EPM Fiscal Year." % period_name(*key), PeriodNotDeclared
     )
 
 
@@ -125,8 +166,8 @@ def _regular_row(rows, key):
     row = _row(rows, key)
     if row.get("period_type") != REGULAR:
         frappe.throw(
-            "FY%d P%02d is a %s period; only Regular periods are signed off."
-            % (key[0], key[1], row.get("period_type") or "blank-type")
+            "%s is a %s period; only Regular periods are signed off."
+            % (period_name(*key), row.get("period_type") or "blank-type")
         )
     return row
 
@@ -239,6 +280,44 @@ def statement_gap():
     return statement_accounts()["gap"]
 
 
+def commentary_threshold():
+    """The declared commentary threshold, or its setup gap (#305-W5-2,
+    story 8.4): Close Settings' three fields through
+    ``close_policy_model.commentary_threshold``. 0 / blank is undeclared,
+    never defaulted."""
+    return close_policy_model.commentary_threshold(
+        frappe.db.get_single_value("Close Settings", "commentary_threshold_amount"),
+        frappe.db.get_single_value("Close Settings", "commentary_threshold_percent"),
+        frappe.db.get_single_value("Close Settings", "commentary_threshold_combine"),
+    )
+
+
+def commentary_gap():
+    """The commentary-threshold setup gap, or None when it is declared."""
+    return commentary_threshold()["gap"]
+
+
+def commentary(fiscal_year, fiscal_period):
+    """The commentary-threshold line for the sign-off signature
+    (#305-W5-2): ``statement_api.signoff_commentary``, the
+    ``commentary_model.requirement`` shape. Like ``intercompany``, a
+    warehouse failure comes back as its own ``"unknown"`` state, never a
+    raise and never 0."""
+    # Imported here: statement_api imports this module.
+    from konsol.close import statement_api
+    return statement_api.signoff_commentary(fiscal_year, fiscal_period)
+
+
+def shared_reads():
+    """``{"commentary_threshold", "ic_balances"}``: the reads that are the
+    same for every period, made once for a request that gates several
+    (S9). See the module docstring."""
+    # Lazy: test loaders stub konsol.close.ic_balance_api.
+    from konsol.close import ic_balance_api
+    return {"commentary_threshold": commentary_threshold(),
+            "ic_balances": ic_balance_api.open_reads()}
+
+
 def _latest_runs():
     """The latest terminal Assertion Run per period (mirrors assertion_run.latest_close_run)."""
     # Imported here: assertion_run's sign-off will call this gate (A22).
@@ -263,8 +342,10 @@ def _submitted(doctype, key):
     )
 
 
-def sign_off_problems(fiscal_year, fiscal_period):
-    """``{"config_gaps": [...], "order": {...}|None, "completeness": {...}|None}``."""
+def sign_off_problems(fiscal_year, fiscal_period, shared=None):
+    """``{"config_gaps": [...], "order": {...}|None, "completeness": {...}|None}``.
+    ``shared`` (``shared_reads()``) spares the per-period reads of the
+    commentary threshold and the IC Balances (S9)."""
     key = _key(fiscal_year, fiscal_period)
     rows = fiscal_calendar.fiscal_period_rows()
     row = _regular_row(rows, key)
@@ -286,9 +367,23 @@ def sign_off_problems(fiscal_year, fiscal_period):
     statement_problem = statement_gap()
     if statement_problem:
         gaps.append(statement_problem)
+    # #305-W5-2 (story 8.4): an undeclared commentary threshold is a setup
+    # gap, right after the statement gap. Only Close Settings is read here;
+    # the statement itself is read by ``commentary`` (sign-off only).
+    threshold_problem = (commentary_gap() if shared is None
+                         else shared["commentary_threshold"]["gap"])
+    if threshold_problem:
+        gaps.append(threshold_problem)
     tolerance = ic_api.tolerance_gap()
     if tolerance:
         gaps.append(tolerance)
+    # #305 5.4 (W5-4): a draft or approved IC Balance whose pair no
+    # unrealised-profit rule matches eliminates nothing; it blocks. F51b: a
+    # pair two rules match is eliminated twice; it blocks too. Lazy: test
+    # loaders stub konsol.close.ic_balance_api (see its docstring).
+    from konsol.close import ic_balance_api
+    gaps.extend(ic_balance_api.rule_gaps(
+        *key, reads=None if shared is None else shared["ic_balances"]))
     tbs = _submitted("Trial Balance Submission", key)
     # #289 (#305-W2-2): a submitted TB from an entity with no covering
     # ownership at the period start is consolidated nowhere; it blocks.
@@ -336,7 +431,7 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
     if first is None:
         frappe.throw(
             "Declare the first close period in Close Settings before closing "
-            "FY%d P%02d." % key, title=CLOSE_BLOCKED_TITLE)
+            "%s." % period_name(*key), title=CLOSE_BLOCKED_TITLE)
     if key < first:
         return None
     # Imported here: assertion_run imports this module's callers (A22).
@@ -431,8 +526,9 @@ def mark_resign_needed_on_reopen(fiscal_year, fiscal_period, period_code, reason
     target = _key(fiscal_year, fiscal_period)
     first = _first_close()
     affected = _regular_periods_from(target, first)
-    affected_by = "FY%d %s reopened on %s by %s: %s" % (
-        target[0], period_code, frappe.utils.nowdate(), user, reason)
+    # period_code is kept in the signature; the name carries the year (review-w5).
+    affected_by = "%s reopened on %s by %s: %s" % (
+        period_name(*target), frappe.utils.nowdate(), user, reason)
     return _mark_latest_signed(affected, affected_by)
 
 
@@ -449,7 +545,7 @@ def _period_row(key, fields):
     )
     if not row:
         frappe.throw(
-            "FY%d P%02d is not declared: create it in EPM Fiscal Year." % key, PeriodNotDeclared)
+            "%s is not declared: create it in EPM Fiscal Year." % period_name(*key), PeriodNotDeclared)
     return row
 
 
@@ -474,7 +570,7 @@ def _stamp_carried_change(source_key, affected, text, user, at):
     data changing. Skipped for a period whose OWN ``data_changed_at`` is
     already newer than ``at`` -- that period's own, real change (not a
     carried balance) is never overwritten by an earlier period's carry."""
-    carried = "Balance carried from FY%d P%02d: %s" % (source_key[0], source_key[1], text)
+    carried = "Balance carried from %s: %s" % (period_name(*source_key), text)
     for key in sorted(affected):
         if key == source_key:
             continue

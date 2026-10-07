@@ -22,7 +22,24 @@ Int fields read back as 0 when unset), is undeclared. Nothing is guessed.
 
 Imports nothing from frappe or konsol.
 """
+import importlib.util as _importlib_util
+import os as _os
 import datetime as _dt
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 FIRST_CLOSE_UNDECLARED = "first_close_undeclared"
 HISTORY_PERIOD = "history_period"
@@ -54,7 +71,7 @@ def _key(value):
 
 
 def _label(key):
-    return "FY%d P%02d" % key
+    return period_name(*key)
 
 
 def config_gaps(first_close, target, frequencies):
@@ -159,14 +176,17 @@ def order_problem(states, first_close, target):
     )
     if not blocking:
         return None
-    oldest = blocking[0][1]
+    # The state's ``code`` is the bare period_code ("P12"), the same in every
+    # year: the gate names each period from its key (review-w5).
+    oldest_key, oldest = blocking[0]
+    name = _label(oldest_key)
     if oldest.get("status") == "Open":
-        message = "Sign off and close %s first" % oldest["code"]
+        message = "Sign off and close %s first" % name
     else:
-        message = "Re-sign %s first" % oldest["code"]
+        message = "Re-sign %s first" % name
     return {
-        "blocking": oldest["code"],
-        "periods": [s["code"] for _key_, s in blocking],
+        "blocking": name,
+        "periods": [_label(k) for k, _s in blocking],
         "message": message,
     }
 
@@ -256,7 +276,7 @@ def expected_entities(frequencies, target, rows):
                 "Declare the Quarter of every Regular period of FY%d in the fiscal year "
                 "(%s is quarterly, so %s needs to be known as a quarter-end or not) "
                 "before signing off." % (
-                    target[0], ", ".join(quarter_unknown), target_row.get("period_code") or _label(target),
+                    target[0], ", ".join(quarter_unknown), _label(target),
                 )
             ),
         })
@@ -307,10 +327,7 @@ def _quarter_bounds(target_row, rows):
     members = [r for r in year if r["quarter"] == quarter]
     first = min(members, key=lambda r: int(r["fiscal_period"]))
     last = max(members, key=lambda r: int(r["fiscal_period"]))
-    return (
-        first.get("period_code") or "P%02d" % int(first["fiscal_period"]),
-        last.get("period_code") or "P%02d" % int(last["fiscal_period"]),
-    )
+    return (_label(_row_key(first)), _label(_row_key(last)))
 
 
 def covers_notes(target, rows, submitted, excepted, frequencies=None):
@@ -341,7 +358,7 @@ def covers_notes(target, rows, submitted, excepted, frequencies=None):
     target_row = None
     for r in _regular(rows):
         key = _row_key(r)
-        codes[key] = r.get("period_code") or "P%02d" % key[1]
+        codes[key] = _label(key)
         if key == target:
             target_row = r
         if key[0] == target[0] and key < target:
@@ -360,7 +377,7 @@ def covers_notes(target, rows, submitted, excepted, frequencies=None):
             else:
                 break
         if first is not None:
-            notes.append("%s: covers %s\u2013%s" % (entity, codes[first], codes.get(target, "P%02d" % target[1])))
+            notes.append("%s: covers %s\u2013%s" % (entity, codes[first], codes.get(target, _label(target))))
 
     if frequencies and target_row is not None and _is_quarter_end(target_row, rows):
         bounds = _quarter_bounds(target_row, rows)
@@ -535,12 +552,68 @@ def ic_warning(ic):
     return "Intercompany: %d pair%s over tolerance" % (n, "" if n == 1 else "s")
 
 
-def effective_status(run_status, ic):
+COMMENTARY_STATES = ("undeclared", "checked", "unknown")  # commentary_model.requirement
+
+_COMMENTARY_UNCHECKED_SUFFIX = " Nothing can be signed until the commentary threshold can be checked."
+
+
+def commentary_required(commentary):
+    """How many statement headings are above the commentary threshold with
+    no commentary, for the #305-W5-2 Amber rule (story 8.4).
+
+    ``commentary`` is the ``commentary_model.requirement`` line
+    (``signoff_gate.commentary``). ``checked`` reads ``required_missing``
+    (never guessed as 0 when missing); ``undeclared`` is 0 (the
+    ``commentary_threshold_undeclared`` setup gap blocks instead, as an
+    unconfigured intercompany line is never Amber); ``unknown`` is None
+    (``commentary_problem`` blocks). Raises ValueError for anything else.
+    """
+    if not isinstance(commentary, dict):
+        raise ValueError("the commentary-threshold line was not read")
+    state = commentary.get("state")
+    if state not in COMMENTARY_STATES:
+        raise ValueError("unknown commentary-threshold state %r; expected one of %s"
+                         % (state, ", ".join(COMMENTARY_STATES)))
+    if state == "checked":
+        if commentary.get("required_missing") is None:
+            raise ValueError("the commentary-threshold line's required_missing is missing")
+        return int(commentary["required_missing"])
+    if state == "undeclared":
+        return 0
+    return None
+
+
+def commentary_warning(commentary):
+    """"Commentary: N heading(s) above the threshold without commentary",
+    or None when there are none or the count is unknown/undeclared."""
+    n = commentary_required(commentary)
+    if not n:
+        return None
+    return "Commentary: %d heading%s above the threshold without commentary" % (
+        n, "" if n == 1 else "s")
+
+
+def commentary_problem(commentary):
+    """None, or the block for a commentary-threshold line that could not be
+    checked (a group's statement could not be read): nothing is signed
+    while it is unknown whether a heading needs commentary (mirrors
+    ``ic_problem``, W3-P4)."""
+    commentary_required(commentary)  # validates; raises for an unknown state
+    if commentary["state"] == "unknown":
+        return {"code": "commentary_unchecked",
+                "message": commentary["message"] + _COMMENTARY_UNCHECKED_SUFFIX}
+    return None
+
+
+def effective_status(run_status, ic, commentary):
     """``run_status``, except a Green run becomes "Amber" when the
     intercompany line has pairs over tolerance (#305-W3-8 option B, the
-    #265 precedent). Amber, Red, Error, Queued and Running are unchanged:
-    only a Green run can be turned Amber by intercompany alone."""
-    if run_status == "Green" and (ic_over_tolerance(ic) or 0) > 0:
+    #265 precedent) or (#305-W5-2, story 8.4) statement headings are above
+    the commentary threshold with no commentary. Amber, Red, Error, Queued
+    and Running are unchanged: only a Green run can be turned Amber this
+    way."""
+    if run_status == "Green" and (
+            (ic_over_tolerance(ic) or 0) > 0 or (commentary_required(commentary) or 0) > 0):
         return "Amber"
     return run_status
 
@@ -556,7 +629,7 @@ def ic_problem(ic):
     return None
 
 
-def _action(run, problems, can_override, period_status, data_change, intercompany):
+def _action(run, problems, can_override, period_status, data_change, intercompany, commentary):
     if period_status not in PERIOD_STATUSES:
         raise ValueError("Unknown period status %r; expected one of %s."
                          % (period_status, ", ".join(PERIOD_STATUSES)))
@@ -584,10 +657,10 @@ def _action(run, problems, can_override, period_status, data_change, intercompan
         return "run_checks", _LABELS["run_checks"]
     if run["signoff_status"] == RE_SIGN_NEEDED:
         return "rerun", _LABELS["rerun"]
-    unchecked = ic_problem(intercompany)
+    unchecked = ic_problem(intercompany) or commentary_problem(commentary)
     if unchecked:
         return "blocked", unchecked["message"]
-    status = effective_status(run["status"], intercompany)
+    status = effective_status(run["status"], intercompany, commentary)
     if status in ("Queued", "Running"):
         return "wait", "The checks are %s; wait for them to finish" % status.lower()
     if status == "Green":
@@ -600,7 +673,7 @@ def _action(run, problems, can_override, period_status, data_change, intercompan
 
 
 def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems, can_override,
-            *, period_status, data_change, intercompany):
+            *, period_status, data_change, intercompany, commentary):
     """The sign-off summary of story 9.1 and the next action.
 
     - ``run``: the latest terminal Assertion Run (``name``, ``status``,
@@ -628,6 +701,14 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
       warning text. "not configured" and "not applicable" never change the
       action; an IC line that could not be checked (``not_built``/``error``)
       blocks signing outright (W3-P4).
+    - ``commentary`` (required, #305-W5-2, story 8.4): the
+      ``commentary_model.requirement`` line (``signoff_gate.commentary``).
+      A Green run with headings above the threshold and no commentary is
+      offered ``acknowledge`` (the same Amber path), and
+      ``acknowledgements["commentary"]`` carries the warning text. An
+      undeclared threshold never changes the action (its setup gap blocks);
+      a line that could not be checked (``unknown``) blocks, like
+      intercompany.
 
     ``action`` is one of signed, blocked, run_checks, rerun, wait, sign,
     acknowledge, override. A signed run stays signed; otherwise a Closed or
@@ -637,9 +718,11 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
     intercompany line that could not be checked (W3-P4). An unknown run,
     sign-off status or intercompany state raises ValueError.
     """
-    action, label = _action(run, problems, can_override, period_status, data_change, intercompany)
+    action, label = _action(run, problems, can_override, period_status, data_change, intercompany,
+                            commentary)
     acknowledgements = _acknowledgements(run, warned_names)
     acknowledgements["intercompany"] = ic_warning(intercompany)
+    acknowledgements["commentary"] = commentary_warning(commentary)
     return {
         "action": action,
         "label": label,
@@ -658,7 +741,7 @@ def summary(run, warned_names, on_behalf, exceptions, covers, previous, problems
         ],
         "covers": list(covers or ()),
         "previous": [
-            {"code": p["code"], "status": p["status"], "signoff": p["signoff"]}
+            {"code": _label(_key(p["key"])), "status": p["status"], "signoff": p["signoff"]}
             for p in sorted(previous or (), key=lambda p: _key(p["key"]))
         ],
     }

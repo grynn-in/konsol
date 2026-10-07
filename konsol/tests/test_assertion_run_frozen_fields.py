@@ -357,6 +357,11 @@ def test_sign_off_close_saves_as_the_signoff_writer():
         "state": "not_configured",
         "message": "Intercompany not configured — nothing was checked.",
         "counts": None, "sent_back_open": None}
+    # W5-2 (story 8.4): sign_off_close reads signoff_gate.commentary too;
+    # checked, nothing required (commentary_model.requirement's shape).
+    gate.commentary = lambda fy, fp: {
+        "state": "checked", "threshold": {"amount": 5000.0, "percent": None, "combine": None},
+        "message": None, "groups": [], "required_missing": 0}
     # A66: the data-change rule is the real, pure signoff_model (loaded by path).
     sm_spec = importlib.util.spec_from_file_location(
         "signoff_model_for_frozen_fields", os.path.join(APP_DIR, "close", "signoff_model.py"))

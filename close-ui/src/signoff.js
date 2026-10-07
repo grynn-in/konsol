@@ -12,6 +12,9 @@
 // (`consolidation_group`, `headings`, `with_commentary`, `missing[]`) — a
 // missing key throws (M46 always sends it); the section never changes
 // `action`.
+// #305-W5-2 (8.4): `commentary_required` — the headings above the declared
+// threshold with no commentary (their own section; the action's Amber comes
+// from the server's `action`, never from this module).
 // Unknown (null) counts are shown as "unknown", never 0 — a missing count
 // means the caller never read it, not that it is zero. Server messages may
 // contain a literal "<br>" (A17: `signoff_gate.assert_can_sign` joins its
@@ -31,6 +34,7 @@ const KNOWN_ACTIONS = [
 ];
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { amountText } from "./numbers.js";
 
 const NONE = "None";
 
@@ -131,9 +135,13 @@ function acknowledgementsSection(ack) {
 	const total = ack ? ack.total : null;
 	const unlisted = ack ? ack.unlisted : null;
 	const intercompany = ack ? ack.intercompany : null;
+	// #305-W5-2 (story 8.4): the server's commentary sentence, verbatim, after IC.
+	const commentary = ack ? ack.commentary : null;
 	const rows = [];
-	if (typeof intercompany === "string" && intercompany.length > 0) {
-		rows.push(intercompany);
+	for (const sentence of [intercompany, commentary]) {
+		if (typeof sentence === "string" && sentence.length > 0) {
+			rows.push(sentence);
+		}
 	}
 	rows.push(...names.map((name) => `Acknowledged: ${name}`));
 	if (names.length || total !== null && total !== undefined) {
@@ -242,6 +250,80 @@ function commentarySection(list) {
 	return section(rows);
 }
 
+const COMMENTARY_REQUIRED_STATES = ["undeclared", "checked", "unknown"];
+
+function thresholdText(threshold) {
+	const parts = [];
+	if (threshold.amount !== null && threshold.amount !== undefined) {
+		parts.push(amountText(threshold.amount));
+	}
+	if (threshold.percent !== null && threshold.percent !== undefined) {
+		parts.push(`${threshold.percent}%`);
+	}
+	if (parts.length === 2) {
+		if (threshold.combine === "Either is exceeded") return `${parts[0]} or ${parts[1]}`;
+		if (threshold.combine === "Both are exceeded") return `${parts[0]} and ${parts[1]}`;
+		throw new Error(`Unknown commentary threshold rule: ${threshold.combine}`);
+	}
+	if (parts.length === 1) return parts[0];
+	throw new Error("The commentary threshold has neither an amount nor a percentage.");
+}
+
+/**
+ * #305-W5-2 (story 8.4): `commentary_required` (signoff_api, the
+ * commentary_model.requirement line) — the headings above the declared
+ * Close Settings threshold that have no commentary, apart from the
+ * informational `commentary` list. Undeclared or unknown shows the server's
+ * own message (never a count); checked shows the threshold, then one row per
+ * required heading, and a group with no comparison says why it was not
+ * compared. A missing/null key or an unknown state throws (always sent).
+ */
+function commentaryRequiredSection(line) {
+	if (line === null || line === undefined) {
+		throw new Error("Sign-off summary has no commentary_required.");
+	}
+	if (!COMMENTARY_REQUIRED_STATES.includes(line.state)) {
+		throw new Error(`Unknown commentary_required state: ${line.state}`);
+	}
+	if (line.state !== "checked") {
+		return section(messageLines(line.message));
+	}
+	const rows = [
+		"Threshold: a heading needs commentary when its variance against the previous period " +
+			`is above ${thresholdText(line.threshold)}`,
+	];
+	for (const group of line.groups || []) {
+		//: review-w5 U9: a checked line's group is `checked` (its message, set
+		//: for a no_chart group, is shown) or `not_comparable`; any other
+		//: state is not guessed (commentary_model.requirement).
+		if (group.state === "not_comparable") {
+			rows.push(`${group.consolidation_group}: not compared — ${group.message}`);
+		} else if (group.state === "checked") {
+			if (group.message) {
+				rows.push(`${group.consolidation_group}: ${group.message}`);
+			}
+		} else {
+			throw new Error(`Unknown commentary_required group state for ${group.consolidation_group}: ${group.state}`);
+		}
+		for (const r of group.required || []) {
+			const pct = r.percent === null || r.percent === undefined
+				? ""
+				: ` (${r.percent}%)`;
+			const base = r.percent === null || r.percent === undefined
+				? " (no percentage on a zero base)"
+				: "";
+			rows.push(
+				`${group.consolidation_group} · ${r.heading_name}: moved ${amountText(r.variance)}${pct} ` +
+					`from ${amountText(r.comparison)}${base} — no commentary`,
+			);
+		}
+	}
+	if (line.required_missing === 0) {
+		rows.push("Every heading above the threshold has commentary");
+	}
+	return section(rows);
+}
+
 /**
  * A21's `summary()` output → `{action, label, gates, checks, intercompany,
  * acknowledgements, onBehalf, exceptions, covers, previous}`. Every section is
@@ -264,6 +346,7 @@ export function summaryView(summary) {
 		exceptions: exceptionsSection(summary.exceptions),
 		covers: coversSection(summary.covers),
 		previous: previousSection(summary.previous),
+		commentaryRequired: commentaryRequiredSection(summary.commentary_required),
 		commentary: commentarySection(summary.commentary),
 	};
 }
@@ -282,4 +365,65 @@ export function closedOnText(value, now, timeZone) {
 		throw new Error("No time zone to show the close time in.");
 	}
 	return formatTime(parseZoned(value), now, timeZone);
+}
+
+/**
+ * #305-W5-1 (story 9.4, #157): what the Reject dialog does when the sign-off
+ * machine moves from `prev` to `state`; `error` is the machine's
+ * context.error after the move.
+ * - "refused": the server refused the reject; the dialog stays open with the
+ *   typed reason and shows the message. Either rejecting → signed, or
+ *   (konsol#305 U3) rejecting → loading WITH a message: A58's stale-run
+ *   refusal, which reloads the summary. The reason is kept while it
+ *   reloads; nothing is re-sent, so the Close Lead clicks Reject again
+ *   against the new summary's run (the button is disabled until the
+ *   machine is back in `signed` and takes REJECT).
+ * - "keep": still signed (including a reload after a stale refusal landing
+ *   back in `signed`), or the reject is in flight.
+ * - "reset": anything else (an accepted reject reloads with no message, a
+ *   refresh from `signed`, a reload that lands outside `signed` so Reject is
+ *   no longer offered, a close, a load failure); the dialog closes and its
+ *   text goes.
+ */
+export function rejectDialogAfter(prev, state, error) {
+	if (prev === "rejecting" && state === "signed") return "refused";
+	if (prev === "rejecting" && state === "loading") return error ? "refused" : "reset";
+	if (state === "signed" || state === "rejecting") return "keep";
+	return "reset";
+}
+
+/** The Reject dialog when it is closed: nothing typed, nothing refused. */
+export const REJECT_DIALOG_CLOSED = Object.freeze({ open: false, reason: "", refused: Object.freeze([]) });
+
+/**
+ * konsol#305 U3/U10: the Reject dialog's whole state ({open, reason,
+ * refused}) after `event`; always a new object. SignOffReject.vue applies it
+ * to every change, so no path changes the dialog any other way.
+ * - OPEN: opens it, keeping nothing from before (a close already reset it).
+ * - TYPE {text}: the reason as typed.
+ * - SENT: the confirm was clicked; the last refusal is cleared.
+ * - CLOSE: Cancel, Esc, the overlay or the dialog's own close (U10): back to
+ *   REJECT_DIALOG_CLOSED, so reopening never shows an old reason or refusal.
+ * - MACHINE {prev, state, error}: the sign-off machine moved
+ *   (rejectDialogAfter decides).
+ */
+export function rejectDialogNext(dialog, event) {
+	switch (event.type) {
+		case "OPEN":
+			return { open: true, reason: dialog.reason, refused: [...dialog.refused] };
+		case "TYPE":
+			return { ...dialog, refused: [...dialog.refused], reason: String(event.text ?? "") };
+		case "SENT":
+			return { ...dialog, refused: [] };
+		case "CLOSE":
+			return { open: false, reason: "", refused: [] };
+		case "MACHINE": {
+			const step = rejectDialogAfter(event.prev, event.state, event.error);
+			if (step === "refused") return { ...dialog, refused: messageLines(event.error) };
+			if (step === "reset") return { open: false, reason: "", refused: [] };
+			return { ...dialog, refused: [...dialog.refused] };
+		}
+		default:
+			throw new Error(`Reject dialog: unknown event ${event.type}`);
+	}
 }

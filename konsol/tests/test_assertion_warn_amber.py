@@ -63,6 +63,13 @@ IC_LINE = {"state": "not_configured",
            "counts": None, "sent_back_open": None}
 
 
+# W5-2 (story 8.4): sign_off_close reads signoff_gate.commentary(fy, fp).
+# Default: checked, nothing required (shape of commentary_model.requirement).
+COMMENTARY_LINE = {"state": "checked", "threshold": {"amount": 5000.0, "percent": None,
+                                                     "combine": None},
+                   "message": None, "groups": [], "required_missing": 0}
+
+
 def _stub_signoff_gate():
     """The no-op signoff_gate installed around every sign_off_close call in
     this file. A fresh module each call, so mutating one test's gate (or its
@@ -75,6 +82,7 @@ def _stub_signoff_gate():
     gate.data_change = lambda *a: {"data_changed_at": None, "data_changed_by": None,
                                    "data_change": None}
     gate.intercompany = lambda fy, fp: dict(IC_LINE)
+    gate.commentary = lambda fy, fp: json.loads(json.dumps(COMMENTARY_LINE))
     return gate
 
 
@@ -853,3 +861,90 @@ def test_red_override_with_ic_over_tolerance_is_unchanged_and_names_the_ic_line(
     (e,) = _events(frappe)
     assert e["detail"]["run_status"] == "Red"
     assert e["detail"]["intercompany"]["over_tolerance"] == 2
+
+
+# --- W5-2 (story 8.4): headings above the commentary threshold --------------
+# Deepak, 6 Oct 2026, option 8.4-1: a Green run with headings above the
+# threshold and no commentary signs only with a typed acknowledgement
+# ("Acknowledged", the #265 / #305-W3-8 path); a line that could not be
+# checked refuses the signature (as W3-P4 does for intercompany). The line
+# used is the golden output of the real statement_api.signoff_commentary.
+
+
+@contextlib.contextmanager
+def _commentary_line(line):
+    global COMMENTARY_LINE
+    old = COMMENTARY_LINE
+    COMMENTARY_LINE = line
+    try:
+        yield
+    finally:
+        COMMENTARY_LINE = old
+
+
+def _golden_commentary():
+    with open(os.path.join(APP_DIR, "tests", "fixtures",
+                           "close_signoff_commentary_required.json")) as fh:
+        return json.load(fh)
+
+
+COMMENTARY_UNKNOWN = {"state": "unknown", "threshold": {"amount": 5000.0, "percent": None,
+                                                        "combine": None},
+                      "message": "The commentary threshold cannot be checked: the statement of "
+                                 "ZZGRP (boom) could not be read.",
+                      "groups": [], "required_missing": None}
+
+
+def test_green_signoff_with_required_commentary_is_refused_without_an_acknowledgement():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _commentary_line(_golden_commentary()):
+        try:
+            module.sign_off_close("AR-1")
+            raise AssertionError("signed with headings above the threshold uncommented")
+        except frappe.ValidationError as e:
+            assert "3 headings above the threshold without commentary" in str(e), str(e)
+            assert "1 warning(s)" in str(e), str(e)
+    assert doc.signoff_saved is False
+    assert frappe.events == []
+
+
+def test_green_signoff_with_required_commentary_is_acknowledged_and_recorded():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _commentary_line(_golden_commentary()):
+        module.sign_off_close("AR-1", acknowledgement="Commentary follows in the pack")
+    assert doc.signoff_status == "Acknowledged"
+    assert doc.status == "Green"
+    assert "Commentary: 3 headings above the threshold" in doc.warnings_at_signoff
+    (e,) = _events(frappe)
+    assert e["detail"]["commentary"] == {"state": "checked", "required_missing": 3}
+
+
+def test_ic_and_commentary_together_count_two_warnings():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _ic_line(IC_CHECKED_2_OVER), _commentary_line(_golden_commentary()):
+        try:
+            module.sign_off_close("AR-1")
+            raise AssertionError("signed with two outstanding warnings")
+        except frappe.ValidationError as e:
+            assert "2 warning(s)" in str(e), str(e)
+            assert "Intercompany" in str(e) and "Commentary" in str(e), str(e)
+
+
+def test_a_commentary_line_that_cannot_be_checked_refuses_the_signature():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    with _commentary_line(COMMENTARY_UNKNOWN):
+        try:
+            module.sign_off_close("AR-1")
+            raise AssertionError("signed although the commentary threshold was unchecked")
+        except frappe.ValidationError as e:
+            assert "Nothing can be signed" in str(e), str(e)
+    assert doc.signoff_saved is False
+    assert frappe.events == []
+
+
+def test_nothing_required_signs_off_with_no_acknowledgement():
+    module, frappe, doc, _ = _load(status="Green", warned=0)
+    module.sign_off_close("AR-1")
+    assert doc.signoff_status == "Signed Off"
+    (e,) = _events(frappe)
+    assert e["detail"]["commentary"] == {"state": "checked", "required_missing": 0}

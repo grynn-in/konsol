@@ -31,6 +31,26 @@ _cpm_spec.loader.exec_module(CPM)
 
 _STATEMENT_GAP = CPM.statement_accounts("", "", {})["gap"]
 
+# #305 5.4: the missing-rule gap fed in is the REAL ic_balance_model gap.
+_IBM_PATH = os.path.join(APP_DIR, "close", "ic_balance_model.py")
+_ibm_spec = importlib.util.spec_from_file_location("ic_balance_model_for_mywork", _IBM_PATH)
+IBM = importlib.util.module_from_spec(_ibm_spec)
+_ibm_spec.loader.exec_module(IBM)
+
+
+def _ic_rule_gap(*pairs):
+    return IBM.rule_gap([{"name": "B%d" % i, "selling_entity": s, "buying_entity": b,
+                          "docstatus": 0} for i, (s, b) in enumerate(pairs)], [])
+
+
+def _ic_rule_ambiguous_gap(*pairs):
+    """F51b: the real producer's gap for ``pairs`` two wildcard rules match."""
+    rules = [{"rule_id": r, "rule_type": "unrealized_profit", "margin_pct": 10,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"} for r in ("R1", "R2")]
+    return IBM.ambiguous_gap([{"name": "B%d" % i, "selling_entity": s, "buying_entity": b,
+                               "docstatus": 0, "ending_inventory_from_ic": 40.0}
+                              for i, (s, b) in enumerate(pairs)], rules)
+
 
 def _facts(**over):
     facts = {
@@ -42,6 +62,7 @@ def _facts(**over):
         "policy_gaps": [],
         "ic_accounts_gap": None,
         "ic_tolerance_gap": None,
+        "ic_rule_gaps": [],
     }
     facts.update(over)
     return facts
@@ -846,3 +867,248 @@ def test_sent_back_items_period_missing_from_codes_raises():
 
 def test_sent_back_items_empty_rows_gives_no_items():
     assert M.sent_back_items([], M.CLOSE_LEAD, {}) == []
+
+
+# --- #305-W5-1 (story 9.4, #157): the preparer's "sent back" sign-off item ------
+#
+# The events are the REAL producers' output: ``signoff_rejected`` from
+# ``assertion_run.reject_signoff`` and ``signed_off`` from ``sign_off_close``
+# (both run against their stub frappe in test_assertion_run_reject.py /
+# test_assertion_warn_amber.py). Only ``name`` and ``at`` are added: the
+# database assigns them, and mywork_api reads them back as ISO text.
+
+_REJ_SPEC = importlib.util.spec_from_file_location(
+    "assertion_run_reject_for_mywork", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                    "test_assertion_run_reject.py"))
+REJ = importlib.util.module_from_spec(_REJ_SPEC)
+_REJ_SPEC.loader.exec_module(REJ)
+
+PREPARER = REJ.PREPARER
+CODES = {(2099, 1): "P01", (2099, 2): "P02"}
+#: review-w5 S13: ``{user id: full name}`` of the users that exist; none here,
+#: so an actor is named by id (the user no longer exists).
+NAMES = {}
+
+
+def _stored(event, name, at, fiscal_period=None):
+    out = {k: v for k, v in event.items() if k != "saved_before"}
+    out.update(name=name, at=at)
+    if fiscal_period is not None:
+        out["fiscal_period"] = fiscal_period
+    return out
+
+
+def _rejected_event(name="CE-2", at="2099-02-03T10:00:00+00:00", reason="ZZA's TB is the draft",
+                    fiscal_period=None):
+    reject, frappe, _doc = REJ.load()
+    reject("AR-1", reason)
+    return _stored(frappe.events[0], name, at, fiscal_period)
+
+
+def _signed_event(name="CE-1", at="2099-02-02T09:00:00+00:00", fiscal_period=None):
+    module, frappe, _doc, _ = REJ._amber._load(status="Green", warned=0)
+    module.sign_off_close("AR-1")
+    event = dict(frappe.events[0], actor="acct@example.com")
+    return _stored(event, name, at, fiscal_period)
+
+
+def test_the_real_producers_give_the_two_kinds():
+    assert _rejected_event()["kind"] == "signoff_rejected"
+    assert _signed_event()["kind"] == "signed_off"
+
+
+def test_a_rejected_signoff_gives_the_preparer_one_todo_item_on_checks():
+    events = [_signed_event(), _rejected_event()]
+    (item,) = M.signoff_sent_back_items(events, PREPARER, M.GROUP_ACCOUNTANT, CODES, NAMES)
+    assert item == {
+        "id": "sent-back:signoff:2099-01",
+        "kind": "todo",
+        "title": "Sent back: sign-off · P01",
+        "detail": "acct@example.com on 2099-02-03: ZZA's TB is the draft. Fix it and run the "
+                  "checks again; the item stays until the period is signed.",
+        "owner": "EPM Analyst",
+        "action": {"screen": "checks"},
+        "period": {"fiscal_year": 2099, "fiscal_period": 1, "code": "P01",
+                   "since": "2099-02-03"},
+    }
+
+
+def test_someone_else_gets_no_item():
+    events = [_signed_event(), _rejected_event()]
+    assert M.signoff_sent_back_items(events, "other@example.com", M.CLOSE_LEAD, CODES, NAMES) == []
+
+
+def test_a_signature_after_the_reject_clears_the_item():
+    events = [_signed_event("CE-1"), _rejected_event("CE-2"),
+              _signed_event("CE-3", at="2099-02-04T09:00:00+00:00")]
+    assert M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES) == []
+
+
+def test_each_period_is_judged_on_its_own():
+    events = [_rejected_event("CE-1"),
+              _rejected_event("CE-2", fiscal_period=2),
+              _signed_event("CE-3", at="2099-02-05T09:00:00+00:00", fiscal_period=2)]
+    items = M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES)
+    assert [i["id"] for i in items] == ["sent-back:signoff:2099-01"]
+
+
+def test_the_latest_reject_gives_the_reason():
+    events = [_rejected_event("CE-1", at="2099-02-03T10:00:00+00:00", reason="first"),
+              _rejected_event("CE-2", at="2099-02-04T10:00:00+00:00", reason="second")]
+    (item,) = M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES)
+    assert "second" in item["detail"] and "first" not in item["detail"]
+
+
+def test_the_same_time_is_ordered_by_name():
+    at = "2099-02-03T10:00:00+00:00"
+    events = [_rejected_event("CE-2", at=at), _signed_event("CE-1", at=at)]
+    assert len(M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES)) == 1
+
+
+def test_a_reject_with_no_preparer_is_nobodys_item():
+    event = _rejected_event()
+    event["detail"] = dict(event["detail"], preparer=None)
+    assert M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES, NAMES) == []
+
+
+def test_the_viewer_and_an_unknown_persona_raise():
+    with pytest.raises(ValueError):
+        M.signoff_sent_back_items([_rejected_event()], PREPARER, M.VIEWER, CODES, NAMES)
+    with pytest.raises(ValueError):
+        M.signoff_sent_back_items([_rejected_event()], PREPARER, "auditor", CODES, NAMES)
+
+
+def test_a_period_missing_from_the_codes_raises():
+    with pytest.raises(ValueError):
+        M.signoff_sent_back_items([_rejected_event()], PREPARER, M.CLOSE_LEAD, {}, NAMES)
+
+
+def test_an_unknown_kind_raises():
+    event = dict(_rejected_event(), kind="signoff_voided")
+    with pytest.raises(ValueError):
+        M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES, NAMES)
+
+
+
+# --- review-w5 S13: the rejecter by name, the latest by write order -------------
+
+
+def test_the_rejecter_is_named_by_full_name():
+    event = _rejected_event()
+    names = {event["actor"]: "Zara Lead"}
+    (item,) = M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES, names)
+    assert item["detail"].startswith("Zara Lead on 2099-02-03: "), item["detail"]
+
+
+def test_a_rejecter_who_no_longer_exists_is_named_by_id():
+    event = _rejected_event()
+    (item,) = M.signoff_sent_back_items([event], PREPARER, M.CLOSE_LEAD, CODES,
+                                        {"someone-else@example.com": "Someone"})
+    assert item["detail"].startswith("%s on " % event["actor"]), item["detail"]
+
+
+def test_the_latest_is_the_last_written_across_the_clocks_going_back():
+    # Europe/London, 25 Oct 2099: 01:00-02:00 happens twice. The reject is
+    # written at 01:50 BST, the signature 20 minutes later at 01:10 GMT. Both
+    # are stored as naive local times, so the later one reads earlier; the
+    # Close Event series (the name) is the write order.
+    events = [_rejected_event("CE-000000041", at="2099-10-25T01:50:00+01:00"),
+              _signed_event("CE-000000042", at="2099-10-25T01:10:00+01:00")]
+    assert M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES) == []
+
+
+def test_the_series_number_orders_past_a_digit_count():
+    events = [_signed_event("CE-9", at="2099-02-03T10:00:00+00:00"),
+              _rejected_event("CE-10", at="2099-02-03T10:00:00+00:00")]
+    assert len(M.signoff_sent_back_items(events, PREPARER, M.CLOSE_LEAD, CODES, NAMES)) == 1
+
+
+def test_an_event_name_without_a_series_number_raises():
+    with pytest.raises(ValueError, match="series"):
+        M.signoff_sent_back_items([_rejected_event("CE-X")], PREPARER, M.CLOSE_LEAD, CODES,
+                                  NAMES)
+
+# --- #305 5.4 (W5-4): IC Balance pairs with no unrealised-profit rule --------
+
+def test_ic_rule_gap_is_one_blocking_item_naming_the_pairs():
+    gap = _ic_rule_gap(("UK01", "DE01"), ("FR01", "DE01"))
+    items = M.setup_gap_items(_facts(ic_rule_gaps=[gap]))
+    assert [i["id"] for i in items] == ["gap:ic_rule"]
+    item = items[0]
+    assert item["kind"] == "blocking"
+    assert item["title"] == "Unrealised-profit rule missing for 2 IC Balance pairs"
+    assert item["detail"] == gap["message"]
+    assert "UK01 → DE01" in item["detail"] and "FR01 → DE01" in item["detail"]
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/ic-elimination-rule"}
+    assert item["entities"] == ["DE01", "FR01", "UK01"]
+
+
+def test_ic_rule_gap_title_singular():
+    item = M.setup_gap_items(_facts(ic_rule_gaps=[_ic_rule_gap(("UK01", "DE01"))]))[0]
+    assert item["title"] == "Unrealised-profit rule missing for 1 IC Balance pair"
+
+
+def test_ic_rule_gap_follows_the_tolerance_gap():
+    items = M.setup_gap_items(_facts(ic_tolerance_gap=_IC_TOLERANCE_GAP,
+                                     ic_rule_gaps=[_ic_rule_gap(("UK01", "DE01"))],
+                                     frequency_missing=["FR01"]))
+    assert [i["id"] for i in items] == ["gap:ic_tolerance", "gap:ic_rule", "gap:frequency"]
+
+
+def test_missing_ic_rule_gaps_fact_raises_not_guessed():
+    facts = _facts()
+    del facts["ic_rule_gaps"]
+    with pytest.raises(ValueError, match="ic_rule_gaps"):
+        M.setup_gap_items(facts)
+
+
+def test_ic_rule_ambiguous_gap_is_one_blocking_item_naming_pairs_and_rules():
+    """F51b / review S2: two rules on one pair are eliminated twice by dbt."""
+    gap = _ic_rule_ambiguous_gap(("UK01", "DE01"), ("FR01", "DE01"))
+    items = M.setup_gap_items(_facts(ic_rule_gaps=[gap]))
+    assert [i["id"] for i in items] == ["gap:ic_rule_ambiguous"]
+    item = items[0]
+    assert item["kind"] == "blocking"
+    assert item["title"] == "More than one unrealised-profit rule for 2 IC Balance pairs"
+    assert item["detail"] == gap["message"]
+    assert "UK01 → DE01 (R1, R2)" in item["detail"]
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/ic-elimination-rule"}
+    assert item["entities"] == ["DE01", "FR01", "UK01"]
+    one = M.setup_gap_items(_facts(ic_rule_gaps=[_ic_rule_ambiguous_gap(("UK01", "DE01"))]))[0]
+    assert one["title"] == "More than one unrealised-profit rule for 1 IC Balance pair"
+
+
+def test_ic_rule_ambiguous_item_follows_the_missing_rule_item():
+    items = M.setup_gap_items(_facts(ic_rule_gaps=[
+        _ic_rule_ambiguous_gap(("UK01", "DE01")), _ic_rule_gap(("FR01", "DE01"))]))
+    assert [i["id"] for i in items] == ["gap:ic_rule", "gap:ic_rule_ambiguous"]
+
+
+def test_unknown_ic_rule_gap_code_raises_not_guessed():
+    with pytest.raises(ValueError, match="ic_rule_other"):
+        M.setup_gap_items(_facts(ic_rule_gaps=[{"code": "ic_rule_other", "pairs": [],
+                                                "entities": [], "message": "m"}]))
+
+
+# --- W5-2 (story 8.4): the commentary-threshold gap ---------------------------
+
+
+_COMMENTARY_GAP = CPM.commentary_threshold(0, 0, "")["gap"]
+
+
+def test_commentary_threshold_gap_is_one_blocking_item_after_the_statement_gap():
+    items = M.setup_gap_items(_facts(policy_gaps=[_STATEMENT_GAP, _COMMENTARY_GAP]))
+    assert [i["id"] for i in items] == ["gap:statement_accounts", "gap:commentary_threshold"]
+    item = items[1]
+    assert item["kind"] == "blocking"
+    assert item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/app/close-settings"}
+    assert item["since"] is None
+    assert item["detail"] == _COMMENTARY_GAP["message"]
+    assert item["title"] == "Commentary threshold not declared"
+
+
+def test_commentary_threshold_is_in_the_fixed_gap_order():
+    assert M.GAPS.index("commentary_threshold") == M.GAPS.index("statement_accounts") + 1

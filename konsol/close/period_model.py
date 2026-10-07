@@ -12,7 +12,24 @@ Implements D5 of konsol#298:
 When nothing qualifies the result carries ``period: None`` and a reason
 naming the fix; it never guesses. Imports nothing from frappe or konsol.
 """
+import importlib.util as _importlib_util
+import os as _os
 import datetime
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 CLOSE_LEAD = "close_lead"
 GROUP_ACCOUNTANT = "group_accountant"
@@ -141,7 +158,7 @@ def _first(first_close):
 
 
 def _period_name(key):
-    return "FY%d P%02d" % key
+    return period_name(*key)
 
 
 def _catch_up(regular_keys, first, loaded):

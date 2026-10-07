@@ -29,7 +29,12 @@ A21 ``signoff_model.summary``:
   which don't (``commentary_model.missing_commentary``). Informational only
   — ``signoff_model.summary`` is never called with it, so ``action`` cannot
   depend on it — and unscoped, same as intercompany (every role sees the
-  same counts). 8.4's missing-commentary threshold is a later row.
+  same counts).
+- commentary_required (#305-W5-2, story 8.4): ``signoff_gate.commentary``,
+  the headings above the Close Settings threshold with no commentary. This
+  one IS fed to ``signoff_model.summary``: a Green run with any is Amber
+  and needs a typed acknowledgement; a line that could not be checked
+  blocks. Unscoped, like intercompany.
 
 It adds ``can_sign`` (write on Assertion Run, the test ``sign_off_close``
 applies), ``can_override`` (``OVERRIDE_ROLES``), and (A49) ``period_status``
@@ -56,6 +61,11 @@ and the Amber/Red rules. ``sign`` never writes a sign-off field itself.
 not the latest terminal run (the checks were re-run meanwhile) the sign is
 refused, so a typed acknowledgement or override never lands on a run the
 Close Lead did not review.
+
+``reject(fiscal_year, fiscal_period, run, reason)`` (POST, Close Lead;
+#305-W5-1, story 9.4, #157) sends the signed run back to Not signed through
+``assertion_run.reject_signoff``, bound to the reviewed run like ``sign``.
+``get_signoff`` adds ``can_reject`` (the Close Lead's roles).
 
 ``declare_tb_exception(entity, fiscal_year, fiscal_period, reason)`` (POST,
 Close Lead; A33, stories 9.1, 9.2) inserts and submits a ``TB Exception``
@@ -86,8 +96,10 @@ from konsol.close import commentary_model, ic_api, period_model, signoff_gate, s
 from konsol.close.timefmt import zoned_iso
 from konsol.consolidation.doctype.assertion_run.assertion_run import (
     OVERRIDE_ROLES,
+    REJECT_ROLES,
     _warned_assertion_names,
     latest_close_run,
+    reject_signoff,
     sign_off_close,
 )
 from konsol.entity_permissions import allowed_entity_codes
@@ -95,7 +107,30 @@ from konsol import period_status
 from konsol.period_status import PeriodNotDeclared
 from konsol.schema_lifecycle import check_epm_admin
 
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 REGULAR = "Regular"
+#: #305 5.4: ``ic_balance_model.RULE_UNDECLARED`` (not imported: test loaders
+#: stub konsol.close; test_close_signoff_api feeds the real producer's gap).
+IC_RULE_UNDECLARED = "ic_unrealized_profit_rule_undeclared"
+#: F51b: ``ic_balance_model.RULE_AMBIGUOUS`` (same reason; the test feeds the
+#: real producer's gap).
+IC_RULE_AMBIGUOUS = "ic_unrealized_profit_rule_ambiguous"
 
 #: A18's Select, read for A21's summary: 1 labelled, 0 not, None unknown.
 _ON_BEHALF = {"Yes": 1, "No": 0, "": None, None: None}
@@ -105,15 +140,15 @@ def _period(fiscal_year, fiscal_period):
     try:
         return int(fiscal_year), int(fiscal_period)
     except (TypeError, ValueError):
-        frappe.throw("FY%s P%s is not a period: pass the fiscal year and period as whole numbers."
-                     % (fiscal_year, fiscal_period))
+        frappe.throw("Fiscal year %r, period %r is not a period: pass the fiscal year and period "
+                     "as whole numbers." % (fiscal_year, fiscal_period))
 
 
 def _declared_row(rows, key):
     for row in rows:
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) == key:
             return row
-    frappe.throw("FY%d P%02d is not declared: create it in EPM Fiscal Year." % key,
+    frappe.throw("%s is not declared: create it in EPM Fiscal Year." % period_name(*key),
                  PeriodNotDeclared)
 
 
@@ -185,6 +220,14 @@ def _names(visible, hidden):
     return ", ".join(parts)
 
 
+def _scoped_pair_gap(gap, allowed, mine, hidden, message):
+    """An IC rule gap scoped: a pair names two entities, so only the pairs
+    this caller sees whole are kept."""
+    pairs = [p for p in gap.get("pairs") or ()
+             if p["selling_entity"] in allowed and p["buying_entity"] in allowed]
+    return dict(gap, entities=mine, hidden=hidden, message=message, pairs=pairs)
+
+
 def _scoped_gap(gap, allowed, key):
     entities = gap.get("entities")
     if entities is None:
@@ -201,9 +244,20 @@ def _scoped_gap(gap, allowed, key):
         message = ("Declare the Quarter of every Regular period of FY%d in the fiscal year "
                    "before signing off (quarterly: %s)." % (key[0], names))
     elif gap["code"] == signoff_model.UNOWNED_TB:
-        message = ("Trial balances from %s have no ownership for FY%d P%02d: record the "
+        message = ("Trial balances from %s have no ownership for %s: record the "
                    "ownership or cancel the trial balance before signing off."
-                   % (names, key[0], key[1]))
+                   % (names, period_name(*key)))
+    elif gap["code"] == IC_RULE_UNDECLARED:
+        message = ("No unrealised-profit IC Elimination Rule (margin above 0) matches the IC "
+                   "Balances of %s for %s: declare the rule in Desk before signing off."
+                   % (names, period_name(*key)))
+        return _scoped_pair_gap(gap, allowed, mine, hidden, message)
+    elif gap["code"] == IC_RULE_AMBIGUOUS:
+        message = ("More than one unrealised-profit IC Elimination Rule matches the IC "
+                   "Balances of %s for %s: dbt applies every matching rule, so the "
+                   "profit is eliminated more than once. Keep one rule per pair in Desk before "
+                   "signing off." % (names, period_name(*key)))
+        return _scoped_pair_gap(gap, allowed, mine, hidden, message)
     else:
         message = "%s (%s)." % (gap["code"], names)
     return dict(gap, entities=mine, hidden=hidden, message=message)
@@ -298,6 +352,9 @@ def get_signoff(fiscal_year, fiscal_period):
     # C21: one read of the IC line serves both the gate (summary) and the
     # result's own "intercompany" key below.
     ic = ic_api.signoff_summary(*key)
+    # #305-W5-2 (story 8.4): one read of the commentary-threshold line
+    # serves the summary's Amber rule and the result's own key below.
+    commentary_line = signoff_gate.commentary(*key)
 
     result = signoff_model.summary(
         run, warned_names, on_behalf,
@@ -310,6 +367,7 @@ def get_signoff(fiscal_year, fiscal_period):
         # A66: the same rule sign_off_close refuses with (the run's started_at).
         data_change={f: closed.get(f) for f in signoff_gate.DATA_CHANGE_FIELDS},
         intercompany=ic,
+        commentary=commentary_line,
     )
     # A55: when each exception was declared, with the site's offset. The A08
     # controller allows one submitted exception per entity-period.
@@ -319,6 +377,8 @@ def get_signoff(fiscal_year, fiscal_period):
     result.update({
         "can_sign": bool(frappe.has_permission("Assertion Run", "write")),
         "can_override": can_override,
+        # #305-W5-1 (story 9.4): the Close Lead, the roles ``reject`` admits.
+        "can_reject": bool(REJECT_ROLES & roles),
         "period_status": row["status"],
         "closed_by": closed.get("closed_by") or None,
         "closed_on": _iso(closed.get("closed_on")),
@@ -334,6 +394,10 @@ def get_signoff(fiscal_year, fiscal_period):
         # Informational only — built after the summary, so it cannot affect
         # "action" or "gates".
         "commentary": _commentary(key),
+        # #305-W5-2 (story 8.4): the headings above the declared threshold
+        # with no commentary, per root group — the same read that fed the
+        # summary's Amber rule above; unscoped, like intercompany.
+        "commentary_required": commentary_line,
     })
     return result
 
@@ -353,16 +417,49 @@ def sign(fiscal_year, fiscal_period, run=None, acknowledgement=None, override_re
     key = _period(fiscal_year, fiscal_period)
     row = _declared_row(fiscal_calendar.fiscal_period_rows(), key)
     if not (run or "").strip():
-        frappe.throw("Reload the sign-off for FY%d %s: the request did not say which checks "
-                     "run it signs." % (key[0], row["period_code"]))
+        frappe.throw("Reload the sign-off for %s: the request did not say which checks "
+                     "run it signs." % period_name(*key))
     latest = latest_close_run(*key)
     if not latest:
-        frappe.throw("Run the checks for FY%d %s first." % (key[0], row["period_code"]))
+        frappe.throw("Run the checks for %s first." % period_name(*key))
     if latest["name"] != run.strip():
         frappe.throw("The checks were re-run (now %s, %s); review the new result before signing."
                      % (latest["name"], latest["status"]))
     return sign_off_close(latest["name"], override_reason=override_reason,
                           acknowledgement=acknowledgement)
+
+
+@frappe.whitelist(methods=["POST"])
+def reject(fiscal_year, fiscal_period, run=None, reason=None):
+    """Reject the period's signature with a reason (#305-W5-1, Deepak Pai 6 Oct
+    2026; story 9.4, #157): the run goes back to Not signed and its preparer
+    gets a "sent back" My work item.
+
+    Only the period's calendar row is read before a blank reason is refused
+    (the message names the period); no run is read. ``run`` is the run the
+    summary showed (A58): a missing name, or one that is no longer the latest
+    terminal run, is refused, so a reject never lands on a run the Close Lead
+    did not review. Everything else (a signed run only, an Open period, the
+    write) is ``assertion_run.reject_signoff``'s; its refusals pass through.
+    """
+    # A literal: the endpoint contract test reads it. It names exactly
+    # assertion_run.REJECT_ROLES (imported above; held equal by a test).
+    frappe.only_for(("EPM Admin", "System Manager"))
+    key = _period(fiscal_year, fiscal_period)
+    row = _declared_row(fiscal_calendar.fiscal_period_rows(), key)
+    if not (reason or "").strip():
+        frappe.throw("Give the reason the sign-off of %s is rejected: the preparer reads it."
+                     % period_name(*key))
+    if not (run or "").strip():
+        frappe.throw("Reload the sign-off for %s: the request did not say which checks "
+                     "run it rejects." % period_name(*key))
+    latest = latest_close_run(*key)
+    if not latest:
+        frappe.throw("%s has no checks run to reject." % period_name(*key))
+    if latest["name"] != run.strip():
+        frappe.throw("The checks were re-run (now %s, %s); review the new result before "
+                     "rejecting." % (latest["name"], latest["status"]))
+    return reject_signoff(latest["name"], reason)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -376,8 +473,8 @@ def declare_tb_exception(entity, fiscal_year, fiscal_period, reason):
     frappe.only_for(("EPM Admin", "System Manager"))
     key = _period(fiscal_year, fiscal_period)
     if not (reason or "").strip():
-        frappe.throw("Give the reason %s has no trial balance for FY%d P%02d." % (
-            entity, key[0], key[1]))
+        frappe.throw("Give the reason %s has no trial balance for %s." % (
+            entity, period_name(*key)))
     doc = frappe.get_doc({
         "doctype": "TB Exception",
         "data_area_id": entity,
@@ -421,6 +518,6 @@ def reopen_period(fiscal_year, fiscal_period, reason):
     check_epm_admin()
     key = _period(fiscal_year, fiscal_period)
     if not (reason or "").strip():
-        frappe.throw("Give the reason for reopening FY%d P%02d." % key)
+        frappe.throw("Give the reason for reopening %s." % period_name(*key))
     doc = period_status.set_status(key[0], key[1], period_status.OPEN, reason=reason)
     return _status_result(doc)

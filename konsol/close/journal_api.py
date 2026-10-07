@@ -7,6 +7,11 @@ screen needs and writes nothing:
 - the period's journals (every docstatus: Draft, Pending Approval, Approved
   and Reversed), each with its lines, totals, duration label, status,
   preparer, statement effect and last rejection;
+- ``reversing_in`` (story 6.5): the Approved journals of earlier periods
+  whose reversal posts into this one, read-only — each with its origin
+  period, a "Reverses here from <code>" label, and the reversal posting's
+  lines (debit and credit swapped) and effect. One more header read; their
+  lines come in the same line read;
 - the drafting choices: the group(s) and their entities, the postable
   (Published, non-group) Main Accounts with their heading, and the reversal
   periods a new journal may name;
@@ -39,6 +44,23 @@ from konsol import fiscal_calendar
 from konsol.close import close_event, journal_model
 from konsol.close.timefmt import zoned_iso
 from konsol.tb_dimension_model import is_flag_on
+
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
 
 JOURNAL = "Consolidation Journal"
 LINE = "Consolidation Journal Line"
@@ -159,7 +181,7 @@ def _period_key(fiscal_year, fiscal_period):
     try:
         return int(fiscal_year), int(fiscal_period)
     except (TypeError, ValueError):
-        frappe.throw(f"FY{fiscal_year} P{fiscal_period} is not a period: "
+        frappe.throw(f"Fiscal year {fiscal_year!r}, period {fiscal_period!r} is not a period: "
                      "pass the fiscal year and period as whole numbers.")
 
 
@@ -167,7 +189,7 @@ def _find_period(key, period_rows):
     for row in period_rows:
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) == key:
             return row
-    frappe.throw("FY%d P%02d is not a declared period: declare it in EPM Fiscal Year." % key)
+    frappe.throw("%s is not a declared period: declare it in EPM Fiscal Year." % period_name(*key))
 
 
 def _title(description):
@@ -307,7 +329,19 @@ def get_journals(fiscal_year, fiscal_period):
     declared = declared_dimensions()
     dim_keys = tuple(d["dimension_name"] for d in declared)
 
-    names = [h["name"] for h in headers]
+    # konsol#305 story 6.5: the Approved journals of earlier periods whose
+    # reversal posts into this one. Only a submitted journal is in the
+    # warehouse (consolidation_journal.resync_staging reads docstatus 1), so
+    # only it reverses; a cancelled one's reversal vanishes with it (D2-2).
+    reversing_headers = frappe.get_all(
+        JOURNAL,
+        filters={"reverse_fiscal_year": fy, "reverse_fiscal_period": fp, "docstatus": 1},
+        fields=JOURNAL_FIELDS + ["fiscal_year", "fiscal_period"],
+        order_by="creation asc",
+        limit_page_length=0,
+    )
+
+    names = [h["name"] for h in headers] + [h["name"] for h in reversing_headers]
     lines = []
     if names:
         lines = frappe.get_all(
@@ -378,6 +412,31 @@ def get_journals(fiscal_year, fiscal_period):
             "last_rejection": last_rejection,
         })
 
+    reversing_in = []
+    for header in reversing_headers:
+        origin_fy, origin_fp = int(header["fiscal_year"]), int(header["fiscal_period"])
+        origin = next((r for r in period_rows
+                       if (int(r["fiscal_year"]), int(r["fiscal_period"])) == (origin_fy, origin_fp)),
+                      None)
+        posting = journal_model.reversal_lines(lines_by_parent.get(header["name"], []))
+        reversing_in.append({
+            "name": header["name"],
+            "title": _title(header.get("description")),
+            "description": header.get("description"),
+            "adjustment_type": header.get("adjustment_type"),
+            "consolidation_group": header.get("consolidation_group"),
+            "currency": header.get("currency"),
+            "total_debit": _number(header.get("total_credit")),
+            "total_credit": _number(header.get("total_debit")),
+            "origin": {"fiscal_year": origin_fy, "fiscal_period": origin_fp,
+                       "code": origin.get("period_code") if origin else None},
+            "label": journal_model.reverses_here_label(origin_fy, origin_fp, period_rows),
+            "approved_by": header.get("approved_by"),
+            "approved_at": _iso(header.get("approved_at")),
+            "lines": [_line_out(line, accounts, dim_keys) for line in posting],
+            "effect": journal_model.statement_effect(posting, accounts),
+        })
+
     return {
         "period": {
             "fiscal_year": fy, "fiscal_period": fp,
@@ -385,6 +444,7 @@ def get_journals(fiscal_year, fiscal_period):
             "period_type": period.get("period_type"),
         },
         "journals": journals,
+        "reversing_in": reversing_in,
         "groups": groups,
         "accounts": accounts,
         "dimensions": dimensions,
@@ -450,7 +510,7 @@ def save_journal(fiscal_year, fiscal_period, consolidation_group, adjustment_typ
     fy, fp = key
     status = period.get("status")
     if status != "Open":
-        frappe.throw("FY%d P%02d is %s: a journal is drafted in an open period." % (fy, fp, status))
+        frappe.throw("%s is %s: a journal is drafted in an open period." % (period_name(fy, fp), status))
     ry = _reversal_number(reverse_fiscal_year, "year")
     rp = _reversal_number(reverse_fiscal_period, "period")
     problem = journal_model.reversal_problem(fy, fp, ry, rp, period_rows)
@@ -478,8 +538,9 @@ def save_journal(fiscal_year, fiscal_period, consolidation_group, adjustment_typ
                          f"rejects it back to {first_state} before it changes.")
         theirs = (int(doc.fiscal_year), int(doc.fiscal_period))
         if theirs != key:
-            frappe.throw("%s is in FY%d P%02d, not FY%d P%02d: a journal's period does not "
-                         "change; draft a new journal in FY%d P%02d." % ((name,) + theirs + key + key))
+            frappe.throw("%s is in %s, not %s: a journal's period does not change; draft a new "
+                         "journal in %s." % (name, period_name(*theirs), period_name(*key),
+                                             period_name(*key)))
         for field, value in header.items():
             doc.set(field, value)
         doc.set("lines", [])
@@ -527,8 +588,8 @@ def send_for_approval(name):
     period = _find_period(key, fiscal_calendar.fiscal_period_rows())
     status = period.get("status")
     if status != "Open":
-        frappe.throw("FY%d P%02d is %s: a journal is sent for approval in an open period."
-                     % (key + (status,)))
+        frappe.throw("%s is %s: a journal is sent for approval in an open period."
+                     % (period_name(*key), status))
 
     from frappe.model.workflow import apply_workflow
 

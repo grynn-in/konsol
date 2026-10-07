@@ -61,6 +61,7 @@ import { parse } from "../route.js";
 import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipView, ownershipGapsCount, mergeDrafts } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_RATES = "konsol.close.rates_api.get_rates";
 const SAVE_RATE = "konsol.close.rates_api.save_rate";
@@ -78,7 +79,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 const what = computed(() => `the group rates for ${periodName.value}`);
 

@@ -15,6 +15,8 @@
 //                                                the summary's checks.run
 //   close({note})                              → A34 close_period
 //   reopen({reason})                           → A34 reopen_period
+//   reject({run, reason})                      → #305-W5-1 signoff_api.reject;
+//                                                `run` is the summary's checks.run
 // The defaults below refuse by name, so a screen that forgets one fails visibly.
 //
 // States and the events each takes (every other event is refused):
@@ -47,6 +49,12 @@
 //                  with a note; an unknown action or status, or an error →
 //                  loadFailed
 //   signed         CLOSE {note?} → closing; REFRESH → loading
+//                  REJECT {reason}, non-blank, when can_reject is true →
+//                  rejecting (#305-W5-1, story 9.4: the Close Lead sends the
+//                  period back to Not signed)
+//   rejecting      nothing; done → loading (emits PERIOD_CHANGED "reject");
+//                  A58's stale-run refusal → loading with the message; any
+//                  other error → signed with the error
 //   closing        nothing; done → closed; error → signed with the error
 //   closed         REOPEN {reason}, non-blank, and the loaded period_status is
 //                  not "Locked" → reopening (B14b: a Locked period offers no
@@ -61,7 +69,7 @@
 // through, and never re-offered once the period reports Closed or Locked.
 //
 // konsol#305 B32: the machine emits PERIOD_CHANGED ({action: "sign" | "close"
-// | "reopen"}) exactly once when the server accepts a sign, close or reopen
+// | "reopen" | "reject"}) exactly once when the server accepts a sign, close or reopen
 // (the service resolves). A refused request, a cancel, a load or a refresh
 // emits nothing. The screen answers it with the shell's quiet context reload,
 // so the header's period status follows (C1 run 3). A sign whose summary
@@ -146,6 +154,7 @@ export const signoffMachine = setup({
 		sign: notProvided("sign"),
 		close: notProvided("close"),
 		reopen: notProvided("reopen"),
+		reject: notProvided("reject"),
 	},
 	guards: {
 		unknownAction: ({ event }) => !known(event.output),
@@ -161,6 +170,9 @@ export const signoffMachine = setup({
 		canOverride: ({ context }) => allowed(context, "override") && context.summary.can_override === true,
 		hasText: ({ event }) => typed(event.text) !== null,
 		hasReason: ({ event }) => typed(event.reason) !== null,
+		// #305-W5-1: the Close Lead (get_signoff's can_reject) with a typed reason.
+		canReject: ({ context, event }) =>
+			typed(event.reason) !== null && context.summary?.can_reject === true,
 		// closed: REOPEN is refused outright once the loaded period is Locked (B14b).
 		canReopen: ({ context, event }) =>
 			typed(event.reason) !== null && context.summary?.period_status !== "Locked",
@@ -272,7 +284,29 @@ export const signoffMachine = setup({
 		signed: {
 			on: {
 				CLOSE: { target: "closing", actions: assign({ error: null }) },
+				REJECT: { guard: "canReject", target: "rejecting", actions: assign({ error: null }) },
 				REFRESH: refresh,
+			},
+		},
+		rejecting: {
+			invoke: {
+				src: "reject",
+				input: ({ context, event }) => ({
+					run: context.summary?.checks?.run ?? null,
+					reason: typed(event.reason),
+				}),
+				onDone: { target: "loading", actions: periodChanged("reject") },
+				onError: [
+					{
+						guard: ({ event }) => isStaleRun(event.error),
+						target: "loading",
+						actions: assign({ error: ({ event }) => messageOf(event.error) }),
+					},
+					{
+						target: "signed",
+						actions: assign({ error: ({ event }) => messageOf(event.error) }),
+					},
+				],
 			},
 		},
 		closing: {

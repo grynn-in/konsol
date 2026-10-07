@@ -91,7 +91,29 @@ const TZ = "Europe/London";
 
 test("header names the period, group and currency", () => {
 	const view = statementView(golden(), NOW, TZ);
-	assert.equal(view.header, "Numbers · FY2025P07 · G1 · USD");
+	assert.equal(golden().period.code, "P07", "the fixture carries the live period_code shape");
+	assert.equal(view.header, "Numbers · FY2025 P07 · G1 · USD");
+});
+
+test("U1: the header's period is the fiscal year and period, never the bare period_code", () => {
+	for (const code of ["P07", "Jul", "", null]) {
+		const p = golden();
+		p.period.code = code;
+		assert.equal(statementView(p, NOW, TZ).header, "Numbers · FY2025 P07 · G1 · USD", `code ${code}`);
+	}
+	const dec = golden();
+	dec.period.fiscal_year = 2024;
+	dec.period.fiscal_period = 12;
+	dec.period.code = "P12";
+	assert.equal(statementView(dec, NOW, TZ).header, "Numbers · FY2024 P12 · G1 · USD");
+});
+
+test("U1: a period with no fiscal year or period throws, naming the key, rather than a blank header", () => {
+	for (const key of ["fiscal_year", "fiscal_period"]) {
+		const p = golden();
+		delete p.period[key];
+		assert.throws(() => statementView(p, NOW, TZ), new RegExp(key));
+	}
 });
 
 test("label follows the sign-off run, not the statement: provisional on the golden payload", () => {
@@ -644,6 +666,24 @@ test("drillView: a top-side row's journals link to Adjustments, in the payload's
 			amount: "40.00",
 			postedBy: "alice@example.com",
 			approvedBy: "bob@example.com",
+			autoReversal: false,
+		},
+		{
+			journalId: "J-2",
+			description: "Accrue audit fee",
+			amount: "10.00",
+			postedBy: "alice@example.com",
+			approvedBy: "bob@example.com",
+			autoReversal: false,
+		},
+		{
+			// #305 story 6.5: an earlier period's journal reversing here.
+			journalId: "J-P6",
+			description: "June bonus",
+			amount: "(10.00)",
+			postedBy: "alice@example.com",
+			approvedBy: "bob@example.com",
+			autoReversal: true,
 		},
 	]);
 	assert.equal(topside.journalsBasis, "posted in this period (the heading's amount is cumulative)");

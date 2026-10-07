@@ -606,3 +606,77 @@ def test_statement_account_problems_the_same_code_twice_is_one_problem():
     chart = {"3300": _account()}
     problems = M.statement_account_problems("3300", "3300", chart)
     assert len(problems) == 1
+
+
+# --- konsol#305-W5-2 (story 8.4): the commentary threshold ---------------
+# Close Settings declares an amount (reporting currency), a percentage, or
+# both; no default. Both declared needs a declared combine rule (either /
+# both exceeded) — never guessed. Undeclared is one setup gap.
+
+def test_commentary_threshold_nothing_declared_is_the_undeclared_gap():
+    for amount, percent in ((0, 0), (None, None), (0.0, None)):
+        result = M.commentary_threshold(amount, percent, "")
+        assert result["threshold"] is None
+        assert result["gap"]["code"] == M.COMMENTARY_THRESHOLD_UNDECLARED
+        assert "Close Settings" in result["gap"]["message"]
+        assert set(result["gap"]) == {"code", "message"}
+
+
+def test_commentary_threshold_amount_only():
+    result = M.commentary_threshold(5000, 0, "")
+    assert result == {"threshold": {"amount": 5000.0, "percent": None, "combine": None},
+                      "gap": None}
+
+
+def test_commentary_threshold_percent_only():
+    result = M.commentary_threshold(0, 10, None)
+    assert result == {"threshold": {"amount": None, "percent": 10.0, "combine": None},
+                      "gap": None}
+
+
+def test_commentary_threshold_both_without_a_combine_rule_is_the_gap():
+    result = M.commentary_threshold(5000, 10, "")
+    assert result["threshold"] is None
+    assert result["gap"]["code"] == M.COMMENTARY_THRESHOLD_UNDECLARED
+    assert "either" in result["gap"]["message"] and "both" in result["gap"]["message"]
+
+
+def test_commentary_threshold_both_with_a_combine_rule():
+    for combine in M.COMMENTARY_COMBINES:
+        result = M.commentary_threshold(5000, 10, combine)
+        assert result == {"threshold": {"amount": 5000.0, "percent": 10.0, "combine": combine},
+                          "gap": None}
+
+
+def test_commentary_combines_are_the_two_declared_rules():
+    assert M.COMMENTARY_COMBINES == ("Either is exceeded", "Both are exceeded")
+
+
+def test_commentary_threshold_problems_blank_is_allowed():
+    assert M.commentary_threshold_problems(0, 0, "") == []
+    assert M.commentary_threshold_problems(None, None, None) == []
+
+
+def test_commentary_threshold_problems_negative_values_are_refused():
+    problems = M.commentary_threshold_problems(-1, -2, "")
+    assert len(problems) == 2
+    assert all("negative" in p for p in problems)
+
+
+def test_commentary_threshold_problems_unknown_combine_is_refused():
+    problems = M.commentary_threshold_problems(5000, 10, "Sometimes")
+    assert len(problems) == 1 and "Sometimes" in problems[0]
+
+
+def test_commentary_threshold_problems_combine_without_both_values_is_refused():
+    """A combine rule with only one value declared would be a dead field."""
+    for amount, percent in ((5000, 0), (0, 10), (0, 0)):
+        problems = M.commentary_threshold_problems(amount, percent, "Both are exceeded")
+        assert len(problems) == 1, (amount, percent, problems)
+        assert "both" in problems[0]
+
+
+def test_commentary_threshold_problems_declared_values_pass():
+    assert M.commentary_threshold_problems(5000, 0, "") == []
+    assert M.commentary_threshold_problems(0, 10, "") == []
+    assert M.commentary_threshold_problems(5000, 10, "Either is exceeded") == []

@@ -20,6 +20,7 @@ import { computed } from "vue";
 import { useRouter } from "vue-router";
 import { FeatherIcon } from "frappe-ui";
 import { format } from "../route.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const props = defineProps({
 	/** A15 `get_context` result, or null while it loads or failed. */
@@ -45,7 +46,7 @@ const PERSONA_LABELS = {
 };
 
 function periodName(key) {
-	return `FY${key[0]} P${String(key[1]).padStart(2, "0")}`;
+	return formatPeriod(key[0], key[1]);
 }
 
 /** A URL under the router's `/close` base, from route.js's full path. */

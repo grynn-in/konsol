@@ -119,6 +119,8 @@ def _frappe(site):
     frappe.session = types.SimpleNamespace(user=site.user)
     frappe.db = types.SimpleNamespace(set_value=forbidden, commit=forbidden, sql=forbidden)
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: "Europe/London")
+    frappe.response = {}
+    site.response = frappe.response
     return frappe
 
 
@@ -200,8 +202,8 @@ def _load_api(site):
     return api
 
 
-def _call(site, *args):
-    return _load_api(site).get_trail(*args)
+def _call(site, *args, **kw):
+    return _load_api(site).get_trail(*args, **kw)
 
 
 def _raises(fn, exc_name):
@@ -374,3 +376,220 @@ def test_allowed_entity_codes_is_called_exactly_once():
     site.events = [_event("CE-1", "approved", _dt(10))]
     _call(site, 2026, 9)
     assert site.allowed_calls == 1
+
+
+# --- story 10.2: filters and the CSV export ------------------------------------
+#
+# Events here come from the real producer: built exactly as
+# close_event.record() builds one (actor_persona added to detail, reason
+# stripped, source "live"), refused by the real close_event_model's
+# event_problems if malformed, and stored with its detail_json -- so the
+# rows are what the Close Event table holds.
+
+import csv as _csv
+import io as _io
+
+CLOSE_EVENT_MODEL_PY = os.path.join(APP_DIR, "close", "close_event_model.py")
+_CEM = _real("close_event_model_for_trail_api_test", CLOSE_EVENT_MODEL_PY)
+
+
+def _produced(name, kind, at, actor, entity=None, reason=None, detail=None,
+              fiscal_period=9, persona="close_lead",
+              reference_doctype="Trial Balance Submission", reference_name="TB-1"):
+    event = {
+        "kind": kind, "fiscal_year": 2026, "fiscal_period": fiscal_period,
+        "entity": entity, "reference_doctype": reference_doctype,
+        "reference_name": reference_name, "actor": actor, "at": at,
+        "reason": (reason or "").strip() or None,
+        "detail": dict(detail or {}, actor_persona=persona),
+        "source": _CEM.LIVE,
+    }
+    problems = _CEM.event_problems(event)
+    assert not problems, problems
+    return dict(event, name=name, detail=_CEM.detail_json(event["detail"]))
+
+
+def _scoped_site():
+    """A Viewer scoped to ZZA. ZZX's events and actor must never reach them."""
+    site = _Site()
+    site.allowed = {"ZZA"}
+    site.events = [
+        _produced("CE-1", "tb_submitted", _dt(10), "zz-a@example.com", entity="ZZA",
+                  detail={"on_behalf": "No"}),
+        _produced("CE-2", "tb_submitted", _dt(11), "zz-x@example.com", entity="ZZX",
+                  detail={"on_behalf": "No"}),
+        _produced("CE-3", "approved", _dt(12), "zz-b@example.com",
+                  reference_doctype="Journal Entry", reference_name="JE-1",
+                  detail={"preparer": "zz-a@example.com"}),
+        _produced("CE-4", "signed_off", _dt(15), "zz-b@example.com",
+                  reference_doctype="Assertion Run", reference_name="AR-1",
+                  detail={"signoff_status": "Signed Off", "run_status": "Green"}),
+        _produced("CE-5", "tb_cancelled", _dt(16, month=9), "zz-x@example.com",
+                  entity="ZZX"),
+        _produced("CE-6", "year_closed", _dt(1), "zz-b@example.com", fiscal_period=0,
+                  reference_doctype="Fiscal Year", reference_name="2026",
+                  detail={"via": "year"}),
+    ]
+    site.users = [_user("zz-a@example.com", "A Accountant"),
+                  _user("zz-b@example.com", "B Lead"),
+                  _user("zz-x@example.com", "X Hidden")]
+    return site
+
+
+def _export(site, *args, **kw):
+    out = _load_api(site).export_trail_csv(*args, **kw)
+    assert out is None, "the CSV goes out as frappe.response, not a return value"
+    return site.response
+
+
+def _csv_rows(response):
+    rows = list(_csv.reader(_io.StringIO(response["filecontent"])))
+    return [dict(zip(rows[0], r)) for r in rows[1:]], rows[0]
+
+
+def test_get_trail_filters_by_kind_and_keeps_the_summary_on_the_whole_scoped_period():
+    site = _scoped_site()
+    out = _call(site, 2026, 9, kinds='["approved"]')
+    assert [e["name"] for e in out["events"]] == ["CE-3"]
+    # the summary describes the period, not the filtered view
+    assert out["summary"]["signoff"]["state"] == "signed"
+    assert out["total"] == 4  # CE-1, CE-3, CE-4, CE-6: the scoped events
+    assert out["hidden"] == 2
+
+
+def test_get_trail_with_no_filter_shows_every_scoped_event_and_echoes_no_filter():
+    site = _scoped_site()
+    out = _call(site, 2026, 9)
+    assert [e["name"] for e in out["events"]] == ["CE-4", "CE-3", "CE-1", "CE-6"]
+    assert out["total"] == 4
+    assert out["filters"] == {"kinds": [], "actors": [], "entities": [],
+                              "date_from": None, "date_to": None}
+
+
+def test_get_trail_filters_by_actor_entity_and_date_as_a_get_sends_them():
+    site = _scoped_site()
+    out = _call(site, 2026, 9, actors='["zz-a@example.com"]', entities='["ZZA"]',
+                date_from="2026-09-10", date_to="2026-09-10")
+    assert [e["name"] for e in out["events"]] == ["CE-1"]
+    assert out["filters"] == {"kinds": [], "actors": ["zz-a@example.com"],
+                              "entities": ["ZZA"], "date_from": "2026-09-10",
+                              "date_to": "2026-09-10"}
+
+
+def test_get_trail_options_are_the_scoped_choices_with_actor_names():
+    site = _scoped_site()
+    out = _call(site, 2026, 9, kinds='["approved"]')
+    opts = out["options"]
+    assert opts["kinds"] == ["approved", "signed_off", "tb_submitted", "year_closed"]
+    assert opts["entities"] == ["(group)", "ZZA"]
+    assert opts["actors"] == [
+        {"actor": "zz-a@example.com", "actor_name": "A Accountant", "actor_missing": False},
+        {"actor": "zz-b@example.com", "actor_name": "B Lead", "actor_missing": False},
+    ]
+    blob = json.dumps(out)
+    assert "ZZX" not in blob and "zz-x@example.com" not in blob and "X Hidden" not in blob
+
+
+def test_get_trail_refuses_a_bad_filter_naming_it():
+    site = _scoped_site()
+    msg = _raises(lambda: _call(site, 2026, 9, kinds='["nope"]'), "ValidationError")
+    assert "nope" in msg
+    msg = _raises(lambda: _call(site, 2026, 9, date_from="2026-09-31"), "ValidationError")
+    assert "2026-09-31" in msg
+
+
+def test_export_is_a_csv_download_named_for_the_period():
+    site = _scoped_site()
+    response = _export(site, 2026, 9)
+    assert response["type"] == "download"
+    assert response["filename"] == "audit-trail-FY2026-P09.csv"
+    assert response["content_type"] == "text/csv; charset=utf-8"
+    rows, header = _csv_rows(response)
+    assert header == list(_load_api(site).trail_model.CSV_COLUMNS)
+
+
+def test_export_rows_are_exactly_the_screens_rows_for_the_same_filters():
+    for kw in ({}, {"kinds": '["tb_submitted", "year_closed"]'},
+               {"actors": '["zz-b@example.com"]', "date_to": "2026-09-12"},
+               {"entities": '["(group)"]'}):
+        site = _scoped_site()
+        shown = [e["name"] for e in _call(site, 2026, 9, **kw)["events"]]
+        site = _scoped_site()
+        rows, _header = _csv_rows(_export(site, 2026, 9, **kw))
+        assert [r["event"] for r in rows] == shown, kw
+
+
+def test_export_row_carries_the_stored_values_and_the_resolved_name():
+    site = _scoped_site()
+    rows, _header = _csv_rows(_export(site, 2026, 9, kinds='["approved"]'))
+    assert rows == [{
+        "event": "CE-3", "at": "2026-09-12T09:00:00+01:00",
+        "fiscal_year": "2026", "fiscal_period": "9", "kind": "approved",
+        "entity": "", "actor": "zz-b@example.com", "actor_name": "B Lead",
+        "actor_persona": "close_lead", "reference_doctype": "Journal Entry",
+        "reference_name": "JE-1", "reason": "", "source": "live",
+        "detail": '{"actor_persona": "close_lead", "preparer": "zz-a@example.com"}',
+    }]
+
+
+def test_forge_a_scoped_user_cannot_export_another_entitys_events():
+    # Every way of asking for ZZX -- by entity, by its actor, by its kind
+    # and day, or with no filter at all -- gives nothing of ZZX's.
+    for kw in ({"entities": '["ZZX"]'},
+               {"actors": '["zz-x@example.com"]'},
+               {"kinds": '["tb_cancelled"]'},
+               {"entities": '["ZZX", "ZZA"]'},
+               {}):
+        site = _scoped_site()
+        response = _export(site, 2026, 9, **kw)
+        content = response["filecontent"]
+        assert "ZZX" not in content, kw
+        assert "zz-x@example.com" not in content and "X Hidden" not in content, kw
+        rows, _header = _csv_rows(response)
+        assert all(r["event"] not in ("CE-2", "CE-5") for r in rows), kw
+    site = _scoped_site()
+    rows, _header = _csv_rows(_export(site, 2026, 9, entities='["ZZX"]'))
+    assert rows == []
+
+
+def test_export_scopes_through_allowed_entity_codes_exactly_once():
+    site = _scoped_site()
+    _export(site, 2026, 9)
+    assert site.allowed_calls == 1
+
+
+def test_export_for_an_unscoped_user_has_every_entity():
+    site = _scoped_site()
+    site.allowed = None
+    rows, _header = _csv_rows(_export(site, 2026, 9))
+    assert [r["event"] for r in rows] == ["CE-5", "CE-4", "CE-3", "CE-2", "CE-1", "CE-6"]
+
+
+def test_export_refuses_the_entity_accountant():
+    site = _scoped_site()
+    site.roles = {"Entity Accountant"}
+    _raises(lambda: _export(site, 2026, 9), "PermissionError")
+    assert "filecontent" not in site.response
+
+
+def test_export_refuses_an_undeclared_period_and_a_bad_filter():
+    site = _scoped_site()
+    site.periods = {}
+    _raises(lambda: _export(site, 2026, 9), "PeriodNotDeclared")
+    site = _scoped_site()
+    _raises(lambda: _export(site, 2026, 9, entities='"ZZA"'), "ValidationError")
+    assert "filecontent" not in site.response
+
+
+# The golden payload close-ui's auditTrail.test.mjs reads: the real
+# get_trail output for a scoped Viewer with a kind and a date filter.
+TRAIL_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures", "close_trail_filtered.json")
+
+
+def test_the_filtered_trail_golden_fixture_is_the_producers_output():
+    site = _scoped_site()
+    out = _call(site, 2026, 9, kinds='["approved", "tb_submitted"]', date_from="2026-09-01")
+    with open(TRAIL_FIXTURE) as fh:
+        golden = json.load(fh)
+    assert json.loads(json.dumps(out)) == golden

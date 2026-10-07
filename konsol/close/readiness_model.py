@@ -133,6 +133,11 @@ def _hidden_detail(hidden):
 _GAP_LABELS = {
     signoff_model.FREQUENCY_UNDECLARED: "Reporting frequency not set",
     signoff_model.QUARTER_UNDECLARED: "Quarter not declared",
+    # #305 5.4: ic_balance_model.RULE_UNDECLARED (this module imports no
+    # sibling but signoff_model/close_policy_model; the test feeds the real gap).
+    "ic_unrealized_profit_rule_undeclared": "Unrealised-profit rule not declared",
+    # F51b: ic_balance_model.RULE_AMBIGUOUS (same reason).
+    "ic_unrealized_profit_rule_ambiguous": "More than one unrealised-profit rule per pair",
 }
 
 

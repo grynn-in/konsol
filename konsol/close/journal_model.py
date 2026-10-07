@@ -19,8 +19,25 @@ Rules (#292):
 Amounts are handled as Decimal, quantized to 2 dp, so 0.10 + 0.20 balances
 against 0.30 — a plain float sum would not.
 """
+import importlib.util as _importlib_util
+import os as _os
 import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
+
 
 _CENTS = Decimal("0.01")
 
@@ -188,21 +205,21 @@ def reversal_problem(fiscal_year, fiscal_period, reverse_year, reverse_period, p
     )
     if row is None:
         return (
-            f"FY{ry} P{rp} is not a declared period; declare it, or name "
+            f"{period_name(ry, rp)} is not a declared period; declare it, or name "
             "another reversal period."
         )
     if row["period_type"] != "Regular":
         return (
-            f"FY{ry} P{rp} is a {row['period_type']} period; a reversal "
+            f"{period_name(ry, rp)} is a {row['period_type']} period; a reversal "
             "posts only into a Regular period."
         )
     if (ry, rp) <= (int(fiscal_year), int(fiscal_period)):
         return (
-            f"FY{ry} P{rp} is not after this journal's period "
-            f"FY{fiscal_year} P{fiscal_period}."
+            f"{period_name(ry, rp)} is not after this journal's period "
+            f"{period_name(fiscal_year, fiscal_period)}."
         )
     if row["status"] != "Open":
-        return f"FY{ry} P{rp} is {row['status']}; name an Open period."
+        return f"{period_name(ry, rp)} is {row['status']}; name an Open period."
     return None
 
 
@@ -234,8 +251,9 @@ def duration_label(reverse_year, reverse_period, period_rows):
     option A). Never blank.
 
     ``(0, 0)`` (a blank Int reads as 0) gives "This period only, no
-    reversal". Otherwise "Reverses in {period_code}" for the matching
-    ``period_rows`` row, or "Reverses in FY{y} P{p:02d} (not a declared
+    reversal". Otherwise "Reverses in FY2025 P07" (``period_name``, never the
+    bare ``period_code``, which live is "P07" alone) for the matching
+    ``period_rows`` row, or "Reverses in FY2025 P07 (not a declared
     period)" when no row matches.
     """
     ry = reverse_year or 0
@@ -248,8 +266,39 @@ def duration_label(reverse_year, reverse_period, period_rows):
         None,
     )
     if row is None:
-        return f"Reverses in FY{ry} P{rp:02d} (not a declared period)"
-    return f"Reverses in {row['period_code']}"
+        return f"Reverses in {period_name(ry, rp)} (not a declared period)"
+    return f"Reverses in {period_name(ry, rp)}"
+
+
+def reverses_here_label(fiscal_year, fiscal_period, period_rows):
+    """The text a reversal shows in the period it posts into (konsol#305
+    story 6.5): "Reverses here from FY{y} P{p:02d}" naming the original
+    journal's fiscal year and period. Never the bare ``period_code``: live it
+    is "P06" alone (measured 6 Oct), ambiguous across a year boundary where
+    P12 reverses into next year's P01 (konsol#305 U1). Never blank: an
+    undeclared original period reads "Reverses here from FY{y} P{p:02d} (not
+    a declared period)"."""
+    fy = int(fiscal_year or 0)
+    fp = int(fiscal_period or 0)
+    row = next(
+        (r for r in period_rows
+         if int(r["fiscal_year"]) == fy and int(r["fiscal_period"]) == fp),
+        None,
+    )
+    if row is None:
+        return f"Reverses here from {period_name(fy, fp)} (not a declared period)"
+    return f"Reverses here from {period_name(fy, fp)}"
+
+
+def reversal_lines(lines):
+    """The reversal posting of ``lines`` (konsol#305 story 6.5): each line
+    copied with ``debit_amount`` and ``credit_amount`` swapped — exactly the
+    one ``auto_reversal`` row per line gold_consolidation_adjustments posts in
+    the named period (#305-D2-11, V01). The input is not mutated."""
+    return [
+        dict(line, debit_amount=line.get("credit_amount"), credit_amount=line.get("debit_amount"))
+        for line in lines
+    ]
 
 
 #: Section order (#305-W3-4 option A): Profit and Loss, then Balance Sheet,

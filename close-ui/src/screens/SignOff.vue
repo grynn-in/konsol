@@ -6,6 +6,8 @@
  * - `load` is A30 GET `signoff_api.get_signoff`, `sign` is A32 POST
  *   `signoff_api.sign`; both are injected with machine.provide({actors}) and
  *   close over the period in the URL (route.js, D5).
+ * - Reject (#305-W5-1, story 9.4) is SignOffReject's: it exports
+ *   `rejectActors`, the machine's `reject` service, spread in the same way.
  * - Close and reopen are B24's: SignOffPeriodActions exports `periodActors`,
  *   the machine's `close` / `reopen` services (A34), which this screen spreads
  *   into provide({actors}), and it renders the Close / Reopen / declare TB
@@ -42,12 +44,14 @@ import { createActor, fromPromise } from "xstate";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import SignOffPeriodActions, { periodActors } from "../sections/SignOffPeriodActions.vue";
+import SignOffReject, { rejectActors } from "../sections/SignOffReject.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
 import { summaryView, messageLines, closedOnText } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { signoffMachine, PERIOD_CHANGED } from "../machines/signoffMachine.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
+import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_SIGNOFF = "konsol.close.signoff_api.get_signoff";
 const SIGN = "konsol.close.signoff_api.sign";
@@ -61,7 +65,7 @@ const period = computed(() => {
 	return p.error || p.year == null ? null : { year: p.year, period: p.period };
 });
 const periodName = computed(() =>
-	period.value ? `FY${period.value.year} P${String(period.value.period).padStart(2, "0")}` : "this period",
+	period.value ? formatPeriod(period.value.year, period.value.period) : "this period",
 );
 
 const snap = shallowRef(null);
@@ -91,6 +95,7 @@ function machineFor(p) {
 				}),
 			),
 			...periodActors(key),
+			...rejectActors(key),
 		},
 	});
 }
@@ -199,6 +204,7 @@ const SECTION_TITLES = [
 	["exceptions", "Trial balance exceptions"],
 	["covers", "Covers"],
 	["previous", "Earlier periods"],
+	["commentaryRequired", "Commentary required"],
 	["commentary", "Commentary"],
 ];
 // B28: each section's rows, shown rows and "and N more" come from summaryView.
@@ -357,6 +363,14 @@ const unknownOr = (value) => (value === null || value === undefined || value ===
 					</div>
 				</div>
 			</div>
+
+			<SignOffReject
+				v-if="periodKey"
+				:snapshot="snap"
+				:period-key="periodKey"
+				:period-name="periodName"
+				@send="send"
+			/>
 
 			<SignOffPeriodActions
 				v-if="periodKey"

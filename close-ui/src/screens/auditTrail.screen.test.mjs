@@ -66,14 +66,42 @@ test("Failure path: no browser storage of the period (D5: it lives in the URL on
 	assert.doesNotMatch(source, new RegExp("\\bsession" + "Storage\\b"));
 });
 
-test("Failure path: no Export CSV button — story 10.2 is P2, not built here", () => {
+test("10.2: an Export CSV button; the endpoint is auditTrail.js's, never named here", () => {
 	const source = read();
-	assert.doesNotMatch(source, /Export CSV/);
+	assert.match(template(source), /Export CSV/);
+	assert.doesNotMatch(source, /konsol\.close\.trail_api\.export_trail_csv/, "EXPORT_CSV lives in auditTrail.js");
 });
 
-test("Failure path: no filter chips — story 10.2 is P2, not built here", () => {
+// U2: exportCsv's behaviour (params, refusal, save) is auditTrail.test.mjs's.
+test("U2: Export CSV goes through exportCsv with api.download and saveFile, and shows a refusal", () => {
 	const source = read();
-	assert.doesNotMatch(source, /\ballowed\b.*filter|filterChips|problemsOnly/i);
+	const js = script(source);
+	assert.doesNotMatch(source, /<a\b[^>]*\bdownload\b/, "never a plain <a download>: a refusal would be saved as the file");
+	assert.match(js, /import\s*\{[^}]*\bdownload\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
+	assert.match(js, /import\s*\{\s*saveFile\s*\}\s*from\s*["']\.\.\/saveFile\.js["']/);
+	assert.match(js, /exportCsv\(\s*trail\.payload\s*,\s*\{\s*download\s*,\s*save:\s*saveFile\s*\}\s*\)/);
+	assert.match(template(source), /v-if="exporting\.error"[^>]*role="alert"|role="alert"[^>]*v-if="exporting\.error"/);
+});
+
+test("10.2: the filters are sent to get_trail through filterParams and choices come from filterChoices", () => {
+	const js = script(read());
+	assert.match(js, /get\(GET_TRAIL,\s*\{[\s\S]*?\.\.\.filterParams\(/);
+	assert.match(js, /filterChoices\(/);
+});
+
+test("10.2: filter controls for kind, actor, entity and a date range", () => {
+	const tpl = template(read());
+	assert.match(tpl, /choices\.kinds/);
+	assert.match(tpl, /choices\.actors/);
+	assert.match(tpl, /choices\.entities/);
+	assert.match(tpl, /type="date"[\s\S]*?type="date"/);
+	assert.match(tpl, /countNote/);
+});
+
+test("10.2 failure path: no client-side filtering or CSV building — the server cuts both", () => {
+	const js = script(read());
+	assert.doesNotMatch(js, /\.filter\(/, "events are never filtered in the browser");
+	assert.doesNotMatch(js, /Blob|text\/csv|createObjectURL/);
 });
 
 test("No v-html anywhere", () => {
@@ -140,4 +168,23 @@ test("A trailView throw (unknown kind or sign-off state) is shown as the screen'
 	const js = script(read());
 	assert.match(js, /catch\s*\(\s*(\w+)\s*\)/);
 	assert.match(js, /\.message/, "the thrown error's message reaches LoadState");
+});
+
+// --- konsol#305 review-w5 U11: the filter chip rows are named groups ---------
+
+test("U11: each filter chip row is a role=group labelled by its visible name", () => {
+  const src = read();
+  for (const name of ["Kind", "Actor", "Entity"]) {
+    const id = `trail-filter-${name.toLowerCase()}`;
+    assert.match(src, new RegExp(`role="group"[^>]*aria-labelledby="${id}"`), name);
+    assert.match(src, new RegExp(`<span id="${id}"[^>]*>${name}</span>`), name);
+  }
+});
+
+// --- konsol#305 review-w5: the header names the year (trailView.title) -------
+
+test("the header reads trailView's title, never the bare payload period.code", () => {
+  const src = read();
+  assert.doesNotMatch(src, /period\.code/);
+  assert.match(src, /<h1[^>]*>\{\{\s*title\s*\}\}<\/h1>/);
 });

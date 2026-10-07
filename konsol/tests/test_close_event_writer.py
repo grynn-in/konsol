@@ -497,6 +497,9 @@ ALLOWED = {
     "hooks.py",
     # C03t (E5-P16): reads ic_sent_back events for the Intercompany screen.
     "close/ic_api.py",
+    # #305-W5-1 (story 9.4): reads signoff_rejected / signed_off events for
+    # the preparer's "sent back" My work item.
+    "close/mywork_api.py",
 }
 WRITER = "close/close_event.py"
 FORBIDDEN = (

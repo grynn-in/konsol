@@ -18,7 +18,8 @@ _spec.loader.exec_module(M)
 # Mirrors build_lock.FLAGGED_STATES and tasks.DOCTYPE_BUILD_MAP; passed in, never imported.
 FLAGGED = ("Draft", "Pending Review", "Approved", "Running")
 SCOPE_OF = {
-    "Trial Balance Submission": "consolidation",
+    "Trial Balance Submission": "full",
+    "EPM Fiscal Year": "full",
     "Group Exchange Rate": "consolidation",
     "Entity": "consolidation",
     "Consolidation Adjustment": "staging",
@@ -51,7 +52,7 @@ def _run(builds, changes=()):
 def test_completed_build_after_every_change_is_fresh():
     out = _run(
         [_build("BA-1", "consolidation", "Completed", _t(10))],
-        [_change("Trial Balance Submission", _t(9)), _change("Entity", _t(8))],
+        [_change("Group Exchange Rate", _t(9)), _change("Entity", _t(8))],
     )
     assert out["state"] == "fresh"
     assert out["changed_since"] == []
@@ -73,7 +74,7 @@ def test_tb_modified_after_last_consolidation_build_is_stale():
 def test_a_change_at_the_build_instant_is_covered():
     out = _run(
         [_build("BA-1", "consolidation", "Completed", _t(10))],
-        [_change("Trial Balance Submission", _t(10))],
+        [_change("Group Exchange Rate", _t(10))],
     )
     assert out["state"] == "fresh"
 
@@ -249,3 +250,46 @@ def test_module_imports_no_frappe():
             assert not any(a.name.split(".")[0] in ("frappe", "konsol") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert (node.module or "").split(".")[0] not in ("frappe", "konsol")
+
+
+# --- konsol#344: a build covers a change only when its scope reaches it --------
+# The calendar and trial balances are rebuilt only by `full`
+# (tasks.DOCTYPE_BUILD_MAP, #334/#337): +tag:domain:consolidation leaves 16
+# gold models that read the calendar stale.
+
+
+def test_a_calendar_change_then_a_consolidation_only_build_stays_stale():
+    out = _run(
+        [_build("BA-1", "full", "Completed", _t(10)),
+         _build("BA-2", "consolidation", "Completed", _t(12))],
+        [_change("EPM Fiscal Year", _t(11))],
+    )
+    assert out["state"] == "stale"
+    assert out["changed_since"] == ["EPM Fiscal Year"]
+    assert out["as_of"] == _t(12)
+
+
+def test_a_full_build_after_the_calendar_change_clears_it():
+    out = _run(
+        [_build("BA-1", "consolidation", "Completed", _t(12)),
+         _build("BA-2", "full", "Completed", _t(13))],
+        [_change("EPM Fiscal Year", _t(11))],
+    )
+    assert out["state"] == "fresh"
+    assert out["changed_since"] == []
+
+
+def test_a_tb_change_then_a_consolidation_only_build_stays_stale():
+    out = _run(
+        [_build("BA-1", "full", "Completed", _t(10)),
+         _build("BA-2", "consolidation", "Completed", _t(12))],
+        [_change("Trial Balance Submission", _t(11)), _change("Entity", _t(11))],
+    )
+    assert out["changed_since"] == ["Trial Balance Submission"]
+
+
+def test_a_consolidation_scoped_change_is_still_covered_by_either_numbers_build():
+    for scope in ("consolidation", "full"):
+        out = _run([_build("BA-1", scope, "Completed", _t(12))],
+                   [_change("Group Exchange Rate", _t(11))])
+        assert out["state"] == "fresh", scope

@@ -3,7 +3,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { trailView, STATIC_KINDS, DYNAMIC_KINDS } from "./auditTrail.js";
+import {
+	trailView, STATIC_KINDS, DYNAMIC_KINDS,
+	filterChoices, filterParams, noFilters, toggled, GROUP_LEVEL,
+} from "./auditTrail.js";
 
 const NOW = new Date("2026-09-20T12:00:00Z");
 const TZ = "UTC";
@@ -561,4 +564,206 @@ test("the source imports no vue, frappe or xstate", () => {
 	for (const term of ["vue", "frappe", "xstate"]) {
 		assert.ok(!source.includes(`"${term}`) && !source.includes(`'${term}`), `unexpected import of ${term}`);
 	}
+});
+
+
+// --- story 10.2: filters ----------------------------------------------------
+//
+// FILTERED is the real producer's output: trail_api.get_trail for a Viewer
+// scoped to ZZA, filtered to approved + tb_submitted from 1 Sep
+// (test_close_trail_api.py asserts it equals the fixture).
+
+const FILTERED = JSON.parse(
+	readFileSync(
+		fileURLToPath(new URL("../../konsol/tests/fixtures/close_trail_filtered.json", import.meta.url)),
+		"utf8",
+	),
+);
+
+test("10.2: the producer's filtered payload renders its rows in the server's order", () => {
+	const v = trailView(FILTERED, NOW, TZ);
+	assert.deepEqual(v.rows.map((r) => r.name), FILTERED.events.map((e) => e.name));
+	assert.deepEqual(v.rows.map((r) => r.label), ["Approved", "Submitted"]);
+});
+
+test("10.2: a filtered payload says how many of the scoped events it shows", () => {
+	const v = trailView(FILTERED, NOW, TZ);
+	assert.equal(v.countNote, `Showing ${FILTERED.events.length} of ${FILTERED.total} events`);
+});
+
+test("10.2: an unfiltered payload has no count note", () => {
+	const v = trailView(payload([event()], { total: 1, filters: noFilters() }), NOW, TZ);
+	assert.equal(v.countNote, null);
+});
+
+test("10.2 failure path: a payload with filters but no total throws; the count is never guessed", () => {
+	const p = { ...FILTERED };
+	delete p.total;
+	assert.throws(() => trailView(p, NOW, TZ), /total/);
+});
+
+test("10.2: filterChoices labels the producer's options; the hidden entity is not among them", () => {
+	const c = filterChoices(FILTERED);
+	assert.deepEqual(c.kinds, [
+		{ value: "approved", label: "Approved" },
+		{ value: "signed_off", label: "Signed off" },
+		{ value: "tb_submitted", label: "Submitted" },
+		{ value: "year_closed", label: "Year closed" },
+	]);
+	assert.deepEqual(c.entities, [
+		{ value: GROUP_LEVEL, label: "Group-level" },
+		{ value: "ZZA", label: "ZZA" },
+	]);
+	assert.deepEqual(c.actors, [
+		{ value: "zz-a@example.com", label: "A Accountant" },
+		{ value: "zz-b@example.com", label: "B Lead" },
+	]);
+	assert.ok(!JSON.stringify(c).includes("ZZX"));
+});
+
+test("10.2: a deleted actor's choice shows the id and says so", () => {
+	const c = filterChoices({
+		...FILTERED,
+		options: { ...FILTERED.options, actors: [{ actor: "gone@example.com", actor_name: "gone@example.com", actor_missing: true }] },
+	});
+	assert.deepEqual(c.actors, [{ value: "gone@example.com", label: "gone@example.com (user deleted)" }]);
+});
+
+test("10.2 failure path: filterChoices throws on an unknown kind and on a payload with no options", () => {
+	assert.throws(
+		() => filterChoices({ ...FILTERED, options: { ...FILTERED.options, kinds: ["bogus"] } }),
+		/bogus/,
+	);
+	const p = { ...FILTERED };
+	delete p.options;
+	assert.throws(() => filterChoices(p), /options/);
+});
+
+test("10.2: filterParams sends lists as JSON and dates as given; an empty field is left out", () => {
+	assert.deepEqual(filterParams(noFilters()), {});
+	assert.deepEqual(
+		filterParams({ kinds: ["approved"], actors: [], entities: ["ZZA", GROUP_LEVEL], date_from: "2026-09-01", date_to: "" }),
+		{ kinds: '["approved"]', entities: '["ZZA","(group)"]', date_from: "2026-09-01" },
+	);
+});
+
+test("10.2: filterParams of the server's echoed filters reproduces the request", () => {
+	assert.deepEqual(filterParams(FILTERED.filters), {
+		kinds: '["approved","tb_submitted"]',
+		date_from: "2026-09-01",
+	});
+});
+
+test("10.2: toggled adds a missing value and removes a present one, never mutating", () => {
+	const list = ["a"];
+	assert.deepEqual(toggled(list, "b"), ["a", "b"]);
+	assert.deepEqual(toggled(list, "a"), []);
+	assert.deepEqual(list, ["a"]);
+});
+
+test("10.2: GROUP_LEVEL matches trail_model.py's", () => {
+	const source = readFileSync(
+		fileURLToPath(new URL("../../konsol/close/trail_model.py", import.meta.url)),
+		"utf8",
+	);
+	const m = source.match(/^GROUP_LEVEL = "([^"]*)"$/m);
+	assert.ok(m, "trail_model.py declares GROUP_LEVEL");
+	assert.equal(GROUP_LEVEL, m[1]);
+});
+
+// --- signoff_rejected (konsol#305 story 9.4, #157, #305-W5-1) -------------
+
+test('signoff_rejected -> "Sign-off rejected", block, the run as item and the reason in detail', () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "signoff_rejected",
+				reference_doctype: "Assertion Run",
+				reference_name: "AR-0007",
+				reason: "ZZA's TB is the draft",
+				detail: { signoff_status: "Signed Off", preparer: "ana@example.com" },
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].label, "Sign-off rejected");
+	assert.equal(v.rows[0].tone, "block");
+	assert.equal(v.rows[0].item, "Assertion Run AR-0007");
+	assert.equal(v.rows[0].detail, 'Reason: "ZZA\'s TB is the draft"');
+});
+
+test("a rejected summary gives Rejected — <reason> (#305-W5-1)", () => {
+	const v = trailView(
+		payload([], {
+			summary: {
+				signoff: { state: "rejected", by: "lead@example.com", at: "2026-09-20T09:00:00+00:00", reason: "ZZA's TB is the draft" },
+				closed: null,
+				locked: null,
+				counts: counts(),
+			},
+		}),
+		NOW,
+		TZ
+	);
+	assert.equal(v.signedOff, "Rejected — ZZA's TB is the draft");
+	assert.equal(v.result, null);
+});
+
+// --- konsol#305 U2: Export CSV goes through api.download, so a refusal shows ---
+
+import { exportCsv, EXPORT_CSV } from "./auditTrail.js";
+
+function trailPayload(filters) {
+	return { period: { fiscal_year: 2025, fiscal_period: 7, code: "P07" }, filters };
+}
+
+test("U2: exportCsv downloads export_trail_csv with the period and the server's echoed filters, then saves it", async () => {
+	const seen = [];
+	const download = async (method, params) => {
+		seen.push({ method, params });
+		return { blob: { size: 3 }, filename: "trail-FY2025P07.csv" };
+	};
+	const saved = [];
+	const save = (blob, filename) => saved.push({ blob, filename });
+	const echoed = { kinds: ["approved"], actors: [], entities: ["ZZA"], date_from: "2026-09-01", date_to: "" };
+	await exportCsv(trailPayload(echoed), { download, save });
+	assert.equal(EXPORT_CSV, "konsol.close.trail_api.export_trail_csv");
+	assert.deepEqual(seen, [{
+		method: EXPORT_CSV,
+		params: { fiscal_year: 2025, fiscal_period: 7, ...filterParams(echoed) },
+	}]);
+	assert.deepEqual(saved, [{ blob: { size: 3 }, filename: "trail-FY2025P07.csv" }]);
+});
+
+test("U2: a server refusal rejects with the server's own sentence and saves nothing", async () => {
+	const download = async () => {
+		throw new Error("You no longer have access to this period.");
+	};
+	const saved = [];
+	await assert.rejects(
+		exportCsv(trailPayload(noFilters()), { download, save: (...a) => saved.push(a) }),
+		{ message: "You no longer have access to this period." },
+	);
+	assert.deepEqual(saved, []);
+});
+
+test("U2: exportCsv refuses a payload with no period rather than calling the server", async () => {
+	let called = false;
+	await assert.rejects(
+		exportCsv({ filters: noFilters() }, { download: async () => { called = true; }, save: () => {} }),
+		/period/,
+	);
+	assert.equal(called, false);
+});
+
+// --- konsol#305 review-w5: the header names the year ------------------------
+
+test("trailView: the title is 'Audit trail · FY2025 P07' when the live code is 'P07' alone", () => {
+	const view = trailView(
+		payload([], { period: { fiscal_year: 2025, fiscal_period: 7, code: "P07", status: "Open" } }),
+		NOW,
+		TZ,
+	);
+	assert.equal(view.title, "Audit trail · FY2025 P07");
 });

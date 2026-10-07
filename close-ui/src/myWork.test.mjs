@@ -187,13 +187,13 @@ test("F03: Approvals' oldest and My work's since agree on the same item's age", 
 // Fixtures below mirror the real shapes konsol/close/mywork_model.py
 // returns (read 3 Oct 2026), not invented ones.
 
-test("U7: a period item (mywork_model._period_item, e.g. Rates missing) gets the kind's color and the period code", () => {
+test("U7: a period item (mywork_model._period_item, e.g. Rates missing) gets the kind's color and the period as FY + period (live code is \"P08\" alone)", () => {
 	const item = {
 		id: "rates:2026-08", kind: "blocking", title: "Rates missing (2)",
 		period: { fiscal_year: 2026, fiscal_period: 8, code: "P08", since: "2026-08-31" },
 		owner: "EPM Admin", action: { screen: "rates" },
 	};
-	assert.deepEqual(badgeFor(item), { theme: "red", label: "P08" });
+	assert.deepEqual(badgeFor(item), { theme: "red", label: "FY2026 P08" });
 });
 
 test("U7: a configuration-gap item (mywork_model.setup_gap_items) gets Setup", () => {
@@ -243,7 +243,7 @@ test("U7: an IC fix item (mywork_model.ic_fix_items) always carries a period, so
 		period: { fiscal_year: 2026, fiscal_period: 8, code: "P08", since: "2026-08-31" },
 		owner: "Entity Accountant", action: { screen: "trial-balances", entity: "ZZE" },
 	};
-	assert.deepEqual(badgeFor(item), { theme: "red", label: "P08" });
+	assert.deepEqual(badgeFor(item), { theme: "red", label: "FY2026 P08" });
 });
 
 test("U7: a waiting-kind period-less item gets the gray waiting badge, not Setup", () => {

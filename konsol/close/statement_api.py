@@ -25,6 +25,11 @@ Numbers screen has already chosen one) and ``heading`` must be a
 Published heading (``is_group``) of the chart; either failing throws, as
 does an unknown group.
 
+``export_statement(fiscal_year, fiscal_period, consolidation_group=None)``
+(GET, story 8.5, decision #305-W5-3) sends the same statement and every
+heading's drill as a downloaded .xlsx (``statement_export_model``). A
+non-ok state is refused with its own message, never an empty file.
+
 Nothing here is ever a silent empty statement:
 
 - several root Consolidation Groups and none named -> ``state
@@ -61,9 +66,28 @@ and the chart is non-empty; otherwise 0.
 import frappe
 
 from konsol import fiscal_calendar
-from konsol.close import ch_read, drill_model, signoff_gate, statement_model
+from konsol.close import (
+    ch_read, commentary_model, drill_model, signoff_gate, statement_export_model,
+    statement_model)
 from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes
+
+import importlib.util as _importlib_util
+import os as _os
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format, reachable even under the host tests' stub
+    ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.period_name
+
+
+period_name = _load_period_name()
 
 #: Who reads the Numbers screen (Close Lead, Group Accountant, Viewer;
 #: the Entity Accountant never gets the `numbers` slug, W4-E20).
@@ -155,7 +179,7 @@ def _period_key(fiscal_year, fiscal_period):
     try:
         return int(fiscal_year), int(fiscal_period)
     except (TypeError, ValueError):
-        frappe.throw(f"FY{fiscal_year} P{fiscal_period} is not a period: "
+        frappe.throw(f"Fiscal year {fiscal_year!r}, period {fiscal_period!r} is not a period: "
                      "pass the fiscal year and period as whole numbers.")
 
 
@@ -164,7 +188,7 @@ def _find_period(key, period_rows):
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) == key:
             return row
     frappe.throw(
-        "FY%d P%02d is not a declared period: declare it in EPM Fiscal Year." % key)
+        "%s is not a declared period: declare it in EPM Fiscal Year." % period_name(*key))
 
 
 def _tb_row(row):
@@ -328,6 +352,15 @@ def _drill_keys(period_rows, key, section):
 @frappe.whitelist(methods=["GET"])
 def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    return _statement(fiscal_year, fiscal_period, consolidation_group)[0]
+
+
+def _statement(fiscal_year, fiscal_period, consolidation_group):
+    """``(payload, reads)``: ``get_statement``'s payload, and — on ``ok``
+    only, else ``None`` — the reads it was built from (``key``,
+    ``period_rows``, ``accounts``, ``declared``, ``tb_rows``), so
+    ``export_statement`` drills every heading without reading them again.
+    The caller has already run ``frappe.only_for``."""
     key = _period_key(fiscal_year, fiscal_period)
     period_rows = fiscal_calendar.fiscal_period_rows()
     period_row = _find_period(key, period_rows)
@@ -386,28 +419,60 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
         "can_comment": can_comment,
     }
     if state != "ok":
-        return result
+        return result, None
 
+    accounts_map = _chart()
+    built = _group_statement(key, period_rows, chosen, declared, accounts_map)
+    if built["state"] != "ok":
+        result["state"], result["message"] = built["state"], built["message"]
+        return result, None
+
+    result["statement"] = built["statement"]
+    result["not_included"] = _not_included(key, built["entity_rows"])
+    result["commentary"] = _commentary(chosen, key)
+    reads = {"key": key, "period_rows": period_rows, "accounts": accounts_map,
+             "declared": declared, "tb_rows": built["tb_rows"]}
+    return result, reads
+
+
+_NO_CHART_MESSAGE = "Publish the group chart (Main Account) first."
+
+
+def _chart():
+    """``{code: row}`` of the Published chart (``ACCOUNT_FIELDS``); empty
+    when nothing is Published."""
     accounts = frappe.get_all(
         "Main Account", filters={"status": "Published"},
         fields=ACCOUNT_FIELDS, limit_page_length=0,
     )
-    if not accounts:
-        result["state"] = "no_chart"
-        result["message"] = "Publish the group chart (Main Account) first."
-        return result
-    accounts_map = {a["name"]: a for a in accounts}
+    return {a["name"]: a for a in accounts}
+
+
+def _group_statement(key, period_rows, group, declared, accounts_map):
+    """One group's statement for ``key``: ``{"state", "message",
+    "statement", "entity_rows", "tb_rows"}``. ``state`` is ``ok``,
+    ``no_chart`` (no ClickHouse read), ``not_built`` / ``error`` (the
+    warehouse read failed, or a NULL amount), or ``setup_gap`` (a BS
+    heading's side undeclared). The ONE statement build: ``_statement``
+    (``get_statement``, ``export_statement``) and ``signoff_commentary``
+    both call it, so the sign-off and the export check the statement the
+    Numbers screen shows."""
+    out = {"state": "ok", "message": None, "statement": None, "entity_rows": None,
+           "tb_rows": None}
+    if not accounts_map:
+        out.update(state="no_chart", message=_NO_CHART_MESSAGE)
+        return out
 
     try:
         tb_rows = [
-            _tb_row(r) for r in ch_read.rows(_TB_SQL, {"group": chosen, "fy": key[0]})
+            _tb_row(r) for r in ch_read.rows(_TB_SQL, {"group": group, "fy": key[0]})
         ]
         entity_rows = ch_read.rows(
-            _ENTITY_SQL, {"group": chosen, "fy": key[0], "fp": key[1]})
+            _ENTITY_SQL, {"group": group, "fy": key[0], "fp": key[1]})
     except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
-        result["state"] = "not_built" if ch_read.not_built(e) else "error"
-        result["message"] = _error_message(e)
-        return result
+        out.update(state="not_built" if ch_read.not_built(e) else "error",
+                   message=_error_message(e))
+        return out
 
     try:
         stmt = statement_model.statement(tb_rows, accounts_map, period_rows, key, declared)
@@ -419,14 +484,54 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
         # guessed statement either way.
         message = str(e)
         is_setup_gap = message.startswith(statement_model.STATEMENT_HEADING_SIDE_UNDECLARED)
-        result["state"] = "setup_gap" if is_setup_gap else "error"
-        result["message"] = message
-        return result
+        out.update(state="setup_gap" if is_setup_gap else "error", message=message)
+        return out
 
-    result["statement"] = stmt
-    result["not_included"] = _not_included(key, entity_rows)
-    result["commentary"] = _commentary(chosen, key)
-    return result
+    out.update(statement=stmt, entity_rows=entity_rows, tb_rows=tb_rows)
+    return out
+
+
+def signoff_commentary(fiscal_year, fiscal_period):
+    """The sign-off's commentary-threshold line (konsol#305-W5-2, story
+    8.4): ``commentary_model.requirement`` over every root Consolidation
+    Group's statement for the period (``_group_statement``: the statement
+    the Numbers screen shows, variance against the previous Regular period)
+    and the period's saved commentary.
+
+    Not whitelisted: ``signoff_gate.commentary`` calls it for
+    ``get_signoff`` and ``sign_off_close``. No ``only_for`` here, so an
+    Entity Accountant reading the sign-off summary gets the same line as the
+    Close Lead (unscoped, like intercompany). An undeclared threshold reads
+    no statement (``state "undeclared"``). A group whose statement cannot be
+    read makes the line ``unknown`` (never 0).
+
+    Reads: Close Settings 3; then, when declared, periods 1, groups 1,
+    declared accounts (``signoff_gate.statement_accounts``), the chart 1,
+    commentary 1, and ClickHouse 2 per root group (none without a chart).
+    """
+    key = _period_key(fiscal_year, fiscal_period)
+    threshold = signoff_gate.commentary_threshold()
+    if threshold["gap"] is not None:
+        return commentary_model.requirement(threshold, None)
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    _find_period(key, period_rows)
+    groups = frappe.get_all("Consolidation Group", filters=_ROOT_FILTER,
+                            fields=["consolidation_group"], limit_page_length=0)
+    declared = signoff_gate.statement_accounts()
+    accounts_map = _chart()
+    texts = {}
+    for row in frappe.get_all(
+            "Statement Commentary", filters={"fiscal_year": key[0], "fiscal_period": key[1]},
+            fields=["consolidation_group", "heading", "text"], limit_page_length=0):
+        texts.setdefault(row["consolidation_group"], {})[row["heading"]] = row.get("text") or ""
+    inputs = []
+    for g in groups:
+        name = g["consolidation_group"]
+        built = _group_statement(key, period_rows, name, declared, accounts_map)
+        inputs.append({"consolidation_group": name, "state": built["state"],
+                       "message": built["message"], "statement": built["statement"],
+                       "texts": texts.get(name, {})})
+    return commentary_model.requirement(threshold, inputs)
 
 
 @frappe.whitelist(methods=["GET"])
@@ -511,3 +616,91 @@ def get_drill(fiscal_year, fiscal_period, consolidation_group, heading):
 
     result["drill"] = drill
     return result
+
+
+def _filename(period, group):
+    """``numbers-FY2025P07-G1.xlsx``: the fiscal year and period (never the
+    ``period_code``, which live is "P07" alone, measured 6 Oct) and the
+    group, any character outside ``[A-Za-z0-9_-]`` replaced by ``_`` (a
+    group name is free text; a header value must not carry quotes or
+    separators)."""
+    import re
+
+    group = re.sub(r"[^A-Za-z0-9_-]", "_", str(group))
+    return "numbers-FY%dP%02d-%s.xlsx" % (period["fiscal_year"], period["fiscal_period"], group)
+
+
+def _statement_headings(stmt):
+    return [line["heading"] for section in stmt["sections"]
+            for line in section["lines"] if line.get("kind") == "heading"]
+
+
+def _drill_reads(payload, reads):
+    """``(drill_rows, journal_rows)`` for EVERY statement heading at once:
+    ONE entity-grain read and ONE journals read over every Published leaf
+    under a heading (never one read per heading) — ``get_drill``'s own SQL,
+    with the CTA branch when the CTA heading is on the statement."""
+    key, accounts = reads["key"], reads["accounts"]
+    group = payload["consolidation_group"]
+    headings = _statement_headings(payload["statement"])
+    leaf_codes = sorted({code for heading in headings for code in _leaf_codes(heading, accounts)})
+    cta_heading = _heading_of(reads["declared"].get("cta_account"), accounts)
+    drill_sql = _DRILL_SQL_WITH_CTA if cta_heading in headings else _DRILL_SQL
+    accounts_param = _sql_array(leaf_codes)
+    drill_rows = [
+        _drill_row(r) for r in ch_read.rows(
+            drill_sql, {"group": group, "fy": key[0], "accounts": accounts_param})
+    ]
+    journal_rows = [
+        _journal_row(r) for r in ch_read.rows(
+            _DRILL_JOURNALS_SQL,
+            {"group": group, "fy": key[0], "fp": key[1], "accounts": accounts_param})
+    ]
+    return drill_rows, journal_rows
+
+
+def _all_drills(payload, reads, drill_rows, journal_rows):
+    """``{heading: drill_model.drill(...)}`` for every statement heading.
+    ``drill_model.drill`` keeps only its own heading's leaves (and the CTA
+    rows only for the CTA heading), so each heading is handed the shared
+    rows — what ``get_drill`` would read for it alone. Raises
+    ``ValueError`` on a drill/statement mismatch or a NULL amount."""
+    key, accounts, declared = reads["key"], reads["accounts"], reads["declared"]
+    stmt = payload["statement"]
+    allowed = allowed_entity_codes()
+    drills = {}
+    for heading in _statement_headings(stmt):
+        keys = _drill_keys(reads["period_rows"], key, accounts[heading].get("statement_section"))
+        drills[heading] = drill_model.drill(
+            drill_rows, journal_rows, accounts, heading, keys, declared, allowed,
+            _line_for_heading(stmt, heading))
+    return drills
+
+
+@frappe.whitelist(methods=["GET"])
+def export_statement(fiscal_year, fiscal_period, consolidation_group=None):
+    """The Numbers statement as a downloaded .xlsx (konsol#305 story 8.5,
+    decision #305-W5-3): ``get_statement``'s payload and every heading's
+    drill, written by ``statement_export_model.workbook``. Same roles and
+    entity scope as ``get_statement``/``get_drill``. A non-ok statement
+    (``choose_group``, ``no_chart``, ``not_built``, ``error``,
+    ``setup_gap``) or a failed drill is refused with the server's own
+    sentence — never an empty file. ClickHouse is read four times
+    (``get_statement``'s two, one drill read, one journals read), whatever
+    the number of headings."""
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    payload, reads = _statement(fiscal_year, fiscal_period, consolidation_group)
+    if payload["state"] != "ok":
+        frappe.throw(payload["message"])
+    try:
+        drill_rows, journal_rows = _drill_reads(payload, reads)
+    except Exception as e:  # noqa: BLE001 — a warehouse failure refuses, never a partial file
+        frappe.throw(_error_message(e))
+    try:
+        drills = _all_drills(payload, reads, drill_rows, journal_rows)
+    except ValueError as e:
+        frappe.throw(str(e))
+    content = statement_export_model.workbook(payload, drills)
+    frappe.response["type"] = "binary"
+    frappe.response["filename"] = _filename(payload["period"], payload["consolidation_group"])
+    frappe.response["filecontent"] = content
