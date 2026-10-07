@@ -25,7 +25,10 @@ import {
   ownershipGapsCount,
   mergeDrafts,
   moveFlagView,
+  ownershipChangeBody,
+  ownershipEffectView,
 } from "./rates.js";
+import * as ratesModule from "./rates.js";
 
 function cell(overrides = {}) {
   return {
@@ -574,8 +577,8 @@ test("pendingCreatedText: today shows HH:MM, in the viewer's own zone", () => {
   assert.equal(pendingCreatedText("2026-09-25T09:30:00+00:00", NOW, "Europe/London"), "10:30");
 });
 
-test("pendingCreatedText: an earlier day renders as 'Sep 20, 10:42', the same text as the TB list", () => {
-  assert.equal(pendingCreatedText("2026-09-20T09:42:00+00:00", NOW, "Europe/London"), "Sep 20, 10:42");
+test("pendingCreatedText: an earlier day renders as '20 Sep, 10:42', the same text as the TB list", () => {
+  assert.equal(pendingCreatedText("2026-09-20T09:42:00+00:00", NOW, "Europe/London"), "20 Sep, 10:42");
 });
 
 test("pendingCreatedText: null/undefined `created` reads 'not recorded', never a guessed time", () => {
@@ -627,7 +630,7 @@ test("ownershipView: counts out-of-scope and surfaces the hidden count", () => {
     blocking: [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }],
     out_of_scope: ["ZZC", "ZZD"],
     in_scope_count: 306,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 3,
   });
   assert.deepEqual(view.blocking, [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }]);
@@ -642,7 +645,7 @@ test("ownershipView: blocking_hidden is surfaced separately from the combined hi
     blocking: [],
     out_of_scope: ["ZZC"],
     in_scope_count: 10,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 3,
     blocking_hidden: 2,
   });
@@ -655,10 +658,49 @@ test("ownershipView: blocking_hidden defaults to 0 when the payload omits it", (
     blocking: [],
     out_of_scope: [],
     in_scope_count: 1,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 0,
   });
   assert.equal(view.blockingHidden, 0);
+});
+
+// -- R53f (#305-R52-4, U10c/U10e): canChange from the server's can_change ------
+// Fed the REAL get_ownership golden (R53e regenerated it from the stub-site
+// call); the Viewer case is that golden with can_change false and change null,
+// exactly what R53e sends a caller the save would refuse.
+
+const OWNERSHIP_GOLDEN = fixture("close_ownership_payload.json");
+const OWNERSHIP_VIEWER = { ...OWNERSHIP_GOLDEN, can_change: false, change: null };
+
+test("R53f: ownershipView carries the server's can_change as canChange (the golden: true)", () => {
+  assert.equal(OWNERSHIP_GOLDEN.can_change, true, "the golden is a caller the save admits");
+  const view = ownershipView(OWNERSHIP_GOLDEN);
+  assert.equal(view.canChange, true);
+  assert.equal(view.canRecord, true, "can_record still drives the Desk link");
+});
+
+test("R53f failure path: the Viewer payload (can_change false, change null) gives canChange false", () => {
+  const view = ownershipView(OWNERSHIP_VIEWER);
+  assert.equal(view.canChange, false);
+});
+
+test("R53f failure path: canChange never follows can_record", () => {
+  const view = ownershipView({ ...OWNERSHIP_VIEWER, can_record: true });
+  assert.equal(view.canRecord, true);
+  assert.equal(view.canChange, false);
+});
+
+test("R53f failure path: a payload without can_change throws", () => {
+  const { can_change, ...missing } = OWNERSHIP_GOLDEN;
+  assert.throws(() => ownershipView(missing), {
+    message: "ownershipView: get_ownership's payload has no can_change",
+  });
+});
+
+test("R53f failure path: can_change true without the change choices throws", () => {
+  assert.throws(() => ownershipView({ ...OWNERSHIP_GOLDEN, change: null }), {
+    message: "ownershipView: get_ownership says can_change but sends no change",
+  });
 });
 
 // -- ownershipEmptyMessage (#305-R01q: SPA should-fix 9) ---------------------
@@ -668,7 +710,7 @@ test("ownershipEmptyMessage: a hidden blocking gap is never read as 'no gaps' --
     blocking: [],
     out_of_scope: [],
     in_scope_count: 10,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 2,
     blocking_hidden: 2,
   });
@@ -680,7 +722,7 @@ test("ownershipEmptyMessage: singular 'gap' for exactly one hidden blocking enti
     blocking: [],
     out_of_scope: [],
     in_scope_count: 5,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 1,
     blocking_hidden: 1,
   });
@@ -692,7 +734,7 @@ test("ownershipEmptyMessage: no blocking and nothing hidden says there are no ga
     blocking: [],
     out_of_scope: [],
     in_scope_count: 10,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 0,
     blocking_hidden: 0,
   });
@@ -704,7 +746,7 @@ test("ownershipEmptyMessage: null when there are visible blocking entries, regar
     blocking: [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }],
     out_of_scope: [],
     in_scope_count: 1,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 2,
     blocking_hidden: 2,
   });
@@ -789,4 +831,371 @@ test("mergeDrafts: a clean draft with no error is rebuilt as a new object (not t
   const merged = mergeDrafts(old, viewCell(1.25, "100"), false);
   assert.notEqual(merged, old, "a clean, un-refused draft is replaced, not mutated in place");
   assert.deepEqual(merged, old);
+});
+
+// ---------------------------------------------------------------------------
+// konsol#305 O59 (story 4.2; wireframe-4.2.md, confirmed as drawn by Deepak
+// Pai 7 Oct): the ownership change body and the effect panel's view. Fed the
+// REAL producers' output: O55's preview golden files and O57's pending golden
+// file, each asserted equal to the stub-site call by its own host test.
+
+function fixture(name) {
+  return JSON.parse(
+    fs.readFileSync(new URL(`../../konsol/tests/fixtures/${name}`, import.meta.url), "utf8"),
+  );
+}
+
+const PREVIEW = fixture("close_ownership_preview_payload.json");
+const REFUSED = fixture("close_ownership_preview_refused.json");
+const PENDING = fixture("close_rates_pending_payload.json");
+
+// The O56 signature, read from the endpoint itself, so the body cannot drift
+// from what save_ownership_change accepts.
+function saveOwnershipChangeParams() {
+  const src = fs.readFileSync(new URL("../../konsol/close/rates_api.py", import.meta.url), "utf8");
+  const m = /def save_ownership_change\(([^)]*)\)/.exec(src);
+  assert.ok(m, "save_ownership_change is not defined in rates_api.py");
+  return m[1].split(",").map((p) => p.trim().split("=")[0].trim()).filter(Boolean);
+}
+
+const PERIOD = { fiscal_year: 2025, fiscal_period: 10 };
+// Dates are written as literal strings in dueDate.js's pinned wording
+// (R52l): an expectation never comes from the function under test.
+const FORM = {
+  consolidationGroup: "ECL_GROUP",
+  entity: "ZZ5B1",
+  ownershipPct: "80",
+  consolidationMethod: "full",
+};
+
+test("O59 ownershipChangeBody: exactly the save_ownership_change keys, pct as a number", () => {
+  const { body, error } = ownershipChangeBody(PERIOD, FORM);
+  assert.equal(error, undefined);
+  assert.deepEqual(body, {
+    fiscal_year: 2025,
+    fiscal_period: 10,
+    consolidation_group: "ECL_GROUP",
+    entity: "ZZ5B1",
+    ownership_pct: 80,
+    consolidation_method: "full",
+  });
+  const params = saveOwnershipChangeParams();
+  assert.deepEqual(Object.keys(body).sort(), params.filter((p) => p !== "name").sort());
+});
+
+test("O59 ownershipChangeBody: editing a draft carries its name, and only then", () => {
+  const { body } = ownershipChangeBody(PERIOD, { ...FORM, name: "OP-ZZ5B1-2025-10-01" });
+  assert.equal(body.name, "OP-ZZ5B1-2025-10-01");
+  assert.deepEqual(Object.keys(body).sort(), saveOwnershipChangeParams().sort());
+  assert.equal("name" in ownershipChangeBody(PERIOD, { ...FORM, name: "" }).body, false);
+});
+
+test("O59 ownershipChangeBody: forged keys never reach the body", () => {
+  const { body } = ownershipChangeBody(PERIOD, {
+    ...FORM,
+    docstatus: 1,
+    supersedes: "OP-X",
+    end_date: "2025-12-31",
+    superseded_end_date: "2025-12-31",
+    acquisition_date: "2025-10-01",
+  });
+  for (const key of ["docstatus", "supersedes", "end_date", "superseded_end_date", "acquisition_date"]) {
+    assert.equal(key in body, false, key);
+  }
+});
+
+test("O59 ownershipChangeBody: a blank entity is refused, no body", () => {
+  for (const entity of ["", null, undefined, "   "]) {
+    const out = ownershipChangeBody(PERIOD, { ...FORM, entity });
+    assert.equal(out.body, undefined, String(entity));
+    assert.equal(out.error, "Choose an entity.");
+  }
+});
+
+test("O59 ownershipChangeBody: a bad pct is refused with the server's own sentence", () => {
+  // The server's sentence, as the REAL preview returns it (O55 refused golden).
+  const serverSentence = REFUSED.problems.find((p) => p.startsWith("Ownership %"));
+  assert.ok(serverSentence);
+  for (const pct of ["", null, undefined, "abc", "80abc", "NaN", "Infinity", "-1", "100.01", -0.5, 101, true]) {
+    const out = ownershipChangeBody(PERIOD, { ...FORM, ownershipPct: pct });
+    assert.equal(out.body, undefined, String(pct));
+    assert.equal(out.error, serverSentence, String(pct));
+  }
+  for (const [pct, n] of [["0", 0], ["100", 100], [" 80.5 ", 80.5], [60, 60]]) {
+    assert.equal(ownershipChangeBody(PERIOD, { ...FORM, ownershipPct: pct }).body.ownership_pct, n);
+  }
+});
+
+test("O59 ownershipEffectView: the wireframe panel from the REAL preview", () => {
+  const view = ownershipEffectView(PREVIEW.effect);
+  assert.deepEqual(view.rows, [
+    { label: "Ownership", before: "100 %", after: "80 %", unchanged: false },
+    { label: "Method", before: "full", after: "full", unchanged: true },
+    {
+      label: "Covers",
+      before: `Wed 1 Jan 2025 → Tue 30 Sep 2025`,
+      after: `Wed 1 Oct 2025 → open-ended`,
+      unchanged: false,
+      note: "(now open-ended; ends on approval)",
+    },
+  ]);
+  assert.equal(view.currentEnds, "Tue 30 Sep 2025");
+  // wireframe-4.2.md §3: "Ends  <current_name> on <date>" (O65).
+  assert.equal(view.endsLine, `OP-ZZ5B1-1 on Tue 30 Sep 2025`);
+  assert.equal(view.firstPeriod, "FY2025 P10");
+  assert.equal(view.periods, "FY2025 P10 onward (open-ended)");
+  // wireframe-4.2.md §1: "FY2025 P11 (signed <date> by <name>)" (O65).
+  // R52f: exactly one entry; the signed Closing P13 is never marked by the
+  // approval, so the REAL preview no longer lists it.
+  assert.deepEqual(view.resign, [
+    `FY2025 P11 (signed Sat 4 Oct 2025 by Zz Lead)`,
+  ]);
+  assert.equal(view.resignNone, null);
+  assert.equal(view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
+});
+
+test("O59 ownershipEffectView: the pending item's effect (O57 golden) gives the same panel", () => {
+  const op = PENDING.items.find((i) => i.doctype === "Ownership Period" && i.ownership_effect);
+  assert.deepEqual(ownershipEffectView(op.ownership_effect), ownershipEffectView(PREVIEW.effect));
+});
+
+test("O59 ownershipEffectView: no signed period reads the wireframe sentence", () => {
+  const view = ownershipEffectView({ ...PREVIEW.effect, resign: [], resign_detail: [] });
+  assert.deepEqual(view.resign, []);
+  assert.equal(view.resignNone, "No signed period is affected.");
+});
+
+test("O59 ownershipEffectView: a current period with an end date keeps it in the note and after", () => {
+  const effect = {
+    ...PREVIEW.effect,
+    before: { ...PREVIEW.effect.before, to: "2026-03-31" },
+    after: { ...PREVIEW.effect.after, to: "2026-03-31" },
+  };
+  const covers = ownershipEffectView(effect).rows[2];
+  assert.equal(covers.before, `Wed 1 Jan 2025 → Tue 30 Sep 2025`);
+  assert.equal(covers.after, `Wed 1 Oct 2025 → Tue 31 Mar 2026`);
+  assert.equal(covers.note, `(now to Tue 31 Mar 2026; ends on approval)`);
+});
+
+test("O59 ownershipEffectView: failure path — an effect without resign throws", () => {
+  const { resign, ...rest } = PREVIEW.effect;
+  assert.throws(() => ownershipEffectView(rest), /resign/);
+});
+
+test("O65 ownershipEffectView: the approvals golden names its own predecessor and signer", () => {
+  const ops = fixture("close_approvals_op_queue_payload.json").items.filter((i) => i.ownership_effect);
+  assert.ok(ops.length, "the approvals golden carries an effect");
+  const view = ownershipEffectView(ops[0].ownership_effect);
+  assert.equal(view.endsLine, `OP-ZZ58-1 on Tue 30 Jun 2026`);
+  assert.deepEqual(view.resign, [`FY2026 P07 (signed Tue 4 Aug 2026 by Zz Lead)`]);
+});
+
+test("O65 ownershipEffectView: failure path — a missing current_name or resign_detail throws", () => {
+  for (const key of ["current_name", "resign_detail"]) {
+    const broken = { ...PREVIEW.effect };
+    delete broken[key];
+    assert.throws(() => ownershipEffectView(broken), new RegExp(key), key);
+  }
+  for (const bad of [null, "", "  "]) {
+    assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, current_name: bad }), /current_name/, String(bad));
+  }
+  assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, resign_detail: null }), /resign_detail/);
+});
+
+test("O65 ownershipEffectView: failure path — a re-sign entry without its date or signer throws, never a blank", () => {
+  const detail = PREVIEW.effect.resign_detail;
+  for (const key of ["period", "signed_on", "signed_by_name"]) {
+    const entry = { ...detail[0] };
+    delete entry[key];
+    const broken = { ...PREVIEW.effect, resign_detail: [entry] };
+    assert.throws(() => ownershipEffectView(broken), new RegExp(`resign_detail.${key}`), key);
+  }
+  for (const name of [null, "", "  "]) {
+    const broken = { ...PREVIEW.effect, resign_detail: [{ ...detail[0], signed_by_name: name }] };
+    assert.throws(() => ownershipEffectView(broken), /signed_by_name/, String(name));
+  }
+  const badDate = { ...PREVIEW.effect, resign_detail: [{ ...detail[0], signed_on: "04/10/2025" }] };
+  assert.throws(() => ownershipEffectView(badDate), /ISO/);
+});
+
+test("O65 ownershipEffectView: failure path — resign_detail out of step with resign throws", () => {
+  const detail = PREVIEW.effect.resign_detail;
+  // R52f: the REAL preview lists exactly one re-sign period (P11).
+  assert.deepEqual(PREVIEW.effect.resign, ["FY2025 P11"]);
+  assert.equal(detail.length, 1);
+  // Fewer entries than resign, more entries than resign, and an entry naming
+  // another period all throw.
+  assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [] }), /resign_detail/);
+  assert.throws(
+    () => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [detail[0], detail[0]] }),
+    /resign_detail/,
+  );
+  assert.throws(
+    () => ownershipEffectView({ ...PREVIEW.effect, resign_detail: [{ ...detail[0], period: "FY2025 P13" }] }),
+    /resign_detail FY2025 P13 does not match resign FY2025 P11/,
+  );
+});
+
+test("O59 ownershipEffectView: every other missing key throws, never a guessed panel", () => {
+  for (const key of Object.keys(PREVIEW.effect)) {
+    const broken = { ...PREVIEW.effect };
+    delete broken[key];
+    assert.throws(() => ownershipEffectView(broken), new RegExp(key), key);
+  }
+  for (const side of ["before", "after"]) {
+    for (const key of ["pct", "method", "from", "to"]) {
+      const broken = { ...PREVIEW.effect, [side]: { ...PREVIEW.effect[side] } };
+      delete broken[side][key];
+      assert.throws(() => ownershipEffectView(broken), new RegExp(`${side}.${key}`), `${side}.${key}`);
+    }
+  }
+  assert.throws(() => ownershipEffectView(null), /effect/);
+  assert.throws(() => ownershipEffectView({ ...PREVIEW.effect, current_ends: "30/09/2025" }), /ISO/);
+});
+
+// ---------------------------------------------------------------------------
+// konsol#305 O67 (wireframe-4.2.md section 1, "The Analyst can edit it until
+// it is approved", confirmed by Deepak Pai 7 Oct): get_pending's Ownership
+// Period items carry the server-decided `edit` (O69). pendingView keeps it,
+// checked, and ownershipDraftEdits maps each editable draft's name to it.
+// Fed the REAL O69 golden (close_rates_pending_payload.json).
+// ---------------------------------------------------------------------------
+
+const EDIT_KEYS = ["consolidation_group", "entity", "fiscal_year", "fiscal_period", "ownership_pct", "consolidation_method"];
+
+test("O67 pendingView keeps each OP item's server `edit` as sent; an HER item gets no edit", () => {
+  const view = pendingView(PENDING);
+  const byName = Object.fromEntries(view.items.map((i) => [i.name, i]));
+  assert.deepEqual(byName["OP-ZZ5B1-2025-10-01"].edit, PENDING.items[1].edit);
+  assert.deepEqual(Object.keys(byName["OP-ZZ5B1-2025-10-01"].edit).sort(), [...EDIT_KEYS].sort());
+  assert.equal(byName["OP-ZZ5B2-2025-10-01"].edit, null, "the Desk draft is not editable here");
+  assert.equal("edit" in byName["HER-ZZ5B1-1"], false);
+});
+
+test("O67 failure path: an OP item without `edit`, or an edit without one of its keys, throws naming it", () => {
+  const op = PENDING.items[1];
+  const { edit, ...noEdit } = op;
+  assert.throws(() => pendingView({ ...PENDING, items: [noEdit] }), /OP-ZZ5B1-2025-10-01.*edit/);
+  for (const key of EDIT_KEYS) {
+    const partial = { ...op.edit };
+    delete partial[key];
+    assert.throws(() => pendingView({ ...PENDING, items: [{ ...op, edit: partial }] }), new RegExp(key), key);
+  }
+});
+
+test("O67 ownershipDraftEdits: only the drafts the server made editable, keyed by name", () => {
+  assert.equal(typeof ratesModule.ownershipDraftEdits, "function", "rates.js exports ownershipDraftEdits");
+  const edits = ratesModule.ownershipDraftEdits(pendingView(PENDING).items);
+  assert.deepEqual(edits, { "OP-ZZ5B1-2025-10-01": PENDING.items[1].edit });
+  assert.deepEqual(ratesModule.ownershipDraftEdits([]), {});
+});
+
+// ---------------------------------------------------------------------------
+// konsol#305 R52o (review U6 part 1, the S2 consumer): one ownership-effect
+// view, `opEffectView(item)`, shared by the pending list and (R52p) the
+// Approvals detail. Fed the REAL goldens (close_rates_pending_payload.json,
+// close_approvals_op_queue_payload.json; both carry `effect_error` from
+// R52i). Expected strings are literals.
+// ---------------------------------------------------------------------------
+
+const OP_QUEUE = fixture("close_approvals_op_queue_payload.json");
+
+// The real server sentence: rates_api.get_pending on test_close_rates_api.py's
+// R52i site (a draft whose `supersedes` names a cancelled period).
+const R52O_SERVER_ERROR =
+  "The pending ownership change OP-ZZ5B3-2025-10-01 cannot be shown: OP-ZZ5B3-2025-10-01 supersedes " +
+  "OP-ZZ5B3-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.";
+
+function r52oItem(payload, name) {
+  const item = payload.items.find((i) => i.name === name);
+  assert.ok(item, `the golden has ${name}`);
+  return item;
+}
+
+test("R52o opEffectView: the golden change draft gives the pending panel (Ownership, Method, Ends; no Covers row)", () => {
+  assert.equal(typeof ratesModule.opEffectView, "function", "rates.js exports opEffectView");
+  const item = r52oItem(pendingView(PENDING), "OP-ZZ5B1-2025-10-01");
+  assert.equal(item.ownership_effect_error, null, "R52i/R52q: the golden carries ownership_effect_error null");
+  assert.deepEqual(ratesModule.opEffectView(item), {
+    view: {
+      rows: [
+        { label: "Ownership", before: "100 %", after: "80 %", unchanged: false },
+        { label: "Method", before: "full", after: "full", unchanged: true },
+      ],
+      currentEnds: "Tue 30 Sep 2025",
+      endsLine: "OP-ZZ5B1-1 on Tue 30 Sep 2025",
+      firstPeriod: "FY2025 P10",
+      periods: "FY2025 P10 onward (open-ended)",
+      resign: ["FY2025 P11 (signed Sat 4 Oct 2025 by Zz Lead)"],
+      resignNone: null,
+      notShown: "Goodwill, NCI and results are not previewed; they change at the next build.",
+    },
+  });
+});
+
+test("R52o opEffectView: the golden Desk draft (ownership_effect null, ownership_effect_error null) gives the Desk sentence", () => {
+  assert.equal(ratesModule.DESK_DRAFT, "Drafted in Desk: effect not previewed.");
+  const item = r52oItem(pendingView(PENDING), "OP-ZZ5B2-2025-10-01");
+  assert.deepEqual(ratesModule.opEffectView(item), { desk: "Drafted in Desk: effect not previewed." });
+});
+
+test("R52o opEffectView failure path: every golden OP item with the server's effect_error gives that sentence, never the Desk line", () => {
+  const items = [
+    ...pendingView(PENDING).items,
+    ...OP_QUEUE.items,
+  ].filter((i) => i.doctype === "Ownership Period");
+  assert.equal(items.length, 4, "two OP items in each golden");
+  for (const item of items) {
+    const broken = { ...item, ownership_effect: null, ownership_effect_error: R52O_SERVER_ERROR };
+    assert.deepEqual(ratesModule.opEffectView(broken), { error: R52O_SERVER_ERROR }, item.name);
+  }
+});
+
+test("R52o opEffectView failure path: a missing ownership_effect or ownership_effect_error key throws", () => {
+  const item = r52oItem(pendingView(PENDING), "OP-ZZ5B1-2025-10-01");
+  const noEffect = { ...item };
+  delete noEffect.ownership_effect;
+  assert.throws(() => ratesModule.opEffectView(noEffect), /OP-ZZ5B1-2025-10-01 has no ownership_effect$/);
+  const noError = { ...item };
+  delete noError.ownership_effect_error;
+  assert.throws(() => ratesModule.opEffectView(noError), /OP-ZZ5B1-2025-10-01 has no ownership_effect_error/);
+  const { resign, ...noResign } = item.ownership_effect;
+  assert.throws(() => ratesModule.opEffectView({ ...item, ownership_effect: noResign }), /resign/);
+});
+
+// ---------------------------------------------------------------------------
+// konsol#305 R52q (review S18, the O62 watch): an Ownership Period item's
+// effect arrives as `ownership_effect` / `ownership_effect_error`, never the
+// journal's `effect`. Fed the REAL regenerated goldens; expected strings are
+// literals.
+// ---------------------------------------------------------------------------
+
+test("R52q: both goldens' OP items carry ownership_effect and ownership_effect_error, never effect", () => {
+  const items = [...PENDING.items, ...OP_QUEUE.items].filter((i) => i.doctype === "Ownership Period");
+  assert.equal(items.length, 4, "two OP items in each golden");
+  for (const item of items) {
+    assert.ok("ownership_effect" in item, `${item.name} carries ownership_effect`);
+    assert.equal(item.ownership_effect_error, null, item.name);
+    assert.equal("effect" in item, false, `${item.name} carries no effect`);
+    assert.equal("effect_error" in item, false, `${item.name} carries no effect_error`);
+  }
+});
+
+test("R52q: the approvals golden's change draft gives the pending panel through opEffectView", () => {
+  const item = r52oItem(OP_QUEUE, "OP-ZZ58-2026-07-01");
+  assert.deepEqual(ratesModule.opEffectView(item).view.rows, [
+    { label: "Ownership", before: "100 %", after: "80 %", unchanged: false },
+    { label: "Method", before: "full", after: "full", unchanged: true },
+  ]);
+  assert.deepEqual(ratesModule.opEffectView(r52oItem(OP_QUEUE, "OP-ZZ58B-2026-07-01")), {
+    desk: "Drafted in Desk: effect not previewed.",
+  });
+});
+
+test("R52q failure path: an item carrying the old effect key but no ownership_effect throws", () => {
+  const item = r52oItem(pendingView(PENDING), "OP-ZZ5B1-2025-10-01");
+  const old = { ...item, effect: item.ownership_effect, effect_error: null };
+  delete old.ownership_effect;
+  delete old.ownership_effect_error;
+  assert.throws(() => ratesModule.opEffectView(old), /OP-ZZ5B1-2025-10-01 has no ownership_effect/);
 });

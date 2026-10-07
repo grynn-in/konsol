@@ -254,7 +254,7 @@ test("a sent-back item carries the rejection's reason, actor and formatted time"
 			rejection: { reason: "Wrong quote", actor: "dave@example.com", at: "2026-09-21T09:30:00+00:00" },
 		})],
 	}), NOW, TZ);
-	assert.deepEqual(view.sentBack[0].rejection, { reason: "Wrong quote", actor: "dave@example.com", at: "Sep 21, 09:30" });
+	assert.deepEqual(view.sentBack[0].rejection, { reason: "Wrong quote", actor: "dave@example.com", at: "21 Sep, 09:30" });
 });
 
 test("a sent-back Desk item (BC/BD) still carries its deskLink", () => {
@@ -336,4 +336,89 @@ test("D06 failure path: a journal item without `dimensions` throws (approvals_ap
 test("D06: a non-journal item gets no dimensions key", () => {
 	const view = queueView(payload({ items: [gerItem()] }), NOW, TZ);
 	assert.equal("dimensions" in view.items[0], false);
+});
+
+// --- R52p (review U6, the O62 watch): the journal effectView runs only on journals ---
+//
+// Fed the REAL golden Approvals queue (close_approvals_op_queue_payload.json,
+// the stub-site get_queue() of test_close_approvals_api.py) and the REAL
+// journal golden (close_approvals_journal_item.json). An Ownership Period
+// item's effect is rates.js's ownership effect (O58), not a journal effect:
+// queueView passes it, and its error (R52i), through unchanged. Since R52q
+// (review S18) the server names them `ownership_effect` and
+// `ownership_effect_error`, so an OP item carries no `effect` key at all.
+
+import { effectView } from "./adjustments.js";
+
+const R52P_OP_QUEUE = fileURLToPath(
+	new URL("../../konsol/tests/fixtures/close_approvals_op_queue_payload.json", import.meta.url),
+);
+const R52P_JOURNAL = fileURLToPath(
+	new URL("../../konsol/tests/fixtures/close_approvals_journal_item.json", import.meta.url),
+);
+const R52P_NOW = new Date("2026-07-02T09:00:00Z");
+const R52P_TZ = "Europe/London";
+const R52P_SERVER_ERROR =
+	"The pending ownership change OP-ZZ58-2026-07-01 cannot be shown: OP-ZZ58-2026-07-01 supersedes " +
+	"OP-ZZ58-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.";
+
+function r52pGolden(file) {
+	return JSON.parse(readFileSync(file, "utf8"));
+}
+
+test("R52p/R52q: the golden OP change item keeps the server's ownership_effect and ownership_effect_error, with no rawEffect", () => {
+	const server = r52pGolden(R52P_OP_QUEUE);
+	const view = queueView(server, R52P_NOW, R52P_TZ);
+	const item = view.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	const raw = server.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	assert.ok(raw.ownership_effect, "R52q: the golden names the OP effect ownership_effect");
+	assert.deepEqual(item.ownership_effect, raw.ownership_effect, "the OP effect is the server's, not effectView's journal shape");
+	assert.equal(item.ownership_effect.current_name, "OP-ZZ58-1");
+	assert.equal("headings" in item.ownership_effect, false, "never the journal view's headings");
+	assert.equal(item.ownership_effect_error, null);
+	assert.equal("effect" in item, false, "R52q: an OP item never carries the journal's effect key");
+	assert.equal("rawEffect" in item, false);
+});
+
+test("R52p/R52q failure path: the golden Desk OP draft keeps ownership_effect null, never the journal note", () => {
+	const view = queueView(r52pGolden(R52P_OP_QUEUE), R52P_NOW, R52P_TZ);
+	const item = view.items.find((i) => i.name === "OP-ZZ58B-2026-07-01");
+	assert.equal(item.ownership_effect, null);
+	assert.equal(item.ownership_effect_error, null);
+	assert.equal("effect" in item, false);
+	assert.equal("rawEffect" in item, false);
+});
+
+test("R52p/R52q failure path: a golden OP item carrying the server's ownership_effect_error passes it through unchanged", () => {
+	const server = r52pGolden(R52P_OP_QUEUE);
+	const op = server.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	op.ownership_effect = null;
+	op.ownership_effect_error = R52P_SERVER_ERROR;
+	const item = queueView(server, R52P_NOW, R52P_TZ).items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	assert.equal(item.ownership_effect, null);
+	assert.equal(item.ownership_effect_error, R52P_SERVER_ERROR);
+	assert.equal("rawEffect" in item, false);
+});
+
+test("R52p failure path: an OP item that carried an `effect` key would still never run the journal effectView", () => {
+	const server = r52pGolden(R52P_OP_QUEUE);
+	const op = server.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	op.effect = op.ownership_effect;
+	const item = queueView(server, R52P_NOW, R52P_TZ).items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	assert.deepEqual(item.effect, op.ownership_effect, "passed through, not turned into the journal view");
+	assert.equal("rawEffect" in item, false);
+});
+
+test("R52p: the golden HER item gets no effect and no rawEffect", () => {
+	const item = queueView(r52pGolden(R52P_OP_QUEUE), R52P_NOW, R52P_TZ).items.find((i) => i.name === "HER-ZZ58");
+	assert.equal("effect" in item, false);
+	assert.equal("rawEffect" in item, false);
+});
+
+test("R52p: the golden journal item is unchanged — effect is the view, rawEffect the server's", () => {
+	const server = r52pGolden(R52P_JOURNAL);
+	const item = queueView(payload({ items: [server] }), NOW, TZ).items[0];
+	assert.deepEqual(item.rawEffect, server.effect);
+	assert.deepEqual(item.effect, effectView(server.effect));
+	assert.ok(Array.isArray(item.effect.headings) && item.effect.headings.length > 0);
 });

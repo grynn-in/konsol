@@ -17,8 +17,15 @@
  *   branch per state.
  * - Selecting a pair opens a side panel, built by the pure `panel(pair)`
  *   helper: both sides (or the hidden label), the difference, the
- *   difference-account sentence, and the pair's own send-back trail entry
- *   (replies and Remind are P2, not built).
+ *   difference-account sentence, the pair's own send-back trail entry
+ *   (replies are not built), and each side's reminded text.
+ * - Y65 (stories 1.5, 5.2; C-R1): each side of the panel shows remind.js's
+ *   reminded text (`selectedPanel.remindA/B.text`). When `panel` says the
+ *   side `canRemind` (the server's per-side `can_remind_a`/`can_remind_b`: over tolerance and visible, #305-R52-2-1),
+ *   a "Remind <entity>" button posts `remindBody(period, entity, "ic")`
+ *   through the one function `remind(side)`. On success get_ic is re-read
+ *   once; a refusal shows the server's sentence through `messageLines`
+ *   under that side and leaves the panel as it was.
  * - C04 POST `ic_api.send_back`, through the ONE function
  *   `sendBack(pair, reason)`, reached only from the panel. `sendBackBody`
  *   (C12) refuses a blank reason client-side before anything is posted. The
@@ -36,14 +43,17 @@
  *   server sends; it blocks sign-off (the gate, not this screen, decides).
  *   F51b: a pair two or more rules match (dbt eliminates it once per rule)
  *   shows the server's `ambiguous_gap` the same way, and its row is marked.
+ *   I54 (S8): a draft whose pair has a matching rule is not eliminated until
+ *   approved; the server's `pending_gap` is shown the same way, and each such
+ *   draft row carries the note from `icBalancesView`.
  *   An Analyst drafts or edits a draft through the ONE function
  *   `saveBalance()`, its body built by `icBalanceBody`; the form renders
  *   only when the server says `can_draft`. There is no approve here: the
  *   Admin approves in Approvals (R2).
  *
  * The period comes from the URL (route.js, D5): nothing is kept in the
- * browser, and there is no "last viewed" memory. Not built here (P2 / no
- * story): Remind, replies in the trail, evidence.
+ * browser, and there is no "last viewed" memory. Not built here (no
+ * story): replies in the trail, evidence.
  */
 import { computed, inject, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -61,6 +71,7 @@ import {
 	icBalanceBody,
 } from "../intercompany.js";
 import { messageLines } from "../signoff.js";
+import { REMIND, remindBody } from "../remind.js";
 import { userTimeZone } from "../timefmt.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 import { periodName as formatPeriod } from "../periodName.js";
@@ -92,6 +103,10 @@ const selectedKey = ref(null);
 const sendBackReason = ref("");
 const sendBackError = ref(null);
 const sendBackBusy = ref(false);
+// Y65: `reminding` is the entity being posted for; `remindError` is the
+// server's refusal for one entity, split into lines.
+const reminding = ref(null);
+const remindError = ref(null);
 
 function pairId(pair) {
 	return [pair.consolidation_group, pair.entity_a, pair.account_a, pair.entity_b, pair.account_b].join("|");
@@ -139,11 +154,13 @@ function selectPair(pair) {
 	selectedKey.value = pairId(pair);
 	sendBackReason.value = "";
 	sendBackError.value = null;
+	remindError.value = null;
 }
 function closePanel() {
 	selectedKey.value = null;
 	sendBackReason.value = "";
 	sendBackError.value = null;
+	remindError.value = null;
 }
 
 async function loadIc({ quiet = false } = {}) {
@@ -195,6 +212,22 @@ async function sendBack(pair, reason) {
 	sendBackReason.value = "";
 	await loadIc({ quiet: true });
 	reloadContext();
+}
+
+/** The one function that sends a reminder (Y65). A refusal leaves the panel as it was. */
+async function remind(side) {
+	if (!period.value) return;
+	const p = period.value;
+	remindError.value = null;
+	reminding.value = side.entity;
+	try {
+		await post(REMIND, remindBody({ fiscal_year: p.year, fiscal_period: p.period }, side.entity, "ic"));
+		await loadIc({ quiet: true });
+	} catch (e) {
+		remindError.value = { entity: side.entity, lines: messageLines(e.message) };
+	} finally {
+		reminding.value = null;
+	}
 }
 
 // --- IC Balances (5.4) ---------------------------------------------------
@@ -508,6 +541,17 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 						>Keep one rule per pair in Desk</a>
 					</div>
 
+					<div
+						v-if="balancesView.pendingGap"
+						role="alert"
+						class="mb-4 rounded border border-outline-red-1 bg-surface-red-1 px-4 py-3 text-sm text-ink-gray-8"
+					>
+						<p v-for="(line, i) in balancesView.pendingGap.lines" :key="i">{{ line }}</p>
+						<ul class="mt-1 list-disc pl-5">
+							<li v-for="pair in balancesView.pendingGap.pairs" :key="pair">{{ pair }}</li>
+						</ul>
+					</div>
+
 					<p v-if="balancesView.hiddenNote" class="mb-3 text-xs text-ink-gray-5">{{ balancesView.hiddenNote }}</p>
 
 					<p
@@ -539,6 +583,7 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 											class="inline-block rounded px-2 py-0.5 text-xs font-medium"
 											:class="row.statusTone === 'ok' ? 'bg-surface-green-2 text-ink-green-4' : 'bg-surface-amber-2 text-ink-amber-4'"
 										>{{ row.statusText }}</span>
+										<p v-if="row.pendingNote" class="mt-1 text-xs text-ink-red-4">{{ row.pendingNote }}</p>
 									</td>
 									<td class="px-3 py-2 text-right">
 										<Button v-if="row.editable" variant="ghost" size="sm" @click="editBalance(row)">Edit</Button>
@@ -633,11 +678,33 @@ const subtitleGroups = computed(() => (view.value ? view.value.groups : []));
 					<p class="text-xs uppercase tracking-wide text-ink-gray-6">Side A</p>
 					<p class="text-ink-gray-9">{{ selectedPanel.sideA.entity }} · {{ selectedPanel.sideA.account }}</p>
 					<p class="font-mono text-ink-gray-8">{{ selectedPanel.sideA.amount }}</p>
+					<p v-if="selectedPanel.remindA.text" class="mt-1 text-xs text-ink-gray-6">{{ selectedPanel.remindA.text }}</p>
+					<button
+						v-if="selectedPanel.remindA.canRemind"
+						type="button"
+						class="mt-1 rounded border border-outline-gray-2 px-2 py-0.5 text-xs text-ink-gray-8 hover:bg-surface-gray-2 disabled:opacity-50"
+						:disabled="reminding === selectedPanel.remindA.entity"
+						@click="remind(selectedPanel.remindA)"
+					>Remind {{ selectedPanel.remindA.entity }}</button>
+					<p v-if="remindError && remindError.entity === selectedPanel.remindA.entity" role="alert" class="mt-1 text-xs text-ink-red-3">
+						<span v-for="(line, i) in remindError.lines" :key="i" class="block">{{ line }}</span>
+					</p>
 				</div>
 				<div class="rounded border border-outline-gray-2 px-3 py-2">
 					<p class="text-xs uppercase tracking-wide text-ink-gray-6">Side B</p>
 					<p class="text-ink-gray-9">{{ selectedPanel.sideB.entity }} · {{ selectedPanel.sideB.account }}</p>
 					<p class="font-mono text-ink-gray-8">{{ selectedPanel.sideB.amount }}</p>
+					<p v-if="selectedPanel.remindB.text" class="mt-1 text-xs text-ink-gray-6">{{ selectedPanel.remindB.text }}</p>
+					<button
+						v-if="selectedPanel.remindB.canRemind"
+						type="button"
+						class="mt-1 rounded border border-outline-gray-2 px-2 py-0.5 text-xs text-ink-gray-8 hover:bg-surface-gray-2 disabled:opacity-50"
+						:disabled="reminding === selectedPanel.remindB.entity"
+						@click="remind(selectedPanel.remindB)"
+					>Remind {{ selectedPanel.remindB.entity }}</button>
+					<p v-if="remindError && remindError.entity === selectedPanel.remindB.entity" role="alert" class="mt-1 text-xs text-ink-red-3">
+						<span v-for="(line, i) in remindError.lines" :key="i" class="block">{{ line }}</span>
+					</p>
 				</div>
 				<div class="rounded border border-outline-gray-2 px-3 py-2">
 					<p class="text-xs uppercase tracking-wide text-ink-gray-6">Difference</p>

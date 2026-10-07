@@ -317,3 +317,139 @@ def test_ambiguous_rule_ids_are_sorted_whatever_the_read_order():
     gap = M.ambiguous_gap([_bal()], [_rule("R-UK", debit="UK01"), _rule("R-ALL")])
     assert gap["pairs"][0]["rule_ids"] == ["R-ALL", "R-UK"]
     assert "UK01 → DE01 (R-ALL, R-UK)" in gap["message"]
+
+
+# --- pending_gap: a draft with a rule that dbt will not eliminate yet (I51, #305-S8-1) ---
+# dbt eliminates only APPROVED IC Balances. A draft whose pair has a matching
+# unrealised-profit rule and inventory above 0 is a blocking gap of its own,
+# never part of rule_gaps (My work's setup gaps never see it, C-S8-2).
+
+def test_pending_code_constant():
+    assert M.DRAFT_PENDING == "ic_balance_draft_pending"
+
+
+def test_one_draft_with_a_rule_is_the_pending_gap():
+    gap = M.pending_gap([_bal("ICB-A-B-2025-P7", sell="A", buy="B", inventory="100")], [_rule()])
+    assert gap["code"] == "ic_balance_draft_pending"
+    assert gap["entities"] == ["A", "B"]
+    assert gap["pairs"] == [{"selling_entity": "A", "buying_entity": "B",
+                             "names": ["ICB-A-B-2025-P7"]}]
+    assert "A → B (ICB-A-B-2025-P7)" in gap["message"]
+    assert gap["message"] == (
+        "1 IC Balance draft has a matching unrealised-profit rule but is not approved: "
+        "A → B (ICB-A-B-2025-P7). dbt eliminates only approved balances: approve it in "
+        "Approvals (Close Lead), or delete the draft (Close Lead, in Desk), before signing off.")
+
+
+def test_approved_balance_with_a_rule_is_not_pending():
+    assert M.pending_gap([_bal(sell="A", buy="B", docstatus=1, inventory="100")],
+                         [_rule()]) is None
+
+
+def test_draft_without_a_matching_rule_is_not_pending():
+    # The undeclared-rule gap covers it instead.
+    balances = [_bal(sell="A", buy="B", inventory="100")]
+    rules = [_rule(debit="C", credit="D")]
+    assert M.pending_gap(balances, rules) is None
+    assert M.rule_gap(balances, rules)["code"] == M.RULE_UNDECLARED
+
+
+def test_draft_with_nothing_to_eliminate_is_not_pending():
+    for inventory in ("0", 0, "-5", -5):
+        assert M.pending_gap([_bal(sell="A", buy="B", inventory=inventory)], [_rule()]) is None, \
+            inventory
+
+
+def test_draft_with_unreadable_inventory_is_pending():
+    # F51b: an unreadable amount is never guessed to be nothing.
+    gap = M.pending_gap([_bal("ICB-X", sell="A", buy="B", inventory="x")], [_rule()])
+    assert gap is not None
+    assert gap["pairs"][0]["names"] == ["ICB-X"]
+
+
+def test_cancelled_balance_raises_in_pending_gap():
+    _raises(ValueError, M.pending_gap, [_bal(sell="A", buy="B", docstatus=2)], [_rule()])
+
+
+def test_two_drafts_on_one_pair_are_one_pair_two_names():
+    gap = M.pending_gap([_bal("ICB-2", sell="A", buy="B", inventory="100"),
+                         _bal("ICB-1", sell="A", buy="B", inventory="50")], [_rule()])
+    assert gap["pairs"] == [{"selling_entity": "A", "buying_entity": "B",
+                             "names": ["ICB-1", "ICB-2"]}]
+    assert gap["message"].startswith(
+        "2 IC Balance drafts have a matching unrealised-profit rule but are not approved: "
+        "A → B (ICB-1, ICB-2). ")
+    assert "approve them in Approvals" in gap["message"]
+
+
+def test_pending_gap_names_every_pair_sorted_with_entities():
+    gap = M.pending_gap([_bal("ICB-CD", sell="C", buy="D", inventory="10"),
+                         _bal("ICB-AB", sell="A", buy="B", inventory="10"),
+                         _bal("ICB-OK", sell="E", buy="F", inventory="10", docstatus=1)],
+                        [_rule()])
+    assert [(p["selling_entity"], p["buying_entity"]) for p in gap["pairs"]] == [("A", "B"),
+                                                                                  ("C", "D")]
+    assert gap["entities"] == ["A", "B", "C", "D"]
+    assert "A → B (ICB-AB), C → D (ICB-CD)" in gap["message"]
+
+
+def test_rule_gaps_never_carry_the_pending_gap():
+    # C-S8-2: My work reads rule_gaps through open_rule_gaps; mywork_model
+    # raises on an unknown code, so the pending gap must stay out of it.
+    balances = [_bal("ICB-A-B-2025-P7", sell="A", buy="B", inventory="100"),
+                _bal("ICB-C-D", sell="C", buy="D", inventory="100")]
+    rules = [_rule("R1", debit="C", credit="D"), _rule("R2", debit="C", credit="*")]
+    codes = [g["code"] for g in M.rule_gaps(balances, rules)]
+    assert "ic_balance_draft_pending" not in codes
+    assert M.pending_gap(balances, rules) is not None
+
+
+# --- R52k (review S8): each row says whether it blocks sign-off ----------------------
+
+def _s8_mix():
+    """One balance per case, two pairs; the wildcard rule covers A → B only."""
+    balances = [
+        _bal("ICB-RULE-STOCK", sell="A", buy="B", inventory="100"),       # pending
+        _bal("ICB-RULE-ZERO", sell="A", buy="B", inventory="0"),          # nothing to eliminate
+        _bal("ICB-RULE-UNREAD", sell="A", buy="B", inventory="n/a"),      # unreadable: pending
+        _bal("ICB-NO-RULE", sell="C", buy="D", inventory="100"),          # no matching rule
+        _bal("ICB-APPROVED", sell="A", buy="B", inventory="100", docstatus=1),
+    ]
+    return balances, [_rule("R1", debit="A", credit="B")]
+
+
+def _pending_names(gap):
+    return sorted(n for p in (gap or {}).get("pairs", []) for n in p["names"])
+
+
+def test_rows_pending_rule_is_exactly_the_pending_gap():
+    balances, rules = _s8_mix()
+    rows = M.balance_rows(balances, rules)
+    for row in rows:
+        assert row["pending_rule"] in (True, False), row
+    flagged = sorted(r["name"] for r in rows if r["pending_rule"])
+    assert flagged == ["ICB-RULE-STOCK", "ICB-RULE-UNREAD"]
+    assert flagged == _pending_names(M.pending_gap(balances, rules))
+
+
+def test_rows_pending_rule_false_when_nothing_pends():
+    balances, rules = _s8_mix()
+    rows = M.balance_rows([b for b in balances if b["name"] in ("ICB-RULE-ZERO", "ICB-NO-RULE",
+                                                                "ICB-APPROVED")], rules)
+    assert [r["pending_rule"] for r in rows] == [False, False, False]
+    assert M.pending_gap(balances[1:2] + balances[3:], rules) is None
+
+
+def test_rows_and_gap_share_one_predicate():
+    # Swap the shared predicate: both outputs must follow it, so neither
+    # carries its own copy of the rule.
+    balances, rules = _s8_mix()
+    original = M._blocks_signoff
+    M._blocks_signoff = lambda balance, rules: balance.get("name") == "ICB-APPROVED"
+    try:
+        rows = M.balance_rows(balances, rules)
+        gap = M.pending_gap(balances, rules)
+    finally:
+        M._blocks_signoff = original
+    assert [r["name"] for r in rows if r["pending_rule"]] == ["ICB-APPROVED"]
+    assert _pending_names(gap) == ["ICB-APPROVED"]

@@ -6,7 +6,10 @@
 // everything Intercompany.vue renders: the state banner, the count chips
 // (only when checked), the groups and pair rows with status text and
 // masked labels, the partnerless rows, the hidden note, and (through the
-// separate `panel` helper) the selected pair's side panel. Takes no
+// separate `panel` helper) the selected pair's side panel, with each side's
+// reminded text and whether it can be reminded (Y65; per side from the
+// server's `can_remind_a/_b`, R53c, #305-R52-2-1 — no client-side tolerance
+// check). Takes no
 // vue/frappe/xstate import.
 //
 // Server text may already contain a literal "<br>" (signoff.js's
@@ -30,6 +33,7 @@
 
 import { formatTime, parseZoned } from "./timefmt.js";
 import { messageLines } from "./signoff.js";
+import { remindedText } from "./remind.js";
 
 const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
 
@@ -149,6 +153,17 @@ function statusFor(matchStatus, sentBack, toleranceDeclared) {
  * text/tone.
  */
 function pairView(pair, group, toleranceDeclared, now, timeZone) {
+	for (const key of ["reminders_a", "reminders_b"]) {
+		if (!(key in pair)) {
+			throw new Error(`Intercompany pair ${pair.entity_a} ↔ ${pair.entity_b} has no \`${key}\` (get_ic always sends it, null when none)`);
+		}
+	}
+	// R53c: the server decides each side's Remind (remind_model.ic_side_can_remind).
+	for (const key of ["can_remind_a", "can_remind_b"]) {
+		if (typeof pair[key] !== "boolean") {
+			throw new Error(`Intercompany pair ${pair.entity_a} ↔ ${pair.entity_b} has no boolean \`${key}\` (get_ic always sends it).`);
+		}
+	}
 	const sentBack = sentBackView(pair.sent_back, now, timeZone);
 	const status = statusFor(pair.match_status, sentBack, toleranceDeclared);
 	return {
@@ -161,6 +176,9 @@ function pairView(pair, group, toleranceDeclared, now, timeZone) {
 		balanceAText: pair.masked_a ? HIDDEN_LABEL : formatAmount(pair.balance_a),
 		balanceBText: pair.masked_b ? HIDDEN_LABEL : formatAmount(pair.balance_b),
 		differenceText: formatAmount(pair.difference),
+		// Y65: a masked side's reminder never renders (W3-2), even if one arrived.
+		remindedAText: pair.masked_a ? null : remindedText(pair.reminders_a, now, timeZone),
+		remindedBText: pair.masked_b ? null : remindedText(pair.reminders_b, now, timeZone),
 	};
 }
 
@@ -204,6 +222,9 @@ function hiddenNoteFor(hidden) {
  * partnerless rows, and the hidden note.
  */
 export function intercompanyView(payload, now, timeZone) {
+	if (typeof payload.can_remind !== "boolean") {
+		throw new Error("Intercompany payload has no `can_remind` flag (get_ic always sends it).");
+	}
 	const banner = bannerFor(payload);
 	const chips = payload.state === "checked" ? chipsFor(payload.counts) : null;
 	const groups = (payload.groups || []).map((group) => groupView(group, now, timeZone));
@@ -220,11 +241,26 @@ export function intercompanyView(payload, now, timeZone) {
 /**
  * The selected pair's side panel: both sides with account and amount (or
  * the hidden label), the difference, the difference-account sentence
- * (E5-P12), and the trail (the pair's `sent_back` entry only — replies and
- * Remind are P2). `pair` is one of `intercompanyView`'s pair rows (it
- * carries `ic_difference_account` and a formatted `sent_back`).
+ * (E5-P12), the trail (the pair's `sent_back` entry only; replies are not
+ * built), and per side `remindA` / `remindB` = `{entity, text, canRemind}`
+ * (Y65, C-R1): `text` is remind.js's reminded text or null, and `canRemind`
+ * is the server's `can_remind_a` / `can_remind_b` for that side (R53c,
+ * #305-R52-2-1: the payload's `can_remind`, the side visible, the pair over
+ * tolerance — decided on the server, never re-checked here). A masked side
+ * has text null and canRemind false, whatever arrived. `pair` is one of
+ * `intercompanyView`'s pair rows (it carries `ic_difference_account`, a
+ * formatted `sent_back`, `remindedAText` / `remindedBText` and the two
+ * flags); any other object throws.
  */
 export function panel(pair) {
+	if (
+		typeof pair.can_remind_a !== "boolean" ||
+		typeof pair.can_remind_b !== "boolean" ||
+		!("remindedAText" in pair) ||
+		!("remindedBText" in pair)
+	) {
+		throw new Error("panel takes an intercompanyView pair row (can_remind_a/_b and the reminded texts are missing).");
+	}
 	const accountSentence = pair.ic_difference_account
 		? `Booked to ${pair.ic_difference_account} in the group view while it stays open.`
 		: "No difference account is declared: the difference stays on the intercompany accounts.";
@@ -244,7 +280,13 @@ export function panel(pair) {
 		trail: pair.sent_back
 			? { by: pair.sent_back.byName, at: pair.sent_back.at, reason: pair.sent_back.reason }
 			: null,
+		remindA: remindSide(pair.entity_a, pair.masked_a, pair.remindedAText, pair.can_remind_a),
+		remindB: remindSide(pair.entity_b, pair.masked_b, pair.remindedBText, pair.can_remind_b),
 	};
+}
+
+function remindSide(entity, masked, text, canRemind) {
+	return masked ? { entity, text: null, canRemind: false } : { entity, text, canRemind };
 }
 
 /**
@@ -277,7 +319,10 @@ export function sendBackBody(period, pair, reason) {
 // matching unrealised-profit rule says that nothing is eliminated, and the
 // server's gap names each pair. F51b: a pair two or more rules match is
 // eliminated once per rule by dbt; the server's `ambiguous_gap` names each
-// pair with its rules and the row is marked. An unknown status throws.
+// pair with its rules and the row is marked. I54 (S8): a draft with a matching
+// rule is not eliminated until approved; the server's `pending_gap` names each
+// pair with its drafts and each such draft row carries a note. An unknown
+// status throws.
 
 function gapView(gap, pairText) {
 	return gap ? { lines: messageLines(gap.message), pairs: (gap.pairs || []).map(pairText) } : null;
@@ -310,8 +355,25 @@ function balanceRow(row, canDraft) {
 		marginText: marginText(row.rules),
 		missingRule: !!row.missing_rule,
 		ambiguousRule: !!row.ambiguous_rule,
+		pendingNote: pendingNote(row),
 		editable: canDraft && row.status === "Draft",
 	};
+}
+
+//: konsol#305 I54 (S8): a draft whose pair has a matching rule and whose
+//: ending inventory is above 0 (or unreadable) is in the server's
+//: `pending_gap`. R52n (review U7, coordinator ruling S8/U7): the server sends
+//: that per row as the boolean `pending_rule` (R52k); the SPA reads it and
+//: never re-derives the rule. A missing or non-boolean flag is a bug: throw.
+const PENDING_NOTE = "Blocks sign-off: approve, or delete the draft";
+
+function pendingNote(row) {
+	if (typeof row.pending_rule !== "boolean") {
+		throw new Error(
+			`IC Balance ${row.name} has no boolean \`pending_rule\` (get_ic_balances always sends it)`,
+		);
+	}
+	return row.pending_rule ? PENDING_NOTE : null;
 }
 
 //: review-w5 U5: `get_ic_balances` always sends these keys, so a missing one
@@ -320,7 +382,8 @@ function balanceRow(row, canDraft) {
 const IC_BALANCES_KEYS = ["balances", "hidden", "entities", "can_draft"];
 //: F51b: `gap` and `ambiguous_gap` are always sent too, as null when there is
 //: no gap; so the key must be present, and null is the declared "no gap".
-const IC_BALANCES_NULLABLE_KEYS = ["gap", "ambiguous_gap"];
+//: I54: `pending_gap` (a draft with a matching rule, not yet approved) too.
+const IC_BALANCES_NULLABLE_KEYS = ["gap", "ambiguous_gap", "pending_gap"];
 
 export function icBalancesView(payload) {
 	for (const key of IC_BALANCES_KEYS) {
@@ -342,6 +405,7 @@ export function icBalancesView(payload) {
 			payload.ambiguous_gap,
 			(p) => `${p.selling_entity} → ${p.buying_entity} (${(p.rule_ids || []).join(", ")})`,
 		),
+		pendingGap: gapView(payload.pending_gap, (p) => `${p.selling_entity} → ${p.buying_entity} (${p.names.join(", ")})`),
 		hiddenNote: hidden > 0 ? `${hidden} IC Balances for entities outside your scope are not shown` : null,
 		canDraft,
 		entities: payload.entities,

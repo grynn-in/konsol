@@ -7,7 +7,7 @@
 //   totals}` (konsol/close/tb_model.py `check_rows`), for the upload screen's
 //   check table.
 // - `entityRows(myTbs)` — A25's `my_tbs` output, `{period_open, can_upload,
-//   entities}`, for "my entities" (the trial-balances screen).
+//   can_remind, entities}`, for "my entities" (the trial-balances screen).
 // - `compareRows(cmp)` — A12/A28's compare output, `{rows, basis_note,
 //   previous_note, previous_code}`, for the compare-by-account view.
 //
@@ -21,6 +21,8 @@
 // comparable), and that renders as the dash "—", never "0.00".
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { remindedText } from "./remind.js";
+import { ISO_DATE, OVERDUE_TONE, dueDateText } from "./dueDate.js";
 
 const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
 const DASH = "—";
@@ -86,7 +88,7 @@ export const KNOWN_STATUSES = new Set([
 ]);
 
 // B27: times on the TB list read like the freshness bar (B09): "10:42" today,
-// "Sep 20, 10:42" otherwise, in the user's zone, which the caller passes in.
+// "20 Sep, 10:42" otherwise (#305-R52-3-1, day first), in the user's zone, which the caller passes in.
 // A zone-less server timestamp is refused (B09b), never read in the browser's
 // zone. B29: the formatter is timefmt.js's, shared with the freshness bar.
 const NOT_RECORDED = "not recorded";
@@ -114,6 +116,19 @@ function timestampText(value, now, timeZone) {
  *
  * Throws on a status this module does not know, so an entity is never shown
  * with a blank or guessed status.
+ *
+ * Y62 (story 1.5): `reminded` is remind.js's "Reminded N× · last <time> by
+ * <name>" for the entity's `reminders` entry, or null when none was sent.
+ * `canRemind` is the payload's `can_remind` AND the status is `Missing`. A
+ * payload with no boolean `can_remind`, or an entity with no `reminders` key,
+ * throws: neither is read as "no".
+ *
+ * D60 (story 2.4, decision #305-2.4-1): each row carries the server's
+ * `overdue` (D56: `deadline.past` on a Missing row, false otherwise) and
+ * `overdueChip`, `{text: "Overdue", tone: OVERDUE_TONE}` when overdue, else
+ * null. Show-only: the chip is the warn tone, never the block tone, and
+ * nothing is disabled by it. A payload with no `deadline`, or an entity with
+ * no boolean `overdue`, throws: neither is read as "not overdue".
  */
 export function entityRows(myTbs, now, timeZone) {
   if (!timeZone) {
@@ -122,9 +137,19 @@ export function entityRows(myTbs, now, timeZone) {
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
     throw new Error("entityRows requires a valid `now`");
   }
+  if (typeof myTbs.can_remind !== "boolean") {
+    throw new Error("entityRows: the payload has no can_remind flag (Y56 always sends it).");
+  }
+  checkDeadline(myTbs, "entityRows");
   return (myTbs.entities || []).map((entity) => {
     if (!KNOWN_STATUSES.has(entity.status)) {
       throw new Error(`entityRows: unknown TB status: ${entity.status}`);
+    }
+    if (!("reminders" in entity)) {
+      throw new Error(`entityRows: ${entity.entity} has no reminders entry (Y56 always sends it, null when none).`);
+    }
+    if (typeof entity.overdue !== "boolean") {
+      throw new Error(`entityRows: ${entity.entity} has no overdue flag (D56 always sends it).`);
     }
     const tb = entity.tb
       ? {
@@ -145,8 +170,51 @@ export function entityRows(myTbs, now, timeZone) {
       tbText: tb ? tb.name : DASH,
       uploaded: tb ? timestampText(tb.creation, now, timeZone) : DASH,
       exception,
+      reminded: remindedText(entity.reminders, now, timeZone),
+      canRemind: myTbs.can_remind && entity.status === "Missing",
+      overdue: entity.overdue,
+      overdueChip: entity.overdue ? { text: OVERDUE_TEXT, tone: OVERDUE_TONE } : null,
     };
   });
+}
+
+// --- D60: the TB due header and the overdue chip (stories 2.4, 3.1) ---------
+// Decision #305-2.4-1: a deadline is show-only and never blocks. The chip is
+// the warn (amber) tone, never the block (red) tone the Missing status uses.
+// D62: the tone and the date wording live in dueDate.js, shared with My work.
+export { OVERDUE_TONE };
+const OVERDUE_TEXT = "Overdue";
+
+/** D56's `deadline` must be present as `{due, past, text}`; anything else throws. */
+function checkDeadline(myTbs, who) {
+  const deadline = myTbs.deadline;
+  if (!deadline || typeof deadline !== "object") {
+    throw new Error(`${who}: the payload has no deadline (D56 always sends it).`);
+  }
+  if (typeof deadline.past !== "boolean") {
+    throw new Error(`${who}: the deadline has no past flag (D56 always sends it).`);
+  }
+  if (deadline.due !== null && !(typeof deadline.due === "string" && ISO_DATE.test(deadline.due))) {
+    throw new Error(`${who}: the deadline's due is not an ISO date: ${deadline.due}`);
+  }
+  if (deadline.due === null && typeof deadline.text !== "string") {
+    throw new Error(`${who}: an undeclared deadline has no text (D56 always sends it).`);
+  }
+  return deadline;
+}
+
+/**
+ * D56's my_tbs `deadline` -> the screen header's `{text, past}`: "TB due Tue
+ * 7 Oct 2025" for a declared date, or the server's own sentence ("No due date
+ * declared") when `due` is null — never a guessed date. Throws on a payload
+ * without a well-formed `deadline`.
+ */
+export function tbDue(myTbs) {
+  const deadline = checkDeadline(myTbs, "tbDue");
+  if (deadline.due === null) {
+    return { text: deadline.text, past: false };
+  }
+  return { text: `TB due ${dueDateText(deadline.due, "tbDue")}`, past: deadline.past };
 }
 
 /**

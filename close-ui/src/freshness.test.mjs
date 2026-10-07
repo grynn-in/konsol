@@ -63,7 +63,7 @@ test("stale: a time on an earlier calendar day (in the given zone) carries its d
     last_failed: null,
   };
   const view = freshnessView(payload, NOW, TZ);
-  assert.equal(view.detail, "As of Sep 24, 10:00");
+  assert.equal(view.detail, "As of 24 Sep, 10:00");
 });
 
 test("stale: several changed doctypes are listed together", () => {

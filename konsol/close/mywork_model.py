@@ -207,10 +207,42 @@ PERIOD_KEYS = ("code", "ended", "my_missing", "missing", "checks", "failed", "si
 #: omits it simply gets ``since: None`` on the period (the API layer is the
 #: one that requires and validates it, per period row, before it ever reaches
 #: this pure model).
+#: Y58 (story 1.5, C-R6): ``reminders`` is read the same way, with
+#: ``facts.get``: ``{entity: {"count", "last_at" (ISO text), "last_by_name"}}``,
+#: the period's TB reminders (mywork_api builds it from
+#: ``remind_model.summary``). The Entity Accountant's "Upload TB" item carries
+#: that entity's entry as ``reminded`` ({"count", "last_at", "last_by_name"});
+#: the "Waiting on N trial balances" items carry ``{"reminded": R, "of": N}``,
+#: R being the missing entities with a reminder. ``reminded`` is None when the
+#: caller sent no ``reminders`` (not read: never an invented 0) and when no
+#: entity of the item was reminded. The model does not format time: the SPA
+#: does. An entry whose count cannot be read raises ValueError.
+#: D58 (stories 1.1, 2.4; C-D6): ``deadlines`` is read the same way, with
+#: ``facts.get``: one period's ``deadline_model.period_deadlines`` output,
+#: ``{step: {"due" (date or ISO text, or None), "past", "text"}}``. Every
+#: period item carries ``due``: ``{"date" (ISO or None), "text", "overdue"}``
+#: when its step is known (``STEP_OF_SLUG``; IC fix items -> ``ic``), with
+#: ``overdue = past`` for the tb and ic steps, because those items exist only
+#: while their step is open (C-D4); None for an item with no step, or when the
+#: caller sent no deadlines (never a guessed date). A deadlines map that is
+#: not a map, lacks the item's step, or whose entry lacks a key raises
+#: ValueError.
+#: R52a (review S1; D57 "the server decides ``signoff_overdue``; one source of
+#: truth"): a sign-off-step item is overdue only when the date has passed AND
+#: the period is not signed (``facts["signoff"]`` not in SIGNED_STATES), the
+#: grid's rule (grid_api.get_period_grid: ``past and not _signed(run)``).
+#: C-D6: the deadline step of each period-item slug; any other slug has none.
+#: R52a: "resign" carries the sign-off due; "close" carries none (sign-off is
+#: done and no "close" deadline exists), which narrows C-D6's "close" mapping.
+STEP_OF_SLUG = {"tb": "tb", "tbs-waiting": "tb", "signoff": "signoff",
+                "signoff-wait": "signoff", "resign": "signoff"}
+DUE_KEYS = ("due", "past", "text")
 CHECK_STATES = ("not_run", "running", "stale", "failed", "current")
 KINDS = ("blocking", "todo", "waiting")
 
 #: Copied from assertion_run.SIGNED_STATES (assertion_run.py:224); not imported.
+#: Equal to signoff_model.SIGNED_STATES, which the grid's ``_signed`` reads
+#: (R52a asserts the two are equal).
 SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
 RE_SIGN_NEEDED = "Re-sign Needed"
 
@@ -225,12 +257,88 @@ def _tbs(n):
     return "%d trial balance%s" % (n, "" if n == 1 else "s")
 
 
+def _reminders(key, facts):
+    """The period's ``reminders`` map, or None when the caller sent none."""
+    reminders = facts.get("reminders")
+    if reminders is not None and not isinstance(reminders, dict):
+        raise ValueError("period_items: %s reminders must be a map of entity to entry, got %r"
+                         % (key, type(reminders).__name__))
+    return reminders
+
+
+def _reminder_count(key, entity, entry):
+    count = entry.get("count") if isinstance(entry, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("period_items: %s reminder entry for %s has no readable count (%r)"
+                         % (key, entity, count))
+    return count
+
+
+def _entity_reminded(key, entity, reminders):
+    if not reminders or entity not in reminders:
+        return None
+    entry = reminders[entity]
+    count = _reminder_count(key, entity, entry)
+    absent = [k for k in ("last_at", "last_by_name") if not entry.get(k)]
+    if absent:
+        raise ValueError("period_items: %s reminder entry for %s is missing %s"
+                         % (key, entity, ", ".join(absent)))
+    return {"count": count, "last_at": entry["last_at"], "last_by_name": entry["last_by_name"]}
+
+
+def _waiting_reminded(key, missing, reminders):
+    if not reminders:
+        return None
+    for entity, entry in reminders.items():
+        _reminder_count(key, entity, entry)
+    reminded = sum(1 for entity in missing if entity in reminders)
+    if not reminded:
+        return None
+    return {"reminded": reminded, "of": len(missing)}
+
+
+def _waiting_tbs_item(p, key, facts):
+    missing = sorted(set(facts["missing"] or ()))
+    if not missing:
+        return None
+    item = _period_item(p, key, facts, "tbs-waiting", "waiting",
+                        "Waiting on %s" % _tbs(len(missing)), {"screen": "trial-balances"})
+    item["reminded"] = _waiting_reminded(key, missing, _reminders(key, facts))
+    return item
+
+
 def _check_period(key, facts):
     absent = [k for k in PERIOD_KEYS if k not in facts]
     if absent:
         raise ValueError("period_items: %s is missing %s" % (key, ", ".join(absent)))
     if facts["checks"] not in CHECK_STATES:
         raise ValueError("period_items: %s has unknown checks state %r" % (key, facts["checks"]))
+
+
+def _due(key, facts, step):
+    """The item's ``due`` (D58), or None when it has no step or no deadlines."""
+    if step is None:
+        return None
+    deadlines = facts.get("deadlines")
+    if deadlines is None:
+        return None
+    if not isinstance(deadlines, dict):
+        raise ValueError("period_items: %s deadlines must be a map of step to deadline, got %r"
+                         % (key, type(deadlines).__name__))
+    if step not in deadlines:
+        raise ValueError("period_items: %s deadlines carry no %s step" % (key, step))
+    entry = deadlines[step]
+    absent = [k for k in DUE_KEYS if not isinstance(entry, dict) or k not in entry]
+    if absent:
+        raise ValueError("period_items: %s %s deadline is missing %s"
+                         % (key, step, ", ".join(absent)))
+    due = entry["due"]
+    if due is not None and not isinstance(due, str):
+        due = due.isoformat()
+    overdue = bool(entry["past"])
+    if step == "signoff":
+        overdue = overdue and facts["signoff"] not in SIGNED_STATES
+    return {"date": due, "text": entry["text"], "overdue": overdue}
 
 
 def _period_item(persona, key, facts, slug, kind, title, action):
@@ -243,16 +351,19 @@ def _period_item(persona, key, facts, slug, kind, title, action):
                    "since": facts.get("since")},
         "owner": OWNERS[persona],
         "action": action,
+        "due": _due(key, facts, STEP_OF_SLUG.get(slug)),
     }
 
 
 def _entity_accountant(key, facts):
     kind = "blocking" if facts["ended"] else "todo"
+    reminders = _reminders(key, facts)
     items = []
     for entity in sorted(set(facts["my_missing"] or ())):
         item = _period_item(ENTITY_ACCOUNTANT, key, facts, "tb", kind, "Upload TB for %s" % entity,
                             {"screen": "trial-balances", "entity": entity})
         item["id"] += ":%s" % entity
+        item["reminded"] = _entity_reminded(key, entity, reminders)
         items.append(item)
     return items
 
@@ -283,11 +394,9 @@ def _group_accountant(key, facts):
         items.append(_period_item(p, key, facts, "checks-failing", "blocking",
                                   "%d check%s failing" % (failed, "" if failed == 1 else "s"),
                                   {"screen": "checks"}))
-    missing = sorted(set(facts["missing"] or ()))
-    if missing:
-        items.append(_period_item(p, key, facts, "tbs-waiting", "waiting",
-                                  "Waiting on %s" % _tbs(len(missing)),
-                                  {"screen": "trial-balances"}))
+    waiting = _waiting_tbs_item(p, key, facts)
+    if waiting:
+        items.append(waiting)
     return items
 
 
@@ -315,10 +424,9 @@ def _close_lead(key, facts, earlier_open):
         items.append(_period_item(p, key, facts, "close", "todo", "Close %s" % facts["code"],
                                   signoff))
     missing = sorted(set(facts["missing"] or ()))
-    if missing:
-        items.append(_period_item(p, key, facts, "tbs-waiting", "waiting",
-                                  "Waiting on %s" % _tbs(len(missing)),
-                                  {"screen": "trial-balances"}))
+    waiting = _waiting_tbs_item(p, key, facts)
+    if waiting:
+        items.append(waiting)
     failed = int(facts["failed"] or 0)
     if failed:
         items.append(_period_item(p, key, facts, "checks-waiting", "waiting",
@@ -371,19 +479,27 @@ def period_items(persona, per_period, first_close):
     return items
 
 
+def _due_rank(item):
+    """C-D6: overdue (0), then not yet due (1), each by date; then no date (2)."""
+    due = item.get("due")
+    if due and due.get("date"):
+        return (0 if due["overdue"] else 1, due["date"])
+    return (2, "")
+
+
 def _rank_key(item):
     period = item.get("period")
     if period is None:
-        return (KINDS.index(item["kind"]), 0, 0, 0, "")
-    return (KINDS.index(item["kind"]), 1, int(period["fiscal_year"]),
-            int(period["fiscal_period"]), item["title"])
+        return (KINDS.index(item["kind"]), 0, 0, "", 0, 0, "")
+    return (KINDS.index(item["kind"]), 1) + _due_rank(item) + (
+        int(period["fiscal_year"]), int(period["fiscal_period"]), item["title"])
 
 
 def rank(items):
-    """Blocking, then todo, then waiting; older periods first, then by title.
-
-    Setup-gap items (no period) come first within their kind, in their own
-    order."""
+    """Blocking, then todo, then waiting (C-D6). Within a kind: setup-gap
+    items (no period) first, in their own order; then overdue items, then
+    not-yet-due ones, each by earliest due date; then items with no date
+    (undeclared, or no step); then older periods first, then by title."""
     return sorted(items or (), key=_rank_key)
 
 
@@ -470,7 +586,7 @@ def _ic_title(partner, own_account, partner_account):
     return "Intercompany difference with %s (%s ↔ %s)" % (partner, own_account, partner_account)
 
 
-def _ic_fix_item(fy, fp, entity, fix, kind, code, since):
+def _ic_fix_item(fy, fp, entity, fix, kind, code, since, due):
     a, acct_a, b, acct_b = fix["entity_a"], fix["account_a"], fix["entity_b"], fix["account_b"]
     if entity == a:
         side, partner, own_account, partner_account = "a", b, acct_a, acct_b
@@ -486,6 +602,7 @@ def _ic_fix_item(fy, fp, entity, fix, kind, code, since):
         "period": {"fiscal_year": fy, "fiscal_period": fp, "code": code, "since": since},
         "owner": "Entity Accountant",
         "action": {"screen": "trial-balances", "entity": entity},
+        "due": due,
     }
 
 
@@ -501,11 +618,12 @@ def ic_fix_items(fixes_by_key, per_period, allowed):
         kind = "blocking" if period_facts["ended"] else "todo"
         code = period_facts["code"]
         since = period_facts.get("since")
+        due = _due((fy, fp), period_facts, "ic")
         for fix in fixes or ():
             for entity in (fix["entity_a"], fix["entity_b"]):
                 if allowed is not None and entity not in allowed:
                     continue
-                items.append(_ic_fix_item(fy, fp, entity, fix, kind, code, since))
+                items.append(_ic_fix_item(fy, fp, entity, fix, kind, code, since, due))
     return items
 
 

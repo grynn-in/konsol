@@ -131,6 +131,9 @@ IC_RULE_UNDECLARED = "ic_unrealized_profit_rule_undeclared"
 #: F51b: ``ic_balance_model.RULE_AMBIGUOUS`` (same reason; the test feeds the
 #: real producer's gap).
 IC_RULE_AMBIGUOUS = "ic_unrealized_profit_rule_ambiguous"
+#: I53: ``ic_balance_model.DRAFT_PENDING`` (same reason; the test feeds the
+#: real producer's gap).
+IC_BALANCE_PENDING = "ic_balance_draft_pending"
 
 #: A18's Select, read for A21's summary: 1 labelled, 0 not, None unknown.
 _ON_BEHALF = {"Yes": 1, "No": 0, "": None, None: None}
@@ -257,6 +260,11 @@ def _scoped_gap(gap, allowed, key):
                    "Balances of %s for %s: dbt applies every matching rule, so the "
                    "profit is eliminated more than once. Keep one rule per pair in Desk before "
                    "signing off." % (names, period_name(*key)))
+        return _scoped_pair_gap(gap, allowed, mine, hidden, message)
+    elif gap["code"] == IC_BALANCE_PENDING:
+        message = ("IC Balance drafts of %s for %s have a matching rule but are not approved: "
+                   "approve them in Approvals or delete the drafts before signing off."
+                   % (names, period_name(*key)))
         return _scoped_pair_gap(gap, allowed, mine, hidden, message)
     else:
         message = "%s (%s)." % (gap["code"], names)

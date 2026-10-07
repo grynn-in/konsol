@@ -549,7 +549,7 @@ test("B33: a zoned closed_on is shown in the user's zone, like the TB list (B27)
   assert.equal(closedOnText("2026-09-25T22:28:32.554257+02:00", now, "Europe/Berlin"), "22:28");
   // Another day, another zone: the date is added and the hour follows the zone.
   const later = new Date("2026-09-30T12:00:00Z");
-  assert.equal(closedOnText("2026-09-25T20:28:32Z", later, "Asia/Kolkata"), "Sep 26, 01:58");
+  assert.equal(closedOnText("2026-09-25T20:28:32Z", later, "Asia/Kolkata"), "26 Sep, 01:58");
 });
 
 test("B33: a missing closed_on reads 'unknown', never blank", async () => {

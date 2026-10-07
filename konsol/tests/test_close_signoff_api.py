@@ -1689,6 +1689,81 @@ def test_ic_rule_ambiguous_gap_is_scoped_to_the_callers_entities():
     assert "ic_unrealized_profit_rule_ambiguous (" not in gap["message"]
 
 
+
+# --- I53 (#305-S8-1): the pending-draft gap -------------------------------------
+
+def _real_pending_gaps(*pairs):
+    """I53: the real producer's gap (ic_balance_model.pending_gap) for one
+    draft IC Balance per pair, inventory 100, that one wildcard rule matches."""
+    balances = [{"name": "ICB-%s-%s" % (s, b), "selling_entity": s, "buying_entity": b,
+                 "docstatus": 0, "ending_inventory_from_ic": 100.0} for s, b in pairs]
+    rules = [{"rule_id": "R1", "rule_type": "unrealized_profit", "margin_pct": 20,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"}]
+    gap = _ic_balance_model().pending_gap(balances, rules)
+    assert gap is not None and gap["code"] == "ic_balance_draft_pending", gap
+    return [gap]
+
+
+def _pending(site):
+    return [g for g in _get(site)["gates"]["config_gaps"]
+            if g["code"] == "ic_balance_draft_pending"]
+
+
+def test_ic_balance_pending_gap_unscoped_keeps_the_producers_message():
+    site = _Site()
+    site.ic_rule_gaps = _real_pending_gaps(("ZZA", "ZZB"))
+    gaps = _pending(site)
+    assert len(gaps) == 1
+    assert gaps[0] == site.ic_rule_gaps[0]
+    assert "ZZA → ZZB (ICB-ZZA-ZZB)" in gaps[0]["message"]
+
+
+def test_ic_balance_pending_gap_is_scoped_to_the_callers_entities():
+    site = _Site()
+    site.ic_rule_gaps = _real_pending_gaps(("ZZA", "ZZB"), ("ZZC", "ZZD"))
+    site.allowed = {"ZZA"}
+    gaps = _pending(site)
+    assert len(gaps) == 1
+    gap = gaps[0]
+    assert gap["entities"] == ["ZZA"] and gap["hidden"] == 3 and gap["pairs"] == []
+    assert gap["message"] == (
+        "IC Balance drafts of ZZA, 3 entities outside your scope for FY2025 P09 have a "
+        "matching rule but are not approved: approve them in Approvals or delete the drafts "
+        "before signing off."), gap["message"]
+    text = json.dumps(gap)
+    for other in ("ZZB", "ZZC", "ZZD"):
+        assert other not in text, other
+
+
+def test_ic_balance_pending_gap_scoped_one_pair_hides_the_partner():
+    site = _Site()
+    site.ic_rule_gaps = _real_pending_gaps(("ZZA", "ZZB"))
+    site.allowed = {"ZZA"}
+    gap = _pending(site)[0]
+    assert gap["entities"] == ["ZZA"] and gap["hidden"] == 1 and gap["pairs"] == []
+    assert "1 entity outside your scope" in gap["message"]
+    assert "ZZB" not in json.dumps(gap)
+
+
+def test_ic_balance_pending_gap_scoped_never_uses_the_generic_fallback():
+    site = _Site()
+    site.ic_rule_gaps = _real_pending_gaps(("ZZA", "ZZB"), ("ZZC", "ZZD"))
+    site.allowed = {"ZZA"}
+    gap = _pending(site)[0]
+    assert "ic_balance_draft_pending (" not in gap["message"]
+    assert "Approvals" in gap["message"]
+
+
+def test_ic_balance_pending_gap_scoped_keeps_a_pair_seen_whole():
+    site = _Site()
+    site.ic_rule_gaps = _real_pending_gaps(("ZZA", "ZZB"), ("ZZC", "ZZD"))
+    site.allowed = {"ZZA", "ZZB"}
+    gap = _pending(site)[0]
+    assert gap["hidden"] == 2
+    assert gap["pairs"] == [{"selling_entity": "ZZA", "buying_entity": "ZZB",
+                             "names": ["ICB-ZZA-ZZB"]}]
+
+
 # --- review-w5 S12: the reject roles are defined once -------------------------
 
 import ast  # noqa: E402

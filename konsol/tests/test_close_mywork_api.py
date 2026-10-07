@@ -33,6 +33,12 @@ NAV_JS = os.path.join(REPO_DIR, "close-ui", "src", "nav.js")
 REAL_MODELS = ("mywork_model", "checks_model", "period_model", "signoff_model",
                "close_policy_model", "scope_model")
 
+DEADLINE_MODEL_PY = os.path.join(APP_DIR, "close", "deadline_model.py")
+_DM_SPEC = importlib.util.spec_from_file_location("test_close_mywork_api_deadline_model",
+                                                  DEADLINE_MODEL_PY)
+DEADLINE_MODEL = importlib.util.module_from_spec(_DM_SPEC)
+_DM_SPEC.loader.exec_module(DEADLINE_MODEL)
+
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 TODAY = date(2025, 9, 15)
 
@@ -143,6 +149,25 @@ class _Site:
         #: S13: User full names that exist, and every full-name read.
         self.full_names = {}
         self.user_name_reads = []
+        # T53t (C-X1): what the stub close_event.reminders / deadlines
+        # .period_deadlines return, so Y59/D59's lazy imports resolve.
+        self.reminders = []
+        #: D59: None = the stub runs the REAL deadline_model.period_deadlines
+        #: over ``deadline_rules``/``holidays`` for each Regular key asked for
+        #: (as deadlines.period_deadlines does); a dict = returned as is.
+        self.deadlines = None
+        self.deadline_rules = []
+        self.holidays = set()
+        self.deadline_calls = []
+        self.deadlines_error = None
+        #: Y59: every close_event.reminders call, an error the read raises,
+        #: and the per-period facts each period_items call was given.
+        self.reminder_calls = []
+        self.reminders_error = None
+        self.period_facts = []
+        #: T53t: called (if set) from inside the endpoint, while the stubs are
+        #: installed, so a test can prove a call-time lazy import resolves.
+        self.during_call = None
 
 
 def _frappe(site):
@@ -256,6 +281,15 @@ def _call(site):
         mods["konsol.close." + name] = _model(name)
         setattr(mods["konsol.close"], name, mods["konsol.close." + name])
 
+    # Y59: record the per-period facts the real period_items is given.
+    real_period_items = mods["konsol.close.mywork_model"].period_items
+
+    def _spy_period_items(persona, per_period, first_close):
+        site.period_facts.append({k: dict(v) for k, v in per_period.items()})
+        return real_period_items(persona, per_period, first_close)
+
+    mods["konsol.close.mywork_model"].period_items = _spy_period_items
+
     # L01a: _aware (A47) lazily imports timefmt (pure, mirrors checks_api).
     tspec = importlib.util.spec_from_file_location(
         "konsol.close.timefmt", os.path.join(APP_DIR, "close", "timefmt.py"))
@@ -316,9 +350,14 @@ def _call(site):
 
     signoff_gate.shared_reads = shared_reads
     freshness_api = types.ModuleType("konsol.close.freshness_api")
-    freshness_api.current_freshness = lambda: {"state": "fresh", "as_of": site.as_of,
-                                               "pending": 0, "changed_since": [],
-                                               "last_failed": None}
+
+    def current_freshness():
+        if site.during_call is not None:
+            site.during_call()
+        return {"state": "fresh", "as_of": site.as_of, "pending": 0,
+                "changed_since": [], "last_failed": None}
+
+    freshness_api.current_freshness = current_freshness
     assertion_run = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     assertion_run.latest_close_run = _latest_close_run(site)
     assertion_run.TERMINAL_STATUSES = ("Green", "Amber", "Red", "Error")
@@ -369,6 +408,39 @@ def _call(site):
 
     approvals_api.sent_back_for = sent_back_for
 
+    # T53t (C-X1): stub konsol.close.close_event (reminders, Y53) and
+    # konsol.close.deadlines (period_deadlines, D55), so mywork_api's lazy
+    # `from konsol.close import close_event, deadlines` (Y59, D59) resolves.
+    close_event = types.ModuleType("konsol.close.close_event")
+
+    def reminders(keys, topic=None):
+        # Y59: every reminders read is recorded; a failed read raises.
+        site.reminder_calls.append((list(keys), topic))
+        if site.reminders_error is not None:
+            raise site.reminders_error
+        return site.reminders
+
+    close_event.reminders = reminders
+    deadlines = types.ModuleType("konsol.close.deadlines")
+
+    def period_deadlines(keys, today):
+        # D59: every read is recorded; a failed read raises.
+        site.deadline_calls.append((list(keys), today))
+        if site.deadlines_error is not None:
+            raise site.deadlines_error
+        if site.deadlines is not None:
+            return site.deadlines
+        wanted = {(int(fy), int(fp)) for fy, fp in keys}
+        out = {}
+        for r in site.rows:
+            key = (r["fiscal_year"], r["fiscal_period"])
+            if key in wanted and r["period_type"] == "Regular":
+                out[key] = DEADLINE_MODEL.period_deadlines(
+                    site.deadline_rules, site.holidays, r["end_date"], today)
+        return out
+
+    deadlines.period_deadlines = period_deadlines
+
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
         "konsol.group_chart": group_chart,
@@ -380,12 +452,15 @@ def _call(site):
         "konsol.close.ic_api": ic_api,
         "konsol.close.ic_balance_api": ic_balance_api,
         "konsol.close.approvals_api": approvals_api,
+        "konsol.close.close_event": close_event,
+        "konsol.close.deadlines": deadlines,
     }
     mods.update(stubs)
     for full, module in stubs.items():
         parent, _, leaf = full.rpartition(".")
         setattr(mods[parent], leaf, module)
 
+    site.stub_modules = mods
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
     try:
@@ -1425,3 +1500,341 @@ def test_period_items_name_the_year_not_the_bare_period_code():
     item = next(i for i in _call(site)["items"] if i["id"] == "signoff:2025-08")
     assert item["title"] == "Sign off FY2025 P08"
     assert item["period"]["code"] == "FY2025 P08"
+
+
+# --- T53t (C-X1): the loader carries close_event.reminders and deadlines ------
+
+def test_stub_close_carries_reminders_and_deadlines():
+    site = _Site()
+    seen = []
+
+    def lazy():
+        # A lazy import made while get_my_work runs, as Y59/D59 will make it.
+        from konsol.close import close_event, deadlines
+        seen.append((close_event.reminders([(2025, 7)]),
+                     close_event.reminders([(2025, 7)], topic="tb"),
+                     deadlines.period_deadlines([(2025, 7)], TODAY)))
+
+    site.during_call = lazy
+    _call(site)
+    undeclared = {step: {"due": None, "past": False, "text": "No due date declared"}
+                  for step in DEADLINE_MODEL.STEPS}
+    assert seen == [([], [], {(2025, 7): undeclared})]
+    close = site.stub_modules["konsol.close"]
+    assert close.close_event is site.stub_modules["konsol.close.close_event"]
+    assert close.deadlines is site.stub_modules["konsol.close.deadlines"]
+
+    site2 = _Site()
+    # Y59: get_my_work now reads these, so they are a real reminder event.
+    event = _reminder("CE-0001", "ZZA", datetime(2025, 8, 6, 14, 5), "zz-ga@example.com")
+    site2.reminders = [event]
+    site2.full_names = {"zz-ga@example.com": "Gee Accountant"}
+    seen.clear()
+    site2.during_call = lazy
+    _call(site2)
+    assert seen == [([event], [event], {(2025, 7): undeclared})]
+
+
+# --- Y59 (konsol#305 story 1.5, 1.2): each open period's TB reminders --------
+#
+# ``_period_facts`` reads ``close_event.reminders(open keys, "tb")`` ONCE and
+# gives every open period's facts ``reminders``: ``{entity: {count, last_at
+# (zoned), last_by, last_by_name}}`` for the entities the caller may see.
+# Review concern (Y58): an absent ``reminders`` reads as "not reminded", so it
+# is ALWAYS passed, ``{}`` when there are none; a failed read raises.
+
+REMIND_MODEL_PY = os.path.join(APP_DIR, "close", "remind_model.py")
+_RM_SPEC = importlib.util.spec_from_file_location("test_close_mywork_api_remind_model",
+                                                  REMIND_MODEL_PY)
+REMIND_MODEL = importlib.util.module_from_spec(_RM_SPEC)
+_RM_SPEC.loader.exec_module(REMIND_MODEL)
+
+MYWORK_ITEMS_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "fixtures", "close_mywork_items.json")
+OPEN_KEYS = [(2025, 7), (2025, 8), (2025, 9)]
+
+
+def _reminder(name, entity, at, actor, topic="tb", fy=2025, fp=7):
+    """One event as ``close_event.reminders`` returns it (Y53): the input
+    ``remind_model.summary`` reads."""
+    return {"name": name, "fiscal_year": fy, "fiscal_period": fp, "entity": entity,
+            "actor": actor, "at": at,
+            "detail": {"topic": topic, "recipients": ["zz-ea@example.com"],
+                       "subject": "Reminder"}}
+
+
+def _reminded_site(**kw):
+    """P07: ZZA reminded twice (the later by Jane), ZZB once by Raj. P09: ZZA
+    once by Raj. Missing: P07 ZZA, ZZB; P09 ZZA."""
+    site = _Site(**kw)
+    site.reminders = [
+        _reminder("CE-0001", "ZZA", datetime(2025, 8, 4, 9, 0), "raj@zz.example"),
+        _reminder("CE-0002", "ZZA", datetime(2025, 8, 6, 14, 5), "jane@zz.example"),
+        _reminder("CE-0003", "ZZB", datetime(2025, 8, 5, 10, 0), "raj@zz.example"),
+        _reminder("CE-0004", "ZZA", datetime(2025, 9, 10, 8, 0), "raj@zz.example", fp=9),
+    ]
+    site.full_names = {"jane@zz.example": "Jane Doe", "raj@zz.example": "Raj Patel"}
+    # D59: deadlines for the golden file: P07/P08 overdue, P09 TB not yet
+    # due, P09 sign-off undeclared (see _deadline_rules).
+    site.deadline_rules = _deadline_rules()
+    return site
+
+
+def _item(result, item_id):
+    return next(i for i in result["items"] if i["id"] == item_id)
+
+
+def test_the_events_are_the_real_summary_input():
+    got = REMIND_MODEL.summary(_reminded_site().reminders)
+    assert got[(2025, 7, "ZZA", "tb")]["count"] == 2
+    assert got[(2025, 7, "ZZA", "tb")]["last_by"] == "jane@zz.example"
+
+
+def test_reminders_are_read_once_for_every_open_period_and_topic_tb():
+    site = _reminded_site()
+    _call(site)
+    assert site.reminder_calls == [(OPEN_KEYS, "tb")], site.reminder_calls
+    # One User read names the senders.
+    assert site.user_name_reads == [{"name": ["in", ["jane@zz.example", "raj@zz.example"]]}], \
+        site.user_name_reads
+
+
+def test_every_open_period_always_carries_reminders_even_when_none():
+    """Y58 treats an absent ``reminders`` as "not reminded": it is never
+    omitted. With no reminders every open period still gets ``{}``."""
+    for site in (_Site(), _reminded_site()):
+        _call(site)
+        assert len(site.period_facts) == 1
+        facts = site.period_facts[0]
+        assert sorted(facts) == OPEN_KEYS
+        for key in OPEN_KEYS:
+            assert "reminders" in facts[key], key
+            assert isinstance(facts[key]["reminders"], dict), key
+    empty = _Site()
+    _call(empty)
+    assert [empty.period_facts[0][k]["reminders"] for k in OPEN_KEYS] == [{}, {}, {}]
+    assert empty.user_name_reads == []
+
+
+def test_a_failed_reminders_read_raises_never_omitted():
+    for persona_kw in ({}, {"roles": ("EPM Analyst",)},
+                       {"roles": ("Entity Accountant",), "user": "zz-ea@example.com",
+                        "allowed": {"ZZA"}}):
+        site = _reminded_site(**persona_kw)
+        site.reminders_error = RuntimeError("Close Event read failed")
+        with pytest.raises(RuntimeError) as info:
+            _call(site)
+        assert "Close Event read failed" in str(info.value)
+        assert site.period_facts == [], "period_items ran without reminders"
+
+
+def test_entity_accountant_item_carries_its_reminded_entry():
+    site = _reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                          allowed={"ZZA"})
+    result = _call(site)
+    assert _item(result, "tb:2025-07:ZZA")["reminded"] == {
+        "count": 2, "last_at": "2025-08-06T14:05:00+01:00", "last_by_name": "Jane Doe"}
+    assert _item(result, "tb:2025-09:ZZA")["reminded"] == {
+        "count": 1, "last_at": "2025-09-10T08:00:00+01:00", "last_by_name": "Raj Patel"}
+
+
+def test_a_hidden_entitys_reminders_never_leave_the_server():
+    """ZZB is not the Entity Accountant's: its entry is absent from every
+    period's facts and every item, and its sender's name is never read."""
+    site = _reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                          allowed={"ZZA"})
+    site.reminders[2]["actor"] = "zz-hidden@example.com"  # ZZB's only sender
+    site.full_names["zz-hidden@example.com"] = "Hidden Sender"
+    result = _call(site)
+    for key, facts in site.period_facts[0].items():
+        assert set(facts["reminders"]) <= {"ZZA"}, (key, facts["reminders"])
+    text = json.dumps(result)
+    for hidden in ("ZZB", "Hidden Sender", "zz-hidden@example.com", "CE-0003"):
+        assert hidden not in text, (hidden, text)
+    assert site.user_name_reads == [{"name": ["in", ["jane@zz.example", "raj@zz.example"]]}], \
+        site.user_name_reads
+
+
+def test_group_waiting_items_count_the_reminded_missing_entities():
+    for roles, persona in ((("EPM Analyst",), "group_accountant"), (("EPM Admin",), "close_lead")):
+        result = _call(_reminded_site(roles=roles))
+        assert _item(result, "tbs-waiting:2025-07")["reminded"] == {"reminded": 2, "of": 2}, persona
+        assert _item(result, "tbs-waiting:2025-09")["reminded"] == {"reminded": 1, "of": 1}, persona
+
+
+def test_no_reminders_gives_reminded_none_not_zero():
+    result = _call(_Site(roles=("EPM Analyst",)))
+    assert _item(result, "tbs-waiting:2025-07")["reminded"] is None
+    ea = _call(_Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"}))
+    assert _item(ea, "tb:2025-07:ZZA")["reminded"] is None
+
+
+def test_a_reminder_outside_the_open_periods_is_not_counted():
+    site = _reminded_site(roles=("EPM Analyst",))
+    # P06 is history and P05 Closed: the stub returns them, the API keeps only open keys.
+    site.reminders.append(_reminder("CE-0005", "ZZB", datetime(2025, 7, 1, 9, 0),
+                                    "raj@zz.example", fp=6))
+    site.reminders.append(_reminder("CE-0006", "ZZA", datetime(2025, 9, 1, 9, 0),
+                                    "raj@zz.example", topic="ic"))
+    _call(site)
+    facts = site.period_facts[0]
+    assert facts[(2025, 7)]["reminders"]["ZZB"]["count"] == 1
+    assert facts[(2025, 7)]["reminders"]["ZZA"]["count"] == 2
+    assert facts[(2025, 8)]["reminders"] == {}
+
+
+def test_an_unknown_topic_raises_never_a_silent_zero():
+    site = _reminded_site()
+    site.reminders.append(_reminder("CE-0009", "ZZA", datetime(2025, 8, 6, 8, 0),
+                                    "raj@zz.example", topic="x"))
+    with pytest.raises(ValueError) as info:
+        _call(site)
+    assert "CE-0009" in str(info.value)
+
+
+def test_a_sender_with_no_full_name_is_labelled_and_the_other_items_are_intact():
+    """konsol#305 R52d (review-w5b S3). Failure path (red at 843cdf7): a
+    sender with no User row, or a User whose full name is blank, made
+    ``get_my_work`` raise "... has no full name" and took the whole My work
+    screen down. Now that entry shows the labelled id
+    (``remind_model.sender_name``), the other entries are intact, every open
+    period still carries ``reminders``, and the reads are unchanged: one
+    reminders read and one User read naming every visible sender."""
+    for names in ({"raj@zz.example": "Raj Patel"},
+                  {"jane@zz.example": "", "raj@zz.example": "Raj Patel"}):
+        site = _reminded_site()
+        site.full_names = names
+        _call(site)
+        facts = site.period_facts[0]
+        assert sorted(facts) == OPEN_KEYS
+        assert facts[(2025, 7)]["reminders"]["ZZA"]["last_by_name"] == \
+            "jane@zz.example (name not recorded)", facts[(2025, 7)]["reminders"]
+        assert facts[(2025, 7)]["reminders"]["ZZA"]["count"] == 2
+        assert facts[(2025, 7)]["reminders"]["ZZB"]["last_by_name"] == "Raj Patel"
+        assert facts[(2025, 9)]["reminders"]["ZZA"]["last_by_name"] == "Raj Patel"
+        assert facts[(2025, 8)]["reminders"] == {}
+        assert site.reminder_calls == [(OPEN_KEYS, "tb")], site.reminder_calls
+        assert site.user_name_reads == [
+            {"name": ["in", ["jane@zz.example", "raj@zz.example"]]}], site.user_name_reads
+        ea = _reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                            allowed={"ZZA"})
+        ea.full_names = names
+        assert _item(_call(ea), "tb:2025-07:ZZA")["reminded"] == {
+            "count": 2, "last_at": "2025-08-06T14:05:00+01:00",
+            "last_by_name": "jane@zz.example (name not recorded)"}
+
+
+def _golden():
+    """The golden My work items close-ui's My work tests load (W4-E19):
+    exactly what the real ``get_my_work`` returns, per persona."""
+    ea = _call(_reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                              allowed={"ZZA"}))
+    ga_site = _reminded_site(roles=("EPM Analyst",), user="zz-ga@example.com")
+    # D59: from 1 Sep 2025 the group declares no TB date, so the Group
+    # Accountant's P09 item reads "No due date declared" (the EA's P09 item
+    # stays "not yet due"): the golden file carries every due form.
+    ga_site.deadline_rules = [_rule(date(2025, 7, 1), 5, 10), _rule(date(2025, 9, 1), 0, 0)]
+    ga = _call(ga_site)
+    return json.loads(json.dumps({"entity_accountant": ea["items"],
+                                  "group_accountant": ga["items"]}))
+
+
+def test_my_work_items_match_the_golden_fixture():
+    with open(MYWORK_ITEMS_FIXTURE) as f:
+        golden = json.load(f)
+    assert _golden() == golden
+    ea = {i["id"]: i for i in golden["entity_accountant"]}
+    assert ea["tb:2025-07:ZZA"]["reminded"]["count"] == 2
+    ga = {i["id"]: i for i in golden["group_accountant"]}
+    assert ga["tbs-waiting:2025-07"]["reminded"] == {"reminded": 2, "of": 2}
+
+
+# --- D59 (konsol#305 stories 1.1, 2.4): each open period's deadlines ---------
+#
+# ``_period_facts`` reads ``deadlines.period_deadlines(open keys, today)`` ONCE
+# and gives every open period's facts ``deadlines``. Review concern (D58): an
+# absent ``deadlines`` reads as "no due date", so it is ALWAYS passed for
+# every open period; a failed read, or an open period the read did not
+# answer, raises and period_items never runs.
+
+def _rule(valid_from, tb, signoff, ic=0, journals=0):
+    rule = {"valid_from": valid_from, "tb_due_days": tb, "ic_due_days": ic,
+            "journals_due_days": journals, "signoff_due_days": signoff}
+    for i, day in enumerate(DEADLINE_MODEL.WEEKDAYS):
+        rule[day] = 1 if i < 5 else 0
+    return rule
+
+
+def _deadline_rules():
+    """Mon-Fri. From 1 Jul 2025: TB 5, sign-off 10 working days. From 1 Sep
+    2025: TB 5, sign-off undeclared. With TODAY 15 Sep 2025: P07 TB due 7 Aug
+    (overdue), P08 TB due 5 Sep (overdue), P09 TB due 7 Oct (not yet due),
+    P09 sign-off "No due date declared"."""
+    return [_rule(date(2025, 7, 1), 5, 10), _rule(date(2025, 9, 1), 5, 0)]
+
+
+def test_deadlines_are_read_once_for_every_open_period():
+    site = _reminded_site()
+    _call(site)
+    assert site.deadline_calls == [(OPEN_KEYS, TODAY)], site.deadline_calls
+
+
+def test_every_open_period_always_carries_deadlines():
+    for site in (_Site(), _reminded_site()):
+        _call(site)
+        facts = site.period_facts[0]
+        assert sorted(facts) == OPEN_KEYS
+        for key in OPEN_KEYS:
+            assert set(facts[key]["deadlines"]) == set(DEADLINE_MODEL.STEPS), key
+
+
+def test_an_item_carries_its_due_date():
+    ea = _call(_reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                              allowed={"ZZA"}))
+    assert _item(ea, "tb:2025-07:ZZA")["due"] == {
+        "date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+    assert _item(ea, "tb:2025-09:ZZA")["due"] == {
+        "date": "2025-10-07", "text": "Due 2025-10-07", "overdue": False}
+
+
+def test_an_undeclared_step_reads_no_due_date_declared():
+    for site in (_Site(), _Site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                                allowed={"ZZA"})):
+        result = _call(site)
+        stepped = [i for i in result["items"] if i.get("due") is not None]
+        assert stepped, [i["id"] for i in result["items"]]
+        for item in stepped:
+            assert item["due"] == {"date": None, "text": "No due date declared",
+                                   "overdue": False}, item
+
+
+def test_a_failed_deadlines_read_raises_never_omitted():
+    site = _reminded_site()
+    site.deadlines_error = RuntimeError("Close Settings read failed")
+    with pytest.raises(RuntimeError) as info:
+        _call(site)
+    assert "Close Settings read failed" in str(info.value)
+    assert site.period_facts == [], "period_items ran without deadlines"
+
+
+def test_an_open_period_the_read_did_not_answer_raises():
+    site = _reminded_site()
+    full = {}
+    for r in site.rows:
+        key = (r["fiscal_year"], r["fiscal_period"])
+        if key in OPEN_KEYS and key != (2025, 8):
+            full[key] = DEADLINE_MODEL.period_deadlines([], set(), r["end_date"], TODAY)
+    site.deadlines = full
+    with pytest.raises(Exception) as info:
+        _call(site)
+    assert "FY2025 P08" in str(info.value), str(info.value)
+    assert site.period_facts == [], "period_items ran without deadlines"
+
+
+def test_the_golden_file_carries_every_due_form():
+    with open(MYWORK_ITEMS_FIXTURE) as f:
+        golden = json.load(f)
+    dues = [i["due"] for items in golden.values() for i in items if i.get("due")]
+    assert any(d["overdue"] for d in dues), dues
+    assert any(d["date"] and not d["overdue"] for d in dues), dues
+    assert any(d["text"] == "No due date declared" for d in dues), dues

@@ -28,7 +28,12 @@ The on-behalf label (R4, konsol#297) follows ``uploaded_on_behalf`` (A18):
 "Yes" -> "by <owner> for <entity>", "No" -> "by <owner>", blank -> unknown
 (uploaded before it was recorded; Problems 16), never read as "No".
 
-No due date is shown: nothing declares one (Problems 6).
+The TB due date (konsol#305 D56, decision #305-2.4-1) is the ``tb`` step of
+``deadlines.period_deadlines`` for the period: ``deadline`` is ``{due, past,
+text}``, and an undeclared rule reads "No due date declared", never a guessed
+date. A ``Missing`` row is ``overdue`` when the due date is past; every other
+row is not (C-D4: overdue is past AND the step still open). Overdue is shown
+only; it blocks nothing.
 
 ``tb_compare(entity, fiscal_year, fiscal_period)`` (A28, story 3.4) compares
 the entity's submitted trial balance with the one of the previous declared
@@ -57,18 +62,25 @@ import importlib.util as _importlib_util
 import os as _os
 
 
-def _load_period_name():
-    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
-    one "FY2025 P07" format, reachable even under the host tests' stub
-    ``konsol.close`` package."""
-    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
-    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+def _load_by_path(filename, module_name):
+    """A pure sibling module loaded by path, reachable even under the host
+    tests' stub ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), filename)
+    spec = _importlib_util.spec_from_file_location(module_name, path)
     module = _importlib_util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.period_name
+    return module
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format."""
+    return _load_by_path("period_name.py", "konsol_close_period_name").period_name
 
 
 period_name = _load_period_name()
+#: The Remind rules (konsol#305 Y52), pure: who may remind, and the summary.
+remind_model = _load_by_path("remind_model.py", "konsol_close_remind_model")
 
 REGULAR = "Regular"
 OPEN = "Open"
@@ -171,9 +183,58 @@ def _exception(record):
             "declared_on": _iso(record.get("creation"))}
 
 
+def _reminders(key, codes):
+    """``{entity: {count, last_at, last_by, last_by_name}}`` for the visible
+    ``codes`` (konsol#305 Y56, C-R6): one ``close_event.reminders`` read for
+    the period and topic tb, summarised by ``remind_model.summary``. Only the
+    visible entities' entries are kept, so a hidden entity's reminders (and
+    who sent them) never leave the server. An unreadable event raises
+    (``summary``): a count is never guessed as 0. A sender with no full name
+    is named by ``remind_model.sender_name``: the full name, or the labelled
+    id "<id> (name not recorded)" when the user has no full name or no longer
+    exists, so one bad sender never takes down the list (konsol#305 R52c,
+    review-w5b S3)."""
+    from konsol.close import close_event  # lazy: the ic_api.send_back precedent
+
+    summary = remind_model.summary(close_event.reminders([key], "tb"))
+    entries = remind_model.visible_entries(summary, [key], "tb", codes)[key]
+    if not entries:
+        return {}
+    actors = sorted({e["last_by"] for e in entries.values()})
+    names = {u["name"]: u.get("full_name") for u in frappe.get_all(
+        "User", filters={"name": ["in", actors]}, fields=["name", "full_name"],
+        limit_page_length=0)}
+    return {entity: {"count": int(e["count"]), "last_at": _iso(e["last_at"]),
+                     "last_by": e["last_by"],
+                     "last_by_name": remind_model.sender_name(e["last_by"], names)}
+            for entity, e in entries.items()}
+
+
+def _tb_deadline(key):
+    """The period's TB due date as ``{due, past, text}`` (konsol#305 D56): one
+    ``deadlines.period_deadlines`` read with today's date. The asked period is
+    Regular (``_regular_row``), so the reader must return it: its absence is
+    an error, never "No due date declared"."""
+    from konsol.close import deadlines  # lazy (C-X1)
+
+    found = deadlines.period_deadlines([key], frappe.utils.getdate())
+    if key not in found:
+        frappe.throw("No deadline was read for %s, a Regular period: check its row in "
+                     "EPM Fiscal Year." % period_name(*key))
+    return deadlines.as_payload(found[key])["tb"]
+
+
 @frappe.whitelist(methods=["GET"])
 def my_tbs(fiscal_year, fiscal_period):
-    """``{period_open, can_upload, entities: [{entity, name, status, tb, exception}]}``.
+    """``{period_open, can_upload, can_remind, deadline, entities: [{entity,
+    name, status, tb, exception, reminders, overdue}]}``.
+
+    ``deadline`` is the TB step's ``{due, past, text}`` (D56); ``overdue`` is
+    ``deadline.past`` on a ``Missing`` row and False on every other row.
+
+    ``reminders`` is ``{count, last_at, last_by, last_by_name}`` or None
+    (topic tb, konsol#305 Y56). ``can_remind`` is True only for
+    ``remind_model.REMIND_ROLES`` in an Open period.
 
     Read-only. Refuses an undeclared period (PeriodNotDeclared) and a
     non-Regular one (only Regular periods are gated, P5).
@@ -187,6 +248,9 @@ def my_tbs(fiscal_year, fiscal_period):
     result = {
         "period_open": period_open,
         "can_upload": bool(period_open and frappe.has_permission("Trial Balance Submission", "create")),
+        "can_remind": bool(period_open
+                           and set(frappe.get_roles()) & set(remind_model.REMIND_ROLES)),
+        "deadline": _tb_deadline(key),
         "entities": [],
     }
 
@@ -246,6 +310,10 @@ def my_tbs(fiscal_year, fiscal_period):
             "tb": _tb(tbs.get(code), code),
             "exception": None,
         })
+    reminded = _reminders(key, {e["entity"] for e in out})
+    for e in out:
+        e["reminders"] = reminded.get(e["entity"])
+        e["overdue"] = bool(e["status"] == MISSING and result["deadline"]["past"])
     out.sort(key=lambda e: (_RANK.get(e["status"], 2), e["entity"]))
     result["entities"] = out
     return result

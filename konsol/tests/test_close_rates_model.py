@@ -7,6 +7,7 @@ close_policy_model.py (loaded by path too), rather than copying the policy
 rule (#305-W2-14).
 """
 import ast
+import datetime
 import importlib.util
 import os
 
@@ -401,3 +402,351 @@ def test_module_imports_no_frappe():
             module = node.module or ""
             assert not module.startswith("frappe")
             assert not module.startswith("konsol")
+
+
+# --- O57: an OP item carries the draft's structural effect (story 4.2, C-O4) -----
+# ``_op_item`` is shared by get_pending (Rates) and approvals_model (Approvals),
+# so the effect is passed through here, once. The effect is the REAL
+# ownership_change_model.effect's output, never a hand-built dict.
+
+_OCM_SPEC = importlib.util.spec_from_file_location(
+    "rates_model_test_ownership_change_model",
+    os.path.join(APP_DIR, "close", "ownership_change_model.py"))
+OCM = importlib.util.module_from_spec(_OCM_SPEC)
+_OCM_SPEC.loader.exec_module(OCM)
+
+
+def _o57_calendar():
+    rows = []
+    for m in range(1, 13):
+        start = "2025-%02d-01" % m
+        nxt = "2026-01-01" if m == 12 else "2025-%02d-01" % (m + 1)
+        end = (datetime.date.fromisoformat(nxt) - datetime.timedelta(days=1)).isoformat()
+        rows.append({"fiscal_year": 2025, "fiscal_period": m, "period_code": "P%02d" % m,
+                     "period_label": "P%02d" % m, "period_type": "Regular",
+                     "start_date": start, "end_date": end, "status": "Open"})
+    return rows
+
+
+def _o57_real_effect():
+    change = {"entity": "ZZENT", "effective_date": "2025-10-01", "ownership_pct": 80,
+              "consolidation_method": "full"}
+    current = {"name": "OP-0", "effective_date": "2025-01-01", "end_date": None,
+               "ownership_pct": 100.0, "consolidation_method": "full"}
+    # O64: the signed runs carry their date and signer, as
+    # ownership_change.context hands them over.
+    signed = {(2025, 9): {"run": "AR-9", "signed_on": "2025-10-04", "signed_by_name": "Jane Doe"},
+              (2025, 11): {"run": "AR-11", "signed_on": "2025-12-04",
+                           "signed_by_name": "Jane Doe"}}
+    return OCM.effect(change, current, _o57_calendar(), signed)
+
+
+def _o57_items(op):
+    return M.pending_items([], [op], {op["name"]: frozenset({"alice"})}, "lead",
+                           ("EPM Admin",), "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+
+
+def test_o57_op_item_carries_the_real_models_effect():
+    effect = _o57_real_effect()
+    op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=effect)
+    [item] = _o57_items(op)
+    assert item["ownership_effect"] == effect
+    assert item["ownership_effect"]["after"]["pct"] == 80.0
+    assert item["ownership_effect"]["resign"] == ["FY2025 P11"]
+    # The detail text is unchanged by the effect.
+    assert item["detail"] == "80% · full"
+
+
+def test_o57_failure_path_a_desk_draft_effect_none_stays_none():
+    """A Desk "Record ownership" draft has no ``supersedes``: its effect is
+    None, never a guessed before/after."""
+    op = dict(_op("OP-2", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=None)
+    [item] = _o57_items(op)
+    assert "ownership_effect" in item and item["ownership_effect"] is None
+
+
+def test_o57_failure_path_a_doc_without_the_effect_key_does_not_raise_or_invent_one():
+    """approvals_model builds OP items through this function before O58 gives
+    its docs an ``effect``: a missing key never raises, and never becomes a
+    None that would read as "Drafted in Desk"."""
+    op = _op("OP-3", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+             "2026-09-01T09:00:00")
+    [item] = _o57_items(op)
+    assert "ownership_effect" not in item
+    assert item["detail"] == "80% · full"
+
+
+def test_o57_her_items_never_carry_an_effect():
+    her = [dict(_her("HER-1", "G1", "ZZENT", "4000", "2026-09-30", 1.1, "alice",
+                     "2026-09-02T10:00:00"), effect=_o57_real_effect())]
+    [item] = M.pending_items(her, [], {"HER-1": frozenset({"alice"})}, "lead", ("EPM Admin",),
+                             "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert "ownership_effect" not in item
+
+
+# --- O69: the pending Ownership Period item says how to edit it -----------------
+# Story 4.2; wireframe-4.2.md §1 ("The Analyst can edit it until it is
+# approved"). The server, never the client, decides which draft offers Edit
+# and with which node, period, pct and method.
+
+def _o69_calendar():
+    """FY2025 as live declares it: P00 Opening and P01 both start 1 Jan,
+    P13 Closing starts on P12's last day. Every period is Open (R52h: the
+    rows carry the effective status, as fiscal_period_rows returns it)."""
+    rows = [{"fiscal_year": 2025, "fiscal_period": 0, "period_type": "Opening",
+             "start_date": datetime.date(2025, 1, 1), "status": "Open"}]
+    for m in range(1, 13):
+        rows.append({"fiscal_year": 2025, "fiscal_period": m, "period_type": "Regular",
+                     "start_date": datetime.date(2025, m, 1), "status": "Open"})
+    rows.append({"fiscal_year": 2025, "fiscal_period": 13, "period_type": "Closing",
+                 "start_date": datetime.date(2025, 12, 31), "status": "Open"})
+    return rows
+
+
+def _o69_draft(**k):
+    op = dict(_op("OP-ZZ-2025-10-01", "G1", "ZZENT", "2025-10-01", None, 80.0, "full",
+                  "alice", "2026-09-01T09:00:00"), supersedes="OP-ZZ-1")
+    op.update(k)
+    return op
+
+
+def test_o69_regular_starts_maps_each_regular_first_day_to_its_period():
+    starts = M.regular_period_by_start(_o69_calendar())
+    assert starts["2025-10-01"] == (2025, 10, "Open")
+    # P00 Opening shares 1 Jan with P01: only the Regular one counts.
+    assert starts["2025-01-01"] == (2025, 1, "Open")
+    # P13 Closing's first day is no Regular period's.
+    assert "2025-12-31" not in starts
+    assert len(starts) == 12
+
+
+def test_o69_failure_path_two_regular_periods_on_one_day_give_neither():
+    rows = _o69_calendar() + [{"fiscal_year": 2026, "fiscal_period": 1,
+                               "period_type": "Regular", "start_date": "2025-10-01"}]
+    starts = M.regular_period_by_start(rows)
+    assert "2025-10-01" not in starts, starts
+
+
+def test_o69_op_edit_is_the_drafts_node_period_pct_and_method():
+    edit = M.op_edit(_o69_draft(), M.regular_period_by_start(_o69_calendar()))
+    assert edit == {"consolidation_group": "G1", "entity": "ZZENT", "fiscal_year": 2025,
+                    "fiscal_period": 10, "ownership_pct": 80.0,
+                    "consolidation_method": "full"}
+
+
+def test_o69_failure_path_a_desk_draft_without_supersedes_has_no_edit():
+    starts = M.regular_period_by_start(_o69_calendar())
+    assert M.op_edit(_o69_draft(supersedes=None), starts) is None
+    assert M.op_edit(_o69_draft(supersedes=""), starts) is None
+
+
+def test_o69_failure_path_a_caller_who_may_not_save_has_no_edit():
+    # ``starts`` None: the caller is not admitted by save_ownership_change.
+    assert M.op_edit(_o69_draft(), None) is None
+
+
+def test_o69_failure_path_a_date_no_regular_period_starts_on_gives_no_guessed_period():
+    starts = M.regular_period_by_start(_o69_calendar())
+    for day in ("2025-10-15", "2025-12-31", "2027-01-01"):
+        assert M.op_edit(_o69_draft(effective_date=day), starts) is None, day
+
+
+def test_o69_pending_items_pass_edit_through_and_never_invent_it():
+    starts = M.regular_period_by_start(_o69_calendar())
+    with_edit = dict(_o69_draft(), edit=M.op_edit(_o69_draft(), starts))
+    desk = dict(_o69_draft(name="OP-DESK", supersedes=None), edit=None)
+    bare = _o69_draft(name="OP-BARE")
+    items = M.pending_items([], [with_edit, desk, bare],
+                            {n: frozenset({"alice"}) for n in ("OP-ZZ-2025-10-01", "OP-DESK",
+                                                               "OP-BARE")},
+                            "lead", ("EPM Admin",), "Blocked", APPROVER_ROLES,
+                            SELF_APPROVAL_PROBLEM)
+    by = {i["name"]: i for i in items}
+    assert by["OP-ZZ-2025-10-01"]["edit"]["fiscal_period"] == 10
+    assert "edit" in by["OP-DESK"] and by["OP-DESK"]["edit"] is None
+    # approvals_model builds OP items through the same function without an
+    # ``edit``: the key stays absent, never a None that reads as "no Edit".
+    assert "edit" not in by["OP-BARE"]
+    # The title and detail are unchanged.
+    assert by["OP-ZZ-2025-10-01"]["title"] == "ZZENT in G1 from 2025-10-01"
+    assert by["OP-ZZ-2025-10-01"]["detail"] == "80% · full"
+
+
+# --- R52h (review S7/U5): ``edit`` only where the form can load the draft --------
+# Coordinator ruling S7/U5: the server's ``op_edit`` is None wherever the
+# ownership change form cannot load the draft. The form's choices are
+# rates_api._change_choices (rates_api.py:508-548): nodes that name an entity,
+# and Regular periods whose effective status is Open.
+
+def _r52h_calendar(closed=(), statuses=None):
+    """``_o69_calendar`` (every period Open) with the periods in ``closed``
+    Closed and those in ``statuses`` set to the given status."""
+    rows = []
+    for r in _o69_calendar():
+        r = dict(r)
+        if r["fiscal_period"] in closed:
+            r["status"] = "Closed"
+        if statuses and r["fiscal_period"] in statuses:
+            r["status"] = statuses[r["fiscal_period"]]
+        rows.append(r)
+    return rows
+
+
+def _r52h_choices(calendar, nodes):
+    """The form's choices in _change_choices' shape, built from the same rows
+    by its rule (rates_api.py:508-548): ``nodes`` are the submitted
+    ``(consolidation_group, data_area_id)`` pairs; only those naming an
+    entity are offered; only Regular periods whose status is Open are."""
+    entities = sorted({(e, g) for g, e in nodes if e})
+    periods = [{"fiscal_year": int(r["fiscal_year"]), "fiscal_period": int(r["fiscal_period"]),
+                "start_date": M._iso_day(r["start_date"])}
+               for r in calendar
+               if r.get("period_type") == "Regular" and r.get("status") == "Open"]
+    return {"entities": [{"entity": e, "consolidation_group": g} for e, g in entities],
+            "periods": periods}
+
+
+def test_r52h_failure_path_a_group_node_draft_has_no_edit():
+    # Red at 843cdf7: {'consolidation_group': 'G1', 'entity': None, ...}.
+    starts = M.regular_period_by_start(_r52h_calendar())
+    assert M.op_edit(_o69_draft(data_area_id=None), starts) is None
+    assert M.op_edit(_o69_draft(data_area_id=""), starts) is None
+
+
+def test_r52h_a_draft_starting_a_closed_regular_period_has_no_edit():
+    starts = M.regular_period_by_start(_r52h_calendar(closed=(10,)))
+    assert M.op_edit(_o69_draft(), starts) is None
+
+
+def test_r52h_any_status_but_open_gives_no_edit_and_a_missing_one_is_never_open():
+    for status in ("Closed", "Locked", "Soft Closed", "", None):
+        starts = M.regular_period_by_start(_r52h_calendar(statuses={10: status}))
+        assert M.op_edit(_o69_draft(), starts) is None, status
+    rows = [dict(r) for r in _r52h_calendar()]
+    for r in rows:
+        if r["fiscal_period"] == 10:
+            del r["status"]
+    assert M.op_edit(_o69_draft(), M.regular_period_by_start(rows)) is None
+
+
+def test_r52h_an_open_entity_draft_is_unchanged():
+    edit = M.op_edit(_o69_draft(), M.regular_period_by_start(_r52h_calendar(closed=(9, 11))))
+    assert edit == {"consolidation_group": "G1", "entity": "ZZENT", "fiscal_year": 2025,
+                    "fiscal_period": 10, "ownership_pct": 80.0,
+                    "consolidation_method": "full"}
+
+
+def test_r52h_the_map_carries_each_regular_periods_status_from_one_read():
+    starts = M.regular_period_by_start(_r52h_calendar(closed=(3,)))
+    assert starts["2025-10-01"] == (2025, 10, "Open")
+    assert starts["2025-03-01"] == (2025, 3, "Closed")
+    assert starts["2025-01-01"] == (2025, 1, "Open")
+    assert "2025-12-31" not in starts
+    assert len(starts) == 12
+
+
+def test_r52h_edit_is_offered_exactly_where_the_forms_choices_hold_the_draft():
+    """Pins op_edit to _change_choices: for every node and every calendar
+    day, ``edit`` is not None exactly when the draft's (entity, period) is
+    one of the choices, and then names that choice."""
+    calendar = _r52h_calendar(closed=(1, 2, 3, 4, 5, 6), statuses={7: "Locked"})
+    nodes = [("G1", "ZZENT"), ("G1", None), ("G2", "ZZENT"), ("G2", "ZZTWO"), ("G3", "")]
+    choices = _r52h_choices(calendar, nodes)
+    starts = M.regular_period_by_start(calendar)
+    offered = 0
+    for group, entity in nodes:
+        for row in calendar:
+            day = M._iso_day(row["start_date"])
+            draft = _o69_draft(consolidation_group=group, data_area_id=entity, effective_date=day)
+            edit = M.op_edit(draft, starts)
+            node_ok = {"entity": entity, "consolidation_group": group} in choices["entities"]
+            period = [p for p in choices["periods"] if p["start_date"] == day]
+            if node_ok and period:
+                offered += 1
+                assert edit is not None, (group, entity, day)
+                assert (edit["entity"], edit["consolidation_group"]) == (entity, group)
+                assert (edit["fiscal_year"], edit["fiscal_period"]) == \
+                    (period[0]["fiscal_year"], period[0]["fiscal_period"])
+            else:
+                assert edit is None, (group, entity, day, edit)
+    # 3 entity nodes x P08..P12 (P00's day is P01's, which is Closed).
+    assert offered == 3 * 5, offered
+
+
+# --- R52i (review S2): one bad ownership draft is an error on that item -------
+# The API sets ``effect = None`` and ``effect_error`` on a draft whose effect
+# cannot be read; ``_op_item`` passes ``effect_error`` through whenever it
+# passes ``effect`` (None when the effect was read).
+
+R52I_ERROR = ("The pending ownership change OP-4 cannot be shown: OP-0 is cancelled. "
+              "Correct or delete the draft in Desk.")
+
+
+def test_r52i_an_op_item_with_an_effect_carries_effect_error_none():
+    effect = _o57_real_effect()
+    op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=effect, effect_error=None)
+    [item] = _o57_items(op)
+    assert item["ownership_effect"] == effect
+    assert "ownership_effect_error" in item and item["ownership_effect_error"] is None
+
+
+def test_r52i_failure_path_a_broken_draft_carries_its_effect_error():
+    op = dict(_op("OP-4", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=None, effect_error=R52I_ERROR)
+    [item] = _o57_items(op)
+    assert item["ownership_effect"] is None
+    assert item["ownership_effect_error"] == R52I_ERROR
+    # The rest of the item is built as normal.
+    assert item["detail"] == "80% · full"
+    assert item["approve"]["mode"] == "direct"
+
+
+def test_r52i_a_doc_with_effect_but_no_effect_error_key_reads_none():
+    """A caller that read the effect and set no error: ``effect_error`` is
+    None, never a missing key beside a present ``effect``."""
+    op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=None)
+    [item] = _o57_items(op)
+    assert "ownership_effect_error" in item and item["ownership_effect_error"] is None
+
+
+def test_r52i_a_doc_without_the_effect_key_has_no_effect_error_key():
+    op = _op("OP-3", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+             "2026-09-01T09:00:00")
+    [item] = _o57_items(op)
+    assert "ownership_effect" not in item and "ownership_effect_error" not in item
+
+
+# --- R52q (review S18, the O62 watch): the OP item's effect keys are named for it ---
+# ``_op_item`` emits ``ownership_effect`` and ``ownership_effect_error`` in
+# place of ``effect``/``effect_error``, so an Ownership Period item never
+# shares a key with the journal's ``effect`` (approvals_model).
+
+
+def test_r52q_an_op_item_carries_ownership_effect_and_no_effect_key():
+    effect = _o57_real_effect()
+    op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=effect, effect_error=None)
+    [item] = _o57_items(op)
+    assert item["ownership_effect"] == effect
+    assert "ownership_effect_error" in item and item["ownership_effect_error"] is None
+    assert "effect" not in item and "effect_error" not in item, sorted(item)
+
+
+def test_r52q_failure_path_a_broken_draft_carries_ownership_effect_error_only():
+    op = dict(_op("OP-4", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=None, effect_error=R52I_ERROR)
+    [item] = _o57_items(op)
+    assert item["ownership_effect"] is None
+    assert item["ownership_effect_error"] == R52I_ERROR
+    assert "effect" not in item and "effect_error" not in item, sorted(item)
+
+
+def test_r52q_a_doc_without_the_effect_key_has_neither_ownership_key():
+    op = _op("OP-3", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+             "2026-09-01T09:00:00")
+    [item] = _o57_items(op)
+    assert "ownership_effect" not in item and "ownership_effect_error" not in item, sorted(item)

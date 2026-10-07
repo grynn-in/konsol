@@ -41,6 +41,99 @@ TIMEFMT_PY = os.path.join(CLOSE_DIR, "timefmt.py")
 #: the real, pure tb_dimension_model are loaded by path too.
 JOURNAL_API_PY = os.path.join(CLOSE_DIR, "journal_api.py")
 TB_DIMENSION_MODEL_PY = os.path.join(APP_DIR, "tb_dimension_model.py")
+#: O58: the REAL ownership_change.py (and through it the real, pure
+#: ownership_change_model.py) gives each pending Ownership Period its effect;
+#: only ``konsol.close.signoff_gate`` is stubbed (``site.signed``).
+OWNERSHIP_CHANGE_PY = os.path.join(CLOSE_DIR, "ownership_change.py")
+OWNERSHIP_CHANGE_MODEL_PY = os.path.join(CLOSE_DIR, "ownership_change_model.py")
+CLOSE_DIR_R52F = CLOSE_DIR
+
+
+#: R52f: the REAL signoff_gate.py, so the rule the preview lists by is the
+#: rule record_data_change marks by (never a re-typed copy of it).
+SIGNOFF_GATE_PY = os.path.join(CLOSE_DIR_R52F, "signoff_gate.py")
+SIGNOFF_MODEL_PY_R52F = os.path.join(CLOSE_DIR_R52F, "signoff_model.py")
+
+
+def _real_periods_marked_from(rows, first_close, reads=None):
+    """``signoff_gate.periods_marked_from`` from the REAL signoff_gate.py,
+    loaded by path against a minimal stub frappe: the period row's type
+    comes from ``rows()`` (the same calendar the code under test reads), the
+    first close is ``first_close`` ((fy, fp) or None = undeclared, read as
+    the Close Settings Ints 0/0) and the real pure ``signoff_model``.
+    ``reads``, when given, records each gate read as ("gate", what)."""
+    log = reads.append if reads is not None else (lambda item: None)
+    fy0, fp0 = first_close or (0, 0)
+
+    frappe = types.ModuleType("frappe")
+    frappe.ValidationError = type("ValidationError", (Exception,), {})
+
+    def throw(msg, exc=None, title=None, **k):
+        raise (exc or frappe.ValidationError)(msg)
+
+    def get_value(doctype, filters, fieldname, as_dict=False, **k):
+        assert doctype == "EPM Fiscal Year Period", doctype
+        log(("gate", "period_row"))
+        key = (int(filters["parent"]), int(filters["fiscal_period"]))
+        row = next((r for r in rows() if (int(r["fiscal_year"]), int(r["fiscal_period"])) == key),
+                   None)
+        if row is None:
+            return None
+        rec = {"name": "ROW-%d-%d" % key, "period_type": row["period_type"]}
+        return {f: rec.get(f) for f in fieldname}
+
+    def get_single_value(doctype, field):
+        assert doctype == "Close Settings", doctype
+        log(("gate", field))
+        return {"first_close_fiscal_year": fy0, "first_close_fiscal_period": fp0}[field]
+
+    frappe.throw = throw
+    frappe.db = types.SimpleNamespace(get_value=get_value, get_single_value=get_single_value)
+
+    konsol = types.ModuleType("konsol")
+    calendar = types.ModuleType("konsol.fiscal_calendar")
+
+    def fiscal_period_rows():
+        log(("gate", "calendar"))
+        return [dict(r) for r in rows()]
+
+    calendar.fiscal_period_rows = fiscal_period_rows
+    close = types.ModuleType("konsol.close")
+    spec = importlib.util.spec_from_file_location("signoff_model_for_r52f", SIGNOFF_MODEL_PY_R52F)
+    signoff_model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signoff_model)
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model"):
+        setattr(close, name, types.ModuleType("konsol.close." + name))
+    close.signoff_model = signoff_model
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    konsol.fiscal_calendar, konsol.close, konsol.period_status = calendar, close, period_status
+    mods = {"frappe": frappe, "konsol": konsol, "konsol.fiscal_calendar": calendar,
+            "konsol.close": close, "konsol.period_status": period_status}
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model", "signoff_model"):
+        mods["konsol.close." + name] = getattr(close, name)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("signoff_gate_for_r52f", SIGNOFF_GATE_PY)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+    def periods_marked_from(fiscal_year, fiscal_period):
+        # Looked up at call time: a gate without the function fails the
+        # caller that asks for it, not every stub site that is built.
+        return gate.periods_marked_from(fiscal_year, fiscal_period)
+
+    return periods_marked_from
+
 
 #: BST (+01:00) in July 2026, mirrors test_close_journal_api.py.
 SITE_TZ = "Europe/London"
@@ -158,6 +251,11 @@ _DOCTYPE_LIST_ATTR = {
 }
 
 
+#: O64: who signed the stub's signed runs, and when.
+O64_LEAD_NAME = "Zz Lead"
+O64_SIGNED_AT = "2026-08-04 17:30:00"
+
+
 class _Site:
     def __init__(self):
         self.user = LEAD
@@ -180,6 +278,16 @@ class _Site:
         self.ic_balances = []
         self.bcs = []
         self.bds = []
+        #: O58: the ``signoff_gate.latest_signed_runs()`` keys, {(fy, fp): run}.
+        self.signed = {}
+        #: R52f: the declared first close (fy, fp), None = undeclared, read by
+        #: the REAL signoff_gate.periods_marked_from (its reads: gate_reads).
+        self.first_close = None
+        self.gate_reads = []
+        #: O64: {(fy, fp): (signed_off_by, signed_off_at)}; unlisted keys are
+        #: signed by LEAD at O64_SIGNED_AT. User full names by user id.
+        self.signers = {}
+        self.users = {LEAD: O64_LEAD_NAME}
         #: doctype -> None, or {"name", "workflow_state_field"}.
         self.workflows = {}
         #: workflow name -> ordered list of state names (idx order).
@@ -257,6 +365,9 @@ def _frappe(site):
             rows = [r for r in site.accounts if _match(r, filters)]
         elif doctype in _DOCTYPE_LIST_ATTR:
             rows = [r for r in getattr(site, _DOCTYPE_LIST_ATTR[doctype]) if _match(r, filters)]
+        elif doctype == "User":  # O64: the signers' full names
+            rows = [{"name": n, "full_name": f} for n, f in sorted(site.users.items())
+                    if _match({"name": n}, filters)]
         else:
             raise AssertionError("unexpected get_all on %s" % doctype)
         return [{f: r.get(f) for f in fields} for r in rows]
@@ -377,6 +488,27 @@ def _close_event(site):
     return mod
 
 
+def _signoff_gate(site):
+    mod = types.ModuleType("konsol.close.signoff_gate")
+
+    def latest_signed_runs(fields=()):
+        site.reads.append(("latest_signed_runs",))
+        out = {}
+        for (fy, fp), run in site.signed.items():
+            by, at = site.signers.get((fy, fp), (LEAD, O64_SIGNED_AT))
+            row = {"name": run, "fiscal_year": fy, "fiscal_period": fp,
+                   "signed_off_by": by, "signed_off_at": at}
+            out[(fy, fp)] = {f: row[f] for f in ("name", "fiscal_year", "fiscal_period")
+                             + tuple(fields)}
+        return out
+
+    mod.latest_signed_runs = latest_signed_runs
+    # R52f: the REAL rule, on this site's calendar and first close.
+    mod.periods_marked_from = _real_periods_marked_from(
+        lambda: site.periods, site.first_close, site.gate_reads)
+    return mod
+
+
 def _load_path(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -395,6 +527,7 @@ def _invoke(site, run):
     entity_permissions = _entity_permissions(site)
     self_approval = _self_approval(site)
     close_event = _close_event(site)
+    signoff_gate = _signoff_gate(site)
     konsol.close = close
     konsol.fiscal_calendar = fiscal_calendar
     konsol.entity_permissions = entity_permissions
@@ -403,7 +536,8 @@ def _invoke(site, run):
              "konsol.close.close_event", "konsol.close.journal_model",
              "konsol.close.close_policy_model", "konsol.close.approvals_model",
              "konsol.close.timefmt", "konsol.tb_dimension_model",
-             "konsol.close.journal_api", "close_approvals_api_under_test"]
+             "konsol.close.journal_api", "konsol.close.signoff_gate",
+             "konsol.close.ownership_change", "close_approvals_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({
         "frappe": frappe, "konsol": konsol, "konsol.close": close,
@@ -411,6 +545,7 @@ def _invoke(site, run):
         "konsol.entity_permissions": entity_permissions,
         "konsol.close.self_approval": self_approval,
         "konsol.close.close_event": close_event,
+        "konsol.close.signoff_gate": signoff_gate,
     })
     try:
         close.self_approval = self_approval
@@ -421,6 +556,8 @@ def _invoke(site, run):
         close.timefmt = _load_path("konsol.close.timefmt", TIMEFMT_PY)
         konsol.tb_dimension_model = _load_path("konsol.tb_dimension_model", TB_DIMENSION_MODEL_PY)
         close.journal_api = _load_path("konsol.close.journal_api", JOURNAL_API_PY)
+        close.signoff_gate = signoff_gate
+        close.ownership_change = _load_path("konsol.close.ownership_change", OWNERSHIP_CHANGE_PY)
         api = _load_path("close_approvals_api_under_test", API_PY)
         return run(api)
     finally:
@@ -869,3 +1006,247 @@ def test_source_contains_no_event_log_doctype_literal():
         source = f.read()
     assert '"Close Event"' not in source
     assert "'Close Event'" not in source
+
+
+# --- O58: a pending Ownership Period carries its effect (story 4.2) ----------------
+# The REAL ownership_change.effect_for reads the draft's ``supersedes`` from this
+# stub site; the expected value is the REAL ownership_change_model.effect.
+
+O58_PRED = "OP-ZZ58-1"
+O58_CHANGE = "OP-ZZ58-2026-07-01"
+O58_DESK = "OP-ZZ58B-2026-07-01"
+
+
+def _o58_site():
+    """DE02 100 % full from 2026-01-01 (approved, open-ended); the Analyst's
+    change of DE02 to 80 % full from FY2026 P07 (``supersedes`` it); a Desk
+    "Record ownership" draft for UK01 (no ``supersedes``); one HER draft.
+    FY2026 P07 is signed."""
+    site = _Site()
+    site.self_approval_policy = "Blocked"
+    site.periods = [_period(2026, 6), _period(2026, 7), _period(2026, 8)]
+    site.signed = {(2026, 7): "RUN-1"}
+    pred = _op(O58_PRED, docstatus=1, effective_date=date(2026, 1, 1), end_date=None,
+               ownership_pct=100, consolidation_method="full")
+    pred["supersedes"] = None
+    change = _op(O58_CHANGE, effective_date=date(2026, 7, 1), ownership_pct=80,
+                 consolidation_method="full")
+    change["supersedes"] = O58_PRED
+    desk = _op(O58_DESK, data_area_id="UK01", effective_date=date(2026, 7, 1),
+               ownership_pct=60, consolidation_method="equity")
+    site.ops = [pred, change, desk]
+    site.hers = [_her("HER-ZZ58")]
+    return site
+
+
+def _o58_item(result, name):
+    [item] = [i for i in _all_items(result) if i["name"] == name]
+    return item
+
+
+def _o58_model():
+    return _load_path("ownership_change_model_for_o58_test", OWNERSHIP_CHANGE_MODEL_PY)
+
+
+def test_o58_a_change_draft_carries_the_real_models_effect():
+    site = _o58_site()
+    item = _o58_item(_call(site), O58_CHANGE)
+    expected = _o58_model().effect(
+        {"entity": "DE02", "effective_date": "2026-07-01", "ownership_pct": 80,
+         "consolidation_method": "full"},
+        {"name": O58_PRED, "effective_date": "2026-01-01", "end_date": None,
+         "ownership_pct": 100.0, "consolidation_method": "full"},
+        [dict(p) for p in site.periods],
+        {(2026, 7): {"run": "RUN-1", "signed_on": "2026-08-04",
+                     "signed_by_name": O64_LEAD_NAME}})
+    assert item["ownership_effect"] == expected
+    # O64: the predecessor's name, and who signed the re-sign period.
+    assert item["ownership_effect"]["current_name"] == O58_PRED
+    assert item["ownership_effect"]["resign_detail"] == [
+        {"period": "FY2026 P07", "signed_on": "2026-08-04", "signed_by_name": O64_LEAD_NAME}]
+    assert item["ownership_effect"]["after"]["pct"] == 80.0
+    assert item["ownership_effect"]["before"]["pct"] == 100.0
+    assert item["ownership_effect"]["current_ends"] == "2026-06-30"
+    assert item["ownership_effect"]["resign"] == ["FY2026 P07"]
+    # The title and detail are unchanged (rates_model._op_item's own text).
+    assert item["detail"] == "80% · full"
+
+
+def test_r52f_failure_path_a_signed_closing_period_is_not_listed_for_re_signing():
+    """R52f (review S5): an approval of the change never marks a Closing
+    period, so the pending item's effect does not list one, however late."""
+    site = _o58_site()
+    site.first_close = (2026, 1)
+    site.periods.append({"fiscal_year": 2026, "fiscal_period": 13, "period_code": "P13",
+                         "period_label": "Closing", "period_type": "Closing",
+                         "start_date": date(2026, 12, 31), "end_date": date(2026, 12, 31),
+                         "quarter": "", "status": "Open"})
+    site.signed = {(2026, 7): "RUN-1", (2026, 13): "RUN-13"}
+    item = _o58_item(_call(site), O58_CHANGE)
+    assert item["ownership_effect"]["resign"] == ["FY2026 P07"], item["ownership_effect"]["resign"]
+    assert [d["period"] for d in item["ownership_effect"]["resign_detail"]] == ["FY2026 P07"]
+    assert ("gate", "period_row") in site.gate_reads, site.gate_reads
+
+
+def test_o58_failure_path_a_her_item_gets_no_effect_key():
+    item = _o58_item(_call(_o58_site()), "HER-ZZ58")
+    assert "ownership_effect" not in item
+
+
+def test_o58_failure_path_a_desk_draft_without_supersedes_has_effect_none():
+    """Never a guessed before/after: a Desk draft names no predecessor."""
+    item = _o58_item(_call(_o58_site()), O58_DESK)
+    assert "ownership_effect" in item and item["ownership_effect"] is None
+
+
+R52I_BROKEN = "OP-ZZ58C-2026-07-01"
+R52I_BROKEN_PRED = "OP-ZZ58C-1"
+
+
+def _r52i_site():
+    """R52i (review S2): the O58 site plus a second change draft, for FR03,
+    whose ``supersedes`` names a period cancelled after the draft was saved."""
+    site = _o58_site()
+    pred = _op(R52I_BROKEN_PRED, data_area_id="FR03", docstatus=2,
+               effective_date=date(2026, 1, 1), end_date=None, ownership_pct=100,
+               consolidation_method="full")
+    pred["supersedes"] = None
+    broken = _op(R52I_BROKEN, data_area_id="FR03", effective_date=date(2026, 7, 1),
+                 ownership_pct=70, consolidation_method="full")
+    broken["supersedes"] = R52I_BROKEN_PRED
+    site.ops.extend([pred, broken])
+    return site
+
+
+def _r52i_check(result):
+    broken = _o58_item(result, R52I_BROKEN)
+    assert broken["ownership_effect"] is None
+    assert broken["ownership_effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken["ownership_effect_error"]
+    assert R52I_BROKEN_PRED in broken["ownership_effect_error"], broken["ownership_effect_error"]
+    assert ".." not in broken["ownership_effect_error"], broken["ownership_effect_error"]
+    assert broken["ownership_effect_error"].endswith(". Correct or delete the draft in Desk."), \
+        broken["ownership_effect_error"]
+    assert broken["detail"] == "70% · full"
+    good = _o58_item(result, O58_CHANGE)
+    alone = _o58_item(_call(_o58_site()), O58_CHANGE)
+    assert good == alone
+    assert good["ownership_effect"]["current_name"] == O58_PRED
+    assert good["ownership_effect_error"] is None
+
+
+def test_r52i_failure_path_a_cancelled_supersedes_is_an_error_on_that_item_only():
+    """Corrupt data (the named predecessor is not an approved period) is an
+    error on that one item, naming the draft and the predecessor; the rest
+    of the queue is built as normal (review S2)."""
+    result = _call(_r52i_site())
+    _r52i_check(result)
+    assert sorted(i["name"] for i in _all_items(result) if i["doctype"] == OP) == sorted(
+        [O58_CHANGE, O58_DESK, R52I_BROKEN])
+
+
+def test_r52i_failure_path_queue_for_as_my_work_calls_it_keeps_its_waiting_count():
+    """mywork_api.get_my_work (mywork_api.py:618) reads the Close Lead's
+    ``queue_for(user, roles)["waiting"]["count"]``: one bad draft leaves the
+    count, never an exception that takes down the whole of My work."""
+    site = _r52i_site()
+    result = _invoke(site, lambda api: api.queue_for(LEAD, ["EPM Admin"]))
+    _r52i_check(result)
+    good_only = _invoke(_o58_site(), lambda api: api.queue_for(LEAD, ["EPM Admin"]))
+    assert int(result["waiting"]["count"]) == int(good_only["waiting"]["count"]) + 1, \
+        (result["waiting"], good_only["waiting"])
+
+
+def test_r52i_every_visible_op_item_carries_effect_error():
+    for item in _all_items(_call(_o58_site())):
+        if item["doctype"] == OP:
+            assert "ownership_effect_error" in item and item["ownership_effect_error"] is None, item
+        else:
+            assert "ownership_effect_error" not in item, item
+
+
+def test_o58_failure_path_a_hidden_draft_is_never_read_for_its_effect():
+    """An out-of-scope draft is cut by approvals_model; its predecessor, the
+    calendar and the signed runs are never read for it (and a broken one can
+    never refuse the caller's queue, nor name a hidden draft)."""
+    site = _o58_site()
+    site.allowed = {"UK01"}
+    site.ops[0]["docstatus"] = 2  # would refuse if it were read
+    result = _call(site)
+    assert [i["name"] for i in _all_items(result) if i["doctype"] == OP] == [O58_DESK]
+    assert len([r for r in site.reads if r == ("get_all", OP)]) == 1
+    assert ("fiscal_period_rows",) not in site.reads
+    assert ("latest_signed_runs",) not in site.reads
+
+
+def test_o58_a_desk_draft_costs_no_effect_read():
+    site = _o58_site()
+    site.ops = [r for r in site.ops if r["name"] != O58_CHANGE]
+    _call(site)
+    assert len([r for r in site.reads if r == ("get_all", OP)]) == 1
+    assert ("latest_signed_runs",) not in site.reads
+
+
+def test_o58_a_group_node_draft_is_visible_to_a_scoped_caller_and_carries_its_effect():
+    """approvals_model shows a blank-entity item (a group node) to a scoped
+    caller, so its effect is read too: never an item silently without it."""
+    site = _o58_site()
+    site.allowed = {"UK01"}
+    for row in site.ops[:2]:
+        row["data_area_id"] = None
+    item = _o58_item(_call(site), O58_CHANGE)
+    assert item["ownership_effect"]["after"]["pct"] == 80.0
+
+
+# --- O62: the golden Approvals queue with Ownership Period effects -----------------
+# close-ui's approvals.screen.test.mjs (O62) feeds this file to the REAL
+# queueView + ownershipEffectView. It is the whole ``get_queue()`` payload of
+# ``_o58_site()``: one OP change draft with its effect, one Desk draft with
+# ``effect: None`` and one HER item with no ``effect`` key.
+
+_O62_FIXTURE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "fixtures", "close_approvals_op_queue_payload.json")
+
+
+def test_o62_golden_op_queue_payload_equals_the_real_stub_site_call():
+    result = _call(_o58_site())
+    with open(_O62_FIXTURE_PATH) as f:
+        golden = json.load(f)
+    assert result == golden
+    ops = {i["name"]: i for i in result["items"] if i["doctype"] == OP}
+    assert ops[O58_CHANGE]["ownership_effect"]["after"]["pct"] == 80.0
+    assert ops[O58_DESK]["ownership_effect"] is None
+    assert ops[O58_CHANGE]["ownership_effect"]["resign_detail"][0]["signed_by_name"] == O64_LEAD_NAME
+
+
+# --- R52q (review S18, the O62 watch): one queue, two effect keys ---------------
+# An Ownership Period item carries ``ownership_effect``/``ownership_effect_error``;
+# a journal item keeps ``effect``. Neither carries the other's key.
+
+
+def test_r52q_op_items_carry_ownership_effect_and_the_journal_keeps_effect():
+    site = _o58_site()
+    site.journals = [_journal("CJ-1")]
+    site.lines = [
+        _line("CJ-1", 1, "DE02", "6100", debit_amount=100),
+        _line("CJ-1", 2, "DE02", "9999", credit_amount=100),
+    ]
+    items = {i["name"]: i for i in _all_items(_call(site))}
+    journal = items["CJ-1"]
+    assert journal["effect"]["no_heading"] == 1
+    assert "ownership_effect" not in journal and "ownership_effect_error" not in journal, sorted(journal)
+    change, desk = items[O58_CHANGE], items[O58_DESK]
+    assert change["ownership_effect"]["current_name"] == O58_PRED
+    assert change["ownership_effect"]["after"]["pct"] == 80.0
+    assert desk["ownership_effect"] is None
+    for op in (change, desk):
+        assert op["ownership_effect_error"] is None, op
+        assert "effect" not in op and "effect_error" not in op, sorted(op)
+
+
+def test_r52q_failure_path_a_broken_op_draft_names_its_error_under_the_ownership_key():
+    broken = _o58_item(_call(_r52i_site()), R52I_BROKEN)
+    assert broken["ownership_effect"] is None
+    assert broken["ownership_effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken
+    assert "effect" not in broken and "effect_error" not in broken, sorted(broken)

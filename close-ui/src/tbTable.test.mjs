@@ -1,11 +1,17 @@
 // konsol#305 B12: tbTable.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkRows, entityRows, compareRows, entityWord } from "./tbTable.js";
+import { checkRows, entityRows, compareRows, entityWord, tbDue, OVERDUE_TONE } from "./tbTable.js";
 import { freshnessView } from "./freshness.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { remindedText } from "./remind.js";
 
 // B27: entityRows needs the user's zone and `now`, like freshnessView (B09).
 const NOW = new Date("2026-09-25T12:00:00Z");
+// D60: the server's undeclared TB deadline (deadline_model._undeclared), for
+// the hand-built payloads below; the D60 tests feed the golden payload.
+const UNDECLARED = { due: null, past: false, text: "No due date declared" };
 const TZ = "Europe/London";
 
 // Convention used throughout this file and tbTable.js: an amount is debit
@@ -63,6 +69,8 @@ test("entityRows: the on-behalf label is kept verbatim", () => {
   const myTbs = {
     period_open: true,
     can_upload: true,
+    can_remind: false,
+    deadline: UNDECLARED,
     entities: [
       {
         entity: "ZZE",
@@ -70,6 +78,8 @@ test("entityRows: the on-behalf label is kept verbatim", () => {
         status: "Received",
         tb: { name: "TBSUB-0001", owner: "admin@example.com", on_behalf_label: "by admin@example.com for ZZE", creation: "2026-09-20T10:00:00Z" },
         exception: null,
+        reminders: null,
+        overdue: false,
       },
     ],
   };
@@ -81,7 +91,9 @@ test("entityRows: a TB-less entity keeps tb as null, never an empty object", () 
   const myTbs = {
     period_open: true,
     can_upload: true,
-    entities: [{ entity: "ZZM", name: "ZZ Missing", status: "Missing", tb: null, exception: null }],
+    can_remind: false,
+    deadline: UNDECLARED,
+    entities: [{ entity: "ZZM", name: "ZZ Missing", status: "Missing", tb: null, exception: null, reminders: null, overdue: false }],
   };
   const view = entityRows(myTbs, NOW, TZ);
   assert.equal(view[0].tb, null);
@@ -92,7 +104,9 @@ test("entityRows: failure path — an unknown status throws, never renders blank
   const myTbs = {
     period_open: true,
     can_upload: true,
-    entities: [{ entity: "ZZX", name: "ZZ X", status: "Somehow Pending", tb: null, exception: null }],
+    can_remind: false,
+    deadline: UNDECLARED,
+    entities: [{ entity: "ZZX", name: "ZZ X", status: "Somehow Pending", tb: null, exception: null, reminders: null, overdue: false }],
   };
   assert.throws(() => entityRows(myTbs, NOW, TZ), /unknown.*status/i);
 });
@@ -203,7 +217,9 @@ function oneEntity(overrides) {
   return {
     period_open: true,
     can_upload: true,
-    entities: [{ entity: "ZZE", name: "ZZ Entity", status: "Received", tb: null, exception: null, ...overrides }],
+    can_remind: false,
+    deadline: UNDECLARED,
+    entities: [{ entity: "ZZE", name: "ZZ Entity", status: "Received", tb: null, exception: null, reminders: null, overdue: false, ...overrides }],
   };
 }
 
@@ -227,11 +243,11 @@ test("(B27) a zoned upload time renders in the user's zone: today as HH:MM", () 
   assert.equal(entityRows(oneEntity({ tb }), NOW, "Asia/Kolkata")[0].uploaded, "15:00");
 });
 
-test("(B27) an earlier day renders as 'Sep 20, 10:42', the same text as the freshness bar", () => {
+test("(B27) an earlier day renders as '20 Sep, 10:42', the same text as the freshness bar", () => {
   const creation = "2026-09-20T09:42:00Z";
   const tb = { name: "TBSUB-0001", owner: "a@example.com", on_behalf_label: "x", creation };
   const [row] = entityRows(oneEntity({ tb }), NOW, TZ);
-  assert.equal(row.uploaded, "Sep 20, 10:42");
+  assert.equal(row.uploaded, "20 Sep, 10:42");
   const bar = freshnessView({ state: "fresh", as_of: creation }, NOW, TZ).text;
   assert.equal(`As of ${row.uploaded}`, bar, "one formatting rule with B09");
 });
@@ -273,4 +289,122 @@ test("entityWord: 1 is singular, every other count (including 0 and null) is plu
   assert.equal(entityWord(2), "entities");
   assert.equal(entityWord(0), "entities");
   assert.equal(entityWord(null), "entities");
+});
+
+// --- Y62: the reminded text and the Remind flag on a Missing row (story 1.5) --
+// Fed the real producer's output: Y56's golden my_tbs payload (asserted equal
+// to the stub-site get_my_tbs call by its own host test).
+
+const GOLDEN = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../../konsol/tests/fixtures/close_my_tbs_payload.json", import.meta.url)), "utf8"),
+);
+const GOLDEN_NOW = new Date("2025-10-07T12:00:00Z");
+const byEntity = (rows, code) => {
+  const row = rows.find((r) => r.entity === code);
+  assert.ok(row, `no row for ${code}`);
+  return row;
+};
+
+test("(Y62) entityRows(golden): a Missing row with reminders carries remind.js's reminded text", () => {
+  const rows = entityRows(GOLDEN, GOLDEN_NOW, TZ);
+  const zzc = byEntity(rows, "ZZC");
+  assert.equal(zzc.status, "Missing");
+  const source = GOLDEN.entities.find((e) => e.entity === "ZZC").reminders;
+  assert.equal(zzc.reminded, remindedText(source, GOLDEN_NOW, TZ), "one formatting rule, remind.js's");
+  assert.match(zzc.reminded, /^Reminded 2× · last .+ by Zed Lead$/);
+  assert.equal(zzc.canRemind, true, "can_remind and Missing");
+});
+
+test("(Y62) entityRows(golden): a Missing row with no reminder has null text but can be reminded", () => {
+  const zzb = byEntity(entityRows(GOLDEN, GOLDEN_NOW, TZ), "ZZB");
+  assert.equal(zzb.status, "Missing");
+  assert.equal(zzb.reminded, null);
+  assert.equal(zzb.canRemind, true);
+});
+
+test("(Y62) entityRows(golden): a Received row has canRemind false, even when can_remind is true", () => {
+  assert.equal(GOLDEN.can_remind, true);
+  const zza = byEntity(entityRows(GOLDEN, GOLDEN_NOW, TZ), "ZZA");
+  assert.equal(zza.status, "Received");
+  assert.equal(zza.canRemind, false);
+});
+
+test("(Y62) failure path: a Viewer payload (can_remind false) gives no Remind on any row, but keeps the text", () => {
+  const viewer = { ...GOLDEN, can_remind: false };
+  const rows = entityRows(viewer, GOLDEN_NOW, TZ);
+  assert.deepEqual(rows.map((r) => r.canRemind), rows.map(() => false));
+  assert.match(byEntity(rows, "ZZC").reminded, /^Reminded 2×/, "the recipient sees the text without the button");
+});
+
+test("(Y62) failure path: a payload without a boolean can_remind is refused, never read as false", () => {
+  const { can_remind: _drop, ...noFlag } = GOLDEN;
+  assert.throws(() => entityRows(noFlag, GOLDEN_NOW, TZ), /can_remind/);
+  assert.throws(() => entityRows({ ...GOLDEN, can_remind: "yes" }, GOLDEN_NOW, TZ), /can_remind/);
+});
+
+test("(Y62) failure path: an entity without its reminders key is refused (Y56 always sends it)", () => {
+  const entities = GOLDEN.entities.map((e) => {
+    if (e.entity !== "ZZB") return e;
+    const { reminders: _drop, ...rest } = e;
+    return rest;
+  });
+  assert.throws(() => entityRows({ ...GOLDEN, entities }, GOLDEN_NOW, TZ), /reminders/);
+});
+
+// --- D60: the TB due header and the overdue chip (stories 2.4, 3.1) ---------
+// Decision #305-2.4-1: show-only, never blocks. Fed D56's golden my_tbs
+// payload: deadline {due: "2025-10-07", past: true}, ZZB/ZZC Missing and
+// overdue, ZZA Received and not overdue.
+
+test("(D60) tbDue(golden): a declared due date reads 'TB due Tue 7 Oct 2025'", () => {
+  assert.equal(GOLDEN.deadline.due, "2025-10-07");
+  const due = tbDue(GOLDEN);
+  assert.equal(due.text, "TB due Tue 7 Oct 2025");
+  assert.equal(due.past, true);
+});
+
+test("(D60) tbDue: an undeclared deadline shows the server's sentence, never a guessed date", () => {
+  const undeclared = { ...GOLDEN, deadline: { due: null, past: false, text: "No due date declared" } };
+  const due = tbDue(undeclared);
+  assert.equal(due.text, "No due date declared");
+  assert.equal(due.past, false);
+});
+
+test("(D60) failure path: a payload without deadline throws (tbDue and entityRows)", () => {
+  const { deadline: _drop, ...noDeadline } = GOLDEN;
+  assert.throws(() => tbDue(noDeadline), /deadline/);
+  assert.throws(() => entityRows(noDeadline, GOLDEN_NOW, TZ), /deadline/);
+  assert.throws(() => tbDue({ ...GOLDEN, deadline: null }), /deadline/);
+});
+
+test("(D60) failure path: a malformed due date throws, never shown as a guess", () => {
+  assert.throws(() => tbDue({ ...GOLDEN, deadline: { due: "7 Oct", past: true, text: "Due 7 Oct" } }), /due/);
+  assert.throws(() => tbDue({ ...GOLDEN, deadline: { due: "2025-10-07", text: "Due 2025-10-07" } }), /past/);
+});
+
+test("(D60) entityRows(golden): Missing rows past due carry the Overdue chip; the Received row does not", () => {
+  const rows = entityRows(GOLDEN, GOLDEN_NOW, TZ);
+  for (const code of ["ZZB", "ZZC"]) {
+    const row = byEntity(rows, code);
+    assert.equal(row.status, "Missing");
+    assert.equal(row.overdue, true);
+    assert.deepEqual(row.overdueChip, { text: "Overdue", tone: OVERDUE_TONE });
+  }
+  const zza = byEntity(rows, "ZZA");
+  assert.equal(zza.overdue, false);
+  assert.equal(zza.overdueChip, null);
+});
+
+test("(D60) failure path: the overdue chip is warn tone, never the block (red) tone", () => {
+  assert.match(OVERDUE_TONE, /amber/);
+  assert.doesNotMatch(OVERDUE_TONE, /red/);
+});
+
+test("(D60) failure path: an entity without a boolean overdue is refused (D56 always sends it)", () => {
+  const entities = GOLDEN.entities.map((e) => {
+    if (e.entity !== "ZZB") return e;
+    const { overdue: _drop, ...rest } = e;
+    return rest;
+  });
+  assert.throws(() => entityRows({ ...GOLDEN, entities }, GOLDEN_NOW, TZ), /overdue/);
 });

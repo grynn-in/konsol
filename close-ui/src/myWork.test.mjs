@@ -258,3 +258,251 @@ test("failure path: an unknown kind throws, and is never defaulted to Setup", ()
 	const item = { id: "x", kind: "mystery", owner: "EPM Admin", action: {} };
 	assert.throws(() => badgeFor(item), /unknown item kind/);
 });
+
+// --- Y64 (stories 1.5, 1.2): the reminded line on TB items ------------------
+// Fed the real producer's output: Y59's golden My work items (asserted equal
+// to the stub-site get_my_work call by its own host test). Two personas: the
+// Entity Accountant's "Upload TB for X" carries {count, last_at,
+// last_by_name}; the waiting items carry {reminded, of}. D62 owns `due`.
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { remindedLine } from "./myWork.js";
+import { remindedText } from "./remind.js";
+
+const MYWORK_GOLDEN = JSON.parse(
+	readFileSync(fileURLToPath(new URL("../../konsol/tests/fixtures/close_mywork_items.json", import.meta.url)), "utf8"),
+);
+const Y64_NOW = new Date("2025-10-07T12:00:00Z");
+const Y64_TZ = "Europe/London";
+const goldenItem = (persona, id) => {
+	const item = MYWORK_GOLDEN[persona].find((i) => i.id === id);
+	assert.ok(item, `no golden ${persona} item ${id}`);
+	return item;
+};
+
+test("(Y64) golden Entity Accountant item: 'Reminded 2× · last … by Jane Doe', remind.js's one rule", () => {
+	const item = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	const line = remindedLine(item, Y64_NOW, Y64_TZ);
+	assert.equal(line, remindedText(item.reminded, Y64_NOW, Y64_TZ));
+	assert.equal(line, "Reminded 2× · last 6 Aug, 14:05 by Jane Doe");
+	assert.equal(
+		remindedLine(goldenItem("entity_accountant", "tb:2025-09:ZZA"), Y64_NOW, Y64_TZ),
+		"Reminded 1× · last 10 Sep, 08:00 by Raj Patel",
+	);
+});
+
+test("(Y64) golden waiting items: 'R of N reminded'", () => {
+	assert.equal(remindedLine(goldenItem("group_accountant", "tbs-waiting:2025-07"), Y64_NOW, Y64_TZ), "2 of 2 reminded");
+	assert.equal(remindedLine(goldenItem("group_accountant", "tbs-waiting:2025-09"), Y64_NOW, Y64_TZ), "1 of 1 reminded");
+});
+
+test("(Y64) golden: every item that is not a TB item has no line, and every TB item has one", () => {
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			const line = remindedLine(item, Y64_NOW, Y64_TZ);
+			if ("reminded" in item) assert.ok(line, `${persona} ${item.id} has a line`);
+			else assert.equal(line, null, `${persona} ${item.id} has no line`);
+		}
+	}
+});
+
+test("(Y64) failure path: reminded null gives no line, never '0×' or '0 of N'", () => {
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			if (!("reminded" in item)) continue;
+			assert.equal(remindedLine({ ...item, reminded: null }, Y64_NOW, Y64_TZ), null, `${item.id} with reminded null`);
+		}
+	}
+});
+
+test("(Y64) failure path: an unreadable reminded value throws, never a guessed line", () => {
+	const waiting = goldenItem("group_accountant", "tbs-waiting:2025-07");
+	const bad = [
+		{ reminded: 0, of: 5 },
+		{ reminded: 3, of: 2 },
+		{ reminded: 1 },
+		{ of: 2 },
+		{ reminded: "1", of: 2 },
+		{},
+		"2 of 2",
+	];
+	for (const reminded of bad) {
+		assert.throws(() => remindedLine({ ...waiting, reminded }, Y64_NOW, Y64_TZ), Error, JSON.stringify(reminded));
+	}
+	const ea = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	const { last_by_name, ...noName } = ea.reminded;
+	assert.throws(() => remindedLine({ ...ea, reminded: noName }, Y64_NOW, Y64_TZ), /last_by_name/);
+	assert.throws(() => remindedLine({ ...ea, reminded: { ...ea.reminded, count: 0 } }, Y64_NOW, Y64_TZ), /count/);
+});
+
+// --- R52t (U13, stories 1.5, 1.2): no time zone says so on the item ----------
+// MyWork.vue runs remindedLine for every item inside `grouped`; a throw there
+// replaces the whole screen with "Invalid time zone specified: null". With no
+// zone, the counted entry gives the item a sentence and never calls Intl; the
+// {reminded, of} form needs no zone and is unchanged.
+
+const R52T_NO_ZONE = "Your browser reported no time zone, so the reminder time cannot be shown.";
+
+function withoutIntl(fn) {
+	const saved = globalThis.Intl;
+	globalThis.Intl = new Proxy(
+		{},
+		{
+			get(_target, key) {
+				throw new Error(`Intl.${String(key)} was called`);
+			},
+		},
+	);
+	try {
+		return fn();
+	} finally {
+		globalThis.Intl = saved;
+	}
+}
+
+test("(R52t) failure path: a golden counted reminder with timeZone null gives the no-zone sentence, never a throw", () => {
+	const item = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	assert.equal(remindedLine(item, Y64_NOW, null), "Your browser reported no time zone, so the reminder time cannot be shown.");
+	assert.equal(
+		remindedLine(goldenItem("entity_accountant", "tb:2025-09:ZZA"), Y64_NOW, null),
+		"Your browser reported no time zone, so the reminder time cannot be shown.",
+	);
+});
+
+test("(R52t) every falsy time zone gives the sentence and calls no Intl", () => {
+	const item = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	for (const zone of [null, undefined, ""]) {
+		assert.equal(withoutIntl(() => remindedLine(item, Y64_NOW, zone)), R52T_NO_ZONE, `zone ${JSON.stringify(zone)}`);
+	}
+});
+
+test("(R52t) with no zone, every golden item still gets its line: waiting items unchanged, null stays no line", () => {
+	assert.equal(remindedLine(goldenItem("group_accountant", "tbs-waiting:2025-07"), Y64_NOW, null), "2 of 2 reminded");
+	assert.equal(remindedLine(goldenItem("group_accountant", "tbs-waiting:2025-09"), Y64_NOW, null), "1 of 1 reminded");
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			const line = withoutIntl(() => remindedLine(item, Y64_NOW, null));
+			if (!("reminded" in item)) assert.equal(line, null, `${persona} ${item.id} has no line`);
+			else if ("count" in item.reminded) assert.equal(line, R52T_NO_ZONE, `${persona} ${item.id}`);
+			else assert.match(line, /^\d+ of \d+ reminded$/, `${persona} ${item.id}`);
+			if ("reminded" in item) assert.equal(remindedLine({ ...item, reminded: null }, Y64_NOW, null), null, `${item.id} null`);
+		}
+	}
+});
+
+test("(R52t) no zone does not hide an unreadable counted entry: it still throws", () => {
+	const ea = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	assert.throws(() => remindedLine({ ...ea, reminded: { ...ea.reminded, count: 0 } }, Y64_NOW, null), /count/);
+	const { last_by_name, ...noName } = ea.reminded;
+	assert.throws(() => remindedLine({ ...ea, reminded: noName }, Y64_NOW, null), /last_by_name/);
+});
+
+// --- D62 (stories 1.1, 2.4): the due line and the overdue badge -------------
+// Fed the same golden My work items (D59 regenerated them from the real
+// stub-site get_my_work call). D58's `due` is {date, text, overdue} on a
+// period item with a step, null on a period item without one, and ABSENT on
+// the items no `_period_item` builds: setup gaps, the approvals item and
+// sent-back items (mywork_model.sent_back_items, coordinator note 7 Oct).
+// Engineering call (D62): the SPA reads an absent `due` like null, no line;
+// the server is not changed to add due:null. The date wording is D60's one
+// formatter (dueDate.js), never a second one.
+
+import { dueLine, MUTE_TONE } from "./myWork.js";
+import { OVERDUE_TONE, tbDue } from "./tbTable.js";
+
+test("(D62) golden: an overdue item reads 'Overdue since Thu 7 Aug 2025' in the amber warn tone", () => {
+	for (const [persona, id] of [["entity_accountant", "tb:2025-07:ZZA"], ["group_accountant", "tbs-waiting:2025-07"]]) {
+		const line = dueLine(goldenItem(persona, id));
+		assert.deepEqual(line, { text: "Overdue since Thu 7 Aug 2025", tone: OVERDUE_TONE, overdue: true }, `${persona} ${id}`);
+	}
+});
+
+test("(D62) golden: a not-yet-due item reads 'Due Tue 7 Oct 2025', not the warn tone", () => {
+	const line = dueLine(goldenItem("entity_accountant", "tb:2025-09:ZZA"));
+	assert.equal(line.text, "Due Tue 7 Oct 2025");
+	assert.equal(line.overdue, false);
+	assert.notEqual(line.tone, OVERDUE_TONE);
+	assert.doesNotMatch(line.tone, /amber|red/);
+});
+
+test("(D62) golden: an undeclared step shows the server's 'No due date declared' in the mute tone", () => {
+	const line = dueLine(goldenItem("group_accountant", "tbs-waiting:2025-09"));
+	assert.deepEqual(line, { text: "No due date declared", tone: MUTE_TONE, overdue: false });
+	assert.doesNotMatch(MUTE_TONE, /amber|red/);
+});
+
+test("(D62) the date wording is D60's one formatter (tbTable's tbDue), not a second one", () => {
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			if (!item.due || item.due.date === null) continue;
+			const d60 = tbDue({ deadline: { due: item.due.date, past: item.due.overdue, text: item.due.text } }).text;
+			const date = d60.replace(/^TB due /, "");
+			assert.ok(dueLine(item).text.endsWith(` ${date}`), `${item.id}: ${dueLine(item).text} vs ${d60}`);
+		}
+	}
+});
+
+test("(D62) failure path: the overdue badge is warn tone, never the block (red) tone", () => {
+	assert.match(OVERDUE_TONE, /amber/);
+	assert.doesNotMatch(OVERDUE_TONE, /red/);
+});
+
+test("(D62) failure path: due null renders nothing", () => {
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			assert.equal(dueLine({ ...item, due: null }), null, `${persona} ${item.id} with due null`);
+		}
+	}
+	// the golden's own null-due period items (checks-failing, rates, checks-run)
+	const nulls = MYWORK_GOLDEN.group_accountant.filter((i) => "due" in i && i.due === null);
+	assert.ok(nulls.length >= 3);
+	for (const item of nulls) assert.equal(dueLine(item), null, item.id);
+});
+
+test("(D62) an item with no due key (setup gap, approvals, sent back) renders nothing, never throws", () => {
+	const gaps = MYWORK_GOLDEN.group_accountant.filter((i) => !("due" in i));
+	assert.ok(gaps.length >= 3, "the golden has period-less items without a due key");
+	for (const item of gaps) assert.equal(dueLine(item), null, item.id);
+	// mywork_model.sent_back_items (mywork_model.py:666-686) builds a
+	// period-keyed sent-back item with `period` and no `due`.
+	const tb = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	const { due, reminded, ...rest } = tb;
+	const sentBack = { ...rest, id: "sent-back:Trial Balance Upload:TBU-1", kind: "todo", title: "Sent back: TB · ZZA" };
+	assert.equal(dueLine(sentBack), null);
+});
+
+test("(D62) failure path: an unreadable due throws, never a guessed date", () => {
+	const item = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	const bad = [
+		"Due 7 Aug",
+		{ date: "7 Aug", text: "Due 7 Aug", overdue: true },
+		{ date: "2025-02-30", text: "Due 2025-02-30", overdue: false },
+		{ date: "2025-08-07", text: "Due 2025-08-07" },
+		{ date: "2025-08-07", text: "Due 2025-08-07", overdue: "yes" },
+		{ date: null, text: "No due date declared", overdue: true },
+		{ date: null, overdue: false },
+		{ text: "Due 2025-08-07", overdue: true },
+	];
+	for (const due of bad) {
+		assert.throws(() => dueLine({ ...item, due }), /due/, JSON.stringify(due));
+	}
+});
+
+test("(D62) failure path: sections keeps the server's order, no client re-sort", () => {
+	const src = readFileSync(fileURLToPath(new URL("./myWork.js", import.meta.url)), "utf8");
+	const start = src.indexOf("export function sections(");
+	const end = src.indexOf("\n}\n", start);
+	assert.ok(start >= 0 && end > start);
+	assert.doesNotMatch(src.slice(start, end), /\.sort\(|\.reverse\(/);
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		const items = MYWORK_GOLDEN[persona];
+		for (const section of sections(items)) {
+			assert.deepEqual(
+				section.items.map((i) => i.id),
+				items.filter((i) => i.kind === section.kind).map((i) => i.id),
+				`${persona} ${section.kind}`,
+			);
+		}
+	}
+});

@@ -9,10 +9,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { gridView } from "../periodGrid.js";
+import { gridView, toneClass } from "../periodGrid.js";
+import { OVERDUE_TONE } from "../dueDate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PERIOD = path.join(__dirname, "Period.vue");
+const GOLDEN = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "../../../konsol/tests/fixtures/close_period_grid_payload.json"), "utf8"),
+);
 
 function read() {
   return fs.readFileSync(PERIOD, "utf8");
@@ -91,7 +95,7 @@ test("The All/Problems filter toggles a problemsOnly ref passed to gridView(", (
   const source = read();
   const js = script(source);
   assert.match(js, /\bproblemsOnly\s*=\s*ref\(/, "a ref named problemsOnly");
-  assert.match(js, /gridView\(\s*[\w.]+\s*,\s*problemsOnly\.value\s*\)/, "gridView is called with it");
+  assert.match(js, /gridView\(\s*[\w.]+\s*,\s*problemsOnly\.value\s*,/, "gridView is called with it");
   const tpl = template(source);
   assert.match(tpl, /problemsOnly\s*=\s*(true|false)/, "the template can change it (refs unwrap in <template>)");
 });
@@ -136,8 +140,15 @@ test("R01l: gridView keeps hiddenNote set when rows is empty (pure view model)",
     rows: [],
     counts: { rows: 0, problems: 0, hidden: 5 },
     rates_error: null,
+    // D61: the strip's keys, from the golden payload (the real producer).
+    deadlines: GOLDEN.deadlines,
+    signoff_overdue: GOLDEN.signoff_overdue,
+    ic_overdue: GOLDEN.ic_overdue,
+    ic_overdue_error: GOLDEN.ic_overdue_error,
+    journals_overdue: GOLDEN.journals_overdue,
+    journals_overdue_error: GOLDEN.journals_overdue_error,
   };
-  const view = gridView(payload, false);
+  const view = gridView(payload, false, new Date("2026-07-15T12:00:00Z"), "Europe/London");
   assert.equal(view.rows.length, 0);
   assert.equal(view.hiddenNote, "5 entities outside your scope are not shown");
 });
@@ -166,4 +177,137 @@ test("the header reads gridView's title, never the bare payload period.code", ()
   const src = fs.readFileSync(PERIOD, "utf8");
   assert.doesNotMatch(src, /period\.code/);
   assert.match(src, /<h1[^>]*>\{\{\s*title\s*\}\}<\/h1>/);
+});
+
+// --- konsol#305 Y63: the reminded text in the Trial balance cell -----------
+
+test("Y63: the TB cell shows row.tbReminded under its status chip, v-if gated, text binding", () => {
+  const tpl = template(read());
+  const chipAt = tpl.search(/\{\{\s*row\.tb\.label\s*\}\}/);
+  assert.ok(chipAt >= 0, "the TB chip renders row.tb.label");
+  const rateAt = tpl.search(/\{\{\s*row\.rate\.label\s*\}\}/);
+  const m = tpl.match(/<div\s+v-if="row\.tbReminded"[^>]*>\s*\{\{\s*row\.tbReminded\s*\}\}\s*<\/div>/);
+  assert.ok(m, "a v-if=\"row.tbReminded\" line renders the text");
+  const at = tpl.indexOf(m[0]);
+  assert.ok(at > chipAt && at < rateAt, "the text sits in the TB cell, after its chip, before the rate cell");
+  assert.equal((tpl.match(/row\.tbReminded/g) || []).length, 2, "one gated line, nothing else");
+});
+
+test("Y63: gridView gets a now taken at load and the user's time zone (timefmt.js)", () => {
+  const js = script(read());
+  assert.match(js, /import\s*\{[^}]*\buserTimeZone\b[^}]*\}\s*from\s*["']\.\.\/timefmt\.js["']/);
+  assert.match(js, /const timeZone = userTimeZone\(\)/);
+  assert.match(js, /gridView\(\s*grid\.payload\s*,\s*problemsOnly\.value\s*,\s*grid\.now\s*,\s*timeZone\s*\)/);
+  assert.match(js, /grid\.now = new Date\(\)/);
+});
+
+test("Y63 failure path: with no time zone the grid is an error naming why, never a guessed zone", () => {
+  const js = script(read());
+  assert.match(js, /if \(!timeZone\)/);
+  assert.match(js, /no time zone/);
+});
+
+test("Y63 (C-R1): no Remind button on the grid: no REMIND, no remind POST, no Remind label", () => {
+  const source = read();
+  assert.doesNotMatch(source, /\bREMIND\b/);
+  assert.doesNotMatch(source, /remind_api/);
+  assert.doesNotMatch(source, /remindBody/);
+  assert.doesNotMatch(template(source), />\s*Remind\b/);
+  assert.doesNotMatch(script(source), /\bpost\(/);
+});
+
+// --- konsol#305 D61: the deadlines strip and overdue cells -----------------
+
+test("D61: the deadlines strip renders gridView's deadlines above the grid, text binding, Overdue v-if gated", () => {
+  const tpl = template(read());
+  const m = tpl.match(/v-for="\(?item\b[^"]* in gridViewResult\.deadlines"/);
+  assert.ok(m, "the strip iterates gridViewResult.deadlines");
+  const stripAt = tpl.indexOf(m[0]);
+  const tableAt = tpl.indexOf("<table");
+  assert.ok(stripAt >= 0 && stripAt < tableAt, "the strip sits above the grid");
+  assert.match(tpl, /\{\{\s*item\.text\s*\}\}/);
+  assert.match(tpl, /<span\s+v-else-if="item\.overdue"[^>]*>\s*Overdue\s*<\/span>/);
+  assert.doesNotMatch(read(), /v-html/);
+});
+
+test("D61: an overdue TB cell shows an Overdue chip, v-if on row.tbOverdue, inside the TB cell", () => {
+  const tpl = template(read());
+  const chipAt = tpl.search(/\{\{\s*row\.tb\.label\s*\}\}/);
+  const rateAt = tpl.search(/\{\{\s*row\.rate\.label\s*\}\}/);
+  const m = tpl.match(/<span\s+v-if="row\.tbOverdue"[^>]*>\s*Overdue\s*<\/span>/);
+  assert.ok(m, "a v-if=\"row.tbOverdue\" chip reads Overdue");
+  const at = tpl.indexOf(m[0]);
+  assert.ok(at > chipAt && at < rateAt, "the chip sits in the TB cell");
+});
+
+test("D61 (one source of truth): Period.vue never derives overdue from a date or past flag", () => {
+  const source = read();
+  assert.doesNotMatch(source, /\.past\b/);
+  assert.doesNotMatch(source, /signoff_overdue|ic_overdue|journals_overdue|\.overdue\s*=/);
+});
+
+// --- konsol#305 D61b: IC and journals overdue chips (#305-Q5-1) ----------
+
+test("D61b: the IC and journals chips come from gridView's strip (fed the golden payload), never from the screen", () => {
+  const view = gridView(GOLDEN, false, new Date("2025-10-06T15:00:00Z"), "Europe/London");
+  const by = Object.fromEntries(view.deadlines.map((i) => [i.step, i]));
+  assert.equal(by.ic.overdue, GOLDEN.ic_overdue);
+  assert.equal(by.journals.overdue, GOLDEN.journals_overdue);
+  const tpl = template(read());
+  assert.match(tpl, /<span\s+v-else-if="item\.overdue"[^>]*>\s*Overdue\s*<\/span>/);
+});
+
+// --- konsol#305 R52m (U2): both Overdue chips are the amber warn tone ------
+
+function overdueChips(tpl) {
+  return [...tpl.matchAll(/<span\b[^>]*>\s*Overdue\s*<\/span>/g)].map((m) => m[0]);
+}
+
+test("R52m (U2): Period.vue imports OVERDUE_TONE from dueDate.js", () => {
+  assert.match(
+    script(read()),
+    /import\s*\{[^}]*\bOVERDUE_TONE\b[^}]*\}\s*from\s*["']\.\.\/dueDate\.js["']/,
+  );
+});
+
+test("R52m (U2): both Overdue chips (strip and TB cell) bind :class=\"OVERDUE_TONE\"", () => {
+  const chips = overdueChips(template(read()));
+  assert.equal(chips.length, 2, "exactly the strip chip and the TB cell chip");
+  for (const chip of chips) {
+    assert.match(chip, /:class="OVERDUE_TONE"/, chip);
+  }
+  assert.equal(OVERDUE_TONE, "bg-surface-amber-1 text-ink-amber-3");
+});
+
+test("R52m (U2) failure path: no Overdue chip carries the red block tone", () => {
+  const blocking = toneClass("blocking").split(/\s+/);
+  assert.deepEqual(blocking, ["bg-surface-red-1", "text-ink-red-3"]);
+  for (const chip of overdueChips(template(read()))) {
+    for (const cls of blocking) {
+      assert.ok(!chip.includes(cls), `${chip} carries ${cls}`);
+    }
+    assert.doesNotMatch(chip, /toneClass\(\s*["']blocking["']\s*\)/);
+  }
+});
+
+// --- konsol#305 R52m (S4): a strip step whose flag could not be read -------
+
+test("R52m (S4): the strip shows item.error in place of the Overdue chip", () => {
+  const tpl = template(read());
+  const m = tpl.match(/<span\s+v-if="item\.error"[^>]*>\s*\{\{\s*item\.error\s*\}\}\s*<\/span>\s*<span\s+v-else-if="item\.overdue"/);
+  assert.ok(m, "an item.error span, then the Overdue chip as its v-else-if");
+});
+
+test("R52m (S4): fed a golden copy with ic_overdue null and its sentence, the IC step carries the sentence and the rows render", () => {
+  const sentence =
+    "Intercompany could not be read (error), so whether a pair is still over tolerance is unknown for FY2025 P09.";
+  const p = JSON.parse(JSON.stringify(GOLDEN));
+  p.ic_overdue = null;
+  p.ic_overdue_error = sentence;
+  const view = gridView(p, false, new Date("2025-10-06T15:00:00Z"), "Europe/London");
+  const ic = view.deadlines.find((i) => i.step === "ic");
+  assert.equal(ic.error, sentence);
+  assert.equal(ic.overdue, null);
+  assert.equal(view.rows.length, GOLDEN.rows.length);
+  assert.equal(view.rows.length, 4);
 });

@@ -49,6 +49,23 @@
  * (rates.js). It is period-keyed, like the grid, so it reloads on period
  * change. It posts nothing: the "Record ownership" link opens the Desk URL
  * the server built (E406), never one this screen constructs.
+ *
+ * O60 (story 4.2; wireframe-4.2.md section 1): below the gaps, the
+ * "Change ownership" form (OwnershipChange.vue) renders only when the
+ * server says `can_change` (R53f; #305-R52-4, U10e: the save's own roles and
+ * an Open Regular period; `can_record` is only the Desk link's flag), fed
+ * `get_ownership`'s `change` choices (O63). Save draft and Edit live inside
+ * the form, so they follow the same flag.
+ * The form owns the preview GET and the save POST; a saved draft reloads
+ * the pending list here, where the Close Lead approves it.
+ *
+ * O67 (wireframe-4.2.md section 1, "The Analyst can edit it until it is
+ * approved", confirmed by Deepak Pai 7 Oct): the pending list's Edit (only
+ * on a draft whose server `edit` is not null, O69) switches to the
+ * Ownership tab and opens that draft in the form (`openEdit`, cleared once
+ * the form has opened it). The form also gets `draftEdits`, rates.js
+ * ownershipDraftEdits of the pending view, so it can offer Edit for the
+ * preview's awaiting drafts. Nothing is parsed from a title or a sentence.
  */
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -56,9 +73,10 @@ import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import RatesPending from "../sections/RatesPending.vue";
 import OwnershipGaps from "../sections/OwnershipGaps.vue";
+import OwnershipChange from "../sections/OwnershipChange.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipView, ownershipGapsCount, mergeDrafts } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipDraftEdits, ownershipView, ownershipGapsCount, mergeDrafts } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 import { periodName as formatPeriod } from "../periodName.js";
@@ -157,13 +175,35 @@ const pendingLoadState = computed(() => {
 });
 const pendingLoadError = computed(() => pendingViewError.value || pending.error);
 
-// ownershipView never throws (E407: it only reshapes the payload), so this
-// needs no error-catching wrapper like `view`/`pendingViewData` above.
+/** O67: the drafts the server made editable, `{name: edit}`; empty until
+ * the pending list has loaded (its own tab shows any load error). */
+const draftEdits = computed(() => (pendingViewData.value ? ownershipDraftEdits(pendingViewData.value.items) : {}));
+/** O67: the draft the pending list asked the form to open, or null. */
+const openEdit = ref(null);
+
+function startEdit(name) {
+	openEdit.value = name;
+	tab.value = "ownership";
+}
+
+// ownershipView throws on a payload without `can_change` (R53f): shown as
+// the error, same rule as `view`/`pendingViewData` above.
+const ownershipViewError = ref(null);
 const ownershipViewData = computed(() => {
 	if (ownership.status !== "ready" || !ownership.payload) return null;
-	return ownershipView(ownership.payload);
+	try {
+		ownershipViewError.value = null;
+		return ownershipView(ownership.payload);
+	} catch (e) {
+		ownershipViewError.value = e.message;
+		return null;
+	}
 });
-const ownershipLoadState = computed(() => ownership.status);
+const ownershipLoadState = computed(() => {
+	if (ownership.status !== "ready") return ownership.status;
+	return ownershipViewData.value ? "ready" : "error";
+});
+const ownershipLoadError = computed(() => ownershipViewError.value || ownership.error);
 const ownershipWhat = computed(() => `the ownership gaps for ${periodName.value}`);
 
 function editable(cell) {
@@ -713,6 +753,7 @@ const TABS = computed(() => [
 					:errors="approveErrors"
 					:approving="approving"
 					@approve="approve"
+					@edit="startEdit"
 				/>
 			</LoadState>
 		</section>
@@ -722,7 +763,7 @@ const TABS = computed(() => [
 				:state="ownershipLoadState"
 				:what="ownershipWhat"
 				:source="GET_OWNERSHIP"
-				:error="ownership.error"
+				:error="ownershipLoadError"
 				:busy="ownership.busy"
 				@retry="loadOwnership"
 			>
@@ -730,6 +771,14 @@ const TABS = computed(() => [
 					v-if="ownershipViewData"
 					:view="ownershipViewData"
 					:out-of-scope="ownership.payload ? ownership.payload.out_of_scope || [] : []"
+				/>
+				<OwnershipChange
+					v-if="ownershipViewData && ownershipViewData.canChange"
+					:change="ownership.payload.change"
+					:editable="draftEdits"
+					:open-edit="openEdit"
+					@edit-opened="openEdit = null"
+					@saved="loadPending({ quiet: true })"
 				/>
 			</LoadState>
 		</section>

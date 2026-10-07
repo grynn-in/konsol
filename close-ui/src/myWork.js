@@ -19,6 +19,8 @@
 import { format } from "./route.js";
 import { ageText as sharedAgeText, userTimeZone } from "./timefmt.js";
 import { periodName } from "./periodName.js";
+import { remindedText } from "./remind.js";
+import { OVERDUE_TONE, dueDateText } from "./dueDate.js";
 
 const KIND_ORDER = ["blocking", "todo", "waiting"];
 
@@ -165,4 +167,103 @@ export function badgeFor(item) {
 		return { theme: "orange", label: "Setup" };
 	}
 	return { theme: BADGE_THEME[item.kind], label: BADGE_LABEL[item.kind] };
+}
+
+// --- Y64 (stories 1.5, 1.2): the reminded line on TB items -----------------
+//
+// mywork_model (Y58) puts `reminded` on TB items only:
+// - the Entity Accountant's "Upload TB for X": `{count, last_at,
+//   last_by_name}` → remind.js's one rule, "Reminded 2× · last … by …";
+// - the "Waiting on N trial balances" items: `{reminded, of}` →
+//   "R of N reminded".
+// Nobody reminded is `reminded: null` (Y58 never sends a 0), so null gives no
+// line: never "0×" or "0 of N". An item that is not a TB item carries no
+// `reminded` key at all and gets no line. Any other value throws.
+
+/** R52t (U13): the counted reminder's line when the browser gave no zone. */
+export const NO_ZONE_REMINDED = "Your browser reported no time zone, so the reminder time cannot be shown.";
+
+/**
+ * `item` (A20's shape), `now` (a `Date`, injected) and `timeZone` → the
+ * reminded line, or null. A falsy `timeZone` gives NO_ZONE_REMINDED for a
+ * counted reminder (no Intl call); `{reminded, of}` needs no zone.
+ */
+export function remindedLine(item, now, timeZone) {
+	if (!Object.prototype.hasOwnProperty.call(item, "reminded")) return null;
+	const reminded = item.reminded;
+	if (reminded === null) return null;
+	if (typeof reminded !== "object") {
+		throw new Error(`${item.id}: unreadable reminded value ${JSON.stringify(reminded)}.`);
+	}
+	if ("count" in reminded) {
+		if (timeZone) return remindedText(reminded, now, timeZone);
+		// R52t (U13): no zone is said on this item, never thrown by Intl over
+		// the whole screen. An unreadable entry still throws as remindedText
+		// would (same checks, same order); only the time needs the zone.
+		for (const key of ["count", "last_at", "last_by_name"]) {
+			if (!(key in reminded)) throw new Error(`Reminders entry is missing ${key}.`);
+		}
+		if (!Number.isInteger(reminded.count) || reminded.count < 1) {
+			throw new Error(`Reminders entry has an unreadable count: ${JSON.stringify(reminded.count)}.`);
+		}
+		if (typeof reminded.last_by_name !== "string" || !reminded.last_by_name) {
+			throw new Error("Reminders entry has no last_by_name.");
+		}
+		return NO_ZONE_REMINDED;
+	}
+	const { reminded: r, of } = reminded;
+	if (!Number.isInteger(r) || !Number.isInteger(of) || r < 1 || r > of) {
+		throw new Error(`${item.id}: unreadable reminded value ${JSON.stringify(reminded)}.`);
+	}
+	return `${r} of ${of} reminded`;
+}
+
+// --- D62 (stories 1.1, 2.4): the due line and the overdue badge -------------
+//
+// mywork_model (D58) puts `due: {date, text, overdue}` on a period item whose
+// step is known, and `due: null` on a period item with no step. The items no
+// `_period_item` builds (setup gaps, the approvals item, sent-back items,
+// mywork_model.sent_back_items) carry no `due` key at all. Engineering call
+// (D62, coordinator note 7 Oct): an absent `due` reads like null, no line;
+// the server is not changed to add due:null. Any other value throws.
+//
+// - overdue: "Overdue since Thu 7 Aug 2025", the warn (amber) tone, never the
+//   block tone; it disables nothing (#305-2.4-1);
+// - not yet due: "Due Tue 7 Oct 2025";
+// - undeclared (`date` null): the server's own sentence, "No due date
+//   declared", in the mute tone; never a guessed date.
+// The date wording is dueDate.js's, the one D60's TB header uses. The items
+// keep the server's rank (D58 ranks by due); nothing here re-sorts them.
+
+export const DUE_TONE = "bg-surface-gray-2 text-ink-gray-7";
+export const MUTE_TONE = "bg-surface-gray-1 text-ink-gray-5";
+
+/** `item` (A20's shape) -> `{text, tone, overdue}`, or null. */
+export function dueLine(item) {
+	if (!Object.prototype.hasOwnProperty.call(item, "due")) return null;
+	const due = item.due;
+	if (due === null) return null;
+	const who = `${item.id}: due`;
+	if (typeof due !== "object") {
+		throw new Error(`${who} is unreadable: ${JSON.stringify(due)}.`);
+	}
+	if (typeof due.overdue !== "boolean") {
+		throw new Error(`${who} has no overdue flag (D58 always sends it).`);
+	}
+	if (!("date" in due)) {
+		throw new Error(`${who} has no date (D58 sends it, null when undeclared).`);
+	}
+	if (due.date === null) {
+		if (due.overdue) {
+			throw new Error(`${who} is overdue with no date declared.`);
+		}
+		if (typeof due.text !== "string" || !due.text) {
+			throw new Error(`${who} is undeclared with no text (D58 always sends it).`);
+		}
+		return { text: due.text, tone: MUTE_TONE, overdue: false };
+	}
+	const date = dueDateText(due.date, who);
+	return due.overdue
+		? { text: `Overdue since ${date}`, tone: OVERDUE_TONE, overdue: true }
+		: { text: `Due ${date}`, tone: DUE_TONE, overdue: false };
 }

@@ -28,11 +28,30 @@
  * throws for it (mirrors how the TB screen surfaces a timestamp it cannot
  * parse, tbTable.js's `timestampText`) rather than silently re-zoning it or
  * inventing different wording.
+ *
+ * konsol#305 O61 (wireframe-4.2.md section 3, confirmed by Deepak Pai
+ * 7 Oct): an Ownership Period draft carries `effect` (O57); the item shows
+ * the read-only EFFECT IF APPROVED panel above Approve, built by rates.js's
+ * `ownershipEffectView` (O59) through `opEffectView` (R52o; it also carries
+ * the server's `effect_error` sentence, R52i) — the screen computes no pct, method, date or
+ * period itself. A Desk "Record ownership" draft arrives with `effect: null`
+ * and says "Drafted in Desk: effect not previewed." instead, never an empty
+ * panel. An effect `ownershipEffectView` refuses (a server regression)
+ * shows its thrown sentence, never a guessed panel. Approve is unchanged:
+ * the same `approve` emit, so `approval_api.approve` and the self-approval
+ * policy still decide.
+ *
+ * konsol#305 O67 (wireframe-4.2.md section 1, "The Analyst can edit it
+ * until it is approved", confirmed by Deepak Pai 7 Oct): an Ownership
+ * Period draft whose server `edit` (O69, checked by pendingView) is not null
+ * offers "Edit", which emits `edit(name)`; Rates.vue opens it in the Change
+ * ownership form. A Desk draft (edit null), a Viewer's list and an HER offer
+ * none. Nothing is read from the title or the detail.
  */
 import { computed, reactive } from "vue";
 import { Button } from "frappe-ui";
 import { messageLines } from "../signoff.js";
-import { pendingEmptyMessage, pendingCreatedText } from "../rates.js";
+import { pendingEmptyMessage, pendingCreatedText, opEffectView } from "../rates.js";
 import { userTimeZone } from "../timefmt.js";
 
 const props = defineProps({
@@ -43,7 +62,7 @@ const props = defineProps({
 	/** The name currently posting an approve, or null. */
 	approving: { type: String, default: null },
 });
-const emit = defineEmits(["approve"]);
+const emit = defineEmits(["approve", "edit"]);
 
 /** #305-R01p: the empty-state text (pure helper, rates.js) -- "none
  * awaiting" only when nothing is hidden; a scoped user with
@@ -86,6 +105,37 @@ function createdText(created) {
 	}
 }
 
+/** O61/R52o: an item's effect panel. Null for a Historical Equity Rate;
+ * otherwise rates.js's one `opEffectView` (`{view}`, `{desk}`, or `{error}`
+ * carrying the server's `effect_error` sentence). A view it refuses (a
+ * missing key or a malformed effect: a server regression) shows its thrown
+ * sentence on this item only, never a guessed panel and never a blank
+ * screen (review S2). */
+function effectFor(item) {
+	if (item.doctype !== "Ownership Period") return null;
+	try {
+		return opEffectView(item);
+	} catch (e) {
+		return { error: e.message };
+	}
+}
+
+/** Each item's panel, keyed by name, computed once per payload. */
+const effects = computed(() => {
+	const out = {};
+	for (const item of (props.view && props.view.items) || []) out[item.name] = effectFor(item);
+	return out;
+});
+
+/** O67: Edit only where the server sent an `edit` for this draft. */
+function canEdit(item) {
+	return item.doctype === "Ownership Period" && item.edit !== null && item.edit !== undefined;
+}
+
+function edit(item) {
+	emit("edit", item.name);
+}
+
 function start(item) {
 	if (item.approve.kind === "reason" && !reasonOpen[item.name]) {
 		reasonOpen[item.name] = true;
@@ -122,7 +172,39 @@ function lines(text) {
 						· {{ createdText(item.created) }}
 					</p>
 				</div>
-				<div class="flex min-w-[10rem] flex-col items-end gap-1">
+				<div
+					v-if="effects[item.name] && effects[item.name].view"
+					class="w-full rounded border border-outline-gray-2 bg-surface-gray-1 px-3 py-2 text-sm text-ink-gray-8"
+				>
+					<p class="text-xs font-medium uppercase tracking-wide text-ink-gray-6">EFFECT IF APPROVED</p>
+					<dl class="mt-1 grid grid-cols-[6rem_1fr] gap-x-3 gap-y-0.5">
+						<template v-for="row in effects[item.name].view.rows" :key="row.label">
+							<dt class="text-ink-gray-6">{{ row.label }}</dt>
+							<dd>{{ row.before }} → {{ row.after }}</dd>
+						</template>
+						<dt class="text-ink-gray-6">Ends</dt>
+						<dd>{{ effects[item.name].view.endsLine }}</dd>
+						<dt class="text-ink-gray-6">Periods</dt>
+						<dd>{{ effects[item.name].view.periods }}</dd>
+						<dt class="text-ink-gray-6">Re-sign</dt>
+						<dd v-if="effects[item.name].view.resign.length">
+							{{ effects[item.name].view.resign.join(", ") }} will be marked "Re-sign Needed"
+						</dd>
+						<dd v-else>{{ effects[item.name].view.resignNone }}</dd>
+					</dl>
+					<p class="mt-1 text-xs text-ink-gray-6">ⓘ {{ effects[item.name].view.notShown }}</p>
+				</div>
+				<p v-else-if="effects[item.name] && effects[item.name].desk" class="w-full text-sm text-ink-gray-7">
+					{{ effects[item.name].desk }}
+				</p>
+				<p
+					v-else-if="effects[item.name] && effects[item.name].error"
+					role="alert"
+					class="w-full rounded border border-outline-red-1 bg-surface-red-1 px-3 py-2 text-sm text-ink-gray-8"
+				>
+					{{ effects[item.name].error }}
+				</p>
+				<div class="ml-auto flex min-w-[10rem] flex-col items-end gap-1">
 					<template v-if="canApprove(item)">
 						<template v-if="item.approve.kind === 'reason' && reasonOpen[item.name]">
 							<label :for="`pending-reason-${item.name}`" class="text-xs text-ink-gray-6">
@@ -148,6 +230,15 @@ function lines(text) {
 						{{ item.approve.message }}
 					</p>
 					<p v-else class="text-xs text-ink-gray-6">The Close Lead approves (R2)</p>
+					<Button
+						v-if="canEdit(item)"
+						size="sm"
+						variant="subtle"
+						:aria-label="`Edit ${item.name}`"
+						@click="edit(item)"
+					>
+						Edit
+					</Button>
 				</div>
 				<div
 					v-if="errors[item.name]"

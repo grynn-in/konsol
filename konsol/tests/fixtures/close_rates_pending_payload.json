@@ -1,0 +1,91 @@
+{
+  "can_approve": true,
+  "counts": {
+    "Historical Equity Rate": 1,
+    "Ownership Period": 2,
+    "hidden": 0
+  },
+  "items": [
+    {
+      "approve": {
+        "message": null,
+        "mode": "direct"
+      },
+      "created": "2025-10-01T09:00:00+01:00",
+      "detail": "1.2 (group ECL_GROUP)",
+      "doctype": "Historical Equity Rate",
+      "edited_by": [],
+      "name": "HER-ZZ5B1-1",
+      "preparer": "zz-analyst@example.com",
+      "title": "ZZ5B1 \u00b7 4000 \u00b7 2024-01-01"
+    },
+    {
+      "approve": {
+        "message": null,
+        "mode": "direct"
+      },
+      "created": "2025-10-02T09:00:00+01:00",
+      "detail": "80% \u00b7 full",
+      "doctype": "Ownership Period",
+      "edit": {
+        "consolidation_group": "ECL_GROUP",
+        "consolidation_method": "full",
+        "entity": "ZZ5B1",
+        "fiscal_period": 10,
+        "fiscal_year": 2025,
+        "ownership_pct": 80.0
+      },
+      "edited_by": [],
+      "name": "OP-ZZ5B1-2025-10-01",
+      "ownership_effect": {
+        "after": {
+          "from": "2025-10-01",
+          "method": "full",
+          "pct": 80.0,
+          "to": null
+        },
+        "before": {
+          "from": "2025-01-01",
+          "method": "full",
+          "pct": 100.0,
+          "to": null
+        },
+        "current_ends": "2025-09-30",
+        "current_name": "OP-ZZ5B1-1",
+        "first_period": "FY2025 P10",
+        "not_shown": "Goodwill, NCI and results are not previewed; they change at the next build.",
+        "periods": "FY2025 P10 onward (open-ended)",
+        "resign": [
+          "FY2025 P11"
+        ],
+        "resign_detail": [
+          {
+            "period": "FY2025 P11",
+            "signed_by_name": "Zz Lead",
+            "signed_on": "2025-10-04"
+          }
+        ]
+      },
+      "ownership_effect_error": null,
+      "preparer": "zz-analyst@example.com",
+      "title": "ZZ5B1 in ECL_GROUP from 2025-10-01"
+    },
+    {
+      "approve": {
+        "message": null,
+        "mode": "direct"
+      },
+      "created": "2025-10-03T09:00:00+01:00",
+      "detail": "60% \u00b7 equity",
+      "doctype": "Ownership Period",
+      "edit": null,
+      "edited_by": [],
+      "name": "OP-ZZ5B2-2025-10-01",
+      "ownership_effect": null,
+      "ownership_effect_error": null,
+      "preparer": "zz-analyst@example.com",
+      "title": "ZZ5B2 in ECL_GROUP from 2025-10-01"
+    }
+  ],
+  "self_approval": "Blocked"
+}

@@ -116,6 +116,9 @@ class _Site:
         self.reads = []
         self.only_for_calls = []
         self.recorded = []  # close_event.record calls (send_back, C04)
+        # T54t (C-X1): what the stub close_event.reminders returns (Y60).
+        self.reminders = []
+        self.reminder_calls = []  # Y60: the (keys, topic) of each reminders read
 
 
 def _match_value(value, cond):
@@ -254,6 +257,12 @@ def _close_event(site):
         return "CE-NEW-%d" % len(site.recorded)
 
     ce.record = record
+    # T54t (C-X1): Y60's lazy read goes through close_event.reminders (Y53).
+    def reminders(keys, topic=None):
+        site.reminder_calls.append((list(keys), topic))
+        return site.reminders
+
+    ce.reminders = reminders
     return ce
 
 
@@ -1114,3 +1123,335 @@ def test_signoff_summary_unbuilt_tables_never_raises():
     site.ch_error = RuntimeError("(UNKNOWN_TABLE)")
     out = _h(site, "signoff_summary", 2025, 7)
     assert out["state"] == "not_built"
+
+
+# --- T54t (C-X1): the stub close_event carries reminders ----------------------
+
+def test_stub_close_event_carries_reminders():
+    """The stub ``konsol.close.close_event`` answers ``reminders`` from the
+    site (default []), and a lazy import made while the endpoint runs
+    resolves to that stub (the T52t lesson)."""
+    site = _Site()
+
+    def check(api):
+        from konsol.close import close_event
+        import konsol.close as close_pkg
+        assert close_pkg.close_event is close_event
+        first = (close_event.reminders([(2025, 7)]),
+                 close_event.reminders([(2025, 7)], topic="ic"))
+        site.reminders = ["r"]
+        return first, close_event.reminders([(2025, 7)])
+
+    assert _invoke(site, check) == (([], []), ["r"])
+
+
+# --- Y60: each pair side carries its reminders; can_remind (stories 1.5, 5.2; C-R1, C-R6) ---
+
+REMIND_MODEL = _load_path("remind_model_for_ic_api_test", os.path.join(CLOSE_DIR, "remind_model.py"))
+sys.modules.pop("remind_model_for_ic_api_test", None)
+
+
+def _ic_reminder(name, entity, at, actor=LEAD, topic="ic", fy=2025, fp=7):
+    """One event as ``close_event.reminders`` returns it (Y53): the input
+    ``remind_model.summary`` reads."""
+    return {"name": name, "fiscal_year": fy, "fiscal_period": fp, "entity": entity,
+            "actor": actor, "at": at,
+            "detail": {"topic": topic, "recipients": ["zz-ea@example.com"],
+                       "subject": "Reminder"}}
+
+
+def _reminded_site():
+    """DE01 was reminded once about intercompany; nobody else was."""
+    site = _Site()
+    site.reminders = [_ic_reminder("CE-R1", "DE01", datetime(2025, 8, 4, 14, 5), actor=LEAD)]
+    return site
+
+
+def _pair_of(out, ea, aa):
+    return next(p for p in _all_pairs(out) if (p["entity_a"], p["account_a"]) == (ea, aa))
+
+
+def _user_reads(site):
+    return [r for r in site.reads if r == ("get_all", "User")]
+
+
+def test_y60_events_are_the_real_summary_input():
+    got = REMIND_MODEL.summary(_reminded_site().reminders)
+    assert got == {(2025, 7, "DE01", "ic"): {"count": 1, "last_at": datetime(2025, 8, 4, 14, 5),
+                                             "last_by": LEAD}}
+
+
+def test_y60_reminded_side_b_carries_count_and_side_a_is_null():
+    out = _call(_reminded_site())
+    uk_de = _pair_of(out, "UK01", "1810")
+    assert uk_de["reminders_a"] is None
+    assert uk_de["reminders_b"] == {"count": 1, "last_at": "2025-08-04T14:05:00+01:00",
+                                    "last_by": LEAD, "last_by_name": "Zz Lead"}
+    de_fr = _pair_of(out, "DE01", "1830")
+    assert de_fr["reminders_a"]["count"] == 1 and de_fr["reminders_b"] is None
+    uk_fr = _pair_of(out, "UK01", "1820")
+    assert uk_fr["reminders_a"] is None and uk_fr["reminders_b"] is None
+
+
+def test_y60_every_pair_carries_both_keys():
+    for site in (_Site(), _reminded_site()):
+        for pair in _all_pairs(_call(site)):
+            assert "reminders_a" in pair and "reminders_b" in pair, pair
+
+
+def test_y60_the_latest_is_by_time_and_the_count_is_every_event():
+    site = _reminded_site()
+    site.reminders.append(_ic_reminder("CE-R2", "DE01", datetime(2025, 8, 4, 9, 0),
+                                       actor=ANALYST))
+    for events in (site.reminders, list(reversed(site.reminders))):
+        site.reminders = events
+        entry = _pair_of(_call(site), "UK01", "1810")["reminders_b"]
+        assert entry["count"] == 2
+        assert entry["last_by_name"] == "Zz Lead"
+
+
+def test_y60_reminders_are_read_once_for_the_period_and_topic_ic():
+    site = _reminded_site()
+    _call(site)
+    assert site.reminder_calls == [([(2025, 7)], "ic")]
+
+
+def test_y60_no_reminders_reads_no_extra_user():
+    """The send-back names are the one User read; no reminder adds none."""
+    site = _Site()
+    _call(site)
+    assert site.reminder_calls == [([(2025, 7)], "ic")]
+    assert len(_user_reads(site)) == 1
+
+
+def test_y60_reads_are_constant_in_pairs():
+    """Failure path (the docstring's fixed count): one reminders read and at
+    most one more User read, whether 1 pair or 6 pairs were reminded."""
+    counts = []
+    for n in (1, 6):
+        site = _Site()
+        site.ic_rows = [_pair("ROOT", "UK0%d" % i, "18%d0" % i, "DE0%d" % i, "28%d0" % i,
+                              "over_tolerance") for i in range(n)]
+        site.reminders = [_ic_reminder("CE-R%d" % i, "DE0%d" % i, datetime(2025, 8, 4, 9, i),
+                                       actor=LEAD if i % 2 else ANALYST) for i in range(n)]
+        out = _call(site)
+        assert all(p["reminders_b"]["count"] == 1 for p in _all_pairs(out))
+        assert len(site.reminder_calls) == 1
+        assert len(_user_reads(site)) == 2
+        counts.append(len(_mariadb_reads(site)))
+    assert counts[0] == counts[1]
+
+
+def test_y60_a_masked_side_gets_null_and_its_reminder_never_leaves_the_server():
+    """Failure path (W3-2): a caller who cannot see DE01 gets reminders_b
+    null on UK01<->DE01, and nothing of DE01's reminder: not its sender, not
+    the event's name. The sender is not even read."""
+    site = _reminded_site()
+    site.reminders[0]["actor"] = ANALYST
+    site.events = []
+    site.allowed = {"UK01"}
+    out = _call(site)
+    uk_de = _pair_of(out, "UK01", "1810")
+    assert uk_de["masked_b"] is True
+    assert uk_de["reminders_b"] is None and uk_de["reminders_a"] is None
+    text = json.dumps(out)
+    for hidden in ("CE-R1", ANALYST, "Zz Analyst"):
+        assert hidden not in text, (hidden, text)
+    assert _user_reads(site) == []
+
+
+def test_y60_a_visible_side_keeps_its_reminder_for_a_scoped_caller():
+    site = _reminded_site()
+    site.allowed = {"DE01"}
+    out = _call(site)
+    uk_de = _pair_of(out, "UK01", "1810")
+    assert uk_de["masked_a"] is True and uk_de["reminders_a"] is None
+    assert uk_de["reminders_b"]["count"] == 1
+
+
+def test_y60_viewer_has_no_can_remind():
+    """Failure path: a Viewer reads the pairs (and their reminders) but
+    cannot remind."""
+    site = _reminded_site()
+    site.user, site.roles = VIEWER, {"EPM User"}
+    out = _call(site)
+    assert out["can_remind"] is False
+    assert _pair_of(out, "UK01", "1810")["reminders_b"]["count"] == 1
+
+
+def test_y60_remind_roles_in_an_open_checked_period_may_remind():
+    for user, role in ((LEAD, "EPM Admin"), (ANALYST, "EPM Analyst"),
+                       ("zz-sm@example.com", "System Manager")):
+        site = _Site()
+        site.user, site.roles = user, {role}
+        assert _call(site)["can_remind"] is True, role
+    assert set(REMIND_MODEL.REMIND_ROLES) == {"EPM Admin", "EPM Analyst", "System Manager"}
+
+
+def test_y60_closed_period_cannot_remind():
+    out = _call(_reminded_site(), 2025, 6)
+    assert out["period"]["status"] == "Closed"
+    assert out["can_remind"] is False
+
+
+def test_y60_not_checked_cannot_remind_and_reads_no_reminders():
+    """Failure path: not configured, not applicable, or a warehouse error has
+    no pairs to remind about, and reads no reminders."""
+    for setup in ("not_configured", "declared_none", "error"):
+        site = _reminded_site()
+        if setup == "not_configured":
+            site.published = 0
+        elif setup == "declared_none":
+            site.settings["intercompany_declaration"] = "None in this group"
+        else:
+            site.ch_error = RuntimeError("ClickHouse down")
+        out = _call(site)
+        assert out["state"] != "checked", setup
+        assert out["can_remind"] is False, setup
+        assert site.reminder_calls == [], setup
+
+
+def test_y60_no_shown_pair_reads_no_reminders():
+    site = _reminded_site()
+    site.allowed = set()
+    out = _call(site)
+    assert _all_pairs(out) == []
+    assert site.reminder_calls == []
+
+
+def test_y60_an_unknown_topic_raises_never_a_silent_zero():
+    site = _reminded_site()
+    site.reminders.append(_ic_reminder("CE-R9", "UK01", datetime(2025, 8, 4, 9, 0), topic="x"))
+    with pytest.raises(ValueError) as info:
+        _call(site)
+    assert "CE-R9" in str(info.value)
+
+
+def test_y60_a_non_datetime_time_raises():
+    site = _reminded_site()
+    site.reminders[0]["at"] = "2025-08-04 14:05:00"
+    with pytest.raises(ValueError) as info:
+        _call(site)
+    assert "CE-R1" in str(info.value)
+
+
+def test_y60_a_sender_with_no_full_name_is_labelled_and_the_other_sides_are_intact():
+    """konsol#305 R52d (review-w5b S3). Failure path (red at 843cdf7): a
+    sender with no User row, or a User whose full name is blank, made
+    ``get_ic`` raise "... has no full name" and took the whole IC screen
+    down. Now that side shows the labelled id (``remind_model.sender_name``),
+    the other sides are intact, and the reads are unchanged: one reminders
+    read, and the same number of User reads."""
+    for users in ([{"name": ANALYST, "full_name": "Zz Analyst"}],
+                  [{"name": ANALYST, "full_name": "Zz Analyst"},
+                   {"name": LEAD, "full_name": ""}]):
+        site = _reminded_site()
+        site.users = users
+        site.reminders.append(_ic_reminder("CE-R2", "UK01", datetime(2025, 8, 5, 9, 0),
+                                           actor=ANALYST))
+        out = _call(site)
+        uk_de = _pair_of(out, "UK01", "1810")
+        assert uk_de["reminders_b"] == {
+            "count": 1, "last_at": "2025-08-04T14:05:00+01:00", "last_by": LEAD,
+            "last_by_name": LEAD + " (name not recorded)"}, uk_de
+        assert uk_de["reminders_a"]["last_by_name"] == "Zz Analyst", uk_de
+        assert uk_de["reminders_a"]["count"] == 1
+        uk_fr = _pair_of(out, "UK01", "1820")
+        assert uk_fr["reminders_a"]["last_by_name"] == "Zz Analyst", uk_fr
+        assert uk_fr["reminders_b"] is None
+        assert site.reminder_calls == [([(2025, 7)], "ic")]
+        assert len(_user_reads(site)) == 2
+
+
+# --- golden fixture (T55t) -------------------------------------------------------
+
+#: The golden payload close-ui's intercompany tests load (Y65): exactly what the
+#: real ``get_ic`` returns for ``_ic_golden_site()``, never a hand-built dict.
+IC_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "fixtures", "close_ic_payload.json")
+
+
+def _ic_golden_site():
+    """Y65's generator: the reminded site plus an IC reminder on FR01, with the
+    caller limited to UK01 and DE01 (so FR01's side is masked)."""
+    site = _reminded_site()
+    site.reminders.append(_ic_reminder("CE-R2", "FR01", datetime(2025, 8, 5, 9, 0),
+                                       actor=LEAD))
+    site.allowed = {"UK01", "DE01"}
+    return site
+
+
+def test_t55t_get_ic_matches_the_golden_fixture():
+    out = json.loads(json.dumps(_call(_ic_golden_site())))
+    with open(IC_FIXTURE) as f:
+        golden = json.load(f)
+    assert out == golden
+    assert golden["can_remind"] is True and _all_pairs(golden)
+
+
+# --- R53b (#305-R52-2-1): each pair side says whether Remind is offered ---------
+#
+# ``can_remind_a`` / ``can_remind_b``: true only when the payload-level
+# ``can_remind`` holds, the side is visible and the pair is over tolerance
+# (remind_model.ic_side_can_remind, the rule remind_api's ic refusal shares).
+
+def test_r53b_every_pair_carries_both_side_flags():
+    for site in (_Site(), _ic_golden_site()):
+        for pair in _all_pairs(_call(site)):
+            assert "can_remind_a" in pair and "can_remind_b" in pair, pair
+
+
+def test_r53b_matched_and_within_tolerance_pairs_offer_neither_side():
+    """Failure path: Remind is never offered on a matched pair."""
+    out = _call(_Site())
+    assert out["can_remind"] is True
+    for ea, aa in (("UK01", "1820"), ("DE01", "1830")):
+        pair = _pair_of(out, ea, aa)
+        assert pair["match_status"] in ("matched", "within_tolerance"), pair
+        assert (pair["can_remind_a"], pair["can_remind_b"]) == (False, False), pair
+
+
+def test_r53b_fx_difference_offers_neither_side():
+    site = _Site()
+    site.ic_rows = [_pair("ROOT", "UK01", "1810", "DE01", "2810", "fx_difference")]
+    pair = _all_pairs(_call(site))[0]
+    assert (pair["can_remind_a"], pair["can_remind_b"]) == (False, False)
+
+
+def test_r53b_over_tolerance_offers_both_visible_sides():
+    pair = _pair_of(_call(_Site()), "UK01", "1810")
+    assert pair["match_status"] == "over_tolerance"
+    assert (pair["can_remind_a"], pair["can_remind_b"]) == (True, True)
+
+
+def test_r53b_over_tolerance_never_offers_the_masked_side():
+    """Failure path (W3-2): a scoped caller is offered Remind only on the
+    side they can see."""
+    for allowed, expected in (({"UK01"}, (True, False)), ({"DE01"}, (False, True))):
+        site = _Site()
+        site.allowed = allowed
+        pair = _pair_of(_call(site), "UK01", "1810")
+        assert (pair["masked_a"], pair["masked_b"]) == (not expected[0], not expected[1])
+        assert (pair["can_remind_a"], pair["can_remind_b"]) == expected, allowed
+
+
+def test_r53b_no_payload_can_remind_offers_no_side():
+    """Failure path: a Viewer, or a Closed period, is offered no side even
+    on an over-tolerance pair; the payload-level can_remind stays."""
+    viewer = _Site()
+    viewer.user, viewer.roles = VIEWER, {"EPM User"}
+    for site, fp in ((viewer, 7), (_Site(), 6)):
+        out = _call(site, 2025, fp)
+        assert out["can_remind"] is False
+        for pair in _all_pairs(out):
+            assert (pair["can_remind_a"], pair["can_remind_b"]) == (False, False), pair
+
+
+def test_r53b_the_side_flags_are_the_real_rule():
+    site = _Site()
+    site.allowed = {"UK01", "DE01"}
+    out = _call(site)
+    for pair in _all_pairs(out):
+        for side in ("a", "b"):
+            assert pair["can_remind_" + side] is REMIND_MODEL.ic_side_can_remind(
+                out["can_remind"], pair["masked_" + side], pair), (side, pair)

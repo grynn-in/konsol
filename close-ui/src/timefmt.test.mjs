@@ -82,9 +82,66 @@ test("formatTime: today shows the time only, in the given zone", async () => {
   assert.equal(formatTime(new Date("2026-09-25T09:42:00Z"), NOW, TZ), "10:42");
 });
 
-test("formatTime: another day shows 'Sep 20, 10:42'", async () => {
+test("formatTime: another day shows '20 Sep, 10:42' (day-first, #305-R52-3-1)", async () => {
   const { formatTime } = await load();
-  assert.equal(formatTime(new Date("2026-09-20T09:42:00Z"), NOW, TZ), "Sep 20, 10:42");
+  assert.equal(formatTime(new Date("2026-09-20T09:42:00Z"), NOW, TZ), "20 Sep, 10:42");
+});
+
+// konsol#305 R53d (decision #305-R52-3-1, Deepak Pai 7 Oct): instants are
+// day-first everywhere, like the due dates ("Tue 7 Oct 2025"). Same year as
+// `now` (judged in the zone): "6 Oct, 10:00"; another year: "6 Oct 2024, 10:00".
+test("formatTime (R53d): day-first across every month of the same year", async () => {
+  const { formatTime } = await load();
+  const now = new Date("2026-12-31T12:00:00Z");
+  const expected = [
+    "6 Jan, 10:00", "6 Feb, 10:00", "6 Mar, 10:00", "6 Apr, 10:00", "6 May, 10:00", "6 Jun, 10:00",
+    "6 Jul, 10:00", "6 Aug, 10:00", "6 Sep, 10:00", "6 Oct, 10:00", "6 Nov, 10:00", "6 Dec, 10:00",
+  ];
+  for (let m = 0; m < 12; m += 1) {
+    const date = new Date(Date.UTC(2026, m, 6, 10, 0));
+    assert.equal(formatTime(date, now, "UTC"), expected[m], `month ${m + 1}`);
+  }
+});
+
+test("formatTime (R53d): another year carries the year — '6 Oct 2024, 10:00'", async () => {
+  const { formatTime } = await load();
+  const now = new Date("2026-10-07T12:00:00Z");
+  assert.equal(formatTime(new Date("2024-10-06T10:00:00Z"), now, "UTC"), "6 Oct 2024, 10:00");
+  assert.equal(formatTime(new Date("2025-12-31T23:59:00Z"), now, "UTC"), "31 Dec 2025, 23:59");
+  // a later year (clock skew) is still another year, never guessed away
+  assert.equal(formatTime(new Date("2027-01-02T08:05:00Z"), now, "UTC"), "2 Jan 2027, 08:05");
+});
+
+test("formatTime (R53d): same year, earlier day — '6 Oct, 10:00'; today — '10:00'", async () => {
+  const { formatTime } = await load();
+  const now = new Date("2026-10-07T12:00:00Z");
+  assert.equal(formatTime(new Date("2026-10-06T10:00:00Z"), now, "UTC"), "6 Oct, 10:00");
+  assert.equal(formatTime(new Date("2026-10-07T10:00:00Z"), now, "UTC"), "10:00");
+  assert.equal(formatTime(new Date("2026-01-01T00:00:00Z"), now, "UTC"), "1 Jan, 00:00");
+});
+
+test("formatTime (R53d): the day, month and year are judged in the zone, not UTC", async () => {
+  const { formatTime } = await load();
+  const now = new Date("2026-06-15T12:00:00Z");
+  // 31 Dec 2025 20:00 UTC is 1 Jan 2026 01:30 in Kolkata: same year as now there.
+  assert.equal(formatTime(new Date("2025-12-31T20:00:00Z"), now, "Asia/Kolkata"), "1 Jan, 01:30");
+  // ... and still 31 Dec 2025 in UTC: another year.
+  assert.equal(formatTime(new Date("2025-12-31T20:00:00Z"), now, "UTC"), "31 Dec 2025, 20:00");
+  // 1 Mar 2026 03:00 UTC is 28 Feb 2026 22:00 in New York.
+  assert.equal(formatTime(new Date("2026-03-01T03:00:00Z"), now, "America/New_York"), "28 Feb, 22:00");
+});
+
+test("formatTime (R53d): month names come from dueDate.js's fixed table, never Intl", () => {
+  const src = fs.readFileSync(TIMEFMT, "utf8");
+  assert.doesNotMatch(src, /month:\s*["'](short|long|narrow)["']/, "no Intl month name");
+  assert.doesNotMatch(src, /toLocale/, "no toLocale*String for names");
+  assert.match(src, /import\s*\{[^}]*\bMONTHS\b[^}]*\}\s*from\s*["']\.\/dueDate\.js["']/, "MONTHS imported from dueDate.js");
+  assert.doesNotMatch(src, /["']Jan["']/, "no second month table in timefmt.js");
+});
+
+test("dueDate.js exports the one MONTHS table", async () => {
+  const { MONTHS } = await import("./dueDate.js");
+  assert.deepEqual(MONTHS, ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]);
 });
 
 test("formatTime: the calendar day is judged in the given zone, not UTC", async () => {
@@ -92,7 +149,7 @@ test("formatTime: the calendar day is judged in the given zone, not UTC", async 
   // 23:30 UTC on the 24th is 00:30 on the 25th in London: today.
   assert.equal(formatTime(new Date("2026-09-24T23:30:00Z"), NOW, TZ), "00:30");
   // The same instant in New York is the 24th, 19:30: not today.
-  assert.equal(formatTime(new Date("2026-09-24T23:30:00Z"), NOW, "America/New_York"), "Sep 24, 19:30");
+  assert.equal(formatTime(new Date("2026-09-24T23:30:00Z"), NOW, "America/New_York"), "24 Sep, 19:30");
 });
 
 function withWindow(win, fn) {

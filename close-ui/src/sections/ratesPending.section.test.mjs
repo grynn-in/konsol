@@ -46,7 +46,7 @@ test("It never posts: no api.js import, no post( or get( call; it emits approve(
   const js = script(source);
   assert.doesNotMatch(js, /\bpost\(/, "the section never posts");
   assert.doesNotMatch(js, /\bget\(/, "the section never fetches");
-  assert.match(js, /defineEmits\(\s*\[\s*["']approve["']\s*\]\s*\)/, "it emits approve");
+  assert.match(js, /defineEmits\(\s*\[\s*["']approve["']\s*,\s*["']edit["']\s*\]\s*\)/, "it emits approve and (O67) edit");
   assert.match(js, /emit\(\s*["']approve["']\s*,\s*item\.doctype\s*,\s*item\.name\s*,/, "approve(doctype, name, reason)");
 });
 
@@ -155,3 +155,188 @@ test("No v-html, no browser dialogs, no browser storage", () => {
     assert.ok(!source.includes(store), `no ${store}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// konsol#305 O61 (wireframe-4.2.md section 3, confirmed by Deepak Pai 7 Oct):
+// a pending Ownership Period item carrying `ownership_effect` (R52q) shows the read-only
+// EFFECT IF APPROVED panel above Approve; an item with `ownership_effect: null` (a Desk
+// "Record ownership" draft, O57) shows "Drafted in Desk: effect not
+// previewed." and never an empty panel. Fed the REAL O57 golden payload
+// through the REAL pendingView + ownershipEffectView (rates.js, O59).
+// ---------------------------------------------------------------------------
+import { pendingView, ownershipEffectView } from "../rates.js";
+import * as ratesModule from "../rates.js";
+
+const PENDING = JSON.parse(
+  fs.readFileSync(new URL("../../../konsol/tests/fixtures/close_rates_pending_payload.json", import.meta.url), "utf8"),
+);
+
+/** R52o: builds the section's own `effectFor(item)` from its <script>
+ * source, with the real rates.js `opEffectView` injected — the function under
+ * test is the one the component runs, not a copy. The section keeps no
+ * DESK_DRAFT or opEffect copy of its own (review U6). */
+function loadOpEffect() {
+  const js = script(read());
+  assert.doesNotMatch(js, /const DESK_DRAFT\b/, "R52o: the Desk sentence lives in rates.js only");
+  assert.doesNotMatch(js, /function opEffect\(/, "R52o: no local opEffect copy");
+  const fn = js.match(/function effectFor\(item\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(fn, "the section declares function effectFor(item)");
+  return new Function("opEffectView", `${fn[0]}return effectFor;`)(ratesModule.opEffectView);
+}
+
+function itemNamed(name) {
+  const item = pendingView(PENDING).items.find((i) => i.name === name);
+  assert.ok(item, `the golden payload has ${name}`);
+  return item;
+}
+
+test("O61: the golden OP draft with effect gives the wireframe's EFFECT IF APPROVED rows", () => {
+  const opEffect = loadOpEffect();
+  const item = itemNamed("OP-ZZ5B1-2025-10-01");
+  const panel = opEffect(item);
+  const real = ownershipEffectView(item.ownership_effect);
+  assert.equal(panel.desk, undefined);
+  assert.equal(panel.error, undefined);
+  assert.deepEqual(
+    panel.view.rows.map((r) => [r.label, r.before, r.after]),
+    [
+      ["Ownership", "100 %", "80 %"],
+      ["Method", "full", "full"],
+    ],
+    "Ownership and Method, before → after (section 3 shows no Covers row: it shows Ends)",
+  );
+  assert.equal(panel.view.currentEnds, real.currentEnds);
+  assert.equal(panel.view.endsLine, real.endsLine, "O65: Ends names the predecessor");
+  assert.match(panel.view.endsLine, /^OP-ZZ5B1-1 on /);
+  assert.equal(panel.view.periods, "FY2025 P10 onward (open-ended)");
+  assert.deepEqual(panel.view.resign, real.resign);
+  assert.match(panel.view.resign[0], /^FY2025 P11 \(signed .+ by Zz Lead\)$/, "O65: who signed it and when");
+  assert.equal(panel.view.resignNone, null);
+  assert.equal(panel.view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
+});
+
+test("O61 failure path: the golden Desk draft (ownership_effect null) gives the sentence, never empty columns", () => {
+  const opEffect = loadOpEffect();
+  const panel = opEffect(itemNamed("OP-ZZ5B2-2025-10-01"));
+  assert.deepEqual(panel, { desk: "Drafted in Desk: effect not previewed." });
+});
+
+test("O61 failure path: an HER item has no panel; an OP item whose effect is broken shows the thrown sentence, not a guessed panel", () => {
+  const opEffect = loadOpEffect();
+  assert.equal(opEffect(itemNamed("HER-ZZ5B1-1")), null);
+  const op = itemNamed("OP-ZZ5B1-2025-10-01");
+  const { resign, ...noResign } = op.ownership_effect;
+  const broken = opEffect({ ...op, ownership_effect: noResign });
+  assert.equal(broken.view, undefined);
+  assert.match(broken.error, /resign/);
+  const missing = { ...op, effect: op.ownership_effect };
+  delete missing.ownership_effect;
+  assert.match(
+    opEffect(missing).error,
+    /OP-ZZ5B1-2025-10-01 has no ownership_effect$/,
+    "an OP item with no ownership_effect key (R52q: the old `effect` key included) is a server regression, shown as such",
+  );
+});
+
+test("R52o failure path (S2 consumer): an OP item carrying the server's ownership_effect_error shows that sentence in place of the panel", () => {
+  const opEffect = loadOpEffect();
+  const sentence =
+    "The pending ownership change OP-ZZ5B3-2025-10-01 cannot be shown: OP-ZZ5B3-2025-10-01 supersedes " +
+    "OP-ZZ5B3-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.";
+  for (const name of ["OP-ZZ5B1-2025-10-01", "OP-ZZ5B2-2025-10-01"]) {
+    const broken = { ...itemNamed(name), ownership_effect: null, ownership_effect_error: sentence };
+    assert.deepEqual(opEffect(broken), { error: sentence }, name);
+  }
+});
+
+test("R52o (U9): the Edit button is labelled with the draft's name", () => {
+  const tpl = template(read());
+  const at = tpl.indexOf('v-if="canEdit(item)"');
+  assert.ok(at > 0);
+  const tag = tpl.slice(tpl.lastIndexOf("<", at), tpl.indexOf(">", at));
+  assert.ok(tag.includes(':aria-label="`Edit ${item.name}`"'), tag);
+});
+
+test("O61: the template renders the panel above Approve, read-only, with the Desk sentence and the error branch", () => {
+  const source = read();
+  assert.match(
+    source,
+    /import\s*\{[^}]*\bopEffectView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
+    "R52o: imports opEffectView from rates.js",
+  );
+  const tpl = template(source);
+  assert.match(tpl, /EFFECT IF APPROVED/);
+  const panelAt = tpl.indexOf("EFFECT IF APPROVED");
+  const approveAt = tpl.indexOf("<Button");
+  assert.ok(panelAt >= 0 && approveAt > panelAt, "the effect panel comes before the Approve button");
+  for (const field of ["row.before", "row.after", "endsLine", "periods", "resign", "resignNone", "notShown"]) {
+    assert.ok(tpl.includes(field), `the panel shows ${field}`);
+  }
+  assert.doesNotMatch(tpl, /The current period, on/, "O65: Ends names the predecessor, not 'The current period'");
+  assert.match(tpl, /\.desk\b/, "the Desk-draft sentence is rendered");
+  assert.match(tpl, /\.error\b/, "a broken effect's sentence is rendered");
+  assert.match(tpl, /Re-sign Needed/);
+  const controlAt = tpl.indexOf('v-if="canApprove(item)"');
+  assert.ok(controlAt > panelAt, "the approve control follows the panel");
+  const panel = tpl.slice(panelAt, controlAt);
+  assert.doesNotMatch(panel, /<input|<select|<textarea|<Button|@click/, "the panel is read-only");
+});
+
+test("O61: Approve stays the existing approve emit — one approve emit site; O67 adds only the edit emit", () => {
+  const js = script(read());
+  assert.equal((js.match(/emit\(\s*["']approve["']/g) || []).length, 1, "one approve emit call");
+  assert.equal((js.match(/emit\(\s*["']edit["']/g) || []).length, 1, "one edit emit call");
+  assert.equal((js.match(/emit\(/g) || []).length, 2, "no other emit");
+  assert.match(js, /defineEmits\(\s*\[\s*["']approve["']\s*,\s*["']edit["']\s*\]\s*\)/);
+});
+
+// ---------------------------------------------------------------------------
+// konsol#305 O67 (wireframe-4.2.md section 1, "The Analyst can edit it until
+// it is approved", confirmed by Deepak Pai 7 Oct): an Ownership Period draft
+// whose server `edit` (O69) is not null offers "Edit", which emits
+// edit(name) for Rates.vue to load into the Change ownership form. The
+// decision is the server's: no title or detail is parsed, and a Desk draft
+// (edit null) or an HER offers no Edit. Fed the REAL O69 golden through the
+// REAL pendingView.
+// ---------------------------------------------------------------------------
+
+function loadEditFns() {
+  const js = script(read());
+  const can = js.match(/\nfunction canEdit\(item\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(can, "the section declares function canEdit(item)");
+  const edit = js.match(/\nfunction edit\(item\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(edit, "the section declares function edit(item)");
+  const emitted = [];
+  const emit = (...args) => emitted.push(args);
+  const fns = new Function("emit", `${can[0]}${edit[0]}return { canEdit, edit };`)(emit);
+  return { ...fns, emitted };
+}
+
+test("O67: the golden OP draft with a server edit offers Edit; the Desk draft and the HER do not", () => {
+  const { canEdit } = loadEditFns();
+  assert.equal(canEdit(itemNamed("OP-ZZ5B1-2025-10-01")), true);
+  assert.equal(canEdit(itemNamed("OP-ZZ5B2-2025-10-01")), false, "Drafted in Desk: edit null, no Edit");
+  assert.equal(canEdit(itemNamed("HER-ZZ5B1-1")), false);
+});
+
+test("O67 failure path: an OP item whose edit is null offers no Edit whatever its title says", () => {
+  const { canEdit } = loadEditFns();
+  const op = itemNamed("OP-ZZ5B1-2025-10-01");
+  assert.equal(canEdit({ ...op, edit: null }), false);
+  assert.equal(canEdit({ ...op, doctype: "Historical Equity Rate" }), false);
+});
+
+test("O67: Edit emits edit(name) only; the template gates it on canEdit(item) and puts it beside Approve", () => {
+  const { edit, emitted } = loadEditFns();
+  edit(itemNamed("OP-ZZ5B1-2025-10-01"));
+  assert.deepEqual(emitted, [["edit", "OP-ZZ5B1-2025-10-01"]]);
+  const tpl = template(read());
+  const at = tpl.indexOf('v-if="canEdit(item)"');
+  assert.ok(at > 0, "the Edit control is gated on canEdit(item)");
+  assert.ok(at > tpl.indexOf('v-if="canApprove(item)"'), "Edit sits in the actions column, after the read-only panel");
+  const tag = tpl.slice(tpl.lastIndexOf("<", at), tpl.indexOf(">", at));
+  assert.match(tag, /@click="edit\(item\)"/);
+  const js = script(read());
+  assert.doesNotMatch(js, /item\.title\.|item\.detail\.|split\(/, "no title or detail parsing");
+});
+

@@ -221,10 +221,22 @@ def _her_item(doc, preparers, mode):
 
 
 def _op_item(doc, preparers, mode):
+    """An Ownership Period draft's item. The caller's ``doc["effect"]`` (O57;
+    story 4.2, C-O4) is emitted as ``ownership_effect`` (R52q, review S18:
+    never the journal's ``effect`` key), and ``doc["effect_error"]`` as
+    ``ownership_effect_error``. It is passed through only when the caller put it on ``doc``
+    (``ownership_change.effect_for``): a dict, or None for a draft without
+    ``supersedes`` (a Desk "Record ownership" draft, "effect not previewed").
+    A doc without the key (a caller that did not compute it) gives an item
+    without the key: it never raises, and never turns into a None that would
+    read as a Desk draft. ``effect_error`` (R52i) goes with ``effect``: the
+    caller's sentence when the effect could not be read, else None. ``edit``
+    (O69, ``op_edit``) is passed through the
+    same way: approvals_model's items carry no ``edit`` key."""
     detail = "%g%% · %s" % (doc["ownership_pct"], doc["consolidation_method"])
     if doc.get("end_date"):
         detail += " to %s" % doc["end_date"]
-    return {
+    item = {
         "doctype": "Ownership Period",
         "name": doc["name"],
         "title": "%s in %s from %s" % (doc["data_area_id"], doc["consolidation_group"], doc["effective_date"]),
@@ -234,6 +246,78 @@ def _op_item(doc, preparers, mode):
         "created": doc["created"],
         "approve": mode,
     }
+    if "effect" in doc:
+        # R52q (review S18): named for the Ownership Period, so the key never
+        # collides with a journal item's ``effect`` (approvals_model).
+        item["ownership_effect"] = doc.get("effect")
+        # R52i (review S2): why the effect could not be read, or None.
+        item["ownership_effect_error"] = doc.get("effect_error")
+    if "edit" in doc:
+        item["edit"] = doc.get("edit")
+    return item
+
+
+def _iso_day(value):
+    """An ISO day of a date, datetime or string; blank gives None."""
+    if value in (None, ""):
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()[:10]
+    return str(value)[:10]
+
+
+def regular_period_by_start(period_rows):
+    """O69 (story 4.2): ``{start_date ISO: (fiscal_year, fiscal_period,
+    status)}`` of the calendar's Regular periods. Only a Regular period's
+    first day is an ownership change's first day (an Opening P00 shares P01's
+    1 Jan). A day on which two Regular periods start maps to neither: the
+    period is never guessed.
+
+    R52h: ``status`` is the row's effective status as
+    ``fiscal_calendar.fiscal_period_rows`` gives it (the same single calendar
+    read), or None when the row carries none; ``op_edit`` reads it."""
+    seen = {}
+    for row in period_rows:
+        if row.get("period_type") != "Regular":
+            continue
+        day = _iso_day(row.get("start_date"))
+        if day is None:
+            continue
+        seen.setdefault(day, []).append(
+            (int(row["fiscal_year"]), int(row["fiscal_period"]), row.get("status")))
+    return {day: keys[0] for day, keys in seen.items() if len(keys) == 1}
+
+
+def op_edit(doc, starts):
+    """O69 (story 4.2; wireframe-4.2.md section 1, "The Analyst can edit it
+    until it is approved"): what O67's Edit loads for the Ownership Period
+    draft ``doc``, or None.
+
+    ``starts`` is ``regular_period_by_start`` of the calendar when the caller
+    may save (the roles ``save_ownership_change`` admits), else None. None is
+    returned for a caller who may not save, a draft without ``supersedes``
+    (a Desk "Record ownership" draft: the form edits only a change it could
+    have saved), and a draft whose ``effective_date`` starts no single
+    Regular period.
+
+    R52h (review S7/U5; coordinator ruling S7/U5): None also wherever the
+    form cannot load the draft, by the rule of its choices
+    (``rates_api._change_choices``): a group-node draft (blank
+    ``data_area_id``; the form offers only nodes that name an entity), and a
+    draft whose first period's status is not Open (the form offers only Open
+    Regular periods; a missing status is never read as Open)."""
+    if starts is None or not doc.get("supersedes"):
+        return None
+    if not doc.get("data_area_id"):
+        return None
+    key = starts.get(_iso_day(doc.get("effective_date")))
+    if key is None or key[2] != "Open":
+        return None
+    return {"consolidation_group": doc["consolidation_group"],
+            "entity": doc["data_area_id"],
+            "fiscal_year": key[0], "fiscal_period": key[1],
+            "ownership_pct": float(doc["ownership_pct"]),
+            "consolidation_method": doc["consolidation_method"]}
 
 
 def pending_items(her, ops, preparers_by_name, user, roles, policy, approver_roles, self_approval_problem):

@@ -198,3 +198,133 @@ test("(B27) entityRows gets the user's zone and now; a missing zone is shown, no
   assert.doesNotMatch(code, /time_zone|resolvedOptions\(\)/, "no local copy of the lookup");
   assert.match(s, /if\s*\(!timeZone\)/, "no zone is an explicit error, never a default");
 });
+
+// --- Y62: Remind on a Missing row, and the reminded text (story 1.5) --------
+
+function code(source) {
+  return script(source).replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
+test("(Y62) Remind posts through remind.js's REMIND and remindBody, via api.js's post", () => {
+  const source = read();
+  const s = code(source);
+  assert.match(s, /import\s*\{[^}]*\bpost\b[^}]*\}\s*from\s*["']\.\.\/api\.js["']/);
+  assert.match(s, /import\s*\{[^}]*\bREMIND\b[^}]*\bremindBody\b[^}]*\}\s*from\s*["']\.\.\/remind\.js["']|import\s*\{[^}]*\bremindBody\b[^}]*\bREMIND\b[^}]*\}\s*from\s*["']\.\.\/remind\.js["']/);
+  assert.doesNotMatch(s, /remind_api/, "the endpoint name lives in remind.js only");
+  assert.match(s, /remindBody\([^)]*,\s*[^)]*,\s*["']tb["']\s*\)/, "the topic is tb");
+});
+
+test("(Y62) exactly one post(REMIND — one function sends a reminder", () => {
+  const s = code(read());
+  const posts = s.match(/post\(\s*REMIND\b/g) || [];
+  assert.equal(posts.length, 1);
+});
+
+test("(Y62) the Remind button is v-if on row.canRemind and the reminded text is row.reminded", () => {
+  const tpl = template(read());
+  const button = tpl.match(/<button\b[^>]*v-if="row\.canRemind"[^>]*>[\s\S]*?<\/button>/);
+  assert.ok(button, "a button gated by v-if=\"row.canRemind\"");
+  assert.match(button[0], /Remind/);
+  assert.match(button[0], /@click\.stop=/, "clicking Remind does not toggle the row's detail area");
+  assert.match(tpl, /v-if="row\.reminded"[^>]*>\s*\{\{\s*row\.reminded\s*\}\}/, "the text is shown as entityRows built it");
+  assert.doesNotMatch(tpl, /can_remind/, "the template never reads the raw payload flag");
+});
+
+test("(Y62) failure path: a refusal shows the server's sentence through messageLines, never invented text", () => {
+  const source = read();
+  const s = code(source);
+  assert.match(s, /import\s*\{[^}]*\bmessageLines\b[^}]*\}\s*from\s*["']\.\.\/signoff\.js["']/);
+  assert.match(s, /messageLines\(\s*e\.message\s*\)/);
+  const tpl = template(source);
+  assert.match(tpl, /remindError/, "the refusal is rendered");
+  assert.match(tpl, /role="alert"[^>]*>[\s\S]*?remindError/);
+});
+
+test("(Y62) success reloads my_tbs once; a refusal does not reload or change the row", () => {
+  const s = code(read());
+  const fn = s.match(/async function remind\(row\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(fn, "one async function remind(row)");
+  const body = fn[1];
+  const tryBlock = body.match(/try\s*\{([\s\S]*?)\}\s*catch/);
+  assert.ok(tryBlock, "remind posts inside try/catch");
+  assert.equal((tryBlock[1].match(/reloadTbs\(p\)/g) || []).length, 1, "one reload, after a successful post, for the captured period (R52s)");
+  const catchBlock = body.slice(body.indexOf("catch"));
+  assert.doesNotMatch(catchBlock.split("finally")[0], /reloadTbs\(|load\.data\s*=/, "a refusal leaves the row as it was");
+});
+
+// --- D60: the TB due header and the overdue chip (stories 2.4, 3.1) --------
+// Behaviour (texts, tone, throws) is tested on tbTable.js with the golden
+// payload; these check the wiring only.
+
+test("(D60) the header shows tbTable's tbDue text, built in the script, not its own date wording", () => {
+  const source = read();
+  const s = code(source);
+  assert.match(s, /import\s*\{[^}]*\btbDue\b[^}]*\}\s*from\s*["']\.\.\/tbTable\.js["']/);
+  assert.match(s, /tbDue\(/);
+  const tpl = template(source);
+  const header = tpl.match(/<header\b[\s\S]*?<\/header>/);
+  assert.ok(header, "the screen has a header");
+  assert.match(header[0], /\{\{\s*due\.text\s*\}\}/, "the header renders the due text");
+  assert.doesNotMatch(source, /No due date is shown/, "the old 'no due date' note is gone");
+  assert.doesNotMatch(tpl, /deadline\./, "the template never reads the raw deadline");
+});
+
+test("(D60) the Overdue chip is v-if on row.overdueChip with its tone, and never blocks a control", () => {
+  const tpl = template(read());
+  const chip = tpl.match(/<span\b[^>]*v-if="row\.overdueChip"[^>]*>[\s\S]*?<\/span>/);
+  assert.ok(chip, "a chip gated by v-if=\"row.overdueChip\"");
+  assert.match(chip[0], /:class="row\.overdueChip\.tone"/);
+  assert.match(chip[0], /\{\{\s*row\.overdueChip\.text\s*\}\}/);
+  assert.doesNotMatch(tpl, /:disabled="[^"]*overdue/i, "overdue never disables anything (#305-2.4-1)");
+});
+
+// --- R52s (U8, U9): a Remind lands on its own period; one at a time; named ----
+// The decision (reload or skip) is remind.js's afterPost, tested there with
+// route.js's real parse() output; these check that the screen wires it.
+
+function fnBody(s, header) {
+  const start = s.indexOf(header);
+  assert.ok(start >= 0, `the screen has ${header}`);
+  const end = s.indexOf("\n}\n", start);
+  return s.slice(start, end);
+}
+
+test("(R52s) every Remind button is disabled while any Remind is posting, and is named for its entity", () => {
+  const tpl = template(read());
+  const buttons = tpl.match(/<button\b[^>]*@click\.stop="remind\(row\)"[^>]*>[\s\S]*?<\/button>/g) || [];
+  assert.ok(buttons.length >= 1, "the screen has a Remind button");
+  for (const button of buttons) {
+    assert.match(button, /:disabled="reminding !== null"/, "one Remind at a time");
+    assert.match(button, /:aria-label="`Remind \$\{row\.entity\}`"/, "the button names its entity");
+  }
+  assert.doesNotMatch(tpl, /reminding === row\.entity/, "no per-row disable left");
+});
+
+test("(R52s) remind(row) captures the period and asks afterPost before reloading or showing an error", () => {
+  const s = code(read());
+  assert.match(s, /import\s*\{[^}]*\bafterPost\b[^}]*\}\s*from\s*["']\.\.\/remind\.js["']/);
+  const body = fnBody(s, "async function remind(row)");
+  assert.match(body, /const p = period\.value;/, "the period is captured when Remind is pressed");
+  const tryBlock = body.slice(body.indexOf("try"), body.indexOf("catch"));
+  assert.match(tryBlock, /afterPost\(p,\s*period\.value\)\s*===\s*["']reload["'][\s\S]*reloadTbs\(p\)/, "the reload runs only on the same period");
+  const catchBlock = body.slice(body.indexOf("catch"), body.indexOf("finally"));
+  assert.match(catchBlock, /afterPost\(p,\s*period\.value\)\s*===\s*["']reload["'][\s\S]*remindError\.value\s*=/, "an error for a period left behind is dropped");
+});
+
+test("(R52s) failure path: reloadTbs takes the period, never reads period.value for the request, and sets the list ready", () => {
+  const s = code(read());
+  const body = fnBody(s, "async function reloadTbs(p)");
+  assert.doesNotMatch(body, /const p = period\.value/, "the request uses the captured period");
+  assert.match(body, /get\(MY_TBS,\s*\{\s*fiscal_year:\s*p\.year,\s*fiscal_period:\s*p\.period\s*\}\)/);
+  assert.match(body, /load\.status = "ready"/, "a reload that bumped seq still ends the loading state");
+  assert.match(body, /"persona" in tbs[\s\S]*load\.persona = tbs\.persona/, "persona only when the payload carries it");
+  assert.match(body, /afterPost\(p,\s*period\.value\)/, "a result for a period left behind is dropped");
+});
+
+test("(R52s) refreshAfterSubmit uses the same captured-period reload", () => {
+  const s = code(read());
+  const body = fnBody(s, "async function refreshAfterSubmit()");
+  assert.match(body, /const p = period\.value;/);
+  assert.match(body, /reloadTbs\(p\)/, "the submit's re-read goes through the one reload");
+  assert.doesNotMatch(body, /get\(MY_TBS/, "no second copy of the re-read");
+});

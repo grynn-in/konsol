@@ -30,6 +30,96 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLOSE_DIR = os.path.join(APP_DIR, "close")
 API_PY = os.path.join(CLOSE_DIR, "rates_api.py")
 TIMEFMT_PY = os.path.join(CLOSE_DIR, "timefmt.py")
+OWNERSHIP_CHANGE_PY = os.path.join(CLOSE_DIR, "ownership_change.py")
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+CLOSE_DIR_R52F = CLOSE_DIR
+
+
+#: R52f: the REAL signoff_gate.py, so the rule the preview lists by is the
+#: rule record_data_change marks by (never a re-typed copy of it).
+SIGNOFF_GATE_PY = os.path.join(CLOSE_DIR_R52F, "signoff_gate.py")
+SIGNOFF_MODEL_PY_R52F = os.path.join(CLOSE_DIR_R52F, "signoff_model.py")
+
+
+def _real_periods_marked_from(rows, first_close, reads=None):
+    """``signoff_gate.periods_marked_from`` from the REAL signoff_gate.py,
+    loaded by path against a minimal stub frappe: the period row's type
+    comes from ``rows()`` (the same calendar the code under test reads), the
+    first close is ``first_close`` ((fy, fp) or None = undeclared, read as
+    the Close Settings Ints 0/0) and the real pure ``signoff_model``.
+    ``reads``, when given, records each gate read as ("gate", what)."""
+    log = reads.append if reads is not None else (lambda item: None)
+    fy0, fp0 = first_close or (0, 0)
+
+    frappe = types.ModuleType("frappe")
+    frappe.ValidationError = type("ValidationError", (Exception,), {})
+
+    def throw(msg, exc=None, title=None, **k):
+        raise (exc or frappe.ValidationError)(msg)
+
+    def get_value(doctype, filters, fieldname, as_dict=False, **k):
+        assert doctype == "EPM Fiscal Year Period", doctype
+        log(("gate", "period_row"))
+        key = (int(filters["parent"]), int(filters["fiscal_period"]))
+        row = next((r for r in rows() if (int(r["fiscal_year"]), int(r["fiscal_period"])) == key),
+                   None)
+        if row is None:
+            return None
+        rec = {"name": "ROW-%d-%d" % key, "period_type": row["period_type"]}
+        return {f: rec.get(f) for f in fieldname}
+
+    def get_single_value(doctype, field):
+        assert doctype == "Close Settings", doctype
+        log(("gate", field))
+        return {"first_close_fiscal_year": fy0, "first_close_fiscal_period": fp0}[field]
+
+    frappe.throw = throw
+    frappe.db = types.SimpleNamespace(get_value=get_value, get_single_value=get_single_value)
+
+    konsol = types.ModuleType("konsol")
+    calendar = types.ModuleType("konsol.fiscal_calendar")
+
+    def fiscal_period_rows():
+        log(("gate", "calendar"))
+        return [dict(r) for r in rows()]
+
+    calendar.fiscal_period_rows = fiscal_period_rows
+    close = types.ModuleType("konsol.close")
+    spec = importlib.util.spec_from_file_location("signoff_model_for_r52f", SIGNOFF_MODEL_PY_R52F)
+    signoff_model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signoff_model)
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model"):
+        setattr(close, name, types.ModuleType("konsol.close." + name))
+    close.signoff_model = signoff_model
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    konsol.fiscal_calendar, konsol.close, konsol.period_status = calendar, close, period_status
+    mods = {"frappe": frappe, "konsol": konsol, "konsol.fiscal_calendar": calendar,
+            "konsol.close": close, "konsol.period_status": period_status}
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model", "signoff_model"):
+        mods["konsol.close." + name] = getattr(close, name)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("signoff_gate_for_r52f", SIGNOFF_GATE_PY)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+    def periods_marked_from(fiscal_year, fiscal_period):
+        # Looked up at call time: a gate without the function fails the
+        # caller that asks for it, not every stub site that is built.
+        return gate.periods_marked_from(fiscal_year, fiscal_period)
+
+    return periods_marked_from
+
 #: The stub site's system time zone (A55, L01e): BST (+01:00) in July 2025.
 SITE_TZ = "Europe/London"
 
@@ -96,6 +186,48 @@ class _Site:
         self.named = {}  # name -> _FakeDoc, for get_doc(doctype, name)
         self.get_doc_calls = []  # what get_doc received
         self.new_docs = []  # every _FakeDoc built from a dict
+        self.signed = []  # signoff_gate.latest_signed_runs() keys (O55)
+        #: R52f: the declared first close (fy, fp), None = undeclared, read by
+        #: the REAL signoff_gate.periods_marked_from; its reads go to gate_reads
+        #: so the MariaDB read log above keeps its exact shape.
+        self.first_close = None
+        self.gate_reads = []
+        #: O64: {(fy, fp): (signed_off_by, signed_off_at)} of a signed run;
+        #: unlisted keys are signed by LEAD at O64_SIGNED_AT.
+        self.signers = {}
+        self.users = {LEAD: O64_LEAD_NAME}  # User full names (O64)
+
+
+#: O64: who signed the stub's signed runs, and when.
+O64_LEAD_NAME = "Zz Lead"
+O64_SIGNED_AT = datetime(2025, 10, 4, 17, 30, 0)
+
+
+def _signed_runs(site, fields=()):
+    """The stub ``signoff_gate.latest_signed_runs(fields)``: one run per
+    signed key, with the requested columns, as the real one returns them."""
+    out = {}
+    for fy, fp in site.signed:
+        by, at = site.signers.get((fy, fp), (LEAD, O64_SIGNED_AT))
+        row = {"name": "ZZ-RUN-%d-%d" % (fy, fp), "fiscal_year": fy, "fiscal_period": fp,
+               "signed_off_by": by, "signed_off_at": at}
+        out[(fy, fp)] = {f: row[f] for f in ("name", "fiscal_year", "fiscal_period")
+                         + tuple(fields)}
+    return out
+
+
+def _o64_signatures(site, keys=None):
+    """The signatures ``ownership_change.context`` should hand the model for
+    this site: written out independently of the code under test. ``keys``
+    (R52f): only those signed keys, the ones the approval will mark."""
+    out = {}
+    for fy, fp in sorted(site.signed):
+        if keys is not None and (fy, fp) not in keys:
+            continue
+        by, at = site.signers.get((fy, fp), (LEAD, O64_SIGNED_AT))
+        out[(fy, fp)] = {"run": "ZZ-RUN-%d-%d" % (fy, fp), "signed_on": at.date().isoformat(),
+                         "signed_by_name": site.users.get(by) or None}
+    return out
 
 
 def _her(name, data_area_id="ZZA", group="CG1", account="4000", rate_date=None,
@@ -175,6 +307,9 @@ def _frappe(site):
             rows = [r for r in site.entities if _match(r, filters)]
         elif doctype == "Trial Balance Submission":
             rows = [r for r in site.tbs if _match(r, filters)]
+        elif doctype == "User":  # O64: the signers' full names
+            rows = [{"name": n, "full_name": f} for n, f in sorted(site.users.items())
+                    if _match({"name": n}, filters)]
         else:
             raise AssertionError("unexpected get_all on %s" % doctype)
         if pluck:
@@ -209,7 +344,7 @@ def _frappe(site):
             site.new_docs.append(doc)
             return doc
         site.reads.append(("get_doc", arg))
-        assert arg == "Group Exchange Rate", arg
+        assert arg in ("Group Exchange Rate", "Ownership Period"), arg
         if name not in site.named:
             raise frappe.ValidationError("%s %s not found" % (arg, name))
         return site.named[name]
@@ -266,7 +401,8 @@ class _FakeDoc:
 
     def insert(self, *a, **k):
         self.calls.append(("insert", a, k))
-        self._data.setdefault("name", "GER-NEW")
+        self._data.setdefault(
+            "name", "OP-NEW" if self._data.get("doctype") == "Ownership Period" else "GER-NEW")
         self._data.setdefault("docstatus", 0)
         if not self._data.get("source"):
             self._data["source"] = "Manual"
@@ -360,7 +496,8 @@ def _invoke(site, run, require_json_safe=True):
     names = ["frappe", "konsol", "konsol.close", "konsol.group_rates", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.close_policy_model",
              "konsol.close.rates_model", "konsol.close.self_approval", "konsol.close.scope_model",
-             "konsol.close.timefmt", "close_rates_api_under_test"]
+             "konsol.close.timefmt", "konsol.close.signoff_gate",
+             "konsol.close.ownership_change", "close_rates_api_under_test"]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({"frappe": frappe, "konsol": konsol, "konsol.close": close,
                         "konsol.group_rates": group_rates,
@@ -376,6 +513,18 @@ def _invoke(site, run, require_json_safe=True):
         close.scope_model = _load_path(
             "konsol.close.scope_model", os.path.join(CLOSE_DIR, "scope_model.py"))
         close.timefmt = _load_path("konsol.close.timefmt", TIMEFMT_PY)
+        # O55: the REAL ownership_change.py (and through it the real
+        # ownership_change_model.py), reading this stub site; only
+        # signoff_gate's signed runs are stubbed.
+        signoff_gate = types.ModuleType("konsol.close.signoff_gate")
+        signoff_gate.latest_signed_runs = lambda fields=(): _signed_runs(site, fields)
+        # R52f: the REAL rule, on this site's calendar and first close.
+        signoff_gate.periods_marked_from = _real_periods_marked_from(
+            lambda: site.periods, site.first_close, site.gate_reads)
+        sys.modules["konsol.close.signoff_gate"] = signoff_gate
+        close.signoff_gate = signoff_gate
+        close.ownership_change = _load_path(
+            "konsol.close.ownership_change", OWNERSHIP_CHANGE_PY)
         api = _load_path("close_rates_api_under_test", API_PY)
         site.frappe = frappe
         result = run(api)
@@ -1087,14 +1236,17 @@ def test_failure_path_the_entity_accountant_is_refused_from_get_ownership():
 
 
 def test_ownership_query_count_is_constant_in_the_number_of_leaves():
+    # O63: a caller who may record also reads the submitted nodes for the
+    # change form (one more read; no node has an entity here, so no Entity
+    # name read). A Viewer's count stays 4 (test_o63_a_viewer_gets_change_none).
     small = _Site()
     small.entities = [_entity("ZZA"), _entity("ZZB"), _entity("ZZC")]
     big = _Site()
     big.entities = [_entity("ZZ%03d" % i) for i in range(30)]
     _call_ownership(small)
     _call_ownership(big)
-    assert len(small.reads) == 4, small.reads
-    assert len(big.reads) == 4, big.reads
+    assert len(small.reads) == 5, small.reads
+    assert len(big.reads) == 5, big.reads
 
 
 def test_an_epm_user_reads_ownership_with_can_record_false():
@@ -1168,3 +1320,1539 @@ def test_a_non_regular_period_is_refused_from_get_ownership():
     assert type(err).__name__ == "ValidationError", err
     assert "Regular" in str(err), err
     assert "FY2025 P13" in str(err), err
+
+
+# --- O55: preview_ownership_change (GET): refusals and effect, no write -----
+# Decisions: #305-4.2-1 (structural effect only), #305-Q1-1 (a change ends its
+# predecessor on approval), wireframe-4.2.md as drawn. The context and effect
+# come from the REAL ownership_change.py / ownership_change_model.py.
+
+PREVIEW_PARAMS = ["fiscal_year", "fiscal_period", "consolidation_group", "entity",
+                  "ownership_pct", "consolidation_method"]
+O55_GROUP = "ECL_GROUP"
+O55_LEAF = "ZZ5B1"
+O55_GOLDEN = os.path.join(FIXTURES, "close_ownership_preview_payload.json")
+O55_GOLDEN_REFUSED = os.path.join(FIXTURES, "close_ownership_preview_refused.json")
+O55_MODEL = None
+
+
+def _o55_model():
+    global O55_MODEL
+    if O55_MODEL is None:
+        spec = importlib.util.spec_from_file_location(
+            "ownership_change_model_for_o55_test",
+            os.path.join(CLOSE_DIR, "ownership_change_model.py"))
+        O55_MODEL = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(O55_MODEL)
+    return O55_MODEL
+
+
+def _o55_calendar():
+    """FY2025 as live declares it (measured 7 Oct): P00 Opening on 1 Jan,
+    P01-P12 Regular months, P13 Closing on 31 Dec."""
+    rows = [{"fiscal_year": 2025, "fiscal_period": 0, "period_code": "P00",
+             "period_label": "Opening", "period_type": "Opening",
+             "start_date": date(2025, 1, 1), "end_date": date(2025, 1, 1),
+             "quarter": "", "status": "Open"}]
+    for m in range(1, 13):
+        end = (date(2025 + m // 12, m % 12 + 1, 1) - (date(2025, 1, 2) - date(2025, 1, 1)))
+        rows.append({"fiscal_year": 2025, "fiscal_period": m, "period_code": "P%02d" % m,
+                     "period_label": "P%02d" % m, "period_type": "Regular",
+                     "start_date": date(2025, m, 1), "end_date": end,
+                     "quarter": "Q%d" % ((m - 1) // 3 + 1), "status": "Open"})
+    rows.append({"fiscal_year": 2025, "fiscal_period": 13, "period_code": "P13",
+                 "period_label": "Closing", "period_type": "Closing",
+                 "start_date": date(2025, 12, 31), "end_date": date(2025, 12, 31),
+                 "quarter": "", "status": "Open"})
+    return rows
+
+
+def _o55_site(roles=("EPM Analyst",), user=ANALYST):
+    site = _Site()
+    site.user = user
+    site.roles = set(roles)
+    site.periods = _o55_calendar()
+    site.ops = [_op("OP-ZZ5B1-1", data_area_id=O55_LEAF, group=O55_GROUP,
+                    effective_date=date(2025, 1, 1), end_date=None, ownership_pct=100.0,
+                    consolidation_method="full", owner=LEAD, docstatus=1)]
+    # P09 is before the change (not re-signed); P11 is after it. The Closing
+    # P13 is after it too, but an approval never marks a Closing period, so
+    # it is not listed (R52f, review S5).
+    site.signed = [(2025, 9), (2025, 11), (2025, 13)]
+    site.first_close = (2025, 1)
+    return site
+
+
+def _preview(site, fy=2025, fp=10, group=O55_GROUP, entity=O55_LEAF, pct="80", method="full"):
+    return _invoke(site, lambda api: api.preview_ownership_change(fy, fp, group, entity, pct,
+                                                                  method))
+
+
+def _preview_raises(site, **k):
+    with pytest.raises(Exception) as info:
+        _preview(site, **k)
+    return info.value
+
+
+def _golden(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _no_write(site):
+    assert site.new_docs == [], site.new_docs
+    assert [c for c in site.get_doc_calls] == [], site.get_doc_calls
+    assert not [r for r in site.reads if r[0] == "sql" and r[1] != "fiscal_period_rows"], site.reads
+
+
+def test_o55_preview_happy_path_matches_the_golden_payload():
+    site = _o55_site()
+    result = _preview(site)
+    assert site.only_for_calls == [RATES_ROLES], site.only_for_calls
+    assert result == _golden(O55_GOLDEN), json.dumps(result, indent=1)
+    assert set(result) == {"problems", "effect", "current", "pending"}
+    assert result["problems"] == []
+    assert result["effect"]["resign"] == ["FY2025 P11"]
+    assert result["effect"]["current_ends"] == "2025-09-30"
+    assert result["current"]["name"] == "OP-ZZ5B1-1"
+    _no_write(site)
+
+
+def test_o55_the_effect_is_the_real_models_for_the_periods_start():
+    site = _o55_site()
+    result = _preview(site)
+    model = _o55_model()
+    current = result["current"]
+    expected = model.effect({"entity": O55_LEAF, "effective_date": "2025-10-01",
+                             "ownership_pct": "80", "consolidation_method": "full"},
+                            current, _o55_calendar(), _o64_signatures(site, {(2025, 11)}))
+    assert result["effect"] == expected
+    # O64: who signed each re-sign period, and the predecessor's name.
+    assert result["effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert result["effect"]["resign_detail"] == [
+        {"period": "FY2025 P11", "signed_on": "2025-10-04", "signed_by_name": O64_LEAD_NAME}]
+    assert "not previewed" in result["effect"]["not_shown"]
+
+
+def test_o55_the_golden_payload_carries_no_amount():
+    golden = _golden(O55_GOLDEN)
+    assert golden["effect"]["not_shown"] == _o55_model().NOT_SHOWN
+    for banned in ("goodwill_amount", "nci_amount", "amount", "result"):
+        assert banned not in golden["effect"], banned
+
+
+def test_o55_a_viewer_may_preview():
+    site = _o55_site(roles=("EPM User",), user=VIEWER)
+    result = _preview(site)
+    assert result["problems"] == []
+    assert result["effect"]["first_period"] == "FY2025 P10"
+    _no_write(site)
+
+
+def test_o55_refused_change_matches_the_golden_refused_payload_and_has_no_effect():
+    site = _o55_site()
+    site.ops.append(_op("OP-ZZ5B1-2", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 11, 1), ownership_pct=70.0,
+                        consolidation_method="full", docstatus=0))
+    result = _preview(site, pct="120")
+    assert result == _golden(O55_GOLDEN_REFUSED), json.dumps(result, indent=1)
+    assert result["problems"] == [
+        "Ownership % must be a number from 0 to 100.",
+        "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-2): edit that draft.",
+    ]
+    assert result["effect"] is None
+    assert result["current"]["name"] == "OP-ZZ5B1-1"
+    _no_write(site)
+
+
+def test_o55_failure_path_nan_pct_is_a_problem_never_an_effect():
+    site = _o55_site()
+    result = _preview(site, pct="nan")
+    assert result["problems"] == ["Ownership % must be a number from 0 to 100."]
+    assert result["effect"] is None
+
+
+def test_o55_failure_path_no_current_ownership_is_the_desk_sentence():
+    site = _o55_site()
+    site.ops = []
+    result = _preview(site)
+    assert result["current"] is None
+    assert result["effect"] is None
+    assert result["problems"][0] == (
+        "ZZ5B1 has no ownership for FY2025 P10: record its first ownership in Desk "
+        "(an acquisition is a Business Combination).")
+
+
+def test_o55_failure_path_a_hidden_entity_throws_before_any_read():
+    site = _o55_site(roles=("EPM Analyst",))
+    site.allowed = {"ZZOTHER"}
+    err = _preview_raises(site)
+    assert type(err).__name__ == "ValidationError", err
+    assert "ZZ5B1" in str(err), err
+    assert site.reads == [], site.reads
+    _no_write(site)
+
+
+def test_o55_failure_path_a_blank_entity_is_refused_for_a_scoped_caller():
+    site = _o55_site()
+    site.allowed = {"ZZ5B1"}
+    err = _preview_raises(site, entity="")
+    assert type(err).__name__ == "ValidationError", err
+    assert site.reads == [], site.reads
+
+
+def test_o55_a_visible_entity_previews_for_a_scoped_caller():
+    site = _o55_site()
+    site.allowed = {"ZZ5B1"}
+    assert _preview(site)["problems"] == []
+
+
+def test_o55_failure_path_a_closing_period_is_the_period_problem():
+    site = _o55_site()
+    result = _preview(site, fp=13)
+    assert result["effect"] is None
+    assert result["problems"][0] == (
+        "FY2025 P13 is the Closing period, not a Regular one: an ownership change starts "
+        "on the first day of a Regular period; pick a Regular period.")
+    # The model's own first-day sentence follows: 31 Dec is inside P12.
+    assert any(p.startswith("Ownership changes take effect on the first day of a period")
+               for p in result["problems"]), result["problems"]
+    _no_write(site)
+
+
+def test_o55_failure_path_an_opening_period_is_never_silently_p01():
+    # P00 starts on P01's first day, so the model alone sees a valid first
+    # day: the endpoint must refuse the non-Regular period itself.
+    site = _o55_site()
+    result = _preview(site, fp=0)
+    assert result["effect"] is None
+    assert result["problems"][0] == (
+        "FY2025 P00 is the Opening period, not a Regular one: an ownership change starts "
+        "on the first day of a Regular period; pick a Regular period.")
+    _no_write(site)
+
+
+def test_o55_failure_path_an_undeclared_period_throws_naming_it():
+    site = _o55_site()
+    err = _preview_raises(site, fp=20)
+    assert type(err).__name__ == "ValidationError", err
+    assert "FY2025 P20" in str(err), err
+
+
+def test_o55_failure_path_corrupt_overlap_throws_a_frappe_error_not_a_value_error():
+    site = _o55_site()
+    site.ops.append(_op("OP-ZZ5B1-X", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 6, 1), ownership_pct=60.0,
+                        consolidation_method="full", docstatus=1))
+    err = _preview_raises(site)
+    assert type(err).__name__ == "ValidationError", err
+    assert "corrupt" in str(err), err
+
+
+def test_o55_failure_path_the_entity_accountant_is_refused():
+    site = _o55_site(roles=("Entity Accountant",), user="zz-ea@example.com")
+    err = _preview_raises(site)
+    assert type(err).__name__ == "PermissionError", err
+    assert site.reads == []
+
+
+def test_o55_preview_names_only_its_parameters_and_takes_no_kwargs():
+    # O66 adds ``name`` (the draft being edited), the only optional one.
+    import inspect
+
+    site = _o55_site()
+    sig = _invoke(site, lambda api: {"sig": [
+        (p.name, p.kind, p.default is None)
+        for p in inspect.signature(api.preview_ownership_change).parameters.values()]})
+    assert [n for n, _, _ in sig["sig"]] == PREVIEW_PARAMS + ["name"]
+    kinds = {k for _, k, _ in sig["sig"]}
+    assert inspect.Parameter.VAR_KEYWORD not in kinds
+    assert inspect.Parameter.VAR_POSITIONAL not in kinds
+    assert [n for n, _, none in sig["sig"] if none] == ["name"]
+
+
+def test_o55_preview_is_a_get_with_a_literal_role_tuple():
+    import ast
+
+    with open(API_PY, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "preview_ownership_change")
+    deco = fn.decorator_list[0]
+    assert ast.unparse(deco) == "frappe.whitelist(methods=['GET'])", ast.unparse(deco)
+    first = fn.body[0]
+    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+        first = fn.body[1]
+    call = first.value
+    assert ast.unparse(call.func) == "frappe.only_for"
+    assert isinstance(call.args[0], ast.Tuple), ast.unparse(call)
+    assert tuple(e.value for e in call.args[0].elts) == RATES_ROLES
+
+
+# --- O56: save_ownership_change (POST): the Analyst's draft ------------------
+# Decisions: #305-4.2-1, #305-Q1-1, wireframe-4.2.md as drawn; R2 (the
+# Analyst drafts, the Close Lead approves). Every refusal of the preview is
+# thrown before any write; the controller (O53) decides the rest, so the
+# insert and the save carry no ignore flag.
+
+O56_SAVE_PARAMS = PREVIEW_PARAMS + ["name"]
+O56_SAVE_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
+
+
+def _o56_save(site, fy=2025, fp=10, group=O55_GROUP, entity=O55_LEAF, pct="80", method="full",
+          name=None):
+    return _invoke(site, lambda api: api.save_ownership_change(
+        fy, fp, group, entity, pct, method, name=name))
+
+
+def _o56_save_raises(site, **k):
+    with pytest.raises(Exception) as info:
+        _o56_save(site, **k)
+    return info.value
+
+
+def _no_save(site):
+    """Nothing inserted and nothing saved: every refusal comes before the write."""
+    assert site.new_docs == [], [d._data for d in site.new_docs]
+    for doc in site.named.values():
+        assert doc.calls == [], doc.calls
+
+
+def _o56_draft(name="OP-ZZ5B1-D", entity=O55_LEAF, group=O55_GROUP,
+               effective_date=date(2025, 10, 1), pct=70.0, docstatus=0, owner=ANALYST):
+    row = _op(name, data_area_id=entity, group=group, effective_date=effective_date,
+              ownership_pct=pct, consolidation_method="full", owner=owner,
+              docstatus=docstatus)
+    doc = _FakeDoc(dict(row, doctype="Ownership Period", supersedes="OP-ZZ5B1-1",
+                        superseded_end_date=None))
+    return row, doc
+
+
+def test_o56_happy_path_inserts_one_draft_superseding_the_current_period():
+    site = _o55_site()
+    result = _o56_save(site)
+    assert site.only_for_calls == [O56_SAVE_ROLES], site.only_for_calls
+    assert result == {"name": "OP-NEW", "docstatus": 0}
+    assert len(site.new_docs) == 1
+    doc = site.new_docs[0]
+    assert [c[0] for c in doc.calls] == ["insert"]
+    assert doc.calls[0][1:] == ((), {}), "insert() with no ignore flag: the controller decides"
+    assert doc._data == {
+        "doctype": "Ownership Period", "consolidation_group": O55_GROUP,
+        "data_area_id": O55_LEAF, "effective_date": "2025-10-01", "end_date": None,
+        "ownership_pct": 80.0, "consolidation_method": "full",
+        "supersedes": "OP-ZZ5B1-1", "superseded_end_date": None,
+        "name": "OP-NEW", "docstatus": 0, "source": "Manual",
+        "quote_label": doc._data["quote_label"]}
+
+
+def test_o56_the_draft_ends_where_the_current_period_ends_as_the_effect_says():
+    # The preview's effect gives after.to = the current period's end; the
+    # saved draft must be that change, not an open-ended one.
+    site = _o55_site()
+    site.ops[0]["end_date"] = date(2025, 12, 31)
+    _o56_save(site)
+    doc = site.new_docs[0]
+    assert doc._data["end_date"] == "2025-12-31"
+    assert doc._data["superseded_end_date"] == "2025-12-31"
+
+
+def test_o56_forged_keys_never_reach_the_doc_the_signature_is_pinned():
+    import inspect
+
+    site = _o55_site()
+    sig = _invoke(site, lambda api: {"sig": [
+        (p.name, p.kind, p.default is None)
+        for p in inspect.signature(api.save_ownership_change).parameters.values()]})
+    assert [n for n, _, _ in sig["sig"]] == O56_SAVE_PARAMS
+    kinds = {k for _, k, _ in sig["sig"]}
+    assert inspect.Parameter.VAR_KEYWORD not in kinds
+    assert inspect.Parameter.VAR_POSITIONAL not in kinds
+    for forged in ("docstatus", "supersedes", "superseded_end_date", "end_date",
+                   "effective_date", "owner", "amended_from", "acquisition_price",
+                   "is_disposal"):
+        assert forged not in O56_SAVE_PARAMS, forged
+    # The only optional parameter is ``name`` (default None).
+    assert [n for n, _, none in sig["sig"] if none] == ["name"]
+
+
+def test_o56_is_a_post_with_a_literal_role_tuple_and_never_commits():
+    import ast
+
+    with open(API_PY, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "save_ownership_change")
+    deco = fn.decorator_list[0]
+    assert ast.unparse(deco) == "frappe.whitelist(methods=['POST'])", ast.unparse(deco)
+    first = fn.body[0]
+    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+        first = fn.body[1]
+    call = first.value
+    assert ast.unparse(call.func) == "frappe.only_for"
+    assert isinstance(call.args[0], ast.Tuple), ast.unparse(call)
+    assert tuple(e.value for e in call.args[0].elts) == O56_SAVE_ROLES
+    # Code only (the docstring may say what the endpoint does not do).
+    used = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Attribute):
+            used.add(node.attr)
+        elif isinstance(node, ast.Name):
+            used.add(node.id)
+        elif isinstance(node, ast.keyword) and node.arg:
+            used.add(node.arg)
+    for banned in ("commit", "ignore_permissions", "ignore_validate", "ignore_mandatory",
+                   "ignore_links", "submit"):
+        assert banned not in used, banned
+
+
+def test_o56_failure_path_a_viewer_is_refused_by_only_for_before_any_read():
+    site = _o55_site(roles=("EPM User",), user=VIEWER)
+    err = _o56_save_raises(site)
+    assert type(err).__name__ == "PermissionError", err
+    assert site.reads == [], site.reads
+    _no_save(site)
+
+
+def test_o56_failure_path_the_entity_accountant_is_refused():
+    site = _o55_site(roles=("Entity Accountant",), user="zz-ea@example.com")
+    err = _o56_save_raises(site)
+    assert type(err).__name__ == "PermissionError", err
+    assert site.reads == []
+    _no_save(site)
+
+
+def test_o56_failure_path_a_hidden_entity_throws_before_any_read():
+    site = _o55_site()
+    site.allowed = {"ZZOTHER"}
+    err = _o56_save_raises(site)
+    assert type(err).__name__ == "ValidationError", err
+    assert "ZZ5B1" in str(err), err
+    assert site.reads == [], site.reads
+    _no_save(site)
+
+
+def test_o56_failure_path_a_hidden_entity_with_a_name_throws_before_reading_the_draft():
+    site = _o55_site()
+    site.allowed = {"ZZOTHER"}
+    row, doc = _o56_draft()
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    err = _o56_save_raises(site, name=row["name"])
+    assert type(err).__name__ == "ValidationError", err
+    assert site.reads == [], site.reads
+    assert site.get_doc_calls == [], site.get_doc_calls
+    _no_save(site)
+
+
+def _o56_refusal_cases():
+    """(label, site mutator, save kwargs, the sentence the model writes)."""
+    def no_current(site):
+        site.ops = []
+
+    def closed(site):
+        for r in site.periods:
+            if r["fiscal_period"] == 10:
+                r["status"] = "Closed"
+
+    def started_same_day(site):
+        site.ops[0]["effective_date"] = date(2025, 10, 1)
+
+    def later(site):
+        site.ops[0]["end_date"] = date(2025, 10, 31)
+        site.ops.append(_op("OP-ZZ5B1-L", data_area_id=O55_LEAF, group=O55_GROUP,
+                            effective_date=date(2025, 11, 1), ownership_pct=90.0,
+                            consolidation_method="full", docstatus=1))
+
+    def pending(site):
+        site.ops.append(_op("OP-ZZ5B1-P", data_area_id=O55_LEAF, group=O55_GROUP,
+                            effective_date=date(2025, 11, 1), ownership_pct=70.0,
+                            consolidation_method="full", docstatus=0))
+
+    def nothing(site):
+        pass
+
+    return [
+        ("no current", no_current, {},
+         "ZZ5B1 has no ownership for FY2025 P10: record its first ownership in Desk "
+         "(an acquisition is a Business Combination)."),
+        ("non-Regular period", nothing, {"fp": 13},
+         "FY2025 P13 is the Closing period, not a Regular one: an ownership change starts "
+         "on the first day of a Regular period; pick a Regular period."),
+        ("first day", nothing, {"fp": 13},
+         "Ownership changes take effect on the first day of a period: the warehouse reads "
+         "ownership on each period's first day. 2025-12-31 is inside FY2025 P12;"),
+        ("Opening period", nothing, {"fp": 0},
+         "FY2025 P00 is the Opening period, not a Regular one"),
+        ("closed period", closed, {},
+         "FY2025 P10 is Closed: an ownership change must start in an Open period."),
+        ("pct 120", nothing, {"pct": "120"}, "Ownership % must be a number from 0 to 100."),
+        ("pct nan", nothing, {"pct": "nan"}, "Ownership % must be a number from 0 to 100."),
+        ("pct inf", nothing, {"pct": "inf"}, "Ownership % must be a number from 0 to 100."),
+        ("method", nothing, {"method": "bogus"},
+         "Method must be one of full, proportional, equity, none."),
+        ("nothing changes", nothing, {"pct": "100"},
+         "Nothing changes: ZZ5B1 is already 100 % full from 2025-01-01."),
+        ("starts same day", started_same_day, {},
+         "The change must start after the current period's start (2025-10-01)."),
+        ("later exists", later, {},
+         "ZZ5B1 already has an ownership period from 2025-11-01: change or cancel that one "
+         "first."),
+        ("pending exists", pending, {},
+         "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-P): edit that draft."),
+    ]
+
+
+def test_o56_failure_path_every_refusal_throws_its_sentence_with_no_insert():
+    for label, mutate, kwargs, sentence in _o56_refusal_cases():
+        site = _o55_site()
+        mutate(site)
+        err = _o56_save_raises(site, **kwargs)
+        assert type(err).__name__ == "ValidationError", (label, err)
+        assert sentence in str(err), (label, str(err))
+        _no_save(site)
+
+
+def test_o56_failure_path_every_problem_is_in_the_one_refusal():
+    site = _o55_site()
+    site.ops.append(_op("OP-ZZ5B1-P", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 11, 1), ownership_pct=70.0,
+                        consolidation_method="full", docstatus=0))
+    err = _o56_save_raises(site, pct="120")
+    assert "Ownership % must be a number from 0 to 100." in str(err), err
+    assert "already awaiting approval (OP-ZZ5B1-P)" in str(err), err
+    _no_save(site)
+
+
+def test_o56_failure_path_corrupt_overlap_throws_with_no_insert():
+    site = _o55_site()
+    site.ops.append(_op("OP-ZZ5B1-X", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 6, 1), ownership_pct=60.0,
+                        consolidation_method="full", docstatus=1))
+    err = _o56_save_raises(site)
+    assert type(err).__name__ == "ValidationError", err
+    assert "corrupt" in str(err), err
+    _no_save(site)
+
+
+def test_o56_edit_saves_the_named_draft_leaving_it_out_of_the_pending_check():
+    # ``ownership_change.context`` reports every draft on the node as pending;
+    # the draft being edited is excluded by its exact name.
+    site = _o55_site()
+    row, doc = _o56_draft()
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    result = _o56_save(site, pct="80", method="equity", name=row["name"])
+    assert result == {"name": "OP-ZZ5B1-D", "docstatus": 0}
+    assert site.new_docs == []
+    assert [c[0] for c in doc.calls] == ["save"]
+    assert doc.calls[0][1:] == ((), {}), "save() with no ignore flag: the controller decides"
+    assert doc._data["ownership_pct"] == 80.0
+    assert doc._data["consolidation_method"] == "equity"
+    assert doc._data["supersedes"] == "OP-ZZ5B1-1"
+    assert doc._data["superseded_end_date"] is None
+    assert doc._data["effective_date"] == date(2025, 10, 1), "the period is unchanged"
+
+
+def test_o56_failure_path_edit_still_refuses_another_pending_draft_on_the_node():
+    site = _o55_site()
+    row, doc = _o56_draft()
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    site.ops.append(_op("OP-ZZ5B1-E", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 11, 1), ownership_pct=75.0,
+                        consolidation_method="full", docstatus=0))
+    err = _o56_save_raises(site, name=row["name"])
+    assert ("A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-E): edit that draft."
+            in str(err)), err
+    assert "OP-ZZ5B1-D" not in str(err), "the draft being edited is left out"
+    _no_save(site)
+
+
+def test_o56_failure_path_the_exclude_is_the_exact_name_never_a_pattern():
+    # A draft whose name merely starts with the edited one stays pending.
+    site = _o55_site()
+    row, doc = _o56_draft()
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    site.ops.append(_op("OP-ZZ5B1-D2", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 11, 1), ownership_pct=75.0,
+                        consolidation_method="full", docstatus=0))
+    err = _o56_save_raises(site, name=row["name"])
+    assert "awaiting approval (OP-ZZ5B1-D2)" in str(err), err
+    _no_save(site)
+
+
+def test_o56_failure_path_editing_an_approved_period_is_refused():
+    site = _o55_site()
+    site.named["OP-ZZ5B1-1"] = _FakeDoc(dict(site.ops[0], doctype="Ownership Period"))
+    err = _o56_save_raises(site, name="OP-ZZ5B1-1")
+    assert type(err).__name__ == "ValidationError", err
+    assert str(err).startswith("OP-ZZ5B1-1 is approved: record a new change instead."), err
+    _no_save(site)
+
+
+def test_o56_failure_path_editing_a_cancelled_period_is_refused():
+    site = _o55_site()
+    row, doc = _o56_draft(docstatus=2)
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    err = _o56_save_raises(site, name=row["name"])
+    assert str(err).startswith("OP-ZZ5B1-D is cancelled: record a new change instead."), err
+    _no_save(site)
+
+
+def test_o56_failure_path_editing_another_entitys_draft_is_refused():
+    site = _o55_site()
+    row, doc = _o56_draft(name="OP-ZZOTHER-D", entity="ZZOTHER")
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    err = _o56_save_raises(site, name=row["name"])
+    assert type(err).__name__ == "ValidationError", err
+    assert "OP-ZZOTHER-D is the change for ZZOTHER in ECL_GROUP from 2025-10-01" in str(err), err
+    _no_save(site)
+
+
+def test_o56_failure_path_editing_a_draft_into_another_period_is_refused():
+    # The draft's name carries its effective date (autoname), so a period
+    # change is a new draft, never a silent move.
+    site = _o55_site()
+    row, doc = _o56_draft()
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    err = _o56_save_raises(site, fp=11, name=row["name"])
+    assert type(err).__name__ == "ValidationError", err
+    assert "OP-ZZ5B1-D is the change for ZZ5B1 in ECL_GROUP from 2025-10-01" in str(err), err
+    assert "2025-11-01" in str(err), err
+    _no_save(site)
+
+
+def test_o64_failure_path_a_listed_run_without_a_signer_name_refuses_the_preview():
+    """A re-sign period whose signer has no full name is refused naming the
+    run: never shown with a user id or a blank (O64)."""
+    site = _o55_site()
+    site.users = {LEAD: ""}
+    err = _preview_raises(site)
+    assert type(err).__name__ == "ValidationError", err
+    assert "ZZ-RUN-2025-11" in str(err), err
+    assert LEAD not in str(err), err
+    _no_write(site)
+
+
+# --- O66: preview_ownership_change takes the draft being edited --------------
+# wireframe-4.2.md §1 ("The Analyst can edit it until it is approved"). The
+# preview passes ``name`` as the same exact-name exclude as O56's save, and
+# refuses (as data, like every other preview problem) a name that is not a
+# draft of the same node and first day.
+
+
+def _o66_preview(site, fy=2025, fp=10, group=O55_GROUP, entity=O55_LEAF, pct="80",
+                 method="full", name=None):
+    return _invoke(site, lambda api: api.preview_ownership_change(
+        fy, fp, group, entity, pct, method, name=name))
+
+
+def _o66_site_with_draft(**k):
+    site = _o55_site(**k)
+    row, doc = _o56_draft()
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    return site, row
+
+
+def _o66_no_write(site):
+    assert site.new_docs == [], [d._data for d in site.new_docs]
+    for doc in site.named.values():
+        assert doc.calls == [], doc.calls
+
+
+def test_o66_failure_path_without_name_the_draft_still_refuses_as_pending():
+    # The base line: without ``name`` the node's draft is pending.
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site)
+    assert result["problems"] == [
+        "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-D): edit that draft."]
+    assert result["effect"] is None
+
+
+def test_o66_preview_of_the_draft_being_edited_is_not_refused_as_pending():
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site, name=row["name"])
+    assert site.only_for_calls == [RATES_ROLES], site.only_for_calls
+    assert result["problems"] == [], result["problems"]
+    assert set(result) == {"problems", "effect", "current", "pending"}
+    # The effect is the one the plain preview gives for the same change.
+    assert result["effect"] == _preview(_o55_site())["effect"]
+    assert result["current"]["name"] == "OP-ZZ5B1-1"
+    _o66_no_write(site)
+
+
+def test_o66_a_viewer_may_preview_an_edit():
+    site, row = _o66_site_with_draft(roles=("EPM User",), user=VIEWER)
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"] == []
+    assert result["effect"]["first_period"] == "FY2025 P10"
+    _o66_no_write(site)
+
+
+def test_o66_failure_path_another_draft_on_the_node_still_refuses():
+    site, row = _o66_site_with_draft()
+    site.ops.append(_op("OP-ZZ5B1-E", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 11, 1), ownership_pct=75.0,
+                        consolidation_method="full", docstatus=0))
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"] == [
+        "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-E): edit that draft."]
+    assert result["effect"] is None
+    _o66_no_write(site)
+
+
+def test_o66_failure_path_the_exclude_is_the_exact_name_never_a_pattern():
+    site, row = _o66_site_with_draft()
+    site.ops.append(_op("OP-ZZ5B1-D2", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 11, 1), ownership_pct=75.0,
+                        consolidation_method="full", docstatus=0))
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"] == [
+        "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-D2): edit that draft."]
+
+
+def test_o66_failure_path_the_name_of_an_approved_period_is_refused():
+    site = _o55_site()
+    site.named["OP-ZZ5B1-1"] = _FakeDoc(dict(site.ops[0], doctype="Ownership Period"))
+    result = _o66_preview(site, name="OP-ZZ5B1-1")
+    assert result["problems"][0] == "OP-ZZ5B1-1 is approved: record a new change instead."
+    assert result["effect"] is None
+    _o66_no_write(site)
+
+
+def test_o66_failure_path_the_name_of_a_cancelled_draft_is_refused():
+    site = _o55_site()
+    row, doc = _o56_draft(docstatus=2)
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"][0] == "OP-ZZ5B1-D is cancelled: record a new change instead."
+    assert result["effect"] is None
+
+
+def test_o66_failure_path_another_nodes_draft_is_refused():
+    site = _o55_site()
+    row, doc = _o56_draft(name="OP-ZZOTHER-D", entity="ZZOTHER")
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    result = _o66_preview(site, name=row["name"])
+    assert result["problems"][0].startswith(
+        "OP-ZZOTHER-D is the change for ZZOTHER in ECL_GROUP from 2025-10-01"), result
+    assert result["effect"] is None
+    _o66_no_write(site)
+
+
+def test_o66_failure_path_the_draft_previewed_into_another_period_is_refused():
+    # The save refuses moving a draft to another period (its name carries the
+    # date); the preview says so before the save is tried.
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site, fp=11, name=row["name"])
+    assert result["problems"][0].startswith(
+        "OP-ZZ5B1-D is the change for ZZ5B1 in ECL_GROUP from 2025-10-01"), result
+    assert "2025-11-01" in result["problems"][0]
+    assert result["effect"] is None
+
+
+def test_o66_failure_path_a_hidden_entitys_draft_is_refused_without_naming_it():
+    site = _o55_site()
+    site.allowed = {O55_LEAF}
+    row, doc = _o56_draft(name="OP-ZZHIDDEN-D", entity="ZZHIDDEN")
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    result = _o66_preview(site, name=row["name"])
+    assert result["effect"] is None
+    assert result["problems"][0] == (
+        "OP-ZZHIDDEN-D is not a draft you can edit here: pick a draft of ZZ5B1 in ECL_GROUP "
+        "from 2025-10-01.")
+    assert not any("ZZHIDDEN " in p or "for ZZHIDDEN" in p for p in result["problems"])
+
+
+def test_o66_failure_path_a_hidden_entity_with_a_name_throws_before_reading_the_draft():
+    site, row = _o66_site_with_draft()
+    site.allowed = {"ZZOTHER"}
+    with pytest.raises(Exception) as info:
+        _o66_preview(site, name=row["name"])
+    assert type(info.value).__name__ == "ValidationError", info.value
+    assert site.reads == [], site.reads
+    assert site.get_doc_calls == [], site.get_doc_calls
+
+
+def test_o66_failure_path_an_unknown_name_throws():
+    site = _o55_site()
+    with pytest.raises(Exception) as info:
+        _o66_preview(site, name="OP-ZZ-MISSING")
+    assert type(info.value).__name__ == "ValidationError", info.value
+    assert "OP-ZZ-MISSING" in str(info.value)
+
+
+def test_o66_failure_path_the_entity_accountant_is_refused_with_a_name():
+    site, row = _o66_site_with_draft(roles=("Entity Accountant",), user="zz-ea@example.com")
+    with pytest.raises(Exception) as info:
+        _o66_preview(site, name=row["name"])
+    assert type(info.value).__name__ == "PermissionError", info.value
+    assert site.reads == []
+
+
+# --- O57: get_pending's OP drafts carry their structural effect (story 4.2,
+# 4.3; C-O4; #305-4.2-1, #305-Q1-1). The effect is computed by the REAL
+# ownership_change.effect_for (loaded in _invoke) and checked against the REAL
+# ownership_change_model.effect, loaded by path. ---------------------------------
+
+O57_GOLDEN = os.path.join(FIXTURES, "close_rates_pending_payload.json")
+O57_DESK_LEAF = "ZZ5B2"
+
+
+def _o57_site():
+    """The O55 site (ZZ5B1 100 % full from 2025-01-01, approved; P09, P11
+    and P13 signed; first close FY2025 P01) plus three drafts: the Analyst's change of ZZ5B1 to 80 %
+    full from FY2025 P10 (``supersedes`` the approved period), a Desk
+    "Record ownership" draft for ZZ5B2 (no ``supersedes``), and one Historical
+    Equity Rate. The Close Lead reads it under Blocked."""
+    site = _o55_site(roles=("EPM Admin",), user=LEAD)
+    site.policy = "Blocked"
+    change = _op("OP-ZZ5B1-2025-10-01", data_area_id=O55_LEAF, group=O55_GROUP,
+                 effective_date=date(2025, 10, 1), end_date=None, ownership_pct=80.0,
+                 consolidation_method="full", owner=ANALYST,
+                 creation=datetime(2025, 10, 2, 9, 0, 0), docstatus=0)
+    change["supersedes"] = "OP-ZZ5B1-1"
+    change["superseded_end_date"] = None
+    desk = _op("OP-ZZ5B2-2025-10-01", data_area_id=O57_DESK_LEAF, group=O55_GROUP,
+               effective_date=date(2025, 10, 1), end_date=None, ownership_pct=60.0,
+               consolidation_method="equity", owner=ANALYST,
+               creation=datetime(2025, 10, 3, 9, 0, 0), docstatus=0)
+    site.ops.extend([change, desk])
+    site.her = [_her("HER-ZZ5B1-1", data_area_id=O55_LEAF, group=O55_GROUP,
+                     creation=datetime(2025, 10, 1, 9, 0, 0))]
+    return site
+
+
+def _o57_item(result, name):
+    [item] = [i for i in result["items"] if i["name"] == name]
+    return item
+
+
+def test_o57_pending_matches_the_golden_payload():
+    site = _o57_site()
+    result = _call_pending(site)
+    assert result == _golden(O57_GOLDEN), json.dumps(result, indent=1)
+
+
+def test_o57_a_change_draft_carries_the_real_models_effect():
+    site = _o57_site()
+    result = _call_pending(site)
+    item = _o57_item(result, "OP-ZZ5B1-2025-10-01")
+    expected = _o55_model().effect(
+        {"entity": O55_LEAF, "effective_date": "2025-10-01", "ownership_pct": 80.0,
+         "consolidation_method": "full"},
+        {"name": "OP-ZZ5B1-1", "effective_date": "2025-01-01", "end_date": None,
+         "ownership_pct": 100.0, "consolidation_method": "full"},
+        _o55_calendar(), _o64_signatures(site, {(2025, 11)}))
+    assert item["ownership_effect"] == expected
+    assert item["ownership_effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert [d["period"] for d in item["ownership_effect"]["resign_detail"]] == item["ownership_effect"]["resign"]
+    assert item["ownership_effect"]["before"]["pct"] == 100.0 and item["ownership_effect"]["after"]["pct"] == 80.0
+    assert item["ownership_effect"]["current_ends"] == "2025-09-30"
+    assert item["ownership_effect"]["resign"] == ["FY2025 P11"]
+    # The detail text is unchanged (O57 goal).
+    assert item["detail"] == "80% · full"
+    assert item["approve"]["mode"] == "direct"
+
+
+def test_o57_failure_path_a_desk_draft_without_supersedes_has_effect_none():
+    """A Desk "Record ownership" draft names no predecessor: its effect is
+    None (the screen says "Drafted in Desk: effect not previewed"), never a
+    guessed before/after."""
+    site = _o57_site()
+    result = _call_pending(site)
+    item = _o57_item(result, "OP-ZZ5B2-2025-10-01")
+    assert "ownership_effect" in item and item["ownership_effect"] is None
+    assert item["detail"] == "60% · equity"
+
+
+def test_o57_her_items_carry_no_effect():
+    result = _call_pending(_o57_site())
+    item = _o57_item(result, "HER-ZZ5B1-1")
+    assert "ownership_effect" not in item
+
+
+R52I_BROKEN = "OP-ZZ5B3-2025-10-01"
+R52I_BROKEN_PRED = "OP-ZZ5B3-1"
+
+
+def _r52i_site():
+    """R52i (review S2): the O57 site plus a second change draft, for ZZ5B3,
+    whose ``supersedes`` names a period cancelled after the draft was saved."""
+    site = _o57_site()
+    site.ops.append(_op(R52I_BROKEN_PRED, data_area_id="ZZ5B3", group=O55_GROUP,
+                        effective_date=date(2025, 1, 1), end_date=None, ownership_pct=100.0,
+                        consolidation_method="full", owner=LEAD, docstatus=2))
+    broken = _op(R52I_BROKEN, data_area_id="ZZ5B3", group=O55_GROUP,
+                 effective_date=date(2025, 10, 1), end_date=None, ownership_pct=70.0,
+                 consolidation_method="full", owner=ANALYST,
+                 creation=datetime(2025, 10, 4, 9, 0, 0), docstatus=0)
+    broken["supersedes"] = R52I_BROKEN_PRED
+    broken["superseded_end_date"] = None
+    site.ops.append(broken)
+    return site
+
+
+def test_r52i_failure_path_a_cancelled_supersedes_is_an_error_on_that_item_only():
+    """Corrupt data (the named predecessor is not an approved period) is an
+    error on that one item, naming the draft and the predecessor, never a
+    guessed effect and never a refusal of the whole screen (review S2)."""
+    result = _call_pending(_r52i_site())
+    broken = _o57_item(result, R52I_BROKEN)
+    assert broken["ownership_effect"] is None
+    assert broken["ownership_effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken["ownership_effect_error"]
+    assert R52I_BROKEN_PRED in broken["ownership_effect_error"], broken["ownership_effect_error"]
+    assert ".." not in broken["ownership_effect_error"], broken["ownership_effect_error"]
+    assert broken["ownership_effect_error"].endswith(". Correct or delete the draft in Desk."), \
+        broken["ownership_effect_error"]
+    assert broken["detail"] == "70% · full"
+    # The good draft is built as normal: the same item as without the broken one.
+    good = _o57_item(result, "OP-ZZ5B1-2025-10-01")
+    alone = _o57_item(_call_pending(_o57_site()), "OP-ZZ5B1-2025-10-01")
+    assert good == alone
+    assert good["ownership_effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert good["ownership_effect_error"] is None
+    # Every draft is listed and counted.
+    assert sorted(i["name"] for i in result["items"]) == sorted(
+        ["OP-ZZ5B1-2025-10-01", "OP-ZZ5B2-2025-10-01", R52I_BROKEN, "HER-ZZ5B1-1"])
+    assert result["counts"]["Ownership Period"] == 3
+
+
+def test_r52i_every_op_item_carries_effect_error_and_her_items_none():
+    result = _call_pending(_o57_site())
+    for item in result["items"]:
+        if item["doctype"] == "Ownership Period":
+            assert "ownership_effect_error" in item and item["ownership_effect_error"] is None, item
+        else:
+            assert "ownership_effect_error" not in item, item
+
+
+def test_o57_reads_grow_only_for_a_change_draft_and_nothing_is_written():
+    """Each visible OP draft with ``supersedes`` costs ``effect_for``'s reads
+    (its predecessor and the calendar; the signed runs are stubbed here); a
+    Desk draft costs none."""
+    desk_only = _o57_site()
+    desk_only.ops = [r for r in desk_only.ops if not r.get("supersedes")]
+    with_change = _o57_site()
+    _call_pending(desk_only)
+    _call_pending(with_change)
+    assert len(desk_only.reads) == 7, desk_only.reads
+    # O64: + one User read for the signers' full names. O69: + one calendar
+    # read per call for the Close Lead's ``edit`` (EPM Admin may save).
+    assert len(with_change.reads) == 11, with_change.reads
+    extra = list(with_change.reads)
+    for read in desk_only.reads:
+        extra.remove(read)
+    assert sorted(extra) == sorted([("get_all", "Ownership Period"),
+                                    ("sql", "fiscal_period_rows"),
+                                    ("sql", "fiscal_period_rows"),
+                                    ("get_all", "User")]), extra
+    assert with_change.new_docs == [] and with_change.get_doc_calls == []
+
+
+def test_o57_failure_path_a_hidden_draft_is_never_read_for_its_effect():
+    site = _o57_site()
+    site.allowed = {O57_DESK_LEAF}
+    result = _call_pending(site)
+    assert [i["name"] for i in result["items"]] == ["OP-ZZ5B2-2025-10-01"]
+    assert result["counts"]["hidden"] == 2
+    # Only the one draft list read: no predecessor, no calendar.
+    assert site.reads.count(("get_all", "Ownership Period")) == 1, site.reads
+    assert ("sql", "fiscal_period_rows") not in site.reads, site.reads
+    assert O55_LEAF not in json.dumps(result)
+
+
+# --- O63: get_ownership carries the change form's choices (story 4.2;
+# #305-4.2-1; C-O2, C-O3; wireframe-4.2.md section 1). Entities come with
+# their node's own group (one item per node, never a guessed one); periods are
+# the Open Regular ones, read from the one calendar read. -------------------
+
+O63_GOLDEN = os.path.join(FIXTURES, "close_ownership_payload.json")
+O63_SUB = "ZZ_SUBGROUP"
+
+
+def _o63_period(fy, fp, status, period_type="Regular", start=None):
+    start = start or date(fy, fp, 1)
+    return {"fiscal_year": fy, "fiscal_period": fp, "period_code": "P%02d" % fp,
+            "period_label": "P%02d" % fp, "period_type": period_type,
+            "start_date": start, "end_date": start, "quarter": "", "status": status}
+
+
+def _o63_site(roles=("EPM Analyst",), user=ANALYST):
+    """FY2026 P01 is listed first in the stub calendar, so calendar order is
+    the endpoint's, not the stub's. FY2025 P09 is Closed, P13 is an Open
+    Closing period: neither is a choice. ZZ5B1 sits on two nodes (ECL_GROUP
+    and ZZ_SUBGROUP; ECL_GROUP twice, an older closed period and the current
+    one). ZZ5B2 has only a draft (C-O3: a first ownership stays in Desk).
+    ZZ5B3 has a submitted period that starts later. The group node's own
+    period has no entity."""
+    site = _Site()
+    site.user = user
+    site.roles = set(roles)
+    site.periods = [_o63_period(2026, 1, "Open"), _o63_period(2025, 9, "Closed"),
+                    _o63_period(2025, 10, "Open"),
+                    _o63_period(2025, 13, "Open", "Closing", date(2025, 12, 31))]
+    site.entities = [dict(_entity("ZZ5B1"), entity_name="ZZ Five B One"),
+                     dict(_entity("ZZ5B2"), entity_name="ZZ Five B Two"),
+                     dict(_entity("ZZ5B3"), entity_name="ZZ Five B Three")]
+    site.ops = [
+        _op("OP-ZZ5B1-0", data_area_id=O55_LEAF, group=O55_GROUP,
+            effective_date=date(2024, 1, 1), end_date=date(2024, 12, 31), docstatus=1),
+        _op("OP-ZZ5B1-1", data_area_id=O55_LEAF, group=O55_GROUP,
+            effective_date=date(2025, 1, 1), docstatus=1),
+        _op("OP-ZZ5B1-SUB", data_area_id=O55_LEAF, group=O63_SUB,
+            effective_date=date(2025, 1, 1), docstatus=1),
+        _op("OP-ZZ5B2-D", data_area_id="ZZ5B2", group=O55_GROUP,
+            effective_date=date(2025, 1, 1), docstatus=0),
+        _op("OP-ZZ5B3-1", data_area_id="ZZ5B3", group=O55_GROUP,
+            effective_date=date(2025, 12, 1), docstatus=1),
+        _op("OP-GROUP-1", data_area_id=None, group=O55_GROUP,
+            effective_date=date(2025, 1, 1), docstatus=1),
+    ]
+    site.tbs = [_tb("ZZ5B1", fp=10)]
+    return site
+
+
+def _o63_call(site):
+    return _call_ownership(site, 2025, 10)
+
+
+def test_o63_ownership_matches_the_golden_payload():
+    site = _o63_site()
+    result = _o63_call(site)
+    assert result == _golden(O63_GOLDEN), json.dumps(result, indent=1)
+
+
+def test_o63_change_entities_carry_their_nodes_group_one_item_per_node():
+    result = _o63_call(_o63_site())
+    assert [{k: e[k] for k in ("entity", "entity_name", "consolidation_group")}
+            for e in result["change"]["entities"]] == [
+        {"entity": "ZZ5B1", "entity_name": "ZZ Five B One", "consolidation_group": O55_GROUP},
+        {"entity": "ZZ5B1", "entity_name": "ZZ Five B One", "consolidation_group": O63_SUB},
+        {"entity": "ZZ5B3", "entity_name": "ZZ Five B Three",
+         "consolidation_group": O55_GROUP},
+    ]
+
+
+def test_o63_change_periods_are_only_the_open_regular_ones_in_calendar_order():
+    result = _o63_call(_o63_site())
+    assert result["change"]["periods"] == [
+        {"fiscal_year": 2025, "fiscal_period": 10, "label": "FY2025 P10",
+         "start_date": "2025-10-01"},
+        {"fiscal_year": 2026, "fiscal_period": 1, "label": "FY2026 P01",
+         "start_date": "2026-01-01"},
+    ]
+
+
+def test_o63_the_calendar_is_read_once():
+    site = _o63_site()
+    _o63_call(site)
+    assert site.reads.count(("sql", "fiscal_period_rows")) == 1, site.reads
+
+
+def test_o63_failure_path_a_viewer_gets_change_none_and_no_extra_read():
+    site = _o63_site(roles=("EPM User",), user=VIEWER)
+    site.can_record = False
+    result = _o63_call(site)
+    assert result["can_record"] is False
+    assert "change" in result and result["change"] is None
+    assert len(site.reads) == 4, site.reads
+
+
+def test_o63_failure_path_a_scoped_caller_never_sees_an_entity_outside_scope():
+    site = _o63_site()
+    site.allowed = {"ZZ5B3"}
+    result = _o63_call(site)
+    assert [{k: e[k] for k in ("entity", "entity_name", "consolidation_group")}
+            for e in result["change"]["entities"]] == [
+        {"entity": "ZZ5B3", "entity_name": "ZZ Five B Three",
+         "consolidation_group": O55_GROUP}]
+    # The existing hidden rule counts out-of-scope ZZ5B2 only; the change list
+    # adds nothing to it.
+    assert result["hidden"] == 1
+    assert "ZZ5B1" not in json.dumps(result)
+
+
+def test_o63_failure_path_an_entity_on_two_nodes_gives_two_items():
+    result = _o63_call(_o63_site())
+    groups = [e["consolidation_group"] for e in result["change"]["entities"]
+              if e["entity"] == "ZZ5B1"]
+    assert groups == [O55_GROUP, O63_SUB]
+
+
+def test_o63_reads_are_constant_in_the_number_of_nodes():
+    small = _o63_site()
+    big = _o63_site()
+    big.entities = big.entities + [dict(_entity("ZZN%02d" % i), entity_name="N%d" % i)
+                                   for i in range(20)]
+    big.ops = big.ops + [_op("OP-ZZN%02d" % i, data_area_id="ZZN%02d" % i,
+                             group=O55_GROUP, effective_date=date(2025, 1, 1), docstatus=1)
+                         for i in range(20)]
+    _o63_call(small)
+    _o63_call(big)
+    assert len(small.reads) == 6, small.reads
+    assert len(big.reads) == len(small.reads), big.reads
+
+
+# --- R52j (review U4; wireframe-4.2.md section 1, the "Currently" line
+# under Group): each change-form entity item carries ``current``, its node's
+# latest SUBMITTED Ownership Period by effective_date, in
+# ``ownership_change._as_current``'s shape, read in the same nodes read. ----
+
+
+def _r52j_current(name, effective_date, end_date=None, pct=60.0, method="Equity"):
+    """Written out independently of the code under test."""
+    return {"name": name, "effective_date": effective_date, "end_date": end_date,
+            "ownership_pct": pct, "consolidation_method": method}
+
+
+def _r52j_item(result, entity, group):
+    items = [e for e in result["change"]["entities"]
+             if (e["entity"], e["consolidation_group"]) == (entity, group)]
+    assert len(items) == 1, result["change"]["entities"]
+    return items[0]
+
+
+def test_r52j_failure_path_every_entity_item_carries_current():
+    # Red at 843cdf7: the items carry no ``current`` (KeyError: current).
+    result = _o63_call(_o63_site())
+    for item in result["change"]["entities"]:
+        assert "current" in item, item
+        item["current"]
+
+
+def test_r52j_a_node_with_an_ended_and_an_open_period_gives_the_open_one():
+    site = _o63_site()
+    # Listed newest first, so the answer is not the stub's row order.
+    site.ops = list(reversed(site.ops))
+    result = _o63_call(site)
+    assert _r52j_item(result, O55_LEAF, O55_GROUP)["current"] == _r52j_current(
+        "OP-ZZ5B1-1", "2025-01-01")
+
+
+def test_r52j_failure_path_a_later_draft_on_the_node_is_not_current():
+    site = _o63_site()
+    site.ops.append(_op("OP-ZZ5B1-D", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 10, 1), ownership_pct=80.0, docstatus=0))
+    result = _o63_call(site)
+    assert _r52j_item(result, O55_LEAF, O55_GROUP)["current"]["name"] == "OP-ZZ5B1-1"
+
+
+def test_r52j_a_node_with_one_period_gives_that_period():
+    result = _o63_call(_o63_site())
+    assert _r52j_item(result, O55_LEAF, O63_SUB)["current"] == _r52j_current(
+        "OP-ZZ5B1-SUB", "2025-01-01")
+    assert _r52j_item(result, "ZZ5B3", O55_GROUP)["current"] == _r52j_current(
+        "OP-ZZ5B3-1", "2025-12-01")
+
+
+def test_r52j_an_ended_latest_period_carries_its_end_date_as_iso():
+    site = _o63_site()
+    site.ops = [r for r in site.ops if r["name"] != "OP-ZZ5B1-1"]
+    result = _o63_call(site)
+    assert _r52j_item(result, O55_LEAF, O55_GROUP)["current"] == _r52j_current(
+        "OP-ZZ5B1-0", "2024-01-01", "2024-12-31")
+
+
+def test_r52j_failure_path_a_hidden_entitys_item_and_period_stay_cut():
+    site = _o63_site()
+    site.allowed = {"ZZ5B3"}
+    result = _o63_call(site)
+    assert [(e["entity"], e["current"]["name"]) for e in result["change"]["entities"]] == [
+        ("ZZ5B3", "OP-ZZ5B3-1")]
+    text = json.dumps(result)
+    assert "ZZ5B1" not in text and "OP-ZZ5B1" not in text
+
+
+def test_r52j_no_new_read():
+    site = _o63_site()
+    _o63_call(site)
+    assert len(site.reads) == 6, site.reads
+    assert site.reads.count(("get_all", "Ownership Period")) == 2, site.reads
+
+
+# --- O68: save_ownership_change(name=<a hidden entity's draft>) never names that entity ---
+# The scope check in ``_ownership_preview`` covers the ``entity`` argument
+# only; the named draft's own entity is checked by one helper the preview
+# (O66) and the save share, so both give one sentence.
+
+O68_HIDDEN_SENTENCE = ("OP-ZZHIDDEN-D is not a draft you can edit here: pick a draft of ZZ5B1 "
+                       "in ECL_GROUP from 2025-10-01.")
+
+
+def _o68_site_with_hidden(docstatus=0):
+    site = _o55_site()
+    site.allowed = {O55_LEAF}
+    row, doc = _o56_draft(name="OP-ZZHIDDEN-D", entity="ZZHIDDEN", docstatus=docstatus)
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    return site, row
+
+
+def _o68_assert_hides(err):
+    text = str(err)
+    assert "ZZHIDDEN " not in text and "for ZZHIDDEN" not in text, text
+
+
+def test_o68_failure_path_saving_a_hidden_entitys_draft_never_names_it():
+    site, row = _o68_site_with_hidden()
+    err = _o56_save_raises(site, name=row["name"])
+    assert type(err).__name__ == "ValidationError", err
+    assert str(err) == O68_HIDDEN_SENTENCE, err
+    _o68_assert_hides(err)
+    _no_save(site)
+
+
+def test_o68_failure_path_a_hidden_approved_period_is_refused_with_the_same_sentence():
+    # Scope comes before status: "is approved" would confirm the hidden
+    # name exists as an approved period.
+    site, row = _o68_site_with_hidden(docstatus=1)
+    err = _o56_save_raises(site, name=row["name"])
+    assert str(err) == O68_HIDDEN_SENTENCE, err
+    _no_save(site)
+
+
+def test_o68_save_and_preview_give_one_sentence():
+    site, row = _o68_site_with_hidden()
+    err = _o56_save_raises(site, name=row["name"])
+    site2, _ = _o68_site_with_hidden()
+    result = _o66_preview(site2, name=row["name"])
+    assert result["problems"][0] == str(err)
+
+
+def test_o68_a_visible_other_nodes_draft_still_gets_the_edit_refusal():
+    site = _o55_site()
+    site.allowed = {O55_LEAF, "ZZOTHER"}
+    row, doc = _o56_draft(name="OP-ZZOTHER-D", entity="ZZOTHER")
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    err = _o56_save_raises(site, name=row["name"])
+    assert type(err).__name__ == "ValidationError", err
+    assert "OP-ZZOTHER-D is the change for ZZOTHER in ECL_GROUP from 2025-10-01" in str(err), err
+    _no_save(site)
+
+
+def test_o68_an_unscoped_caller_still_gets_the_edit_refusal():
+    # allowed None (no Entity permission at all) sees every entity.
+    site = _o55_site()
+    row, doc = _o56_draft(name="OP-ZZHIDDEN-D", entity="ZZHIDDEN")
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    err = _o56_save_raises(site, name=row["name"])
+    assert "OP-ZZHIDDEN-D is the change for ZZHIDDEN in ECL_GROUP" in str(err), err
+    _no_save(site)
+
+
+# --- O69: the pending OP item says how to edit it; the preview names the awaiting drafts ---
+# Story 4.2; wireframe-4.2.md §1 ("The Analyst can edit it until it is
+# approved", confirmed by Deepak Pai 7 Oct). O67's Edit is fed by the server:
+# ``edit`` is never derived by the client from a title, a sentence or
+# ``get_ownership.can_record`` (a different test from the save's roles).
+
+O69_CHANGE = "OP-ZZ5B1-2025-10-01"
+O69_EDIT = {"consolidation_group": O55_GROUP, "entity": O55_LEAF, "fiscal_year": 2025,
+            "fiscal_period": 10, "ownership_pct": 80.0, "consolidation_method": "full"}
+
+
+def _o69_site(roles=("EPM Analyst",), user=ANALYST):
+    site = _o57_site()
+    site.roles = set(roles)
+    site.user = user
+    return site
+
+
+def _o69_calendar_reads(site):
+    return site.reads.count(("sql", "fiscal_period_rows"))
+
+
+def test_o69_an_analysts_change_draft_carries_its_edit_and_a_desk_draft_none():
+    result = _call_pending(_o69_site())
+    assert _o57_item(result, O69_CHANGE)["edit"] == O69_EDIT
+    desk = _o57_item(result, "OP-ZZ5B2-2025-10-01")
+    assert "edit" in desk and desk["edit"] is None
+    # HER items are not ownership drafts: no key.
+    assert "edit" not in _o57_item(result, "HER-ZZ5B1-1")
+    # The title and detail are unchanged; the client never parses them.
+    item = _o57_item(result, O69_CHANGE)
+    assert item["title"] == "ZZ5B1 in ECL_GROUP from 2025-10-01"
+    assert item["detail"] == "80% · full"
+
+
+def test_o69_every_role_save_admits_gets_the_edit():
+    for role in ("EPM Analyst", "EPM Admin", "System Manager"):
+        result = _call_pending(_o69_site(roles=(role,)))
+        assert _o57_item(result, O69_CHANGE)["edit"] == O69_EDIT, role
+
+
+def test_o69_the_edit_roles_are_the_saves_literal_role_tuple():
+    import ast
+
+    with open(API_PY, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "save_ownership_change")
+    first = fn.body[0]
+    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+        first = fn.body[1]
+    literal = tuple(e.value for e in first.value.args[0].elts)
+    api = _load_rates_api(_Site())
+    assert tuple(api.OWNERSHIP_SAVE_ROLES) == literal == O56_SAVE_ROLES
+
+
+def test_o69_the_edit_fed_back_to_the_save_edits_that_draft_without_a_refusal():
+    """The server's ``edit`` plus the item's ``name`` is a save the save
+    accepts: the client never re-derives the node, period, pct or method."""
+    site = _o69_site()
+    item = _o57_item(_call_pending(site), O69_CHANGE)
+    edit = item["edit"]
+    [row] = [r for r in site.ops if r["name"] == O69_CHANGE]
+    doc = _FakeDoc(dict(row, doctype="Ownership Period"))
+    site.named[O69_CHANGE] = doc
+    result = _invoke(site, lambda api: api.save_ownership_change(
+        edit["fiscal_year"], edit["fiscal_period"], edit["consolidation_group"],
+        edit["entity"], edit["ownership_pct"], edit["consolidation_method"],
+        name=item["name"]))
+    assert result == {"name": O69_CHANGE, "docstatus": 0}
+    assert [c[0] for c in doc.calls] == ["save"]
+    assert site.new_docs == []
+
+
+def test_o69_failure_path_a_viewer_gets_edit_none_on_every_item_and_no_calendar_read():
+    viewer = _o69_site(roles=("EPM User",), user=VIEWER)
+    lead = _o69_site()
+    result = _call_pending(viewer)
+    ops = [i for i in result["items"] if i["doctype"] == "Ownership Period"]
+    assert len(ops) == 2
+    assert all("edit" in i and i["edit"] is None for i in ops), ops
+    _call_pending(lead)
+    # The Analyst's one extra read is the calendar, read once.
+    assert _o69_calendar_reads(lead) - _o69_calendar_reads(viewer) == 1
+
+
+def test_o69_failure_path_no_regular_period_starting_on_the_date_gives_edit_none():
+    """Two Regular periods declared on the draft's first day: the period is
+    ambiguous, so ``edit`` is None, never a guessed one. (A date that starts
+    no Regular period at all is already refused by O57's effect.)"""
+    site = _o69_site()
+    site.periods = site.periods + [{
+        "fiscal_year": 2026, "fiscal_period": 1, "period_code": "P01", "period_label": "P01",
+        "period_type": "Regular", "start_date": date(2025, 10, 1),
+        "end_date": date(2025, 10, 31), "quarter": "Q1", "status": "Open"}]
+    result = _call_pending(site)
+    assert _o57_item(result, O69_CHANGE)["edit"] is None
+
+
+def test_o69_failure_path_the_calendar_is_read_once_for_n_change_drafts():
+    one = _o69_site()
+    many = _o69_site()
+    for i in range(4):
+        extra = dict(next(r for r in many.ops if r["name"] == O69_CHANGE),
+                     name="OP-ZZ5B1-X%d" % i, creation=datetime(2025, 10, 4 + i, 9, 0, 0))
+        many.ops.append(extra)
+    viewer_one = _o69_site(roles=("EPM User",), user=VIEWER)
+    viewer_many = _o69_site(roles=("EPM User",), user=VIEWER)
+    viewer_many.ops = [dict(r) for r in many.ops]
+    for s in (one, many, viewer_one, viewer_many):
+        _call_pending(s)
+    # effect_for (O57) reads the calendar per change draft; O69 adds one read
+    # per call, whatever the number of drafts.
+    assert _o69_calendar_reads(one) - _o69_calendar_reads(viewer_one) == 1
+    assert _o69_calendar_reads(many) - _o69_calendar_reads(viewer_many) == 1
+
+
+def test_o69_failure_path_no_change_draft_means_no_calendar_read():
+    site = _o69_site()
+    site.ops = [r for r in site.ops if not r.get("supersedes")]
+    _call_pending(site)
+    assert _o69_calendar_reads(site) == 0, site.reads
+
+
+def test_o69_failure_path_a_scoped_analyst_sees_only_visible_drafts_with_edit():
+    site = _o69_site()
+    site.allowed = {O55_LEAF}
+    result = _call_pending(site)
+    ops = [i for i in result["items"] if i["doctype"] == "Ownership Period"]
+    assert [i["name"] for i in ops] == [O69_CHANGE]
+    assert ops[0]["edit"] == O69_EDIT
+    assert O57_DESK_LEAF not in json.dumps(result)
+
+
+def test_o69_preview_names_the_other_awaiting_draft_as_data_beside_the_sentence():
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site)
+    assert result["pending"] == [row["name"]]
+    assert result["problems"] == [
+        "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-D): edit that draft."]
+
+
+def test_o69_preview_of_that_draft_by_name_has_pending_empty():
+    site, row = _o66_site_with_draft()
+    result = _o66_preview(site, name=row["name"])
+    assert result["pending"] == []
+    assert result["problems"] == []
+
+
+def test_o69_preview_with_no_draft_has_pending_empty_never_missing():
+    result = _preview(_o55_site())
+    assert "pending" in result and result["pending"] == []
+
+
+def test_o69_failure_path_editing_one_draft_still_names_the_others_sorted():
+    site, row = _o66_site_with_draft()
+    for name in ("OP-ZZ5B1-F", "OP-ZZ5B1-E"):
+        site.ops.append(_op(name, data_area_id=O55_LEAF, group=O55_GROUP,
+                            effective_date=date(2025, 11, 1), ownership_pct=75.0,
+                            consolidation_method="full", docstatus=0))
+    result = _o66_preview(site, name=row["name"])
+    assert result["pending"] == ["OP-ZZ5B1-E", "OP-ZZ5B1-F"]
+    assert result["effect"] is None
+
+
+def test_o69_failure_path_another_nodes_draft_is_never_in_pending():
+    site = _o55_site()
+    site.ops.append(_op("OP-ZZ5B2-D", data_area_id="ZZ5B2", group=O55_GROUP,
+                        effective_date=date(2025, 10, 1), docstatus=0))
+    result = _preview(site)
+    assert result["pending"] == [] and result["problems"] == []
+
+
+def test_o69_the_preview_goldens_carry_pending():
+    assert _golden(O55_GOLDEN)["pending"] == []
+    assert _golden(O55_GOLDEN_REFUSED)["pending"] == ["OP-ZZ5B1-2"]
+
+
+def test_o69_the_pending_golden_carries_edit_on_every_op_item():
+    golden = _golden(O57_GOLDEN)
+    ops = {i["name"]: i for i in golden["items"] if i["doctype"] == "Ownership Period"}
+    assert set(ops) == {O69_CHANGE, "OP-ZZ5B2-2025-10-01"}
+    # The golden is the Close Lead's call: EPM Admin may save.
+    assert ops[O69_CHANGE]["edit"] == O69_EDIT
+    assert ops["OP-ZZ5B2-2025-10-01"]["edit"] is None
+
+
+# --- R52q (review S18): the pending list's OP items carry the ownership keys ----
+
+
+def test_r52q_pending_op_items_carry_ownership_effect_and_no_effect():
+    result = _call_pending(_o57_site())
+    ops = {i["name"]: i for i in result["items"] if i["doctype"] == "Ownership Period"}
+    assert sorted(ops) == ["OP-ZZ5B1-2025-10-01", "OP-ZZ5B2-2025-10-01"]
+    assert ops["OP-ZZ5B1-2025-10-01"]["ownership_effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert ops["OP-ZZ5B2-2025-10-01"]["ownership_effect"] is None
+    for item in ops.values():
+        assert item["ownership_effect_error"] is None, item
+        assert "effect" not in item and "effect_error" not in item, sorted(item)
+    for item in result["items"]:
+        if item["doctype"] != "Ownership Period":
+            assert "ownership_effect" not in item and "ownership_effect_error" not in item, item
+
+
+def test_r52q_failure_path_a_broken_draft_names_its_error_under_the_ownership_key():
+    result = _call_pending(_r52i_site())
+    [broken] = [i for i in result["items"] if i["name"] == R52I_BROKEN]
+    assert broken["ownership_effect"] is None
+    assert broken["ownership_effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken
+    assert "effect" not in broken and "effect_error" not in broken, sorted(broken)
+
+
+# --- R53e (#305-R52-4, U10e; Deepak Pai 7 Oct): get_ownership sends one
+# ``can_change``, true exactly when ``save_ownership_change`` would admit the
+# caller: a role in the save's literal tuple (OWNERSHIP_SAVE_ROLES), and at
+# least one Open Regular period to start a change in (the save refuses any
+# other period). Never Ownership Period create permission (``can_record``),
+# which a DocPerm customisation can move. ``change`` is sent exactly when
+# ``can_change`` is true, so the form never mounts without its choices. ----
+
+
+def test_r53e_every_role_the_save_admits_gets_can_change_true():
+    for role in ("EPM Analyst", "EPM Admin", "System Manager"):
+        result = _o63_call(_o63_site(roles=(role,)))
+        assert result["can_change"] is True, role
+        assert result["change"] is not None, role
+
+
+def test_r53e_failure_path_a_viewer_gets_can_change_false_and_no_change():
+    site = _o63_site(roles=("EPM User",), user=VIEWER)
+    site.can_record = False
+    result = _o63_call(site)
+    assert result["can_change"] is False
+    assert result["change"] is None
+
+
+def test_r53e_failure_path_a_viewer_granted_op_create_still_gets_can_change_false():
+    """A role customisation granting Ownership Period create to the Viewer
+    moves ``can_record`` (the Desk link) but never ``can_change``: the save
+    would still refuse them."""
+    site = _o63_site(roles=("EPM User",), user=VIEWER)
+    site.can_record = True
+    result = _o63_call(site)
+    assert result["can_record"] is True
+    assert result["can_change"] is False
+    assert result["change"] is None
+
+
+def test_r53e_failure_path_an_analyst_without_op_create_still_gets_can_change_true():
+    """The other direction of the same customisation: the save admits the
+    Analyst by role, so the form is offered with its choices."""
+    site = _o63_site()
+    site.can_record = False
+    result = _o63_call(site)
+    assert result["can_record"] is False
+    assert result["can_change"] is True
+    assert [p["label"] for p in result["change"]["periods"]] == ["FY2025 P10", "FY2026 P01"]
+
+
+def test_r53e_failure_path_no_open_regular_period_gives_can_change_false():
+    """The save refuses a change starting in any period that is not an Open
+    Regular one, so with none open there is nothing the save would accept."""
+    site = _o63_site()
+    site.periods = [_o63_period(2025, 9, "Closed"), _o63_period(2025, 10, "Closed"),
+                    _o63_period(2025, 13, "Open", "Closing", date(2025, 12, 31))]
+    result = _o63_call(site)
+    assert result["can_change"] is False
+    assert result["change"] is None
+
+
+def test_r53e_the_golden_carries_can_change():
+    golden = _golden(O63_GOLDEN)
+    assert golden["can_change"] is True
+    assert golden["change"] is not None
+
+
+def test_r53e_the_servers_decision_fed_back_to_the_save():
+    """Where ``can_change`` is true the save admits the caller with a period
+    and node from ``change``; where it is false the save refuses by role."""
+    for roles, user in ((("EPM Analyst",), ANALYST), (("EPM Admin",), LEAD),
+                        (("System Manager",), LEAD), (("EPM User",), VIEWER)):
+        site = _o63_site(roles=roles, user=user)
+        site.can_record = True
+        result = _o63_call(site)
+        if result["can_change"]:
+            period = result["change"]["periods"][0]
+            node = result["change"]["entities"][0]
+            fresh = _o63_site(roles=roles, user=user)
+            saved = _invoke(fresh, lambda api: api.save_ownership_change(
+                period["fiscal_year"], period["fiscal_period"], node["consolidation_group"],
+                node["entity"], "80", "full"))
+            assert saved["docstatus"] == 0, roles
+            assert len(fresh.new_docs) == 1, roles
+        else:
+            fresh = _o63_site(roles=roles, user=user)
+            with pytest.raises(Exception) as info:
+                _invoke(fresh, lambda api: api.save_ownership_change(
+                    2025, 10, O55_GROUP, O55_LEAF, "80", "full"))
+            assert type(info.value).__name__ == "PermissionError", (roles, info.value)
+            assert fresh.new_docs == [], roles
+    # Both branches ran.
+    assert _o63_call(_o63_site(roles=("EPM User",), user=VIEWER))["can_change"] is False

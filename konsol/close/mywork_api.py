@@ -51,6 +51,16 @@ Per-period facts:
   no reporting currency. When the warehouse cannot answer, the Close Lead
   gets a blocking item carrying the error, and the period counts as blocked,
   so it is never offered for sign-off;
+- ``reminders`` (konsol#305 Y59, story 1.5): ``{entity: {count, last_at,
+  last_by, last_by_name}}`` of the period's TB reminders, from ONE
+  ``close_event.reminders`` read for all the open periods. Always present
+  (``{}`` when none); cut to the entities the caller may see. A failed read
+  raises: it is never a "not reminded";
+- ``deadlines`` (konsol#305 D59, story 2.4): ``{step: {due, past, text}}``,
+  the period's ``deadline_model.period_deadlines``, from ONE
+  ``deadlines.period_deadlines`` read for all the open periods. Always
+  present: a failed read, or an open period the read did not answer, raises,
+  never "no due date"; an undeclared step reads "No due date declared";
 - ``unowned`` (#289, E206): entities named by the sign-off gate's
   ``tb_without_ownership`` config gap — a submitted TB with no covering
   ownership. Only the Close Lead is shown the resulting blocking item.
@@ -125,18 +135,25 @@ from konsol.close.freshness_api import current_freshness
 from konsol.consolidation.doctype.assertion_run.assertion_run import latest_close_run
 
 
-def _load_period_name():
-    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
-    one "FY2025 P07" format, reachable even under the host tests' stub
-    ``konsol.close`` package."""
-    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
-    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+def _load_by_path(filename, module_name):
+    """A pure sibling module loaded by path, reachable even under the host
+    tests' stub ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), filename)
+    spec = _importlib_util.spec_from_file_location(module_name, path)
     module = _importlib_util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.period_name
+    return module
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format."""
+    return _load_by_path("period_name.py", "konsol_close_period_name").period_name
 
 
 period_name = _load_period_name()
+#: The Remind rules (konsol#305 Y52), pure: the reminder summary.
+remind_model = _load_by_path("remind_model.py", "konsol_close_remind_model")
 
 
 #: The close roles; the gate spells them out (the A01 contract reads a literal).
@@ -442,12 +459,68 @@ def _rates_error_item(key, code, error, end_date):
     }
 
 
+def _reminders(keys, allowed):
+    """``{key: {entity: {count, last_at, last_by, last_by_name}}}`` for every
+    key in ``keys`` (konsol#305 Y59, C-R6): ONE ``close_event.reminders`` read
+    for all the open periods and topic tb, summarised by
+    ``remind_model.summary``. Every key is present, ``{}`` when nothing was
+    reminded: ``mywork_model`` reads an absent ``reminders`` as "not
+    reminded", so it is never omitted. Only the entities ``allowed`` lets the
+    caller see are kept (the ``_mine`` rule), so a hidden entity's reminders
+    and their sender never leave the server. A failed read or an unreadable
+    event raises: a count is never guessed as 0. ``last_at`` carries the
+    site's UTC offset. The sender is named by ``remind_model.sender_name``:
+    the full name, or the labelled id "<id> (name not recorded)" when the
+    user has no full name or no longer exists, so one bad sender never takes
+    down My work (konsol#305 R52d, review-w5b S3)."""
+    from konsol.close import close_event  # lazy: the ic_api.send_back precedent
+    from konsol.close.timefmt import zoned_iso
+
+    summary = remind_model.summary(close_event.reminders(list(keys), "tb"))
+    out = remind_model.visible_entries(summary, keys, "tb", allowed)
+    actors = sorted({e["last_by"] for entries in out.values() for e in entries.values()})
+    if not actors:
+        return out
+    names = {u["name"]: u.get("full_name") for u in frappe.get_all(
+        "User", filters={"name": ["in", actors]}, fields=["name", "full_name"],
+        limit_page_length=0)}
+    tz = frappe.utils.get_system_timezone()
+    return {key: {entity: {"count": int(e["count"]), "last_at": zoned_iso(e["last_at"], tz),
+                           "last_by": e["last_by"],
+                           "last_by_name": remind_model.sender_name(e["last_by"], names)}
+                  for entity, e in entries.items()}
+            for key, entries in out.items()}
+
+
+def _deadlines(keys, today):
+    """``{key: {step: {"due", "past", "text"}}}`` for every key in ``keys``
+    (konsol#305 D59, story 2.4): ONE ``deadlines.period_deadlines`` read for
+    all the open periods. ``mywork_model`` reads an absent ``deadlines`` as
+    "no due date", so every key is present: a failed read raises, and an open
+    period the read did not answer (not Regular, or not in the calendar) is
+    refused, never left without a deadline. An undeclared step is
+    deadline_model's "No due date declared"."""
+    from konsol.close import deadlines  # lazy (C-X1), as _reminders
+
+    by_key = deadlines.period_deadlines(list(keys), today)
+    missing = [key for key in keys if key not in by_key]
+    if missing:
+        frappe.throw("No deadlines could be read for %s: check that each is a Regular period "
+                     "in EPM Fiscal Year." % ", ".join(period_name(*key) for key in missing))
+    return {key: by_key[key] for key in keys}
+
+
 def _period_facts(first_close, allowed, today, shared):
-    """``(per_period, extra_items)``; extra items are the rate-gate errors."""
+    """``(per_period, extra_items)``; extra items are the rate-gate errors.
+    Each period's facts carry ``reminders`` (Y59) and ``deadlines`` (D59),
+    each read once for all."""
     as_of_text = current_freshness()["as_of"]
     as_of = _aware(datetime.fromisoformat(as_of_text)) if as_of_text else None
     per_period, extra = {}, []
-    for key, row in _open_rows(first_close, today):
+    open_rows = _open_rows(first_close, today)
+    reminders = _reminders([key for key, _ in open_rows], allowed)
+    due = _deadlines([key for key, _ in open_rows], today)
+    for key, row in open_rows:
         code = period_name(*key)
         end_date = _date(row.get("end_date"))
         if end_date is None:
@@ -478,6 +551,8 @@ def _period_facts(first_close, allowed, today, shared):
             "rates_missing": len(rates_missing or ()) + len(blockers or ()),
             "unowned": unowned,
             "since": end_date.isoformat(),
+            "reminders": reminders[key],
+            "deadlines": due[key],
         }
     return per_period, extra
 

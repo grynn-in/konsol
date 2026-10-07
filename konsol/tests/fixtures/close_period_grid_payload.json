@@ -1,0 +1,133 @@
+{
+  "counts": {
+    "hidden": 0,
+    "problems": 2,
+    "rows": 4
+  },
+  "deadlines": {
+    "ic": {
+      "due": "2025-10-07",
+      "past": true,
+      "text": "Due 2025-10-07"
+    },
+    "journals": {
+      "due": null,
+      "past": false,
+      "text": "No due date declared"
+    },
+    "signoff": {
+      "due": "2025-10-01",
+      "past": true,
+      "text": "Due 2025-10-01"
+    },
+    "tb": {
+      "due": "2025-10-03",
+      "past": true,
+      "text": "Due 2025-10-03"
+    }
+  },
+  "ic_overdue": true,
+  "ic_overdue_error": null,
+  "journals_overdue": false,
+  "journals_overdue_error": null,
+  "period": {
+    "code": "P09",
+    "fiscal_period": 9,
+    "fiscal_year": 2025,
+    "start_date": "2025-09-01",
+    "status": "Open"
+  },
+  "rates_error": null,
+  "rows": [
+    {
+      "currency": "EUR",
+      "entity": "ZZA",
+      "in_scope": true,
+      "name": "Entity ZZA",
+      "ownership": {
+        "label": "Full · 100%",
+        "tone": "none"
+      },
+      "problem": true,
+      "rate": {
+        "label": "Approved",
+        "tone": "ok"
+      },
+      "tb": {
+        "label": "Missing",
+        "overdue": true,
+        "reminders": {
+          "count": 2,
+          "last_at": "2025-10-06T10:00:00+01:00",
+          "last_by": "zz-lead@example.com",
+          "last_by_name": "Zed Lead"
+        },
+        "tone": "blocking"
+      }
+    },
+    {
+      "currency": "EUR",
+      "entity": "ZZB",
+      "in_scope": true,
+      "name": "Entity ZZB",
+      "ownership": {
+        "label": "Full · 100%",
+        "tone": "none"
+      },
+      "problem": false,
+      "rate": {
+        "label": "Approved",
+        "tone": "ok"
+      },
+      "tb": {
+        "label": "Received",
+        "overdue": false,
+        "reminders": null,
+        "tone": "ok"
+      }
+    },
+    {
+      "currency": "EUR",
+      "entity": "ZZC",
+      "in_scope": true,
+      "name": "Entity ZZC",
+      "ownership": {
+        "label": "Full · 100%",
+        "tone": "none"
+      },
+      "problem": false,
+      "rate": {
+        "label": "Approved",
+        "tone": "ok"
+      },
+      "tb": {
+        "label": "Received",
+        "overdue": false,
+        "reminders": null,
+        "tone": "ok"
+      }
+    },
+    {
+      "currency": "EUR",
+      "entity": "ZZX",
+      "in_scope": false,
+      "name": "Entity ZZX",
+      "ownership": {
+        "label": "None for P09",
+        "tone": "blocking"
+      },
+      "problem": true,
+      "rate": {
+        "label": "Approved",
+        "tone": "ok"
+      },
+      "tb": {
+        "label": "Not consolidated: no ownership for this period",
+        "overdue": false,
+        "reminders": null,
+        "tone": "blocking"
+      }
+    }
+  ],
+  "signoff_overdue": true
+}

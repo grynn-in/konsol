@@ -138,6 +138,8 @@ _GAP_LABELS = {
     "ic_unrealized_profit_rule_undeclared": "Unrealised-profit rule not declared",
     # F51b: ic_balance_model.RULE_AMBIGUOUS (same reason).
     "ic_unrealized_profit_rule_ambiguous": "More than one unrealised-profit rule per pair",
+    # I53: ic_balance_model.DRAFT_PENDING (same reason).
+    "ic_balance_draft_pending": "IC Balance draft awaiting approval",
 }
 
 
@@ -187,6 +189,24 @@ def _policies_item(by_code):
     return _item("policies", OK, "Both close policies are declared")
 
 
+_TERMINAL = (".", "!", "?")
+
+
+def _sentences(parts):
+    """R52u: one sentence per part, joined by a space. A part that is not
+    the last and lacks terminal punctuation gets a full stop, so two gaps
+    never run together ("…you cannot see Declare…"); one that already ends
+    in terminal punctuation is never given a second. The last part is left
+    as written, like every other item's detail."""
+    out = []
+    for i, part in enumerate(parts):
+        part = part.rstrip()
+        if i < len(parts) - 1 and not part.endswith(_TERMINAL):
+            part += "."
+        out.append(part)
+    return " ".join(out)
+
+
 def _configuration_item(config_gaps, allowed):
     leftover = [g for g in config_gaps if g["code"] not in _HANDLED_ELSEWHERE]
     if not leftover:
@@ -195,7 +215,7 @@ def _configuration_item(config_gaps, allowed):
     for gap in leftover:
         entities.extend(gap.get("entities") or ())
     visible, hidden = _cut(entities, allowed)
-    detail = " ".join(_scoped_gap_detail(gap, allowed) for gap in leftover)
+    detail = _sentences([_scoped_gap_detail(gap, allowed) for gap in leftover])
     return _item("configuration", BLOCKED, detail, visible, hidden)
 
 

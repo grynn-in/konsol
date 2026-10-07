@@ -4,6 +4,8 @@
 // (B09 freshness bar, B27 TB list). Nothing here reads the machine's clock:
 // `now` and `timeZone` are always passed in.
 
+import { MONTHS } from "./dueDate.js";
+
 // B09b: a server timestamp must carry its zone ("Z" or "+hh:mm"). A zone-less
 // string would be read in the browser's zone and show the wrong hour, so it is
 // refused rather than guessed.
@@ -27,7 +29,14 @@ function sameCalendarDay(a, b, timeZone) {
   return fmt.format(a) === fmt.format(b);
 }
 
-/** A Date, shown in `timeZone`, relative to `now` — "10:42" today, "Sep 20, 10:42" otherwise. */
+/**
+ * A Date, shown in `timeZone`, relative to `now`, day-first (decision
+ * #305-R52-3-1, R53d): "10:42" today, "20 Sep, 10:42" another day of the
+ * same year, "20 Sep 2024, 10:42" another year. Day, month and year are
+ * judged in `timeZone` (Intl is used only for that zone conversion); the
+ * month name comes from dueDate.js's fixed MONTHS table, never Intl, so the
+ * ICU build cannot change the wording.
+ */
 export function formatTime(date, now, timeZone) {
   const time = new Intl.DateTimeFormat("en-GB", {
     timeZone,
@@ -40,13 +49,10 @@ export function formatTime(date, now, timeZone) {
     return time;
   }
 
-  const day = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    month: "short",
-    day: "numeric",
-  }).format(date);
-
-  return `${day}, ${time}`;
+  const [year, month, day] = calendarParts(date, timeZone);
+  const [nowYear] = calendarParts(now, timeZone);
+  const dayMonth = `${day} ${MONTHS[month - 1]}`;
+  return year === nowYear ? `${dayMonth}, ${time}` : `${dayMonth} ${year}, ${time}`;
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;

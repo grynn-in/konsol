@@ -15,6 +15,19 @@
  *   no Entity Accountant reads this screen or its endpoints). Reached as the
  *   `period` slug through the router's glob (router.js); unreachable until
  *   E208b adds it to route.js and nav.js.
+ * - Y63 (stories 1.5, 2.2): a Missing TB cell shows gridView's `tbReminded`
+ *   under its status. There is no Remind button here (C-R1).
+ * - D61 (stories 2.4, 2.2): above the grid, gridView's `deadlines` strip
+ *   ("TB due … · IC due … · Journals due … · Sign-off due …"), and an
+ *   Overdue chip on a TB cell whose `tbOverdue` is set. Overdue is only ever
+ *   the server's flag; this screen never compares dates.
+ * - D61b (#305-Q5-1): the strip's IC and Journals items carry the Overdue
+ *   chip from the server's IC and journals flags, read by gridView's
+ *   strip (`item.overdue`); this screen never reads or derives them.
+ * - R52m (U2): both Overdue chips bind dueDate.js's OVERDUE_TONE (amber):
+ *   a deadline never blocks (#305-2.4-1), so never the red block tone.
+ * - R52m (S4): a strip step the server could not read carries gridView's
+ *   `item.error` sentence, shown in place of its chip; the rows still render.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
@@ -23,6 +36,8 @@ import { get } from "../api.js";
 import { parse, format } from "../route.js";
 import { gridView, readinessView, toneClass, COLUMNS } from "../periodGrid.js";
 import { periodName as formatPeriod } from "../periodName.js";
+import { userTimeZone } from "../timefmt.js";
+import { OVERDUE_TONE } from "../dueDate.js";
 
 const GET_READINESS = "konsol.close.grid_api.get_readiness";
 const GET_PERIOD_GRID = "konsol.close.grid_api.get_period_grid";
@@ -42,7 +57,12 @@ const gridWhat = computed(() => `the entity grid of ${periodName.value}`);
 const problemsOnly = ref(false);
 
 const readiness = reactive({ status: "loading", payload: null, error: null, busy: false });
-const grid = reactive({ status: "loading", payload: null, error: null, busy: false });
+const grid = reactive({ status: "loading", payload: null, error: null, busy: false, now: null });
+
+// Y63: the TB cell's reminded text is shown in the user's zone (timefmt.js,
+// B29). With no zone the grid is an error, never a guessed zone.
+const timeZone = userTimeZone();
+const NO_ZONE = "Your browser reported no time zone, so reminder times cannot be shown.";
 let readinessSeq = 0;
 let gridSeq = 0;
 
@@ -89,6 +109,7 @@ async function loadGrid() {
 		});
 		if (mine !== gridSeq) return;
 		grid.payload = payload;
+		grid.now = new Date();
 		grid.error = null;
 		grid.status = "ready";
 	} catch (e) {
@@ -125,8 +146,12 @@ const gridViewError = ref(null);
 const gridViewResult = computed(() => {
 	if (grid.status !== "ready" || !grid.payload) return null;
 	try {
+		if (!timeZone) {
+			gridViewError.value = NO_ZONE;
+			return null;
+		}
 		gridViewError.value = null;
-		return gridView(grid.payload, problemsOnly.value);
+		return gridView(grid.payload, problemsOnly.value, grid.now, timeZone);
 	} catch (e) {
 		gridViewError.value = e.message;
 		return null;
@@ -222,6 +247,18 @@ const signOffPath = computed(() =>
 		</section>
 
 		<section>
+			<p
+				v-if="gridViewResult"
+				class="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-gray-7"
+			>
+				<template v-for="(item, i) in gridViewResult.deadlines" :key="item.step">
+					<span v-if="i > 0" class="text-ink-gray-4">·</span>
+					<span>{{ item.text }}</span>
+					<span v-if="item.error" class="text-xs text-ink-amber-3">{{ item.error }}</span>
+					<span v-else-if="item.overdue" class="inline-block rounded px-2 py-0.5 text-xs font-medium" :class="OVERDUE_TONE">Overdue</span>
+				</template>
+			</p>
+
 			<div class="mb-3 flex flex-wrap items-center gap-2">
 				<button
 					type="button"
@@ -297,6 +334,8 @@ const signOffPath = computed(() =>
 										class="inline-block rounded px-2 py-0.5 text-xs font-medium"
 										:class="toneClass(row.tb.tone)"
 									>{{ row.tb.label }}</span>
+									<span v-if="row.tbOverdue" class="ml-1 inline-block rounded px-2 py-0.5 text-xs font-medium" :class="OVERDUE_TONE">Overdue</span>
+									<div v-if="row.tbReminded" class="mt-1 text-xs text-ink-gray-6">{{ row.tbReminded }}</div>
 								</td>
 								<td class="px-4 py-2">
 									<span

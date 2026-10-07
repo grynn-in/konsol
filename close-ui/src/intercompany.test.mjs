@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { intercompanyView, sendBackBody, panel, bannerToneClass } from "./intercompany.js";
+import { remindedText } from "./remind.js";
 
 // --- fixtures --------------------------------------------------------------
 
@@ -48,6 +49,10 @@ function pairRow(overrides) {
 		masked_b: false,
 		sent_back: null,
 		can_send_back: false,
+		reminders_a: null,
+		reminders_b: null,
+		can_remind_a: false,
+		can_remind_b: false,
 		...overrides,
 	};
 }
@@ -65,6 +70,7 @@ function basePayload(overrides) {
 		counts: { pairs: 0, matched: 0, within_tolerance: 0, fx_difference: 0, over_tolerance: 0, unmatched: 0 },
 		hidden: { pairs: 0, unmatched: 0 },
 		can_send_back: false,
+		can_remind: false,
 		...overrides,
 	};
 }
@@ -179,8 +185,8 @@ test("checked: chips from counts, group order kept, status texts, sent-back pair
 	const [root, sub] = view.groups;
 	// U5: a sent-back pair keeps its real status (never "Sent to both"),
 	// with the sent-back time appended and the status's own tone.
-	assert.equal(root.pairs[0].statusText, "Over tolerance · sent back Sep 29, 08:15");
-	assert.notEqual(root.pairs[0].statusText, "Sent to both · Sep 29, 08:15");
+	assert.equal(root.pairs[0].statusText, "Over tolerance · sent back 29 Sep, 08:15");
+	assert.notEqual(root.pairs[0].statusText, "Sent to both · 29 Sep, 08:15");
 	assert.equal(root.pairs[0].statusTone, "block");
 	assert.equal(root.pairs[1].statusText, "Within tolerance");
 	assert.equal(root.pairs[1].statusTone, "ok");
@@ -210,7 +216,7 @@ test("U5: sent-back pairs across every match status keep STATUS_TEXT and append 
 		});
 		const view = intercompanyView(payload, NOW, ZONE);
 		const pair = view.groups[0].pairs[0];
-		assert.equal(pair.statusText, `${label} · sent back Sep 29, 08:15`);
+		assert.equal(pair.statusText, `${label} · sent back 29 Sep, 08:15`);
 		assert.doesNotMatch(pair.statusText, /Sent to both/);
 	}
 });
@@ -384,13 +390,13 @@ test("U9: Intercompany.vue's own reads of intercompanyView's output — banner c
 // --- panel ---------------------------------------------------------------------
 
 test("panel: the difference-account sentence when an account is declared", () => {
-	const pair = pairRow({ ic_difference_account: "7999", difference: 50 });
+	const pair = pairRow({ ic_difference_account: "7999", difference: 50, remindedAText: null, remindedBText: null });
 	const result = panel(pair);
 	assert.equal(result.accountSentence, "Booked to 7999 in the group view while it stays open.");
 });
 
 test("panel: the difference-account sentence when no account is declared", () => {
-	const pair = pairRow({ ic_difference_account: null, difference: 50 });
+	const pair = pairRow({ ic_difference_account: null, difference: 50, remindedAText: null, remindedBText: null });
 	const result = panel(pair);
 	assert.equal(
 		result.accountSentence,
@@ -585,13 +591,13 @@ function balancesPayload(overrides) {
 			{
 				name: "ICB-FR01-DE01-2025-P7", selling_entity: "FR01", buying_entity: "DE01",
 				fiscal_year: 2025, fiscal_period: 7, ic_sales_amount: 1000, ending_inventory_from_ic: 250.5,
-				status: "Approved", rules: [], missing_rule: true,
+				status: "Approved", rules: [], missing_rule: true, pending_rule: false,
 			},
 			{
 				name: "ICB-UK01-DE01-2025-P7", selling_entity: "UK01", buying_entity: "DE01",
 				fiscal_year: 2025, fiscal_period: 7, ic_sales_amount: 1234.5, ending_inventory_from_ic: 0,
 				status: "Draft", rules: [{ rule_id: "R-UK", rule_name: "UK margin", margin_pct: 12.5 }],
-				missing_rule: false,
+				missing_rule: false, pending_rule: false,
 			},
 		],
 		gap: {
@@ -601,6 +607,7 @@ function balancesPayload(overrides) {
 			message: GAP_MESSAGE,
 		},
 		ambiguous_gap: null,
+		pending_gap: null,
 		hidden: 0,
 		entities: ["DE01", "FR01", "UK01"],
 		can_draft: true,
@@ -759,3 +766,252 @@ for (const key of ["gap", "ambiguous_gap"]) {
 		assert.doesNotThrow(() => icBalancesView({ ...goldenBalances(), [key]: null }));
 	});
 }
+
+// --- konsol#305 I54 (S8, #305-S8-1): a draft IC Balance with a rule blocks sign-off --
+//
+// The server's `pending_gap` (ic_balance_model.pending_gap via get_ic_balances)
+// names each draft whose pair has a matching unrealised-profit rule. dbt
+// eliminates only approved balances, so the screen shows the gap like the two
+// rule gaps, and marks each such draft row. Coordinator call: the row note
+// reads "approve, or delete the draft".
+
+const PENDING_NOTE = "Blocks sign-off: approve, or delete the draft";
+
+test("I54: icBalancesView shows the real pending_gap, naming the fixture's draft pair and its drafts", () => {
+	const golden = goldenBalances();
+	assert.ok(golden.pending_gap, "the golden fixture carries a pending gap");
+	const view = icBalancesView(golden);
+	assert.deepEqual(
+		view.pendingGap.pairs,
+		golden.pending_gap.pairs.map((p) => `${p.selling_entity} → ${p.buying_entity} (${p.names.join(", ")})`),
+	);
+	assert.deepEqual(view.pendingGap.pairs, ["UK01 → DE01 (ICB-UK01-DE01-2025-P7)"]);
+	assert.deepEqual(view.pendingGap.lines, [golden.pending_gap.message]);
+});
+
+test("I54: no pending gap is null (the declared \"no gap\")", () => {
+	assert.equal(icBalancesView({ ...goldenBalances(), pending_gap: null }).pendingGap, null);
+	assert.equal(icBalancesView(balancesPayload()).pendingGap, null);
+});
+
+test("Failure path — I54: a payload without `pending_gap` throws, naming it", () => {
+	const payload = goldenBalances();
+	delete payload.pending_gap;
+	assert.throws(() => icBalancesView(payload), /pending_gap/);
+});
+
+test("I54: the fixture's draft with a matching rule carries the blocks-sign-off note; the one with no rule does not", () => {
+	const golden = goldenBalances();
+	const view = icBalancesView(golden);
+	const byName = Object.fromEntries(view.rows.map((r) => [r.name, r]));
+	assert.equal(byName["ICB-UK01-DE01-2025-P7"].pendingNote, PENDING_NOTE);
+	// no matching rule: the undeclared gap covers it, not this note
+	assert.equal(byName["ICB-DE01-UK01-2025-P7"].pendingNote, null);
+	// every pending pair's drafts are noted
+	const noted = view.rows.filter((r) => r.pendingNote).map((r) => r.name).sort();
+	assert.deepEqual(noted, golden.pending_gap.pairs.flatMap((p) => p.names).sort());
+});
+
+// --- konsol#305 R52n (review U7, coordinator ruling S8/U7): the row note
+// reads the server's per-row `pending_rule` flag (R52k). The SPA no longer
+// re-derives the rule from status, rules and inventory.
+
+test("R52n: on the real payload, the rows with a note are exactly those with pending_rule", () => {
+	const golden = goldenBalances();
+	assert.ok(golden.balances.some((b) => b.pending_rule === true), "the golden has a pending row");
+	assert.ok(golden.balances.some((b) => b.pending_rule === false), "the golden has a row that is not pending");
+	const view = icBalancesView(golden);
+	const noted = view.rows.filter((r) => r.pendingNote !== null).map((r) => r.name).sort();
+	assert.deepEqual(noted, golden.balances.filter((b) => b.pending_rule).map((b) => b.name).sort());
+	for (const row of view.rows) {
+		assert.ok(row.pendingNote === null || row.pendingNote === PENDING_NOTE, row.name);
+	}
+});
+
+test("Failure path — R52n: the server says no (pending_rule false) on a draft with a rule and inventory > 0: no note", () => {
+	const golden = goldenBalances();
+	const ruled = golden.balances.find((b) => b.pending_rule === true);
+	assert.equal(ruled.status, "Draft");
+	assert.ok(ruled.rules.length > 0 && Number(ruled.ending_inventory_from_ic) > 0, "the flipped row would be re-derived as pending");
+	const [view] = icBalancesView({ ...golden, balances: [{ ...ruled, pending_rule: false }] }).rows;
+	assert.equal(view.pendingNote, null);
+});
+
+test("R52n: the server says yes (pending_rule true): the note shows, whatever the other fields", () => {
+	const golden = goldenBalances();
+	const plain = golden.balances.find((b) => b.pending_rule === false);
+	const [view] = icBalancesView({ ...golden, balances: [{ ...plain, pending_rule: true }] }).rows;
+	assert.equal(view.pendingNote, PENDING_NOTE);
+});
+
+test("Failure path — R52n: a row without pending_rule, or with a non-boolean one, throws naming it", () => {
+	const golden = goldenBalances();
+	const ruled = golden.balances.find((b) => b.pending_rule === true);
+	const missing = { ...ruled };
+	delete missing.pending_rule;
+	assert.throws(() => icBalancesView({ ...golden, balances: [missing] }), /pending_rule/);
+	for (const bad of [null, 1, 0, "true", "", undefined]) {
+		assert.throws(
+			() => icBalancesView({ ...golden, balances: [{ ...ruled, pending_rule: bad }] }),
+			/pending_rule/,
+			String(bad),
+		);
+	}
+});
+
+// --- konsol#305 Y65: Remind each side, and the reminded text (stories 1.5, 5.2; C-R1) ---
+//
+// Fed the REAL producer's output: konsol/tests/fixtures/close_ic_payload.json
+// is `ic_api.get_ic` called on test_close_ic_api.py's stub site (Y60's
+// `_reminded_site()`, plus an ic reminder on FR01, caller scoped to UK01 and
+// DE01, so FR01's side is masked and its reminder is nulled by the server).
+
+const IC_FIXTURE_PATH = fileURLToPath(new URL("../../konsol/tests/fixtures/close_ic_payload.json", import.meta.url));
+
+function icFixture() {
+	return JSON.parse(readFileSync(IC_FIXTURE_PATH, "utf8"));
+}
+
+function fixturePair(view, entityA, entityB) {
+	for (const group of view.groups) {
+		for (const pair of group.pairs) {
+			if (pair.entity_a === entityA && pair.entity_b === entityB) return pair;
+		}
+	}
+	throw new Error(`no pair ${entityA} ↔ ${entityB} in the fixture`);
+}
+
+test("Y65: panel over a pair with reminders_b gives the reminded text on B only", () => {
+	const payload = icFixture();
+	const raw = payload.groups.flatMap((g) => g.pairs).find((p) => p.entity_a === "UK01" && p.entity_b === "DE01");
+	assert.equal(raw.reminders_a, null, "the fixture's UK01 side has no reminder");
+	assert.ok(raw.reminders_b, "the fixture's DE01 side has one");
+	const view = intercompanyView(payload, NOW, ZONE);
+	const side = panel(fixturePair(view, "UK01", "DE01"));
+	const expected = remindedText(raw.reminders_b, NOW, ZONE);
+	assert.match(expected, /^Reminded 1× · last .+ by Zz Lead$/);
+	assert.deepEqual(side.remindB, { entity: "DE01", text: expected, canRemind: true });
+	assert.deepEqual(side.remindA, { entity: "UK01", text: null, canRemind: true });
+});
+
+test("Y65: the A side's reminder is on A only (DE01 ↔ FR01)", () => {
+	const view = intercompanyView(icFixture(), NOW, ZONE);
+	const side = panel(fixturePair(view, "DE01", "FR01"));
+	assert.match(side.remindA.text, /^Reminded 1× · last .+ by Zz Lead$/);
+	// R53c: the pair is within tolerance, so the server sends can_remind_a false.
+	assert.equal(side.remindA.canRemind, false);
+	assert.equal(side.remindB.text, null);
+});
+
+test("Y65 failure path: a masked side has canRemind false and no entity code in its text", () => {
+	const payload = icFixture();
+	const view = intercompanyView(payload, NOW, ZONE);
+	const pair = fixturePair(view, "UK01", "FR01");
+	assert.equal(pair.masked_b, true, "the fixture masks FR01");
+	const side = panel(pair);
+	assert.equal(side.remindB.canRemind, false);
+	assert.equal(side.remindB.text, null);
+	// R53c: the visible side of this matched pair has nothing to remind about.
+	assert.equal(side.remindA.canRemind, false, "a matched pair offers no Remind on its visible side");
+	// Even if a masked side ever arrived with a reminders entry, or a true
+	// can_remind_b, nothing of it is shown and no Remind is offered.
+	const leaked = structuredClone(payload);
+	const leakedPair = leaked.groups.flatMap((g) => g.pairs).find((p) => p.entity_a === "UK01" && p.entity_b === "FR01");
+	leakedPair.reminders_b = { count: 3, last_at: "2025-08-05T09:00:00+01:00", last_by: "zz-x@example.com", last_by_name: "Zz Hidden" };
+	leakedPair.can_remind_b = true;
+	const leakedSide = panel(fixturePair(intercompanyView(leaked, NOW, ZONE), "UK01", "FR01"));
+	assert.equal(leakedSide.remindB.canRemind, false);
+	assert.equal(leakedSide.remindB.text, null);
+	assert.ok(!JSON.stringify(leakedSide.remindB).includes("Zz Hidden"));
+	assert.ok(!String(leakedSide.remindB.text ?? "").includes("FR01"));
+});
+
+test("Y65 failure path: a Viewer payload (can_remind false) gives no Remind on either side, text still shown", () => {
+	// The server's rule (remind_model.ic_side_can_remind) gives every side
+	// false when the payload's can_remind is false; the payload mirrors that.
+	const payload = { ...icFixture(), can_remind: false };
+	for (const pair of payload.groups.flatMap((g) => g.pairs)) {
+		pair.can_remind_a = false;
+		pair.can_remind_b = false;
+	}
+	const side = panel(fixturePair(intercompanyView(payload, NOW, ZONE), "UK01", "DE01"));
+	assert.equal(side.remindA.canRemind, false);
+	assert.equal(side.remindB.canRemind, false);
+	assert.match(side.remindB.text, /^Reminded 1×/, "the recipient sees the text without the button");
+});
+
+test("Y65 failure path: a payload without can_remind throws, naming it", () => {
+	const payload = icFixture();
+	delete payload.can_remind;
+	assert.throws(() => intercompanyView(payload, NOW, ZONE), /can_remind/);
+});
+
+test("Y65 failure path: a pair without reminders_b throws, naming it (get_ic always sends it, null when none)", () => {
+	const payload = icFixture();
+	delete payload.groups[0].pairs[0].reminders_b;
+	assert.throws(() => intercompanyView(payload, NOW, ZONE), /reminders_b/);
+});
+
+// --- konsol#305 R53c: each side's Remind follows the server's can_remind_a/_b (#305-R52-2-1) ---
+//
+// Fed the regenerated golden (R53b): UK01 ↔ DE01 over tolerance (both sides
+// true), UK01 ↔ FR01 matched (both false, FR01 masked), DE01 ↔ FR01 within
+// tolerance (both false, FR01 masked). The payload's own can_remind is true.
+
+test("R53c: the golden's per-side flags are what the panel offers, pair by pair", () => {
+	const payload = icFixture();
+	assert.equal(payload.can_remind, true, "the golden caller may remind");
+	const view = intercompanyView(payload, NOW, ZONE);
+	const offered = [];
+	for (const group of view.groups) {
+		for (const pair of group.pairs) {
+			const side = panel(pair);
+			offered.push(`${pair.entity_a} ↔ ${pair.entity_b} ${pair.match_status}: A ${side.remindA.canRemind}, B ${side.remindB.canRemind}`);
+		}
+	}
+	assert.deepEqual(offered, [
+		"UK01 ↔ DE01 over_tolerance: A true, B true",
+		"UK01 ↔ FR01 matched: A false, B false",
+		"DE01 ↔ FR01 within_tolerance: A false, B false",
+	]);
+});
+
+test("R53c failure path: a matched pair offers no Remind although the payload's can_remind is true", () => {
+	const side = panel(fixturePair(intercompanyView(icFixture(), NOW, ZONE), "UK01", "FR01"));
+	assert.deepEqual(side.remindA, { entity: "UK01", text: null, canRemind: false });
+});
+
+test("R53c: no client-side tolerance check — the server's flag decides, whatever the status", () => {
+	const payload = icFixture();
+	const pairs = payload.groups.flatMap((g) => g.pairs);
+	const over = pairs.find((p) => p.entity_a === "UK01" && p.entity_b === "DE01");
+	const within = pairs.find((p) => p.entity_a === "DE01" && p.entity_b === "FR01");
+	over.can_remind_a = false;
+	within.can_remind_a = true;
+	const view = intercompanyView(payload, NOW, ZONE);
+	assert.equal(panel(fixturePair(view, "UK01", "DE01")).remindA.canRemind, false);
+	assert.equal(panel(fixturePair(view, "UK01", "DE01")).remindB.canRemind, true);
+	assert.equal(panel(fixturePair(view, "DE01", "FR01")).remindA.canRemind, true);
+});
+
+test("R53c failure path: a pair without can_remind_a or can_remind_b throws, naming it", () => {
+	for (const key of ["can_remind_a", "can_remind_b"]) {
+		const payload = icFixture();
+		delete payload.groups[0].pairs[0][key];
+		assert.throws(() => intercompanyView(payload, NOW, ZONE), new RegExp(key));
+	}
+	for (const key of ["can_remind_a", "can_remind_b"]) {
+		const payload = icFixture();
+		payload.groups[0].pairs[0][key] = "yes";
+		assert.throws(() => intercompanyView(payload, NOW, ZONE), new RegExp(key));
+	}
+});
+
+test("Y65 failure path: panel refuses a pair that did not come through intercompanyView", () => {
+	assert.throws(() => panel(pairRow({})), /intercompanyView/);
+});
+
+test("Y65: the 'Remind is P2' note is gone from intercompany.js", () => {
+	const source = readFileSync(fileURLToPath(new URL("./intercompany.js", import.meta.url)), "utf8");
+	assert.doesNotMatch(source, /Remind (is|are) P2|replies and\s+(\*\s*)?Remind are P2/);
+});

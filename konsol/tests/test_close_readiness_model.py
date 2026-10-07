@@ -403,3 +403,78 @@ def test_ic_rule_ambiguous_gap_scoped_has_a_plain_label_and_never_names_the_part
     assert configuration["detail"] == (
         "More than one unrealised-profit rule per pair: 1 entity, and 1 you cannot see")
     assert "ZZX" not in json.dumps(result)
+
+
+def _ic_pending_gap():
+    """I53: the real producer's gap for a draft ZZA → ZZX balance (inventory
+    100) that one unrealised-profit rule matches."""
+    rules = [{"rule_id": "R1", "rule_type": "unrealized_profit", "margin_pct": 20,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"}]
+    gap = IBM.pending_gap([{"name": "ICB-ZZA-ZZX", "selling_entity": "ZZA",
+                            "buying_entity": "ZZX", "docstatus": 0,
+                            "ending_inventory_from_ic": 100.0}], rules)
+    assert gap is not None and gap["code"] == "ic_balance_draft_pending", gap
+    return gap
+
+
+def test_ic_pending_gap_blocks_configuration_unscoped_with_its_message():
+    gap = _ic_pending_gap()
+    configuration = _by_code(_readiness(problems=_problems(config_gaps=[gap]), allowed=None),
+                             "configuration")
+    assert configuration["state"] == "blocked"
+    assert gap["message"] in configuration["detail"]
+
+
+def test_ic_pending_gap_scoped_has_a_plain_label_and_never_names_the_partner():
+    result = _readiness(problems=_problems(config_gaps=[_ic_pending_gap()]), allowed={"ZZA"})
+    configuration = _by_code(result, "configuration")
+    assert configuration["state"] == "blocked"
+    assert configuration["detail"] == (
+        "IC Balance draft awaiting approval: 1 entity, and 1 you cannot see")
+    assert "ic_balance_draft_pending" not in configuration["detail"]
+    assert "ZZX" not in json.dumps(result)
+
+
+
+# R52u (L52 live walk, 7 Oct): two leftover configuration gaps ran together —
+# "…and 306 you cannot see Declare the commentary threshold…". Each gap's
+# scoped detail is its own sentence, and a detail that already ends in
+# terminal punctuation never gets a second full stop.
+def _frequency_gap():
+    gap = SM.config_gaps((2025, 1), (2025, 9), {"ZZA": None, "ZZX": None})[0]
+    assert gap["code"] == SM.FREQUENCY_UNDECLARED
+    return gap
+
+
+def test_two_scoped_configuration_gaps_read_as_two_sentences():
+    commentary = CPM.commentary_threshold(None, None, None)["gap"]
+    gaps = [_frequency_gap(), commentary]
+    result = _readiness(problems=_problems(config_gaps=gaps), allowed={"ZZA"})
+    configuration = _by_code(result, "configuration")
+    first = M._scoped_gap_detail(gaps[0], {"ZZA"})
+    second = M._scoped_gap_detail(gaps[1], {"ZZA"})
+    assert first == "Reporting frequency not set: 1 entity, and 1 you cannot see"
+    assert second == commentary["message"]
+    assert configuration["detail"] == first + ". " + second
+    assert "you cannot see Declare" not in configuration["detail"]
+    assert "ZZX" not in json.dumps(result)
+
+
+def test_two_scoped_labelled_gaps_each_end_in_a_full_stop_between_them():
+    gaps = [_frequency_gap(), _ic_rule_gap()]
+    configuration = _by_code(
+        _readiness(problems=_problems(config_gaps=gaps), allowed={"ZZA"}), "configuration")
+    assert configuration["detail"] == (
+        "Reporting frequency not set: 1 entity, and 1 you cannot see. "
+        "Unrealised-profit rule not declared: 1 entity, and 1 you cannot see")
+
+
+def test_a_configuration_detail_already_ending_in_a_full_stop_is_not_doubled():
+    commentary = CPM.commentary_threshold(None, None, None)["gap"]
+    accounts = CPM.statement_accounts("", "", {})["gap"]
+    assert commentary["message"].endswith(".") and accounts["message"].endswith(".")
+    configuration = _by_code(
+        _readiness(problems=_problems(config_gaps=[commentary, accounts]), allowed={"ZZA"}),
+        "configuration")
+    assert configuration["detail"] == commentary["message"] + " " + accounts["message"]
+    assert ".." not in configuration["detail"]

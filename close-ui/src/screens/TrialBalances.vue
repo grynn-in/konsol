@@ -18,21 +18,35 @@
  *   server says `can_upload` (the period is Open and the user may create a
  *   trial balance). After a submit the list is re-read in place, so the
  *   server's own label is shown; the detail area stays open.
- * - No due date is shown: nothing declares one (Problems 6).
+ * - D60 (story 2.4, decision #305-2.4-1): the header shows tbTable's
+ *   `tbDue` text — "TB due Tue 7 Oct 2025", or the server's "No due date
+ *   declared" — never a guessed date. A Missing row past due shows the
+ *   "Overdue" chip (`row.overdueChip`, warn tone). Show-only: overdue never
+ *   blocks or disables anything. A payload without `deadline` is the error
+ *   state, like an unknown status.
  * - B27: a missing TB shows the dash from `entityRows` (never "None"), and
  *   the upload / exception times are formatted in the user's zone like the
  *   freshness bar (B09), with the zone from timefmt.js's `userTimeZone` (B29),
  *   shared with AppShell. With no zone the list is an error, never a
  *   guessed zone; a zone-less server timestamp is refused the same way.
+ * - Y62 (story 1.5): a Missing row shows remind.js's reminded text
+ *   (`row.reminded`, built by `entityRows`). When the server says
+ *   `can_remind`, that row also has a Remind button (`row.canRemind`). It
+ *   posts `remindBody(period, entity, "tb")` through the one function
+ *   `remind(row)`. On success my_tbs is re-read once; a refusal shows the
+ *   server's sentence through `messageLines` and leaves the row as it was.
+ *   The server picks the recipients; the recipient sees the text only.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import LoadState from "../components/LoadState.vue";
 import TbUpload from "../sections/TbUpload.vue";
 import TbCompare from "../sections/TbCompare.vue";
-import { get } from "../api.js";
+import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { entityRows, entityWord } from "../tbTable.js";
+import { entityRows, entityWord, tbDue } from "../tbTable.js";
+import { REMIND, afterPost, remindBody } from "../remind.js";
+import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { periodName as formatPeriod } from "../periodName.js";
 
@@ -120,32 +134,85 @@ watch(() => route.path, () => fetchAll(), { immediate: true });
 
 const refreshError = ref(null);
 
-/** After a submit: re-read my_tbs without leaving the detail area. */
+/**
+ * After a submit: re-read my_tbs without leaving the detail area. TbUpload
+ * is keyed to the period and emits only while mounted, so the period read
+ * here is the one the trial balance was submitted for (R52s).
+ */
 async function refreshAfterSubmit() {
 	const p = period.value;
-	const mine = ++seq;
 	refreshError.value = null;
+	const failed = await reloadTbs(p);
+	if (failed) refreshError.value = `The trial balance was received, but the list could not be re-read: ${failed}`;
+}
+
+// Y62: Remind on a Missing row. `reminding` is the entity being posted for;
+// `remindError` is the server's refusal for one entity, split into lines.
+const reminding = ref(null);
+const remindError = ref(null);
+const reloadError = ref(null);
+
+/**
+ * R52s: re-read my_tbs in place for the captured period `p` (after a
+ * reminder or a submit). It bumps `seq`, so it may cancel a read in flight
+ * for the same period; it therefore ends the loading state itself. A result
+ * for a period the route has left is dropped (remind.js's afterPost).
+ * Returns null, or the message of a read that failed on this period.
+ */
+async function reloadTbs(p) {
+	const mine = ++seq;
 	try {
 		const tbs = await get(MY_TBS, { fiscal_year: p.year, fiscal_period: p.period });
-		if (mine !== seq) return;
+		if (mine !== seq || afterPost(p, period.value) !== "reload") return null;
 		load.data = tbs;
 		load.now = new Date();
+		if (tbs && typeof tbs === "object" && "persona" in tbs) load.persona = tbs.persona;
+		load.error = null;
+		load.status = "ready";
+		return null;
 	} catch (e) {
-		if (mine !== seq) return;
-		refreshError.value = `The trial balance was received, but the list could not be re-read: ${e.message}`;
+		if (mine !== seq || afterPost(p, period.value) !== "reload") return null;
+		return e.message;
+	}
+}
+
+/**
+ * The one function that sends a reminder. A refusal leaves the row as it
+ * was. The period is captured when Remind is pressed (R52s): if the route
+ * has moved to another period by the time the POST returns, the list is not
+ * re-read and any error is dropped; that period's own read owns the screen.
+ */
+async function remind(row) {
+	const p = period.value;
+	remindError.value = null;
+	reloadError.value = null;
+	reminding.value = row.entity;
+	try {
+		await post(REMIND, remindBody({ fiscal_year: p.year, fiscal_period: p.period }, row.entity, "tb"));
+		if (afterPost(p, period.value) === "reload") {
+			const failed = await reloadTbs(p);
+			if (failed) reloadError.value = `The reminder was sent, but the list could not be re-read: ${failed}`;
+		}
+	} catch (e) {
+		if (afterPost(p, period.value) === "reload") {
+			remindError.value = { entity: row.entity, lines: messageLines(e.message) };
+		}
+	} finally {
+		reminding.value = null;
 	}
 }
 
 /** `entityRows` refuses an unknown status; that refusal is shown, not hidden. */
 const table = computed(() => {
-	if (load.status !== "ready") return { rows: null, error: null };
-	if (!timeZone) return { rows: null, error: NO_ZONE };
+	if (load.status !== "ready") return { rows: null, due: null, error: null };
+	if (!timeZone) return { rows: null, due: null, error: NO_ZONE };
 	try {
-		return { rows: entityRows(load.data, load.now, timeZone), error: null };
+		return { rows: entityRows(load.data, load.now, timeZone), due: tbDue(load.data), error: null };
 	} catch (e) {
-		return { rows: null, error: e.message };
+		return { rows: null, due: null, error: e.message };
 	}
 });
+const due = computed(() => table.value.due);
 
 const viewState = computed(() => {
 	if (load.status !== "ready") return load.status;
@@ -216,6 +283,7 @@ watch(
 			<p class="mt-1 text-sm text-ink-gray-6">
 				Your entities for {{ period.error || period.year == null ? "this period" : periodName(period) }}, and whether each trial balance is in.
 			</p>
+			<p v-if="due" class="mt-1 text-sm font-medium text-ink-gray-8" data-due>{{ due.text }}</p>
 		</header>
 
 		<LoadState
@@ -229,6 +297,10 @@ watch(
 		>
 			<p v-if="!load.data.period_open" class="mb-4 rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7">
 				This period is not open. Trial balances are shown read only.
+			</p>
+
+			<p v-if="reloadError" role="alert" class="mb-4 rounded border border-outline-red-1 bg-surface-red-1 px-4 py-3 text-sm text-ink-red-3">
+				{{ reloadError }}
 			</p>
 
 			<p v-if="entityNote" role="alert" class="mb-4 rounded border border-outline-amber-1 bg-surface-amber-1 px-4 py-3 text-sm text-ink-amber-3">
@@ -270,6 +342,21 @@ watch(
 							</td>
 							<td class="px-4 py-2">
 								<span class="inline-block rounded px-2 py-0.5 text-xs font-medium" :class="STATUS_TONE[row.status]">{{ row.status }}</span>
+								<span v-if="row.overdueChip" class="ml-1 inline-block rounded px-2 py-0.5 text-xs font-medium" :class="row.overdueChip.tone">{{ row.overdueChip.text }}</span>
+								<div v-if="row.reminded" class="mt-1 text-xs text-ink-gray-6">{{ row.reminded }}</div>
+								<button
+									v-if="row.canRemind"
+									type="button"
+									class="mt-1 rounded border border-outline-gray-2 px-2 py-0.5 text-xs text-ink-gray-8 hover:bg-surface-gray-2 disabled:opacity-50"
+									:disabled="reminding !== null"
+									:aria-label="`Remind ${row.entity}`"
+									@click.stop="remind(row)"
+									@keydown.enter.stop
+									@keydown.space.stop
+								>Remind</button>
+								<p v-if="remindError && remindError.entity === row.entity" role="alert" class="mt-1 text-xs text-ink-red-3">
+									<span v-for="(line, i) in remindError.lines" :key="i" class="block">{{ line }}</span>
+								</p>
 							</td>
 							<td class="px-4 py-2 text-ink-gray-7">
 								<template v-if="row.tb">

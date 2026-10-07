@@ -24,6 +24,8 @@ API_PY = os.path.join(APP_DIR, "close", "tb_read_api.py")
 SIGNOFF_MODEL_PY = os.path.join(APP_DIR, "close", "signoff_model.py")
 VIEW_MODEL_PY = os.path.join(APP_DIR, "close", "tb_view_model.py")
 TIMEFMT_PY = os.path.join(APP_DIR, "close", "timefmt.py")
+DEADLINES_PY = os.path.join(APP_DIR, "close", "deadlines.py")
+DEADLINE_MODEL_PY = os.path.join(APP_DIR, "close", "deadline_model.py")
 #: The stub site's system time zone (A55): BST (+01:00) in October 2025.
 SITE_TZ = "Europe/London"
 BASIS_MODEL_PY = os.path.join(APP_DIR, "tb_basis_model.py")
@@ -105,6 +107,17 @@ class _Site:
         self.access_checked = []
         self.gaps = []                    # sign_off_problems()["config_gaps"]
         self.sign_off_problems_calls = []
+        self.reminders = []               # close_event.reminders(keys, topic)
+        # deadlines.period_deadlines(keys, today): None -> the stub computes it
+        # with the REAL deadline_model from deadline_rules/holidays (D56).
+        self.deadlines = None
+        self.deadline_rules = []          # Close Deadline Rule rows (none declared)
+        self.holidays = set()             # Close Holiday dates
+        self.deadline_calls = []          # D56: (keys, today) per period_deadlines read
+        self.today = date(2025, 10, 6)    # frappe.utils.getdate()
+        self.reminder_calls = []          # Y56: (keys, topic) per close_event.reminders read
+        self.roles = ["EPM Admin"]        # frappe.get_roles() (Y56: can_remind)
+        self.records["User"] = []         # Y56: the reminder senders' full names
 
 
 def _match(value, cond):
@@ -164,6 +177,7 @@ def _load(site):
         return _File(filters["file_url"])
 
     frappe.get_doc = get_doc
+    frappe.get_roles = lambda user=None: list(site.roles)
     frappe.throw = throw
     frappe.whitelist = whitelist
     frappe.only_for = only_for
@@ -172,7 +186,8 @@ def _load(site):
     frappe._ = lambda s: s
     frappe._dict = _D
     frappe.session = types.SimpleNamespace(user="zz-ea@example.com")
-    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
+    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ,
+                                         getdate=lambda *a: site.today)
 
     def _by_path(name, path):
         spec = importlib.util.spec_from_file_location(name, path)
@@ -197,6 +212,30 @@ def _load(site):
     gate.sign_off_problems = sign_off_problems
     close.signoff_model, close.signoff_gate = signoff_model, gate
     close.timefmt = _by_path("konsol.close.timefmt", TIMEFMT_PY)
+    # Wave 5b (C-X1): Y56/D56 lazily import close_event.reminders and
+    # deadlines.period_deadlines; the stub package carries both.
+    close_event = types.ModuleType("konsol.close.close_event")
+
+    def reminders(keys, topic=None):
+        site.reminder_calls.append((list(keys), topic))
+        return site.reminders
+
+    close_event.reminders = reminders
+    deadlines = types.ModuleType("konsol.close.deadlines")
+
+    def period_deadlines(keys, today):
+        site.deadline_calls.append((list(keys), today))
+        if site.deadlines is not None:
+            return site.deadlines
+        model = _by_path("test_close_tb_read_api_deadline_model", DEADLINE_MODEL_PY)
+        wanted = {(int(fy), int(fp)) for fy, fp in keys}
+        return {(r["fiscal_year"], r["fiscal_period"]): model.period_deadlines(
+                    site.deadline_rules, site.holidays, r["end_date"], today)
+                for r in site.rows if (r["fiscal_year"], r["fiscal_period"]) in wanted
+                and r["period_type"] == "Regular"}
+
+    deadlines.period_deadlines = period_deadlines
+    close.close_event, close.deadlines = close_event, deadlines
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     perms = types.ModuleType("konsol.entity_permissions")
@@ -233,6 +272,8 @@ def _load(site):
             "konsol.close.signoff_model": signoff_model,
             "konsol.close.signoff_gate": gate,
             "konsol.close.timefmt": close.timefmt,
+            "konsol.close.close_event": close_event,
+            "konsol.close.deadlines": deadlines,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status, "konsol.clickhouse": clickhouse,
             "konsol.tb_dimension": tb_dimension,
@@ -262,6 +303,9 @@ def _load(site):
         sys.modules["konsol.tb_balance_model"] = mods["konsol.tb_balance_model"]
         mods[CONTROLLER] = _by_path(CONTROLLER, CONTROLLER_PY)
         sys.modules[CONTROLLER] = mods[CONTROLLER]
+        # D56: the payload form is the REAL deadlines.as_payload.
+        deadlines.as_payload = _by_path("test_close_tb_read_api_deadlines",
+                                        DEADLINES_PY).as_payload
         close.tb_view_model = _by_path("konsol.close.tb_view_model", VIEW_MODEL_PY)
         mods["konsol.close.tb_view_model"] = close.tb_view_model
         sys.modules["konsol.close.tb_view_model"] = close.tb_view_model
@@ -323,6 +367,35 @@ def test_is_a_get_endpoint_gated_on_every_close_role():
     _my_tbs(site)
     assert site.whitelisted["my_tbs"] == ["GET"]
     assert site.only_for == [ALL_CLOSE_ROLES]
+
+
+def test_stub_close_carries_reminders_and_deadlines():
+    """C-X1 guard (T51t): the stub konsol.close resolves close_event.reminders
+    and deadlines.period_deadlines, both as attributes and as imports."""
+    site = _Site()
+    site.reminders = [{"topic": "tb"}]
+    site.deadlines = {(2025, 9): "2025-10-10"}
+    _module, mods = _load(site)
+    close = mods["konsol.close"]
+    assert close.close_event.reminders([(2025, 9)]) == site.reminders
+    assert close.close_event.reminders([(2025, 9)], topic="tb") == site.reminders
+    assert close.deadlines.period_deadlines([(2025, 9)], "2025-10-01") == site.deadlines
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        from konsol.close import close_event, deadlines
+        from konsol.close.close_event import reminders
+        from konsol.close.deadlines import period_deadlines
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    assert close_event is close.close_event and deadlines is close.deadlines
+    assert reminders([(2025, 9)]) == site.reminders
+    assert period_deadlines([(2025, 9)], "2025-10-01") == site.deadlines
+    assert _Site().reminders == [] and _Site().deadlines is None
 
 
 # --- who sees what ---------------------------------------------------------------
@@ -804,3 +877,338 @@ def test_tb_compare_refuses_undeclared_and_non_regular_periods():
     site.rows = _year(2025, closing="Open")
     err = _raises_compare(site, fp=13)
     assert "Regular" in str(err), str(err)
+
+
+# --- Y56: each row carries its reminders; can_remind (story 1.5, C-R6) -------------
+
+REMIND_MODEL_PY = os.path.join(APP_DIR, "close", "remind_model.py")
+_RM_SPEC = importlib.util.spec_from_file_location("test_close_tb_read_api_remind_model",
+                                                  REMIND_MODEL_PY)
+REMIND_MODEL = importlib.util.module_from_spec(_RM_SPEC)
+_RM_SPEC.loader.exec_module(REMIND_MODEL)
+
+#: The golden payload close-ui's TB list tests load (W4-E19): exactly what the
+#: real ``my_tbs`` returns for ``_golden_site()``, never a hand-built dict.
+MY_TBS_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "fixtures", "close_my_tbs_payload.json")
+
+
+def _reminder(name, entity, at, actor, topic="tb", fy=2025, fp=9):
+    """One event as ``close_event.reminders`` returns it (Y53): the input
+    ``remind_model.summary`` reads."""
+    return {"name": name, "fiscal_year": fy, "fiscal_period": fp, "entity": entity,
+            "actor": actor, "at": at,
+            "detail": {"topic": topic, "recipients": ["zz-ea@example.com"],
+                       "subject": "Reminder"}}
+
+
+def _user(name, full_name):
+    return {"name": name, "full_name": full_name}
+
+
+def _reminded_site():
+    """ZZC (Missing) reminded twice, an hour apart, by two senders; nothing else."""
+    site = _Site()
+    site.roles = ["EPM Analyst"]
+    site.reminders = [
+        _reminder("CE-0002", "ZZC", datetime(2025, 10, 6, 10, 0), "zz-lead@example.com"),
+        _reminder("CE-0001", "ZZC", datetime(2025, 10, 6, 9, 0), "zz-ga@example.com"),
+    ]
+    site.records["User"] = [_user("zz-lead@example.com", "Zed Lead"),
+                            _user("zz-ga@example.com", "Gee Accountant")]
+    return site
+
+
+def _golden_site():
+    """D56: plus a declared rule whose TB due date (2025-10-07) is past on
+    2025-10-08, so the SPA sees overdue Missing rows."""
+    site = _reminded_site()
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=5)]
+    site.today = date(2025, 10, 8)
+    return site
+
+
+def test_the_events_are_the_real_summary_input():
+    """The stub events are the shape remind_model.summary reads: a count of 2."""
+    got = REMIND_MODEL.summary(_reminded_site().reminders)
+    assert got[(2025, 9, "ZZC", "tb")]["count"] == 2
+
+
+def test_a_reminded_row_carries_count_last_at_and_the_latest_sender():
+    site = _reminded_site()
+    by = _by_entity(_my_tbs(site))
+    assert by["ZZC"]["reminders"] == {
+        "count": 2, "last_at": "2025-10-06T10:00:00+01:00",
+        "last_by": "zz-lead@example.com", "last_by_name": "Zed Lead"}, by["ZZC"]
+    assert by["ZZA"]["reminders"] is None and by["ZZB"]["reminders"] is None
+
+
+def test_the_latest_is_by_time_not_by_list_order():
+    site = _reminded_site()
+    site.reminders = list(reversed(site.reminders))
+    assert _by_entity(_my_tbs(site))["ZZC"]["reminders"]["last_by_name"] == "Zed Lead"
+
+
+def test_reminders_are_read_once_for_the_period_and_topic_tb():
+    site = _reminded_site()
+    _my_tbs(site)
+    assert site.reminder_calls == [([(2025, 9)], "tb")]
+    user_reads = [f for d, f in site.get_all_calls if d == "User"]
+    assert user_reads == [{"name": ["in", ["zz-lead@example.com"]]}], user_reads
+
+
+def test_no_reminders_reads_no_user():
+    site = _Site()
+    result = _my_tbs(site)
+    assert all(e["reminders"] is None for e in result["entities"])
+    assert [d for d, _f in site.get_all_calls if d == "User"] == []
+
+
+def test_an_unowned_row_carries_reminders_too():
+    site = _reminded_site()
+    site.records["Entity"].append(_entity("ZZU"))
+    site.records["Trial Balance Submission"].append(_tb("TB-U", "ZZU"))
+    site.gaps = [_unowned_gap(["ZZU"])]
+    site.reminders.append(
+        _reminder("CE-0003", "ZZU", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+    by = _by_entity(_my_tbs(site))
+    assert by["ZZU"]["status"] == NOT_CONSOLIDATED
+    assert by["ZZU"]["reminders"]["count"] == 1
+    assert by["ZZU"]["reminders"]["last_by_name"] == "Gee Accountant"
+
+
+def test_a_hidden_entitys_reminders_never_leave_the_server():
+    """The recipient (an Entity Accountant on ZZA) sees their own row's
+    reminders, and nothing about ZZC's: not its count, not its sender."""
+    site = _reminded_site()
+    site.roles = ["Entity Accountant"]
+    site.allowed = {"ZZA"}
+    site.reminders.append(
+        _reminder("CE-0003", "ZZA", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+    result = _my_tbs(site)
+    assert [e["entity"] for e in result["entities"]] == ["ZZA"]
+    assert result["entities"][0]["reminders"]["count"] == 1
+    text = json.dumps(result)
+    # zz-lead@example.com also owns ZZA's own TB, so its id is legitimately
+    # present; its full name comes only from ZZC's reminder.
+    for hidden in ("ZZC", "Zed Lead", "CE-0002"):
+        assert hidden not in text, (hidden, text)
+    user_reads = [f for d, f in site.get_all_calls if d == "User"]
+    assert user_reads == [{"name": ["in", ["zz-ga@example.com"]]}], user_reads
+
+
+def test_an_unknown_topic_raises_never_a_silent_zero():
+    site = _reminded_site()
+    site.reminders.append(_reminder("CE-0009", "ZZA", datetime(2025, 10, 6, 8, 0),
+                                    "zz-ga@example.com", topic="x"))
+    with pytest.raises(ValueError) as info:
+        _my_tbs(site)
+    assert "CE-0009" in str(info.value)
+
+
+def test_a_non_datetime_time_raises():
+    site = _reminded_site()
+    site.reminders[0]["at"] = "2025-10-06 10:00:00"
+    with pytest.raises(ValueError) as info:
+        _my_tbs(site)
+    assert "CE-0002" in str(info.value)
+
+
+def test_a_sender_with_no_full_name_is_labelled_and_the_other_rows_are_intact():
+    """konsol#305 R52c (review-w5b S3). Failure path (red at 843cdf7): a
+    sender with no User row, or a User whose full name is blank, made
+    ``my_tbs`` raise "... has no full name" and took the whole list down. Now
+    that row shows the labelled id (``remind_model.sender_name``), every other
+    row is intact, and the reads are unchanged: one reminders read, one User
+    read naming every visible sender."""
+    for users in ([_user("zz-ga@example.com", "Gee Accountant")],
+                  [_user("zz-lead@example.com", ""),
+                   _user("zz-ga@example.com", "Gee Accountant")]):
+        site = _reminded_site()
+        site.records["User"] = users
+        site.reminders.append(
+            _reminder("CE-0003", "ZZA", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+        by = _by_entity(_my_tbs(site))
+        assert by["ZZC"]["reminders"] == {
+            "count": 2, "last_at": "2025-10-06T10:00:00+01:00",
+            "last_by": "zz-lead@example.com",
+            "last_by_name": "zz-lead@example.com (name not recorded)"}, by["ZZC"]
+        assert by["ZZA"]["reminders"]["last_by_name"] == "Gee Accountant", by["ZZA"]
+        assert by["ZZA"]["reminders"]["count"] == 1
+        assert by["ZZB"]["reminders"] is None
+        assert site.reminder_calls == [([(2025, 9)], "tb")]
+        user_reads = [f for d, f in site.get_all_calls if d == "User"]
+        assert user_reads == [{"name": ["in", ["zz-ga@example.com",
+                                               "zz-lead@example.com"]]}], user_reads
+
+
+def test_can_remind_only_for_remind_roles_in_an_open_period():
+    for roles, expected in ((["EPM Admin"], True), (["EPM Analyst"], True),
+                            (["System Manager"], True), (["EPM User"], False),
+                            (["Entity Accountant"], False), ([], False),
+                            (["Entity Accountant", "EPM Analyst"], True)):
+        site = _Site()
+        site.roles = roles
+        assert _my_tbs(site)["can_remind"] is expected, roles
+    site = _Site()
+    site.rows = _year(2025, status="Closed")
+    assert _my_tbs(site)["can_remind"] is False
+
+
+def test_can_remind_is_present_when_the_caller_sees_no_entity():
+    site = _Site()
+    site.allowed = set()
+    result = _my_tbs(site)
+    assert result["can_remind"] is True and result["entities"] == []
+    assert site.reminder_calls == []
+
+
+def test_every_row_carries_the_reminders_key():
+    site = _Site()
+    site.in_scope = ["ZZA", "ZZB", "ZZC", "ZZD"]
+    site.records["Entity"].append(_entity("ZZD"))
+    site.records["TB Exception"].append(_exc("EXC-D", "ZZD"))
+    for row in _my_tbs(site)["entities"]:
+        assert "reminders" in row, row
+
+
+def test_my_tbs_matches_the_golden_fixture():
+    out = json.loads(json.dumps(_my_tbs(_golden_site())))
+    with open(MY_TBS_FIXTURE) as f:
+        golden = json.load(f)
+    assert out == golden
+    assert golden["can_remind"] is True
+    assert [e["entity"] for e in golden["entities"] if e["reminders"]] == ["ZZC"]
+
+
+# --- D56: the TB due date, and overdue on Missing rows ------------------------------
+
+DEADLINE_SPEC = importlib.util.spec_from_file_location("test_close_tb_read_api_dm", DEADLINE_MODEL_PY)
+DEADLINE_MODEL = importlib.util.module_from_spec(DEADLINE_SPEC)
+DEADLINE_SPEC.loader.exec_module(DEADLINE_MODEL)
+
+
+def _rule(valid_from, tb=0, ic=0, journals=0, signoff=0, week=("monday", "tuesday", "wednesday",
+                                                              "thursday", "friday")):
+    """One Close Deadline Rule row (D53 fields), as deadlines.py reads it."""
+    rule = {"valid_from": valid_from, "tb_due_days": tb, "ic_due_days": ic,
+            "journals_due_days": journals, "signoff_due_days": signoff}
+    for wd in DEADLINE_MODEL.WEEKDAYS:
+        rule[wd] = 1 if wd in week else 0
+    return rule
+
+
+def _deadline_site(today):
+    """FY2025 P09 ends Tue 30 Sep; TB due 5 working days later = Tue 7 Oct.
+    ZZA Received, ZZB and ZZC Missing; ZZD has an exception."""
+    site = _Site()
+    site.in_scope = ["ZZA", "ZZB", "ZZC", "ZZD"]
+    site.records["Entity"].append(_entity("ZZD"))
+    site.records["TB Exception"].append(_exc("EXC-D", "ZZD"))
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=5, signoff=10)]
+    site.today = today
+    return site
+
+
+def test_the_stub_deadlines_are_the_real_model_output():
+    site = _deadline_site(date(2025, 10, 8))
+    got = DEADLINE_MODEL.period_deadlines(site.deadline_rules, set(), date(2025, 9, 30),
+                                          site.today)
+    assert got["tb"] == {"due": date(2025, 10, 7), "past": True, "text": "Due 2025-10-07"}
+
+
+def test_a_past_tb_due_makes_the_missing_rows_overdue_and_no_other():
+    result = _my_tbs(_deadline_site(date(2025, 10, 8)))
+    assert result["deadline"] == {"due": "2025-10-07", "past": True, "text": "Due 2025-10-07"}
+    by = _by_entity(result)
+    assert by["ZZB"]["status"] == by["ZZC"]["status"] == "Missing"
+    assert by["ZZB"]["overdue"] is True and by["ZZC"]["overdue"] is True
+    assert by["ZZA"]["status"] == "Received" and by["ZZA"]["overdue"] is False
+    assert by["ZZD"]["status"] == "Exception declared" and by["ZZD"]["overdue"] is False
+
+
+def test_on_the_due_date_nothing_is_overdue():
+    result = _my_tbs(_deadline_site(date(2025, 10, 7)))
+    assert result["deadline"] == {"due": "2025-10-07", "past": False, "text": "Due 2025-10-07"}
+    assert all(e["overdue"] is False for e in result["entities"])
+
+
+def test_an_undeclared_rule_reads_no_due_date_declared_and_nothing_is_overdue():
+    """Failure path (#305-2.4-1): no rule -> the sentence, never a guessed date."""
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = []
+    result = _my_tbs(site)
+    assert result["deadline"] == {"due": None, "past": False, "text": "No due date declared"}
+    assert result["entities"] and all(e["overdue"] is False for e in result["entities"])
+
+
+def test_a_rule_with_no_tb_offset_is_undeclared_for_the_tb():
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=0, signoff=10)]
+    result = _my_tbs(site)
+    assert result["deadline"]["text"] == "No due date declared"
+    assert all(e["overdue"] is False for e in result["entities"])
+
+
+def test_a_rule_valid_after_the_period_end_does_not_govern_it():
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = [_rule(date(2025, 10, 1), tb=5)]
+    assert _my_tbs(site)["deadline"]["text"] == "No due date declared"
+
+
+def test_an_unowned_row_is_never_overdue():
+    site = _deadline_site(date(2025, 10, 8))
+    site.records["Entity"].append(_entity("ZZU"))
+    site.records["Trial Balance Submission"].append(_tb("TB-U", "ZZU"))
+    site.gaps = [_unowned_gap(["ZZU"])]
+    by = _by_entity(_my_tbs(site))
+    assert by["ZZU"]["status"] == NOT_CONSOLIDATED and by["ZZU"]["overdue"] is False
+
+
+def test_deadlines_are_read_once_for_the_period_with_today():
+    site = _deadline_site(date(2025, 10, 8))
+    _my_tbs(site)
+    assert site.deadline_calls == [([(2025, 9)], date(2025, 10, 8))]
+
+
+def test_the_deadline_is_present_when_the_caller_sees_no_entity():
+    site = _deadline_site(date(2025, 10, 8))
+    site.allowed = set()
+    result = _my_tbs(site)
+    assert result["entities"] == []
+    assert result["deadline"]["text"] == "Due 2025-10-07"
+
+
+def test_a_regular_period_missing_from_the_deadline_read_raises():
+    """No silent fallback: the reader returning nothing for the asked Regular
+    period is an error naming it, never "No due date declared"."""
+    site = _deadline_site(date(2025, 10, 8))
+    site.deadlines = {}
+    with pytest.raises(Exception) as info:
+        _my_tbs(site)
+    assert "FY2025 P09" in str(info.value), str(info.value)
+
+
+def test_a_bad_step_map_raises():
+    site = _deadline_site(date(2025, 10, 8))
+    site.deadlines = {(2025, 9): {"tb": {"due": None, "past": False, "text": "x"}}}
+    with pytest.raises(Exception):
+        _my_tbs(site)
+
+
+def test_every_row_carries_the_overdue_key():
+    for row in _my_tbs(_deadline_site(date(2025, 10, 8)))["entities"]:
+        assert isinstance(row.get("overdue"), bool), row
+
+
+def test_the_no_due_date_docstring_line_is_gone():
+    with open(API_PY) as f:
+        assert "No due date is shown" not in f.read()
+
+
+def test_the_golden_fixture_carries_the_deadline_and_overdue():
+    with open(MY_TBS_FIXTURE) as f:
+        golden = json.load(f)
+    assert golden["deadline"] == {"due": "2025-10-07", "past": True, "text": "Due 2025-10-07"}
+    overdue = sorted(e["entity"] for e in golden["entities"] if e["overdue"])
+    assert overdue == ["ZZB", "ZZC"], overdue

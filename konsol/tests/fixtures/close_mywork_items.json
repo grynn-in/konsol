@@ -1,0 +1,219 @@
+{
+  "entity_accountant": [
+    {
+      "action": {
+        "desk": "/app/entity"
+      },
+      "detail": "ZZA",
+      "entities": [
+        "ZZA"
+      ],
+      "id": "gap:frequency",
+      "kind": "blocking",
+      "owner": "EPM Admin",
+      "since": null,
+      "since_reason": "configuration gap",
+      "title": "Reporting frequency missing for 1 entity",
+      "users": []
+    },
+    {
+      "action": {
+        "entity": "ZZA",
+        "screen": "trial-balances"
+      },
+      "due": {
+        "date": "2025-08-07",
+        "overdue": true,
+        "text": "Due 2025-08-07"
+      },
+      "id": "tb:2025-07:ZZA",
+      "kind": "blocking",
+      "owner": "Entity Accountant",
+      "period": {
+        "code": "FY2025 P07",
+        "fiscal_period": 7,
+        "fiscal_year": 2025,
+        "since": "2025-07-31"
+      },
+      "reminded": {
+        "count": 2,
+        "last_at": "2025-08-06T14:05:00+01:00",
+        "last_by_name": "Jane Doe"
+      },
+      "title": "Upload TB for ZZA"
+    },
+    {
+      "action": {
+        "entity": "ZZA",
+        "screen": "trial-balances"
+      },
+      "due": {
+        "date": "2025-10-07",
+        "overdue": false,
+        "text": "Due 2025-10-07"
+      },
+      "id": "tb:2025-09:ZZA",
+      "kind": "todo",
+      "owner": "Entity Accountant",
+      "period": {
+        "code": "FY2025 P09",
+        "fiscal_period": 9,
+        "fiscal_year": 2025,
+        "since": "2025-09-30"
+      },
+      "reminded": {
+        "count": 1,
+        "last_at": "2025-09-10T08:00:00+01:00",
+        "last_by_name": "Raj Patel"
+      },
+      "title": "Upload TB for ZZA"
+    }
+  ],
+  "group_accountant": [
+    {
+      "action": {
+        "desk": "/app/entity"
+      },
+      "detail": "ZZA, ZZB",
+      "entities": [
+        "ZZA",
+        "ZZB"
+      ],
+      "id": "gap:frequency",
+      "kind": "blocking",
+      "owner": "EPM Admin",
+      "since": null,
+      "since_reason": "configuration gap",
+      "title": "Reporting frequency missing for 2 entities",
+      "users": []
+    },
+    {
+      "action": {
+        "desk": "/app/ownership-period"
+      },
+      "detail": "ZZC: FY2025 P07, FY2025 P08, FY2025 P09, FY2025 P10, FY2025 P11",
+      "entities": [
+        "ZZC"
+      ],
+      "id": "gap:ownership",
+      "kind": "blocking",
+      "owner": "EPM Admin",
+      "since": null,
+      "since_reason": "configuration gap",
+      "title": "Ownership missing for 1 entity",
+      "users": []
+    },
+    {
+      "action": {
+        "desk": "/app/user"
+      },
+      "detail": "zz-idle@example.com",
+      "entities": [],
+      "id": "gap:accountants",
+      "kind": "blocking",
+      "owner": "System Manager",
+      "since": null,
+      "since_reason": "configuration gap",
+      "title": "1 Entity Accountant with no entity",
+      "users": [
+        "zz-idle@example.com"
+      ]
+    },
+    {
+      "action": {
+        "screen": "checks"
+      },
+      "due": null,
+      "id": "checks-failing:2025-07",
+      "kind": "blocking",
+      "owner": "EPM Analyst",
+      "period": {
+        "code": "FY2025 P07",
+        "fiscal_period": 7,
+        "fiscal_year": 2025,
+        "since": "2025-07-31"
+      },
+      "title": "3 checks failing"
+    },
+    {
+      "action": {
+        "screen": "rates"
+      },
+      "due": null,
+      "id": "rates:2025-07",
+      "kind": "blocking",
+      "owner": "EPM Analyst",
+      "period": {
+        "code": "FY2025 P07",
+        "fiscal_period": 7,
+        "fiscal_year": 2025,
+        "since": "2025-07-31"
+      },
+      "title": "Rates missing (2)"
+    },
+    {
+      "action": {
+        "screen": "checks"
+      },
+      "due": null,
+      "id": "checks-run:2025-09",
+      "kind": "todo",
+      "owner": "EPM Analyst",
+      "period": {
+        "code": "FY2025 P09",
+        "fiscal_period": 9,
+        "fiscal_year": 2025,
+        "since": "2025-09-30"
+      },
+      "title": "Run checks"
+    },
+    {
+      "action": {
+        "screen": "trial-balances"
+      },
+      "due": {
+        "date": "2025-08-07",
+        "overdue": true,
+        "text": "Due 2025-08-07"
+      },
+      "id": "tbs-waiting:2025-07",
+      "kind": "waiting",
+      "owner": "EPM Analyst",
+      "period": {
+        "code": "FY2025 P07",
+        "fiscal_period": 7,
+        "fiscal_year": 2025,
+        "since": "2025-07-31"
+      },
+      "reminded": {
+        "of": 2,
+        "reminded": 2
+      },
+      "title": "Waiting on 2 trial balances"
+    },
+    {
+      "action": {
+        "screen": "trial-balances"
+      },
+      "due": {
+        "date": null,
+        "overdue": false,
+        "text": "No due date declared"
+      },
+      "id": "tbs-waiting:2025-09",
+      "kind": "waiting",
+      "owner": "EPM Analyst",
+      "period": {
+        "code": "FY2025 P09",
+        "fiscal_period": 9,
+        "fiscal_year": 2025,
+        "since": "2025-09-30"
+      },
+      "reminded": {
+        "of": 1,
+        "reminded": 1
+      },
+      "title": "Waiting on 1 trial balance"
+    }
+  ]
+}

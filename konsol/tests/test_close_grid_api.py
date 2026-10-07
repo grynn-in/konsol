@@ -17,14 +17,16 @@ import json
 import os
 import sys
 import types
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PY = os.path.join(APP_DIR, "close", "grid_api.py")
+DEADLINES_PY = os.path.join(APP_DIR, "close", "deadlines.py")
 REAL_MODELS = ("scope_model", "signoff_model", "period_grid_model", "readiness_model")
 GRID_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
+SITE_TZ = "Europe/London"
 
 
 class _D(dict):
@@ -94,6 +96,27 @@ class _Site:
         self.problem_calls = []
         self.run_result = None
         self.run_calls = []
+        # T52t (C-X1): what the stub close_event.reminders / deadlines
+        # .period_deadlines return, so Y57/D57's lazy imports resolve.
+        self.reminders = []
+        # deadlines.period_deadlines(keys, today): None -> the stub computes it
+        # with the REAL deadline_model from deadline_rules/holidays (D57).
+        self.deadlines = None
+        self.deadline_rules = []          # Close Deadline Rule rows (none declared)
+        self.holidays = set()             # Close Holiday dates
+        self.deadline_calls = []          # D57: (keys, today) per period_deadlines read
+        self.today = date(2025, 10, 6)    # frappe.utils.getdate()
+        self.reminder_calls = []          # Y57: (keys, topic) per close_event.reminders read
+        self.data["User"] = []            # Y57: the reminder senders' full names
+        self.user_filters = []            # Y57: the filters of each User read
+        # D57b (#305-Q5-1): ic_api.signoff_summary is computed by the REAL
+        # ic_model from ic_state/ic_rows; journals are counted by db.count.
+        self.ic_state = "checked"
+        self.ic_rows = []                 # gold_ic_reconciliation rows
+        self.ic_calls = []                # (fy, fp) per signoff_summary read
+        self.data["Consolidation Journal"] = []
+        self.count_calls = []             # (doctype, filters) per db.count read
+        self.count_error = None           # raised by db.count when set
 
 
 def _match(value, cond):
@@ -137,6 +160,8 @@ def _frappe(site):
         if doctype not in site.data:
             raise AssertionError("unexpected get_all(%r)" % doctype)
         site.get_all_calls[doctype] = site.get_all_calls.get(doctype, 0) + 1
+        if doctype == "User":
+            site.user_filters.append(filters)
         filters = filters or {}
         assert isinstance(filters, dict), filters
         rows = [r for r in site.data[doctype]
@@ -150,6 +175,15 @@ def _frappe(site):
     def forbidden(*a, **k):
         raise AssertionError("get_period_grid must not write")
 
+    def count(doctype, filters=None, **k):
+        site.count_calls.append((doctype, dict(filters or {})))
+        if site.count_error is not None:
+            raise site.count_error
+        if doctype not in site.data:
+            raise AssertionError("unexpected count(%r)" % doctype)
+        return len([r for r in site.data[doctype]
+                    if all(_match(r.get(f), c) for f, c in (filters or {}).items())])
+
     frappe.throw = throw
     frappe._ = lambda s: s
     frappe.only_for = only_for
@@ -157,7 +191,10 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
-    frappe.db = types.SimpleNamespace(set_value=forbidden, commit=forbidden, sql=forbidden)
+    frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ,
+                                         getdate=lambda *a: site.today)
+    frappe.db = types.SimpleNamespace(set_value=forbidden, commit=forbidden, sql=forbidden,
+                                      count=count)
     frappe.get_doc = forbidden
     frappe.enqueue = forbidden
     return frappe
@@ -218,6 +255,39 @@ def _load_api(site):
         return site.run_result
 
     assertion_run.latest_close_run = latest_close_run
+    # T52t (C-X1): stub konsol.close.close_event (reminders, Y53) and
+    # konsol.close.deadlines (period_deadlines, D55), so grid_api's lazy
+    # `from konsol.close import close_event, deadlines` resolves.
+    close_event = types.ModuleType("konsol.close.close_event")
+
+    def reminders(keys, topic=None):
+        site.reminder_calls.append((list(keys), topic))
+        return site.reminders
+
+    close_event.reminders = reminders
+    deadlines = types.ModuleType("konsol.close.deadlines")
+
+    def period_deadlines(keys, today):
+        site.deadline_calls.append((list(keys), today))
+        if site.deadlines is not None:
+            return site.deadlines
+        model = _model("deadline_model")
+        wanted = {(int(fy), int(fp)) for fy, fp in keys}
+        return {(r["fiscal_year"], r["fiscal_period"]): model.period_deadlines(
+                    site.deadline_rules, site.holidays, r["end_date"], today)
+                for r in site.rows if (r["fiscal_year"], r["fiscal_period"]) in wanted
+                and r["period_type"] == "Regular"}
+
+    deadlines.period_deadlines = period_deadlines
+    # D57b: ic_api.signoff_summary, built by the REAL ic_model.signoff_line
+    # (what the real helper returns for each state).
+    ic_api = types.ModuleType("konsol.close.ic_api")
+
+    def signoff_summary(fy, fp):
+        site.ic_calls.append((fy, fp))
+        return _model("ic_model").signoff_line(site.ic_state, list(site.ic_rows), [], [])
+
+    ic_api.signoff_summary = signoff_summary
 
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
@@ -226,6 +296,9 @@ def _load_api(site):
         "konsol.period_status": period_status,
         "konsol.close.signoff_gate": signoff_gate,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
+        "konsol.close.close_event": close_event,
+        "konsol.close.deadlines": deadlines,
+        "konsol.close.ic_api": ic_api,
     }
     mods.update(stubs)
     for full, module in stubs.items():
@@ -235,6 +308,11 @@ def _load_api(site):
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
     try:
+        # D57: the payload form is the REAL deadlines.as_payload.
+        real = importlib.util.spec_from_file_location("test_close_grid_api_deadlines", DEADLINES_PY)
+        real_deadlines = importlib.util.module_from_spec(real)
+        real.loader.exec_module(real_deadlines)
+        deadlines.as_payload = real_deadlines.as_payload
         spec = importlib.util.spec_from_file_location("konsol.close.grid_api", API_PY)
         api = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(api)
@@ -247,12 +325,28 @@ def _load_api(site):
     site.errors = types.SimpleNamespace(PermissionError=frappe.PermissionError,
                                         ValidationError=frappe.ValidationError,
                                         PeriodNotDeclared=period_status.PeriodNotDeclared)
+    site.stub_modules = mods
     return api
+
+
+def _installed(site, fn, *args):
+    """Run ``fn`` with the stub modules installed, so a lazy import inside
+    the endpoint resolves to the stubs (T52t, C-X1)."""
+    saved = {n: sys.modules.get(n) for n in site.stub_modules}
+    sys.modules.update(site.stub_modules)
+    try:
+        return fn(*args)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
 
 
 def _call(site, fy=2025, fp=9):
     api = _load_api(site)
-    result = api.get_period_grid(fy, fp)
+    result = _installed(site, api.get_period_grid, fy, fp)
     json.dumps(result)  # JSON-safe
     return result
 
@@ -265,7 +359,7 @@ def _call_raises(site, fy=2025, fp=9):
 
 def _call_readiness(site, fy=2025, fp=9):
     api = _load_api(site)
-    result = api.get_readiness(fy, fp)
+    result = _installed(site, api.get_readiness, fy, fp)
     json.dumps(result)  # JSON-safe
     return result
 
@@ -334,11 +428,13 @@ def test_a_clean_site_gives_four_rows_with_the_unowned_tb_a_problem():
     assert zzx["problem"] is True
     assert zzx["in_scope"] is False
     assert zzx["ownership"] == {"tone": "blocking", "label": "None for P09"}
-    assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership for this period"}
+    assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership for this period",
+                         "reminders": None, "overdue": False}
     zza = rows["ZZA"]
     assert zza["problem"] is False, zza
     assert zza["ownership"]["label"] == "Full · 100%"
-    assert zza["tb"] == {"tone": "ok", "label": "Received"}
+    assert zza["tb"] == {"tone": "ok", "label": "Received", "reminders": None,
+                         "overdue": False}
     # Group currency comes from the root group only (data_area_id not set):
     # USD, not the sub-group's GBP; EUR->USD Closing is approved.
     assert zza["rate"] == {"tone": "ok", "label": "Approved"}
@@ -358,7 +454,8 @@ def test_other_periods_records_do_not_count():
     site = _Site()
     site.data["Trial Balance Submission"][0]["fiscal_period"] = 8
     rows = {r["entity"]: r for r in _call(site)["rows"]}
-    assert rows["ZZA"]["tb"] == {"tone": "blocking", "label": "Missing"}
+    assert rows["ZZA"]["tb"] == {"tone": "blocking", "label": "Missing",
+                                 "reminders": None, "overdue": False}
 
 
 def test_a_draft_rate_in_the_missing_list_reads_awaiting_approval():
@@ -499,3 +596,620 @@ def test_readiness_each_reader_is_called_exactly_once():
     assert site.problem_calls == [(2025, 9)]
     assert site.rate_calls == [(2025, 9)]
     assert site.run_calls == [(2025, 9)]
+
+
+# --- T52t (C-X1): the loader carries close_event.reminders and deadlines ------
+
+def test_stub_close_carries_reminders_and_deadlines():
+    site = _Site()
+    _load_api(site)
+    close = site.stub_modules["konsol.close"]
+    assert close.close_event is site.stub_modules["konsol.close.close_event"]
+    assert close.deadlines is site.stub_modules["konsol.close.deadlines"]
+    assert close.close_event.reminders([(2025, 9)]) == []
+    assert close.close_event.reminders([(2025, 9)], topic="tb") == []
+    assert site.deadlines is None  # D57: the stub computes with the real deadline_model
+    site.reminders = ["r"]
+    site.deadlines = {"tb": "d"}
+    assert close.close_event.reminders([(2025, 9)]) == ["r"]
+    assert close.deadlines.period_deadlines([(2025, 9)], "2025-10-01") == {"tb": "d"}
+
+    def lazy():
+        from konsol.close import close_event, deadlines
+        return close_event.reminders([]), deadlines.period_deadlines([], None)
+
+    assert _installed(site, lazy) == (["r"], {"tb": "d"})
+
+
+# --- Y57: the Trial balance cell carries reminders (stories 1.5, 2.2; C-R6) --------
+
+REMIND_MODEL_PY = os.path.join(APP_DIR, "close", "remind_model.py")
+_RM_SPEC = importlib.util.spec_from_file_location("test_close_grid_api_remind_model",
+                                                  REMIND_MODEL_PY)
+REMIND_MODEL = importlib.util.module_from_spec(_RM_SPEC)
+_RM_SPEC.loader.exec_module(REMIND_MODEL)
+
+#: The golden payload close-ui's period grid tests load (W4-E19, Y63): exactly
+#: what the real ``get_period_grid`` returns for ``_golden_site()``.
+GRID_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "fixtures", "close_period_grid_payload.json")
+
+
+def _reminder(name, entity, at, actor, topic="tb", fy=2025, fp=9):
+    """One event as ``close_event.reminders`` returns it (Y53): the input
+    ``remind_model.summary`` reads."""
+    return {"name": name, "fiscal_year": fy, "fiscal_period": fp, "entity": entity,
+            "actor": actor, "at": at,
+            "detail": {"topic": topic, "recipients": ["zz-ea@example.com"],
+                       "subject": "Reminder"}}
+
+
+def _user(name, full_name):
+    return _D(name=name, full_name=full_name)
+
+
+def _reminded_site(n_extra=0):
+    """ZZA's TB is Missing (submitted for P08 only); ZZA was reminded twice,
+    an hour apart, by two senders. Nothing else is reminded."""
+    site = _Site(n_extra)
+    site.data["Trial Balance Submission"][0]["fiscal_period"] = 8
+    site.reminders = [
+        _reminder("CE-0002", "ZZA", datetime(2025, 10, 6, 10, 0), "zz-lead@example.com"),
+        _reminder("CE-0001", "ZZA", datetime(2025, 10, 6, 9, 0), "zz-ga@example.com"),
+    ]
+    site.data["User"] = [_user("zz-lead@example.com", "Zed Lead"),
+                         _user("zz-ga@example.com", "Gee Accountant")]
+    return site
+
+
+def _golden_site():
+    """D57: plus a declared rule (TB 5, IC 7, sign-off 3, journals blank) on
+    2025-10-08 with no close run: ZZA (Missing) is overdue, the TB, IC and
+    sign-off dates are past, journals read "No due date declared", and
+    ``signoff_overdue`` is True. D57b: one over-tolerance pair is open, so
+    ``ic_overdue`` is True; journals are undeclared, so ``journals_overdue``
+    is False."""
+    site = _reminded_site()
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=5, ic=7, signoff=3)]
+    site.today = date(2025, 10, 8)
+    site.ic_rows = [_pair("matched", "ZZB", "ZZC"), _pair("over_tolerance")]
+    return site
+
+
+def _sized_site(n):
+    """A site with exactly ``n`` in-scope entities (each with a TB) and one
+    reminder on each: the per-entity work a read count must not follow."""
+    site = _Site()
+    codes = ["ZZE%02d" % i for i in range(n)]
+    site.data["Entity"] = [_entity(c) for c in codes]
+    site.data["Ownership Period"] = [_owner(c) for c in codes]
+    site.data["Trial Balance Submission"] = [_tb(c) for c in codes]
+    site.reminders = [_reminder("CE-%04d" % i, c, datetime(2025, 10, 6, 9, i), "zz-ga@example.com")
+                      for i, c in enumerate(codes)]
+    site.data["User"] = [_user("zz-ga@example.com", "Gee Accountant")]
+    return site
+
+
+def _by_row(result):
+    return {r["entity"]: r for r in result["rows"]}
+
+
+def test_the_events_are_the_real_summary_input():
+    """The stub events are the shape remind_model.summary reads: a count of 2."""
+    got = REMIND_MODEL.summary(_reminded_site().reminders)
+    assert got[(2025, 9, "ZZA", "tb")]["count"] == 2
+
+
+def test_a_reminded_tb_cell_carries_count_last_at_and_the_latest_sender():
+    rows = _by_row(_call(_reminded_site()))
+    assert rows["ZZA"]["tb"] == {
+        "tone": "blocking", "label": "Missing",
+        "reminders": {"count": 2, "last_at": "2025-10-06T10:00:00+01:00",
+                      "last_by": "zz-lead@example.com", "last_by_name": "Zed Lead"},
+        "overdue": False}, rows["ZZA"]
+    for code in ("ZZB", "ZZC", "ZZX"):
+        assert rows[code]["tb"]["reminders"] is None, rows[code]
+
+
+def test_the_latest_is_by_time_not_by_list_order():
+    site = _reminded_site()
+    site.reminders = list(reversed(site.reminders))
+    assert _by_row(_call(site))["ZZA"]["tb"]["reminders"]["last_by_name"] == "Zed Lead"
+
+
+def test_every_tb_cell_carries_the_reminders_key():
+    for site in (_Site(), _reminded_site()):
+        for row in _call(site)["rows"]:
+            assert "reminders" in row["tb"], row
+
+
+def test_reminders_are_read_once_for_the_period_and_topic_tb():
+    site = _reminded_site()
+    _call(site)
+    assert site.reminder_calls == [([(2025, 9)], "tb")]
+    assert site.user_filters == [
+        {"name": ["in", ["zz-lead@example.com"]]}], site.user_filters
+
+
+def test_no_reminders_reads_no_user():
+    site = _Site()
+    result = _call(site)
+    assert all(r["tb"]["reminders"] is None for r in result["rows"])
+    assert "User" not in site.get_all_calls
+    assert site.reminder_calls == [([(2025, 9)], "tb")]
+
+
+def test_reads_are_the_old_count_plus_two_whatever_the_entity_count():
+    """Failure path (C-R6, the docstring's fixed count): one Close Event read
+    plus one User read, with 1 entity and with 5."""
+    old = 6  # Entity, Ownership Period, TB Submission, TB Exception, Group, GER
+    for n in (1, 5):
+        site = _sized_site(n)
+        result = _call(site)
+        assert result["counts"]["rows"] == n
+        assert all(r["tb"]["reminders"]["count"] == 1 for r in result["rows"]), result
+        reads = sum(site.get_all_calls.values()) + len(site.reminder_calls)
+        assert reads == old + 2, (n, site.get_all_calls, site.reminder_calls)
+        # D57: plus one deadlines read (D55's 3 queries) and one latest run.
+        assert len(site.deadline_calls) == 1 and len(site.run_calls) == 1
+        assert all(v == 1 for v in site.get_all_calls.values()), site.get_all_calls
+
+
+def test_a_hidden_entitys_reminders_never_leave_the_server():
+    """A scoped caller (ZZB only) sees ZZB's reminder, and nothing about
+    ZZA's: not its count, not its sender, not its name."""
+    site = _reminded_site()
+    site.allowed = {"ZZB"}
+    site.reminders.append(
+        _reminder("CE-0003", "ZZB", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+    result = _call(site)
+    assert [r["entity"] for r in result["rows"]] == ["ZZB"]
+    assert result["rows"][0]["tb"]["reminders"]["count"] == 1
+    text = json.dumps(result)
+    for hidden in ("ZZA", "zz-lead@example.com", "Zed Lead", "CE-0002"):
+        assert hidden not in text, (hidden, text)
+    assert site.user_filters == [{"name": ["in", ["zz-ga@example.com"]]}], site.user_filters
+
+
+def test_a_hidden_entitys_sender_is_not_even_read():
+    site = _reminded_site()
+    site.allowed = {"ZZB"}
+    _call(site)
+    assert site.user_filters == [], site.user_filters
+
+
+def test_no_visible_row_reads_no_reminders():
+    site = _reminded_site()
+    site.allowed = set()
+    result = _call(site)
+    assert result["rows"] == []
+    assert site.reminder_calls == [] and "User" not in site.get_all_calls
+
+
+def test_an_unknown_topic_raises_never_a_silent_zero():
+    site = _reminded_site()
+    site.reminders.append(_reminder("CE-0009", "ZZB", datetime(2025, 10, 6, 8, 0),
+                                    "zz-ga@example.com", topic="x"))
+    with pytest.raises(ValueError) as info:
+        _call(site)
+    assert "CE-0009" in str(info.value)
+
+
+def test_a_non_datetime_time_raises():
+    site = _reminded_site()
+    site.reminders[0]["at"] = "2025-10-06 10:00:00"
+    with pytest.raises(ValueError) as info:
+        _call(site)
+    assert "CE-0002" in str(info.value)
+
+
+def test_a_sender_with_no_full_name_is_labelled_and_the_other_rows_are_intact():
+    """konsol#305 R52c (review-w5b S3). Failure path (red at 843cdf7): a
+    sender with no User row, or a User whose full name is blank, made
+    ``get_period_grid`` raise "... has no full name" and took the whole grid
+    down. Now that cell shows the labelled id (``remind_model.sender_name``),
+    every other row is intact, and the reads are unchanged."""
+    for users in ([_user("zz-ga@example.com", "Gee Accountant")],
+                  [_user("zz-lead@example.com", ""),
+                   _user("zz-ga@example.com", "Gee Accountant")]):
+        site = _reminded_site()
+        site.data["User"] = users
+        site.reminders.append(
+            _reminder("CE-0003", "ZZB", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+        rows = _by_row(_call(site))
+        assert rows["ZZA"]["tb"]["reminders"] == {
+            "count": 2, "last_at": "2025-10-06T10:00:00+01:00",
+            "last_by": "zz-lead@example.com",
+            "last_by_name": "zz-lead@example.com (name not recorded)"}, rows["ZZA"]
+        assert rows["ZZB"]["tb"]["reminders"]["last_by_name"] == "Gee Accountant", rows["ZZB"]
+        for code in ("ZZC", "ZZX"):
+            assert rows[code]["tb"]["reminders"] is None, rows[code]
+        assert site.reminder_calls == [([(2025, 9)], "tb")]
+        assert site.user_filters == [
+            {"name": ["in", ["zz-ga@example.com", "zz-lead@example.com"]]}], site.user_filters
+
+
+def test_a_nameless_sender_keeps_the_read_count_constant():
+    """R52c: with no User row for the sender, the grid still makes one Close
+    Event read plus one User read on top of the old count, for 1 entity and 5."""
+    old = 6  # as test_reads_are_the_old_count_plus_two_whatever_the_entity_count
+    for n in (1, 5):
+        site = _sized_site(n)
+        site.data["User"] = []
+        result = _call(site)
+        assert all(r["tb"]["reminders"]["last_by_name"] == "zz-ga@example.com (name not recorded)"
+                   for r in result["rows"]), result
+        reads = sum(site.get_all_calls.values()) + len(site.reminder_calls)
+        assert reads == old + 2, (n, site.get_all_calls, site.reminder_calls)
+
+
+def test_the_grid_has_no_can_remind():
+    """C-R1: Remind lives on the TB list and the IC panel, not the grid."""
+    assert "can_remind" not in _call(_reminded_site())
+
+
+def test_get_period_grid_matches_the_golden_fixture():
+    out = json.loads(json.dumps(_call(_golden_site())))
+    with open(GRID_FIXTURE) as f:
+        golden = json.load(f)
+    assert out == golden
+    assert [r["entity"] for r in golden["rows"] if r["tb"]["reminders"]] == ["ZZA"]
+
+
+# --- D57: the period's four due dates, TB overdue and signoff_overdue (2.4) ------
+
+_DM = _model("deadline_model")
+WEEK = ("monday", "tuesday", "wednesday", "thursday", "friday")
+
+
+def _rule(valid_from, tb=0, ic=0, journals=0, signoff=0, week=WEEK):
+    """One Close Deadline Rule row (D53 fields), as deadlines.py reads it."""
+    rule = {"valid_from": valid_from, "tb_due_days": tb, "ic_due_days": ic,
+            "journals_due_days": journals, "signoff_due_days": signoff}
+    for wd in _DM.WEEKDAYS:
+        rule[wd] = 1 if wd in week else 0
+    return rule
+
+
+def _deadline_site(today, run=None):
+    """FY2025 P09 ends Sun 28 Sep (stub calendar). Mon-Fri, TB 5 -> Fri 3 Oct,
+    sign-off 10 -> Fri 10 Oct. ZZA Missing (TB for P08 only), ZZB/ZZC Received,
+    ZZX Not consolidated."""
+    site = _Site()
+    site.data["Trial Balance Submission"][0]["fiscal_period"] = 8
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=5, signoff=10)]
+    site.today = today
+    site.run_result = run
+    return site
+
+
+def _run(signoff_status):
+    return {"name": "AR-1", "status": "Green", "signoff_status": signoff_status,
+            "failed": 0, "errored": 0}
+
+
+def test_the_stub_deadlines_are_the_real_model_output():
+    got = _DM.period_deadlines([_rule(date(2025, 1, 1), tb=5, signoff=10)], set(),
+                               date(2025, 9, 28), date(2025, 10, 11))
+    assert got["tb"] == {"due": date(2025, 10, 3), "past": True, "text": "Due 2025-10-03"}
+    assert got["signoff"] == {"due": date(2025, 10, 10), "past": True,
+                              "text": "Due 2025-10-10"}
+
+
+def test_the_grid_carries_all_four_steps():
+    result = _call(_deadline_site(date(2025, 10, 6)))
+    assert result["deadlines"] == {
+        "tb": {"due": "2025-10-03", "past": True, "text": "Due 2025-10-03"},
+        "ic": {"due": None, "past": False, "text": "No due date declared"},
+        "journals": {"due": None, "past": False, "text": "No due date declared"},
+        "signoff": {"due": "2025-10-10", "past": False, "text": "Due 2025-10-10"},
+    }
+
+
+def test_a_past_tb_due_makes_the_missing_cell_overdue_and_no_other():
+    rows = _by_row(_call(_deadline_site(date(2025, 10, 6))))
+    assert rows["ZZA"]["tb"]["label"] == "Missing" and rows["ZZA"]["tb"]["overdue"] is True
+    for code in ("ZZB", "ZZC", "ZZX"):
+        assert rows[code]["tb"]["overdue"] is False, rows[code]
+
+
+def test_on_the_tb_due_date_nothing_is_overdue():
+    result = _call(_deadline_site(date(2025, 10, 3)))
+    assert result["deadlines"]["tb"]["past"] is False
+    assert all(r["tb"]["overdue"] is False for r in result["rows"])
+
+
+def test_every_tb_cell_carries_overdue():
+    for site in (_Site(), _deadline_site(date(2025, 10, 6))):
+        for row in _call(site)["rows"]:
+            assert row["tb"]["overdue"] in (True, False), row
+
+
+def test_a_past_signoff_date_with_no_run_is_signoff_overdue():
+    assert _call(_deadline_site(date(2025, 10, 11)))["signoff_overdue"] is True
+
+
+def test_a_past_signoff_date_unsigned_or_re_sign_is_overdue():
+    for status in ("Not Signed Off", "Re-sign Needed", None):
+        site = _deadline_site(date(2025, 10, 11), run=_run(status))
+        assert _call(site)["signoff_overdue"] is True, status
+
+
+def test_a_signed_run_is_never_signoff_overdue():
+    for status in ("Signed Off", "Acknowledged", "Overridden"):
+        site = _deadline_site(date(2025, 10, 11), run=_run(status))
+        assert _call(site)["signoff_overdue"] is False, status
+
+
+def test_before_the_signoff_date_is_not_signoff_overdue():
+    site = _deadline_site(date(2025, 10, 10))
+    result = _call(site)
+    assert result["deadlines"]["signoff"]["past"] is False
+    assert result["signoff_overdue"] is False
+
+
+def test_undeclared_deadlines_mean_no_overdue_anywhere():
+    """Failure path (#305-2.4-1): no rule -> the sentence on all four steps,
+    never a guessed date, and nothing overdue even long after the period."""
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = []
+    result = _call(site)
+    for step in ("tb", "ic", "journals", "signoff"):
+        assert result["deadlines"][step] == {"due": None, "past": False,
+                                             "text": "No due date declared"}, step
+    assert all(r["tb"]["overdue"] is False for r in result["rows"])
+    assert result["signoff_overdue"] is False
+
+
+def test_a_rule_with_blank_offsets_is_undeclared_per_step():
+    site = _deadline_site(date(2030, 1, 1))
+    site.deadline_rules = [_rule(date(2025, 1, 1), tb=0, signoff=0, ic=4)]
+    result = _call(site)
+    assert result["deadlines"]["tb"]["text"] == "No due date declared"
+    assert result["deadlines"]["ic"]["past"] is True
+    assert result["signoff_overdue"] is False
+    assert all(r["tb"]["overdue"] is False for r in result["rows"])
+
+
+def test_deadlines_and_the_run_are_read_once_with_today():
+    site = _deadline_site(date(2025, 10, 6))
+    _call(site)
+    assert site.deadline_calls == [([(2025, 9)], date(2025, 10, 6))]
+    assert site.run_calls == [(2025, 9)]
+
+
+def test_the_deadlines_are_present_when_the_caller_sees_no_row():
+    site = _deadline_site(date(2025, 10, 11))
+    site.allowed = set()
+    result = _call(site)
+    assert result["rows"] == []
+    assert result["deadlines"]["tb"]["text"] == "Due 2025-10-03"
+    assert result["signoff_overdue"] is True
+
+
+def test_a_period_absent_from_the_deadline_read_throws():
+    """Failure path: the asked period is Regular, so the reader must return
+    it; its absence is an error, never "No due date declared"."""
+    site = _deadline_site(date(2025, 10, 6))
+    site.deadlines = {}
+    err = _call_raises(site)
+    assert isinstance(err, site.errors.ValidationError), err
+    assert "FY2025 P09" in str(err)
+
+
+def test_a_refused_period_reads_no_deadline_and_no_run():
+    site = _deadline_site(date(2025, 10, 6))
+    _call_raises(site, 2025, 13)
+    assert site.deadline_calls == [] and site.run_calls == []
+
+
+def test_the_golden_fixture_shows_overdue():
+    with open(GRID_FIXTURE) as f:
+        golden = json.load(f)
+    assert golden["signoff_overdue"] is True
+    assert golden["deadlines"]["journals"]["text"] == "No due date declared"
+    assert [r["entity"] for r in golden["rows"] if r["tb"]["overdue"]] == ["ZZA"]
+
+
+# --- D57b (#305-Q5-1, Deepak Pai, 7 Oct): IC and journals overdue --------------
+# IC step done = no open over-tolerance pair; journals step done = no draft or
+# pending (docstatus 0) Consolidation Journal for the period. The grid decides
+# both flags from deadline_model.ic_open / journals_open; the SPA never does.
+
+def _pair(status, a="ZZA", b="ZZB"):
+    return {"consolidation_group": "ZZG", "entity_a": a, "account_a": "1100",
+            "entity_b": b, "account_b": "2100", "match_status": status,
+            "difference": 0.0, "tolerance": 1.0}
+
+
+def _journal(name, docstatus, fp=9):
+    return _D(name=name, fiscal_year=2025, fiscal_period=fp, docstatus=docstatus)
+
+
+def _q5_site(today, ic=4, journals=6):
+    """FY2025 P09 ends Sun 28 Sep. Mon-Fri, IC 4 -> Thu 2 Oct, journals 6 ->
+    Mon 6 Oct."""
+    site = _Site()
+    site.deadline_rules = [_rule(date(2025, 1, 1), ic=ic, journals=journals)]
+    site.today = today
+    return site
+
+
+def test_a_past_ic_date_with_an_open_over_tolerance_pair_is_ic_overdue():
+    site = _q5_site(date(2025, 10, 7))
+    site.ic_rows = [_pair("matched"), _pair("over_tolerance", "ZZC", "ZZD")]
+    result = _call(site)
+    assert result["deadlines"]["ic"]["past"] is True
+    assert result["ic_overdue"] is True
+    assert site.ic_calls == [(2025, 9)]
+
+
+def test_a_past_ic_date_with_every_pair_matched_is_not_ic_overdue():
+    site = _q5_site(date(2025, 10, 7))
+    site.ic_rows = [_pair("matched"), _pair("within_tolerance", "ZZC"),
+                    _pair("fx_difference", "ZZD")]
+    assert _call(site)["ic_overdue"] is False
+
+
+def test_ic_not_configured_or_not_applicable_is_never_ic_overdue():
+    for state in ("not_configured", "not_applicable"):
+        site = _q5_site(date(2025, 10, 7))
+        site.ic_state = state
+        assert _call(site)["ic_overdue"] is False, state
+
+
+def test_before_the_ic_date_is_not_ic_overdue_and_reads_no_ic():
+    site = _q5_site(date(2025, 10, 2))
+    site.ic_rows = [_pair("over_tolerance")]
+    result = _call(site)
+    assert result["deadlines"]["ic"]["past"] is False
+    assert result["ic_overdue"] is False
+    assert site.ic_calls == []
+
+
+def test_a_past_journals_date_with_a_draft_or_pending_journal_is_journals_overdue():
+    site = _q5_site(date(2025, 10, 7))
+    site.data["Consolidation Journal"] = [_journal("CJ-1", 1), _journal("CJ-2", 0)]
+    result = _call(site)
+    assert result["deadlines"]["journals"]["past"] is True
+    assert result["journals_overdue"] is True
+    assert site.count_calls == [("Consolidation Journal",
+                                 {"fiscal_year": 2025, "fiscal_period": 9, "docstatus": 0})]
+
+
+def test_only_submitted_or_cancelled_journals_is_not_journals_overdue():
+    site = _q5_site(date(2025, 10, 7))
+    site.data["Consolidation Journal"] = [_journal("CJ-1", 1), _journal("CJ-2", 2),
+                                          _journal("CJ-3", 0, fp=8)]
+    assert _call(site)["journals_overdue"] is False
+
+
+def test_before_the_journals_date_is_not_journals_overdue_and_counts_nothing():
+    site = _q5_site(date(2025, 10, 6))
+    site.data["Consolidation Journal"] = [_journal("CJ-2", 0)]
+    result = _call(site)
+    assert result["deadlines"]["journals"]["past"] is False
+    assert result["journals_overdue"] is False
+    assert site.count_calls == []
+
+
+def test_undeclared_ic_and_journals_deadlines_are_never_overdue():
+    """Failure path: no rule -> "No due date declared" and both False, even
+    with an open pair and a draft journal long after the period."""
+    site = _q5_site(date(2030, 1, 1))
+    site.deadline_rules = []
+    site.ic_rows = [_pair("over_tolerance")]
+    site.data["Consolidation Journal"] = [_journal("CJ-2", 0)]
+    result = _call(site)
+    for step in ("ic", "journals"):
+        assert result["deadlines"][step]["text"] == "No due date declared", step
+    assert result["ic_overdue"] is False and result["journals_overdue"] is False
+
+
+def test_every_grid_payload_carries_both_flags():
+    for site in (_Site(), _q5_site(date(2025, 10, 7))):
+        result = _call(site)
+        assert result["ic_overdue"] in (True, False)
+        assert result["journals_overdue"] in (True, False)
+
+
+# --- R52e (review-w5b S4): an unreadable IC or journal read is that flag's own
+# error, never the whole grid's. The flag is None (unknown), never False, and
+# its ``*_error`` sentence names the period; the rows and counts still render.
+
+def test_every_grid_payload_carries_both_error_keys_none_when_read():
+    """Both ``*_error`` keys are always present, None when the read worked
+    or no read was needed."""
+    for site in (_Site(), _q5_site(date(2025, 10, 7)), _q5_site(date(2025, 10, 2))):
+        result = _call(site)
+        assert "ic_overdue_error" in result and "journals_overdue_error" in result
+        assert result["ic_overdue_error"] is None
+        assert result["journals_overdue_error"] is None
+
+
+def test_an_unreadable_ic_read_is_the_flags_error_and_the_grid_still_renders():
+    """Failure path (red at 843cdf7: the call raised ValidationError and no
+    rows came back): the IC date is past and the warehouse could not be read
+    (state error / not_built) -> ic_overdue None, never False, and
+    ic_overdue_error names the period; rows, counts and the journals flag
+    are intact."""
+    clean = _call(_q5_site(date(2025, 10, 7)))
+    for state in ("error", "not_built"):
+        site = _q5_site(date(2025, 10, 7))
+        site.ic_state = state
+        result = _call(site)
+        assert result["deadlines"]["ic"]["past"] is True, state
+        assert result["ic_overdue"] is None, (state, result["ic_overdue"])
+        err = result["ic_overdue_error"]
+        assert isinstance(err, str) and err.strip(), (state, err)
+        assert "Intercompany" in err and "FY2025 P09" in err and state in err, err
+        assert result["rows"] == clean["rows"], state
+        assert result["counts"] == clean["counts"], state
+        assert result["journals_overdue"] is False and result["journals_overdue_error"] is None
+        assert site.ic_calls == [(2025, 9)], state
+
+
+def test_before_the_ic_date_an_unreadable_warehouse_is_never_read():
+    """The IC date not past -> False and None, and no IC read happens."""
+    site = _q5_site(date(2025, 10, 2))
+    site.ic_state = "error"
+    result = _call(site)
+    assert result["ic_overdue"] is False and result["ic_overdue_error"] is None
+    assert site.ic_calls == []
+
+
+def test_an_unreadable_journal_count_is_the_flags_error_and_the_grid_still_renders():
+    """Failure path (red at 843cdf7: the count's error took down the grid):
+    the journals date is past and the count fails -> journals_overdue None,
+    never False, and journals_overdue_error names the period; rows, counts
+    and the IC flag are intact."""
+    clean = _call(_q5_site(date(2025, 10, 7)))
+    site = _q5_site(date(2025, 10, 7))
+    site.count_error = RuntimeError("db gone")
+    result = _call(site)
+    assert result["deadlines"]["journals"]["past"] is True
+    assert result["journals_overdue"] is None
+    err = result["journals_overdue_error"]
+    assert isinstance(err, str) and "journal" in err.lower() and "FY2025 P09" in err, err
+    assert "db gone" in err, err
+    assert result["rows"] == clean["rows"]
+    assert result["counts"] == clean["counts"]
+    assert result["ic_overdue"] is False and result["ic_overdue_error"] is None
+
+
+def test_an_unreadable_journal_count_value_is_the_flags_error():
+    """A count that is not a non-negative int (deadline_model.journals_open's
+    ValueError) is the same error, never False."""
+    site = _q5_site(date(2025, 10, 7))
+    api = _load_api(site)
+    site.stub_modules["frappe"].db.count = lambda *a, **k: None
+    result = _installed(site, api.get_period_grid, 2025, 9)
+    json.dumps(result)
+    assert result["journals_overdue"] is None
+    assert "FY2025 P09" in result["journals_overdue_error"], result["journals_overdue_error"]
+    assert result["rows"]
+
+
+def test_q5_reads_are_one_each_and_constant_in_entities():
+    for n in (1, 5):
+        site = _sized_site(n)
+        site.deadline_rules = [_rule(date(2025, 1, 1), ic=4, journals=6)]
+        site.today = date(2025, 10, 7)
+        _call(site)
+        assert site.ic_calls == [(2025, 9)], (n, site.ic_calls)
+        assert len(site.count_calls) == 1, (n, site.count_calls)
+
+
+def test_the_golden_fixture_shows_ic_overdue():
+    with open(GRID_FIXTURE) as f:
+        golden = json.load(f)
+    assert golden["ic_overdue"] is True
+    assert golden["journals_overdue"] is False
+
+
+def test_the_golden_fixture_carries_both_error_keys_as_none():
+    """R52e: the golden (read worked) carries both ``*_error`` keys, None."""
+    with open(GRID_FIXTURE) as f:
+        golden = json.load(f)
+    assert golden["ic_overdue_error"] is None
+    assert golden["journals_overdue_error"] is None

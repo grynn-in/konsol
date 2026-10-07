@@ -77,6 +77,7 @@
 //   existed outside their scope; it is now `blocking.length + blockingHidden`.
 
 import { formatTime, parseZoned } from "./timefmt.js";
+import { dueDateText } from "./dueDate.js";
 
 export const STATUS_LABELS = {
   missing: "Missing",
@@ -426,9 +427,46 @@ export function pendingCreatedText(created, now, timeZone) {
 
 /** `get_pending` payload -> `{items, counts, selfApproval, canApprove}`,
  * each item's `approve` run through `approveAction`. */
+/** O69's `edit` keys on a pending Ownership Period item (rates_model.op_edit). */
+const OWNERSHIP_EDIT_KEYS = ["consolidation_group", "entity", "fiscal_year", "fiscal_period", "ownership_pct", "consolidation_method"];
+
+/**
+ * konsol#305 O67: a pending Ownership Period item's server `edit` (O69), or
+ * null when the server says the caller cannot edit it here (a Desk draft, a
+ * Viewer, a day no Regular period starts on). A missing `edit`, or an edit
+ * without one of its keys, throws naming the draft: the client never decides
+ * editability itself, and never reads it from the title or detail.
+ */
+function ownershipEdit(item) {
+  if (!("edit" in item)) {
+    throw new Error(`pendingView: ${item.name} has no edit`);
+  }
+  if (item.edit === null) return null;
+  for (const key of OWNERSHIP_EDIT_KEYS) {
+    if (!item.edit || typeof item.edit !== "object" || !(key in item.edit)) {
+      throw new Error(`pendingView: ${item.name}'s edit has no ${key}`);
+    }
+  }
+  return item.edit;
+}
+
+/** O67: `pendingView(...).items` -> `{name: edit}` for each Ownership Period
+ * draft the server made editable (`edit` not null). */
+export function ownershipDraftEdits(items) {
+  const out = {};
+  for (const item of items) {
+    if (item.doctype === "Ownership Period" && item.edit !== null) out[item.name] = item.edit;
+  }
+  return out;
+}
+
 export function pendingView(payload) {
   return {
-    items: (payload.items || []).map((item) => ({ ...item, approve: approveAction(item.approve) })),
+    items: (payload.items || []).map((item) => {
+      const out = { ...item, approve: approveAction(item.approve) };
+      if (item.doctype === "Ownership Period") out.edit = ownershipEdit(item);
+      return out;
+    }),
     counts: payload.counts,
     selfApproval: payload.self_approval,
     canApprove: Boolean(payload.can_approve),
@@ -461,7 +499,13 @@ export function pendingEmptyMessage(view) {
 }
 
 /** `get_ownership` payload -> `{blocking, outOfScopeCount, inScopeCount,
- * canRecord, hiddenCount, blockingHidden}`. `blocking` entries
+ * canRecord, canChange, hiddenCount, blockingHidden}`. `canRecord` drives
+ * only the Desk "Record ownership" link; `canChange` (R53f; #305-R52-4,
+ * U10e) is the server's `can_change`, true exactly when
+ * `save_ownership_change` would admit the caller, and is what mounts the
+ * Change ownership form. A payload without `can_change` throws, and so does
+ * `can_change` true without the `change` choices (the server sends them
+ * exactly when it is true). Never derived from `can_record` or a role. `blocking` entries
  * (`{entity, message, desk}`) are server-authored sentences and pass
  * through unchanged; the out-of-scope list is shown only as a count.
  * `blockingHidden` (R01h: `blocking_hidden`) is the subset of `hiddenCount`
@@ -469,11 +513,18 @@ export function pendingEmptyMessage(view) {
  * `ownershipEmptyMessage` needs that distinction, `hiddenCount` alone
  * cannot tell the two apart. */
 export function ownershipView(payload) {
+  if (typeof payload.can_change !== "boolean") {
+    throw new Error("ownershipView: get_ownership's payload has no can_change");
+  }
+  if (payload.can_change && (payload.change === null || typeof payload.change !== "object")) {
+    throw new Error("ownershipView: get_ownership says can_change but sends no change");
+  }
   return {
     blocking: payload.blocking || [],
     outOfScopeCount: (payload.out_of_scope || []).length,
     inScopeCount: payload.in_scope_count,
     canRecord: Boolean(payload.can_record),
+    canChange: payload.can_change,
     hiddenCount: payload.hidden || 0,
     blockingHidden: payload.blocking_hidden || 0,
   };
@@ -507,4 +558,215 @@ export function ownershipEmptyMessage(view) {
 export function ownershipGapsCount(view) {
   if (!view) return null;
   return view.blocking.length + (view.blockingHidden || 0);
+}
+
+// ---------------------------------------------------------------------------
+// konsol#305 O59 (story 4.2; #305-4.2-1; wireframe-4.2.md, confirmed as drawn
+// by Deepak Pai 7 Oct): the ownership change form's POST body and the effect
+// panel. The effect is the server's (`ownership_change_model.effect`, reached
+// through `rates_api.preview_ownership_change` and `get_pending`'s OP items):
+// this view only lays it out. It never computes a pct, a method, a date or a
+// period, and every refusal beyond the two form checks below is the server's.
+// Dates are written with dueDate.js's one date wording.
+
+/** The server's own pct sentence (ownership_change_model.PCT_SENTENCE); the
+ * test pins it to the REAL preview's refusal. */
+const PCT_SENTENCE = "Ownership % must be a number from 0 to 100.";
+const NO_ENTITY = "Choose an entity.";
+const NO_SIGNED_PERIOD = "No signed period is affected.";
+const EFFECT_KEYS = [
+  "before",
+  "after",
+  "current_name",
+  "current_ends",
+  "first_period",
+  "periods",
+  "resign",
+  "resign_detail",
+  "not_shown",
+];
+const RESIGN_DETAIL_KEYS = ["period", "signed_on", "signed_by_name"];
+const SIDE_KEYS = ["pct", "method", "from", "to"];
+
+/** A form value -> a finite number in 0..100, or null. Blank, a bool, a
+ * partial number ("80abc"), NaN and infinity are not numbers here (the
+ * server's `_pct` rule). */
+function ownershipPctValue(value) {
+  if (typeof value === "boolean" || value === null || value === undefined) return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null;
+  return n;
+}
+
+/**
+ * `(period, form)` -> `{body}` or `{error}` for
+ * `rates_api.save_ownership_change`. `period` is `{fiscal_year,
+ * fiscal_period}` (the first period affected; the server takes its first
+ * day, C-O2). `form` is `{consolidationGroup, entity, ownershipPct,
+ * consolidationMethod, name?}`; `name` is set only when editing a draft. The
+ * body carries exactly the endpoint's parameters: never `docstatus`,
+ * `supersedes`, `end_date` or a deal field. A blank entity and a bad pct are
+ * refused here, the pct with the server's own sentence; every other refusal
+ * is the server's.
+ */
+export function ownershipChangeBody(period, form) {
+  const entity = typeof form.entity === "string" ? form.entity.trim() : form.entity;
+  if (isBlank(entity)) {
+    return { error: NO_ENTITY };
+  }
+  const pct = ownershipPctValue(form.ownershipPct);
+  if (pct === null) {
+    return { error: PCT_SENTENCE };
+  }
+  const body = {
+    fiscal_year: period.fiscal_year,
+    fiscal_period: period.fiscal_period,
+    consolidation_group: form.consolidationGroup,
+    entity,
+    ownership_pct: pct,
+    consolidation_method: form.consolidationMethod,
+  };
+  if (!isBlank(form.name)) {
+    body.name = form.name;
+  }
+  return { body };
+}
+
+function requireKeys(obj, keys, where) {
+  for (const key of keys) {
+    if (!(key in obj)) {
+      throw new Error(`ownershipEffectView: the effect has no ${where}${key}`);
+    }
+  }
+}
+
+function effectDate(iso) {
+  return dueDateText(iso, "ownershipEffectView");
+}
+
+/**
+ * `resign_detail` (O64, parallel to `resign`) -> "FY2025 P11 (signed Sat 4
+ * Oct 2025 by Jane Doe)" per entry (wireframe-4.2.md §1). An entry without
+ * its period, date or signer name, or out of step with `resign`, throws:
+ * never a blank signer or a guessed date.
+ */
+function blankText(value) {
+  return typeof value !== "string" || value.trim() === "";
+}
+
+function resignLines(effect) {
+  const detail = effect.resign_detail;
+  if (!Array.isArray(detail)) {
+    throw new Error("ownershipEffectView: the effect's resign_detail is not a list");
+  }
+  if (detail.length !== effect.resign.length) {
+    throw new Error("ownershipEffectView: the effect's resign_detail does not match resign");
+  }
+  return detail.map((entry, i) => {
+    requireKeys(entry || {}, RESIGN_DETAIL_KEYS, "resign_detail.");
+    if (entry.period !== effect.resign[i]) {
+      throw new Error(`ownershipEffectView: the effect's resign_detail ${entry.period} does not match resign ${effect.resign[i]}`);
+    }
+    if (blankText(entry.signed_by_name)) {
+      throw new Error(`ownershipEffectView: the effect's resign_detail.signed_by_name is blank for ${entry.period}`);
+    }
+    return `${entry.period} (signed ${effectDate(entry.signed_on)} by ${entry.signed_by_name})`;
+  });
+}
+
+function effectEnd(iso) {
+  return iso === null ? "open-ended" : effectDate(iso);
+}
+
+/**
+ * The server's effect (`ownership_change_model.effect`) -> the wireframe's
+ * EFFECT panel: `{rows, currentEnds, firstPeriod, periods, resign,
+ * resignNone, notShown}`. `rows` are Ownership, Method and Covers, each
+ * `{label, before, after, unchanged}`; Covers' before side runs to
+ * `current_ends` and carries the note on the current period's end today.
+ * `resignNone` is "No signed period is affected." only when `resign` is
+ * empty. `resign` holds one "FY2025 P11 (signed <date> by <name>)" line per
+ * signed period and `endsLine` is "<current_name> on <date>" (O65,
+ * wireframe-4.2.md §1 and §3). Throws on a missing key, a missing effect, or a date that is not
+ * ISO: never a guessed panel.
+ */
+export function ownershipEffectView(effect) {
+  if (!effect || typeof effect !== "object") {
+    throw new Error("ownershipEffectView: no effect was given");
+  }
+  requireKeys(effect, EFFECT_KEYS, "");
+  requireKeys(effect.before, SIDE_KEYS, "before.");
+  requireKeys(effect.after, SIDE_KEYS, "after.");
+  if (!Array.isArray(effect.resign)) {
+    throw new Error("ownershipEffectView: the effect's resign is not a list");
+  }
+  if (blankText(effect.current_name)) {
+    throw new Error("ownershipEffectView: the effect's current_name is blank");
+  }
+  const resign = resignLines(effect);
+  const { before, after } = effect;
+  const currentEnds = effectDate(effect.current_ends);
+  const nowEnds = before.to === null ? "now open-ended" : `now to ${effectDate(before.to)}`;
+  return {
+    rows: [
+      {
+        label: "Ownership",
+        before: `${formatPct(before.pct)} %`,
+        after: `${formatPct(after.pct)} %`,
+        unchanged: before.pct === after.pct,
+      },
+      { label: "Method", before: before.method, after: after.method, unchanged: before.method === after.method },
+      {
+        label: "Covers",
+        before: `${effectDate(before.from)} → ${currentEnds}`,
+        after: `${effectDate(after.from)} → ${effectEnd(after.to)}`,
+        unchanged: false,
+        note: `(${nowEnds}; ends on approval)`,
+      },
+    ],
+    currentEnds,
+    endsLine: `${effect.current_name} on ${currentEnds}`,
+    firstPeriod: effect.first_period,
+    periods: effect.periods,
+    resign,
+    resignNone: effect.resign.length ? null : NO_SIGNED_PERIOD,
+    notShown: effect.not_shown,
+  };
+}
+
+/** The sentence an Ownership Period drafted in Desk shows in place of the
+ * effect panel (O57: such a draft arrives with `effect: null`). */
+export const DESK_DRAFT = "Drafted in Desk: effect not previewed.";
+
+/**
+ * konsol#305 R52o (review U6, S2): the one EFFECT IF APPROVED view of a
+ * pending Ownership Period item, shared by the pending list and the
+ * Approvals detail, so neither screen keeps its own copy.
+ * - `ownership_effect_error` set (R52i: the server could not read this draft's
+ *   effect) -> `{error: <the server's sentence>}`;
+ * - `ownership_effect: null` -> `{desk: DESK_DRAFT}`;
+ * - otherwise `{view}`: `ownershipEffectView(item.ownership_effect)` without its
+ *   Covers row, because the pending panel (wireframe-4.2.md section 3)
+ *   shows the current period's end as its own "Ends" line instead.
+ * R52q (review S18): the server names the keys for the Ownership Period,
+ * so they never collide with a journal item's `effect`. A missing
+ * `ownership_effect` or `ownership_effect_error` key (an item carrying the
+ * old `effect` instead included) is a server regression and
+ * throws, as does an effect `ownershipEffectView` refuses.
+ */
+export function opEffectView(item) {
+  for (const key of ["ownership_effect", "ownership_effect_error"]) {
+    if (!item || !(key in item)) {
+      throw new Error(`opEffectView: the pending item ${item && item.name} has no ${key}`);
+    }
+  }
+  if (item.ownership_effect_error !== null && item.ownership_effect_error !== undefined) {
+    return { error: item.ownership_effect_error };
+  }
+  if (item.ownership_effect === null) {
+    return { desk: DESK_DRAFT };
+  }
+  const view = ownershipEffectView(item.ownership_effect);
+  return { view: { ...view, rows: view.rows.filter((row) => row.label !== "Covers") } };
 }
