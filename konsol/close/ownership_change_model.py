@@ -27,7 +27,8 @@ Inputs:
   period that starts after the change. The sentence names that date.
 - ``pending_exists``: falsy, or the name of the node's draft awaiting approval.
 - ``period_rows``: ``fiscal_calendar.fiscal_period_rows()``. Only Regular rows
-  count, so an Adjustment period's start is never a first day.
+  count as first days, so an Adjustment period's start is never a first day;
+  ``effect``'s ``resign`` list reads every row (O54a).
 
 Dates may be ``datetime.date`` objects or ISO strings. The output always uses
 ISO strings.
@@ -197,8 +198,10 @@ def effect(change, current, period_rows, signed_keys):
 
     Raises ValueError when the change has no current period, does not start
     on a Regular period's first day, or has a bad % or method. The effect of
-    a refused change is never guessed. A signed key that is not in the
-    calendar also raises.
+    a refused change is never guessed. ``resign`` lists signed periods of
+    every type (Regular, Opening, Closing, Adjustment) that start on or after
+    the change (O54a); a signed key that is not in the calendar at all
+    raises.
     """
     if current is None:
         raise ValueError("an ownership change has no effect without a current period")
@@ -223,16 +226,23 @@ def effect(change, current, period_rows, signed_keys):
             raise ValueError("the current period's end %s is in no Regular period" % cur_to)
         periods = "%s to %s" % (_name(first), _name(last))
 
-    by_key = {_key(r["fiscal_year"], r["fiscal_period"]): r for r in regular}
+    # O54a: every signed period from the first affected one onward needs
+    # re-signing, whatever its type (Regular, Opening, Closing, Adjustment).
+    # Only the first-day checks above are Regular-only. A signed key absent
+    # from the calendar is corrupt data and raises.
+    by_key = {_key(r["fiscal_year"], r["fiscal_period"]): r for r in period_rows}
     resign_rows = []
     for fy, fp in signed_keys:
         row = by_key.get(_key(fy, fp))
         if row is None:
-            raise ValueError("signed period %r is not a Regular period of the "
-                             "calendar" % ((fy, fp),))
+            raise ValueError("signed period %r is not in the fiscal calendar"
+                             % ((fy, fp),))
         if _iso(row["start_date"]) >= eff:
             resign_rows.append(row)
-    resign_rows.sort(key=lambda r: _iso(r["start_date"]))
+    # Calendar order: by start date, then year and period, so an Opening P00
+    # that shares its start with P01 comes first.
+    resign_rows.sort(key=lambda r: (_iso(r["start_date"]), int(r["fiscal_year"]),
+                                    int(r["fiscal_period"])))
 
     current_ends = (datetime.date.fromisoformat(eff) - datetime.timedelta(days=1)).isoformat()
     return {
