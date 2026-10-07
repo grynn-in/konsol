@@ -7,6 +7,7 @@ close_policy_model.py (loaded by path too), rather than copying the policy
 rule (#305-W2-14).
 """
 import ast
+import datetime
 import importlib.util
 import os
 
@@ -401,3 +402,80 @@ def test_module_imports_no_frappe():
             module = node.module or ""
             assert not module.startswith("frappe")
             assert not module.startswith("konsol")
+
+
+# --- O57: an OP item carries the draft's structural effect (story 4.2, C-O4) -----
+# ``_op_item`` is shared by get_pending (Rates) and approvals_model (Approvals),
+# so the effect is passed through here, once. The effect is the REAL
+# ownership_change_model.effect's output, never a hand-built dict.
+
+_OCM_SPEC = importlib.util.spec_from_file_location(
+    "rates_model_test_ownership_change_model",
+    os.path.join(APP_DIR, "close", "ownership_change_model.py"))
+OCM = importlib.util.module_from_spec(_OCM_SPEC)
+_OCM_SPEC.loader.exec_module(OCM)
+
+
+def _o57_calendar():
+    rows = []
+    for m in range(1, 13):
+        start = "2025-%02d-01" % m
+        nxt = "2026-01-01" if m == 12 else "2025-%02d-01" % (m + 1)
+        end = (datetime.date.fromisoformat(nxt) - datetime.timedelta(days=1)).isoformat()
+        rows.append({"fiscal_year": 2025, "fiscal_period": m, "period_code": "P%02d" % m,
+                     "period_label": "P%02d" % m, "period_type": "Regular",
+                     "start_date": start, "end_date": end, "status": "Open"})
+    return rows
+
+
+def _o57_real_effect():
+    change = {"entity": "ZZENT", "effective_date": "2025-10-01", "ownership_pct": 80,
+              "consolidation_method": "full"}
+    current = {"name": "OP-0", "effective_date": "2025-01-01", "end_date": None,
+               "ownership_pct": 100.0, "consolidation_method": "full"}
+    return OCM.effect(change, current, _o57_calendar(), [(2025, 9), (2025, 11)])
+
+
+def _o57_items(op):
+    return M.pending_items([], [op], {op["name"]: frozenset({"alice"})}, "lead",
+                           ("EPM Admin",), "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+
+
+def test_o57_op_item_carries_the_real_models_effect():
+    effect = _o57_real_effect()
+    op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=effect)
+    [item] = _o57_items(op)
+    assert item["effect"] == effect
+    assert item["effect"]["after"]["pct"] == 80.0
+    assert item["effect"]["resign"] == ["FY2025 P11"]
+    # The detail text is unchanged by the effect.
+    assert item["detail"] == "80% · full"
+
+
+def test_o57_failure_path_a_desk_draft_effect_none_stays_none():
+    """A Desk "Record ownership" draft has no ``supersedes``: its effect is
+    None, never a guessed before/after."""
+    op = dict(_op("OP-2", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=None)
+    [item] = _o57_items(op)
+    assert "effect" in item and item["effect"] is None
+
+
+def test_o57_failure_path_a_doc_without_the_effect_key_does_not_raise_or_invent_one():
+    """approvals_model builds OP items through this function before O58 gives
+    its docs an ``effect``: a missing key never raises, and never becomes a
+    None that would read as "Drafted in Desk"."""
+    op = _op("OP-3", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+             "2026-09-01T09:00:00")
+    [item] = _o57_items(op)
+    assert "effect" not in item
+    assert item["detail"] == "80% · full"
+
+
+def test_o57_her_items_never_carry_an_effect():
+    her = [dict(_her("HER-1", "G1", "ZZENT", "4000", "2026-09-30", 1.1, "alice",
+                     "2026-09-02T10:00:00"), effect=_o57_real_effect())]
+    [item] = M.pending_items(her, [], {"HER-1": frozenset({"alice"})}, "lead", ("EPM Admin",),
+                             "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
+    assert "effect" not in item

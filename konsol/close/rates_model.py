@@ -221,10 +221,17 @@ def _her_item(doc, preparers, mode):
 
 
 def _op_item(doc, preparers, mode):
+    """An Ownership Period draft's item. ``effect`` (O57; story 4.2, C-O4) is
+    passed through only when the caller put it on ``doc``
+    (``ownership_change.effect_for``): a dict, or None for a draft without
+    ``supersedes`` (a Desk "Record ownership" draft, "effect not previewed").
+    A doc without the key (a caller that did not compute it) gives an item
+    without the key: it never raises, and never turns into a None that would
+    read as a Desk draft."""
     detail = "%g%% · %s" % (doc["ownership_pct"], doc["consolidation_method"])
     if doc.get("end_date"):
         detail += " to %s" % doc["end_date"]
-    return {
+    item = {
         "doctype": "Ownership Period",
         "name": doc["name"],
         "title": "%s in %s from %s" % (doc["data_area_id"], doc["consolidation_group"], doc["effective_date"]),
@@ -234,6 +241,9 @@ def _op_item(doc, preparers, mode):
         "created": doc["created"],
         "approve": mode,
     }
+    if "effect" in doc:
+        item["effect"] = doc.get("effect")
+    return item
 
 
 def pending_items(her, ops, preparers_by_name, user, roles, policy, approver_roles, self_approval_problem):
