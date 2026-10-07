@@ -10,5 +10,8 @@
     "end_date": null,
     "ownership_pct": 100.0,
     "consolidation_method": "full"
-  }
+  },
+  "pending": [
+    "OP-ZZ5B1-2"
+  ]
 }

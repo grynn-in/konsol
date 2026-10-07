@@ -337,14 +337,40 @@ def _drafts(doctype, fields):
                           order_by="creation asc", limit_page_length=0)
 
 
+#: O69: the roles ``save_ownership_change`` admits (its ``frappe.only_for``
+#: literal; a test pins the two together). A pending Ownership Period item
+#: carries ``edit`` only for a caller holding one of them, so the client never
+#: decides editability (``get_ownership.can_record`` is a different test).
+OWNERSHIP_SAVE_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
+
+
 @frappe.whitelist(methods=["GET"])
 def get_pending():
+    """The pending Historical Equity Rate and Ownership Period drafts (story
+    4.3; E405).
+
+    O69 (story 4.2; wireframe-4.2.md section 1): each Ownership Period item
+    carries ``edit`` (``rates_model.op_edit``): the node, the period whose
+    first day is the draft's ``effective_date``, its pct and method, which
+    O67's Edit loads and sends back with the item's ``name``; None for a
+    Desk draft (no ``supersedes``), a caller ``save_ownership_change`` does
+    not admit, or a day no single Regular period starts on. The listed
+    drafts are already cut to the caller's entities, which is
+    ``_name_refusal``'s scope rule, and each is a draft of its own node and
+    first day, so the save accepts the ``edit`` it is given. The calendar is
+    read once per call, and only when a visible draft has ``supersedes`` and
+    the caller may save."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     her_all = _drafts(HER, HER_FIELDS)
     ops_all = _drafts(OP, OP_FIELDS)
     allowed = allowed_entity_codes()
     her_visible, her_hidden = _visible(her_all, allowed)
     ops_visible, ops_hidden = _visible(ops_all, allowed)
+    user = frappe.session.user
+    roles = frappe.get_roles(user)
+    starts = None
+    if set(roles) & set(OWNERSHIP_SAVE_ROLES) and any(d.get("supersedes") for d in ops_visible):
+        starts = rates_model.regular_period_by_start(fiscal_calendar.fiscal_period_rows())
 
     her = []
     for doc in her_visible:
@@ -367,6 +393,7 @@ def get_pending():
         doc["created"] = _iso(doc.pop("creation", None))
         doc["effective_date"] = _iso(doc.get("effective_date"))
         doc["end_date"] = _iso(doc.get("end_date"))
+        doc["edit"] = rates_model.op_edit(doc, starts)
         ops.append(doc)
 
     policy = frappe.db.get_single_value("Close Settings", "self_approval")
@@ -377,8 +404,6 @@ def get_pending():
     preparers_by_name.update(
         self_approval.preparers_for(OP, {d["name"]: d["owner"] for d in ops}))
 
-    user = frappe.session.user
-    roles = frappe.get_roles(user)
     items = rates_model.pending_items(
         her, ops, preparers_by_name, user, roles, policy,
         close_policy_model.APPROVER_ROLES, close_policy_model.self_approval_problem)
@@ -554,10 +579,14 @@ def _ownership_preview(fiscal_year, fiscal_period, consolidation_group, entity, 
         ctx = ownership_change.context(consolidation_group, entity, *key)
     except ValueError as e:
         frappe.throw(str(e))
+    # O69: the node's other drafts awaiting approval, as exact names (the
+    # data behind the "already awaiting approval" sentence, never parsed
+    # back out of it).
+    others = sorted(r["name"] for r in ownership_change._node_periods(consolidation_group,
+                                                                      entity)
+                    if int(r["docstatus"] or 0) == 0 and r["name"] != exclude)
+    ctx["pending"] = others
     if exclude:
-        others = sorted(r["name"] for r in ownership_change._node_periods(consolidation_group,
-                                                                          entity)
-                        if int(r["docstatus"] or 0) == 0 and r["name"] != exclude)
         ctx["pending_exists"] = ", ".join(others) if others else None
     problems = []
     period_type = ctx["period"].get("period_type")
@@ -594,7 +623,12 @@ def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, en
     first day) is the first problem, and there is no effect. A draft of an
     entity the caller cannot see is refused without naming its entity.
 
-    Returns ``{"problems": [...], "effect": {...} | None, "current": {...} | None}``.
+    O69: ``pending`` is the sorted list of the node's other drafts awaiting
+    approval (after the ``name`` exclude), the exact names the "already
+    awaiting approval … edit that draft" problem names; ``[]`` when none.
+
+    Returns ``{"problems": [...], "effect": {...} | None, "current": {...} | None,
+    "pending": [...]}``.
     """
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     ctx, problems, effect = _ownership_preview(fiscal_year, fiscal_period, consolidation_group,
@@ -606,7 +640,8 @@ def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, en
         if refusal:
             problems = [refusal] + problems
             effect = None
-    return {"problems": problems, "effect": effect, "current": ctx["current"]}
+    return {"problems": problems, "effect": effect, "current": ctx["current"],
+            "pending": ctx["pending"]}
 
 
 def _edit_refusal(doc, consolidation_group, entity, effective_date):
