@@ -81,14 +81,16 @@ function need(obj, keys, where) {
 	}
 }
 
-/** `change.entities` -> one option per node, `{key, entity, group, label}`. */
+/** `change.entities` -> one option per node, `{key, entity, group, label,
+ * current}`. `current` is the node's latest submitted period (R52j); an
+ * entity choice without it throws. */
 function entityOptions(entities) {
 	if (!Array.isArray(entities)) {
 		throw new Error("OwnershipChange: get_ownership's change has no entities list");
 	}
 	const nodes = {};
 	for (const e of entities) {
-		need(e, ["entity", "entity_name", "consolidation_group"], "an entity choice");
+		need(e, ["entity", "entity_name", "consolidation_group", "current"], "an entity choice");
 		nodes[e.entity] = (nodes[e.entity] || 0) + 1;
 	}
 	return entities.map((e) => ({
@@ -96,6 +98,7 @@ function entityOptions(entities) {
 		entity: e.entity,
 		group: e.consolidation_group,
 		label: `${e.entity} — ${e.entity_name}${nodes[e.entity] > 1 ? ` (in ${e.consolidation_group})` : ""}`,
+		current: e.current,
 	}));
 }
 
@@ -170,7 +173,20 @@ function pendingEdits(pending, editable) {
 	return pending.filter((n) => Object.prototype.hasOwnProperty.call(editable, n));
 }
 
-/** The preview's `current` -> the wireframe's "Currently" line. */
+/** konsol#305 R52r (review U4): which current period the "Currently" line
+ * shows. None until an entity is picked; then the picked node's own
+ * (`change.entities[].current`, R52j), so the line shows before any
+ * preview. A fresh preview with a current period replaces it (the period
+ * covering the chosen first period). A stale preview (for older inputs,
+ * perhaps another entity), an errored one, or one without a current never
+ * shows over the picked entity's. */
+function shownCurrent(entity, panel, fresh) {
+	if (!entity) return null;
+	if (fresh && panel && !panel.error && panel.current) return panel.current;
+	return entity.current;
+}
+
+/** A current period -> the wireframe's "Currently" line. */
 function currentText(current) {
 	need(current, ["name", "effective_date", "end_date", "ownership_pct", "consolidation_method"], "the current period");
 	const to = current.end_date === null ? "open-ended" : `to ${dueDateText(current.end_date, "OwnershipChange")}`;
@@ -279,10 +295,10 @@ const selectedPeriod = computed(() => {
 	return null;
 });
 const current = computed(() => {
-	const panel = preview.panel;
-	if (!panel || !panel.current) return null;
+	const shown = shownCurrent(selectedEntity.value, preview.panel, preview.fresh);
+	if (shown === null) return null;
 	try {
-		return { text: currentText(panel.current) };
+		return { text: currentText(shown) };
 	} catch (e) {
 		return { error: e.message };
 	}
@@ -417,6 +433,7 @@ async function saveDraft() {
 				<label for="oc-entity" class="text-ink-gray-6">Entity</label>
 				<select
 					id="oc-entity"
+					:disabled="saving"
 					v-model="form.entityKey"
 					class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
 				>
@@ -439,6 +456,7 @@ async function saveDraft() {
 				<span class="flex flex-wrap items-center gap-2">
 					<select
 						id="oc-period"
+						:disabled="saving"
 						v-model="form.periodKey"
 						class="rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
 					>
@@ -453,6 +471,7 @@ async function saveDraft() {
 				<label for="oc-pct" class="text-ink-gray-6">Ownership %</label>
 				<input
 					id="oc-pct"
+					:disabled="saving"
 					v-model="form.pct"
 					type="text"
 					inputmode="decimal"
@@ -462,6 +481,7 @@ async function saveDraft() {
 				<label for="oc-method" class="text-ink-gray-6">Method</label>
 				<select
 					id="oc-method"
+					:disabled="saving"
 					v-model="form.method"
 					class="w-40 rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
 				>
@@ -515,7 +535,7 @@ async function saveDraft() {
 					<p v-if="preview.panel.view" class="mt-2 flex items-start gap-1 text-xs text-ink-gray-5">
 						<FeatherIcon name="info" class="mt-0.5 h-3 w-3 shrink-0" />{{ preview.panel.view.notShown }}
 					</p>
-					<ul v-if="preview.panel.problems.length" role="alert" class="mt-2 flex flex-col gap-1">
+					<ul v-if="preview.panel.problems.length" class="mt-2 flex flex-col gap-1">
 						<li
 							v-for="(problem, i) in preview.panel.problems"
 							:key="i"

@@ -77,9 +77,10 @@ function hiddenNoteText(hidden) {
 /** The server's item (approvals_model.queue_items' shape, every field
  * passed through unchanged except the ones below), formatted for display.
  * Only a journal's `effect` runs through `effectView` (konsol#305 R52p,
- * review U6): an Ownership Period item carries its own ownership effect
- * (O58) and `effect_error` (R52i), which pass through unchanged for rates.js's
- * `opEffectView`, and get no `rawEffect`. `rawEffect` keeps the server's own
+ * review U6): an Ownership Period item carries its own `ownership_effect`
+ * (O58) and `ownership_effect_error` (R52i; both renamed in R52q), which
+ * pass through unchanged for rates.js's `opEffectView`, and get no
+ * `rawEffect`. `rawEffect` keeps the server's own
  * `journal_model.statement_effect` shape (`{headings: [{section, heading,
  * heading_name, net_debit}]}`) alongside the display-shaped `effect`
  * (konsol#305 U2): `beforeAfter` (numbers.js) needs `net_debit` and
