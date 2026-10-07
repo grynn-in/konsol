@@ -1343,3 +1343,29 @@ def test_y60_a_sender_with_no_full_name_is_refused_not_shown_as_an_id():
         site.users = users
         err = _call_raises(site)
         assert LEAD in str(err) and "full name" in str(err), str(err)
+
+
+# --- golden fixture (T55t) -------------------------------------------------------
+
+#: The golden payload close-ui's intercompany tests load (Y65): exactly what the
+#: real ``get_ic`` returns for ``_ic_golden_site()``, never a hand-built dict.
+IC_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "fixtures", "close_ic_payload.json")
+
+
+def _ic_golden_site():
+    """Y65's generator: the reminded site plus an IC reminder on FR01, with the
+    caller limited to UK01 and DE01 (so FR01's side is masked)."""
+    site = _reminded_site()
+    site.reminders.append(_ic_reminder("CE-R2", "FR01", datetime(2025, 8, 5, 9, 0),
+                                       actor=LEAD))
+    site.allowed = {"UK01", "DE01"}
+    return site
+
+
+def test_t55t_get_ic_matches_the_golden_fixture():
+    out = json.loads(json.dumps(_call(_ic_golden_site())))
+    with open(IC_FIXTURE) as f:
+        golden = json.load(f)
+    assert out == golden
+    assert golden["can_remind"] is True and _all_pairs(golden)
