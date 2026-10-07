@@ -1050,3 +1050,76 @@ test("O67 ownershipDraftEdits: only the drafts the server made editable, keyed b
   assert.deepEqual(edits, { "OP-ZZ5B1-2025-10-01": PENDING.items[1].edit });
   assert.deepEqual(ratesModule.ownershipDraftEdits([]), {});
 });
+
+// ---------------------------------------------------------------------------
+// konsol#305 R52o (review U6 part 1, the S2 consumer): one ownership-effect
+// view, `opEffectView(item)`, shared by the pending list and (R52p) the
+// Approvals detail. Fed the REAL goldens (close_rates_pending_payload.json,
+// close_approvals_op_queue_payload.json; both carry `effect_error` from
+// R52i). Expected strings are literals.
+// ---------------------------------------------------------------------------
+
+const OP_QUEUE = fixture("close_approvals_op_queue_payload.json");
+
+// The real server sentence: rates_api.get_pending on test_close_rates_api.py's
+// R52i site (a draft whose `supersedes` names a cancelled period).
+const R52O_SERVER_ERROR =
+  "The pending ownership change OP-ZZ5B3-2025-10-01 cannot be shown: OP-ZZ5B3-2025-10-01 supersedes " +
+  "OP-ZZ5B3-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.";
+
+function r52oItem(payload, name) {
+  const item = payload.items.find((i) => i.name === name);
+  assert.ok(item, `the golden has ${name}`);
+  return item;
+}
+
+test("R52o opEffectView: the golden change draft gives the pending panel (Ownership, Method, Ends; no Covers row)", () => {
+  assert.equal(typeof ratesModule.opEffectView, "function", "rates.js exports opEffectView");
+  const item = r52oItem(pendingView(PENDING), "OP-ZZ5B1-2025-10-01");
+  assert.equal(item.effect_error, null, "R52i: the golden carries effect_error null");
+  assert.deepEqual(ratesModule.opEffectView(item), {
+    view: {
+      rows: [
+        { label: "Ownership", before: "100 %", after: "80 %", unchanged: false },
+        { label: "Method", before: "full", after: "full", unchanged: true },
+      ],
+      currentEnds: "Tue 30 Sep 2025",
+      endsLine: "OP-ZZ5B1-1 on Tue 30 Sep 2025",
+      firstPeriod: "FY2025 P10",
+      periods: "FY2025 P10 onward (open-ended)",
+      resign: ["FY2025 P11 (signed Sat 4 Oct 2025 by Zz Lead)"],
+      resignNone: null,
+      notShown: "Goodwill, NCI and results are not previewed; they change at the next build.",
+    },
+  });
+});
+
+test("R52o opEffectView: the golden Desk draft (effect null, effect_error null) gives the Desk sentence", () => {
+  assert.equal(ratesModule.DESK_DRAFT, "Drafted in Desk: effect not previewed.");
+  const item = r52oItem(pendingView(PENDING), "OP-ZZ5B2-2025-10-01");
+  assert.deepEqual(ratesModule.opEffectView(item), { desk: "Drafted in Desk: effect not previewed." });
+});
+
+test("R52o opEffectView failure path: every golden OP item with the server's effect_error gives that sentence, never the Desk line", () => {
+  const items = [
+    ...pendingView(PENDING).items,
+    ...OP_QUEUE.items,
+  ].filter((i) => i.doctype === "Ownership Period");
+  assert.equal(items.length, 4, "two OP items in each golden");
+  for (const item of items) {
+    const broken = { ...item, effect: null, effect_error: R52O_SERVER_ERROR };
+    assert.deepEqual(ratesModule.opEffectView(broken), { error: R52O_SERVER_ERROR }, item.name);
+  }
+});
+
+test("R52o opEffectView failure path: a missing effect or effect_error key throws", () => {
+  const item = r52oItem(pendingView(PENDING), "OP-ZZ5B1-2025-10-01");
+  const noEffect = { ...item };
+  delete noEffect.effect;
+  assert.throws(() => ratesModule.opEffectView(noEffect), /OP-ZZ5B1-2025-10-01 has no effect/);
+  const noError = { ...item };
+  delete noError.effect_error;
+  assert.throws(() => ratesModule.opEffectView(noError), /OP-ZZ5B1-2025-10-01 has no effect_error/);
+  const { resign, ...noResign } = item.effect;
+  assert.throws(() => ratesModule.opEffectView({ ...item, effect: noResign }), /resign/);
+});

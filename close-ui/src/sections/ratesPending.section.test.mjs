@@ -165,21 +165,23 @@ test("No v-html, no browser dialogs, no browser storage", () => {
 // through the REAL pendingView + ownershipEffectView (rates.js, O59).
 // ---------------------------------------------------------------------------
 import { pendingView, ownershipEffectView } from "../rates.js";
+import * as ratesModule from "../rates.js";
 
 const PENDING = JSON.parse(
   fs.readFileSync(new URL("../../../konsol/tests/fixtures/close_rates_pending_payload.json", import.meta.url), "utf8"),
 );
 
-/** Builds the section's own `opEffect(item)` from its <script> source, with
- * the real `ownershipEffectView` injected — the function under test is the
- * one the component runs, not a copy. */
+/** R52o: builds the section's own `effectFor(item)` from its <script>
+ * source, with the real rates.js `opEffectView` injected — the function under
+ * test is the one the component runs, not a copy. The section keeps no
+ * DESK_DRAFT or opEffect copy of its own (review U6). */
 function loadOpEffect() {
   const js = script(read());
-  const constant = js.match(/const DESK_DRAFT = [^\n]*\n/);
-  assert.ok(constant, "the section declares const DESK_DRAFT");
-  const fn = js.match(/function opEffect\(item\)\s*\{[\s\S]*?\n\}\n/);
-  assert.ok(fn, "the section declares function opEffect(item)");
-  return new Function("ownershipEffectView", `${constant[0]}${fn[0]}return opEffect;`)(ownershipEffectView);
+  assert.doesNotMatch(js, /const DESK_DRAFT\b/, "R52o: the Desk sentence lives in rates.js only");
+  assert.doesNotMatch(js, /function opEffect\(/, "R52o: no local opEffect copy");
+  const fn = js.match(/function effectFor\(item\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(fn, "the section declares function effectFor(item)");
+  return new Function("opEffectView", `${fn[0]}return effectFor;`)(ratesModule.opEffectView);
 }
 
 function itemNamed(name) {
@@ -232,12 +234,31 @@ test("O61 failure path: an HER item has no panel; an OP item whose effect is bro
   assert.match(opEffect(missing).error, /effect/, "an OP item with no effect key is a server regression, shown as such");
 });
 
+test("R52o failure path (S2 consumer): an OP item carrying the server's effect_error shows that sentence in place of the panel", () => {
+  const opEffect = loadOpEffect();
+  const sentence =
+    "The pending ownership change OP-ZZ5B3-2025-10-01 cannot be shown: OP-ZZ5B3-2025-10-01 supersedes " +
+    "OP-ZZ5B3-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.";
+  for (const name of ["OP-ZZ5B1-2025-10-01", "OP-ZZ5B2-2025-10-01"]) {
+    const broken = { ...itemNamed(name), effect: null, effect_error: sentence };
+    assert.deepEqual(opEffect(broken), { error: sentence }, name);
+  }
+});
+
+test("R52o (U9): the Edit button is labelled with the draft's name", () => {
+  const tpl = template(read());
+  const at = tpl.indexOf('v-if="canEdit(item)"');
+  assert.ok(at > 0);
+  const tag = tpl.slice(tpl.lastIndexOf("<", at), tpl.indexOf(">", at));
+  assert.ok(tag.includes(':aria-label="`Edit ${item.name}`"'), tag);
+});
+
 test("O61: the template renders the panel above Approve, read-only, with the Desk sentence and the error branch", () => {
   const source = read();
   assert.match(
     source,
-    /import\s*\{[^}]*\bownershipEffectView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
-    "imports ownershipEffectView from rates.js",
+    /import\s*\{[^}]*\bopEffectView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
+    "R52o: imports opEffectView from rates.js",
   );
   const tpl = template(source);
   assert.match(tpl, /EFFECT IF APPROVED/);
