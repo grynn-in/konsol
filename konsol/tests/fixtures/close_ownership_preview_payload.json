@@ -1,0 +1,19 @@
+{
+  "problems": [],
+  "effect": {
+    "before": {"pct": 100.0, "method": "full", "from": "2025-01-01", "to": null},
+    "after": {"pct": 80.0, "method": "full", "from": "2025-10-01", "to": null},
+    "current_ends": "2025-09-30",
+    "first_period": "FY2025 P10",
+    "periods": "FY2025 P10 onward (open-ended)",
+    "resign": ["FY2025 P11", "FY2025 P13"],
+    "not_shown": "Goodwill, NCI and results are not previewed; they change at the next build."
+  },
+  "current": {
+    "name": "OP-ZZ5B1-1",
+    "effective_date": "2025-01-01",
+    "end_date": null,
+    "ownership_pct": 100.0,
+    "consolidation_method": "full"
+  }
+}

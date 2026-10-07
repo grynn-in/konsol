@@ -1,0 +1,14 @@
+{
+  "problems": [
+    "Ownership % must be a number from 0 to 100.",
+    "A change for ZZ5B1 is already awaiting approval (OP-ZZ5B1-2): edit that draft."
+  ],
+  "effect": null,
+  "current": {
+    "name": "OP-ZZ5B1-1",
+    "effective_date": "2025-01-01",
+    "end_date": null,
+    "ownership_pct": 100.0,
+    "consolidation_method": "full"
+  }
+}

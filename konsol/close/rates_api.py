@@ -60,6 +60,12 @@ a combined ``hidden`` count (W2-10, W2-14) and a ``blocking_hidden`` count
 hidden gap from a merely-hidden out-of-scope entity. The query is keyed to
 the period's start date; moving it to the period's end waits on G09/G04
 (W2-16, blocked).
+
+``preview_ownership_change(...)`` (GET, O55; story 4.2, #305-4.2-1,
+#305-Q1-1) returns a proposed ownership change's refusals and structural
+effect as data, read once through ``ownership_change`` and decided by
+``ownership_change_model`` (C-O4). It refuses an entity the caller cannot see
+before any read, lists a non-Regular period as a problem, and writes nothing.
 """
 import importlib.util as _importlib_util
 import os as _os
@@ -447,3 +453,65 @@ def get_ownership(fiscal_year, fiscal_period):
         "hidden": blocking_hidden + out_of_scope_hidden,
         "blocking_hidden": blocking_hidden,
     }
+
+
+#: preview_ownership_change (O55): the chosen period must be Regular. An
+#: Opening P00 starts on P01's first day, so the model alone would read it as
+#: a valid first day and silently describe a P01 change.
+OWNERSHIP_CHANGE_REGULAR_ONLY = (
+    "%s is the %s period, not a Regular one: an ownership change starts on the "
+    "first day of a Regular period; pick a Regular period."
+)
+
+
+def _ownership_preview(fiscal_year, fiscal_period, consolidation_group, entity, ownership_pct,
+                       consolidation_method):
+    """``(ctx, problems, effect)`` of a proposed ownership change: the one
+    reading the preview (O55) and the save (O56) share. The scope check comes
+    first, before any read; corrupt data (``ValueError`` from
+    ``ownership_change``) is thrown as a sentence. ``effect`` is None while
+    any problem stands: the effect of a refused change is never guessed."""
+    allowed = allowed_entity_codes()
+    if allowed is not None and entity not in allowed:
+        frappe.throw(f"You cannot see entity {entity or '(blank)'}: ask an administrator for "
+                     "an Entity permission on it, or pick an entity you can see.")
+    key = _period(fiscal_year, fiscal_period)
+    from konsol.close import ownership_change  # lazy (C-X1)
+
+    try:
+        ctx = ownership_change.context(consolidation_group, entity, *key)
+    except ValueError as e:
+        frappe.throw(str(e))
+    problems = []
+    period_type = ctx["period"].get("period_type")
+    if period_type != "Regular":
+        problems.append(OWNERSHIP_CHANGE_REGULAR_ONLY
+                        % (period_name(*key), period_type or "blank-type"))
+    problems.extend(ownership_change.model.problems(
+        ownership_change.change(ctx, ownership_pct, consolidation_method), ctx["current"],
+        ctx["later_exists"], ctx["pending_exists"], ctx["period_rows"]))
+    effect = None
+    if not problems:
+        try:
+            effect = ownership_change.model.effect(
+                ownership_change.change(ctx, ownership_pct, consolidation_method),
+                ctx["current"], ctx["period_rows"], ctx["signed_keys"])
+        except ValueError as e:
+            frappe.throw(str(e))
+    return ctx, problems, effect
+
+
+@frappe.whitelist(methods=["GET"])
+def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, entity,
+                             ownership_pct, consolidation_method):
+    """O55 (story 4.2; #305-4.2-1, #305-Q1-1; wireframe-4.2.md): the
+    refusals and the structural effect of an ownership change starting on the
+    chosen period's first day (C-O2), as data, so the form shows them as the
+    user types. A Viewer may preview. Writes nothing.
+
+    Returns ``{"problems": [...], "effect": {...} | None, "current": {...} | None}``.
+    """
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    ctx, problems, effect = _ownership_preview(fiscal_year, fiscal_period, consolidation_group,
+                                               entity, ownership_pct, consolidation_method)
+    return {"problems": problems, "effect": effect, "current": ctx["current"]}
