@@ -402,3 +402,54 @@ def test_rule_gaps_never_carry_the_pending_gap():
     codes = [g["code"] for g in M.rule_gaps(balances, rules)]
     assert "ic_balance_draft_pending" not in codes
     assert M.pending_gap(balances, rules) is not None
+
+
+# --- R52k (review S8): each row says whether it blocks sign-off ----------------------
+
+def _s8_mix():
+    """One balance per case, two pairs; the wildcard rule covers A → B only."""
+    balances = [
+        _bal("ICB-RULE-STOCK", sell="A", buy="B", inventory="100"),       # pending
+        _bal("ICB-RULE-ZERO", sell="A", buy="B", inventory="0"),          # nothing to eliminate
+        _bal("ICB-RULE-UNREAD", sell="A", buy="B", inventory="n/a"),      # unreadable: pending
+        _bal("ICB-NO-RULE", sell="C", buy="D", inventory="100"),          # no matching rule
+        _bal("ICB-APPROVED", sell="A", buy="B", inventory="100", docstatus=1),
+    ]
+    return balances, [_rule("R1", debit="A", credit="B")]
+
+
+def _pending_names(gap):
+    return sorted(n for p in (gap or {}).get("pairs", []) for n in p["names"])
+
+
+def test_rows_pending_rule_is_exactly_the_pending_gap():
+    balances, rules = _s8_mix()
+    rows = M.balance_rows(balances, rules)
+    for row in rows:
+        assert row["pending_rule"] in (True, False), row
+    flagged = sorted(r["name"] for r in rows if r["pending_rule"])
+    assert flagged == ["ICB-RULE-STOCK", "ICB-RULE-UNREAD"]
+    assert flagged == _pending_names(M.pending_gap(balances, rules))
+
+
+def test_rows_pending_rule_false_when_nothing_pends():
+    balances, rules = _s8_mix()
+    rows = M.balance_rows([b for b in balances if b["name"] in ("ICB-RULE-ZERO", "ICB-NO-RULE",
+                                                                "ICB-APPROVED")], rules)
+    assert [r["pending_rule"] for r in rows] == [False, False, False]
+    assert M.pending_gap(balances[1:2] + balances[3:], rules) is None
+
+
+def test_rows_and_gap_share_one_predicate():
+    # Swap the shared predicate: both outputs must follow it, so neither
+    # carries its own copy of the rule.
+    balances, rules = _s8_mix()
+    original = M._blocks_signoff
+    M._blocks_signoff = lambda balance, rules: balance.get("name") == "ICB-APPROVED"
+    try:
+        rows = M.balance_rows(balances, rules)
+        gap = M.pending_gap(balances, rules)
+    finally:
+        M._blocks_signoff = original
+    assert [r["name"] for r in rows if r["pending_rule"]] == ["ICB-APPROVED"]
+    assert _pending_names(gap) == ["ICB-APPROVED"]
