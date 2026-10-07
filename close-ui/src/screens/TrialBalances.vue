@@ -18,7 +18,12 @@
  *   server says `can_upload` (the period is Open and the user may create a
  *   trial balance). After a submit the list is re-read in place, so the
  *   server's own label is shown; the detail area stays open.
- * - No due date is shown: nothing declares one (Problems 6).
+ * - D60 (story 2.4, decision #305-2.4-1): the header shows tbTable's
+ *   `tbDue` text — "TB due Tue 7 Oct 2025", or the server's "No due date
+ *   declared" — never a guessed date. A Missing row past due shows the
+ *   "Overdue" chip (`row.overdueChip`, warn tone). Show-only: overdue never
+ *   blocks or disables anything. A payload without `deadline` is the error
+ *   state, like an unknown status.
  * - B27: a missing TB shows the dash from `entityRows` (never "None"), and
  *   the upload / exception times are formatted in the user's zone like the
  *   freshness bar (B09), with the zone from timefmt.js's `userTimeZone` (B29),
@@ -39,7 +44,7 @@ import TbUpload from "../sections/TbUpload.vue";
 import TbCompare from "../sections/TbCompare.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { entityRows, entityWord } from "../tbTable.js";
+import { entityRows, entityWord, tbDue } from "../tbTable.js";
 import { REMIND, remindBody } from "../remind.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
@@ -184,14 +189,15 @@ async function remind(row) {
 
 /** `entityRows` refuses an unknown status; that refusal is shown, not hidden. */
 const table = computed(() => {
-	if (load.status !== "ready") return { rows: null, error: null };
-	if (!timeZone) return { rows: null, error: NO_ZONE };
+	if (load.status !== "ready") return { rows: null, due: null, error: null };
+	if (!timeZone) return { rows: null, due: null, error: NO_ZONE };
 	try {
-		return { rows: entityRows(load.data, load.now, timeZone), error: null };
+		return { rows: entityRows(load.data, load.now, timeZone), due: tbDue(load.data), error: null };
 	} catch (e) {
-		return { rows: null, error: e.message };
+		return { rows: null, due: null, error: e.message };
 	}
 });
+const due = computed(() => table.value.due);
 
 const viewState = computed(() => {
 	if (load.status !== "ready") return load.status;
@@ -262,6 +268,7 @@ watch(
 			<p class="mt-1 text-sm text-ink-gray-6">
 				Your entities for {{ period.error || period.year == null ? "this period" : periodName(period) }}, and whether each trial balance is in.
 			</p>
+			<p v-if="due" class="mt-1 text-sm font-medium text-ink-gray-8" data-due>{{ due.text }}</p>
 		</header>
 
 		<LoadState
@@ -320,6 +327,7 @@ watch(
 							</td>
 							<td class="px-4 py-2">
 								<span class="inline-block rounded px-2 py-0.5 text-xs font-medium" :class="STATUS_TONE[row.status]">{{ row.status }}</span>
+								<span v-if="row.overdueChip" class="ml-1 inline-block rounded px-2 py-0.5 text-xs font-medium" :class="row.overdueChip.tone">{{ row.overdueChip.text }}</span>
 								<div v-if="row.reminded" class="mt-1 text-xs text-ink-gray-6">{{ row.reminded }}</div>
 								<button
 									v-if="row.canRemind"
