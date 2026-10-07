@@ -380,7 +380,7 @@ def _row(name, effective, end=None, docstatus=1, group="ZZG", entity="ZZ01"):
 
 class _Stored:
     """A stored Ownership Period as ``frappe.get_doc`` returns it: ``db_set``
-    records the field, the value and whether ``from_ownership_change`` was set."""
+    records the name, the field and the value."""
 
     def __init__(self, frappe, row, log):
         self.__dict__.update(vars(row))
@@ -390,7 +390,7 @@ class _Stored:
         return self.__dict__.get(field, default)
 
     def db_set(self, field, value, *a, **k):
-        self._log.append((self.name, field, value, bool(getattr(self._frappe.flags, "from_ownership_change", False))))
+        self._log.append((self.name, field, value))
         setattr(self, field, value)
 
 
@@ -455,7 +455,7 @@ def test_a_change_superseding_an_open_ended_predecessor_validates():
     assert filters["docstatus"] == ["!=", 2]
     # a predecessor with an end date after the change's start is superseded too
     module, _, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 12, 31))])
-    _change(module, superseded_end_date="2025-12-31")._check_no_gaps_or_overlaps()
+    _change(module, end_date="2025-12-31", superseded_end_date="2025-12-31")._check_no_gaps_or_overlaps()
 
 
 def test_without_supersedes_a_new_period_still_overlaps():
@@ -508,20 +508,19 @@ def test_a_change_between_two_existing_periods_is_refused():
     later = _row("OP-ZZG-ZZ01-2026-01-01", _D(2026, 1, 1))
     module, _, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 12, 31)), later])
     with pytest.raises(_Refused) as e:
-        _change(module, end_date="2025-11-30", superseded_end_date="2025-12-31")._check_no_gaps_or_overlaps()
+        _change(module, end_date="2025-12-31", superseded_end_date="2025-12-31")._check_no_gaps_or_overlaps()
     assert later.name in str(e.value) and "between" in str(e.value)
 
 
-def test_submit_ends_the_predecessor_the_day_before_under_the_flag():
+def test_submit_ends_the_predecessor_the_day_before():
     module, log, calls = _site([_row(_PRED, _D(2025, 1, 1))])
     _change(module, docstatus=1).on_submit()
-    assert log == [(_PRED, "end_date", _D(2025, 9, 30), True)]
+    assert log == [(_PRED, "end_date", _D(2025, 9, 30))]
     assert ("get_doc", _PRED, True) in calls, "the predecessor is read FOR UPDATE"
-    assert not getattr(module.frappe.flags, "from_ownership_change", False), "flag reset"
     # a stored end date that still matches
     module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 12, 31))])
-    _change(module, docstatus=1, superseded_end_date="2025-12-31").on_submit()
-    assert log == [(_PRED, "end_date", _D(2025, 9, 30), True)]
+    _change(module, docstatus=1, end_date="2025-12-31", superseded_end_date="2025-12-31").on_submit()
+    assert log == [(_PRED, "end_date", _D(2025, 9, 30))]
 
 
 def test_submit_without_supersedes_touches_no_other_period():
@@ -538,17 +537,15 @@ def test_submit_refuses_a_predecessor_whose_end_date_moved_since_the_draft():
         msg = str(e.value)
         assert _PRED in msg and "changed since" in msg and "record the change again" in msg, msg
         assert log == []
-        assert not getattr(module.frappe.flags, "from_ownership_change", False)
 
 
 def test_cancel_restores_the_stored_end_date():
     module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 9, 30))])
     _change(module, docstatus=2).on_cancel()
-    assert log == [(_PRED, "end_date", None, True)]
-    assert not getattr(module.frappe.flags, "from_ownership_change", False)
+    assert log == [(_PRED, "end_date", None)]
     module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 9, 30))])
     _change(module, docstatus=2, superseded_end_date="2025-12-31").on_cancel()
-    assert log == [(_PRED, "end_date", _D(2025, 12, 31), True)]
+    assert log == [(_PRED, "end_date", _D(2025, 12, 31))]
     # no supersedes: nothing to restore
     module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 9, 30))])
     _change(module, docstatus=2, supersedes=None).on_cancel()
@@ -565,3 +562,66 @@ def test_cancel_refuses_a_restore_that_would_overlap_a_later_period():
         _change(module, docstatus=2).on_cancel()
     assert later.name in str(e.value) and "first" in str(e.value)
     assert log == []
+
+
+# --- R52g: review S6, S10, S16 (konsol#305 wave 5b) -----------------------------
+
+_S6_CHANGE = "OP-ZZG-ZZ01-2025-07-01"
+
+
+def test_s6_a_change_ends_where_its_predecessor_ended():
+    """S6: a change supersedes the current period for the rest of its span, so
+    its end date is the predecessor's stored end date (blank = open). An edited
+    End Date on the draft is refused, so the effect's ``after.to`` is true by
+    construction."""
+    module, log, _ = _site([_row(_PRED, _D(2025, 1, 1))])
+    with pytest.raises(_Refused) as e:
+        _change(module, name=_S6_CHANGE, effective_date="2025-07-01",
+                end_date="2025-09-30")._check_no_gaps_or_overlaps()
+    assert str(e.value) == (
+        f"{_S6_CHANGE} supersedes {_PRED}, so it ends where {_PRED} ended (open): "
+        f"clear or correct End Date.")
+    # a stored date and a different (or blank) end date: refused, naming the date
+    module, _, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 12, 31))])
+    for end in ("2025-09-30", None, ""):
+        with pytest.raises(_Refused) as e:
+            _change(module, name=_S6_CHANGE, effective_date="2025-07-01", end_date=end,
+                    superseded_end_date="2025-12-31")._check_no_gaps_or_overlaps()
+        assert str(e.value) == (
+            f"{_S6_CHANGE} supersedes {_PRED}, so it ends where {_PRED} ended (2025-12-31): "
+            f"clear or correct End Date."), end
+    # matching: saves, whatever the spelling (blank equals blank, str equals date)
+    module, _, _ = _site([_row(_PRED, _D(2025, 1, 1))])
+    for end, stored in ((None, None), ("", None), (None, ""), ("", "")):
+        _change(module, effective_date="2025-07-01", end_date=end,
+                superseded_end_date=stored)._check_no_gaps_or_overlaps()
+    module, _, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 12, 31))])
+    _change(module, effective_date="2025-07-01", end_date=_D(2025, 12, 31),
+            superseded_end_date="2025-12-31")._check_no_gaps_or_overlaps()
+    assert log == []
+
+
+def test_s6_without_supersedes_an_end_date_is_unchanged():
+    module, _, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 6, 30))])
+    _change(module, supersedes=None, effective_date="2025-07-01",
+            end_date="2025-09-30")._check_no_gaps_or_overlaps()
+
+
+def test_s16_cancel_never_writes_a_cancelled_predecessor():
+    """S16: a predecessor cancelled since gets no end date back, as a deleted
+    one gets none."""
+    module, log, calls = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 9, 30), docstatus=2)])
+    _change(module, docstatus=2).on_cancel()
+    assert log == []
+    module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 9, 30), docstatus=2)])
+    _change(module, docstatus=2, superseded_end_date="2025-12-31").on_cancel()
+    assert log == []
+    # a deleted predecessor: still nothing
+    module, log, _ = _site([])
+    _change(module, docstatus=2).on_cancel()
+    assert log == []
+
+
+def test_s10_the_dead_ownership_change_flag_is_gone():
+    """S10: ``frappe.flags.from_ownership_change`` was set and read nowhere."""
+    assert "from_ownership_change" not in _src()

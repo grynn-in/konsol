@@ -803,14 +803,44 @@ def test_a_non_datetime_time_raises():
     assert "CE-0002" in str(info.value)
 
 
-def test_a_sender_with_no_full_name_is_refused_not_shown_as_an_id():
-    for users in ([], [_user("zz-lead@example.com", ""),
-                       _user("zz-ga@example.com", "Gee Accountant")]):
+def test_a_sender_with_no_full_name_is_labelled_and_the_other_rows_are_intact():
+    """konsol#305 R52c (review-w5b S3). Failure path (red at 843cdf7): a
+    sender with no User row, or a User whose full name is blank, made
+    ``get_period_grid`` raise "... has no full name" and took the whole grid
+    down. Now that cell shows the labelled id (``remind_model.sender_name``),
+    every other row is intact, and the reads are unchanged."""
+    for users in ([_user("zz-ga@example.com", "Gee Accountant")],
+                  [_user("zz-lead@example.com", ""),
+                   _user("zz-ga@example.com", "Gee Accountant")]):
         site = _reminded_site()
         site.data["User"] = users
-        err = _call_raises(site)
-        assert "zz-lead@example.com" in str(err), str(err)
-        assert "full name" in str(err), str(err)
+        site.reminders.append(
+            _reminder("CE-0003", "ZZB", datetime(2025, 10, 6, 8, 0), "zz-ga@example.com"))
+        rows = _by_row(_call(site))
+        assert rows["ZZA"]["tb"]["reminders"] == {
+            "count": 2, "last_at": "2025-10-06T10:00:00+01:00",
+            "last_by": "zz-lead@example.com",
+            "last_by_name": "zz-lead@example.com (name not recorded)"}, rows["ZZA"]
+        assert rows["ZZB"]["tb"]["reminders"]["last_by_name"] == "Gee Accountant", rows["ZZB"]
+        for code in ("ZZC", "ZZX"):
+            assert rows[code]["tb"]["reminders"] is None, rows[code]
+        assert site.reminder_calls == [([(2025, 9)], "tb")]
+        assert site.user_filters == [
+            {"name": ["in", ["zz-ga@example.com", "zz-lead@example.com"]]}], site.user_filters
+
+
+def test_a_nameless_sender_keeps_the_read_count_constant():
+    """R52c: with no User row for the sender, the grid still makes one Close
+    Event read plus one User read on top of the old count, for 1 entity and 5."""
+    old = 6  # as test_reads_are_the_old_count_plus_two_whatever_the_entity_count
+    for n in (1, 5):
+        site = _sized_site(n)
+        site.data["User"] = []
+        result = _call(site)
+        assert all(r["tb"]["reminders"]["last_by_name"] == "zz-ga@example.com (name not recorded)"
+                   for r in result["rows"]), result
+        reads = sum(site.get_all_calls.values()) + len(site.reminder_calls)
+        assert reads == old + 2, (n, site.get_all_calls, site.reminder_calls)
 
 
 def test_the_grid_has_no_can_remind():
