@@ -74,6 +74,43 @@ def test_the_ownership_fields_stay_editable():
         assert not fields[fn].get("read_only"), f"{fn} must stay editable"
 
 
+# --- O52: the ownership-change link (#305-Q1-1, plan-w5b.md §4d) ------------
+
+SUPERSEDE_FIELDS = ("supersedes", "superseded_end_date")
+
+
+def test_the_supersede_fields_exist_read_only_after_consolidation_method():
+    """A change draft names the period it ends on approval; the predecessor's
+    old end date is kept so a cancel can restore it. Both are set by the
+    product, never typed, and sit right after consolidation_method."""
+    order = [f["fieldname"] for f in _meta()["fields"]]
+    fields = {f["fieldname"]: f for f in _meta()["fields"]}
+    for fn in SUPERSEDE_FIELDS:
+        assert fn in fields, f"missing field {fn}"
+        assert fields[fn].get("read_only") == 1, f"{fn} must be read_only"
+        assert not fields[fn].get("reqd"), f"{fn} must be optional"
+    at = order.index("consolidation_method")
+    assert order[at + 1:at + 3] == list(SUPERSEDE_FIELDS)
+    sup = fields["supersedes"]
+    assert sup["fieldtype"] == "Link" and sup["options"] == "Ownership Period"
+    assert sup.get("description") == "The period this change ends on approval."
+    assert not sup.get("hidden"), "supersedes is shown on the form"
+    end = fields["superseded_end_date"]
+    assert end["fieldtype"] == "Date"
+    assert end.get("hidden") == 1, "superseded_end_date is hidden"
+
+
+def test_the_supersede_fields_are_not_synced_to_the_warehouse():
+    """Nothing new goes to ClickHouse: the fields are not in CH_FIELD_MAP."""
+    module = _load(_no_flags())
+    ch = module.OwnershipPeriod.CH_FIELD_MAP
+    for fn in SUPERSEDE_FIELDS:
+        assert fn not in ch, f"{fn} must not be synced"
+        assert fn not in ch.values(), f"{fn} must not be a warehouse column"
+    fields = {f["fieldname"] for f in _meta()["fields"]}
+    assert set(ch) <= fields, "every synced field is declared"
+
+
 # --- source -----------------------------------------------------------------
 
 def test_validate_guards_the_deal_fields():
