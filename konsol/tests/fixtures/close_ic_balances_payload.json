@@ -10,6 +10,7 @@
       "ic_sales_amount": 500.0,
       "missing_rule": true,
       "name": "ICB-DE01-UK01-2025-P7",
+      "pending_rule": false,
       "rules": [],
       "selling_entity": "DE01",
       "status": "Draft"
@@ -23,6 +24,7 @@
       "ic_sales_amount": 1000.0,
       "missing_rule": false,
       "name": "ICB-UK01-DE01-2025-P7",
+      "pending_rule": true,
       "rules": [
         {
           "margin_pct": 12.5,

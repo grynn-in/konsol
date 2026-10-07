@@ -179,17 +179,23 @@ def rule_gaps(balances, rules):
     return [g for g in (rule_gap(balances, rules), ambiguous_gap(balances, rules)) if g]
 
 
+def _blocks_signoff(balance, rules):
+    """True when ``balance`` blocks sign-off as a pending draft: it is a
+    Draft, at least one rule matches it, and it has something to eliminate
+    (an unreadable inventory counts: it is never guessed to be nothing).
+    The one predicate behind ``pending_gap`` and each row's ``pending_rule``
+    (konsol#305 review S8)."""
+    return (_status(balance) == "Draft"
+            and not _nothing_to_eliminate(balance)
+            and bool(matching_rules(balance, rules)))
+
+
 def pending_gap(balances, rules):
-    """None, or the one blocking gap naming every draft that has a matching
-    rule and something to eliminate (an unreadable inventory counts: it is
-    never guessed to be nothing). Names are sorted within each pair."""
+    """None, or the one blocking gap naming every draft ``_blocks_signoff``
+    holds for. Names are sorted within each pair."""
     pending = {}
     for balance in balances:
-        if _status(balance) != "Draft":
-            continue
-        if _nothing_to_eliminate(balance):
-            continue
-        if matching_rules(balance, rules):
+        if _blocks_signoff(balance, rules):
             pending.setdefault(_pair(balance), []).append(balance.get("name"))
     if not pending:
         return None
@@ -210,7 +216,8 @@ def pending_gap(balances, rules):
 
 def balance_rows(balances, rules):
     """One row per balance, ordered by pair then name, with its status, its
-    amounts as numbers and the margins of the rules that match it."""
+    amounts as numbers, the margins of the rules that match it, and
+    ``pending_rule``: True exactly when ``pending_gap`` names it."""
     rows = []
     for balance in balances:
         matched = matching_rules(balance, rules)
@@ -227,6 +234,7 @@ def balance_rows(balances, rules):
                        "margin_pct": _number(r.get("margin_pct"))} for r in matched],
             "missing_rule": not matched and not _nothing_to_eliminate(balance),
             "ambiguous_rule": len(matched) > 1 and not _nothing_to_eliminate(balance),
+            "pending_rule": _blocks_signoff(balance, rules),
         })
     rows.sort(key=lambda r: (r["selling_entity"] or "", r["buying_entity"] or "", r["name"] or ""))
     return rows
