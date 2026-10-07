@@ -602,13 +602,7 @@ def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, en
                                                exclude=name)
     if name:
         doc = frappe.get_doc(OP, name)
-        allowed = allowed_entity_codes()
-        if allowed is not None and doc.get("data_area_id") not in allowed:
-            refusal = ("%s is not a draft you can edit here: pick a draft of %s in %s from %s."
-                       % (name, entity or "the group node", consolidation_group,
-                          ctx["effective_date"]))
-        else:
-            refusal = _edit_refusal(doc, consolidation_group, entity, ctx["effective_date"])
+        refusal = _name_refusal(doc, consolidation_group, entity, ctx["effective_date"])
         if refusal:
             problems = [refusal] + problems
             effect = None
@@ -633,6 +627,19 @@ def _edit_refusal(doc, consolidation_group, entity, effective_date):
                     doc.name, theirs[1] or "the group node", theirs[0], theirs[2],
                     asked[1] or "the group node", asked[0], asked[2]))
     return None
+
+
+def _name_refusal(doc, consolidation_group, entity, effective_date):
+    """The one sentence refusing ``doc`` as the draft named for editing, shared
+    by the preview (O66) and the save (O68), or None. A draft of an entity the
+    caller cannot see (W2-10, fail closed) is refused first, naming only what
+    the caller asked for, so neither its entity, its first day nor its status
+    is told; otherwise ``_edit_refusal`` decides."""
+    allowed = allowed_entity_codes()
+    if allowed is not None and doc.get("data_area_id") not in allowed:
+        return ("%s is not a draft you can edit here: pick a draft of %s in %s from %s."
+                % (doc.name, entity or "the group node", consolidation_group, effective_date))
+    return _edit_refusal(doc, consolidation_group, entity, effective_date)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -662,7 +669,7 @@ def save_ownership_change(fiscal_year, fiscal_period, consolidation_group, entit
     doc = None
     if name:
         doc = frappe.get_doc(OP, name)
-        refusal = _edit_refusal(doc, consolidation_group, entity, ctx["effective_date"])
+        refusal = _name_refusal(doc, consolidation_group, entity, ctx["effective_date"])
         if refusal:
             frappe.throw(refusal)
     if problems:
