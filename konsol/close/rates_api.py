@@ -580,17 +580,38 @@ def _ownership_preview(fiscal_year, fiscal_period, consolidation_group, entity, 
 
 @frappe.whitelist(methods=["GET"])
 def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, entity,
-                             ownership_pct, consolidation_method):
+                             ownership_pct, consolidation_method, name=None):
     """O55 (story 4.2; #305-4.2-1, #305-Q1-1; wireframe-4.2.md): the
     refusals and the structural effect of an ownership change starting on the
     chosen period's first day (C-O2), as data, so the form shows them as the
     user types. A Viewer may preview. Writes nothing.
 
+    O66 (wireframe-4.2.md §1, "The Analyst can edit it until it is
+    approved"): with ``name``, previews an edit of that draft. ``name`` is the
+    same exact-name exclude as O56's save, so the draft being edited is not
+    "already awaiting approval"; every other draft on the node still is. A
+    ``name`` the save would refuse (not a draft, another node or another
+    first day) is the first problem, and there is no effect. A draft of an
+    entity the caller cannot see is refused without naming its entity.
+
     Returns ``{"problems": [...], "effect": {...} | None, "current": {...} | None}``.
     """
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     ctx, problems, effect = _ownership_preview(fiscal_year, fiscal_period, consolidation_group,
-                                               entity, ownership_pct, consolidation_method)
+                                               entity, ownership_pct, consolidation_method,
+                                               exclude=name)
+    if name:
+        doc = frappe.get_doc(OP, name)
+        allowed = allowed_entity_codes()
+        if allowed is not None and doc.get("data_area_id") not in allowed:
+            refusal = ("%s is not a draft you can edit here: pick a draft of %s in %s from %s."
+                       % (name, entity or "the group node", consolidation_group,
+                          ctx["effective_date"]))
+        else:
+            refusal = _edit_refusal(doc, consolidation_group, entity, ctx["effective_date"])
+        if refusal:
+            problems = [refusal] + problems
+            effect = None
     return {"problems": problems, "effect": effect, "current": ctx["current"]}
 
 
