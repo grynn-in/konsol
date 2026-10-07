@@ -27,6 +27,14 @@
       "created": "2025-10-02T09:00:00+01:00",
       "detail": "80% \u00b7 full",
       "doctype": "Ownership Period",
+      "edit": {
+        "consolidation_group": "ECL_GROUP",
+        "consolidation_method": "full",
+        "entity": "ZZ5B1",
+        "fiscal_period": 10,
+        "fiscal_year": 2025,
+        "ownership_pct": 80.0
+      },
       "edited_by": [],
       "effect": {
         "after": {
@@ -75,6 +83,7 @@
       "created": "2025-10-03T09:00:00+01:00",
       "detail": "60% \u00b7 equity",
       "doctype": "Ownership Period",
+      "edit": null,
       "edited_by": [],
       "effect": null,
       "name": "OP-ZZ5B2-2025-10-01",

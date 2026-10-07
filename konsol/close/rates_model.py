@@ -227,7 +227,8 @@ def _op_item(doc, preparers, mode):
     ``supersedes`` (a Desk "Record ownership" draft, "effect not previewed").
     A doc without the key (a caller that did not compute it) gives an item
     without the key: it never raises, and never turns into a None that would
-    read as a Desk draft."""
+    read as a Desk draft. ``edit`` (O69, ``op_edit``) is passed through the
+    same way: approvals_model's items carry no ``edit`` key."""
     detail = "%g%% · %s" % (doc["ownership_pct"], doc["consolidation_method"])
     if doc.get("end_date"):
         detail += " to %s" % doc["end_date"]
@@ -243,7 +244,59 @@ def _op_item(doc, preparers, mode):
     }
     if "effect" in doc:
         item["effect"] = doc.get("effect")
+    if "edit" in doc:
+        item["edit"] = doc.get("edit")
     return item
+
+
+def _iso_day(value):
+    """An ISO day of a date, datetime or string; blank gives None."""
+    if value in (None, ""):
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()[:10]
+    return str(value)[:10]
+
+
+def regular_period_by_start(period_rows):
+    """O69 (story 4.2): ``{start_date ISO: (fiscal_year, fiscal_period)}`` of
+    the calendar's Regular periods. Only a Regular period's first day is an
+    ownership change's first day (an Opening P00 shares P01's 1 Jan). A day
+    on which two Regular periods start maps to neither: the period is never
+    guessed."""
+    seen = {}
+    for row in period_rows:
+        if row.get("period_type") != "Regular":
+            continue
+        day = _iso_day(row.get("start_date"))
+        if day is None:
+            continue
+        seen.setdefault(day, []).append((int(row["fiscal_year"]), int(row["fiscal_period"])))
+    return {day: keys[0] for day, keys in seen.items() if len(keys) == 1}
+
+
+def op_edit(doc, starts):
+    """O69 (story 4.2; wireframe-4.2.md section 1, "The Analyst can edit it
+    until it is approved"): what O67's Edit loads for the Ownership Period
+    draft ``doc``, or None.
+
+    ``starts`` is ``regular_period_by_start`` of the calendar when the caller
+    may save (the roles ``save_ownership_change`` admits), else None. None is
+    returned for a caller who may not save, a draft without ``supersedes``
+    (a Desk "Record ownership" draft: the form edits only a change it could
+    have saved), and a draft whose ``effective_date`` starts no single
+    Regular period. ``entity`` is ``data_area_id``, None for the group
+    node."""
+    if starts is None or not doc.get("supersedes"):
+        return None
+    key = starts.get(_iso_day(doc.get("effective_date")))
+    if key is None:
+        return None
+    return {"consolidation_group": doc["consolidation_group"],
+            "entity": doc.get("data_area_id") or None,
+            "fiscal_year": key[0], "fiscal_period": key[1],
+            "ownership_pct": float(doc["ownership_pct"]),
+            "consolidation_method": doc["consolidation_method"]}
 
 
 def pending_items(her, ops, preparers_by_name, user, roles, policy, approver_roles, self_approval_problem):
