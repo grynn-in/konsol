@@ -1,0 +1,100 @@
+{
+  "can_approve": true,
+  "counts": {
+    "Business Combination": 0,
+    "Business Disposal": 0,
+    "Consolidation Journal": 0,
+    "Group Exchange Rate": 0,
+    "Historical Equity Rate": 1,
+    "IC Balance": 0,
+    "Ownership Period": 2
+  },
+  "hidden": 0,
+  "items": [
+    {
+      "approve": {
+        "message": null,
+        "mode": "direct"
+      },
+      "created": "2026-07-01T09:00:00+01:00",
+      "desk": null,
+      "detail": "1.2 (group G1)",
+      "doctype": "Historical Equity Rate",
+      "edited_by": [],
+      "entity": "DE02",
+      "inline": true,
+      "kind_label": "Historical equity rate",
+      "name": "HER-ZZ58",
+      "preparer": "zz-analyst@example.com",
+      "rejection": null,
+      "sent_back": false,
+      "title": "DE02 \u00b7 4000 \u00b7 2026-06-30"
+    },
+    {
+      "approve": {
+        "message": null,
+        "mode": "direct"
+      },
+      "created": "2026-07-01T09:00:00+01:00",
+      "desk": null,
+      "detail": "80% \u00b7 full",
+      "doctype": "Ownership Period",
+      "edited_by": [],
+      "effect": {
+        "after": {
+          "from": "2026-07-01",
+          "method": "full",
+          "pct": 80.0,
+          "to": null
+        },
+        "before": {
+          "from": "2026-01-01",
+          "method": "full",
+          "pct": 100.0,
+          "to": null
+        },
+        "current_ends": "2026-06-30",
+        "first_period": "FY2026 P07",
+        "not_shown": "Goodwill, NCI and results are not previewed; they change at the next build.",
+        "periods": "FY2026 P07 onward (open-ended)",
+        "resign": [
+          "FY2026 P07"
+        ]
+      },
+      "entity": "DE02",
+      "inline": true,
+      "kind_label": "Ownership period",
+      "name": "OP-ZZ58-2026-07-01",
+      "preparer": "zz-analyst@example.com",
+      "rejection": null,
+      "sent_back": false,
+      "title": "DE02 in G1 from 2026-07-01"
+    },
+    {
+      "approve": {
+        "message": null,
+        "mode": "direct"
+      },
+      "created": "2026-07-01T09:00:00+01:00",
+      "desk": null,
+      "detail": "60% \u00b7 equity",
+      "doctype": "Ownership Period",
+      "edited_by": [],
+      "effect": null,
+      "entity": "UK01",
+      "inline": true,
+      "kind_label": "Ownership period",
+      "name": "OP-ZZ58B-2026-07-01",
+      "preparer": "zz-analyst@example.com",
+      "rejection": null,
+      "sent_back": false,
+      "title": "UK01 in G1 from 2026-07-01"
+    }
+  ],
+  "self_approval": "Blocked",
+  "sent_back": [],
+  "waiting": {
+    "count": 3,
+    "oldest": "2026-07-01T09:00:00+01:00"
+  }
+}
