@@ -21,6 +21,7 @@
 
 import { periodName } from "./periodName.js";
 import { remindedText } from "./remind.js";
+import { dueDateText } from "./dueDate.js";
 
 export const COLUMNS = ["Ownership", "Trial balance", "Closing rate"];
 export const TONES = ["ok", "blocking", "none"];
@@ -68,6 +69,13 @@ const STEP_LABELS = { tb: "TB", ic: "IC", journals: "Journals", signoff: "Sign-o
 // The server flag that marks each step Overdue in the strip (D61, D61b).
 // TB has none here: it is marked per cell.
 const STEP_OVERDUE_KEYS = { ic: "ic_overdue", journals: "journals_overdue", signoff: "signoff_overdue" };
+// R52m (review S4, R52e): the server sends these flags null, with a sentence
+// in the matching *_error key, when it could not read them. Sign-off has none.
+const STEP_ERROR_KEYS = { ic: "ic_overdue_error", journals: "journals_overdue_error" };
+
+function isSentence(value) {
+	return typeof value === "string" && value.trim() !== "";
+}
 
 function requireKey(obj, key, where) {
 	if (obj == null || !Object.prototype.hasOwnProperty.call(obj, key)) {
@@ -77,11 +85,13 @@ function requireKey(obj, key, where) {
 }
 
 /**
- * `deadlineStrip(payload)` -> `[{step, label, text, overdue}]`, one per
- * DEADLINE_STEPS step, in that order, from `payload.deadlines` (D57: each
- * step `{due, past, text}`). A declared step reads "<Label> due <due>"; an
- * undeclared one (`due` null) reads "<Label>: <text>", the server's "No due
- * date declared", never a guessed date.
+ * `deadlineStrip(payload)` -> `[{step, label, text, overdue, error}]`, one
+ * per DEADLINE_STEPS step, in that order, from `payload.deadlines` (D57: each
+ * step `{due, past, text}`). A declared step reads "<Label> due <date>" in
+ * dueDate.js's wording ("TB due Fri 3 Oct 2025", R52m/U1); an undeclared one
+ * (`due` null) reads "<Label>: <text>", the server's "No due date declared",
+ * never a guessed date. A `due` that is not an ISO date throws, and so does
+ * an undeclared step whose `text` is not a non-blank string.
  *
  * `overdue` is only ever a server flag, never derived from `past` (one
  * source of truth): Sign-off reads `payload.signoff_overdue`, IC reads
@@ -89,9 +99,17 @@ function requireKey(obj, key, where) {
  * #305-Q5-1: D57b decides them). TB overdue is shown per cell
  * (`tbOverdue`), so the TB item is not marked.
  *
+ * R52m (S4): `ic_overdue_error` and `journals_overdue_error` are required.
+ * When the server could not read a flag it sends it null with a sentence in
+ * the error key; that step then carries `overdue: null` and `error: <the
+ * sentence>`, which the screen shows in place of the chip, and the rest of
+ * the grid still renders. Every other step's `error` is null.
+ *
  * A missing `deadlines` key, a missing or unknown step, a step missing
- * `due` or `text`, or a missing or non-boolean `signoff_overdue`,
- * `ic_overdue` or `journals_overdue` throws.
+ * `due` or `text`, a missing or non-boolean `signoff_overdue`, a missing
+ * `ic_overdue`/`journals_overdue` or its `*_error` key, a null flag with no
+ * error sentence, a non-boolean flag, or a true/false flag that also carries
+ * an error throws.
  */
 export function deadlineStrip(payload) {
 	const deadlines = requireKey(payload, "deadlines", "The grid payload");
@@ -104,23 +122,42 @@ export function deadlineStrip(payload) {
 		}
 	}
 	const stepOverdue = { tb: false };
+	const stepError = { tb: null, signoff: null };
 	for (const [step, key] of Object.entries(STEP_OVERDUE_KEYS)) {
 		const flag = requireKey(payload, key, "The grid payload");
+		const errorKey = STEP_ERROR_KEYS[step];
+		const error = errorKey ? requireKey(payload, errorKey, "The grid payload") : null;
+		if (errorKey && flag === null) {
+			if (!isSentence(error)) {
+				throw new Error(`The grid payload's ${key} is null but ${errorKey} gives no reason: ${error}`);
+			}
+			stepOverdue[step] = null;
+			stepError[step] = error;
+			continue;
+		}
 		if (typeof flag !== "boolean") {
 			throw new Error(`The grid payload's ${key} is not true or false: ${flag}`);
 		}
+		if (errorKey && error !== null) {
+			throw new Error(`The grid payload's ${key} is ${flag} but ${errorKey} is set: ${error}`);
+		}
 		stepOverdue[step] = flag;
+		stepError[step] = null;
 	}
 	return DEADLINE_STEPS.map((step) => {
 		const entry = requireKey(deadlines, step, "The grid payload's deadlines");
 		const label = STEP_LABELS[step];
 		const due = requireKey(entry, "due", `The ${step} deadline`);
 		const text = requireKey(entry, "text", `The ${step} deadline`);
+		if (due === null && !isSentence(text)) {
+			throw new Error(`The ${step} deadline has no due date and no text: ${text}`);
+		}
 		return {
 			step,
 			label,
-			text: due ? `${label} due ${due}` : `${label}: ${text}`,
+			text: due === null ? `${label}: ${text}` : `${label} due ${dueDateText(due, "deadlineStrip")}`,
 			overdue: stepOverdue[step],
+			error: stepError[step],
 		};
 	});
 }

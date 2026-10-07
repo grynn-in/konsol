@@ -144,7 +144,9 @@ test("R01l: gridView keeps hiddenNote set when rows is empty (pure view model)",
     deadlines: GOLDEN.deadlines,
     signoff_overdue: GOLDEN.signoff_overdue,
     ic_overdue: GOLDEN.ic_overdue,
+    ic_overdue_error: GOLDEN.ic_overdue_error,
     journals_overdue: GOLDEN.journals_overdue,
+    journals_overdue_error: GOLDEN.journals_overdue_error,
   };
   const view = gridView(payload, false, new Date("2026-07-15T12:00:00Z"), "Europe/London");
   assert.equal(view.rows.length, 0);
