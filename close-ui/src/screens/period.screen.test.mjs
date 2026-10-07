@@ -91,7 +91,7 @@ test("The All/Problems filter toggles a problemsOnly ref passed to gridView(", (
   const source = read();
   const js = script(source);
   assert.match(js, /\bproblemsOnly\s*=\s*ref\(/, "a ref named problemsOnly");
-  assert.match(js, /gridView\(\s*[\w.]+\s*,\s*problemsOnly\.value\s*\)/, "gridView is called with it");
+  assert.match(js, /gridView\(\s*[\w.]+\s*,\s*problemsOnly\.value\s*,/, "gridView is called with it");
   const tpl = template(source);
   assert.match(tpl, /problemsOnly\s*=\s*(true|false)/, "the template can change it (refs unwrap in <template>)");
 });
@@ -137,7 +137,7 @@ test("R01l: gridView keeps hiddenNote set when rows is empty (pure view model)",
     counts: { rows: 0, problems: 0, hidden: 5 },
     rates_error: null,
   };
-  const view = gridView(payload, false);
+  const view = gridView(payload, false, new Date("2026-07-15T12:00:00Z"), "Europe/London");
   assert.equal(view.rows.length, 0);
   assert.equal(view.hiddenNote, "5 entities outside your scope are not shown");
 });
@@ -166,4 +166,41 @@ test("the header reads gridView's title, never the bare payload period.code", ()
   const src = fs.readFileSync(PERIOD, "utf8");
   assert.doesNotMatch(src, /period\.code/);
   assert.match(src, /<h1[^>]*>\{\{\s*title\s*\}\}<\/h1>/);
+});
+
+// --- konsol#305 Y63: the reminded text in the Trial balance cell -----------
+
+test("Y63: the TB cell shows row.tbReminded under its status chip, v-if gated, text binding", () => {
+  const tpl = template(read());
+  const chipAt = tpl.search(/\{\{\s*row\.tb\.label\s*\}\}/);
+  assert.ok(chipAt >= 0, "the TB chip renders row.tb.label");
+  const rateAt = tpl.search(/\{\{\s*row\.rate\.label\s*\}\}/);
+  const m = tpl.match(/<div\s+v-if="row\.tbReminded"[^>]*>\s*\{\{\s*row\.tbReminded\s*\}\}\s*<\/div>/);
+  assert.ok(m, "a v-if=\"row.tbReminded\" line renders the text");
+  const at = tpl.indexOf(m[0]);
+  assert.ok(at > chipAt && at < rateAt, "the text sits in the TB cell, after its chip, before the rate cell");
+  assert.equal((tpl.match(/row\.tbReminded/g) || []).length, 2, "one gated line, nothing else");
+});
+
+test("Y63: gridView gets a now taken at load and the user's time zone (timefmt.js)", () => {
+  const js = script(read());
+  assert.match(js, /import\s*\{[^}]*\buserTimeZone\b[^}]*\}\s*from\s*["']\.\.\/timefmt\.js["']/);
+  assert.match(js, /const timeZone = userTimeZone\(\)/);
+  assert.match(js, /gridView\(\s*grid\.payload\s*,\s*problemsOnly\.value\s*,\s*grid\.now\s*,\s*timeZone\s*\)/);
+  assert.match(js, /grid\.now = new Date\(\)/);
+});
+
+test("Y63 failure path: with no time zone the grid is an error naming why, never a guessed zone", () => {
+  const js = script(read());
+  assert.match(js, /if \(!timeZone\)/);
+  assert.match(js, /no time zone/);
+});
+
+test("Y63 (C-R1): no Remind button on the grid: no REMIND, no remind POST, no Remind label", () => {
+  const source = read();
+  assert.doesNotMatch(source, /\bREMIND\b/);
+  assert.doesNotMatch(source, /remind_api/);
+  assert.doesNotMatch(source, /remindBody/);
+  assert.doesNotMatch(template(source), />\s*Remind\b/);
+  assert.doesNotMatch(script(source), /\bpost\(/);
 });

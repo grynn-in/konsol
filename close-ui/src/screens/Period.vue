@@ -15,6 +15,8 @@
  *   no Entity Accountant reads this screen or its endpoints). Reached as the
  *   `period` slug through the router's glob (router.js); unreachable until
  *   E208b adds it to route.js and nav.js.
+ * - Y63 (stories 1.5, 2.2): a Missing TB cell shows gridView's `tbReminded`
+ *   under its status. There is no Remind button here (C-R1).
  */
 import { computed, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
@@ -23,6 +25,7 @@ import { get } from "../api.js";
 import { parse, format } from "../route.js";
 import { gridView, readinessView, toneClass, COLUMNS } from "../periodGrid.js";
 import { periodName as formatPeriod } from "../periodName.js";
+import { userTimeZone } from "../timefmt.js";
 
 const GET_READINESS = "konsol.close.grid_api.get_readiness";
 const GET_PERIOD_GRID = "konsol.close.grid_api.get_period_grid";
@@ -42,7 +45,12 @@ const gridWhat = computed(() => `the entity grid of ${periodName.value}`);
 const problemsOnly = ref(false);
 
 const readiness = reactive({ status: "loading", payload: null, error: null, busy: false });
-const grid = reactive({ status: "loading", payload: null, error: null, busy: false });
+const grid = reactive({ status: "loading", payload: null, error: null, busy: false, now: null });
+
+// Y63: the TB cell's reminded text is shown in the user's zone (timefmt.js,
+// B29). With no zone the grid is an error, never a guessed zone.
+const timeZone = userTimeZone();
+const NO_ZONE = "Your browser reported no time zone, so reminder times cannot be shown.";
 let readinessSeq = 0;
 let gridSeq = 0;
 
@@ -89,6 +97,7 @@ async function loadGrid() {
 		});
 		if (mine !== gridSeq) return;
 		grid.payload = payload;
+		grid.now = new Date();
 		grid.error = null;
 		grid.status = "ready";
 	} catch (e) {
@@ -125,8 +134,12 @@ const gridViewError = ref(null);
 const gridViewResult = computed(() => {
 	if (grid.status !== "ready" || !grid.payload) return null;
 	try {
+		if (!timeZone) {
+			gridViewError.value = NO_ZONE;
+			return null;
+		}
 		gridViewError.value = null;
-		return gridView(grid.payload, problemsOnly.value);
+		return gridView(grid.payload, problemsOnly.value, grid.now, timeZone);
 	} catch (e) {
 		gridViewError.value = e.message;
 		return null;
@@ -297,6 +310,7 @@ const signOffPath = computed(() =>
 										class="inline-block rounded px-2 py-0.5 text-xs font-medium"
 										:class="toneClass(row.tb.tone)"
 									>{{ row.tb.label }}</span>
+									<div v-if="row.tbReminded" class="mt-1 text-xs text-ink-gray-6">{{ row.tbReminded }}</div>
 								</td>
 								<td class="px-4 py-2">
 									<span
