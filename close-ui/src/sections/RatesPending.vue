@@ -169,7 +169,7 @@ function lines(text) {
 							<dd>{{ row.before }} → {{ row.after }}</dd>
 						</template>
 						<dt class="text-ink-gray-6">Ends</dt>
-						<dd>The current period, on {{ effects[item.name].view.currentEnds }}</dd>
+						<dd>{{ effects[item.name].view.endsLine }}</dd>
 						<dt class="text-ink-gray-6">Periods</dt>
 						<dd>{{ effects[item.name].view.periods }}</dd>
 						<dt class="text-ink-gray-6">Re-sign</dt>
