@@ -15,6 +15,8 @@ data_area_id)``, the same pair that names a Consolidation Group document, so a
 sub-group is ownable too — leave ``data_area_id`` blank for a group node. Root
 nodes are 100% by construction and take no period: nobody owns the top.
 """
+import datetime
+
 import frappe
 from frappe.model.document import Document
 from frappe.utils import getdate
@@ -57,6 +59,11 @@ def _deal_value(field, value):
     if field in DEAL_DATE_FIELDS:
         return getdate(value)
     return float(value)
+
+
+def _date_or_none(value):
+    """A blank end date is "open-ended", never today (``getdate(None)`` is today)."""
+    return getdate(value) if value not in (None, "") else None
 
 
 class OwnershipPeriod(Document):
@@ -121,9 +128,68 @@ class OwnershipPeriod(Document):
         return getdate(self.effective_date), end, exclusive
 
     def on_submit(self):
+        self._end_predecessor()
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     def on_cancel(self):
+        self._restore_predecessor()
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+
+    # -- ownership change (#305-Q1-1, Deepak Pai 7 Oct 2026) -------------------
+    #
+    # Approving a change end-dates the period it supersedes to the change's
+    # effective_date - 1 day; a cancel restores the end date the draft stored
+    # (``superseded_end_date``, blank = open-ended). Rejected: Q1-2 (cancel and
+    # amend the current period) and Q1-3 (changes only through a Business
+    # Combination / Disposal). The predecessor is written with ``db_set`` under
+    # ``frappe.flags.from_ownership_change`` (the Business Disposal pattern) and
+    # re-synced after the commit. The flag does NOT open the deal-field guard.
+
+    def _end_predecessor(self):
+        name = self.get("supersedes")
+        if not name:
+            return
+        predecessor = frappe.get_doc("Ownership Period", name, for_update=True)
+        stored, now = _date_or_none(self.get("superseded_end_date")), _date_or_none(predecessor.get("end_date"))
+        if stored != now:
+            frappe.throw(
+                f"{name} changed since this change was drafted: its end date is now "
+                f"{now or 'open'}, the draft recorded {stored or 'open'}. Delete this draft "
+                f"and record the change again from the current ownership."
+            )
+        self._write_predecessor_end(predecessor, getdate(self.effective_date) - datetime.timedelta(days=1))
+
+    def _restore_predecessor(self):
+        name = self.get("supersedes")
+        if not name or not frappe.db.exists("Ownership Period", name):
+            # nothing superseded, or the predecessor was deleted since: no end to give back
+            return
+        predecessor = frappe.get_doc("Ownership Period", name, for_update=True)
+        restored = _date_or_none(self.get("superseded_end_date"))
+        start, end = getdate(predecessor.effective_date), restored or getdate(_OPEN_ENDED)
+        later = [
+            op for op in frappe.get_all(
+                self.doctype,
+                filters={"consolidation_group": self.consolidation_group,
+                         "data_area_id": self.data_area_id or _BLANK, "docstatus": 1,
+                         "name": ["!=", self.name]},
+                fields=["name", "effective_date"], limit_page_length=0)
+            if op.name != name and start < getdate(op.effective_date) <= end
+        ]
+        if later:
+            frappe.throw(
+                f"Cancelling this change gives {name} back its end date ({restored or 'open'}), "
+                f"which would overlap " + ", ".join(sorted(op.name for op in later))
+                + ". Cancel the later period(s) first."
+            )
+        self._write_predecessor_end(predecessor, restored)
+
+    def _write_predecessor_end(self, predecessor, end_date):
+        frappe.flags.from_ownership_change = True
+        try:
+            predecessor.db_set("end_date", end_date)
+        finally:
+            frappe.flags.from_ownership_change = False
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     def after_delete(self):
@@ -257,12 +323,40 @@ class OwnershipPeriod(Document):
                 "name": ["!=", self.name],
                 "docstatus": ["!=", 2],
             },
-            fields=["name", "effective_date", "end_date"],
+            fields=["name", "effective_date", "end_date", "docstatus"],
             limit_page_length=0,
         )
+        supersedes = self.get("supersedes")
+        # #305-Q1-1: the period this change supersedes is exempt ONLY when it is
+        # submitted, belongs to this node (``others`` holds only this node's
+        # periods), starts before this change and covers its first day — the
+        # period approval ends at effective_date - 1. Anything else it names
+        # is checked like any other period.
+        predecessor = next(
+            (op for op in others
+             if supersedes and op.name == supersedes and int(op.docstatus or 0) == 1
+             and getdate(op.effective_date) < start <= getdate(op.end_date or _OPEN_ENDED)),
+            None)
         for op in others:
+            if predecessor is not None and op.name == predecessor.name:
+                continue
             if start <= getdate(op.end_date or _OPEN_ENDED) and end >= getdate(op.effective_date):
                 frappe.throw(
                     f"Ownership period overlaps with {op.name} "
                     f"({op.effective_date} to {op.end_date or 'open'})"
                 )
+        if not supersedes:
+            return
+        if predecessor is None:
+            frappe.throw(
+                f"{supersedes} cannot be superseded by this change: a change supersedes the "
+                f"approved Ownership Period of the same node that starts before "
+                f"{self.effective_date} and covers that day."
+            )
+        later = sorted((op for op in others if getdate(op.effective_date) > start),
+                       key=lambda op: getdate(op.effective_date))
+        if later:
+            frappe.throw(
+                f"A change cannot go between two existing periods: {later[0].name} starts "
+                f"{later[0].effective_date}, after {self.effective_date}. Change the latest period instead."
+            )

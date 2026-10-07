@@ -359,3 +359,209 @@ def test_before_cancel_gates_exactly_the_cancel_span():
     _period(module, end_date=datetime.date(2025, 12, 31)).before_cancel()
     assert spans[-1] == (datetime.date(2025, 3, 15), datetime.date(2025, 12, 31),
                          "cancel an ownership period", False)
+
+
+# --- O53: a change ends its predecessor on approval (#305-Q1-1) ----------------
+#
+# Deepak Pai, 7 Oct 2026 (konsol#305 issuecomment-6031976783): approving an
+# ownership change end-dates the period it supersedes to the change's
+# effective_date - 1 day; a cancel restores the end date stored on the change
+# (``superseded_end_date``, blank = open-ended); a change between two existing
+# periods is refused. Rejected: Q1-2 (cancel and amend the current period), Q1-3
+# (changes only through Business Combination / Disposal).
+
+_D = datetime.date
+
+
+def _row(name, effective, end=None, docstatus=1, group="ZZG", entity="ZZ01"):
+    return types.SimpleNamespace(name=name, consolidation_group=group, data_area_id=entity,
+                                 effective_date=effective, end_date=end, docstatus=docstatus)
+
+
+class _Stored:
+    """A stored Ownership Period as ``frappe.get_doc`` returns it: ``db_set``
+    records the field, the value and whether ``from_ownership_change`` was set."""
+
+    def __init__(self, frappe, row, log):
+        self.__dict__.update(vars(row))
+        self._frappe, self._log = frappe, log
+
+    def get(self, field, default=None):
+        return self.__dict__.get(field, default)
+
+    def db_set(self, field, value, *a, **k):
+        self._log.append((self.name, field, value, bool(getattr(self._frappe.flags, "from_ownership_change", False))))
+        setattr(self, field, value)
+
+
+def _site(rows):
+    """``_load`` with get_all / get_doc / exists over ``rows``: get_all honours
+    the node, ``name !=`` and ``docstatus !=`` filters the controller sends."""
+    module = _load(_no_flags())
+    frappe = module.frappe
+    log, calls = [], []
+
+    def get_all(doctype, filters=None, fields=None, **k):
+        calls.append(("get_all", filters))
+        out = []
+        for r in rows:
+            ok = True
+            for key, cond in (filters or {}).items():
+                value = getattr(r, key)
+                if isinstance(cond, list) and cond and cond[0] == "!=":
+                    ok = ok and value != cond[1]
+                elif isinstance(cond, list) and cond and cond[0] == "is":
+                    ok = ok and not value
+                elif isinstance(cond, list) and cond and cond[0] == ">":
+                    ok = ok and value > cond[1]
+                elif isinstance(cond, list):
+                    raise AssertionError(f"unexpected filter {key} {cond}")
+                else:
+                    ok = ok and value == cond
+            if ok:
+                out.append(types.SimpleNamespace(**vars(r)))
+        return out
+
+    def get_doc(doctype, name, *a, **k):
+        assert doctype == "Ownership Period"
+        calls.append(("get_doc", name, k.get("for_update")))
+        for r in rows:
+            if r.name == name:
+                return _Stored(frappe, r, log)
+        raise AssertionError(f"no such period {name}")
+
+    frappe.get_all = get_all
+    frappe.get_doc = get_doc
+    frappe.db.exists = lambda doctype, name, *a, **k: any(r.name == name for r in rows)
+    return module, log, calls
+
+
+_PRED = "OP-ZZG-ZZ01-2025-01-01"
+
+
+def _change(module, **over):
+    fields = dict(doctype="Ownership Period", name="OP-ZZG-ZZ01-2025-10-01", consolidation_group="ZZG", data_area_id="ZZ01",
+                  effective_date="2025-10-01", end_date=None, ownership_pct=80.0,
+                  consolidation_method="full", supersedes=_PRED, superseded_end_date=None, docstatus=0)
+    fields.update(over)
+    return module.OwnershipPeriod(before=None, **fields)
+
+
+def test_a_change_superseding_an_open_ended_predecessor_validates():
+    module, _, calls = _site([_row(_PRED, _D(2025, 1, 1))])
+    _change(module)._check_no_gaps_or_overlaps()
+    filters = calls[0][1]
+    assert filters["consolidation_group"] == "ZZG" and filters["data_area_id"] == "ZZ01"
+    assert filters["docstatus"] == ["!=", 2]
+    # a predecessor with an end date after the change's start is superseded too
+    module, _, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 12, 31))])
+    _change(module, superseded_end_date="2025-12-31")._check_no_gaps_or_overlaps()
+
+
+def test_without_supersedes_a_new_period_still_overlaps():
+    module, _, _ = _site([_row(_PRED, _D(2025, 1, 1))])
+    with pytest.raises(_Refused) as e:
+        _change(module, supersedes=None)._check_no_gaps_or_overlaps()
+    assert str(e.value).startswith(f"Ownership period overlaps with {_PRED}")
+
+
+def test_a_predecessor_of_another_node_is_refused_as_overlapping():
+    other = _row("OP-ZZG-ZZ02-2025-01-01", _D(2025, 1, 1), entity="ZZ02")
+    module, log, _ = _site([_row(_PRED, _D(2025, 1, 1)), other])
+    with pytest.raises(_Refused) as e:
+        _change(module, supersedes=other.name)._check_no_gaps_or_overlaps()
+    assert str(e.value).startswith(f"Ownership period overlaps with {_PRED}")
+    # the node has no period of its own: still refused, never end-dates ZZ02's
+    module, log, _ = _site([other])
+    with pytest.raises(_Refused) as e:
+        _change(module, supersedes=other.name)._check_no_gaps_or_overlaps()
+    assert other.name in str(e.value) and "covers" in str(e.value)
+    assert log == []
+
+
+def test_a_predecessor_that_starts_later_or_is_not_submitted_is_refused():
+    module, _, _ = _site([_row(_PRED, _D(2025, 12, 1))])
+    with pytest.raises(_Refused) as e:
+        _change(module)._check_no_gaps_or_overlaps()
+    assert str(e.value).startswith(f"Ownership period overlaps with {_PRED}")
+    # same start day: not before, refused
+    module, _, _ = _site([_row(_PRED, _D(2025, 10, 1))])
+    with pytest.raises(_Refused) as e:
+        _change(module)._check_no_gaps_or_overlaps()
+    assert "overlaps" in str(e.value)
+    # a draft predecessor is not a holding
+    module, _, _ = _site([_row(_PRED, _D(2025, 1, 1), docstatus=0)])
+    with pytest.raises(_Refused) as e:
+        _change(module)._check_no_gaps_or_overlaps()
+    assert "overlaps" in str(e.value)
+
+
+def test_a_predecessor_that_does_not_cover_the_first_day_is_refused():
+    """Ending it at effective_date - 1 would lengthen it, not end it."""
+    module, _, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 6, 30))])
+    with pytest.raises(_Refused) as e:
+        _change(module)._check_no_gaps_or_overlaps()
+    assert _PRED in str(e.value) and "covers" in str(e.value)
+
+
+def test_a_change_between_two_existing_periods_is_refused():
+    later = _row("OP-ZZG-ZZ01-2026-01-01", _D(2026, 1, 1))
+    module, _, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 12, 31)), later])
+    with pytest.raises(_Refused) as e:
+        _change(module, end_date="2025-11-30", superseded_end_date="2025-12-31")._check_no_gaps_or_overlaps()
+    assert later.name in str(e.value) and "between" in str(e.value)
+
+
+def test_submit_ends_the_predecessor_the_day_before_under_the_flag():
+    module, log, calls = _site([_row(_PRED, _D(2025, 1, 1))])
+    _change(module, docstatus=1).on_submit()
+    assert log == [(_PRED, "end_date", _D(2025, 9, 30), True)]
+    assert ("get_doc", _PRED, True) in calls, "the predecessor is read FOR UPDATE"
+    assert not getattr(module.frappe.flags, "from_ownership_change", False), "flag reset"
+    # a stored end date that still matches
+    module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 12, 31))])
+    _change(module, docstatus=1, superseded_end_date="2025-12-31").on_submit()
+    assert log == [(_PRED, "end_date", _D(2025, 9, 30), True)]
+
+
+def test_submit_without_supersedes_touches_no_other_period():
+    module, log, calls = _site([_row(_PRED, _D(2025, 1, 1))])
+    _change(module, supersedes=None, docstatus=1).on_submit()
+    assert log == [] and not [c for c in calls if c[0] == "get_doc"]
+
+
+def test_submit_refuses_a_predecessor_whose_end_date_moved_since_the_draft():
+    for stored, now in ((None, _D(2025, 11, 30)), ("2025-12-31", None), ("2025-12-31", _D(2025, 11, 30))):
+        module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=now)])
+        with pytest.raises(_Refused) as e:
+            _change(module, docstatus=1, superseded_end_date=stored).on_submit()
+        msg = str(e.value)
+        assert _PRED in msg and "changed since" in msg and "record the change again" in msg, msg
+        assert log == []
+        assert not getattr(module.frappe.flags, "from_ownership_change", False)
+
+
+def test_cancel_restores_the_stored_end_date():
+    module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 9, 30))])
+    _change(module, docstatus=2).on_cancel()
+    assert log == [(_PRED, "end_date", None, True)]
+    assert not getattr(module.frappe.flags, "from_ownership_change", False)
+    module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 9, 30))])
+    _change(module, docstatus=2, superseded_end_date="2025-12-31").on_cancel()
+    assert log == [(_PRED, "end_date", _D(2025, 12, 31), True)]
+    # no supersedes: nothing to restore
+    module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 9, 30))])
+    _change(module, docstatus=2, supersedes=None).on_cancel()
+    assert log == []
+
+
+def test_cancel_refuses_a_restore_that_would_overlap_a_later_period():
+    """A later change superseded this one: restoring the predecessor open-ended
+    would overlap it. That one is cancelled first."""
+    later = _row("OP-ZZG-ZZ01-2026-01-01", _D(2026, 1, 1))
+    module, log, _ = _site([_row(_PRED, _D(2025, 1, 1), end=_D(2025, 9, 30)),
+                            _row("OP-ZZG-ZZ01-2025-10-01", _D(2025, 10, 1), end=_D(2025, 12, 31)), later])
+    with pytest.raises(_Refused) as e:
+        _change(module, docstatus=2).on_cancel()
+    assert later.name in str(e.value) and "first" in str(e.value)
+    assert log == []
