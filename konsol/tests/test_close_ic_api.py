@@ -1335,14 +1335,32 @@ def test_y60_a_non_datetime_time_raises():
     assert "CE-R1" in str(info.value)
 
 
-def test_y60_a_sender_with_no_full_name_is_refused_not_shown_as_an_id():
+def test_y60_a_sender_with_no_full_name_is_labelled_and_the_other_sides_are_intact():
+    """konsol#305 R52d (review-w5b S3). Failure path (red at 843cdf7): a
+    sender with no User row, or a User whose full name is blank, made
+    ``get_ic`` raise "... has no full name" and took the whole IC screen
+    down. Now that side shows the labelled id (``remind_model.sender_name``),
+    the other sides are intact, and the reads are unchanged: one reminders
+    read, and the same number of User reads."""
     for users in ([{"name": ANALYST, "full_name": "Zz Analyst"}],
                   [{"name": ANALYST, "full_name": "Zz Analyst"},
                    {"name": LEAD, "full_name": ""}]):
         site = _reminded_site()
         site.users = users
-        err = _call_raises(site)
-        assert LEAD in str(err) and "full name" in str(err), str(err)
+        site.reminders.append(_ic_reminder("CE-R2", "UK01", datetime(2025, 8, 5, 9, 0),
+                                           actor=ANALYST))
+        out = _call(site)
+        uk_de = _pair_of(out, "UK01", "1810")
+        assert uk_de["reminders_b"] == {
+            "count": 1, "last_at": "2025-08-04T14:05:00+01:00", "last_by": LEAD,
+            "last_by_name": LEAD + " (name not recorded)"}, uk_de
+        assert uk_de["reminders_a"]["last_by_name"] == "Zz Analyst", uk_de
+        assert uk_de["reminders_a"]["count"] == 1
+        uk_fr = _pair_of(out, "UK01", "1820")
+        assert uk_fr["reminders_a"]["last_by_name"] == "Zz Analyst", uk_fr
+        assert uk_fr["reminders_b"] is None
+        assert site.reminder_calls == [([(2025, 7)], "ic")]
+        assert len(_user_reads(site)) == 2
 
 
 # --- golden fixture (T55t) -------------------------------------------------------

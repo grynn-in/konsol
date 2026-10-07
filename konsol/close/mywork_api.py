@@ -469,29 +469,25 @@ def _reminders(keys, allowed):
     caller see are kept (the ``_mine`` rule), so a hidden entity's reminders
     and their sender never leave the server. A failed read or an unreadable
     event raises: a count is never guessed as 0. ``last_at`` carries the
-    site's UTC offset; a sender with no full name is refused, never shown as
-    a user id (as tb_read_api)."""
+    site's UTC offset. The sender is named by ``remind_model.sender_name``:
+    the full name, or the labelled id "<id> (name not recorded)" when the
+    user has no full name or no longer exists, so one bad sender never takes
+    down My work (konsol#305 R52d, review-w5b S3)."""
     from konsol.close import close_event  # lazy: the ic_api.send_back precedent
     from konsol.close.timefmt import zoned_iso
 
-    out = {key: {} for key in keys}
     summary = remind_model.summary(close_event.reminders(list(keys), "tb"))
-    for (fy, fp, entity, topic), entry in summary.items():
-        if (fy, fp) in out and topic == "tb" and (allowed is None or entity in allowed):
-            out[(fy, fp)][entity] = entry
+    out = remind_model.visible_entries(summary, keys, "tb", allowed)
     actors = sorted({e["last_by"] for entries in out.values() for e in entries.values()})
     if not actors:
         return out
     names = {u["name"]: u.get("full_name") for u in frappe.get_all(
         "User", filters={"name": ["in", actors]}, fields=["name", "full_name"],
         limit_page_length=0)}
-    for actor in actors:
-        if not names.get(actor):
-            frappe.throw("User %s, who sent the last reminder, has no full name: set the "
-                         "user's First Name in User." % actor)
     tz = frappe.utils.get_system_timezone()
     return {key: {entity: {"count": int(e["count"]), "last_at": zoned_iso(e["last_at"], tz),
-                           "last_by": e["last_by"], "last_by_name": names[e["last_by"]]}
+                           "last_by": e["last_by"],
+                           "last_by_name": remind_model.sender_name(e["last_by"], names)}
                   for entity, e in entries.items()}
             for key, entries in out.items()}
 
