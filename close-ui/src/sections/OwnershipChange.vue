@@ -35,12 +35,26 @@
  * There is no acquisition or disposal date or price here (#305-4.2-1): those
  * are Business Combination and Business Disposal documents in Desk, and a
  * first ownership stays the gaps list's "Record ownership" Desk link (C-O3).
+ *
+ * konsol#305 O67 (wireframe-4.2.md section 1, "The Analyst can edit it
+ * until it is approved", confirmed by Deepak Pai 7 Oct): a saved draft is
+ * edited here. What may be edited is the server's: `editable` is
+ * rates.js ownershipDraftEdits of get_pending (O69's `edit`, null for a
+ * Desk draft or a caller the save does not admit), and the preview's
+ * `pending` names the drafts already awaiting approval on the node; Edit is
+ * offered only for a name in both. Rates.vue's `openEdit` (the pending
+ * list's Edit) opens a draft once. Opening loads the draft's node, first
+ * period, pct and method (editForm); a node or period this form does not
+ * offer is an error naming the draft, never a guessed choice. While
+ * editing, the preview and the save both send `name` (O66, O56), through
+ * the same one GET and one POST; after the save the same saved line shows.
  */
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { Button, FeatherIcon } from "frappe-ui";
 import { get, post } from "../api.js";
 import { ownershipChangeBody, ownershipEffectView } from "../rates.js";
 import { dueDateText } from "../dueDate.js";
+import { periodName } from "../periodName.js";
 
 const PREVIEW = "konsol.close.rates_api.preview_ownership_change";
 const SAVE_OWNERSHIP_CHANGE = "konsol.close.rates_api.save_ownership_change";
@@ -51,8 +65,12 @@ const INCOMPLETE = "Choose an entity, the first period affected, the ownership %
 const props = defineProps({
 	/** `get_ownership(...).change` (O63): `{entities, periods}`. */
 	change: { type: Object, required: true },
+	/** O67: `{name: edit}` (rates.js ownershipDraftEdits of get_pending). */
+	editable: { type: Object, default: () => ({}) },
+	/** O67: a draft name the pending list asked to open, or null. */
+	openEdit: { type: String, default: null },
 });
-const emit = defineEmits(["saved"]);
+const emit = defineEmits(["saved", "edit-opened"]);
 
 /** Throws naming the first of `keys` that `obj` lacks: never a guessed value. */
 function need(obj, keys, where) {
@@ -107,11 +125,12 @@ function periodGroups(periods) {
 }
 
 /** The preview's parameters, or null while the form is incomplete. A bad
- * pct is still sent: its refusal is the server's sentence. */
-function previewParams(entity, period, pct, method) {
+ * pct is still sent: its refusal is the server's sentence. `name` (O67) is
+ * the draft being edited, sent only while editing. */
+function previewParams(entity, period, pct, method, name) {
 	const text = pct === null || pct === undefined ? "" : String(pct).trim();
 	if (!entity || !period || !method || !text) return null;
-	return {
+	const params = {
 		fiscal_year: period.fiscal_year,
 		fiscal_period: period.fiscal_period,
 		consolidation_group: entity.group,
@@ -119,6 +138,36 @@ function previewParams(entity, period, pct, method) {
 		ownership_pct: text,
 		consolidation_method: method,
 	};
+	if (name) params.name = name;
+	return params;
+}
+
+/** O67: a draft's server `edit` -> the form's values. The node and the
+ * period must be choices this form offers; otherwise it throws naming the
+ * draft (never a guessed node or period). */
+function editForm(name, edit, entities, groups) {
+	need(edit, ["consolidation_group", "entity", "fiscal_year", "fiscal_period", "ownership_pct", "consolidation_method"], `${name}'s edit`);
+	const entity = entities.find((o) => o.entity === edit.entity && o.group === edit.consolidation_group);
+	if (!entity) {
+		const node = edit.entity === null ? "the group node" : edit.entity;
+		throw new Error(`${name} is for ${node} in ${edit.consolidation_group}, which is not an entity this form offers.`);
+	}
+	let period = null;
+	for (const g of groups) {
+		period = g.options.find((o) => o.fiscal_year === edit.fiscal_year && o.fiscal_period === edit.fiscal_period) || period;
+	}
+	if (!period) {
+		throw new Error(`${name} starts in ${periodName(edit.fiscal_year, edit.fiscal_period)}, which is not an Open Regular period this form offers.`);
+	}
+	return { entityKey: entity.key, periodKey: period.key, pct: String(edit.ownership_pct), method: edit.consolidation_method };
+}
+
+/** O67: the preview's `pending` names that the server made editable. */
+function pendingEdits(pending, editable) {
+	if (!Array.isArray(pending)) {
+		throw new Error("OwnershipChange: the preview's pending is not a list");
+	}
+	return pending.filter((n) => Object.prototype.hasOwnProperty.call(editable, n));
 }
 
 /** The preview's `current` -> the wireframe's "Currently" line. */
@@ -131,10 +180,13 @@ function currentText(current) {
 /** A preview result (`{payload}` or `{error}`) -> `{problems, view,
  * current, error}`. Never throws: a malformed payload is its error. */
 function effectPanel(result) {
-	if ("error" in result) return { problems: [], view: null, current: null, error: result.error };
+	if ("error" in result) return { problems: [], view: null, current: null, pending: [], error: result.error };
 	try {
 		const payload = result.payload;
-		need(payload, ["problems", "effect", "current"], "the preview");
+		need(payload, ["problems", "effect", "current", "pending"], "the preview");
+		if (!Array.isArray(payload.pending)) {
+			throw new Error("OwnershipChange: the preview's pending is not a list");
+		}
 		if (!Array.isArray(payload.problems)) {
 			throw new Error("OwnershipChange: the preview's problems is not a list");
 		}
@@ -142,9 +194,9 @@ function effectPanel(result) {
 		if (!payload.problems.length && !view) {
 			throw new Error("OwnershipChange: the preview gave neither an effect nor a refusal");
 		}
-		return { problems: payload.problems, view, current: payload.current, error: null };
+		return { problems: payload.problems, view, current: payload.current, pending: payload.pending, error: null };
 	} catch (e) {
-		return { problems: [], view: null, current: null, error: e.message };
+		return { problems: [], view: null, current: null, pending: [], error: e.message };
 	}
 }
 
@@ -206,6 +258,9 @@ const preview = reactive({ panel: null, fresh: false, busy: false });
 const saving = ref(false);
 const saveError = ref(null);
 const saved = ref(null);
+/** O67: the draft being edited, or null for a new change. */
+const editing = ref(null);
+const editError = ref(null);
 
 const choices = computed(() => {
 	try {
@@ -246,7 +301,7 @@ const previewer = makePreviewer({
 });
 
 watch(
-	() => previewParams(selectedEntity.value, selectedPeriod.value, form.pct, form.method),
+	() => previewParams(selectedEntity.value, selectedPeriod.value, form.pct, form.method, editing.value),
 	(params) => {
 		preview.fresh = false;
 		saveError.value = null;
@@ -263,6 +318,38 @@ watch(
 
 onBeforeUnmount(() => previewer.cancel());
 
+/** O67: load a draft the server made editable into the form. */
+function openDraft(name) {
+	editError.value = null;
+	saved.value = null;
+	try {
+		if (!Object.prototype.hasOwnProperty.call(props.editable, name)) {
+			throw new Error(`${name} is not a draft you can edit here.`);
+		}
+		const values = editForm(name, props.editable[name], choices.value.entities, choices.value.groups);
+		Object.assign(form, values);
+		editing.value = name;
+	} catch (e) {
+		editError.value = e.message;
+	}
+}
+
+function stopEditing() {
+	editing.value = null;
+	editError.value = null;
+	Object.assign(form, { entityKey: "", periodKey: "", pct: "", method: "" });
+}
+
+watch(
+	() => props.openEdit,
+	(name) => {
+		if (!name) return;
+		openDraft(name);
+		emit("edit-opened");
+	},
+	{ immediate: true },
+);
+
 async function saveDraft() {
 	if (saveBlocked(preview.panel, preview.fresh, saving.value)) return;
 	const built = ownershipChangeBody(
@@ -272,6 +359,7 @@ async function saveDraft() {
 			entity: selectedEntity.value.entity,
 			ownershipPct: form.pct,
 			consolidationMethod: form.method,
+			name: editing.value,
 		},
 	);
 	if (built.error) {
@@ -284,6 +372,7 @@ async function saveDraft() {
 	try {
 		const result = await post(SAVE_OWNERSHIP_CHANGE, built.body);
 		saved.value = savedLine(result);
+		editing.value = null;
 		Object.assign(form, { entityKey: "", periodKey: "", pct: "", method: "" });
 		emit("saved", result.name);
 	} catch (e) {
@@ -311,6 +400,19 @@ async function saveDraft() {
 			class="rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7"
 		>No Open Regular period to start a change in.</p>
 		<template v-else>
+			<p
+				v-if="editError"
+				role="alert"
+				class="mb-3 max-w-3xl rounded border border-outline-red-1 bg-surface-red-1 px-4 py-3 text-sm text-ink-gray-8"
+			>{{ editError }}</p>
+			<p
+				v-if="editing"
+				role="status"
+				class="mb-3 flex max-w-3xl items-center justify-between gap-3 rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-2 text-sm text-ink-gray-8"
+			>
+				<span>Editing draft {{ editing }}</span>
+				<Button size="sm" variant="subtle" @click="stopEditing">Stop editing</Button>
+			</p>
 			<div class="grid max-w-3xl grid-cols-[10rem_1fr] items-center gap-x-4 gap-y-3 rounded border border-outline-gray-2 px-4 py-4 text-sm">
 				<label for="oc-entity" class="text-ink-gray-6">Entity</label>
 				<select
@@ -422,6 +524,17 @@ async function saveDraft() {
 							<FeatherIcon name="x" class="mt-0.5 h-4 w-4 shrink-0" /><span>{{ problem }}</span>
 						</li>
 					</ul>
+					<p v-if="pendingEdits(preview.panel.pending, editable).length" class="mt-2 flex flex-wrap gap-2">
+						<Button
+							v-for="n in pendingEdits(preview.panel.pending, editable)"
+							:key="n"
+							size="sm"
+							variant="subtle"
+							@click="openDraft(n)"
+						>
+							Edit {{ n }}
+						</Button>
+					</p>
 				</template>
 			</div>
 		</template>

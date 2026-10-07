@@ -39,6 +39,13 @@
  * shows its thrown sentence, never a guessed panel. Approve is unchanged:
  * the same `approve` emit, so `approval_api.approve` and the self-approval
  * policy still decide.
+ *
+ * konsol#305 O67 (wireframe-4.2.md section 1, "The Analyst can edit it
+ * until it is approved", confirmed by Deepak Pai 7 Oct): an Ownership
+ * Period draft whose server `edit` (O69, checked by pendingView) is not null
+ * offers "Edit", which emits `edit(name)`; Rates.vue opens it in the Change
+ * ownership form. A Desk draft (edit null), a Viewer's list and an HER offer
+ * none. Nothing is read from the title or the detail.
  */
 import { computed, reactive } from "vue";
 import { Button } from "frappe-ui";
@@ -54,7 +61,7 @@ const props = defineProps({
 	/** The name currently posting an approve, or null. */
 	approving: { type: String, default: null },
 });
-const emit = defineEmits(["approve"]);
+const emit = defineEmits(["approve", "edit"]);
 
 /** #305-R01p: the empty-state text (pure helper, rates.js) -- "none
  * awaiting" only when nothing is hidden; a scoped user with
@@ -121,6 +128,15 @@ const effects = computed(() => {
 	for (const item of (props.view && props.view.items) || []) out[item.name] = opEffect(item);
 	return out;
 });
+
+/** O67: Edit only where the server sent an `edit` for this draft. */
+function canEdit(item) {
+	return item.doctype === "Ownership Period" && item.edit !== null && item.edit !== undefined;
+}
+
+function edit(item) {
+	emit("edit", item.name);
+}
 
 function start(item) {
 	if (item.approve.kind === "reason" && !reasonOpen[item.name]) {
@@ -216,6 +232,7 @@ function lines(text) {
 						{{ item.approve.message }}
 					</p>
 					<p v-else class="text-xs text-ink-gray-6">The Close Lead approves (R2)</p>
+					<Button v-if="canEdit(item)" size="sm" variant="subtle" @click="edit(item)">Edit</Button>
 				</div>
 				<div
 					v-if="errors[item.name]"

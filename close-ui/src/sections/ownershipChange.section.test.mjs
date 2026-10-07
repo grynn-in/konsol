@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { ownershipEffectView, ownershipChangeBody, pendingView } from "../rates.js";
 import * as ratesModule from "../rates.js";
 import { dueDateText } from "../dueDate.js";
+import { periodName } from "../periodName.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SECTION = path.join(__dirname, "OwnershipChange.vue");
@@ -450,6 +451,7 @@ function editHelpers() {
   return load(["need", "entityOptions", "periodGroups", "previewParams", "effectPanel", "editForm", "pendingEdits"], {
     ownershipEffectView,
     dueDateText,
+    periodName,
   });
 }
 
