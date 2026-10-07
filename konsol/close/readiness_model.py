@@ -138,6 +138,8 @@ _GAP_LABELS = {
     "ic_unrealized_profit_rule_undeclared": "Unrealised-profit rule not declared",
     # F51b: ic_balance_model.RULE_AMBIGUOUS (same reason).
     "ic_unrealized_profit_rule_ambiguous": "More than one unrealised-profit rule per pair",
+    # I53: ic_balance_model.DRAFT_PENDING (same reason).
+    "ic_balance_draft_pending": "IC Balance draft awaiting approval",
 }
 
 

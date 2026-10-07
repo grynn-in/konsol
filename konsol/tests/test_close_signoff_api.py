@@ -1727,7 +1727,7 @@ def test_ic_balance_pending_gap_is_scoped_to_the_callers_entities():
     gap = gaps[0]
     assert gap["entities"] == ["ZZA"] and gap["hidden"] == 3 and gap["pairs"] == []
     assert gap["message"] == (
-        "IC Balance drafts of ZZA, 3 entities outside your scope for FY2025 P07 have a "
+        "IC Balance drafts of ZZA, 3 entities outside your scope for FY2025 P09 have a "
         "matching rule but are not approved: approve them in Approvals or delete the drafts "
         "before signing off."), gap["message"]
     text = json.dumps(gap)
