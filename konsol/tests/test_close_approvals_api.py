@@ -46,6 +46,94 @@ TB_DIMENSION_MODEL_PY = os.path.join(APP_DIR, "tb_dimension_model.py")
 #: only ``konsol.close.signoff_gate`` is stubbed (``site.signed``).
 OWNERSHIP_CHANGE_PY = os.path.join(CLOSE_DIR, "ownership_change.py")
 OWNERSHIP_CHANGE_MODEL_PY = os.path.join(CLOSE_DIR, "ownership_change_model.py")
+CLOSE_DIR_R52F = CLOSE_DIR
+
+
+#: R52f: the REAL signoff_gate.py, so the rule the preview lists by is the
+#: rule record_data_change marks by (never a re-typed copy of it).
+SIGNOFF_GATE_PY = os.path.join(CLOSE_DIR_R52F, "signoff_gate.py")
+SIGNOFF_MODEL_PY_R52F = os.path.join(CLOSE_DIR_R52F, "signoff_model.py")
+
+
+def _real_periods_marked_from(rows, first_close, reads=None):
+    """``signoff_gate.periods_marked_from`` from the REAL signoff_gate.py,
+    loaded by path against a minimal stub frappe: the period row's type
+    comes from ``rows()`` (the same calendar the code under test reads), the
+    first close is ``first_close`` ((fy, fp) or None = undeclared, read as
+    the Close Settings Ints 0/0) and the real pure ``signoff_model``.
+    ``reads``, when given, records each gate read as ("gate", what)."""
+    log = reads.append if reads is not None else (lambda item: None)
+    fy0, fp0 = first_close or (0, 0)
+
+    frappe = types.ModuleType("frappe")
+    frappe.ValidationError = type("ValidationError", (Exception,), {})
+
+    def throw(msg, exc=None, title=None, **k):
+        raise (exc or frappe.ValidationError)(msg)
+
+    def get_value(doctype, filters, fieldname, as_dict=False, **k):
+        assert doctype == "EPM Fiscal Year Period", doctype
+        log(("gate", "period_row"))
+        key = (int(filters["parent"]), int(filters["fiscal_period"]))
+        row = next((r for r in rows() if (int(r["fiscal_year"]), int(r["fiscal_period"])) == key),
+                   None)
+        if row is None:
+            return None
+        rec = {"name": "ROW-%d-%d" % key, "period_type": row["period_type"]}
+        return {f: rec.get(f) for f in fieldname}
+
+    def get_single_value(doctype, field):
+        assert doctype == "Close Settings", doctype
+        log(("gate", field))
+        return {"first_close_fiscal_year": fy0, "first_close_fiscal_period": fp0}[field]
+
+    frappe.throw = throw
+    frappe.db = types.SimpleNamespace(get_value=get_value, get_single_value=get_single_value)
+
+    konsol = types.ModuleType("konsol")
+    calendar = types.ModuleType("konsol.fiscal_calendar")
+
+    def fiscal_period_rows():
+        log(("gate", "calendar"))
+        return [dict(r) for r in rows()]
+
+    calendar.fiscal_period_rows = fiscal_period_rows
+    close = types.ModuleType("konsol.close")
+    spec = importlib.util.spec_from_file_location("signoff_model_for_r52f", SIGNOFF_MODEL_PY_R52F)
+    signoff_model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(signoff_model)
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model"):
+        setattr(close, name, types.ModuleType("konsol.close." + name))
+    close.signoff_model = signoff_model
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    konsol.fiscal_calendar, konsol.close, konsol.period_status = calendar, close, period_status
+    mods = {"frappe": frappe, "konsol": konsol, "konsol.fiscal_calendar": calendar,
+            "konsol.close": close, "konsol.period_status": period_status}
+    for name in ("close_policy_model", "ic_api", "period_model", "scope_model",
+                 "statement_model", "signoff_model"):
+        mods["konsol.close." + name] = getattr(close, name)
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        spec = importlib.util.spec_from_file_location("signoff_gate_for_r52f", SIGNOFF_GATE_PY)
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+    def periods_marked_from(fiscal_year, fiscal_period):
+        # Looked up at call time: a gate without the function fails the
+        # caller that asks for it, not every stub site that is built.
+        return gate.periods_marked_from(fiscal_year, fiscal_period)
+
+    return periods_marked_from
+
 
 #: BST (+01:00) in July 2026, mirrors test_close_journal_api.py.
 SITE_TZ = "Europe/London"
@@ -192,6 +280,10 @@ class _Site:
         self.bds = []
         #: O58: the ``signoff_gate.latest_signed_runs()`` keys, {(fy, fp): run}.
         self.signed = {}
+        #: R52f: the declared first close (fy, fp), None = undeclared, read by
+        #: the REAL signoff_gate.periods_marked_from (its reads: gate_reads).
+        self.first_close = None
+        self.gate_reads = []
         #: O64: {(fy, fp): (signed_off_by, signed_off_at)}; unlisted keys are
         #: signed by LEAD at O64_SIGNED_AT. User full names by user id.
         self.signers = {}
@@ -411,6 +503,9 @@ def _signoff_gate(site):
         return out
 
     mod.latest_signed_runs = latest_signed_runs
+    # R52f: the REAL rule, on this site's calendar and first close.
+    mod.periods_marked_from = _real_periods_marked_from(
+        lambda: site.periods, site.first_close, site.gate_reads)
     return mod
 
 
@@ -975,6 +1070,22 @@ def test_o58_a_change_draft_carries_the_real_models_effect():
     assert item["effect"]["resign"] == ["FY2026 P07"]
     # The title and detail are unchanged (rates_model._op_item's own text).
     assert item["detail"] == "80% · full"
+
+
+def test_r52f_failure_path_a_signed_closing_period_is_not_listed_for_re_signing():
+    """R52f (review S5): an approval of the change never marks a Closing
+    period, so the pending item's effect does not list one, however late."""
+    site = _o58_site()
+    site.first_close = (2026, 1)
+    site.periods.append({"fiscal_year": 2026, "fiscal_period": 13, "period_code": "P13",
+                         "period_label": "Closing", "period_type": "Closing",
+                         "start_date": date(2026, 12, 31), "end_date": date(2026, 12, 31),
+                         "quarter": "", "status": "Open"})
+    site.signed = {(2026, 7): "RUN-1", (2026, 13): "RUN-13"}
+    item = _o58_item(_call(site), O58_CHANGE)
+    assert item["effect"]["resign"] == ["FY2026 P07"], item["effect"]["resign"]
+    assert [d["period"] for d in item["effect"]["resign_detail"]] == ["FY2026 P07"]
+    assert ("gate", "period_row") in site.gate_reads, site.gate_reads
 
 
 def test_o58_failure_path_a_her_item_gets_no_effect_key():

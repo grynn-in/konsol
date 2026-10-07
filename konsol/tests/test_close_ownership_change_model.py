@@ -326,8 +326,10 @@ def _rows_with_closing_and_opening():
 
 
 def test_effect_lists_a_signed_closing_period_without_raising():
-    # O54a: a signed Closing period after the change must be listed for
-    # re-signing (W4-4), not make every preview raise.
+    # The model lists every signed key it is given that starts on or after
+    # the change. Which keys it is given is ownership_change's job (R52f:
+    # only those signoff_gate.periods_marked_from marks, so never a Closing
+    # period in practice); a non-Regular key it IS given never raises.
     eff = M.effect(_change(), _current(), _rows_with_closing_and_opening(),
                    _signed((2025, 14)))
     assert eff["resign"] == ["FY2025 P14"]
@@ -451,3 +453,16 @@ def test_module_imports_no_frappe():
             assert not any(a.name.startswith(("frappe", "konsol")) for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert not (node.module or "").startswith(("frappe", "konsol"))
+
+
+# --- R52f (review S5): the model no longer promises non-Regular periods ------
+
+def test_r52f_the_model_does_not_promise_to_list_non_regular_periods():
+    """ownership_change passes only the signed keys an approval marks
+    (signoff_gate.periods_marked_from, Regular only); the model's docstring
+    and comments must not promise Closing/Opening/Adjustment periods
+    (the O54a text this row reverses)."""
+    with open(M.__file__, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "O54a" not in src, "the O54a promise is still in the model"
+    assert "periods_marked_from" in src, "the model must name the rule its caller filters by"
