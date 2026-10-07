@@ -56,6 +56,23 @@
     ]
   },
   "hidden": 1,
+  "pending_gap": {
+    "code": "ic_balance_draft_pending",
+    "entities": [
+      "DE01",
+      "UK01"
+    ],
+    "message": "1 IC Balance draft has a matching unrealised-profit rule but is not approved: UK01 \u2192 DE01 (ICB-UK01-DE01-2025-P7). dbt eliminates only approved balances: approve it in Approvals (Close Lead), or delete the draft (Close Lead, in Desk), before signing off.",
+    "pairs": [
+      {
+        "buying_entity": "DE01",
+        "names": [
+          "ICB-UK01-DE01-2025-P7"
+        ],
+        "selling_entity": "UK01"
+      }
+    ]
+  },
   "period": {
     "fiscal_period": 7,
     "fiscal_year": 2025,
