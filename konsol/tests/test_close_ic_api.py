@@ -116,6 +116,8 @@ class _Site:
         self.reads = []
         self.only_for_calls = []
         self.recorded = []  # close_event.record calls (send_back, C04)
+        # T54t (C-X1): what the stub close_event.reminders returns (Y60).
+        self.reminders = []
 
 
 def _match_value(value, cond):
@@ -254,6 +256,8 @@ def _close_event(site):
         return "CE-NEW-%d" % len(site.recorded)
 
     ce.record = record
+    # T54t (C-X1): Y60's lazy read goes through close_event.reminders (Y53).
+    ce.reminders = lambda keys, topic=None: site.reminders
     return ce
 
 
@@ -1114,3 +1118,23 @@ def test_signoff_summary_unbuilt_tables_never_raises():
     site.ch_error = RuntimeError("(UNKNOWN_TABLE)")
     out = _h(site, "signoff_summary", 2025, 7)
     assert out["state"] == "not_built"
+
+
+# --- T54t (C-X1): the stub close_event carries reminders ----------------------
+
+def test_stub_close_event_carries_reminders():
+    """The stub ``konsol.close.close_event`` answers ``reminders`` from the
+    site (default []), and a lazy import made while the endpoint runs
+    resolves to that stub (the T52t lesson)."""
+    site = _Site()
+
+    def check(api):
+        from konsol.close import close_event
+        import konsol.close as close_pkg
+        assert close_pkg.close_event is close_event
+        first = (close_event.reminders([(2025, 7)]),
+                 close_event.reminders([(2025, 7)], topic="ic"))
+        site.reminders = ["r"]
+        return first, close_event.reminders([(2025, 7)])
+
+    assert _invoke(site, check) == (([], []), ["r"])
