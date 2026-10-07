@@ -33,6 +33,12 @@ NAV_JS = os.path.join(REPO_DIR, "close-ui", "src", "nav.js")
 REAL_MODELS = ("mywork_model", "checks_model", "period_model", "signoff_model",
                "close_policy_model", "scope_model")
 
+DEADLINE_MODEL_PY = os.path.join(APP_DIR, "close", "deadline_model.py")
+_DM_SPEC = importlib.util.spec_from_file_location("test_close_mywork_api_deadline_model",
+                                                  DEADLINE_MODEL_PY)
+DEADLINE_MODEL = importlib.util.module_from_spec(_DM_SPEC)
+_DM_SPEC.loader.exec_module(DEADLINE_MODEL)
+
 ALL_CLOSE_ROLES = ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")
 TODAY = date(2025, 9, 15)
 
@@ -146,7 +152,14 @@ class _Site:
         # T53t (C-X1): what the stub close_event.reminders / deadlines
         # .period_deadlines return, so Y59/D59's lazy imports resolve.
         self.reminders = []
-        self.deadlines = {}
+        #: D59: None = the stub runs the REAL deadline_model.period_deadlines
+        #: over ``deadline_rules``/``holidays`` for each Regular key asked for
+        #: (as deadlines.period_deadlines does); a dict = returned as is.
+        self.deadlines = None
+        self.deadline_rules = []
+        self.holidays = set()
+        self.deadline_calls = []
+        self.deadlines_error = None
         #: Y59: every close_event.reminders call, an error the read raises,
         #: and the per-period facts each period_items call was given.
         self.reminder_calls = []
@@ -409,7 +422,24 @@ def _call(site):
 
     close_event.reminders = reminders
     deadlines = types.ModuleType("konsol.close.deadlines")
-    deadlines.period_deadlines = lambda keys, today: site.deadlines
+
+    def period_deadlines(keys, today):
+        # D59: every read is recorded; a failed read raises.
+        site.deadline_calls.append((list(keys), today))
+        if site.deadlines_error is not None:
+            raise site.deadlines_error
+        if site.deadlines is not None:
+            return site.deadlines
+        wanted = {(int(fy), int(fp)) for fy, fp in keys}
+        out = {}
+        for r in site.rows:
+            key = (r["fiscal_year"], r["fiscal_period"])
+            if key in wanted and r["period_type"] == "Regular":
+                out[key] = DEADLINE_MODEL.period_deadlines(
+                    site.deadline_rules, site.holidays, r["end_date"], today)
+        return out
+
+    deadlines.period_deadlines = period_deadlines
 
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
@@ -1483,11 +1513,13 @@ def test_stub_close_carries_reminders_and_deadlines():
         from konsol.close import close_event, deadlines
         seen.append((close_event.reminders([(2025, 7)]),
                      close_event.reminders([(2025, 7)], topic="tb"),
-                     deadlines.period_deadlines([(2025, 7)], "2025-10-01")))
+                     deadlines.period_deadlines([(2025, 7)], TODAY)))
 
     site.during_call = lazy
     _call(site)
-    assert seen == [([], [], {})]
+    undeclared = {step: {"due": None, "past": False, "text": "No due date declared"}
+                  for step in DEADLINE_MODEL.STEPS}
+    assert seen == [([], [], {(2025, 7): undeclared})]
     close = site.stub_modules["konsol.close"]
     assert close.close_event is site.stub_modules["konsol.close.close_event"]
     assert close.deadlines is site.stub_modules["konsol.close.deadlines"]
@@ -1497,11 +1529,10 @@ def test_stub_close_carries_reminders_and_deadlines():
     event = _reminder("CE-0001", "ZZA", datetime(2025, 8, 6, 14, 5), "zz-ga@example.com")
     site2.reminders = [event]
     site2.full_names = {"zz-ga@example.com": "Gee Accountant"}
-    site2.deadlines = {"tb": "d"}
     seen.clear()
     site2.during_call = lazy
     _call(site2)
-    assert seen == [([event], [event], {"tb": "d"})]
+    assert seen == [([event], [event], {(2025, 7): undeclared})]
 
 
 # --- Y59 (konsol#305 story 1.5, 1.2): each open period's TB reminders --------
@@ -1543,6 +1574,9 @@ def _reminded_site(**kw):
         _reminder("CE-0004", "ZZA", datetime(2025, 9, 10, 8, 0), "raj@zz.example", fp=9),
     ]
     site.full_names = {"jane@zz.example": "Jane Doe", "raj@zz.example": "Raj Patel"}
+    # D59: deadlines for the golden file: P07/P08 overdue, P09 TB not yet
+    # due, P09 sign-off undeclared (see _deadline_rules).
+    site.deadline_rules = _deadline_rules()
     return site
 
 
@@ -1687,3 +1721,94 @@ def test_my_work_items_match_the_golden_fixture():
     assert ea["tb:2025-07:ZZA"]["reminded"]["count"] == 2
     ga = {i["id"]: i for i in golden["group_accountant"]}
     assert ga["tbs-waiting:2025-07"]["reminded"] == {"reminded": 2, "of": 2}
+
+
+# --- D59 (konsol#305 stories 1.1, 2.4): each open period's deadlines ---------
+#
+# ``_period_facts`` reads ``deadlines.period_deadlines(open keys, today)`` ONCE
+# and gives every open period's facts ``deadlines``. Review concern (D58): an
+# absent ``deadlines`` reads as "no due date", so it is ALWAYS passed for
+# every open period; a failed read, or an open period the read did not
+# answer, raises and period_items never runs.
+
+def _rule(valid_from, tb, signoff, ic=0, journals=0):
+    rule = {"valid_from": valid_from, "tb_due_days": tb, "ic_due_days": ic,
+            "journals_due_days": journals, "signoff_due_days": signoff}
+    for i, day in enumerate(DEADLINE_MODEL.WEEKDAYS):
+        rule[day] = 1 if i < 5 else 0
+    return rule
+
+
+def _deadline_rules():
+    """Mon-Fri. From 1 Jul 2025: TB 5, sign-off 10 working days. From 1 Sep
+    2025: TB 5, sign-off undeclared. With TODAY 15 Sep 2025: P07 TB due 7 Aug
+    (overdue), P08 TB due 5 Sep (overdue), P09 TB due 7 Oct (not yet due),
+    P09 sign-off "No due date declared"."""
+    return [_rule(date(2025, 7, 1), 5, 10), _rule(date(2025, 9, 1), 5, 0)]
+
+
+def test_deadlines_are_read_once_for_every_open_period():
+    site = _reminded_site()
+    _call(site)
+    assert site.deadline_calls == [(OPEN_KEYS, TODAY)], site.deadline_calls
+
+
+def test_every_open_period_always_carries_deadlines():
+    for site in (_Site(), _reminded_site()):
+        _call(site)
+        facts = site.period_facts[0]
+        assert sorted(facts) == OPEN_KEYS
+        for key in OPEN_KEYS:
+            assert set(facts[key]["deadlines"]) == set(DEADLINE_MODEL.STEPS), key
+
+
+def test_an_item_carries_its_due_date():
+    ea = _call(_reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                              allowed={"ZZA"}))
+    assert _item(ea, "tb:2025-07:ZZA")["due"] == {
+        "date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+    assert _item(ea, "tb:2025-09:ZZA")["due"] == {
+        "date": "2025-10-07", "text": "Due 2025-10-07", "overdue": False}
+
+
+def test_an_undeclared_step_reads_no_due_date_declared():
+    for site in (_Site(), _Site(roles=("Entity Accountant",), user="zz-ea@example.com",
+                                allowed={"ZZA"})):
+        result = _call(site)
+        stepped = [i for i in result["items"] if i.get("due") is not None]
+        assert stepped, [i["id"] for i in result["items"]]
+        for item in stepped:
+            assert item["due"] == {"date": None, "text": "No due date declared",
+                                   "overdue": False}, item
+
+
+def test_a_failed_deadlines_read_raises_never_omitted():
+    site = _reminded_site()
+    site.deadlines_error = RuntimeError("Close Settings read failed")
+    with pytest.raises(RuntimeError) as info:
+        _call(site)
+    assert "Close Settings read failed" in str(info.value)
+    assert site.period_facts == [], "period_items ran without deadlines"
+
+
+def test_an_open_period_the_read_did_not_answer_raises():
+    site = _reminded_site()
+    full = {}
+    for r in site.rows:
+        key = (r["fiscal_year"], r["fiscal_period"])
+        if key in OPEN_KEYS and key != (2025, 8):
+            full[key] = DEADLINE_MODEL.period_deadlines([], set(), r["end_date"], TODAY)
+    site.deadlines = full
+    with pytest.raises(Exception) as info:
+        _call(site)
+    assert "FY2025 P08" in str(info.value), str(info.value)
+    assert site.period_facts == [], "period_items ran without deadlines"
+
+
+def test_the_golden_file_carries_every_due_form():
+    with open(MYWORK_ITEMS_FIXTURE) as f:
+        golden = json.load(f)
+    dues = [i["due"] for items in golden.values() for i in items if i.get("due")]
+    assert any(d["overdue"] for d in dues), dues
+    assert any(d["date"] and not d["overdue"] for d in dues), dues
+    assert any(d["text"] == "No due date declared" for d in dues), dues
