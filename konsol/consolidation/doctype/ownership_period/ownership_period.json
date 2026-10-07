@@ -66,6 +66,24 @@
    "reqd": 1
   },
   {
+   "fieldname": "supersedes",
+   "fieldtype": "Link",
+   "label": "Supersedes",
+   "options": "Ownership Period",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The period this change ends on approval."
+  },
+  {
+   "fieldname": "superseded_end_date",
+   "fieldtype": "Date",
+   "label": "Superseded End Date",
+   "read_only": 1,
+   "hidden": 1,
+   "no_copy": 1,
+   "description": "The superseded period's end date before approval, which a cancel restores. Blank means open-ended."
+  },
+  {
    "fieldname": "tab_acquisition",
    "fieldtype": "Tab Break",
    "label": "Acquisition"
