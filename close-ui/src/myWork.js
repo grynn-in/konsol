@@ -19,6 +19,7 @@
 import { format } from "./route.js";
 import { ageText as sharedAgeText, userTimeZone } from "./timefmt.js";
 import { periodName } from "./periodName.js";
+import { remindedText } from "./remind.js";
 
 const KIND_ORDER = ["blocking", "todo", "waiting"];
 
@@ -165,4 +166,34 @@ export function badgeFor(item) {
 		return { theme: "orange", label: "Setup" };
 	}
 	return { theme: BADGE_THEME[item.kind], label: BADGE_LABEL[item.kind] };
+}
+
+// --- Y64 (stories 1.5, 1.2): the reminded line on TB items -----------------
+//
+// mywork_model (Y58) puts `reminded` on TB items only:
+// - the Entity Accountant's "Upload TB for X": `{count, last_at,
+//   last_by_name}` → remind.js's one rule, "Reminded 2× · last … by …";
+// - the "Waiting on N trial balances" items: `{reminded, of}` →
+//   "R of N reminded".
+// Nobody reminded is `reminded: null` (Y58 never sends a 0), so null gives no
+// line: never "0×" or "0 of N". An item that is not a TB item carries no
+// `reminded` key at all and gets no line. Any other value throws.
+
+/**
+ * `item` (A20's shape), `now` (a `Date`, injected) and `timeZone` → the
+ * reminded line, or null.
+ */
+export function remindedLine(item, now, timeZone) {
+	if (!Object.prototype.hasOwnProperty.call(item, "reminded")) return null;
+	const reminded = item.reminded;
+	if (reminded === null) return null;
+	if (typeof reminded !== "object") {
+		throw new Error(`${item.id}: unreadable reminded value ${JSON.stringify(reminded)}.`);
+	}
+	if ("count" in reminded) return remindedText(reminded, now, timeZone);
+	const { reminded: r, of } = reminded;
+	if (!Number.isInteger(r) || !Number.isInteger(of) || r < 1 || r > of) {
+		throw new Error(`${item.id}: unreadable reminded value ${JSON.stringify(reminded)}.`);
+	}
+	return `${r} of ${of} reminded`;
 }

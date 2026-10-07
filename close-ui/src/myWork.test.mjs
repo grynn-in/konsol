@@ -258,3 +258,80 @@ test("failure path: an unknown kind throws, and is never defaulted to Setup", ()
 	const item = { id: "x", kind: "mystery", owner: "EPM Admin", action: {} };
 	assert.throws(() => badgeFor(item), /unknown item kind/);
 });
+
+// --- Y64 (stories 1.5, 1.2): the reminded line on TB items ------------------
+// Fed the real producer's output: Y59's golden My work items (asserted equal
+// to the stub-site get_my_work call by its own host test). Two personas: the
+// Entity Accountant's "Upload TB for X" carries {count, last_at,
+// last_by_name}; the waiting items carry {reminded, of}. D62 owns `due`.
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { remindedLine } from "./myWork.js";
+import { remindedText } from "./remind.js";
+
+const MYWORK_GOLDEN = JSON.parse(
+	readFileSync(fileURLToPath(new URL("../../konsol/tests/fixtures/close_mywork_items.json", import.meta.url)), "utf8"),
+);
+const Y64_NOW = new Date("2025-10-07T12:00:00Z");
+const Y64_TZ = "Europe/London";
+const goldenItem = (persona, id) => {
+	const item = MYWORK_GOLDEN[persona].find((i) => i.id === id);
+	assert.ok(item, `no golden ${persona} item ${id}`);
+	return item;
+};
+
+test("(Y64) golden Entity Accountant item: 'Reminded 2× · last … by Jane Doe', remind.js's one rule", () => {
+	const item = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	const line = remindedLine(item, Y64_NOW, Y64_TZ);
+	assert.equal(line, remindedText(item.reminded, Y64_NOW, Y64_TZ));
+	assert.equal(line, "Reminded 2× · last Aug 6, 14:05 by Jane Doe");
+	assert.equal(
+		remindedLine(goldenItem("entity_accountant", "tb:2025-09:ZZA"), Y64_NOW, Y64_TZ),
+		"Reminded 1× · last Sep 10, 08:00 by Raj Patel",
+	);
+});
+
+test("(Y64) golden waiting items: 'R of N reminded'", () => {
+	assert.equal(remindedLine(goldenItem("group_accountant", "tbs-waiting:2025-07"), Y64_NOW, Y64_TZ), "2 of 2 reminded");
+	assert.equal(remindedLine(goldenItem("group_accountant", "tbs-waiting:2025-09"), Y64_NOW, Y64_TZ), "1 of 1 reminded");
+});
+
+test("(Y64) golden: every item that is not a TB item has no line, and every TB item has one", () => {
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			const line = remindedLine(item, Y64_NOW, Y64_TZ);
+			if ("reminded" in item) assert.ok(line, `${persona} ${item.id} has a line`);
+			else assert.equal(line, null, `${persona} ${item.id} has no line`);
+		}
+	}
+});
+
+test("(Y64) failure path: reminded null gives no line, never '0×' or '0 of N'", () => {
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			if (!("reminded" in item)) continue;
+			assert.equal(remindedLine({ ...item, reminded: null }, Y64_NOW, Y64_TZ), null, `${item.id} with reminded null`);
+		}
+	}
+});
+
+test("(Y64) failure path: an unreadable reminded value throws, never a guessed line", () => {
+	const waiting = goldenItem("group_accountant", "tbs-waiting:2025-07");
+	const bad = [
+		{ reminded: 0, of: 5 },
+		{ reminded: 3, of: 2 },
+		{ reminded: 1 },
+		{ of: 2 },
+		{ reminded: "1", of: 2 },
+		{},
+		"2 of 2",
+	];
+	for (const reminded of bad) {
+		assert.throws(() => remindedLine({ ...waiting, reminded }, Y64_NOW, Y64_TZ), Error, JSON.stringify(reminded));
+	}
+	const ea = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	const { last_by_name, ...noName } = ea.reminded;
+	assert.throws(() => remindedLine({ ...ea, reminded: noName }, Y64_NOW, Y64_TZ), /last_by_name/);
+	assert.throws(() => remindedLine({ ...ea, reminded: { ...ea.reminded, count: 0 } }, Y64_NOW, Y64_TZ), /count/);
+});

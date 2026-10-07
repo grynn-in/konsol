@@ -27,14 +27,22 @@
  * or the item itself carries it (a setup gap, always null). `ageText`
  * (myWork.js) turns it into "N days"; `today` is captured once here and
  * passed in, since the pure module never reads the clock itself.
+ *
+ * Y64 (stories 1.5, 1.2): a TB item with `reminded` shows myWork.js's
+ * `remindedLine` under its title (remind.js's text for the Entity
+ * Accountant, the R-of-N count for a waiting item), in the user's zone
+ * (timefmt.js). The lines are built inside `grouped`, so a value the screen
+ * cannot read becomes the screen's error. There is no Remind button here
+ * (C-R1: Remind lives on the TB list and the IC panel).
  */
 import { computed, reactive, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { Badge, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get } from "../api.js";
-import { ageText, badgeFor, itemRoute, sections } from "../myWork.js";
+import { ageText, badgeFor, itemRoute, remindedLine, sections } from "../myWork.js";
 import { parse } from "../route.js";
+import { userTimeZone } from "../timefmt.js";
 
 const MY_WORK = "konsol.close.mywork_api.get_my_work";
 
@@ -70,6 +78,7 @@ const current = computed(() => {
 
 /** `today`, captured once: the pure `ageText` never reads the clock itself. */
 const today = new Date();
+const timeZone = userTimeZone();
 
 const NO_ENTITIES_TITLE = "No entities are assigned to you. Ask the System Manager.";
 const NO_ENTITIES_DETAIL = "Until an entity is assigned there is nothing for you to upload, so the groups below stay empty.";
@@ -113,14 +122,22 @@ watch(() => (current.value ? `${current.value.year}/${current.value.period}` : "
 
 /** B10 groups, in the server's order. An unknown kind is an error, not a dropped item. */
 const grouped = computed(() => {
-	if (work.status !== "ready") return { groups: [], error: null };
+	if (work.status !== "ready") return { groups: [], reminded: {}, error: null };
 	try {
-		return { groups: sections(work.items), error: null };
+		const groups = sections(work.items);
+		const reminded = {};
+		for (const item of work.items) reminded[item.id] = remindedLine(item, today, timeZone);
+		return { groups, reminded, error: null };
 	} catch (e) {
-		return { groups: [], error: e.message };
+		return { groups: [], reminded: {}, error: e.message };
 	}
 });
 const groups = computed(() => grouped.value.groups);
+
+/** Y64: the item's reminded line (built in `grouped`), or null. */
+function remindedOf(item) {
+	return grouped.value.reminded[item.id] || null;
+}
 
 const loadState = computed(() => {
 	if (work.status === "ready" && grouped.value.error) return "error";
@@ -247,6 +264,7 @@ function ageOf(item) {
 									<span class="text-base font-medium text-ink-gray-9">{{ item.title }}</span>
 									<span v-if="ageOf(item)" class="text-xs text-ink-gray-5">{{ ageOf(item) }}</span>
 								</div>
+								<p v-if="remindedOf(item)" class="mt-1 text-xs text-ink-gray-6">{{ remindedOf(item) }}</p>
 								<p v-if="item.detail" class="mt-1 break-words text-sm text-ink-gray-7">{{ item.detail }}</p>
 								<p class="mt-1 text-xs text-ink-gray-5">Owner: {{ ownerLabel(item.owner) }}</p>
 							</div>
