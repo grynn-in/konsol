@@ -1,21 +1,70 @@
 {
-  "period": {"fiscal_year": 2025, "fiscal_period": 10},
+  "period": {
+    "fiscal_year": 2025,
+    "fiscal_period": 10
+  },
   "start_date": "2025-10-01",
   "blocking": [],
-  "out_of_scope": ["ZZ5B2", "ZZ5B3"],
+  "out_of_scope": [
+    "ZZ5B2",
+    "ZZ5B3"
+  ],
   "in_scope_count": 1,
   "can_record": true,
   "hidden": 0,
   "blocking_hidden": 0,
   "change": {
     "entities": [
-      {"entity": "ZZ5B1", "entity_name": "ZZ Five B One", "consolidation_group": "ECL_GROUP"},
-      {"entity": "ZZ5B1", "entity_name": "ZZ Five B One", "consolidation_group": "ZZ_SUBGROUP"},
-      {"entity": "ZZ5B3", "entity_name": "ZZ Five B Three", "consolidation_group": "ECL_GROUP"}
+      {
+        "entity": "ZZ5B1",
+        "entity_name": "ZZ Five B One",
+        "consolidation_group": "ECL_GROUP",
+        "current": {
+          "name": "OP-ZZ5B1-1",
+          "effective_date": "2025-01-01",
+          "end_date": null,
+          "ownership_pct": 60.0,
+          "consolidation_method": "Equity"
+        }
+      },
+      {
+        "entity": "ZZ5B1",
+        "entity_name": "ZZ Five B One",
+        "consolidation_group": "ZZ_SUBGROUP",
+        "current": {
+          "name": "OP-ZZ5B1-SUB",
+          "effective_date": "2025-01-01",
+          "end_date": null,
+          "ownership_pct": 60.0,
+          "consolidation_method": "Equity"
+        }
+      },
+      {
+        "entity": "ZZ5B3",
+        "entity_name": "ZZ Five B Three",
+        "consolidation_group": "ECL_GROUP",
+        "current": {
+          "name": "OP-ZZ5B3-1",
+          "effective_date": "2025-12-01",
+          "end_date": null,
+          "ownership_pct": 60.0,
+          "consolidation_method": "Equity"
+        }
+      }
     ],
     "periods": [
-      {"fiscal_year": 2025, "fiscal_period": 10, "label": "FY2025 P10", "start_date": "2025-10-01"},
-      {"fiscal_year": 2026, "fiscal_period": 1, "label": "FY2026 P01", "start_date": "2026-01-01"}
+      {
+        "fiscal_year": 2025,
+        "fiscal_period": 10,
+        "label": "FY2025 P10",
+        "start_date": "2025-10-01"
+      },
+      {
+        "fiscal_year": 2026,
+        "fiscal_period": 1,
+        "label": "FY2026 P01",
+        "start_date": "2026-01-01"
+      }
     ]
   }
 }

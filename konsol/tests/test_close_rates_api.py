@@ -2373,7 +2373,8 @@ def test_o63_failure_path_a_scoped_caller_never_sees_an_entity_outside_scope():
     site = _o63_site()
     site.allowed = {"ZZ5B3"}
     result = _o63_call(site)
-    assert result["change"]["entities"] == [
+    assert [{k: e[k] for k in ("entity", "entity_name", "consolidation_group")}
+            for e in result["change"]["entities"]] == [
         {"entity": "ZZ5B3", "entity_name": "ZZ Five B Three",
          "consolidation_group": O55_GROUP}]
     # The existing hidden rule counts out-of-scope ZZ5B2 only; the change list
