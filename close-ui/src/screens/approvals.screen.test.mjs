@@ -374,7 +374,7 @@ test("D06: zero declared dimensions — the golden journal item renders no dimen
 // `get_queue()` of test_close_approvals_api.py's `_o58_site()`) through the
 // REAL queueView and rates.js's ownershipEffectView (O59).
 // ---------------------------------------------------------------------------
-import { ownershipEffectView } from "../rates.js";
+import { ownershipEffectView, opEffectView, DESK_DRAFT } from "../rates.js";
 
 const OP_QUEUE_FIXTURE = fileURLToPath(
 	new URL("../../../konsol/tests/fixtures/close_approvals_op_queue_payload.json", import.meta.url),
@@ -383,18 +383,13 @@ const O62_NOW = new Date("2026-07-02T09:00:00Z");
 const O62_TZ = "Europe/London";
 
 /** The screen's own `opEffect(item)`, built from its <script> source with
- * the real `ownershipEffectView` injected — the function the component runs,
- * not a copy. */
+ * the real rates.js `opEffectView` injected (R52p) — the function the
+ * component runs, not a copy. */
 function loadOpEffect() {
 	const js = script(read());
-	const constant = js.match(/const DESK_DRAFT = [^\n]*\n/);
-	assert.ok(constant, "the screen declares const DESK_DRAFT");
 	const fn = js.match(/function opEffect\(item\)\s*\{[\s\S]*?\n\}\n/);
 	assert.ok(fn, "the screen declares function opEffect(item)");
-	return new Function("ownershipEffectView", "OWNERSHIP", `${constant[0]}${fn[0]}return opEffect;`)(
-		ownershipEffectView,
-		"Ownership Period",
-	);
+	return new Function("opEffectView", "OWNERSHIP", `${fn[0]}return opEffect;`)(opEffectView, "Ownership Period");
 }
 
 function opQueueItem(name) {
@@ -454,11 +449,34 @@ test("O62 failure path: an HER item has no panel; a broken or missing OP effect 
 	assert.match(missing.error, /effect/, "an OP item with no effect key is a server regression, shown as such");
 });
 
-test("O62: opEffect reads the server's effect (rawEffect), never queueView's journal-shaped .effect", () => {
-	const fn = script(read()).match(/function opEffect\(item\)\s*\{([\s\S]*?)\n\}\n/);
+test("R52p: opEffect is rates.js's opEffectView over the item itself; the screen keeps no DESK_DRAFT or ownershipEffectView copy", () => {
+	const js = script(read());
+	const fn = js.match(/function opEffect\(item\)\s*\{([\s\S]*?)\n\}\n/);
 	assert.ok(fn, "opEffect(item) is defined");
-	assert.match(fn[1], /ownershipEffectView\(\s*item\.rawEffect\s*\)/);
-	assert.doesNotMatch(fn[1], /item\.effect\b/);
+	assert.match(fn[1], /opEffectView\(\s*item\s*\)/);
+	assert.doesNotMatch(fn[1], /rawEffect|ownershipEffectView/);
+	assert.doesNotMatch(js, /const DESK_DRAFT\b/, "no local Desk sentence");
+	assert.doesNotMatch(js, /\bownershipEffectView\b/, "no local ownership-effect view");
+	assert.doesNotMatch(js, /\.filter\(\(row\) => row\.label !== "Covers"\)/, "the Covers cut lives in rates.js only");
+});
+
+test("R52p failure path: a golden OP item carrying the server's effect_error shows that sentence in the detail", () => {
+	const opEffect = loadOpEffect();
+	const sentence =
+		"The pending ownership change OP-ZZ58-2026-07-01 cannot be shown: OP-ZZ58-2026-07-01 supersedes " +
+		"OP-ZZ58-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.";
+	const payload = golden(OP_QUEUE_FIXTURE);
+	const op = payload.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	op.effect = null;
+	op.effect_error = sentence;
+	const item = queueView(payload, O62_NOW, O62_TZ).items.find((i) => i.name === op.name);
+	assert.deepEqual(opEffect(item), { error: sentence });
+});
+
+test("R52p: the Desk sentence is rates.js's DESK_DRAFT, through queueView and the screen", () => {
+	const opEffect = loadOpEffect();
+	assert.equal(DESK_DRAFT, "Drafted in Desk: effect not previewed.");
+	assert.deepEqual(opEffect(opQueueItem("OP-ZZ58B-2026-07-01")), { desk: DESK_DRAFT });
 });
 
 test("O62: an OP item's title opens the Ownership change detail, which loads no statement", () => {
@@ -466,8 +484,8 @@ test("O62: an OP item's title opens the Ownership change detail, which loads no 
 	const js = script(source);
 	assert.match(
 		source,
-		/import\s*\{[^}]*\bownershipEffectView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
-		"imports ownershipEffectView from rates.js",
+		/import\s*\{[^}]*\bopEffectView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
+		"imports opEffectView from rates.js",
 	);
 	const fn = js.match(/function selectOwnership\(item\)\s*\{([\s\S]*?)\n\}/);
 	assert.ok(fn, "selectOwnership(item) is defined");
