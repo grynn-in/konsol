@@ -247,7 +247,9 @@ test("O61: the template renders the panel above Approve, read-only, with the Des
   assert.match(tpl, /\.desk\b/, "the Desk-draft sentence is rendered");
   assert.match(tpl, /\.error\b/, "a broken effect's sentence is rendered");
   assert.match(tpl, /Re-sign Needed/);
-  const panel = tpl.slice(panelAt, approveAt);
+  const controlAt = tpl.indexOf('v-if="canApprove(item)"');
+  assert.ok(controlAt > panelAt, "the approve control follows the panel");
+  const panel = tpl.slice(panelAt, controlAt);
   assert.doesNotMatch(panel, /<input|<select|<textarea|<Button|@click/, "the panel is read-only");
 });
 

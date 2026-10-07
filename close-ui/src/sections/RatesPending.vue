@@ -28,11 +28,22 @@
  * throws for it (mirrors how the TB screen surfaces a timestamp it cannot
  * parse, tbTable.js's `timestampText`) rather than silently re-zoning it or
  * inventing different wording.
+ *
+ * konsol#305 O61 (wireframe-4.2.md section 3, confirmed by Deepak Pai
+ * 7 Oct): an Ownership Period draft carries `effect` (O57); the item shows
+ * the read-only EFFECT IF APPROVED panel above Approve, built by rates.js's
+ * `ownershipEffectView` (O59) — the screen computes no pct, method, date or
+ * period itself. A Desk "Record ownership" draft arrives with `effect: null`
+ * and says "Drafted in Desk: effect not previewed." instead, never an empty
+ * panel. An effect `ownershipEffectView` refuses (a server regression)
+ * shows its thrown sentence, never a guessed panel. Approve is unchanged:
+ * the same `approve` emit, so `approval_api.approve` and the self-approval
+ * policy still decide.
  */
 import { computed, reactive } from "vue";
 import { Button } from "frappe-ui";
 import { messageLines } from "../signoff.js";
-import { pendingEmptyMessage, pendingCreatedText } from "../rates.js";
+import { pendingEmptyMessage, pendingCreatedText, ownershipEffectView } from "../rates.js";
 import { userTimeZone } from "../timefmt.js";
 
 const props = defineProps({
@@ -86,6 +97,31 @@ function createdText(created) {
 	}
 }
 
+const DESK_DRAFT = "Drafted in Desk: effect not previewed.";
+
+/** O61: an item's effect panel. Null for a Historical Equity Rate;
+ * `{desk}` for a Desk draft (`effect: null`); `{error}` when the effect is
+ * missing or malformed; otherwise `{view}`. Section 3 shows Ownership and
+ * Method as before → after and the current period's end as its own
+ * "Ends" line, so the Covers row is left out here. */
+function opEffect(item) {
+	if (item.doctype !== "Ownership Period") return null;
+	if (item.effect === null) return { desk: DESK_DRAFT };
+	try {
+		const view = ownershipEffectView(item.effect);
+		return { view: { ...view, rows: view.rows.filter((row) => row.label !== "Covers") } };
+	} catch (e) {
+		return { error: e.message };
+	}
+}
+
+/** Each item's panel, keyed by name, computed once per payload. */
+const effects = computed(() => {
+	const out = {};
+	for (const item of (props.view && props.view.items) || []) out[item.name] = opEffect(item);
+	return out;
+});
+
 function start(item) {
 	if (item.approve.kind === "reason" && !reasonOpen[item.name]) {
 		reasonOpen[item.name] = true;
@@ -122,7 +158,39 @@ function lines(text) {
 						· {{ createdText(item.created) }}
 					</p>
 				</div>
-				<div class="flex min-w-[10rem] flex-col items-end gap-1">
+				<div
+					v-if="effects[item.name] && effects[item.name].view"
+					class="w-full rounded border border-outline-gray-2 bg-surface-gray-1 px-3 py-2 text-sm text-ink-gray-8"
+				>
+					<p class="text-xs font-medium uppercase tracking-wide text-ink-gray-6">EFFECT IF APPROVED</p>
+					<dl class="mt-1 grid grid-cols-[6rem_1fr] gap-x-3 gap-y-0.5">
+						<template v-for="row in effects[item.name].view.rows" :key="row.label">
+							<dt class="text-ink-gray-6">{{ row.label }}</dt>
+							<dd>{{ row.before }} → {{ row.after }}</dd>
+						</template>
+						<dt class="text-ink-gray-6">Ends</dt>
+						<dd>The current period, on {{ effects[item.name].view.currentEnds }}</dd>
+						<dt class="text-ink-gray-6">Periods</dt>
+						<dd>{{ effects[item.name].view.periods }}</dd>
+						<dt class="text-ink-gray-6">Re-sign</dt>
+						<dd v-if="effects[item.name].view.resign.length">
+							{{ effects[item.name].view.resign.join(", ") }} will be marked "Re-sign Needed"
+						</dd>
+						<dd v-else>{{ effects[item.name].view.resignNone }}</dd>
+					</dl>
+					<p class="mt-1 text-xs text-ink-gray-6">ⓘ {{ effects[item.name].view.notShown }}</p>
+				</div>
+				<p v-else-if="effects[item.name] && effects[item.name].desk" class="w-full text-sm text-ink-gray-7">
+					{{ effects[item.name].desk }}
+				</p>
+				<p
+					v-else-if="effects[item.name] && effects[item.name].error"
+					role="alert"
+					class="w-full rounded border border-outline-red-1 bg-surface-red-1 px-3 py-2 text-sm text-ink-gray-8"
+				>
+					{{ effects[item.name].error }}
+				</p>
+				<div class="ml-auto flex min-w-[10rem] flex-col items-end gap-1">
 					<template v-if="canApprove(item)">
 						<template v-if="item.approve.kind === 'reason' && reasonOpen[item.name]">
 							<label :for="`pending-reason-${item.name}`" class="text-xs text-ink-gray-6">
