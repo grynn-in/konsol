@@ -630,7 +630,7 @@ test("ownershipView: counts out-of-scope and surfaces the hidden count", () => {
     blocking: [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }],
     out_of_scope: ["ZZC", "ZZD"],
     in_scope_count: 306,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 3,
   });
   assert.deepEqual(view.blocking, [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }]);
@@ -645,7 +645,7 @@ test("ownershipView: blocking_hidden is surfaced separately from the combined hi
     blocking: [],
     out_of_scope: ["ZZC"],
     in_scope_count: 10,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 3,
     blocking_hidden: 2,
   });
@@ -658,10 +658,49 @@ test("ownershipView: blocking_hidden defaults to 0 when the payload omits it", (
     blocking: [],
     out_of_scope: [],
     in_scope_count: 1,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 0,
   });
   assert.equal(view.blockingHidden, 0);
+});
+
+// -- R53f (#305-R52-4, U10c/U10e): canChange from the server's can_change ------
+// Fed the REAL get_ownership golden (R53e regenerated it from the stub-site
+// call); the Viewer case is that golden with can_change false and change null,
+// exactly what R53e sends a caller the save would refuse.
+
+const OWNERSHIP_GOLDEN = fixture("close_ownership_payload.json");
+const OWNERSHIP_VIEWER = { ...OWNERSHIP_GOLDEN, can_change: false, change: null };
+
+test("R53f: ownershipView carries the server's can_change as canChange (the golden: true)", () => {
+  assert.equal(OWNERSHIP_GOLDEN.can_change, true, "the golden is a caller the save admits");
+  const view = ownershipView(OWNERSHIP_GOLDEN);
+  assert.equal(view.canChange, true);
+  assert.equal(view.canRecord, true, "can_record still drives the Desk link");
+});
+
+test("R53f failure path: the Viewer payload (can_change false, change null) gives canChange false", () => {
+  const view = ownershipView(OWNERSHIP_VIEWER);
+  assert.equal(view.canChange, false);
+});
+
+test("R53f failure path: canChange never follows can_record", () => {
+  const view = ownershipView({ ...OWNERSHIP_VIEWER, can_record: true });
+  assert.equal(view.canRecord, true);
+  assert.equal(view.canChange, false);
+});
+
+test("R53f failure path: a payload without can_change throws", () => {
+  const { can_change, ...missing } = OWNERSHIP_GOLDEN;
+  assert.throws(() => ownershipView(missing), {
+    message: "ownershipView: get_ownership's payload has no can_change",
+  });
+});
+
+test("R53f failure path: can_change true without the change choices throws", () => {
+  assert.throws(() => ownershipView({ ...OWNERSHIP_GOLDEN, change: null }), {
+    message: "ownershipView: get_ownership says can_change but sends no change",
+  });
 });
 
 // -- ownershipEmptyMessage (#305-R01q: SPA should-fix 9) ---------------------
@@ -671,7 +710,7 @@ test("ownershipEmptyMessage: a hidden blocking gap is never read as 'no gaps' --
     blocking: [],
     out_of_scope: [],
     in_scope_count: 10,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 2,
     blocking_hidden: 2,
   });
@@ -683,7 +722,7 @@ test("ownershipEmptyMessage: singular 'gap' for exactly one hidden blocking enti
     blocking: [],
     out_of_scope: [],
     in_scope_count: 5,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 1,
     blocking_hidden: 1,
   });
@@ -695,7 +734,7 @@ test("ownershipEmptyMessage: no blocking and nothing hidden says there are no ga
     blocking: [],
     out_of_scope: [],
     in_scope_count: 10,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 0,
     blocking_hidden: 0,
   });
@@ -707,7 +746,7 @@ test("ownershipEmptyMessage: null when there are visible blocking entries, regar
     blocking: [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }],
     out_of_scope: [],
     in_scope_count: 1,
-    can_record: true,
+    can_record: true,     can_change: false,     change: null,
     hidden: 2,
     blocking_hidden: 2,
   });

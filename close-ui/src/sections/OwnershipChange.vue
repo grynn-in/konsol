@@ -4,7 +4,9 @@
  * screen's Ownership tab (story 4.2; #305-4.2-1; wireframe-4.2.md section 1,
  * confirmed as drawn by Deepak Pai 7 Oct; C-O2, C-O3, C-O4).
  *
- * Rates.vue mounts it only when `get_ownership` says `can_record`, and
+ * Rates.vue mounts it only when `get_ownership` says `can_change` (R53f;
+ * #305-R52-4, U10e: the save's own roles and an Open Regular period; the
+ * heading carries the wireframe caption "(EPM Analyst, Close Lead)"), and
  * passes that payload's `change` (O63): the entities that already have a
  * submitted ownership period, each with its own node's group, and the Open
  * Regular periods. Every choice the form offers comes from there:
@@ -401,7 +403,10 @@ async function saveDraft() {
 
 <template>
 	<section aria-label="Change ownership" class="mt-6">
-		<h2 class="mb-2 text-base font-semibold text-ink-gray-9">Change ownership</h2>
+		<div class="mb-2 flex items-baseline justify-between gap-2">
+			<h2 class="text-base font-semibold text-ink-gray-9">Change ownership</h2>
+			<span class="text-xs text-ink-gray-6">(EPM Analyst, Close Lead)</span>
+		</div>
 		<p
 			v-if="choices.error"
 			role="alert"

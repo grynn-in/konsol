@@ -72,6 +72,19 @@ test("the section file exists", () => {
   assert.ok(fs.existsSync(SECTION), "sections/OwnershipChange.vue exists");
 });
 
+// R53f (#305-R52-4, U10c; wireframe-4.2.md section 1): the caption
+// "(EPM Analyst, Close Lead)" sits beside the CHANGE OWNERSHIP heading,
+// before anything else the form shows.
+test("R53f: the heading carries the wireframe caption (EPM Analyst, Close Lead) beside it", () => {
+  const tpl = template(read());
+  const h2 = tpl.indexOf("<h2");
+  assert.ok(h2 >= 0, "the section has a heading");
+  const head = tpl.slice(h2, tpl.indexOf("<p", h2));
+  assert.match(head, />Change ownership<\/h2>/);
+  assert.ok(head.includes(">(EPM Analyst, Close Lead)<"), "the caption follows the heading, before the first paragraph");
+  assert.equal(tpl.split("(EPM Analyst, Close Lead)").length - 1, 1, "the caption appears once");
+});
+
 // ---------------------------------------------------------------------------
 // Wiring
 // ---------------------------------------------------------------------------

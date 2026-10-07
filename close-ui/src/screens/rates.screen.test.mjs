@@ -380,18 +380,39 @@ test("saveRates does not reload a period it has already navigated away from", ()
 
 // -- O60 (story 4.2; wireframe-4.2.md section 1, confirmed as drawn by Deepak Pai 7 Oct) --
 // The Ownership tab mounts the "Change ownership" form (sections/OwnershipChange.vue)
-// only when the server says can_record, fed get_ownership's `change` choices (O63).
+// only when the server says can_change (R53f; #305-R52-4, U10e: was can_record,
+// which is the Desk "Record ownership" link's flag), fed get_ownership's
+// `change` choices (O63).
 
-test("O60: the Ownership tab mounts OwnershipChange only when can_record, with get_ownership's change", () => {
+test("O60/R53f: the Ownership tab mounts OwnershipChange only when can_change, with get_ownership's change", () => {
   const source = read();
   assert.match(source, /import OwnershipChange from ["']\.\.\/sections\/OwnershipChange\.vue["']/);
   const tpl = template(source);
   const ownershipTab = tpl.slice(tpl.indexOf('aria-label="Ownership"'));
   const tags = tagsWith(ownershipTab, "<OwnershipChange");
   assert.equal(tags.length, 1, "one OwnershipChange");
-  assert.match(tags[0], /v-if="[^"]*\bownershipViewData\.canRecord\b[^"]*"/, "v-if on can_record");
+  assert.match(tags[0], /v-if="[^"]*\bownershipViewData\.canChange\b[^"]*"/, "v-if on can_change");
+  assert.doesNotMatch(tags[0], /canRecord/, "never gated on can_record");
   assert.match(tags[0], /:change="ownership\.payload\.change"/, "fed the server's change choices");
   assert.match(tags[0], /@saved="[^"]*\bloadPending\(/, "a saved draft reloads the pending tab");
+});
+
+// R53f: the mount gate evaluated on the REAL ownershipView of the golden
+// (can_change true) and of the Viewer copy (can_change false, change null).
+test("R53f: the form mounts for the golden payload and not for the Viewer payload (the v-if evaluated)", async () => {
+  const { ownershipView } = await import("../rates.js");
+  const golden = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", "..", "konsol", "tests", "fixtures", "close_ownership_payload.json"), "utf8"),
+  );
+  const viewer = { ...golden, can_change: false, change: null };
+  const tpl = template(read());
+  const tag = tagsWith(tpl.slice(tpl.indexOf('aria-label="Ownership"')), "<OwnershipChange")[0];
+  const vIf = tag.match(/v-if="([^"]*)"/)[1];
+  const gate = new Function("ownershipViewData", `return Boolean(${vIf});`);
+  assert.equal(gate(ownershipView(golden)), true, "the golden (can_change true) mounts the form");
+  assert.equal(gate(ownershipView(viewer)), false, "the Viewer (can_change false) sees no form");
+  assert.equal(gate(ownershipView({ ...viewer, can_record: true })), false, "can_record alone never mounts it");
+  assert.equal(gate(null), false, "nothing mounts while loading");
 });
 
 test("O60: the preview and save calls live in OwnershipChange only, never a second call site here", () => {

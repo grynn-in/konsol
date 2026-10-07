@@ -52,7 +52,10 @@
  *
  * O60 (story 4.2; wireframe-4.2.md section 1): below the gaps, the
  * "Change ownership" form (OwnershipChange.vue) renders only when the
- * server says `can_record`, fed `get_ownership`'s `change` choices (O63).
+ * server says `can_change` (R53f; #305-R52-4, U10e: the save's own roles and
+ * an Open Regular period; `can_record` is only the Desk link's flag), fed
+ * `get_ownership`'s `change` choices (O63). Save draft and Edit live inside
+ * the form, so they follow the same flag.
  * The form owns the preview GET and the save POST; a saved draft reloads
  * the pending list here, where the Close Lead approves it.
  *
@@ -183,13 +186,24 @@ function startEdit(name) {
 	tab.value = "ownership";
 }
 
-// ownershipView never throws (E407: it only reshapes the payload), so this
-// needs no error-catching wrapper like `view`/`pendingViewData` above.
+// ownershipView throws on a payload without `can_change` (R53f): shown as
+// the error, same rule as `view`/`pendingViewData` above.
+const ownershipViewError = ref(null);
 const ownershipViewData = computed(() => {
 	if (ownership.status !== "ready" || !ownership.payload) return null;
-	return ownershipView(ownership.payload);
+	try {
+		ownershipViewError.value = null;
+		return ownershipView(ownership.payload);
+	} catch (e) {
+		ownershipViewError.value = e.message;
+		return null;
+	}
 });
-const ownershipLoadState = computed(() => ownership.status);
+const ownershipLoadState = computed(() => {
+	if (ownership.status !== "ready") return ownership.status;
+	return ownershipViewData.value ? "ready" : "error";
+});
+const ownershipLoadError = computed(() => ownershipViewError.value || ownership.error);
 const ownershipWhat = computed(() => `the ownership gaps for ${periodName.value}`);
 
 function editable(cell) {
@@ -749,7 +763,7 @@ const TABS = computed(() => [
 				:state="ownershipLoadState"
 				:what="ownershipWhat"
 				:source="GET_OWNERSHIP"
-				:error="ownership.error"
+				:error="ownershipLoadError"
 				:busy="ownership.busy"
 				@retry="loadOwnership"
 			>
@@ -759,7 +773,7 @@ const TABS = computed(() => [
 					:out-of-scope="ownership.payload ? ownership.payload.out_of_scope || [] : []"
 				/>
 				<OwnershipChange
-					v-if="ownershipViewData && ownershipViewData.canRecord"
+					v-if="ownershipViewData && ownershipViewData.canChange"
 					:change="ownership.payload.change"
 					:editable="draftEdits"
 					:open-edit="openEdit"
