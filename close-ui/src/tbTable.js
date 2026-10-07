@@ -22,6 +22,7 @@
 
 import { formatTime, parseZoned } from "./timefmt.js";
 import { remindedText } from "./remind.js";
+import { ISO_DATE, OVERDUE_TONE, dueDateText } from "./dueDate.js";
 
 const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
 const DASH = "—";
@@ -180,18 +181,9 @@ export function entityRows(myTbs, now, timeZone) {
 // --- D60: the TB due header and the overdue chip (stories 2.4, 3.1) ---------
 // Decision #305-2.4-1: a deadline is show-only and never blocks. The chip is
 // the warn (amber) tone, never the block (red) tone the Missing status uses.
-export const OVERDUE_TONE = "bg-surface-amber-1 text-ink-amber-3";
+// D62: the tone and the date wording live in dueDate.js, shared with My work.
+export { OVERDUE_TONE };
 const OVERDUE_TEXT = "Overdue";
-const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
-// A due date is a calendar date, not an instant: it is formatted in UTC so
-// the browser's zone can never move it to the day before or after.
-const DUE_FORMAT = new Intl.DateTimeFormat("en-GB", {
-  weekday: "short",
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  timeZone: "UTC",
-});
 
 /** D56's `deadline` must be present as `{due, past, text}`; anything else throws. */
 function checkDeadline(myTbs, who) {
@@ -211,17 +203,6 @@ function checkDeadline(myTbs, who) {
   return deadline;
 }
 
-/** "2025-10-07" -> "Tue 7 Oct 2025". */
-function dueDateText(iso) {
-  const [, y, m, d] = ISO_DATE.exec(iso);
-  const date = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
-  if (date.getUTCDate() !== Number(d)) {
-    throw new Error(`tbDue: the deadline's due is not a real date: ${iso}`);
-  }
-  const parts = Object.fromEntries(DUE_FORMAT.formatToParts(date).map((p) => [p.type, p.value]));
-  return `${parts.weekday} ${parts.day} ${parts.month} ${parts.year}`;
-}
-
 /**
  * D56's my_tbs `deadline` -> the screen header's `{text, past}`: "TB due Tue
  * 7 Oct 2025" for a declared date, or the server's own sentence ("No due date
@@ -233,7 +214,7 @@ export function tbDue(myTbs) {
   if (deadline.due === null) {
     return { text: deadline.text, past: false };
   }
-  return { text: `TB due ${dueDateText(deadline.due)}`, past: deadline.past };
+  return { text: `TB due ${dueDateText(deadline.due, "tbDue")}`, past: deadline.past };
 }
 
 /**
