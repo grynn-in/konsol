@@ -375,11 +375,12 @@ def test_a_clean_site_gives_four_rows_with_the_unowned_tb_a_problem():
     assert zzx["problem"] is True
     assert zzx["in_scope"] is False
     assert zzx["ownership"] == {"tone": "blocking", "label": "None for P09"}
-    assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership for this period"}
+    assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership for this period",
+                         "reminders": None}
     zza = rows["ZZA"]
     assert zza["problem"] is False, zza
     assert zza["ownership"]["label"] == "Full · 100%"
-    assert zza["tb"] == {"tone": "ok", "label": "Received"}
+    assert zza["tb"] == {"tone": "ok", "label": "Received", "reminders": None}
     # Group currency comes from the root group only (data_area_id not set):
     # USD, not the sub-group's GBP; EUR->USD Closing is approved.
     assert zza["rate"] == {"tone": "ok", "label": "Approved"}
@@ -399,7 +400,8 @@ def test_other_periods_records_do_not_count():
     site = _Site()
     site.data["Trial Balance Submission"][0]["fiscal_period"] = 8
     rows = {r["entity"]: r for r in _call(site)["rows"]}
-    assert rows["ZZA"]["tb"] == {"tone": "blocking", "label": "Missing"}
+    assert rows["ZZA"]["tb"] == {"tone": "blocking", "label": "Missing",
+                                 "reminders": None}
 
 
 def test_a_draft_rate_in_the_missing_list_reads_awaiting_approval():

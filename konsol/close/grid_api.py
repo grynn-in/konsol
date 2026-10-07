@@ -11,8 +11,14 @@ It reads the period in a fixed number of queries, whatever the entity
 count: the calendar rows, Entity, Ownership Period, Trial Balance
 Submission, TB Exception, the root Consolidation Group's reporting
 currency, the period's Closing Group Exchange Rates, one plain (no lock)
-``group_rates.rate_gate`` and ``allowed_entity_codes``. Nothing is read per
-entity, and nothing is written.
+``group_rates.rate_gate`` and ``allowed_entity_codes``; then, when any row
+is visible, one ``close_event.reminders`` read (topic tb) and, when a
+visible row was reminded, one User read for the senders' full names
+(konsol#305 Y57). Nothing is read per entity, and nothing is written.
+
+Each row's Trial balance cell carries ``reminders``: ``{count, last_at,
+last_by, last_by_name}`` or None (C-R6). Only visible rows are filled, so a
+hidden entity's reminders never leave the server.
 
 The Entity Accountant is not a grid role (E2-7): the grid is an all-entity
 read of group configuration. Rows are still cut to the caller's permitted
@@ -41,18 +47,27 @@ import importlib.util as _importlib_util
 import os as _os
 
 
-def _load_period_name():
-    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
-    one "FY2025 P07" format, reachable even under the host tests' stub
-    ``konsol.close`` package."""
-    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "period_name.py")
-    spec = _importlib_util.spec_from_file_location("konsol_close_period_name", path)
+def _load_by_path(filename, module_name):
+    """A pure sibling module loaded by path, reachable even under the host
+    tests' stub ``konsol.close`` package."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), filename)
+    spec = _importlib_util.spec_from_file_location(module_name, path)
     module = _importlib_util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.period_name
+    return module
+
+
+def _load_period_name():
+    """konsol/close/period_name.py loaded by path (konsol#305 review-w5): the
+    one "FY2025 P07" format."""
+    return _load_by_path("period_name.py", "konsol_close_period_name").period_name
 
 
 period_name = _load_period_name()
+#: The Remind rules (konsol#305 Y52), pure: the reminder summary.
+remind_model = _load_by_path("remind_model.py", "konsol_close_remind_model")
+#: Zoned ISO for the reminders' ``last_at`` (A16b), pure.
+zoned_iso = _load_by_path("timefmt.py", "konsol_close_timefmt").zoned_iso
 
 REGULAR = "Regular"
 CLOSING = "Closing"
@@ -117,13 +132,45 @@ def _rates(key):
             "approved": approved, "drafts": drafts}
 
 
+def _reminders(key, codes):
+    """``{entity: {count, last_at, last_by, last_by_name}}`` for the visible
+    ``codes`` (konsol#305 Y57, C-R6, as tb_read_api ``_reminders``): one
+    ``close_event.reminders`` read for the period and topic tb, summarised by
+    ``remind_model.summary``. Only the visible entities' entries are kept, so
+    a hidden entity's reminders (and who sent them) never leave the server.
+    An unreadable event raises (``summary``): a count is never guessed as 0.
+    A sender with no full name is refused, never shown as a user id."""
+    from konsol.close import close_event  # lazy: the ic_api.send_back precedent
+
+    summary = remind_model.summary(close_event.reminders([key], "tb"))
+    entries = {}
+    for (fy, fp, entity, topic), entry in summary.items():
+        if (fy, fp) == key and topic == "tb" and entity in codes:
+            entries[entity] = entry
+    if not entries:
+        return {}
+    actors = sorted({e["last_by"] for e in entries.values()})
+    names = {u["name"]: u.get("full_name") for u in frappe.get_all(
+        "User", filters={"name": ["in", actors]}, fields=["name", "full_name"],
+        limit_page_length=0)}
+    for actor in actors:
+        if not names.get(actor):
+            frappe.throw("User %s, who sent the last reminder, has no full name: set the "
+                         "user's First Name in User." % actor)
+    tz = frappe.utils.get_system_timezone()
+    return {entity: {"count": int(e["count"]), "last_at": zoned_iso(e["last_at"], tz),
+                     "last_by": e["last_by"], "last_by_name": names[e["last_by"]]}
+            for entity, e in entries.items()}
+
+
 @frappe.whitelist(methods=["GET"])
 def get_period_grid(fiscal_year, fiscal_period):
     """``{period, rows, counts, rates_error}`` for a Regular period.
 
     ``period`` = ``{fiscal_year, fiscal_period, code, status, start_date}``
     (ISO date). ``rows``, ``counts`` and ``rates_error`` are
-    ``period_grid_model.period_grid``'s. Read-only. Refuses an undeclared
+    ``period_grid_model.period_grid``'s; each row's ``tb`` cell also
+    carries ``reminders`` (konsol#305 Y57). Read-only. Refuses an undeclared
     period (PeriodNotDeclared) and a non-Regular one.
     """
     # A literal: the endpoint contract test reads it. No Entity Accountant (E2-7).
@@ -152,6 +199,10 @@ def get_period_grid(fiscal_year, fiscal_period):
 
     grid = period_grid_model.period_grid(
         key, rows, entities, ownership_rows, tbs, exceptions, rates, allowed)
+    if grid["rows"]:
+        reminded = _reminders(key, {r["entity"] for r in grid["rows"]})
+        for r in grid["rows"]:
+            r["tb"] = dict(r["tb"], reminders=reminded.get(r["entity"]))
     period = {"fiscal_year": key[0], "fiscal_period": key[1], "code": row.get("period_code"),
               "status": row.get("status"), "start_date": _iso(start)}
     return dict({"period": period}, **grid)
