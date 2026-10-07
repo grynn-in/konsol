@@ -20,6 +20,7 @@
 //   `{code, state: "ok"|"blocked"|"unknown", label, detail, entities, hidden}`.
 
 import { periodName } from "./periodName.js";
+import { remindedText } from "./remind.js";
 
 export const COLUMNS = ["Ownership", "Trial balance", "Closing rate"];
 export const TONES = ["ok", "blocking", "none"];
@@ -49,8 +50,19 @@ function validateRow(row) {
 	return row;
 }
 
+// Y63 (stories 1.5, 2.2): the reminded text of a row's Trial balance cell.
+// Y57 always sends `tb.reminders` (null when none was sent), so a missing key
+// throws. Only a Missing cell shows the text; there is no Remind button on
+// the grid (C-R1: Remind lives on the TB list and the IC panel).
+function tbReminded(row, now, timeZone) {
+	if (!("reminders" in row.tb)) {
+		throw new Error(`gridView: ${row.entity}'s Trial balance cell has no reminders entry (Y57 always sends it, null when none).`);
+	}
+	return row.tb.label === "Missing" ? remindedText(row.tb.reminders, now, timeZone) : null;
+}
+
 /**
- * `gridView(payload, problemsOnly)` -> `{rows, all, problems, hiddenNote,
+ * `gridView(payload, problemsOnly, now, timeZone)` -> `{rows, all, problems, hiddenNote,
  * ratesNote, empty}` for Period.vue's entity grid.
  *
  * `rows` are `payload.rows` filtered to `row.problem` when `problemsOnly`,
@@ -59,15 +71,27 @@ function validateRow(row) {
  * Every row's three cell tones are validated eagerly (an unknown tone
  * throws), so a bad tone from the server surfaces as an error rather than
  * rendering silently.
+ *
+ * Y63: each row gains `tbReminded`, remind.js's "Reminded N× · last <time>
+ * by <name>" for a Missing TB cell's `reminders` entry (null otherwise),
+ * formatted in `timeZone` relative to `now`; both are required, as in
+ * tbTable.entityRows.
  */
-export function gridView(payload, problemsOnly) {
+export function gridView(payload, problemsOnly, now, timeZone) {
+	if (!timeZone) {
+		throw new Error("gridView requires a time zone");
+	}
+	if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+		throw new Error("gridView requires a valid `now`");
+	}
 	//: review-w5: the live period code is "P07" alone; the header and the
 	//: empty text name the year (periodName).
 	const code = periodName(payload.period.fiscal_year, payload.period.fiscal_period);
 	const counts = payload.counts || {};
 	const rows = (payload.rows || [])
 		.filter((row) => !problemsOnly || row.problem)
-		.map(validateRow);
+		.map(validateRow)
+		.map((row) => ({ ...row, tbReminded: tbReminded(row, now, timeZone) }));
 	const hiddenNote =
 		counts.hidden > 0 ? `${counts.hidden} entities outside your scope are not shown` : null;
 	const ratesNote = payload.rates_error ? `Rates cannot be checked: ${payload.rates_error}` : null;
