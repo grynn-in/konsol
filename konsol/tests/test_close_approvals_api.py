@@ -1217,3 +1217,36 @@ def test_o62_golden_op_queue_payload_equals_the_real_stub_site_call():
     assert ops[O58_CHANGE]["effect"]["after"]["pct"] == 80.0
     assert ops[O58_DESK]["effect"] is None
     assert ops[O58_CHANGE]["effect"]["resign_detail"][0]["signed_by_name"] == O64_LEAD_NAME
+
+
+# --- R52q (review S18, the O62 watch): one queue, two effect keys ---------------
+# An Ownership Period item carries ``ownership_effect``/``ownership_effect_error``;
+# a journal item keeps ``effect``. Neither carries the other's key.
+
+
+def test_r52q_op_items_carry_ownership_effect_and_the_journal_keeps_effect():
+    site = _o58_site()
+    site.journals = [_journal("CJ-1")]
+    site.lines = [
+        _line("CJ-1", 1, "DE02", "6100", debit_amount=100),
+        _line("CJ-1", 2, "DE02", "9999", credit_amount=100),
+    ]
+    items = {i["name"]: i for i in _all_items(_call(site))}
+    journal = items["CJ-1"]
+    assert journal["effect"]["no_heading"] == 1
+    assert "ownership_effect" not in journal and "ownership_effect_error" not in journal, sorted(journal)
+    change, desk = items[O58_CHANGE], items[O58_DESK]
+    assert change["ownership_effect"]["current_name"] == O58_PRED
+    assert change["ownership_effect"]["after"]["pct"] == 80.0
+    assert desk["ownership_effect"] is None
+    for op in (change, desk):
+        assert op["ownership_effect_error"] is None, op
+        assert "effect" not in op and "effect_error" not in op, sorted(op)
+
+
+def test_r52q_failure_path_a_broken_op_draft_names_its_error_under_the_ownership_key():
+    broken = _o58_item(_call(_r52i_site()), R52I_BROKEN)
+    assert broken["ownership_effect"] is None
+    assert broken["ownership_effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken
+    assert "effect" not in broken and "effect_error" not in broken, sorted(broken)

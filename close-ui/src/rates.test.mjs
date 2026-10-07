@@ -1123,3 +1123,40 @@ test("R52o opEffectView failure path: a missing effect or effect_error key throw
   const { resign, ...noResign } = item.effect;
   assert.throws(() => ratesModule.opEffectView({ ...item, effect: noResign }), /resign/);
 });
+
+// ---------------------------------------------------------------------------
+// konsol#305 R52q (review S18, the O62 watch): an Ownership Period item's
+// effect arrives as `ownership_effect` / `ownership_effect_error`, never the
+// journal's `effect`. Fed the REAL regenerated goldens; expected strings are
+// literals.
+// ---------------------------------------------------------------------------
+
+test("R52q: both goldens' OP items carry ownership_effect and ownership_effect_error, never effect", () => {
+  const items = [...PENDING.items, ...OP_QUEUE.items].filter((i) => i.doctype === "Ownership Period");
+  assert.equal(items.length, 4, "two OP items in each golden");
+  for (const item of items) {
+    assert.ok("ownership_effect" in item, `${item.name} carries ownership_effect`);
+    assert.equal(item.ownership_effect_error, null, item.name);
+    assert.equal("effect" in item, false, `${item.name} carries no effect`);
+    assert.equal("effect_error" in item, false, `${item.name} carries no effect_error`);
+  }
+});
+
+test("R52q: the approvals golden's change draft gives the pending panel through opEffectView", () => {
+  const item = r52oItem(OP_QUEUE, "OP-ZZ58-2026-07-01");
+  assert.deepEqual(ratesModule.opEffectView(item).view.rows, [
+    { label: "Ownership", before: "100 %", after: "80 %", unchanged: false },
+    { label: "Method", before: "full", after: "full", unchanged: true },
+  ]);
+  assert.deepEqual(ratesModule.opEffectView(r52oItem(OP_QUEUE, "OP-ZZ58B-2026-07-01")), {
+    desk: "Drafted in Desk: effect not previewed.",
+  });
+});
+
+test("R52q failure path: an item carrying the old effect key but no ownership_effect throws", () => {
+  const item = r52oItem(pendingView(PENDING), "OP-ZZ5B1-2025-10-01");
+  const old = { ...item, effect: item.ownership_effect, effect_error: null };
+  delete old.ownership_effect;
+  delete old.ownership_effect_error;
+  assert.throws(() => ratesModule.opEffectView(old), /OP-ZZ5B1-2025-10-01 has no ownership_effect/);
+});

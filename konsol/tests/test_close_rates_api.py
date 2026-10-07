@@ -2738,3 +2738,29 @@ def test_o69_the_pending_golden_carries_edit_on_every_op_item():
     # The golden is the Close Lead's call: EPM Admin may save.
     assert ops[O69_CHANGE]["edit"] == O69_EDIT
     assert ops["OP-ZZ5B2-2025-10-01"]["edit"] is None
+
+
+# --- R52q (review S18): the pending list's OP items carry the ownership keys ----
+
+
+def test_r52q_pending_op_items_carry_ownership_effect_and_no_effect():
+    result = _call_pending(_o57_site())
+    ops = {i["name"]: i for i in result["items"] if i["doctype"] == "Ownership Period"}
+    assert sorted(ops) == ["OP-ZZ5B1-2025-10-01", "OP-ZZ5B2-2025-10-01"]
+    assert ops["OP-ZZ5B1-2025-10-01"]["ownership_effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert ops["OP-ZZ5B2-2025-10-01"]["ownership_effect"] is None
+    for item in ops.values():
+        assert item["ownership_effect_error"] is None, item
+        assert "effect" not in item and "effect_error" not in item, sorted(item)
+    for item in result["items"]:
+        if item["doctype"] != "Ownership Period":
+            assert "ownership_effect" not in item and "ownership_effect_error" not in item, item
+
+
+def test_r52q_failure_path_a_broken_draft_names_its_error_under_the_ownership_key():
+    result = _call_pending(_r52i_site())
+    [broken] = [i for i in result["items"] if i["name"] == R52I_BROKEN]
+    assert broken["ownership_effect"] is None
+    assert broken["ownership_effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken
+    assert "effect" not in broken and "effect_error" not in broken, sorted(broken)

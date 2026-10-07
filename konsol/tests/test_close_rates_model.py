@@ -718,3 +718,35 @@ def test_r52i_a_doc_without_the_effect_key_has_no_effect_error_key():
              "2026-09-01T09:00:00")
     [item] = _o57_items(op)
     assert "effect" not in item and "effect_error" not in item
+
+
+# --- R52q (review S18, the O62 watch): the OP item's effect keys are named for it ---
+# ``_op_item`` emits ``ownership_effect`` and ``ownership_effect_error`` in
+# place of ``effect``/``effect_error``, so an Ownership Period item never
+# shares a key with the journal's ``effect`` (approvals_model).
+
+
+def test_r52q_an_op_item_carries_ownership_effect_and_no_effect_key():
+    effect = _o57_real_effect()
+    op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=effect, effect_error=None)
+    [item] = _o57_items(op)
+    assert item["ownership_effect"] == effect
+    assert "ownership_effect_error" in item and item["ownership_effect_error"] is None
+    assert "effect" not in item and "effect_error" not in item, sorted(item)
+
+
+def test_r52q_failure_path_a_broken_draft_carries_ownership_effect_error_only():
+    op = dict(_op("OP-4", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+                  "2026-09-01T09:00:00"), effect=None, effect_error=R52I_ERROR)
+    [item] = _o57_items(op)
+    assert item["ownership_effect"] is None
+    assert item["ownership_effect_error"] == R52I_ERROR
+    assert "effect" not in item and "effect_error" not in item, sorted(item)
+
+
+def test_r52q_a_doc_without_the_effect_key_has_neither_ownership_key():
+    op = _op("OP-3", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
+             "2026-09-01T09:00:00")
+    [item] = _o57_items(op)
+    assert "ownership_effect" not in item and "ownership_effect_error" not in item, sorted(item)
