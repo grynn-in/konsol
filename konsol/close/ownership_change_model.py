@@ -189,12 +189,43 @@ def _key(fy, fp):
     return (int(fy), int(fp))
 
 
+def _signature(signed_keys, key, row):
+    """``resign_detail``'s entry for the listed period ``row`` (O64). The
+    signature must name its date and its signer's full name; a period with
+    no signature, or a run without either, raises naming the run (never a
+    user id, a blank or a guessed name)."""
+    sig = signed_keys.get(key) if isinstance(signed_keys, dict) else None
+    name = _name(row)
+    if not isinstance(sig, dict):
+        raise ValueError("%s is signed, but its signature (date and signer) was not read: "
+                         "the re-sign list cannot name who signed it." % name)
+    run = sig.get("run") or "with no name"
+    on = _iso(sig.get("signed_on"))
+    by = sig.get("signed_by_name")
+    if not on:
+        raise ValueError("Signed run %s (%s) has no signed-off date: correct the run in Desk."
+                         % (run, name))
+    if not by:
+        raise ValueError("Signed run %s (%s) has no signer name: give its signer a full "
+                         "name in Desk." % (run, name))
+    return {"period": name, "signed_on": on, "signed_by_name": by}
+
+
 def effect(change, current, period_rows, signed_keys):
     """The structural effect of ``change`` if it is approved. It carries no
     amount: ``not_shown`` says so.
 
-    ``signed_keys`` holds the ``(fiscal_year, fiscal_period)`` of each period
-    whose latest run is signed (``signoff_gate.latest_signed_runs()`` keys).
+    ``signed_keys`` maps the ``(fiscal_year, fiscal_period)`` of each period
+    whose latest run is signed (``signoff_gate.latest_signed_runs()`` keys) to
+    its signature ``{"run", "signed_on", "signed_by_name"}``
+    (``ownership_change.context``, O64). Iterating it gives the keys.
+
+    O64 (wireframe-4.2.md §1, §3, confirmed by Deepak Pai 7 Oct): the effect
+    names the superseded period (``current_name``) and, parallel to
+    ``resign``, who signed each listed period and when (``resign_detail``:
+    ``[{"period", "signed_on", "signed_by_name"}]``). Only the listed
+    periods must carry a signature; one without a date or a signer name
+    raises naming the run.
 
     Raises ValueError when the change has no current period, does not start
     on a Regular period's first day, or has a bad % or method. The effect of
@@ -238,11 +269,12 @@ def effect(change, current, period_rows, signed_keys):
             raise ValueError("signed period %r is not in the fiscal calendar"
                              % ((fy, fp),))
         if _iso(row["start_date"]) >= eff:
-            resign_rows.append(row)
+            resign_rows.append(((fy, fp), row))
     # Calendar order: by start date, then year and period, so an Opening P00
     # that shares its start with P01 comes first.
-    resign_rows.sort(key=lambda r: (_iso(r["start_date"]), int(r["fiscal_year"]),
-                                    int(r["fiscal_period"])))
+    resign_rows.sort(key=lambda kr: (_iso(kr[1]["start_date"]), int(kr[1]["fiscal_year"]),
+                                     int(kr[1]["fiscal_period"])))
+    resign_detail = [_signature(signed_keys, k, r) for k, r in resign_rows]
 
     current_ends = (datetime.date.fromisoformat(eff) - datetime.timedelta(days=1)).isoformat()
     return {
@@ -250,9 +282,11 @@ def effect(change, current, period_rows, signed_keys):
                    "method": current["consolidation_method"],
                    "from": _iso(current["effective_date"]), "to": cur_to},
         "after": {"pct": pct, "method": method, "from": eff, "to": cur_to},
+        "current_name": current["name"],
         "current_ends": current_ends,
         "first_period": _name(first),
         "periods": periods,
-        "resign": [_name(r) for r in resign_rows],
+        "resign": [_name(r) for _k, r in resign_rows],
+        "resign_detail": resign_detail,
         "not_shown": NOT_SHOWN,
     }
