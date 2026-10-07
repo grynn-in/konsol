@@ -45,7 +45,7 @@ import TbCompare from "../sections/TbCompare.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
 import { entityRows, entityWord, tbDue } from "../tbTable.js";
-import { REMIND, remindBody } from "../remind.js";
+import { REMIND, afterPost, remindBody } from "../remind.js";
 import { messageLines } from "../signoff.js";
 import { userTimeZone } from "../timefmt.js";
 import { periodName as formatPeriod } from "../periodName.js";
@@ -134,20 +134,16 @@ watch(() => route.path, () => fetchAll(), { immediate: true });
 
 const refreshError = ref(null);
 
-/** After a submit: re-read my_tbs without leaving the detail area. */
+/**
+ * After a submit: re-read my_tbs without leaving the detail area. TbUpload
+ * is keyed to the period and emits only while mounted, so the period read
+ * here is the one the trial balance was submitted for (R52s).
+ */
 async function refreshAfterSubmit() {
 	const p = period.value;
-	const mine = ++seq;
 	refreshError.value = null;
-	try {
-		const tbs = await get(MY_TBS, { fiscal_year: p.year, fiscal_period: p.period });
-		if (mine !== seq) return;
-		load.data = tbs;
-		load.now = new Date();
-	} catch (e) {
-		if (mine !== seq) return;
-		refreshError.value = `The trial balance was received, but the list could not be re-read: ${e.message}`;
-	}
+	const failed = await reloadTbs(p);
+	if (failed) refreshError.value = `The trial balance was received, but the list could not be re-read: ${failed}`;
 }
 
 // Y62: Remind on a Missing row. `reminding` is the entity being posted for;
@@ -156,32 +152,51 @@ const reminding = ref(null);
 const remindError = ref(null);
 const reloadError = ref(null);
 
-/** After a reminder is sent: re-read my_tbs in place (the new reminded text). */
-async function reloadTbs() {
-	const p = period.value;
+/**
+ * R52s: re-read my_tbs in place for the captured period `p` (after a
+ * reminder or a submit). It bumps `seq`, so it may cancel a read in flight
+ * for the same period; it therefore ends the loading state itself. A result
+ * for a period the route has left is dropped (remind.js's afterPost).
+ * Returns null, or the message of a read that failed on this period.
+ */
+async function reloadTbs(p) {
 	const mine = ++seq;
-	reloadError.value = null;
 	try {
 		const tbs = await get(MY_TBS, { fiscal_year: p.year, fiscal_period: p.period });
-		if (mine !== seq) return;
+		if (mine !== seq || afterPost(p, period.value) !== "reload") return null;
 		load.data = tbs;
 		load.now = new Date();
+		if (tbs && typeof tbs === "object" && "persona" in tbs) load.persona = tbs.persona;
+		load.error = null;
+		load.status = "ready";
+		return null;
 	} catch (e) {
-		if (mine !== seq) return;
-		reloadError.value = `The reminder was sent, but the list could not be re-read: ${e.message}`;
+		if (mine !== seq || afterPost(p, period.value) !== "reload") return null;
+		return e.message;
 	}
 }
 
-/** The one function that sends a reminder. A refusal leaves the row as it was. */
+/**
+ * The one function that sends a reminder. A refusal leaves the row as it
+ * was. The period is captured when Remind is pressed (R52s): if the route
+ * has moved to another period by the time the POST returns, the list is not
+ * re-read and any error is dropped; that period's own read owns the screen.
+ */
 async function remind(row) {
 	const p = period.value;
 	remindError.value = null;
+	reloadError.value = null;
 	reminding.value = row.entity;
 	try {
 		await post(REMIND, remindBody({ fiscal_year: p.year, fiscal_period: p.period }, row.entity, "tb"));
-		await reloadTbs();
+		if (afterPost(p, period.value) === "reload") {
+			const failed = await reloadTbs(p);
+			if (failed) reloadError.value = `The reminder was sent, but the list could not be re-read: ${failed}`;
+		}
 	} catch (e) {
-		remindError.value = { entity: row.entity, lines: messageLines(e.message) };
+		if (afterPost(p, period.value) === "reload") {
+			remindError.value = { entity: row.entity, lines: messageLines(e.message) };
+		}
 	} finally {
 		reminding.value = null;
 	}
@@ -333,7 +348,8 @@ watch(
 									v-if="row.canRemind"
 									type="button"
 									class="mt-1 rounded border border-outline-gray-2 px-2 py-0.5 text-xs text-ink-gray-8 hover:bg-surface-gray-2 disabled:opacity-50"
-									:disabled="reminding === row.entity"
+									:disabled="reminding !== null"
+									:aria-label="`Remind ${row.entity}`"
 									@click.stop="remind(row)"
 									@keydown.enter.stop
 									@keydown.space.stop
