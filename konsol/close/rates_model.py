@@ -221,8 +221,10 @@ def _her_item(doc, preparers, mode):
 
 
 def _op_item(doc, preparers, mode):
-    """An Ownership Period draft's item. ``effect`` (O57; story 4.2, C-O4) is
-    passed through only when the caller put it on ``doc``
+    """An Ownership Period draft's item. The caller's ``doc["effect"]`` (O57;
+    story 4.2, C-O4) is emitted as ``ownership_effect`` (R52q, review S18:
+    never the journal's ``effect`` key), and ``doc["effect_error"]`` as
+    ``ownership_effect_error``. It is passed through only when the caller put it on ``doc``
     (``ownership_change.effect_for``): a dict, or None for a draft without
     ``supersedes`` (a Desk "Record ownership" draft, "effect not previewed").
     A doc without the key (a caller that did not compute it) gives an item
@@ -245,9 +247,11 @@ def _op_item(doc, preparers, mode):
         "approve": mode,
     }
     if "effect" in doc:
-        item["effect"] = doc.get("effect")
+        # R52q (review S18): named for the Ownership Period, so the key never
+        # collides with a journal item's ``effect`` (approvals_model).
+        item["ownership_effect"] = doc.get("effect")
         # R52i (review S2): why the effect could not be read, or None.
-        item["effect_error"] = doc.get("effect_error")
+        item["ownership_effect_error"] = doc.get("effect_error")
     if "edit" in doc:
         item["edit"] = doc.get("edit")
     return item

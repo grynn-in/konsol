@@ -916,8 +916,8 @@ test("O59 ownershipEffectView: the wireframe panel from the REAL preview", () =>
 });
 
 test("O59 ownershipEffectView: the pending item's effect (O57 golden) gives the same panel", () => {
-  const op = PENDING.items.find((i) => i.doctype === "Ownership Period" && i.effect);
-  assert.deepEqual(ownershipEffectView(op.effect), ownershipEffectView(PREVIEW.effect));
+  const op = PENDING.items.find((i) => i.doctype === "Ownership Period" && i.ownership_effect);
+  assert.deepEqual(ownershipEffectView(op.ownership_effect), ownershipEffectView(PREVIEW.effect));
 });
 
 test("O59 ownershipEffectView: no signed period reads the wireframe sentence", () => {
@@ -944,9 +944,9 @@ test("O59 ownershipEffectView: failure path — an effect without resign throws"
 });
 
 test("O65 ownershipEffectView: the approvals golden names its own predecessor and signer", () => {
-  const ops = fixture("close_approvals_op_queue_payload.json").items.filter((i) => i.effect);
+  const ops = fixture("close_approvals_op_queue_payload.json").items.filter((i) => i.ownership_effect);
   assert.ok(ops.length, "the approvals golden carries an effect");
-  const view = ownershipEffectView(ops[0].effect);
+  const view = ownershipEffectView(ops[0].ownership_effect);
   assert.equal(view.endsLine, `OP-ZZ58-1 on Tue 30 Jun 2026`);
   assert.deepEqual(view.resign, [`FY2026 P07 (signed Tue 4 Aug 2026 by Zz Lead)`]);
 });
@@ -1076,7 +1076,7 @@ function r52oItem(payload, name) {
 test("R52o opEffectView: the golden change draft gives the pending panel (Ownership, Method, Ends; no Covers row)", () => {
   assert.equal(typeof ratesModule.opEffectView, "function", "rates.js exports opEffectView");
   const item = r52oItem(pendingView(PENDING), "OP-ZZ5B1-2025-10-01");
-  assert.equal(item.effect_error, null, "R52i: the golden carries effect_error null");
+  assert.equal(item.ownership_effect_error, null, "R52i/R52q: the golden carries ownership_effect_error null");
   assert.deepEqual(ratesModule.opEffectView(item), {
     view: {
       rows: [
@@ -1094,7 +1094,7 @@ test("R52o opEffectView: the golden change draft gives the pending panel (Owners
   });
 });
 
-test("R52o opEffectView: the golden Desk draft (effect null, effect_error null) gives the Desk sentence", () => {
+test("R52o opEffectView: the golden Desk draft (ownership_effect null, ownership_effect_error null) gives the Desk sentence", () => {
   assert.equal(ratesModule.DESK_DRAFT, "Drafted in Desk: effect not previewed.");
   const item = r52oItem(pendingView(PENDING), "OP-ZZ5B2-2025-10-01");
   assert.deepEqual(ratesModule.opEffectView(item), { desk: "Drafted in Desk: effect not previewed." });
@@ -1107,21 +1107,21 @@ test("R52o opEffectView failure path: every golden OP item with the server's eff
   ].filter((i) => i.doctype === "Ownership Period");
   assert.equal(items.length, 4, "two OP items in each golden");
   for (const item of items) {
-    const broken = { ...item, effect: null, effect_error: R52O_SERVER_ERROR };
+    const broken = { ...item, ownership_effect: null, ownership_effect_error: R52O_SERVER_ERROR };
     assert.deepEqual(ratesModule.opEffectView(broken), { error: R52O_SERVER_ERROR }, item.name);
   }
 });
 
-test("R52o opEffectView failure path: a missing effect or effect_error key throws", () => {
+test("R52o opEffectView failure path: a missing ownership_effect or ownership_effect_error key throws", () => {
   const item = r52oItem(pendingView(PENDING), "OP-ZZ5B1-2025-10-01");
   const noEffect = { ...item };
-  delete noEffect.effect;
-  assert.throws(() => ratesModule.opEffectView(noEffect), /OP-ZZ5B1-2025-10-01 has no effect/);
+  delete noEffect.ownership_effect;
+  assert.throws(() => ratesModule.opEffectView(noEffect), /OP-ZZ5B1-2025-10-01 has no ownership_effect$/);
   const noError = { ...item };
-  delete noError.effect_error;
-  assert.throws(() => ratesModule.opEffectView(noError), /OP-ZZ5B1-2025-10-01 has no effect_error/);
-  const { resign, ...noResign } = item.effect;
-  assert.throws(() => ratesModule.opEffectView({ ...item, effect: noResign }), /resign/);
+  delete noError.ownership_effect_error;
+  assert.throws(() => ratesModule.opEffectView(noError), /OP-ZZ5B1-2025-10-01 has no ownership_effect_error/);
+  const { resign, ...noResign } = item.ownership_effect;
+  assert.throws(() => ratesModule.opEffectView({ ...item, ownership_effect: noResign }), /resign/);
 });
 
 // ---------------------------------------------------------------------------

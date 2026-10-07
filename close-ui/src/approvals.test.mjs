@@ -343,8 +343,10 @@ test("D06: a non-journal item gets no dimensions key", () => {
 // Fed the REAL golden Approvals queue (close_approvals_op_queue_payload.json,
 // the stub-site get_queue() of test_close_approvals_api.py) and the REAL
 // journal golden (close_approvals_journal_item.json). An Ownership Period
-// item's `effect` is rates.js's ownership effect (O58), not a journal effect:
-// queueView passes it, and `effect_error` (R52i), through unchanged.
+// item's effect is rates.js's ownership effect (O58), not a journal effect:
+// queueView passes it, and its error (R52i), through unchanged. Since R52q
+// (review S18) the server names them `ownership_effect` and
+// `ownership_effect_error`, so an OP item carries no `effect` key at all.
 
 import { effectView } from "./adjustments.js";
 
@@ -364,34 +366,46 @@ function r52pGolden(file) {
 	return JSON.parse(readFileSync(file, "utf8"));
 }
 
-test("R52p: the golden OP change item keeps the server's effect and effect_error, with no rawEffect", () => {
+test("R52p/R52q: the golden OP change item keeps the server's ownership_effect and ownership_effect_error, with no rawEffect", () => {
 	const server = r52pGolden(R52P_OP_QUEUE);
 	const view = queueView(server, R52P_NOW, R52P_TZ);
 	const item = view.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
 	const raw = server.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
-	assert.deepEqual(item.effect, raw.effect, "the OP effect is the server's, not effectView's journal shape");
-	assert.equal(item.effect.current_name, "OP-ZZ58-1");
-	assert.equal("headings" in item.effect, false, "never the journal view's headings");
-	assert.equal(item.effect_error, null);
+	assert.ok(raw.ownership_effect, "R52q: the golden names the OP effect ownership_effect");
+	assert.deepEqual(item.ownership_effect, raw.ownership_effect, "the OP effect is the server's, not effectView's journal shape");
+	assert.equal(item.ownership_effect.current_name, "OP-ZZ58-1");
+	assert.equal("headings" in item.ownership_effect, false, "never the journal view's headings");
+	assert.equal(item.ownership_effect_error, null);
+	assert.equal("effect" in item, false, "R52q: an OP item never carries the journal's effect key");
 	assert.equal("rawEffect" in item, false);
 });
 
-test("R52p failure path: the golden Desk OP draft keeps effect null, never the journal note", () => {
+test("R52p/R52q failure path: the golden Desk OP draft keeps ownership_effect null, never the journal note", () => {
 	const view = queueView(r52pGolden(R52P_OP_QUEUE), R52P_NOW, R52P_TZ);
 	const item = view.items.find((i) => i.name === "OP-ZZ58B-2026-07-01");
-	assert.equal(item.effect, null);
-	assert.equal(item.effect_error, null);
+	assert.equal(item.ownership_effect, null);
+	assert.equal(item.ownership_effect_error, null);
+	assert.equal("effect" in item, false);
 	assert.equal("rawEffect" in item, false);
 });
 
-test("R52p failure path: a golden OP item carrying the server's effect_error passes it through unchanged", () => {
+test("R52p/R52q failure path: a golden OP item carrying the server's ownership_effect_error passes it through unchanged", () => {
 	const server = r52pGolden(R52P_OP_QUEUE);
 	const op = server.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
-	op.effect = null;
-	op.effect_error = R52P_SERVER_ERROR;
+	op.ownership_effect = null;
+	op.ownership_effect_error = R52P_SERVER_ERROR;
 	const item = queueView(server, R52P_NOW, R52P_TZ).items.find((i) => i.name === "OP-ZZ58-2026-07-01");
-	assert.equal(item.effect, null);
-	assert.equal(item.effect_error, R52P_SERVER_ERROR);
+	assert.equal(item.ownership_effect, null);
+	assert.equal(item.ownership_effect_error, R52P_SERVER_ERROR);
+	assert.equal("rawEffect" in item, false);
+});
+
+test("R52p failure path: an OP item that carried an `effect` key would still never run the journal effectView", () => {
+	const server = r52pGolden(R52P_OP_QUEUE);
+	const op = server.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	op.effect = op.ownership_effect;
+	const item = queueView(server, R52P_NOW, R52P_TZ).items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	assert.deepEqual(item.effect, op.ownership_effect, "passed through, not turned into the journal view");
 	assert.equal("rawEffect" in item, false);
 });
 

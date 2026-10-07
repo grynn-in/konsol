@@ -2153,12 +2153,12 @@ def test_o57_a_change_draft_carries_the_real_models_effect():
         {"name": "OP-ZZ5B1-1", "effective_date": "2025-01-01", "end_date": None,
          "ownership_pct": 100.0, "consolidation_method": "full"},
         _o55_calendar(), _o64_signatures(site, {(2025, 11)}))
-    assert item["effect"] == expected
-    assert item["effect"]["current_name"] == "OP-ZZ5B1-1"
-    assert [d["period"] for d in item["effect"]["resign_detail"]] == item["effect"]["resign"]
-    assert item["effect"]["before"]["pct"] == 100.0 and item["effect"]["after"]["pct"] == 80.0
-    assert item["effect"]["current_ends"] == "2025-09-30"
-    assert item["effect"]["resign"] == ["FY2025 P11"]
+    assert item["ownership_effect"] == expected
+    assert item["ownership_effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert [d["period"] for d in item["ownership_effect"]["resign_detail"]] == item["ownership_effect"]["resign"]
+    assert item["ownership_effect"]["before"]["pct"] == 100.0 and item["ownership_effect"]["after"]["pct"] == 80.0
+    assert item["ownership_effect"]["current_ends"] == "2025-09-30"
+    assert item["ownership_effect"]["resign"] == ["FY2025 P11"]
     # The detail text is unchanged (O57 goal).
     assert item["detail"] == "80% · full"
     assert item["approve"]["mode"] == "direct"
@@ -2171,14 +2171,14 @@ def test_o57_failure_path_a_desk_draft_without_supersedes_has_effect_none():
     site = _o57_site()
     result = _call_pending(site)
     item = _o57_item(result, "OP-ZZ5B2-2025-10-01")
-    assert "effect" in item and item["effect"] is None
+    assert "ownership_effect" in item and item["ownership_effect"] is None
     assert item["detail"] == "60% · equity"
 
 
 def test_o57_her_items_carry_no_effect():
     result = _call_pending(_o57_site())
     item = _o57_item(result, "HER-ZZ5B1-1")
-    assert "effect" not in item
+    assert "ownership_effect" not in item
 
 
 R52I_BROKEN = "OP-ZZ5B3-2025-10-01"
@@ -2208,20 +2208,20 @@ def test_r52i_failure_path_a_cancelled_supersedes_is_an_error_on_that_item_only(
     guessed effect and never a refusal of the whole screen (review S2)."""
     result = _call_pending(_r52i_site())
     broken = _o57_item(result, R52I_BROKEN)
-    assert broken["effect"] is None
-    assert broken["effect_error"].startswith(
-        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken["effect_error"]
-    assert R52I_BROKEN_PRED in broken["effect_error"], broken["effect_error"]
-    assert ".." not in broken["effect_error"], broken["effect_error"]
-    assert broken["effect_error"].endswith(". Correct or delete the draft in Desk."), \
-        broken["effect_error"]
+    assert broken["ownership_effect"] is None
+    assert broken["ownership_effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken["ownership_effect_error"]
+    assert R52I_BROKEN_PRED in broken["ownership_effect_error"], broken["ownership_effect_error"]
+    assert ".." not in broken["ownership_effect_error"], broken["ownership_effect_error"]
+    assert broken["ownership_effect_error"].endswith(". Correct or delete the draft in Desk."), \
+        broken["ownership_effect_error"]
     assert broken["detail"] == "70% · full"
     # The good draft is built as normal: the same item as without the broken one.
     good = _o57_item(result, "OP-ZZ5B1-2025-10-01")
     alone = _o57_item(_call_pending(_o57_site()), "OP-ZZ5B1-2025-10-01")
     assert good == alone
-    assert good["effect"]["current_name"] == "OP-ZZ5B1-1"
-    assert good["effect_error"] is None
+    assert good["ownership_effect"]["current_name"] == "OP-ZZ5B1-1"
+    assert good["ownership_effect_error"] is None
     # Every draft is listed and counted.
     assert sorted(i["name"] for i in result["items"]) == sorted(
         ["OP-ZZ5B1-2025-10-01", "OP-ZZ5B2-2025-10-01", R52I_BROKEN, "HER-ZZ5B1-1"])
@@ -2232,9 +2232,9 @@ def test_r52i_every_op_item_carries_effect_error_and_her_items_none():
     result = _call_pending(_o57_site())
     for item in result["items"]:
         if item["doctype"] == "Ownership Period":
-            assert "effect_error" in item and item["effect_error"] is None, item
+            assert "ownership_effect_error" in item and item["ownership_effect_error"] is None, item
         else:
-            assert "effect_error" not in item, item
+            assert "ownership_effect_error" not in item, item
 
 
 def test_o57_reads_grow_only_for_a_change_draft_and_nothing_is_written():

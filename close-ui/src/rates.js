@@ -730,27 +730,30 @@ export const DESK_DRAFT = "Drafted in Desk: effect not previewed.";
  * konsol#305 R52o (review U6, S2): the one EFFECT IF APPROVED view of a
  * pending Ownership Period item, shared by the pending list and the
  * Approvals detail, so neither screen keeps its own copy.
- * - `effect_error` set (R52i: the server could not read this draft's
+ * - `ownership_effect_error` set (R52i: the server could not read this draft's
  *   effect) -> `{error: <the server's sentence>}`;
- * - `effect: null` -> `{desk: DESK_DRAFT}`;
- * - otherwise `{view}`: `ownershipEffectView(item.effect)` without its
+ * - `ownership_effect: null` -> `{desk: DESK_DRAFT}`;
+ * - otherwise `{view}`: `ownershipEffectView(item.ownership_effect)` without its
  *   Covers row, because the pending panel (wireframe-4.2.md section 3)
  *   shows the current period's end as its own "Ends" line instead.
- * A missing `effect` or `effect_error` key is a server regression and
+ * R52q (review S18): the server names the keys for the Ownership Period,
+ * so they never collide with a journal item's `effect`. A missing
+ * `ownership_effect` or `ownership_effect_error` key (an item carrying the
+ * old `effect` instead included) is a server regression and
  * throws, as does an effect `ownershipEffectView` refuses.
  */
 export function opEffectView(item) {
-  for (const key of ["effect", "effect_error"]) {
+  for (const key of ["ownership_effect", "ownership_effect_error"]) {
     if (!item || !(key in item)) {
       throw new Error(`opEffectView: the pending item ${item && item.name} has no ${key}`);
     }
   }
-  if (item.effect_error !== null && item.effect_error !== undefined) {
-    return { error: item.effect_error };
+  if (item.ownership_effect_error !== null && item.ownership_effect_error !== undefined) {
+    return { error: item.ownership_effect_error };
   }
-  if (item.effect === null) {
+  if (item.ownership_effect === null) {
     return { desk: DESK_DRAFT };
   }
-  const view = ownershipEffectView(item.effect);
+  const view = ownershipEffectView(item.ownership_effect);
   return { view: { ...view, rows: view.rows.filter((row) => row.label !== "Covers") } };
 }

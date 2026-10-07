@@ -451,9 +451,9 @@ def test_o57_op_item_carries_the_real_models_effect():
     op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
                   "2026-09-01T09:00:00"), effect=effect)
     [item] = _o57_items(op)
-    assert item["effect"] == effect
-    assert item["effect"]["after"]["pct"] == 80.0
-    assert item["effect"]["resign"] == ["FY2025 P11"]
+    assert item["ownership_effect"] == effect
+    assert item["ownership_effect"]["after"]["pct"] == 80.0
+    assert item["ownership_effect"]["resign"] == ["FY2025 P11"]
     # The detail text is unchanged by the effect.
     assert item["detail"] == "80% · full"
 
@@ -464,7 +464,7 @@ def test_o57_failure_path_a_desk_draft_effect_none_stays_none():
     op = dict(_op("OP-2", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
                   "2026-09-01T09:00:00"), effect=None)
     [item] = _o57_items(op)
-    assert "effect" in item and item["effect"] is None
+    assert "ownership_effect" in item and item["ownership_effect"] is None
 
 
 def test_o57_failure_path_a_doc_without_the_effect_key_does_not_raise_or_invent_one():
@@ -474,7 +474,7 @@ def test_o57_failure_path_a_doc_without_the_effect_key_does_not_raise_or_invent_
     op = _op("OP-3", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
              "2026-09-01T09:00:00")
     [item] = _o57_items(op)
-    assert "effect" not in item
+    assert "ownership_effect" not in item
     assert item["detail"] == "80% · full"
 
 
@@ -483,7 +483,7 @@ def test_o57_her_items_never_carry_an_effect():
                      "2026-09-02T10:00:00"), effect=_o57_real_effect())]
     [item] = M.pending_items(her, [], {"HER-1": frozenset({"alice"})}, "lead", ("EPM Admin",),
                              "Blocked", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
-    assert "effect" not in item
+    assert "ownership_effect" not in item
 
 
 # --- O69: the pending Ownership Period item says how to edit it -----------------
@@ -689,16 +689,16 @@ def test_r52i_an_op_item_with_an_effect_carries_effect_error_none():
     op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
                   "2026-09-01T09:00:00"), effect=effect, effect_error=None)
     [item] = _o57_items(op)
-    assert item["effect"] == effect
-    assert "effect_error" in item and item["effect_error"] is None
+    assert item["ownership_effect"] == effect
+    assert "ownership_effect_error" in item and item["ownership_effect_error"] is None
 
 
 def test_r52i_failure_path_a_broken_draft_carries_its_effect_error():
     op = dict(_op("OP-4", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
                   "2026-09-01T09:00:00"), effect=None, effect_error=R52I_ERROR)
     [item] = _o57_items(op)
-    assert item["effect"] is None
-    assert item["effect_error"] == R52I_ERROR
+    assert item["ownership_effect"] is None
+    assert item["ownership_effect_error"] == R52I_ERROR
     # The rest of the item is built as normal.
     assert item["detail"] == "80% · full"
     assert item["approve"]["mode"] == "direct"
@@ -710,14 +710,14 @@ def test_r52i_a_doc_with_effect_but_no_effect_error_key_reads_none():
     op = dict(_op("OP-1", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
                   "2026-09-01T09:00:00"), effect=None)
     [item] = _o57_items(op)
-    assert "effect_error" in item and item["effect_error"] is None
+    assert "ownership_effect_error" in item and item["ownership_effect_error"] is None
 
 
 def test_r52i_a_doc_without_the_effect_key_has_no_effect_error_key():
     op = _op("OP-3", "G1", "ZZENT", "2025-10-01", None, 80, "full", "alice",
              "2026-09-01T09:00:00")
     [item] = _o57_items(op)
-    assert "effect" not in item and "effect_error" not in item
+    assert "ownership_effect" not in item and "ownership_effect_error" not in item
 
 
 # --- R52q (review S18, the O62 watch): the OP item's effect keys are named for it ---

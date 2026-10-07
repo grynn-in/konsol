@@ -368,7 +368,7 @@ test("D06: zero declared dimensions — the golden journal item renders no dimen
 // konsol#305 O62 (wireframe-4.2.md section 3, confirmed as drawn by Deepak Pai
 // 7 Oct): Approvals › select an Ownership Period item → the right-hand detail
 // shows the identical EFFECT IF APPROVED block (O61's), above Approve /
-// Reject. A Desk draft (`effect: null`, O57/O58) says "Drafted in Desk:
+// Reject. A Desk draft (`ownership_effect: null`, O57/O58/R52q) says "Drafted in Desk:
 // effect not previewed." and never shows empty columns. Fed the REAL golden
 // Approvals queue (close_approvals_op_queue_payload.json, the stub-site
 // `get_queue()` of test_close_approvals_api.py's `_o58_site()`) through the
@@ -419,7 +419,7 @@ test("O62: the golden OP change draft, through queueView, gives the wireframe's 
 		],
 		"Ownership and Method, before → after (section 3 shows Ends, not a Covers row)",
 	);
-	const real = ownershipEffectView(golden(OP_QUEUE_FIXTURE).items[1].effect);
+	const real = ownershipEffectView(golden(OP_QUEUE_FIXTURE).items[1].ownership_effect);
 	assert.equal(panel.view.currentEnds, real.currentEnds);
 	assert.equal(panel.view.endsLine, real.endsLine, "O65: Ends names the predecessor");
 	assert.match(panel.view.endsLine, /^OP-ZZ58-1 on /);
@@ -430,7 +430,7 @@ test("O62: the golden OP change draft, through queueView, gives the wireframe's 
 	assert.equal(panel.view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
 });
 
-test("O62 failure path: the golden Desk draft (effect null) gives the sentence, never empty columns", () => {
+test("O62 failure path: the golden Desk draft (ownership_effect null) gives the sentence, never empty columns", () => {
 	const opEffect = loadOpEffect();
 	assert.deepEqual(opEffect(opQueueItem("OP-ZZ58B-2026-07-01")), { desk: "Drafted in Desk: effect not previewed." });
 });
@@ -440,13 +440,19 @@ test("O62 failure path: an HER item has no panel; a broken or missing OP effect 
 	assert.equal(opEffect(opQueueItem("HER-ZZ58")), null);
 	const payload = golden(OP_QUEUE_FIXTURE);
 	const op = payload.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
-	delete op.effect.resign;
+	delete op.ownership_effect.resign;
 	const broken = opEffect(queueView(payload, O62_NOW, O62_TZ).items.find((i) => i.name === op.name));
 	assert.equal(broken.view, undefined);
 	assert.match(broken.error, /resign/);
-	delete op.effect;
+	op.effect = op.ownership_effect;
+	delete op.ownership_effect;
 	const missing = opEffect(queueView(payload, O62_NOW, O62_TZ).items.find((i) => i.name === op.name));
-	assert.match(missing.error, /effect/, "an OP item with no effect key is a server regression, shown as such");
+	assert.equal(missing.view, undefined);
+	assert.match(
+		missing.error,
+		/OP-ZZ58-2026-07-01 has no ownership_effect$/,
+		"an OP item with no ownership_effect key (R52q: the old `effect` key included) is a server regression, shown as such",
+	);
 });
 
 test("R52p: opEffect is rates.js's opEffectView over the item itself; the screen keeps no DESK_DRAFT or ownershipEffectView copy", () => {
@@ -460,15 +466,15 @@ test("R52p: opEffect is rates.js's opEffectView over the item itself; the screen
 	assert.doesNotMatch(js, /\.filter\(\(row\) => row\.label !== "Covers"\)/, "the Covers cut lives in rates.js only");
 });
 
-test("R52p failure path: a golden OP item carrying the server's effect_error shows that sentence in the detail", () => {
+test("R52p failure path: a golden OP item carrying the server's ownership_effect_error shows that sentence in the detail", () => {
 	const opEffect = loadOpEffect();
 	const sentence =
 		"The pending ownership change OP-ZZ58-2026-07-01 cannot be shown: OP-ZZ58-2026-07-01 supersedes " +
 		"OP-ZZ58-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.";
 	const payload = golden(OP_QUEUE_FIXTURE);
 	const op = payload.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
-	op.effect = null;
-	op.effect_error = sentence;
+	op.ownership_effect = null;
+	op.ownership_effect_error = sentence;
 	const item = queueView(payload, O62_NOW, O62_TZ).items.find((i) => i.name === op.name);
 	assert.deepEqual(opEffect(item), { error: sentence });
 });
