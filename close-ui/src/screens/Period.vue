@@ -21,6 +21,9 @@
  *   ("TB due … · IC due … · Journals due … · Sign-off due …"), and an
  *   Overdue chip on a TB cell whose `tbOverdue` is set. Overdue is only ever
  *   the server's flag; this screen never compares dates.
+ * - D61b (#305-Q5-1): the strip's IC and Journals items carry the Overdue
+ *   chip from the server's IC and journals flags, read by gridView's
+ *   strip (`item.overdue`); this screen never reads or derives them.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
