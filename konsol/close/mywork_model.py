@@ -207,6 +207,16 @@ PERIOD_KEYS = ("code", "ended", "my_missing", "missing", "checks", "failed", "si
 #: omits it simply gets ``since: None`` on the period (the API layer is the
 #: one that requires and validates it, per period row, before it ever reaches
 #: this pure model).
+#: Y58 (story 1.5, C-R6): ``reminders`` is read the same way, with
+#: ``facts.get``: ``{entity: {"count", "last_at" (ISO text), "last_by_name"}}``,
+#: the period's TB reminders (mywork_api builds it from
+#: ``remind_model.summary``). The Entity Accountant's "Upload TB" item carries
+#: that entity's entry as ``reminded`` ({"count", "last_at", "last_by_name"});
+#: the "Waiting on N trial balances" items carry ``{"reminded": R, "of": N}``,
+#: R being the missing entities with a reminder. ``reminded`` is None when the
+#: caller sent no ``reminders`` (not read: never an invented 0) and when no
+#: entity of the item was reminded. The model does not format time: the SPA
+#: does. An entry whose count cannot be read raises ValueError.
 CHECK_STATES = ("not_run", "running", "stale", "failed", "current")
 KINDS = ("blocking", "todo", "waiting")
 
@@ -223,6 +233,56 @@ OWNERS = {
 
 def _tbs(n):
     return "%d trial balance%s" % (n, "" if n == 1 else "s")
+
+
+def _reminders(key, facts):
+    """The period's ``reminders`` map, or None when the caller sent none."""
+    reminders = facts.get("reminders")
+    if reminders is not None and not isinstance(reminders, dict):
+        raise ValueError("period_items: %s reminders must be a map of entity to entry, got %r"
+                         % (key, type(reminders).__name__))
+    return reminders
+
+
+def _reminder_count(key, entity, entry):
+    count = entry.get("count") if isinstance(entry, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError("period_items: %s reminder entry for %s has no readable count (%r)"
+                         % (key, entity, count))
+    return count
+
+
+def _entity_reminded(key, entity, reminders):
+    if not reminders or entity not in reminders:
+        return None
+    entry = reminders[entity]
+    count = _reminder_count(key, entity, entry)
+    absent = [k for k in ("last_at", "last_by_name") if not entry.get(k)]
+    if absent:
+        raise ValueError("period_items: %s reminder entry for %s is missing %s"
+                         % (key, entity, ", ".join(absent)))
+    return {"count": count, "last_at": entry["last_at"], "last_by_name": entry["last_by_name"]}
+
+
+def _waiting_reminded(key, missing, reminders):
+    if not reminders:
+        return None
+    for entity, entry in reminders.items():
+        _reminder_count(key, entity, entry)
+    reminded = sum(1 for entity in missing if entity in reminders)
+    if not reminded:
+        return None
+    return {"reminded": reminded, "of": len(missing)}
+
+
+def _waiting_tbs_item(p, key, facts):
+    missing = sorted(set(facts["missing"] or ()))
+    if not missing:
+        return None
+    item = _period_item(p, key, facts, "tbs-waiting", "waiting",
+                        "Waiting on %s" % _tbs(len(missing)), {"screen": "trial-balances"})
+    item["reminded"] = _waiting_reminded(key, missing, _reminders(key, facts))
+    return item
 
 
 def _check_period(key, facts):
@@ -248,11 +308,13 @@ def _period_item(persona, key, facts, slug, kind, title, action):
 
 def _entity_accountant(key, facts):
     kind = "blocking" if facts["ended"] else "todo"
+    reminders = _reminders(key, facts)
     items = []
     for entity in sorted(set(facts["my_missing"] or ())):
         item = _period_item(ENTITY_ACCOUNTANT, key, facts, "tb", kind, "Upload TB for %s" % entity,
                             {"screen": "trial-balances", "entity": entity})
         item["id"] += ":%s" % entity
+        item["reminded"] = _entity_reminded(key, entity, reminders)
         items.append(item)
     return items
 
@@ -283,11 +345,9 @@ def _group_accountant(key, facts):
         items.append(_period_item(p, key, facts, "checks-failing", "blocking",
                                   "%d check%s failing" % (failed, "" if failed == 1 else "s"),
                                   {"screen": "checks"}))
-    missing = sorted(set(facts["missing"] or ()))
-    if missing:
-        items.append(_period_item(p, key, facts, "tbs-waiting", "waiting",
-                                  "Waiting on %s" % _tbs(len(missing)),
-                                  {"screen": "trial-balances"}))
+    waiting = _waiting_tbs_item(p, key, facts)
+    if waiting:
+        items.append(waiting)
     return items
 
 
@@ -315,10 +375,9 @@ def _close_lead(key, facts, earlier_open):
         items.append(_period_item(p, key, facts, "close", "todo", "Close %s" % facts["code"],
                                   signoff))
     missing = sorted(set(facts["missing"] or ()))
-    if missing:
-        items.append(_period_item(p, key, facts, "tbs-waiting", "waiting",
-                                  "Waiting on %s" % _tbs(len(missing)),
-                                  {"screen": "trial-balances"}))
+    waiting = _waiting_tbs_item(p, key, facts)
+    if waiting:
+        items.append(waiting)
     failed = int(facts["failed"] or 0)
     if failed:
         items.append(_period_item(p, key, facts, "checks-waiting", "waiting",
