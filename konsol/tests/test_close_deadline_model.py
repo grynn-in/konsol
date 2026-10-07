@@ -230,3 +230,117 @@ def test_period_deadlines_has_no_overdue_key():
     out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2026, 1, 1))
     for step in M.STEPS:
         assert set(out[step]) == {"due", "past", "text"}
+
+
+# ---- rule_problems: the save rules (D52; C-D1, C-D3, C-D7) ------------------
+# ``rule_problems(rules, holidays)`` returns the sentences that refuse a Close
+# Settings save. ``rules`` are "Close Deadline Rule" child dicts, ``holidays``
+# are "Close Holiday" child dicts (``holiday_date``). Blank is allowed: it is
+# undeclared, never defaulted.
+
+def _holiday(d, description=None):
+    return {"holiday_date": d, "description": description}
+
+
+def test_rule_problems_empty_is_allowed_and_invents_nothing():
+    # Failure path: an empty Deadlines tab saves; no rule is invented.
+    assert M.rule_problems([], []) == []
+
+
+def test_rule_problems_valid_rules_and_holidays_pass():
+    rules = [
+        _rule(date(2025, 1, 1), MON_FRI, tb=5, ic=7, journals=8, signoff=10),
+        _rule(date(2025, 7, 1), SUN_THU, tb=3),
+    ]
+    holidays = [_holiday(date(2025, 8, 4), "Bank holiday"), _holiday(date(2025, 12, 25))]
+    assert M.rule_problems(rules, holidays) == []
+
+
+def test_rule_problems_blank_and_zero_offsets_are_allowed():
+    # Blank or 0 is "undeclared", not a problem (C-D3).
+    rules = [_rule(date(2025, 1, 1), MON_FRI, tb=0, ic="", journals=None, signoff=None)]
+    assert M.rule_problems(rules, []) == []
+
+
+def test_rule_problems_two_rules_same_valid_from():
+    rules = [
+        _rule(date(2025, 1, 1), MON_FRI, tb=5),
+        _rule(date(2025, 1, 1), MON_FRI, tb=6),
+    ]
+    assert M.rule_problems(rules, []) == ["Two deadline rules start on 2025-01-01: keep one."]
+
+
+def test_rule_problems_three_rules_same_valid_from_one_sentence():
+    rules = [_rule(date(2025, 1, 1), MON_FRI, tb=n) for n in (5, 6, 7)]
+    assert M.rule_problems(rules, []) == ["Two deadline rules start on 2025-01-01: keep one."]
+
+
+def test_rule_problems_same_sentence_as_governing_rule():
+    # The save refusal and governing_rule's raise read the same sentence.
+    rules = [
+        _rule(date(2025, 1, 1), MON_FRI, tb=5),
+        _rule(date(2025, 1, 1), MON_FRI, tb=6),
+    ]
+    try:
+        M.governing_rule(rules, date(2025, 7, 31))
+    except ValueError as e:
+        assert M.rule_problems(rules, []) == [str(e)]
+    else:
+        raise AssertionError("expected governing_rule to raise")
+
+
+def test_rule_problems_no_working_day():
+    rules = [_rule(date(2025, 7, 1), set(), tb=5)]
+    assert M.rule_problems(rules, []) == [
+        "The rule from 2025-07-01 declares no working day: tick the days your team works."
+    ]
+
+
+def test_rule_problems_negative_offset_names_each_step_label():
+    expected = {
+        "tb": "The rule from 2025-07-01 has a negative Trial Balances offset.",
+        "ic": "The rule from 2025-07-01 has a negative Intercompany offset.",
+        "journals": "The rule from 2025-07-01 has a negative Journals offset.",
+        "signoff": "The rule from 2025-07-01 has a negative Sign-off offset.",
+    }
+    for step in M.STEPS:
+        rule = _rule(date(2025, 7, 1), MON_FRI)
+        rule[M.OFFSET_FIELD[step]] = -1
+        assert M.rule_problems([rule], []) == [expected[step]], step
+
+
+def test_rule_problems_duplicate_holiday():
+    holidays = [
+        _holiday(date(2025, 12, 25), "Christmas"),
+        _holiday(date(2025, 8, 4)),
+        _holiday(date(2025, 12, 25), "Christmas again"),
+    ]
+    assert M.rule_problems([], holidays) == ["2025-12-25 is listed twice as a holiday."]
+
+
+def test_rule_problems_reports_every_problem():
+    rules = [
+        _rule(date(2025, 1, 1), set(), tb=-2, signoff=-1),
+        _rule(date(2025, 1, 1), MON_FRI, tb=5),
+    ]
+    holidays = [_holiday(date(2025, 8, 4)), _holiday(date(2025, 8, 4))]
+    assert M.rule_problems(rules, holidays) == [
+        "Two deadline rules start on 2025-01-01: keep one.",
+        "The rule from 2025-01-01 declares no working day: tick the days your team works.",
+        "The rule from 2025-01-01 has a negative Trial Balances offset.",
+        "The rule from 2025-01-01 has a negative Sign-off offset.",
+        "2025-08-04 is listed twice as a holiday.",
+    ]
+
+
+def test_rule_problems_missing_key_raises():
+    # No silent fallback: a row without its child field is a programming error.
+    rule = _rule(date(2025, 1, 1), MON_FRI, tb=5)
+    del rule["valid_from"]
+    for rules, holidays in (([rule], []), ([], [{"description": "x"}])):
+        try:
+            M.rule_problems(rules, holidays)
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("expected KeyError")
