@@ -13,6 +13,7 @@
   "can_record": true,
   "hidden": 0,
   "blocking_hidden": 0,
+  "can_change": true,
   "change": {
     "entities": [
       {
