@@ -1,7 +1,7 @@
 // konsol#305 B12: tbTable.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkRows, entityRows, compareRows, entityWord } from "./tbTable.js";
+import { checkRows, entityRows, compareRows, entityWord, tbDue, OVERDUE_TONE } from "./tbTable.js";
 import { freshnessView } from "./freshness.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,9 @@ import { remindedText } from "./remind.js";
 
 // B27: entityRows needs the user's zone and `now`, like freshnessView (B09).
 const NOW = new Date("2026-09-25T12:00:00Z");
+// D60: the server's undeclared TB deadline (deadline_model._undeclared), for
+// the hand-built payloads below; the D60 tests feed the golden payload.
+const UNDECLARED = { due: null, past: false, text: "No due date declared" };
 const TZ = "Europe/London";
 
 // Convention used throughout this file and tbTable.js: an amount is debit
@@ -67,6 +70,7 @@ test("entityRows: the on-behalf label is kept verbatim", () => {
     period_open: true,
     can_upload: true,
     can_remind: false,
+    deadline: UNDECLARED,
     entities: [
       {
         entity: "ZZE",
@@ -75,6 +79,7 @@ test("entityRows: the on-behalf label is kept verbatim", () => {
         tb: { name: "TBSUB-0001", owner: "admin@example.com", on_behalf_label: "by admin@example.com for ZZE", creation: "2026-09-20T10:00:00Z" },
         exception: null,
         reminders: null,
+        overdue: false,
       },
     ],
   };
@@ -87,7 +92,8 @@ test("entityRows: a TB-less entity keeps tb as null, never an empty object", () 
     period_open: true,
     can_upload: true,
     can_remind: false,
-    entities: [{ entity: "ZZM", name: "ZZ Missing", status: "Missing", tb: null, exception: null, reminders: null }],
+    deadline: UNDECLARED,
+    entities: [{ entity: "ZZM", name: "ZZ Missing", status: "Missing", tb: null, exception: null, reminders: null, overdue: false }],
   };
   const view = entityRows(myTbs, NOW, TZ);
   assert.equal(view[0].tb, null);
@@ -99,7 +105,8 @@ test("entityRows: failure path — an unknown status throws, never renders blank
     period_open: true,
     can_upload: true,
     can_remind: false,
-    entities: [{ entity: "ZZX", name: "ZZ X", status: "Somehow Pending", tb: null, exception: null, reminders: null }],
+    deadline: UNDECLARED,
+    entities: [{ entity: "ZZX", name: "ZZ X", status: "Somehow Pending", tb: null, exception: null, reminders: null, overdue: false }],
   };
   assert.throws(() => entityRows(myTbs, NOW, TZ), /unknown.*status/i);
 });
@@ -211,7 +218,8 @@ function oneEntity(overrides) {
     period_open: true,
     can_upload: true,
     can_remind: false,
-    entities: [{ entity: "ZZE", name: "ZZ Entity", status: "Received", tb: null, exception: null, reminders: null, ...overrides }],
+    deadline: UNDECLARED,
+    entities: [{ entity: "ZZE", name: "ZZ Entity", status: "Received", tb: null, exception: null, reminders: null, overdue: false, ...overrides }],
   };
 }
 
@@ -341,4 +349,62 @@ test("(Y62) failure path: an entity without its reminders key is refused (Y56 al
     return rest;
   });
   assert.throws(() => entityRows({ ...GOLDEN, entities }, GOLDEN_NOW, TZ), /reminders/);
+});
+
+// --- D60: the TB due header and the overdue chip (stories 2.4, 3.1) ---------
+// Decision #305-2.4-1: show-only, never blocks. Fed D56's golden my_tbs
+// payload: deadline {due: "2025-10-07", past: true}, ZZB/ZZC Missing and
+// overdue, ZZA Received and not overdue.
+
+test("(D60) tbDue(golden): a declared due date reads 'TB due Tue 7 Oct 2025'", () => {
+  assert.equal(GOLDEN.deadline.due, "2025-10-07");
+  const due = tbDue(GOLDEN);
+  assert.equal(due.text, "TB due Tue 7 Oct 2025");
+  assert.equal(due.past, true);
+});
+
+test("(D60) tbDue: an undeclared deadline shows the server's sentence, never a guessed date", () => {
+  const undeclared = { ...GOLDEN, deadline: { due: null, past: false, text: "No due date declared" } };
+  const due = tbDue(undeclared);
+  assert.equal(due.text, "No due date declared");
+  assert.equal(due.past, false);
+});
+
+test("(D60) failure path: a payload without deadline throws (tbDue and entityRows)", () => {
+  const { deadline: _drop, ...noDeadline } = GOLDEN;
+  assert.throws(() => tbDue(noDeadline), /deadline/);
+  assert.throws(() => entityRows(noDeadline, GOLDEN_NOW, TZ), /deadline/);
+  assert.throws(() => tbDue({ ...GOLDEN, deadline: null }), /deadline/);
+});
+
+test("(D60) failure path: a malformed due date throws, never shown as a guess", () => {
+  assert.throws(() => tbDue({ ...GOLDEN, deadline: { due: "7 Oct", past: true, text: "Due 7 Oct" } }), /due/);
+  assert.throws(() => tbDue({ ...GOLDEN, deadline: { due: "2025-10-07", text: "Due 2025-10-07" } }), /past/);
+});
+
+test("(D60) entityRows(golden): Missing rows past due carry the Overdue chip; the Received row does not", () => {
+  const rows = entityRows(GOLDEN, GOLDEN_NOW, TZ);
+  for (const code of ["ZZB", "ZZC"]) {
+    const row = byEntity(rows, code);
+    assert.equal(row.status, "Missing");
+    assert.equal(row.overdue, true);
+    assert.deepEqual(row.overdueChip, { text: "Overdue", tone: OVERDUE_TONE });
+  }
+  const zza = byEntity(rows, "ZZA");
+  assert.equal(zza.overdue, false);
+  assert.equal(zza.overdueChip, null);
+});
+
+test("(D60) failure path: the overdue chip is warn tone, never the block (red) tone", () => {
+  assert.match(OVERDUE_TONE, /amber/);
+  assert.doesNotMatch(OVERDUE_TONE, /red/);
+});
+
+test("(D60) failure path: an entity without a boolean overdue is refused (D56 always sends it)", () => {
+  const entities = GOLDEN.entities.map((e) => {
+    if (e.entity !== "ZZB") return e;
+    const { overdue: _drop, ...rest } = e;
+    return rest;
+  });
+  assert.throws(() => entityRows({ ...GOLDEN, entities }, GOLDEN_NOW, TZ), /overdue/);
 });

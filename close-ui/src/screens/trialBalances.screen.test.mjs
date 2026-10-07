@@ -251,3 +251,29 @@ test("(Y62) success reloads my_tbs once; a refusal does not reload or change the
   const catchBlock = body.slice(body.indexOf("catch"));
   assert.doesNotMatch(catchBlock.split("finally")[0], /reloadTbs\(|load\.data\s*=/, "a refusal leaves the row as it was");
 });
+
+// --- D60: the TB due header and the overdue chip (stories 2.4, 3.1) --------
+// Behaviour (texts, tone, throws) is tested on tbTable.js with the golden
+// payload; these check the wiring only.
+
+test("(D60) the header shows tbTable's tbDue text, built in the script, not its own date wording", () => {
+  const source = read();
+  const s = code(source);
+  assert.match(s, /import\s*\{[^}]*\btbDue\b[^}]*\}\s*from\s*["']\.\.\/tbTable\.js["']/);
+  assert.match(s, /tbDue\(/);
+  const tpl = template(source);
+  const header = tpl.match(/<header\b[\s\S]*?<\/header>/);
+  assert.ok(header, "the screen has a header");
+  assert.match(header[0], /\{\{\s*due\.text\s*\}\}/, "the header renders the due text");
+  assert.doesNotMatch(source, /No due date is shown/, "the old 'no due date' note is gone");
+  assert.doesNotMatch(tpl, /deadline\./, "the template never reads the raw deadline");
+});
+
+test("(D60) the Overdue chip is v-if on row.overdueChip with its tone, and never blocks a control", () => {
+  const tpl = template(read());
+  const chip = tpl.match(/<span\b[^>]*v-if="row\.overdueChip"[^>]*>[\s\S]*?<\/span>/);
+  assert.ok(chip, "a chip gated by v-if=\"row.overdueChip\"");
+  assert.match(chip[0], /:class="row\.overdueChip\.tone"/);
+  assert.match(chip[0], /\{\{\s*row\.overdueChip\.text\s*\}\}/);
+  assert.doesNotMatch(tpl, /:disabled="[^"]*overdue/i, "overdue never disables anything (#305-2.4-1)");
+});
