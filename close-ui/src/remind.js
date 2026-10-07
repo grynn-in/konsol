@@ -60,3 +60,21 @@ export function remindedText(entry, now, timeZone) {
 	const at = formatTime(parseZoned(lastAt), now, timeZone);
 	return `Reminded ${count}× · last ${at} by ${byName}`;
 }
+
+/**
+ * R52s (U8): after a POST sent for period `sent`, what the screen does now
+ * that the route is on `current` (both route.js parse() output):
+ * - "reload": the route is still on that period, so re-read the list and
+ *   show any error;
+ * - "skip": the route has moved to another period (or to no period), so the
+ *   list on screen belongs to that period's own read: no reload, and the
+ *   error for the period left behind is dropped.
+ * A sent period without a year and period throws: it is never guessed.
+ */
+export function afterPost(sent, current) {
+	if (!sent || sent.error || sent.year == null || sent.period == null) {
+		throw new Error("afterPost: the period the request was sent for is missing.");
+	}
+	if (!current || current.error || current.year == null || current.period == null) return "skip";
+	return sent.year === current.year && sent.period === current.period ? "reload" : "skip";
+}
