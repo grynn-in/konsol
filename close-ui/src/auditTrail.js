@@ -69,6 +69,8 @@ const KIND_LABEL = {
 	tb_exception_cancelled: { label: "Exception cancelled", tone: "mute" },
 	ic_sent_back: { label: "Sent back", tone: "warn" },
 	commentary_saved: { label: "Commentary", tone: "mute" },
+	// konsol#305 Y51 (story 1.5, #305-1.5-1): a Remind sent.
+	reminder_sent: { label: "Reminder", tone: "mute" },
 };
 
 const SIGNOFF_LABEL = {
@@ -90,6 +92,8 @@ const TB_KINDS = new Set([
 ]);
 const PERIOD_KINDS = new Set(["period_closed", "period_locked", "period_reopened"]);
 const YEAR_KINDS = new Set(["year_closed", "year_locked", "year_reopened"]);
+// konsol#305 Y51: a reminder_sent event's `detail.topic` (remind_model.TOPICS).
+const REMINDER_TOPIC_LABEL = { tb: "Trial balance", ic: "Intercompany" };
 
 /** `{label, tone}` for one event. Throws on an unknown kind, naming it,
  * and on a `signed_off` whose `detail.signoff_status` is not one of the
@@ -142,6 +146,13 @@ function itemText(event, periodFiscalYear) {
 		}
 		return `Commentary · ${heading_name} (${heading})`;
 	}
+	if (event.kind === "reminder_sent") {
+		const topicLabel = REMINDER_TOPIC_LABEL[(event.detail || {}).topic];
+		if (!topicLabel || !event.entity) {
+			return "Reminder (topic not recorded)";
+		}
+		return `Reminder · ${topicLabel} · ${event.entity}`;
+	}
 	return `${event.reference_doctype} ${event.reference_name}`;
 }
 
@@ -191,6 +202,15 @@ function detailText(event) {
 			throw new Error("Audit trail: commentary_saved event has no detail.text.");
 		}
 		parts.push(detail.text ? `Text: "${detail.text}"` : "Commentary cleared");
+	}
+	if (event.kind === "reminder_sent") {
+		// Y54 always writes `detail.recipients` (the sorted user ids it
+		// notified), so a missing list is a broken contract, never "0".
+		if (!Array.isArray(detail.recipients)) {
+			throw new Error("Audit trail: reminder_sent event has no detail.recipients.");
+		}
+		const n = detail.recipients.length;
+		parts.push(`Sent to ${n} ${n === 1 ? "person" : "people"}`);
 	}
 	if (event.source === "backfill") {
 		parts.push("Recovered from records");

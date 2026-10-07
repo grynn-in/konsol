@@ -42,7 +42,7 @@
    "fieldname": "kind",
    "fieldtype": "Select",
    "label": "Kind",
-   "options": "approved\nself_approved\nrejected\napproval_cancelled\nperiod_closed\nperiod_locked\nperiod_reopened\nyear_closed\nyear_locked\nyear_reopened\nsigned_off\nsignoff_voided\nsignoff_rejected\ntb_submitted\ntb_cancelled\ntb_exception_declared\ntb_exception_cancelled\nic_sent_back\ncommentary_saved",
+   "options": "approved\nself_approved\nrejected\napproval_cancelled\nperiod_closed\nperiod_locked\nperiod_reopened\nyear_closed\nyear_locked\nyear_reopened\nsigned_off\nsignoff_voided\nsignoff_rejected\ntb_submitted\ntb_cancelled\ntb_exception_declared\ntb_exception_cancelled\nic_sent_back\ncommentary_saved\nreminder_sent",
    "reqd": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
