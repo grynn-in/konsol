@@ -31,6 +31,12 @@ every row the caller reads is live in the warehouse.
   once per rule. Same shape and scoping as ``rule_gap``; it blocks too.
 - ``rule_gaps(balances, rules)``: ``[rule_gap, ambiguous_gap]`` without the
   Nones, undeclared first: what the sign-off gate and My work append.
+- ``pending_gap(balances, rules)``: None, or ONE gap naming every DRAFT
+  balance whose pair has a matching rule and whose ending inventory is above
+  0 (#305-S8-1): dbt eliminates only approved balances, so it blocks sign-off
+  until the draft is approved or deleted. Pairs carry their draft ``names``.
+  It is NOT part of ``rule_gaps``: My work's setup gaps never see it
+  (C-S8-2).
 - ``balance_rows(balances, rules)``: the screen's rows.
 - ``visible(balances, allowed)``: entity scope (either side allowed).
 - ``draft_problems(...)``: a draft's own refusals, before any write.
@@ -40,6 +46,7 @@ import math
 
 RULE_UNDECLARED = "ic_unrealized_profit_rule_undeclared"
 RULE_AMBIGUOUS = "ic_unrealized_profit_rule_ambiguous"
+DRAFT_PENDING = "ic_balance_draft_pending"
 RULE_TYPE = "unrealized_profit"
 WILDCARD = "*"
 #: Where the rule is configured (the brief: configuration stays in Desk).
@@ -57,6 +64,12 @@ _AMBIGUOUS_MESSAGE = (
     "%d IC Balance pair%s match%s more than one unrealised-profit IC Elimination Rule: %s. "
     "dbt applies every matching rule, so its unrealised profit is eliminated more than once: "
     "keep one rule per pair in Desk (IC Elimination Rule) before signing off."
+)
+
+_PENDING_MESSAGE = (
+    "%d IC Balance draft%s ha%s a matching unrealised-profit rule but %s not approved: %s. "
+    "dbt eliminates only approved balances: approve %s in Approvals (Close Lead), or delete "
+    "the draft (Close Lead, in Desk), before signing off."
 )
 
 
@@ -164,6 +177,35 @@ def ambiguous_gap(balances, rules):
 def rule_gaps(balances, rules):
     """Both rule gaps that apply, undeclared first; ``[]`` when none does."""
     return [g for g in (rule_gap(balances, rules), ambiguous_gap(balances, rules)) if g]
+
+
+def pending_gap(balances, rules):
+    """None, or the one blocking gap naming every draft that has a matching
+    rule and something to eliminate (an unreadable inventory counts: it is
+    never guessed to be nothing). Names are sorted within each pair."""
+    pending = {}
+    for balance in balances:
+        if _status(balance) != "Draft":
+            continue
+        if _nothing_to_eliminate(balance):
+            continue
+        if matching_rules(balance, rules):
+            pending.setdefault(_pair(balance), []).append(balance.get("name"))
+    if not pending:
+        return None
+    pairs = sorted(pending)
+    names = {p: sorted(pending[p]) for p in pairs}
+    count = sum(len(n) for n in names.values())
+    text = ", ".join("%s → %s (%s)" % (s, b, ", ".join(names[(s, b)])) for s, b in pairs)
+    one = count == 1
+    return {
+        "code": DRAFT_PENDING,
+        "pairs": [{"selling_entity": s, "buying_entity": b, "names": names[(s, b)]}
+                  for s, b in pairs],
+        "entities": sorted({e for p in pairs for e in p}),
+        "message": _PENDING_MESSAGE % (count, "" if one else "s", "s" if one else "ve",
+                                       "is" if one else "are", text, "it" if one else "them"),
+    }
 
 
 def balance_rows(balances, rules):
