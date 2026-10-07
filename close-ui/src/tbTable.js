@@ -121,6 +121,13 @@ function timestampText(value, now, timeZone) {
  * `canRemind` is the payload's `can_remind` AND the status is `Missing`. A
  * payload with no boolean `can_remind`, or an entity with no `reminders` key,
  * throws: neither is read as "no".
+ *
+ * D60 (story 2.4, decision #305-2.4-1): each row carries the server's
+ * `overdue` (D56: `deadline.past` on a Missing row, false otherwise) and
+ * `overdueChip`, `{text: "Overdue", tone: OVERDUE_TONE}` when overdue, else
+ * null. Show-only: the chip is the warn tone, never the block tone, and
+ * nothing is disabled by it. A payload with no `deadline`, or an entity with
+ * no boolean `overdue`, throws: neither is read as "not overdue".
  */
 export function entityRows(myTbs, now, timeZone) {
   if (!timeZone) {
@@ -132,12 +139,16 @@ export function entityRows(myTbs, now, timeZone) {
   if (typeof myTbs.can_remind !== "boolean") {
     throw new Error("entityRows: the payload has no can_remind flag (Y56 always sends it).");
   }
+  checkDeadline(myTbs, "entityRows");
   return (myTbs.entities || []).map((entity) => {
     if (!KNOWN_STATUSES.has(entity.status)) {
       throw new Error(`entityRows: unknown TB status: ${entity.status}`);
     }
     if (!("reminders" in entity)) {
       throw new Error(`entityRows: ${entity.entity} has no reminders entry (Y56 always sends it, null when none).`);
+    }
+    if (typeof entity.overdue !== "boolean") {
+      throw new Error(`entityRows: ${entity.entity} has no overdue flag (D56 always sends it).`);
     }
     const tb = entity.tb
       ? {
@@ -160,8 +171,69 @@ export function entityRows(myTbs, now, timeZone) {
       exception,
       reminded: remindedText(entity.reminders, now, timeZone),
       canRemind: myTbs.can_remind && entity.status === "Missing",
+      overdue: entity.overdue,
+      overdueChip: entity.overdue ? { text: OVERDUE_TEXT, tone: OVERDUE_TONE } : null,
     };
   });
+}
+
+// --- D60: the TB due header and the overdue chip (stories 2.4, 3.1) ---------
+// Decision #305-2.4-1: a deadline is show-only and never blocks. The chip is
+// the warn (amber) tone, never the block (red) tone the Missing status uses.
+export const OVERDUE_TONE = "bg-surface-amber-1 text-ink-amber-3";
+const OVERDUE_TEXT = "Overdue";
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+// A due date is a calendar date, not an instant: it is formatted in UTC so
+// the browser's zone can never move it to the day before or after.
+const DUE_FORMAT = new Intl.DateTimeFormat("en-GB", {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+/** D56's `deadline` must be present as `{due, past, text}`; anything else throws. */
+function checkDeadline(myTbs, who) {
+  const deadline = myTbs.deadline;
+  if (!deadline || typeof deadline !== "object") {
+    throw new Error(`${who}: the payload has no deadline (D56 always sends it).`);
+  }
+  if (typeof deadline.past !== "boolean") {
+    throw new Error(`${who}: the deadline has no past flag (D56 always sends it).`);
+  }
+  if (deadline.due !== null && !(typeof deadline.due === "string" && ISO_DATE.test(deadline.due))) {
+    throw new Error(`${who}: the deadline's due is not an ISO date: ${deadline.due}`);
+  }
+  if (deadline.due === null && typeof deadline.text !== "string") {
+    throw new Error(`${who}: an undeclared deadline has no text (D56 always sends it).`);
+  }
+  return deadline;
+}
+
+/** "2025-10-07" -> "Tue 7 Oct 2025". */
+function dueDateText(iso) {
+  const [, y, m, d] = ISO_DATE.exec(iso);
+  const date = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+  if (date.getUTCDate() !== Number(d)) {
+    throw new Error(`tbDue: the deadline's due is not a real date: ${iso}`);
+  }
+  const parts = Object.fromEntries(DUE_FORMAT.formatToParts(date).map((p) => [p.type, p.value]));
+  return `${parts.weekday} ${parts.day} ${parts.month} ${parts.year}`;
+}
+
+/**
+ * D56's my_tbs `deadline` -> the screen header's `{text, past}`: "TB due Tue
+ * 7 Oct 2025" for a declared date, or the server's own sentence ("No due date
+ * declared") when `due` is null — never a guessed date. Throws on a payload
+ * without a well-formed `deadline`.
+ */
+export function tbDue(myTbs) {
+  const deadline = checkDeadline(myTbs, "tbDue");
+  if (deadline.due === null) {
+    return { text: deadline.text, past: false };
+  }
+  return { text: `TB due ${dueDateText(deadline.due)}`, past: deadline.past };
 }
 
 /**
