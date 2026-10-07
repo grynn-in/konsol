@@ -4,6 +4,28 @@
     "problems": 2,
     "rows": 4
   },
+  "deadlines": {
+    "ic": {
+      "due": "2025-10-07",
+      "past": true,
+      "text": "Due 2025-10-07"
+    },
+    "journals": {
+      "due": null,
+      "past": false,
+      "text": "No due date declared"
+    },
+    "signoff": {
+      "due": "2025-10-01",
+      "past": true,
+      "text": "Due 2025-10-01"
+    },
+    "tb": {
+      "due": "2025-10-03",
+      "past": true,
+      "text": "Due 2025-10-03"
+    }
+  },
   "period": {
     "code": "P09",
     "fiscal_period": 9,
@@ -29,6 +51,7 @@
       },
       "tb": {
         "label": "Missing",
+        "overdue": true,
         "reminders": {
           "count": 2,
           "last_at": "2025-10-06T10:00:00+01:00",
@@ -54,6 +77,7 @@
       },
       "tb": {
         "label": "Received",
+        "overdue": false,
         "reminders": null,
         "tone": "ok"
       }
@@ -74,6 +98,7 @@
       },
       "tb": {
         "label": "Received",
+        "overdue": false,
         "reminders": null,
         "tone": "ok"
       }
@@ -94,9 +119,11 @@
       },
       "tb": {
         "label": "Not consolidated: no ownership for this period",
+        "overdue": false,
         "reminders": null,
         "tone": "blocking"
       }
     }
-  ]
+  ],
+  "signoff_overdue": true
 }
