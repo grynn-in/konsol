@@ -65,6 +65,9 @@ function tbReminded(row, now, timeZone) {
 // their order are deadline_model.STEPS; the labels are the strip's words.
 export const DEADLINE_STEPS = ["tb", "ic", "journals", "signoff"];
 const STEP_LABELS = { tb: "TB", ic: "IC", journals: "Journals", signoff: "Sign-off" };
+// The server flag that marks each step Overdue in the strip (D61, D61b).
+// TB has none here: it is marked per cell.
+const STEP_OVERDUE_KEYS = { ic: "ic_overdue", journals: "journals_overdue", signoff: "signoff_overdue" };
 
 function requireKey(obj, key, where) {
 	if (obj == null || !Object.prototype.hasOwnProperty.call(obj, key)) {
@@ -81,12 +84,14 @@ function requireKey(obj, key, where) {
  * date declared", never a guessed date.
  *
  * `overdue` is only ever a server flag, never derived from `past` (one
- * source of truth): Sign-off reads `payload.signoff_overdue`. TB overdue is
- * shown per cell (`tbOverdue`), so the TB item is not marked. IC and
- * journals are marked by D61b (`ic_overdue` / `journals_overdue`).
+ * source of truth): Sign-off reads `payload.signoff_overdue`, IC reads
+ * `payload.ic_overdue` and Journals reads `payload.journals_overdue` (D61b,
+ * #305-Q5-1: D57b decides them). TB overdue is shown per cell
+ * (`tbOverdue`), so the TB item is not marked.
  *
  * A missing `deadlines` key, a missing or unknown step, a step missing
- * `due` or `text`, or a missing `signoff_overdue` throws.
+ * `due` or `text`, or a missing or non-boolean `signoff_overdue`,
+ * `ic_overdue` or `journals_overdue` throws.
  */
 export function deadlineStrip(payload) {
 	const deadlines = requireKey(payload, "deadlines", "The grid payload");
@@ -98,9 +103,13 @@ export function deadlineStrip(payload) {
 			throw new Error(`unknown deadline step: ${step}`);
 		}
 	}
-	const signoffOverdue = requireKey(payload, "signoff_overdue", "The grid payload");
-	if (typeof signoffOverdue !== "boolean") {
-		throw new Error(`The grid payload's signoff_overdue is not true or false: ${signoffOverdue}`);
+	const stepOverdue = { tb: false };
+	for (const [step, key] of Object.entries(STEP_OVERDUE_KEYS)) {
+		const flag = requireKey(payload, key, "The grid payload");
+		if (typeof flag !== "boolean") {
+			throw new Error(`The grid payload's ${key} is not true or false: ${flag}`);
+		}
+		stepOverdue[step] = flag;
 	}
 	return DEADLINE_STEPS.map((step) => {
 		const entry = requireKey(deadlines, step, "The grid payload's deadlines");
@@ -111,7 +120,7 @@ export function deadlineStrip(payload) {
 			step,
 			label,
 			text: due ? `${label} due ${due}` : `${label}: ${text}`,
-			overdue: step === "signoff" ? signoffOverdue : false,
+			overdue: stepOverdue[step],
 		};
 	});
 }

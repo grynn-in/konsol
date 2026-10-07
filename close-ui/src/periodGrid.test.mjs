@@ -46,6 +46,8 @@ function payload(overrides = {}) {
 		rates_error: null,
 		deadlines: JSON.parse(JSON.stringify(GOLDEN_DEADLINES)),
 		signoff_overdue: false,
+		ic_overdue: false,
+		journals_overdue: false,
 		...overrides,
 	};
 }
@@ -426,4 +428,64 @@ test("D61 failure path: a TB cell missing the overdue key throws", () => {
 	const p = clone(goldenGrid);
 	delete p.rows.find((r) => r.entity === "ZZB").tb.overdue;
 	assert.throws(() => gridView(p, false, NOW, TZ), /ZZB.*overdue/);
+});
+
+// --- konsol#305 D61b: IC and journals overdue chips (#305-Q5-1) ----------
+//
+// Fed D57b's regenerated golden payload: ic_overdue true (IC date past, an
+// open over-tolerance pair), journals_overdue false (journals undeclared).
+// The SPA only displays the server's flags; it never derives them.
+
+test("D61b: golden -> IC is marked Overdue from ic_overdue, journals not", () => {
+	assert.equal(goldenGrid.ic_overdue, true);
+	assert.equal(goldenGrid.journals_overdue, false);
+	const by = Object.fromEntries(deadlineStrip(goldenGrid).map((i) => [i.step, i]));
+	assert.equal(by.ic.overdue, true);
+	assert.equal(by.journals.overdue, false);
+	assert.equal(by.signoff.overdue, true);
+	assert.equal(by.tb.overdue, false);
+});
+
+test("D61b: each flag True/False drives only its own step", () => {
+	for (const ic of [true, false]) {
+		for (const journals of [true, false]) {
+			const p = clone(goldenGrid);
+			p.ic_overdue = ic;
+			p.journals_overdue = journals;
+			const by = Object.fromEntries(deadlineStrip(p).map((i) => [i.step, i]));
+			assert.equal(by.ic.overdue, ic, `ic ${ic}/${journals}`);
+			assert.equal(by.journals.overdue, journals, `journals ${ic}/${journals}`);
+			assert.equal(by.signoff.overdue, goldenGrid.signoff_overdue);
+			assert.equal(by.tb.overdue, false);
+		}
+	}
+});
+
+test("D61b: the strip never derives IC/journals overdue from a past date", () => {
+	const p = clone(goldenGrid);
+	assert.equal(p.deadlines.ic.past, true);
+	p.ic_overdue = false; // e.g. every pair is matched
+	assert.equal(deadlineStrip(p).find((i) => i.step === "ic").overdue, false);
+	p.deadlines.journals = { due: "2025-10-02", past: true, text: "Due 2025-10-02" };
+	p.journals_overdue = false; // no draft journal
+	assert.equal(deadlineStrip(p).find((i) => i.step === "journals").overdue, false);
+});
+
+test("D61b failure path: a payload missing ic_overdue or journals_overdue throws", () => {
+	for (const key of ["ic_overdue", "journals_overdue"]) {
+		const p = clone(goldenGrid);
+		delete p[key];
+		assert.throws(() => deadlineStrip(p), new RegExp(key), key);
+		assert.throws(() => gridView(p, false, NOW, TZ), new RegExp(key), key);
+	}
+});
+
+test("D61b failure path: a non-boolean ic_overdue or journals_overdue throws", () => {
+	for (const key of ["ic_overdue", "journals_overdue"]) {
+		for (const bad of [null, "true", 1, 0]) {
+			const p = clone(goldenGrid);
+			p[key] = bad;
+			assert.throws(() => deadlineStrip(p), new RegExp(`${key} is not true or false`), `${key}=${bad}`);
+		}
+	}
 });
