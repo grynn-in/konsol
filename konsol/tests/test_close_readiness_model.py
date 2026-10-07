@@ -403,3 +403,34 @@ def test_ic_rule_ambiguous_gap_scoped_has_a_plain_label_and_never_names_the_part
     assert configuration["detail"] == (
         "More than one unrealised-profit rule per pair: 1 entity, and 1 you cannot see")
     assert "ZZX" not in json.dumps(result)
+
+
+def _ic_pending_gap():
+    """I53: the real producer's gap for a draft ZZA → ZZX balance (inventory
+    100) that one unrealised-profit rule matches."""
+    rules = [{"rule_id": "R1", "rule_type": "unrealized_profit", "margin_pct": 20,
+              "debit_entity_pattern": "*", "credit_entity_pattern": "*"}]
+    gap = IBM.pending_gap([{"name": "ICB-ZZA-ZZX", "selling_entity": "ZZA",
+                            "buying_entity": "ZZX", "docstatus": 0,
+                            "ending_inventory_from_ic": 100.0}], rules)
+    assert gap is not None and gap["code"] == "ic_balance_draft_pending", gap
+    return gap
+
+
+def test_ic_pending_gap_blocks_configuration_unscoped_with_its_message():
+    gap = _ic_pending_gap()
+    configuration = _by_code(_readiness(problems=_problems(config_gaps=[gap]), allowed=None),
+                             "configuration")
+    assert configuration["state"] == "blocked"
+    assert gap["message"] in configuration["detail"]
+
+
+def test_ic_pending_gap_scoped_has_a_plain_label_and_never_names_the_partner():
+    result = _readiness(problems=_problems(config_gaps=[_ic_pending_gap()]), allowed={"ZZA"})
+    configuration = _by_code(result, "configuration")
+    assert configuration["state"] == "blocked"
+    assert configuration["detail"] == (
+        "IC Balance draft awaiting approval: 1 entity, and 1 you cannot see")
+    assert "ic_balance_draft_pending" not in configuration["detail"]
+    assert "ZZX" not in json.dumps(result)
+
