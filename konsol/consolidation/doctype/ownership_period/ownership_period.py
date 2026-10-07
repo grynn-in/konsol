@@ -141,9 +141,9 @@ class OwnershipPeriod(Document):
     # effective_date - 1 day; a cancel restores the end date the draft stored
     # (``superseded_end_date``, blank = open-ended). Rejected: Q1-2 (cancel and
     # amend the current period) and Q1-3 (changes only through a Business
-    # Combination / Disposal). The predecessor is written with ``db_set`` under
-    # ``frappe.flags.from_ownership_change`` (the Business Disposal pattern) and
-    # re-synced after the commit. The flag does NOT open the deal-field guard.
+    # Combination / Disposal). The predecessor's end date is written with
+    # ``db_set`` and re-synced after the commit; the deal-field guard is not
+    # involved (end_date is not a deal field).
 
     def _end_predecessor(self):
         name = self.get("supersedes")
@@ -165,6 +165,9 @@ class OwnershipPeriod(Document):
             # nothing superseded, or the predecessor was deleted since: no end to give back
             return
         predecessor = frappe.get_doc("Ownership Period", name, for_update=True)
+        if int(predecessor.get("docstatus") or 0) == 2:
+            # cancelled since (review S16): it is the audit trail, never written again
+            return
         restored = _date_or_none(self.get("superseded_end_date"))
         start, end = getdate(predecessor.effective_date), restored or getdate(_OPEN_ENDED)
         later = [
@@ -185,11 +188,7 @@ class OwnershipPeriod(Document):
         self._write_predecessor_end(predecessor, restored)
 
     def _write_predecessor_end(self, predecessor, end_date):
-        frappe.flags.from_ownership_change = True
-        try:
-            predecessor.db_set("end_date", end_date)
-        finally:
-            frappe.flags.from_ownership_change = False
+        predecessor.db_set("end_date", end_date)
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     def after_delete(self):
@@ -352,6 +351,16 @@ class OwnershipPeriod(Document):
                 f"{supersedes} cannot be superseded by this change: a change supersedes the "
                 f"approved Ownership Period of the same node that starts before "
                 f"{self.effective_date} and covers that day."
+            )
+        # Review S6: a change takes over the rest of its predecessor's span, so it
+        # ends where the predecessor ended (``superseded_end_date``, blank = open).
+        # Any other end date would make the change's effect say one span and the
+        # warehouse hold another.
+        stored = _date_or_none(self.get("superseded_end_date"))
+        if _date_or_none(self.end_date) != stored:
+            frappe.throw(
+                f"{self.name} supersedes {supersedes}, so it ends where {supersedes} ended "
+                f"({stored or 'open'}): clear or correct End Date."
             )
         later = sorted((op for op in others if getdate(op.effective_date) > start),
                        key=lambda op: getdate(op.effective_date))
