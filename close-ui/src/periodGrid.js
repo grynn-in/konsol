@@ -61,6 +61,71 @@ function tbReminded(row, now, timeZone) {
 	return row.tb.label === "Missing" ? remindedText(row.tb.reminders, now, timeZone) : null;
 }
 
+// D61 (stories 2.4, 2.2): the deadlines strip above the grid. The steps and
+// their order are deadline_model.STEPS; the labels are the strip's words.
+export const DEADLINE_STEPS = ["tb", "ic", "journals", "signoff"];
+const STEP_LABELS = { tb: "TB", ic: "IC", journals: "Journals", signoff: "Sign-off" };
+
+function requireKey(obj, key, where) {
+	if (obj == null || !Object.prototype.hasOwnProperty.call(obj, key)) {
+		throw new Error(`${where} has no ${key} entry (D57 always sends it).`);
+	}
+	return obj[key];
+}
+
+/**
+ * `deadlineStrip(payload)` -> `[{step, label, text, overdue}]`, one per
+ * DEADLINE_STEPS step, in that order, from `payload.deadlines` (D57: each
+ * step `{due, past, text}`). A declared step reads "<Label> due <due>"; an
+ * undeclared one (`due` null) reads "<Label>: <text>", the server's "No due
+ * date declared", never a guessed date.
+ *
+ * `overdue` is only ever a server flag, never derived from `past` (one
+ * source of truth): Sign-off reads `payload.signoff_overdue`. TB overdue is
+ * shown per cell (`tbOverdue`), so the TB item is not marked. IC and
+ * journals are marked by D61b (`ic_overdue` / `journals_overdue`).
+ *
+ * A missing `deadlines` key, a missing or unknown step, a step missing
+ * `due` or `text`, or a missing `signoff_overdue` throws.
+ */
+export function deadlineStrip(payload) {
+	const deadlines = requireKey(payload, "deadlines", "The grid payload");
+	if (deadlines == null || typeof deadlines !== "object") {
+		throw new Error("The grid payload's deadlines entry is not an object.");
+	}
+	for (const step of Object.keys(deadlines)) {
+		if (!DEADLINE_STEPS.includes(step)) {
+			throw new Error(`unknown deadline step: ${step}`);
+		}
+	}
+	const signoffOverdue = requireKey(payload, "signoff_overdue", "The grid payload");
+	if (typeof signoffOverdue !== "boolean") {
+		throw new Error(`The grid payload's signoff_overdue is not true or false: ${signoffOverdue}`);
+	}
+	return DEADLINE_STEPS.map((step) => {
+		const entry = requireKey(deadlines, step, "The grid payload's deadlines");
+		const label = STEP_LABELS[step];
+		const due = requireKey(entry, "due", `The ${step} deadline`);
+		const text = requireKey(entry, "text", `The ${step} deadline`);
+		return {
+			step,
+			label,
+			text: due ? `${label} due ${due}` : `${label}: ${text}`,
+			overdue: step === "signoff" ? signoffOverdue : false,
+		};
+	});
+}
+
+// D61: a TB cell's `overdue` is the server's flag (D57 sets it on a Missing
+// cell past the TB date); a missing key throws, never reads as not overdue.
+function tbOverdue(row) {
+	const overdue = requireKey(row.tb, "overdue", `${row.entity}'s Trial balance cell`);
+	if (typeof overdue !== "boolean") {
+		throw new Error(`${row.entity}'s Trial balance cell overdue is not true or false: ${overdue}`);
+	}
+	return overdue;
+}
+
 /**
  * `gridView(payload, problemsOnly, now, timeZone)` -> `{rows, all, problems, hiddenNote,
  * ratesNote, empty}` for Period.vue's entity grid.
@@ -76,6 +141,9 @@ function tbReminded(row, now, timeZone) {
  * by <name>" for a Missing TB cell's `reminders` entry (null otherwise),
  * formatted in `timeZone` relative to `now`; both are required, as in
  * tbTable.entityRows.
+ *
+ * D61: the view also carries `deadlines` (deadlineStrip) and each row
+ * `tbOverdue`, the TB cell's server `overdue` flag.
  */
 export function gridView(payload, problemsOnly, now, timeZone) {
 	if (!timeZone) {
@@ -86,12 +154,13 @@ export function gridView(payload, problemsOnly, now, timeZone) {
 	}
 	//: review-w5: the live period code is "P07" alone; the header and the
 	//: empty text name the year (periodName).
+	const deadlines = deadlineStrip(payload);
 	const code = periodName(payload.period.fiscal_year, payload.period.fiscal_period);
 	const counts = payload.counts || {};
 	const rows = (payload.rows || [])
 		.filter((row) => !problemsOnly || row.problem)
 		.map(validateRow)
-		.map((row) => ({ ...row, tbReminded: tbReminded(row, now, timeZone) }));
+		.map((row) => ({ ...row, tbReminded: tbReminded(row, now, timeZone), tbOverdue: tbOverdue(row) }));
 	const hiddenNote =
 		counts.hidden > 0 ? `${counts.hidden} entities outside your scope are not shown` : null;
 	const ratesNote = payload.rates_error ? `Rates cannot be checked: ${payload.rates_error}` : null;
@@ -99,6 +168,7 @@ export function gridView(payload, problemsOnly, now, timeZone) {
 	return {
 		title: `Period ${code}`,
 		rows,
+		deadlines,
 		all: counts.rows,
 		problems: counts.problems,
 		hiddenNote,

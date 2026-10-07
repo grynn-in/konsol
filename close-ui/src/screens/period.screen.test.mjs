@@ -13,6 +13,9 @@ import { gridView } from "../periodGrid.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PERIOD = path.join(__dirname, "Period.vue");
+const GOLDEN = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "../../../konsol/tests/fixtures/close_period_grid_payload.json"), "utf8"),
+);
 
 function read() {
   return fs.readFileSync(PERIOD, "utf8");
@@ -136,6 +139,9 @@ test("R01l: gridView keeps hiddenNote set when rows is empty (pure view model)",
     rows: [],
     counts: { rows: 0, problems: 0, hidden: 5 },
     rates_error: null,
+    // D61: the strip's keys, from the golden payload (the real producer).
+    deadlines: GOLDEN.deadlines,
+    signoff_overdue: GOLDEN.signoff_overdue,
   };
   const view = gridView(payload, false, new Date("2026-07-15T12:00:00Z"), "Europe/London");
   assert.equal(view.rows.length, 0);
@@ -209,7 +215,7 @@ test("Y63 (C-R1): no Remind button on the grid: no REMIND, no remind POST, no Re
 
 test("D61: the deadlines strip renders gridView's deadlines above the grid, text binding, Overdue v-if gated", () => {
   const tpl = template(read());
-  const m = tpl.match(/v-for="item in gridViewResult\.deadlines"/);
+  const m = tpl.match(/v-for="\(?item\b[^"]* in gridViewResult\.deadlines"/);
   assert.ok(m, "the strip iterates gridViewResult.deadlines");
   const stripAt = tpl.indexOf(m[0]);
   const tableAt = tpl.indexOf("<table");
