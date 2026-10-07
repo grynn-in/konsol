@@ -14,7 +14,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ownershipEffectView } from "../rates.js";
+import { ownershipEffectView, ownershipChangeBody, pendingView } from "../rates.js";
+import * as ratesModule from "../rates.js";
 import { dueDateText } from "../dueDate.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,7 @@ const d = (iso) => dueDateText(iso, "test");
 const OWNERSHIP = fixture("close_ownership_payload.json");
 const PREVIEW_OK = fixture("close_ownership_preview_payload.json");
 const PREVIEW_REFUSED = fixture("close_ownership_preview_refused.json");
+const PENDING = fixture("close_rates_pending_payload.json");
 
 function read() {
   return fs.readFileSync(SECTION, "utf8");
@@ -103,7 +105,7 @@ test("Save draft is disabled through saveBlocked(…), and the save emits `saved
   assert.ok(i > 0, "a Save draft control");
   const tag = tpl.slice(tpl.lastIndexOf("<Button", i), i);
   assert.match(tag, /:disabled="[^"]*\bsaveBlocked\(/, "Save draft's :disabled is saveBlocked(…)");
-  assert.match(script(source), /defineEmits\(\s*\[\s*["']saved["']\s*\]\s*\)/);
+  assert.match(script(source), /defineEmits\(\s*\[\s*["']saved["']\s*,\s*["']edit-opened["']\s*\]\s*\)/);
   assert.match(decl(script(source), "saveDraft"), /emit\(\s*["']saved["']/);
 });
 
@@ -226,18 +228,23 @@ test("Failure path: a period choice without its start date throws", () => {
 // The preview request
 // ---------------------------------------------------------------------------
 
-function endpointParams(name) {
+/** The endpoint's parameters as `[name, optional]`, read from rates_api.py. */
+function endpointSignature(name) {
   const py = fs.readFileSync(path.join(REPO, "konsol", "close", "rates_api.py"), "utf8");
   const m = py.match(new RegExp(`def ${name}\\(([^)]*)\\)`));
   assert.ok(m, `rates_api declares ${name}`);
-  return m[1].split(",").map((s) => s.trim().split("=")[0]).filter(Boolean);
+  return m[1].split(",").map((s) => s.trim()).filter(Boolean).map((s) => [s.split("=")[0].trim(), s.includes("=")]);
 }
 
 test("previewParams carries exactly preview_ownership_change's parameters, from the chosen node and period", () => {
   const { entityOptions, periodGroups, previewParams } = helpers();
+  const signature = endpointSignature("preview_ownership_change");
+  const all = signature.map(([n]) => n).sort();
+  const required = signature.filter(([, optional]) => !optional).map(([n]) => n).sort();
+  assert.deepEqual(signature.filter(([, optional]) => optional).map(([n]) => n), ["name"], "only `name` is optional (O66)");
   const entity = entityOptions(OWNERSHIP.change.entities)[1];
   const period = periodGroups(OWNERSHIP.change.periods)[1].options[0];
-  const params = previewParams(entity, period, " 80 ", "full");
+  const params = previewParams(entity, period, " 80 ", "full", null);
   assert.deepEqual(params, {
     fiscal_year: 2025,
     fiscal_period: 10,
@@ -246,7 +253,11 @@ test("previewParams carries exactly preview_ownership_change's parameters, from 
     ownership_pct: "80",
     consolidation_method: "full",
   });
-  assert.deepEqual(Object.keys(params).sort(), endpointParams("preview_ownership_change").sort());
+  assert.deepEqual(Object.keys(params).sort(), required, "a new change sends every required parameter and no name");
+  const edited = previewParams(entity, period, " 80 ", "full", "OP-ZZ5B1-2025-10-01");
+  assert.equal(edited.name, "OP-ZZ5B1-2025-10-01", "O67: editing a draft previews it by name");
+  assert.deepEqual(Object.keys(edited).sort(), all, "an edit sends exactly every parameter");
+  assert.equal("name" in previewParams(entity, period, "80", "full", ""), false, "a blank name is no edit");
 });
 
 test("Failure path: an incomplete form asks for no preview (null), so no refusal is guessed for an untouched field", () => {
@@ -422,4 +433,196 @@ test("A request error for the newest input is shown as its message; cancel drops
   await settle();
   assert.equal(h.shown.length, 1, "a cancelled request is never shown");
   assert.equal(h.calls.length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// konsol#305 O67 (wireframe-4.2.md section 1, "The Analyst can edit it until
+// it is approved", confirmed by Deepak Pai 7 Oct): a saved draft is edited
+// in this form. What may be edited is the server's: get_pending's `edit`
+// (O69) through rates.js ownershipDraftEdits, and the preview's `pending`
+// names. No title or sentence is parsed. Editing sends `name` in both the
+// preview and the save, through the one send path each.
+// ---------------------------------------------------------------------------
+
+const EDITABLE = () => ratesModule.ownershipDraftEdits(pendingView(PENDING).items);
+
+function editHelpers() {
+  return load(["need", "entityOptions", "periodGroups", "previewParams", "effectPanel", "editForm", "pendingEdits"], {
+    ownershipEffectView,
+    dueDateText,
+  });
+}
+
+test("O67 editForm: the golden pending draft's server edit loads its node, first period, pct and method", () => {
+  const { entityOptions, periodGroups, previewParams, editForm } = editHelpers();
+  const entities = entityOptions(OWNERSHIP.change.entities);
+  const groups = periodGroups(OWNERSHIP.change.periods);
+  const name = "OP-ZZ5B1-2025-10-01";
+  const edit = EDITABLE()[name];
+  assert.ok(edit, "the golden draft is editable");
+  const loaded = editForm(name, edit, entities, groups);
+  assert.deepEqual(loaded, { entityKey: "ZZ5B1|ECL_GROUP", periodKey: "2025/10", pct: "80", method: "full" });
+  const entity = entities.find((o) => o.key === loaded.entityKey);
+  const period = groups.flatMap((g) => g.options).find((o) => o.key === loaded.periodKey);
+  assert.deepEqual(previewParams(entity, period, loaded.pct, loaded.method, name), {
+    fiscal_year: 2025,
+    fiscal_period: 10,
+    consolidation_group: "ECL_GROUP",
+    entity: "ZZ5B1",
+    ownership_pct: "80",
+    consolidation_method: "full",
+    name,
+  });
+});
+
+test("O67 failure path: an edit whose node or period is not a choice here, or that lacks a key, throws naming the draft", () => {
+  const { entityOptions, periodGroups, editForm } = editHelpers();
+  const entities = entityOptions(OWNERSHIP.change.entities);
+  const groups = periodGroups(OWNERSHIP.change.periods);
+  const name = "OP-ZZ5B1-2025-10-01";
+  const edit = EDITABLE()[name];
+  assert.throws(() => editForm(name, { ...edit, entity: null }, entities, groups), /OP-ZZ5B1-2025-10-01[\s\S]*ECL_GROUP/, "the group node is not an entity choice");
+  assert.throws(() => editForm(name, { ...edit, entity: "ZZ5B2" }, entities, groups), /OP-ZZ5B1-2025-10-01[\s\S]*ZZ5B2/, "an entity not on this form");
+  assert.throws(() => editForm(name, { ...edit, fiscal_period: 11 }, entities, groups), /OP-ZZ5B1-2025-10-01[\s\S]*FY2025 P11/, "a period not offered");
+  for (const key of ["consolidation_group", "entity", "fiscal_year", "fiscal_period", "ownership_pct", "consolidation_method"]) {
+    const partial = { ...edit };
+    delete partial[key];
+    assert.throws(() => editForm(name, partial, entities, groups), new RegExp(key), key);
+  }
+});
+
+test("O67 pendingEdits: the preview's awaiting drafts offer Edit only where the server made them editable", () => {
+  const { pendingEdits } = editHelpers();
+  const editable = EDITABLE();
+  assert.deepEqual(pendingEdits(PREVIEW_REFUSED.pending, editable), [], "the refused golden's draft is not in the pending list's edits");
+  assert.deepEqual(
+    pendingEdits(["OP-ZZ5B1-2025-10-01", "OP-ZZ5B2-2025-10-01"], editable),
+    ["OP-ZZ5B1-2025-10-01"],
+    "the Desk draft (edit null) offers no Edit",
+  );
+  assert.deepEqual(pendingEdits([], editable), []);
+  assert.throws(() => pendingEdits(undefined, editable), /pending/);
+});
+
+test("O67: the preview's `pending` reaches the panel; a preview without it is an error and blocks Save", () => {
+  const { effectPanel } = editHelpers();
+  assert.deepEqual(effectPanel({ payload: PREVIEW_REFUSED }).pending, PREVIEW_REFUSED.pending);
+  assert.deepEqual(effectPanel({ payload: PREVIEW_OK }).pending, []);
+  const { pending, ...noPending } = PREVIEW_OK;
+  const panel = effectPanel({ payload: noPending });
+  assert.match(panel.error, /pending/);
+  const { saveBlocked } = helpers();
+  assert.equal(saveBlocked(panel, true, false), true);
+});
+
+/** The section's own saveDraft, with the real ownershipChangeBody and a recording post. */
+function saveHarness(editingName) {
+  const { savedLine, saveBlocked } = helpers();
+  const posts = [];
+  const emitted = [];
+  const refs = {
+    preview: { panel: { problems: [], view: {}, error: null }, fresh: true },
+    saving: { value: false },
+    selectedPeriod: { value: { fiscal_year: 2025, fiscal_period: 10 } },
+    selectedEntity: { value: { group: "ECL_GROUP", entity: "ZZ5B1" } },
+    form: { entityKey: "ZZ5B1|ECL_GROUP", periodKey: "2025/10", pct: "75", method: "full" },
+    editing: { value: editingName },
+    saveError: { value: null },
+    saved: { value: null },
+  };
+  const js = script(read());
+  const inject = {
+    ...refs,
+    saveBlocked,
+    savedLine,
+    ownershipChangeBody,
+    SAVE_OWNERSHIP_CHANGE: "konsol.close.rates_api.save_ownership_change",
+    post: async (method, body) => {
+      posts.push([method, body]);
+      return { name: body.name || "OP-ECL_GROUP-ZZ5B1-2025-10-01", docstatus: 0 };
+    },
+    emit: (...args) => emitted.push(args),
+  };
+  const saveDraft = new Function(...Object.keys(inject), `${decl(js, "saveDraft")}return saveDraft;`)(...Object.values(inject));
+  return { saveDraft, posts, emitted, refs };
+}
+
+test("O67: saving an edit posts the draft's name through the one save path; the same saved line shows and editing ends", async () => {
+  const h = saveHarness("OP-ZZ5B1-2025-10-01");
+  await h.saveDraft();
+  assert.equal(h.posts.length, 1);
+  assert.equal(h.posts[0][0], "konsol.close.rates_api.save_ownership_change");
+  assert.deepEqual(h.posts[0][1], {
+    fiscal_year: 2025,
+    fiscal_period: 10,
+    consolidation_group: "ECL_GROUP",
+    entity: "ZZ5B1",
+    ownership_pct: 75,
+    consolidation_method: "full",
+    name: "OP-ZZ5B1-2025-10-01",
+  });
+  assert.equal(
+    h.refs.saved.value,
+    "Draft OP-ZZ5B1-2025-10-01 saved — awaiting the Close Lead's approval (Historical equity rates tab, and Approvals).",
+  );
+  assert.equal(h.refs.editing.value, null, "the edit is done");
+  assert.deepEqual(h.emitted, [["saved", "OP-ZZ5B1-2025-10-01"]]);
+});
+
+test("O67 failure path: a new change (not editing) posts no name", async () => {
+  const h = saveHarness(null);
+  await h.saveDraft();
+  assert.equal(h.posts.length, 1);
+  assert.equal("name" in h.posts[0][1], false);
+});
+
+/** The section's own openDraft, with the real editForm and the golden choices. */
+function openHarness(editable) {
+  const { entityOptions, periodGroups, editForm } = editHelpers();
+  const refs = {
+    props: { editable },
+    choices: { value: { entities: entityOptions(OWNERSHIP.change.entities), groups: periodGroups(OWNERSHIP.change.periods), error: null } },
+    form: { entityKey: "", periodKey: "", pct: "", method: "" },
+    editing: { value: null },
+    editError: { value: null },
+    saved: { value: "an earlier line" },
+  };
+  const js = script(read());
+  const inject = { ...refs, editForm };
+  const openDraft = new Function(...Object.keys(inject), `${decl(js, "openDraft")}return openDraft;`)(...Object.values(inject));
+  return { openDraft, refs };
+}
+
+test("O67 openDraft: loads the server's edit into the form and marks the draft being edited", () => {
+  const h = openHarness(EDITABLE());
+  h.openDraft("OP-ZZ5B1-2025-10-01");
+  assert.deepEqual({ ...h.refs.form }, { entityKey: "ZZ5B1|ECL_GROUP", periodKey: "2025/10", pct: "80", method: "full" });
+  assert.equal(h.refs.editing.value, "OP-ZZ5B1-2025-10-01");
+  assert.equal(h.refs.editError.value, null);
+  assert.equal(h.refs.saved.value, null, "an older saved line is cleared");
+});
+
+test("O67 failure path: opening a draft the server did not make editable shows an error and loads nothing", () => {
+  const h = openHarness(EDITABLE());
+  h.openDraft("OP-ZZ5B2-2025-10-01");
+  assert.match(h.refs.editError.value, /OP-ZZ5B2-2025-10-01/);
+  assert.equal(h.refs.editing.value, null);
+  assert.deepEqual({ ...h.refs.form }, { entityKey: "", periodKey: "", pct: "", method: "" });
+});
+
+test("O67 wiring: props editable + openEdit, opened once on mount, the preview watch sends the edited name, Edit buttons from pendingEdits", () => {
+  const source = read();
+  const js = script(source);
+  assert.match(js, /editable:\s*\{\s*type:\s*Object/);
+  assert.match(js, /openEdit:\s*\{\s*type:\s*String/);
+  assert.match(js, /watch\(\s*\(\)\s*=>\s*props\.openEdit,[\s\S]*?openDraft\([\s\S]*?emit\(\s*["']edit-opened["'][\s\S]*?\{\s*immediate:\s*true\s*\}/);
+  assert.match(js, /previewParams\(selectedEntity\.value,\s*selectedPeriod\.value,\s*form\.pct,\s*form\.method,\s*editing\.value\)/);
+  assert.match(decl(js, "saveDraft"), /name:\s*editing\.value/);
+  const tpl = template(source);
+  assert.match(tpl, /v-for="n in pendingEdits\(preview\.panel\.pending, editable\)"/);
+  assert.match(tpl, /@click="openDraft\(n\)"/);
+  assert.match(tpl, /Editing draft \{\{\s*editing\s*\}\}/);
+  assert.match(tpl, /@click="stopEditing"/);
+  assert.match(tpl, /\{\{\s*editError\s*\}\}/);
+  assert.doesNotMatch(js, /\.title\b|\.detail\b|problems\[[^\]]*\]\.(match|split|includes)/, "no title or sentence parsing");
 });
