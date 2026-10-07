@@ -69,6 +69,7 @@
           }
         ]
       },
+      "effect_error": null,
       "entity": "DE02",
       "inline": true,
       "kind_label": "Ownership period",
@@ -89,6 +90,7 @@
       "doctype": "Ownership Period",
       "edited_by": [],
       "effect": null,
+      "effect_error": null,
       "entity": "UK01",
       "inline": true,
       "kind_label": "Ownership period",

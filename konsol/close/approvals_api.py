@@ -44,8 +44,10 @@ before/after the Rates tab shows (O57), or None for a draft without
 draft with ``supersedes``, one read of its predecessor, one fiscal calendar
 read and one ``signoff_gate.latest_signed_runs()``; a Desk draft or a draft
 outside the caller's entities costs none (pending OP drafts are few; live,
-7 Oct: 0). A predecessor that is no longer approved is refused with a
-sentence naming the draft, never shown with a guessed effect.
+7 Oct: 0). A draft whose effect cannot be read (a predecessor no longer
+approved) carries ``effect`` None and ``effect_error``, a sentence naming
+the draft, never a guessed effect; the rest of the queue is built as normal
+(R52i, review S2). ``effect_error`` is None on every other OP item.
 ``ownership_change`` is imported inside the call, only when an OP draft is
 pending.
 
@@ -298,11 +300,16 @@ def queue_for(user, roles):
                 # are formatted; None for a Desk draft. Visibility mirrors
                 # approvals_model's cut (a blank entity, a group node, is
                 # visible); a draft it hides is never read here.
+                # R52i (review S2): a draft whose effect cannot be read is an
+                # error on its own item; the rest of the queue (and My work,
+                # which reads its waiting count) is built as normal.
                 try:
-                    doc["effect"] = ownership_change.effect_for(doc)
+                    doc["effect"], doc["effect_error"] = ownership_change.effect_for(doc), None
                 except ValueError as e:
-                    frappe.throw("The pending ownership change %s cannot be shown: %s. "
-                                 "Correct or delete the draft in Desk." % (name, e))
+                    doc["effect"] = None
+                    doc["effect_error"] = ("The pending ownership change %s cannot be shown: "
+                                           "%s. Correct or delete the draft in Desk."
+                                           % (name, str(e).rstrip(".")))
             doc["created"] = _iso(doc.pop("creation", None))
             for field in date_fields:
                 doc[field] = _iso(doc.get(field))
