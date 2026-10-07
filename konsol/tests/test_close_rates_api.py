@@ -1503,11 +1503,11 @@ def test_o56_the_draft_ends_where_the_current_period_ends_as_the_effect_says():
     # The preview's effect gives after.to = the current period's end; the
     # saved draft must be that change, not an open-ended one.
     site = _o55_site()
-    site.ops[0]["end_date"] = date(2026, 3, 31)
+    site.ops[0]["end_date"] = date(2025, 12, 31)
     _o56_save(site)
     doc = site.new_docs[0]
-    assert doc._data["end_date"] == "2026-03-31"
-    assert doc._data["superseded_end_date"] == "2026-03-31"
+    assert doc._data["end_date"] == "2025-12-31"
+    assert doc._data["superseded_end_date"] == "2025-12-31"
 
 
 def test_o56_forged_keys_never_reach_the_doc_the_signature_is_pinned():
@@ -1545,10 +1545,18 @@ def test_o56_is_a_post_with_a_literal_role_tuple_and_never_commits():
     assert ast.unparse(call.func) == "frappe.only_for"
     assert isinstance(call.args[0], ast.Tuple), ast.unparse(call)
     assert tuple(e.value for e in call.args[0].elts) == O56_SAVE_ROLES
-    body = ast.unparse(fn)
+    # Code only (the docstring may say what the endpoint does not do).
+    used = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Attribute):
+            used.add(node.attr)
+        elif isinstance(node, ast.Name):
+            used.add(node.id)
+        elif isinstance(node, ast.keyword) and node.arg:
+            used.add(node.arg)
     for banned in ("commit", "ignore_permissions", "ignore_validate", "ignore_mandatory",
-                   "submit"):
-        assert banned not in body, banned
+                   "ignore_links", "submit"):
+        assert banned not in used, banned
 
 
 def test_o56_failure_path_a_viewer_is_refused_by_only_for_before_any_read():

@@ -465,12 +465,17 @@ OWNERSHIP_CHANGE_REGULAR_ONLY = (
 
 
 def _ownership_preview(fiscal_year, fiscal_period, consolidation_group, entity, ownership_pct,
-                       consolidation_method):
+                       consolidation_method, exclude=None):
     """``(ctx, problems, effect)`` of a proposed ownership change: the one
     reading the preview (O55) and the save (O56) share. The scope check comes
     first, before any read; corrupt data (``ValueError`` from
     ``ownership_change``) is thrown as a sentence. ``effect`` is None while
-    any problem stands: the effect of a refused change is never guessed."""
+    any problem stands: the effect of a refused change is never guessed.
+
+    ``exclude`` (O56) is the exact name of the draft being edited:
+    ``ownership_change.context`` reports every draft on the node as pending,
+    so that one draft is left out of ``pending_exists`` by name equality,
+    never by a name pattern. Every other draft on the node still refuses."""
     allowed = allowed_entity_codes()
     if allowed is not None and entity not in allowed:
         frappe.throw(f"You cannot see entity {entity or '(blank)'}: ask an administrator for "
@@ -482,6 +487,11 @@ def _ownership_preview(fiscal_year, fiscal_period, consolidation_group, entity, 
         ctx = ownership_change.context(consolidation_group, entity, *key)
     except ValueError as e:
         frappe.throw(str(e))
+    if exclude:
+        others = sorted(r["name"] for r in ownership_change._node_periods(consolidation_group,
+                                                                          entity)
+                        if int(r["docstatus"] or 0) == 0 and r["name"] != exclude)
+        ctx["pending_exists"] = ", ".join(others) if others else None
     problems = []
     period_type = ctx["period"].get("period_type")
     if period_type != "Regular":
@@ -515,3 +525,74 @@ def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, en
     ctx, problems, effect = _ownership_preview(fiscal_year, fiscal_period, consolidation_group,
                                                entity, ownership_pct, consolidation_method)
     return {"problems": problems, "effect": effect, "current": ctx["current"]}
+
+
+def _edit_refusal(doc, consolidation_group, entity, effective_date):
+    """The sentence refusing an edit of ``doc`` through
+    ``save_ownership_change``, or None. Only a draft of the same node and the
+    same first day is edited: the name carries the effective date (autoname),
+    so another period is a new draft, never a silent move."""
+    status = int(doc.get("docstatus") or 0)
+    if status != 0:
+        return "%s is %s: record a new change instead." % (
+            doc.name, "approved" if status == 1 else "cancelled")
+    theirs = (doc.get("consolidation_group"), doc.get("data_area_id") or None,
+              _iso(doc.get("effective_date")))
+    asked = (consolidation_group, entity or None, effective_date)
+    if theirs != asked:
+        return ("%s is the change for %s in %s from %s, not %s in %s from %s: edit a draft "
+                "under its own entity and period." % (
+                    doc.name, theirs[1] or "the group node", theirs[0], theirs[2],
+                    asked[1] or "the group node", asked[0], asked[2]))
+    return None
+
+
+@frappe.whitelist(methods=["POST"])
+def save_ownership_change(fiscal_year, fiscal_period, consolidation_group, entity,
+                          ownership_pct, consolidation_method, name=None):
+    """O56 (story 4.2; R2: the Analyst drafts, the Close Lead approves;
+    #305-4.2-1, #305-Q1-1; wireframe-4.2.md as drawn): save an ownership
+    change as a draft Ownership Period starting on the chosen period's first
+    day (C-O2), superseding the current period (``supersedes`` its name,
+    ``superseded_end_date`` its end date). The draft ends where the current
+    period ends, as the preview's effect says (``after.to``).
+
+    With ``name``, edits that draft instead (same node, same first day); the
+    draft being edited is left out of the "already awaiting approval" check.
+    Every refusal is thrown before the write. ``insert()`` / ``save()`` carry
+    no ignore flag, so the Ownership Period controller (O53) and Frappe's
+    permissions decide the rest; nothing here submits or commits (the request
+    commits). The signature names no ``docstatus``, ``supersedes``,
+    ``end_date`` or deal field, so a forged key never reaches the document.
+
+    Returns ``{"name", "docstatus": 0}``.
+    """
+    frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
+    ctx, problems, _effect = _ownership_preview(
+        fiscal_year, fiscal_period, consolidation_group, entity, ownership_pct,
+        consolidation_method, exclude=name)
+    doc = None
+    if name:
+        doc = frappe.get_doc(OP, name)
+        refusal = _edit_refusal(doc, consolidation_group, entity, ctx["effective_date"])
+        if refusal:
+            frappe.throw(refusal)
+    if problems:
+        frappe.throw(" ".join(problems))
+
+    current = ctx["current"]
+    values = {"ownership_pct": float(ownership_pct),
+              "consolidation_method": consolidation_method,
+              "supersedes": current["name"],
+              "superseded_end_date": current["end_date"]}
+    if doc is None:
+        doc = frappe.get_doc(dict(values, doctype=OP, consolidation_group=consolidation_group,
+                                  data_area_id=entity or None,
+                                  effective_date=ctx["effective_date"],
+                                  end_date=current["end_date"]))
+        doc.insert()
+    else:
+        for field, value in values.items():
+            setattr(doc, field, value)
+        doc.save()
+    return {"name": doc.name, "docstatus": doc.docstatus}
