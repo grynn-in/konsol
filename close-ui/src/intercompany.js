@@ -347,20 +347,19 @@ function balanceRow(row, canDraft) {
 }
 
 //: konsol#305 I54 (S8): a draft whose pair has a matching rule and whose
-//: ending inventory is above 0 is in the server's `pending_gap` (dbt
-//: eliminates only approved balances). An unreadable inventory is noted too,
-//: as ic_balance_model.pending_gap does: never guessed to be 0.
+//: ending inventory is above 0 (or unreadable) is in the server's
+//: `pending_gap`. R52n (review U7, coordinator ruling S8/U7): the server sends
+//: that per row as the boolean `pending_rule` (R52k); the SPA reads it and
+//: never re-derives the rule. A missing or non-boolean flag is a bug: throw.
 const PENDING_NOTE = "Blocks sign-off: approve, or delete the draft";
 
 function pendingNote(row) {
-	if (row.status !== "Draft" || !row.rules || !row.rules.length) return null;
-	const inventory = Number(row.ending_inventory_from_ic);
-	const readable =
-		row.ending_inventory_from_ic !== null &&
-		row.ending_inventory_from_ic !== undefined &&
-		String(row.ending_inventory_from_ic).trim() !== "" &&
-		Number.isFinite(inventory);
-	return readable && inventory <= 0 ? null : PENDING_NOTE;
+	if (typeof row.pending_rule !== "boolean") {
+		throw new Error(
+			`IC Balance ${row.name} has no boolean \`pending_rule\` (get_ic_balances always sends it)`,
+		);
+	}
+	return row.pending_rule ? PENDING_NOTE : null;
 }
 
 //: review-w5 U5: `get_ic_balances` always sends these keys, so a missing one
