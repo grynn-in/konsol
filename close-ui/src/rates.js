@@ -721,3 +721,36 @@ export function ownershipEffectView(effect) {
     notShown: effect.not_shown,
   };
 }
+
+/** The sentence an Ownership Period drafted in Desk shows in place of the
+ * effect panel (O57: such a draft arrives with `effect: null`). */
+export const DESK_DRAFT = "Drafted in Desk: effect not previewed.";
+
+/**
+ * konsol#305 R52o (review U6, S2): the one EFFECT IF APPROVED view of a
+ * pending Ownership Period item, shared by the pending list and the
+ * Approvals detail, so neither screen keeps its own copy.
+ * - `effect_error` set (R52i: the server could not read this draft's
+ *   effect) -> `{error: <the server's sentence>}`;
+ * - `effect: null` -> `{desk: DESK_DRAFT}`;
+ * - otherwise `{view}`: `ownershipEffectView(item.effect)` without its
+ *   Covers row, because the pending panel (wireframe-4.2.md section 3)
+ *   shows the current period's end as its own "Ends" line instead.
+ * A missing `effect` or `effect_error` key is a server regression and
+ * throws, as does an effect `ownershipEffectView` refuses.
+ */
+export function opEffectView(item) {
+  for (const key of ["effect", "effect_error"]) {
+    if (!item || !(key in item)) {
+      throw new Error(`opEffectView: the pending item ${item && item.name} has no ${key}`);
+    }
+  }
+  if (item.effect_error !== null && item.effect_error !== undefined) {
+    return { error: item.effect_error };
+  }
+  if (item.effect === null) {
+    return { desk: DESK_DRAFT };
+  }
+  const view = ownershipEffectView(item.effect);
+  return { view: { ...view, rows: view.rows.filter((row) => row.label !== "Covers") } };
+}
