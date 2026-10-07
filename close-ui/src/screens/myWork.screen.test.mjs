@@ -169,3 +169,29 @@ test("the gap-item Desk link opens in a new tab and is marked as Desk", () => {
   assert.match(gap, /rel="noopener[^"]*"/);
   assert.match(gap, /\bDesk\b/, "the link says it opens the Desk");
 });
+
+// --- Y64 (stories 1.5, 1.2): the reminded line under a TB item's title --------
+
+test("(Y64) MyWork shows myWork.js's remindedLine under the title, in the user's zone", () => {
+  const source = read();
+  const s = script(source);
+  assert.match(s, /import\s*\{[^}]*\bremindedLine\b[^}]*\}\s*from\s*["']\.\.\/myWork\.js["']/);
+  assert.match(s, /import\s*\{[^}]*\buserTimeZone\b[^}]*\}\s*from\s*["']\.\.\/timefmt\.js["']/);
+  assert.match(s, /remindedLine\(\s*item\s*,\s*today\s*,\s*timeZone\s*\)/, "the injected today and the user's zone");
+  const t = template(source);
+  const title = t.indexOf("{{ item.title }}");
+  const line = t.search(/v-if="remindedOf\(item\)"/);
+  assert.ok(title >= 0 && line > title, "the reminded line sits under the title");
+});
+
+test("(Y64) failure path: the screen formats no reminder text itself and has no Remind button", () => {
+  const source = read();
+  assert.doesNotMatch(source, /Reminded|×| reminded`|of \$\{/, "the text comes from myWork.js/remind.js only");
+  assert.doesNotMatch(source, /remind_api|REMIND/, "My work shows the line; Remind lives on the TB list and the IC panel");
+});
+
+test("(Y64) failure path: a reminded value the screen cannot read is the screen's error, not a crash", () => {
+  const s = script(read());
+  const grouped = s.slice(s.indexOf("const grouped = computed("), s.indexOf("const groups = computed("));
+  assert.match(grouped, /remindedLine\(/, "lines are built inside grouped's try, so a throw becomes loadError");
+});
