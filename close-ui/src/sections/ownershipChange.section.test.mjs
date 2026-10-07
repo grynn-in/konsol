@@ -24,6 +24,8 @@ const REPO = path.join(__dirname, "..", "..", "..");
 function fixture(name) {
   return JSON.parse(fs.readFileSync(path.join(REPO, "konsol", "tests", "fixtures", name), "utf8"));
 }
+/** The one date wording (dueDate.js); the ICU month abbreviation varies by Node build. */
+const d = (iso) => dueDateText(iso, "test");
 const OWNERSHIP = fixture("close_ownership_payload.json");
 const PREVIEW_OK = fixture("close_ownership_preview_payload.json");
 const PREVIEW_REFUSED = fixture("close_ownership_preview_refused.json");
@@ -47,7 +49,7 @@ function template(source) {
 
 /** A top-level `function NAME(` or `const NAME =` declaration of the section's script. */
 function decl(js, name) {
-  const fn = js.match(new RegExp(`\\nfunction ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}\\n`));
+  const fn = js.match(new RegExp(`\\n(?:async )?function ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}\\n`));
   if (fn) return fn[0];
   const c = js.match(new RegExp(`\\nconst ${name} = [\\s\\S]*?;\\n`));
   assert.ok(c, `the section declares ${name}`);
@@ -275,7 +277,7 @@ test("The golden preview gives the effect panel through the real ownershipEffect
     [
       ["Ownership", "100 %", "80 %"],
       ["Method", "full", "full"],
-      ["Covers", "Wed 1 Jan 2025 → Tue 30 Sep 2025", "Wed 1 Oct 2025 → open-ended"],
+      ["Covers", `${d("2025-01-01")} → ${d("2025-09-30")}`, `${d("2025-10-01")} → open-ended`],
     ],
   );
   assert.equal(saveBlocked(panel, true, false), false);
@@ -316,10 +318,10 @@ test("Failure path: Save is disabled while the shown preview is stale, while sav
 
 test("Currently: the golden current period as the wireframe's line; a missing key throws", () => {
   const { currentText } = helpers();
-  assert.equal(currentText(PREVIEW_OK.current), "100 % · full · from Wed 1 Jan 2025 · open-ended (OP-ZZ5B1-1)");
+  assert.equal(currentText(PREVIEW_OK.current), `100 % · full · from ${d("2025-01-01")} · open-ended (OP-ZZ5B1-1)`);
   assert.equal(
     currentText({ ...PREVIEW_OK.current, end_date: "2025-09-30" }),
-    "100 % · full · from Wed 1 Jan 2025 · to Tue 30 Sep 2025 (OP-ZZ5B1-1)",
+    `100 % · full · from ${d("2025-01-01")} · to ${d("2025-09-30")} (OP-ZZ5B1-1)`,
   );
   const { name, ...noName } = PREVIEW_OK.current;
   assert.throws(() => currentText(noName), /name/);
