@@ -589,13 +589,13 @@ function balancesPayload(overrides) {
 			{
 				name: "ICB-FR01-DE01-2025-P7", selling_entity: "FR01", buying_entity: "DE01",
 				fiscal_year: 2025, fiscal_period: 7, ic_sales_amount: 1000, ending_inventory_from_ic: 250.5,
-				status: "Approved", rules: [], missing_rule: true,
+				status: "Approved", rules: [], missing_rule: true, pending_rule: false,
 			},
 			{
 				name: "ICB-UK01-DE01-2025-P7", selling_entity: "UK01", buying_entity: "DE01",
 				fiscal_year: 2025, fiscal_period: 7, ic_sales_amount: 1234.5, ending_inventory_from_ic: 0,
 				status: "Draft", rules: [{ rule_id: "R-UK", rule_name: "UK margin", margin_pct: 12.5 }],
-				missing_rule: false,
+				missing_rule: false, pending_rule: false,
 			},
 		],
 		gap: {
@@ -810,27 +810,50 @@ test("I54: the fixture's draft with a matching rule carries the blocks-sign-off 
 	assert.deepEqual(noted, golden.pending_gap.pairs.flatMap((p) => p.names).sort());
 });
 
-test("Failure path — I54: an approved row, a draft with inventory 0 or below, and a draft with no rule carry no note", () => {
+// --- konsol#305 R52n (review U7, coordinator ruling S8/U7): the row note
+// reads the server's per-row `pending_rule` flag (R52k). The SPA no longer
+// re-derives the rule from status, rules and inventory.
+
+test("R52n: on the real payload, the rows with a note are exactly those with pending_rule", () => {
 	const golden = goldenBalances();
-	const ruled = golden.balances.find((b) => b.rules.length > 0);
-	const cases = [
-		{ ...ruled, status: "Approved" },
-		{ ...ruled, ending_inventory_from_ic: 0 },
-		{ ...ruled, ending_inventory_from_ic: -5 },
-		{ ...ruled, rules: [], missing_rule: true },
-	];
-	for (const row of cases) {
-		const [view] = icBalancesView({ ...golden, balances: [row] }).rows;
-		assert.equal(view.pendingNote, null, JSON.stringify(row));
+	assert.ok(golden.balances.some((b) => b.pending_rule === true), "the golden has a pending row");
+	assert.ok(golden.balances.some((b) => b.pending_rule === false), "the golden has a row that is not pending");
+	const view = icBalancesView(golden);
+	const noted = view.rows.filter((r) => r.pendingNote !== null).map((r) => r.name).sort();
+	assert.deepEqual(noted, golden.balances.filter((b) => b.pending_rule).map((b) => b.name).sort());
+	for (const row of view.rows) {
+		assert.ok(row.pendingNote === null || row.pendingNote === PENDING_NOTE, row.name);
 	}
 });
 
-test("I54: a draft with a rule whose inventory cannot be read IS noted (never guessed, as pending_gap)", () => {
+test("Failure path — R52n: the server says no (pending_rule false) on a draft with a rule and inventory > 0: no note", () => {
 	const golden = goldenBalances();
-	const ruled = golden.balances.find((b) => b.rules.length > 0);
-	for (const inventory of ["x", null]) {
-		const [view] = icBalancesView({ ...golden, balances: [{ ...ruled, ending_inventory_from_ic: inventory }] }).rows;
-		assert.equal(view.pendingNote, PENDING_NOTE, String(inventory));
+	const ruled = golden.balances.find((b) => b.pending_rule === true);
+	assert.equal(ruled.status, "Draft");
+	assert.ok(ruled.rules.length > 0 && Number(ruled.ending_inventory_from_ic) > 0, "the flipped row would be re-derived as pending");
+	const [view] = icBalancesView({ ...golden, balances: [{ ...ruled, pending_rule: false }] }).rows;
+	assert.equal(view.pendingNote, null);
+});
+
+test("R52n: the server says yes (pending_rule true): the note shows, whatever the other fields", () => {
+	const golden = goldenBalances();
+	const plain = golden.balances.find((b) => b.pending_rule === false);
+	const [view] = icBalancesView({ ...golden, balances: [{ ...plain, pending_rule: true }] }).rows;
+	assert.equal(view.pendingNote, PENDING_NOTE);
+});
+
+test("Failure path — R52n: a row without pending_rule, or with a non-boolean one, throws naming it", () => {
+	const golden = goldenBalances();
+	const ruled = golden.balances.find((b) => b.pending_rule === true);
+	const missing = { ...ruled };
+	delete missing.pending_rule;
+	assert.throws(() => icBalancesView({ ...golden, balances: [missing] }), /pending_rule/);
+	for (const bad of [null, 1, 0, "true", "", undefined]) {
+		assert.throws(
+			() => icBalancesView({ ...golden, balances: [{ ...ruled, pending_rule: bad }] }),
+			/pending_rule/,
+			String(bad),
+		);
 	}
 });
 
