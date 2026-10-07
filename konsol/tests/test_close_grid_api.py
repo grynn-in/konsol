@@ -109,6 +109,14 @@ class _Site:
         self.reminder_calls = []          # Y57: (keys, topic) per close_event.reminders read
         self.data["User"] = []            # Y57: the reminder senders' full names
         self.user_filters = []            # Y57: the filters of each User read
+        # D57b (#305-Q5-1): ic_api.signoff_summary is computed by the REAL
+        # ic_model from ic_state/ic_rows; journals are counted by db.count.
+        self.ic_state = "checked"
+        self.ic_rows = []                 # gold_ic_reconciliation rows
+        self.ic_calls = []                # (fy, fp) per signoff_summary read
+        self.data["Consolidation Journal"] = []
+        self.count_calls = []             # (doctype, filters) per db.count read
+        self.count_error = None           # raised by db.count when set
 
 
 def _match(value, cond):
@@ -167,6 +175,15 @@ def _frappe(site):
     def forbidden(*a, **k):
         raise AssertionError("get_period_grid must not write")
 
+    def count(doctype, filters=None, **k):
+        site.count_calls.append((doctype, dict(filters or {})))
+        if site.count_error is not None:
+            raise site.count_error
+        if doctype not in site.data:
+            raise AssertionError("unexpected count(%r)" % doctype)
+        return len([r for r in site.data[doctype]
+                    if all(_match(r.get(f), c) for f, c in (filters or {}).items())])
+
     frappe.throw = throw
     frappe._ = lambda s: s
     frappe.only_for = only_for
@@ -176,7 +193,8 @@ def _frappe(site):
     frappe.session = types.SimpleNamespace(user=site.user)
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ,
                                          getdate=lambda *a: site.today)
-    frappe.db = types.SimpleNamespace(set_value=forbidden, commit=forbidden, sql=forbidden)
+    frappe.db = types.SimpleNamespace(set_value=forbidden, commit=forbidden, sql=forbidden,
+                                      count=count)
     frappe.get_doc = forbidden
     frappe.enqueue = forbidden
     return frappe
@@ -261,6 +279,15 @@ def _load_api(site):
                 and r["period_type"] == "Regular"}
 
     deadlines.period_deadlines = period_deadlines
+    # D57b: ic_api.signoff_summary, built by the REAL ic_model.signoff_line
+    # (what the real helper returns for each state).
+    ic_api = types.ModuleType("konsol.close.ic_api")
+
+    def signoff_summary(fy, fp):
+        site.ic_calls.append((fy, fp))
+        return _model("ic_model").signoff_line(site.ic_state, list(site.ic_rows), [], [])
+
+    ic_api.signoff_summary = signoff_summary
 
     stubs = {
         "konsol.fiscal_calendar": fiscal_calendar,
@@ -271,6 +298,7 @@ def _load_api(site):
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run,
         "konsol.close.close_event": close_event,
         "konsol.close.deadlines": deadlines,
+        "konsol.close.ic_api": ic_api,
     }
     mods.update(stubs)
     for full, module in stubs.items():
@@ -638,10 +666,13 @@ def _golden_site():
     """D57: plus a declared rule (TB 5, IC 7, sign-off 3, journals blank) on
     2025-10-08 with no close run: ZZA (Missing) is overdue, the TB, IC and
     sign-off dates are past, journals read "No due date declared", and
-    ``signoff_overdue`` is True."""
+    ``signoff_overdue`` is True. D57b: one over-tolerance pair is open, so
+    ``ic_overdue`` is True; journals are undeclared, so ``journals_overdue``
+    is False."""
     site = _reminded_site()
     site.deadline_rules = [_rule(date(2025, 1, 1), tb=5, ic=7, signoff=3)]
     site.today = date(2025, 10, 8)
+    site.ic_rows = [_pair("matched", "ZZB", "ZZC"), _pair("over_tolerance")]
     return site
 
 
@@ -948,3 +979,140 @@ def test_the_golden_fixture_shows_overdue():
     assert golden["signoff_overdue"] is True
     assert golden["deadlines"]["journals"]["text"] == "No due date declared"
     assert [r["entity"] for r in golden["rows"] if r["tb"]["overdue"]] == ["ZZA"]
+
+
+# --- D57b (#305-Q5-1, Deepak Pai, 7 Oct): IC and journals overdue --------------
+# IC step done = no open over-tolerance pair; journals step done = no draft or
+# pending (docstatus 0) Consolidation Journal for the period. The grid decides
+# both flags from deadline_model.ic_open / journals_open; the SPA never does.
+
+def _pair(status, a="ZZA", b="ZZB"):
+    return {"consolidation_group": "ZZG", "entity_a": a, "account_a": "1100",
+            "entity_b": b, "account_b": "2100", "match_status": status,
+            "difference": 0.0, "tolerance": 1.0}
+
+
+def _journal(name, docstatus, fp=9):
+    return _D(name=name, fiscal_year=2025, fiscal_period=fp, docstatus=docstatus)
+
+
+def _q5_site(today, ic=4, journals=6):
+    """FY2025 P09 ends Sun 28 Sep. Mon-Fri, IC 4 -> Thu 2 Oct, journals 6 ->
+    Mon 6 Oct."""
+    site = _Site()
+    site.deadline_rules = [_rule(date(2025, 1, 1), ic=ic, journals=journals)]
+    site.today = today
+    return site
+
+
+def test_a_past_ic_date_with_an_open_over_tolerance_pair_is_ic_overdue():
+    site = _q5_site(date(2025, 10, 7))
+    site.ic_rows = [_pair("matched"), _pair("over_tolerance", "ZZC", "ZZD")]
+    result = _call(site)
+    assert result["deadlines"]["ic"]["past"] is True
+    assert result["ic_overdue"] is True
+    assert site.ic_calls == [(2025, 9)]
+
+
+def test_a_past_ic_date_with_every_pair_matched_is_not_ic_overdue():
+    site = _q5_site(date(2025, 10, 7))
+    site.ic_rows = [_pair("matched"), _pair("within_tolerance", "ZZC"),
+                    _pair("fx_difference", "ZZD")]
+    assert _call(site)["ic_overdue"] is False
+
+
+def test_ic_not_configured_or_not_applicable_is_never_ic_overdue():
+    for state in ("not_configured", "not_applicable"):
+        site = _q5_site(date(2025, 10, 7))
+        site.ic_state = state
+        assert _call(site)["ic_overdue"] is False, state
+
+
+def test_before_the_ic_date_is_not_ic_overdue_and_reads_no_ic():
+    site = _q5_site(date(2025, 10, 2))
+    site.ic_rows = [_pair("over_tolerance")]
+    result = _call(site)
+    assert result["deadlines"]["ic"]["past"] is False
+    assert result["ic_overdue"] is False
+    assert site.ic_calls == []
+
+
+def test_a_past_journals_date_with_a_draft_or_pending_journal_is_journals_overdue():
+    site = _q5_site(date(2025, 10, 7))
+    site.data["Consolidation Journal"] = [_journal("CJ-1", 1), _journal("CJ-2", 0)]
+    result = _call(site)
+    assert result["deadlines"]["journals"]["past"] is True
+    assert result["journals_overdue"] is True
+    assert site.count_calls == [("Consolidation Journal",
+                                 {"fiscal_year": 2025, "fiscal_period": 9, "docstatus": 0})]
+
+
+def test_only_submitted_or_cancelled_journals_is_not_journals_overdue():
+    site = _q5_site(date(2025, 10, 7))
+    site.data["Consolidation Journal"] = [_journal("CJ-1", 1), _journal("CJ-2", 2),
+                                          _journal("CJ-3", 0, fp=8)]
+    assert _call(site)["journals_overdue"] is False
+
+
+def test_before_the_journals_date_is_not_journals_overdue_and_counts_nothing():
+    site = _q5_site(date(2025, 10, 6))
+    site.data["Consolidation Journal"] = [_journal("CJ-2", 0)]
+    result = _call(site)
+    assert result["deadlines"]["journals"]["past"] is False
+    assert result["journals_overdue"] is False
+    assert site.count_calls == []
+
+
+def test_undeclared_ic_and_journals_deadlines_are_never_overdue():
+    """Failure path: no rule -> "No due date declared" and both False, even
+    with an open pair and a draft journal long after the period."""
+    site = _q5_site(date(2030, 1, 1))
+    site.deadline_rules = []
+    site.ic_rows = [_pair("over_tolerance")]
+    site.data["Consolidation Journal"] = [_journal("CJ-2", 0)]
+    result = _call(site)
+    for step in ("ic", "journals"):
+        assert result["deadlines"][step]["text"] == "No due date declared", step
+    assert result["ic_overdue"] is False and result["journals_overdue"] is False
+
+
+def test_every_grid_payload_carries_both_flags():
+    for site in (_Site(), _q5_site(date(2025, 10, 7))):
+        result = _call(site)
+        assert result["ic_overdue"] in (True, False)
+        assert result["journals_overdue"] in (True, False)
+
+
+def test_an_unreadable_ic_count_is_the_error_state_never_false():
+    """Failure path: the warehouse read failed (error / not_built) -> the
+    endpoint throws (the SPA's error state); ic_overdue is never False."""
+    for state in ("error", "not_built"):
+        site = _q5_site(date(2025, 10, 7))
+        site.ic_state = state
+        err = _call_raises(site)
+        assert isinstance(err, site.errors.ValidationError), (state, err)
+        assert "Intercompany" in str(err) and "FY2025 P09" in str(err), str(err)
+
+
+def test_an_unreadable_journal_count_raises_never_false():
+    site = _q5_site(date(2025, 10, 7))
+    site.count_error = RuntimeError("db gone")
+    with pytest.raises(RuntimeError):
+        _call(site)
+
+
+def test_q5_reads_are_one_each_and_constant_in_entities():
+    for n in (1, 5):
+        site = _sized_site(n)
+        site.deadline_rules = [_rule(date(2025, 1, 1), ic=4, journals=6)]
+        site.today = date(2025, 10, 7)
+        _call(site)
+        assert site.ic_calls == [(2025, 9)], (n, site.ic_calls)
+        assert len(site.count_calls) == 1, (n, site.count_calls)
+
+
+def test_the_golden_fixture_shows_ic_overdue():
+    with open(GRID_FIXTURE) as f:
+        golden = json.load(f)
+    assert golden["ic_overdue"] is True
+    assert golden["journals_overdue"] is False

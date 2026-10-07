@@ -16,8 +16,12 @@ is visible, one ``close_event.reminders`` read (topic tb) and, when a
 visible row was reminded, one User read for the senders' full names
 (konsol#305 Y57); one ``deadlines.period_deadlines`` read (its three
 queries: the rules, the holidays and the calendar) and one
-``assertion_run.latest_close_run`` read (konsol#305 D57). Nothing is read
-per entity, and nothing is written.
+``assertion_run.latest_close_run`` read (konsol#305 D57); only when the IC
+due date is past, one ``ic_api.signoff_summary`` read (its own reads: the
+Intercompany Account count, Close Settings, the two ClickHouse IC tables and
+the sent-back Close Events), and only when the journals due date is past, one
+Consolidation Journal count (konsol#305 D57b). Nothing is read per entity,
+and nothing is written.
 
 Each row's Trial balance cell carries ``reminders``: ``{count, last_at,
 last_by, last_by_name}`` or None (C-R6). Only visible rows are filled, so a
@@ -31,7 +35,17 @@ due date is past and the cell is ``Missing`` (C-D4: past AND the step still
 open); every other cell is not overdue. ``signoff_overdue`` is the sign-off
 date past and the period not signed: the latest close run's
 ``signoff_status`` is not in ``signoff_model.SIGNED_STATES`` (no run and
-"Re-sign Needed" count as not signed). IC and journals overdue come in D57b.
+"Re-sign Needed" count as not signed).
+
+IC and journals overdue (konsol#305 D57b, decision #305-Q5-1, Deepak Pai,
+7 Oct): ``ic_overdue`` is the IC date past and at least one pair over
+tolerance (``deadline_model.ic_open``); ``journals_overdue`` is the journals
+date past and at least one Consolidation Journal of the period a draft or
+pending approval, docstatus 0 (``deadline_model.journals_open``). An
+undeclared or not-yet-past date is False and reads nothing. An unreadable IC
+warehouse or journal count throws (the grid's error state), never False.
+Intercompany not configured or declared not applicable has no pair to be
+open: False.
 
 The Entity Accountant is not a grid role (E2-7): the grid is an all-entity
 read of group configuration. Rows are still cut to the caller's permitted
@@ -81,6 +95,8 @@ period_name = _load_period_name()
 remind_model = _load_by_path("remind_model.py", "konsol_close_remind_model")
 #: Zoned ISO for the reminders' ``last_at`` (A16b), pure.
 zoned_iso = _load_by_path("timefmt.py", "konsol_close_timefmt").zoned_iso
+#: The IC and journals "open" rules (konsol#305 D57b, #305-Q5-1), pure.
+deadline_model = _load_by_path("deadline_model.py", "konsol_close_deadline_model")
 
 REGULAR = "Regular"
 CLOSING = "Closing"
@@ -190,6 +206,38 @@ def _deadlines(key):
     return deadlines.as_payload(found[key])
 
 
+def _ic_overdue(key, due):
+    """``ic_overdue`` (konsol#305 D57b, #305-Q5-1): the IC date is past and a
+    pair is still over tolerance (``deadline_model.ic_open``). Read only when
+    the date is past: one ``ic_api.signoff_summary`` read (the sign-off
+    summary's own IC counts). An unreadable warehouse throws (the grid's
+    error state), never False."""
+    if not due["ic"]["past"]:
+        return False
+    from konsol.close import ic_api  # lazy (C-X1): ic_api imports ch_read
+
+    summary = ic_api.signoff_summary(*key)
+    try:
+        return deadline_model.ic_open(summary["state"], summary["counts"])
+    except ValueError as e:
+        frappe.throw("%s for %s. %s" % (e, period_name(*key), summary.get("message") or ""))
+
+
+def _journals_overdue(key, due):
+    """``journals_overdue`` (konsol#305 D57b, #305-Q5-1): the journals date is
+    past and a Consolidation Journal of the period is a draft or pending
+    approval (docstatus 0, ``deadline_model.journals_open``). Read only when
+    the date is past: one count. A failed count raises, never False."""
+    if not due["journals"]["past"]:
+        return False
+    count = frappe.db.count("Consolidation Journal",
+                            {"fiscal_year": key[0], "fiscal_period": key[1], "docstatus": 0})
+    try:
+        return deadline_model.journals_open(count)
+    except ValueError as e:
+        frappe.throw("%s for %s." % (e, period_name(*key)))
+
+
 def _signed(run):
     """The latest close run is signed: its ``signoff_status`` is one of
     ``signoff_model.SIGNED_STATES``. No run, "Not Signed Off" and "Re-sign
@@ -199,14 +247,14 @@ def _signed(run):
 
 @frappe.whitelist(methods=["GET"])
 def get_period_grid(fiscal_year, fiscal_period):
-    """``{period, rows, counts, rates_error, deadlines, signoff_overdue}``
-    for a Regular period.
+    """``{period, rows, counts, rates_error, deadlines, signoff_overdue,
+    ic_overdue, journals_overdue}`` for a Regular period.
 
     ``period`` = ``{fiscal_year, fiscal_period, code, status, start_date}``
     (ISO date). ``rows``, ``counts`` and ``rates_error`` are
     ``period_grid_model.period_grid``'s; each row's ``tb`` cell also
     carries ``reminders`` (konsol#305 Y57) and ``overdue`` (D57).
-    ``deadlines`` and ``signoff_overdue``: see the module docstring.
+    ``deadlines`` and the three ``*_overdue`` flags: see the module docstring.
     Read-only. Refuses an undeclared
     period (PeriodNotDeclared) and a non-Regular one.
     """
@@ -248,7 +296,8 @@ def get_period_grid(fiscal_year, fiscal_period):
     period = {"fiscal_year": key[0], "fiscal_period": key[1], "code": row.get("period_code"),
               "status": row.get("status"), "start_date": _iso(start)}
     return dict({"period": period}, **grid, deadlines=due,
-                signoff_overdue=bool(due["signoff"]["past"] and not _signed(run)))
+                signoff_overdue=bool(due["signoff"]["past"] and not _signed(run)),
+                ic_overdue=_ic_overdue(key, due), journals_overdue=_journals_overdue(key, due))
 
 
 @frappe.whitelist(methods=["GET"])

@@ -344,3 +344,98 @@ def test_rule_problems_missing_key_raises():
             pass
         else:
             raise AssertionError("expected KeyError")
+
+
+# --- D57b (#305-Q5-1, Deepak Pai, 7 Oct): when the IC and journals steps are open ---
+# IC step done = no open over-tolerance pair; journals step done = no draft or
+# pending (docstatus 0) Consolidation Journal for the period. The grid decides
+# the overdue flags from these two helpers only (one source of truth).
+
+IC_MODEL_PY = os.path.join(APP_DIR, "close", "ic_model.py")
+_ic_spec = importlib.util.spec_from_file_location("ic_model_for_deadline_test", IC_MODEL_PY)
+IC = importlib.util.module_from_spec(_ic_spec)
+_ic_spec.loader.exec_module(IC)
+
+
+def _pair(status, a="ZZA", b="ZZB"):
+    return {"consolidation_group": "ZZG", "entity_a": a, "account_a": "1100",
+            "entity_b": b, "account_b": "2100", "match_status": status,
+            "difference": 0.0, "tolerance": 1.0}
+
+
+def _ic_line(state, rows=()):
+    """The REAL producer: ic_model.signoff_line, what ic_api.signoff_summary returns."""
+    return IC.signoff_line(state, list(rows), [], [])
+
+
+def test_ic_open_one_over_tolerance_pair_is_open():
+    line = _ic_line("checked", [_pair("matched"), _pair("over_tolerance", "ZZC", "ZZD")])
+    assert M.ic_open(line["state"], line["counts"]) is True
+
+
+def test_ic_open_every_pair_matched_or_within_is_done():
+    rows = [_pair("matched"), _pair("within_tolerance", "ZZC"), _pair("fx_difference", "ZZD")]
+    line = _ic_line("checked", rows)
+    assert M.ic_open(line["state"], line["counts"]) is False
+
+
+def test_ic_open_no_pairs_in_the_build_is_done():
+    line = _ic_line("checked")
+    assert M.ic_open(line["state"], line["counts"]) is False
+
+
+def test_ic_open_not_configured_or_not_applicable_has_no_pair_to_be_open():
+    for state in ("not_configured", "not_applicable"):
+        line = _ic_line(state)
+        assert line["counts"] is None
+        assert M.ic_open(line["state"], line["counts"]) is False, state
+
+
+def test_ic_open_an_unreadable_warehouse_raises_never_false():
+    """Failure path: error / not_built carry no counts; never read as 0 open."""
+    for state in ("error", "not_built"):
+        line = _ic_line(state)
+        try:
+            M.ic_open(line["state"], line["counts"])
+        except ValueError as e:
+            assert "could not be read" in str(e), str(e)
+        else:
+            raise AssertionError("ic_open(%r) did not raise" % state)
+
+
+def test_ic_open_checked_without_a_readable_count_raises():
+    for counts in (None, {}, {"over_tolerance": None}, {"over_tolerance": "1"},
+                   {"over_tolerance": -1}, {"over_tolerance": True}):
+        try:
+            M.ic_open("checked", counts)
+        except ValueError:
+            continue
+        raise AssertionError("ic_open('checked', %r) did not raise" % (counts,))
+
+
+def test_ic_open_an_unknown_state_raises():
+    try:
+        M.ic_open("reconciled", None)
+    except ValueError as e:
+        assert "reconciled" in str(e)
+    else:
+        raise AssertionError("an unknown IC state did not raise")
+
+
+def test_journals_open_one_draft_or_pending_is_open():
+    assert M.journals_open(1) is True
+    assert M.journals_open(3) is True
+
+
+def test_journals_open_none_in_docstatus_0_is_done():
+    assert M.journals_open(0) is False
+
+
+def test_journals_open_an_unreadable_count_raises_never_false():
+    """Failure path: a count that is not a non-negative int is never read as 0."""
+    for count in (None, "", "0", -1, 1.0, True):
+        try:
+            M.journals_open(count)
+        except ValueError:
+            continue
+        raise AssertionError("journals_open(%r) did not raise" % (count,))

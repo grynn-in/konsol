@@ -26,6 +26,8 @@
       "text": "Due 2025-10-03"
     }
   },
+  "ic_overdue": true,
+  "journals_overdue": false,
   "period": {
     "code": "P09",
     "fiscal_period": 9,
