@@ -155,3 +155,104 @@ test("No v-html, no browser dialogs, no browser storage", () => {
     assert.ok(!source.includes(store), `no ${store}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// konsol#305 O61 (wireframe-4.2.md section 3, confirmed by Deepak Pai 7 Oct):
+// a pending Ownership Period item carrying `effect` shows the read-only
+// EFFECT IF APPROVED panel above Approve; an item with `effect: null` (a Desk
+// "Record ownership" draft, O57) shows "Drafted in Desk: effect not
+// previewed." and never an empty panel. Fed the REAL O57 golden payload
+// through the REAL pendingView + ownershipEffectView (rates.js, O59).
+// ---------------------------------------------------------------------------
+import { pendingView, ownershipEffectView } from "../rates.js";
+
+const PENDING = JSON.parse(
+  fs.readFileSync(new URL("../../../konsol/tests/fixtures/close_rates_pending_payload.json", import.meta.url), "utf8"),
+);
+
+/** Builds the section's own `opEffect(item)` from its <script> source, with
+ * the real `ownershipEffectView` injected — the function under test is the
+ * one the component runs, not a copy. */
+function loadOpEffect() {
+  const js = script(read());
+  const constant = js.match(/const DESK_DRAFT = [^\n]*\n/);
+  assert.ok(constant, "the section declares const DESK_DRAFT");
+  const fn = js.match(/function opEffect\(item\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(fn, "the section declares function opEffect(item)");
+  return new Function("ownershipEffectView", `${constant[0]}${fn[0]}return opEffect;`)(ownershipEffectView);
+}
+
+function itemNamed(name) {
+  const item = pendingView(PENDING).items.find((i) => i.name === name);
+  assert.ok(item, `the golden payload has ${name}`);
+  return item;
+}
+
+test("O61: the golden OP draft with effect gives the wireframe's EFFECT IF APPROVED rows", () => {
+  const opEffect = loadOpEffect();
+  const item = itemNamed("OP-ZZ5B1-2025-10-01");
+  const panel = opEffect(item);
+  const real = ownershipEffectView(item.effect);
+  assert.equal(panel.desk, undefined);
+  assert.equal(panel.error, undefined);
+  assert.deepEqual(
+    panel.view.rows.map((r) => [r.label, r.before, r.after]),
+    [
+      ["Ownership", "100 %", "80 %"],
+      ["Method", "full", "full"],
+    ],
+    "Ownership and Method, before → after (section 3 shows no Covers row: it shows Ends)",
+  );
+  assert.equal(panel.view.currentEnds, real.currentEnds);
+  assert.equal(panel.view.periods, "FY2025 P10 onward (open-ended)");
+  assert.deepEqual(panel.view.resign, ["FY2025 P11", "FY2025 P13"]);
+  assert.equal(panel.view.resignNone, null);
+  assert.equal(panel.view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
+});
+
+test("O61 failure path: the golden Desk draft (effect null) gives the sentence, never empty columns", () => {
+  const opEffect = loadOpEffect();
+  const panel = opEffect(itemNamed("OP-ZZ5B2-2025-10-01"));
+  assert.deepEqual(panel, { desk: "Drafted in Desk: effect not previewed." });
+});
+
+test("O61 failure path: an HER item has no panel; an OP item whose effect is broken shows the thrown sentence, not a guessed panel", () => {
+  const opEffect = loadOpEffect();
+  assert.equal(opEffect(itemNamed("HER-ZZ5B1-1")), null);
+  const op = itemNamed("OP-ZZ5B1-2025-10-01");
+  const { resign, ...noResign } = op.effect;
+  const broken = opEffect({ ...op, effect: noResign });
+  assert.equal(broken.view, undefined);
+  assert.match(broken.error, /resign/);
+  const missing = { ...op };
+  delete missing.effect;
+  assert.match(opEffect(missing).error, /effect/, "an OP item with no effect key is a server regression, shown as such");
+});
+
+test("O61: the template renders the panel above Approve, read-only, with the Desk sentence and the error branch", () => {
+  const source = read();
+  assert.match(
+    source,
+    /import\s*\{[^}]*\bownershipEffectView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
+    "imports ownershipEffectView from rates.js",
+  );
+  const tpl = template(source);
+  assert.match(tpl, /EFFECT IF APPROVED/);
+  const panelAt = tpl.indexOf("EFFECT IF APPROVED");
+  const approveAt = tpl.indexOf("<Button");
+  assert.ok(panelAt >= 0 && approveAt > panelAt, "the effect panel comes before the Approve button");
+  for (const field of ["row.before", "row.after", "currentEnds", "periods", "resign", "resignNone", "notShown"]) {
+    assert.ok(tpl.includes(field), `the panel shows ${field}`);
+  }
+  assert.match(tpl, /\.desk\b/, "the Desk-draft sentence is rendered");
+  assert.match(tpl, /\.error\b/, "a broken effect's sentence is rendered");
+  assert.match(tpl, /Re-sign Needed/);
+  const panel = tpl.slice(panelAt, approveAt);
+  assert.doesNotMatch(panel, /<input|<select|<textarea|<Button|@click/, "the panel is read-only");
+});
+
+test("O61: Approve stays the existing approve emit — one emit site, no second action", () => {
+  const js = script(read());
+  assert.equal((js.match(/emit\(/g) || []).length, 1, "one emit call");
+  assert.match(js, /defineEmits\(\s*\[\s*["']approve["']\s*\]\s*\)/);
+});
