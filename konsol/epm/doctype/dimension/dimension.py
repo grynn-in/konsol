@@ -51,6 +51,7 @@ SURVIVES_CLOSE_LABEL = "Survives Year-End Close"
 #:   schema_apply._apply_clickhouse_columns: cube_type
 #:   schema_apply._sync_tb_dimension_columns: in_trial_balance
 #:   schema_apply._sync_budget_custom_fields: label, in_budget
+#:   schema_apply._sync_budget_dimension_columns: in_budget
 #: All of them also read dimension_name, which is not listed because a save
 #: cannot change it: autoname is field:dimension_name, and Frappe's
 #: ``_sync_autoname_field`` puts it back to the name before the write.

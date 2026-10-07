@@ -45,3 +45,4 @@ konsol.patches.declare_allow_ic_for_published_pairings
 konsol.patches.backfill_close_events
 konsol.patches.stamp_signed_run_fingerprints
 konsol.patches.stamp_fiscal_year_calendar_changed_at
+konsol.patches.retire_budget_annual_input_fixed_dimensions

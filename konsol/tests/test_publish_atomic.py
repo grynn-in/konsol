@@ -46,6 +46,11 @@ def _call_name(call):
     return getattr(call.func, "attr", None) or getattr(call.func, "id", None)
 
 
+#: The tables an in_budget Dimension puts a Custom Field on (konsol#287 added
+#: Budget Annual Input beside Budget Line).
+BUDGET_DTS = ("Budget Line", "Budget Annual Input")
+
+
 def _load(names, ns):
     """Compile the named schema_apply functions (and its _BUDGET constants) into ns."""
     tree = _tree(SCHEMA_APPLY)
@@ -150,6 +155,9 @@ def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sy
         # konsolidat#245 option D: the journal staging table's dim columns,
         # another ClickHouse DDL step of _apply_schema_steps.
         "_sync_journal_dimension_columns": lambda: [],
+        # konsol#287: the budget input tables' dim columns, the same kind of
+        # ClickHouse DDL step.
+        "_sync_budget_dimension_columns": lambda: [],
         "_apply_fact_tables": lambda: ([], []),
         "_sync_budget_custom_fields": sync,
     }
@@ -328,7 +336,13 @@ def _run_publish(touched, enqueued, created=None, ch=None):
         return refuse("new_doc " + doctype)()
 
     def get_all(doctype, **kw):
-        if doctype in ("Dimension", "Dataset") and "in_budget" not in str(kw):   # steps 1-3
+        # Steps 1-3 read Dimension and Dataset. This used to refuse a Dimension
+        # read filtered on in_budget, as the mark of the Custom Field sync; the
+        # budget tables' ClickHouse column sync (konsol#287) reads that set
+        # too, as the journal's reads in_journal. The sync is still caught
+        # inline: its lock is a db.sql GET_LOCK and its next read is Custom
+        # Field, and both are refused.
+        if doctype in ("Dimension", "Dataset"):
             return []
         return refuse("get_all " + doctype)()
 
@@ -411,13 +425,15 @@ def test_publish_runs_only_schema_ddl_against_clickhouse():
 
     # The statements an empty declared set implies: each sync reads back what is
     # on its table before it can decide there is nothing to do. Two tables carry
-    # per-site dimension columns now — the raw trial balance and the journal's
-    # staging table (konsolidat#245 option D) — so two read-backs and no more.
+    # per-site dimension columns now — the raw trial balance, the journal's
+    # staging table (konsolidat#245 option D) and the two budget input tables
+    # (konsol#287) — so four read-backs and no more.
     selects = [" ".join(s.split()) for s in ch
                if " ".join(s.split()).startswith(CH_INTROSPECTION)]
-    assert len(selects) == 2, ch
-    assert sum("trial_balance_submissions" in s for s in selects) == 1, selects
-    assert sum("consolidation_adjustments" in s for s in selects) == 1, selects
+    assert len(selects) == 4, ch
+    for table in ("trial_balance_submissions", "consolidation_adjustments",
+                  "budget_annual_input", "budget_monthly_input"):
+        assert sum(f"table = '{table}'" in s for s in selects) == 1, (table, selects)
 
     # Nothing is declared in this fixture, so no column may be added OR
     # dropped. A publish that altered the table on an empty declared set
@@ -483,9 +499,13 @@ class _Site:
         self.exceptions = []
 
     # -- transactions --
-    def seed(self, fieldname, creation="old", dt="Budget Line"):
-        self.committed[f"{dt}-{fieldname}"] = {"fieldname": fieldname, "creation": creation,
-                                               "dt": dt}
+    def seed(self, fieldname, creation="old", dt=None):
+        """``dt`` None seeds the field on every in_budget table, as a synced
+        site has it (konsol#287: Budget Annual Input carries the same fields as
+        Budget Line)."""
+        for one in ((dt,) if dt else BUDGET_DTS):
+            self.committed[f"{one}-{fieldname}"] = {"fieldname": fieldname,
+                                                    "creation": creation, "dt": one}
         self.snap = dict(self.committed)
 
     def visible(self):
@@ -514,15 +534,17 @@ class _Site:
     def rollback(self):
         self._new_transaction()
 
-    def commit_elsewhere(self, fieldname, dt="Budget Line"):
+    def commit_elsewhere(self, fieldname, dt=None):
         """Another session commits the field: not in this snapshot.
 
         dt-aware since konsolidat#245 gave a second table its own fields (PR
         #324 re-review, finding 3's related note): hard-coded to Budget Line it
-        could only ever stage the wrong table's row.
+        could only ever stage the wrong table's row. ``dt`` None is every
+        in_budget table, as ``seed``.
         """
-        self.committed[f"{dt}-{fieldname}"] = {"fieldname": fieldname, "creation": "theirs",
-                                               "dt": dt}
+        for one in ((dt,) if dt else BUDGET_DTS):
+            self.committed[f"{one}-{fieldname}"] = {"fieldname": fieldname,
+                                                    "creation": "theirs", "dt": one}
 
     # -- SQL --
     def sql(self, query, values=None, as_dict=False):
@@ -564,7 +586,8 @@ class _Site:
                     if d.get(flag) == 1 and d["status"] == "Published"]
         assert doctype == "Custom Field", doctype
         dt = filters.get("dt")
-        assert dt in ("Budget Line", "Consolidation Journal Line"), filters
+        assert dt in ("Budget Line", "Budget Annual Input",
+                      "Consolidation Journal Line"), filters
         assert filters == {"dt": dt, "fieldname": ("like", "dim_%")}, filters
         # Filtered by dt, like the real query. Without it a field on one table
         # read as an orphan of the other and was removed on the next run — the
@@ -665,11 +688,12 @@ def test_the_sync_is_idempotent_and_follows_publish_and_unpublish():
     sync = _sync(site)
 
     site.dimensions["dim_zz"] = {"label": "ZZ", "in_budget": 1, "in_journal": 0, "status": "Published"}
-    assert sync() == ["added dim_zz"]
+    # one field per in_budget table: Budget Line and Budget Annual Input
+    assert sync() == ["added dim_zz"] * 2
     assert sync() == [], "a second run (a duplicate job, or after_migrate) changes nothing"
 
     site.dimensions["dim_zz"]["status"] = "Inactive"   # unpublished
-    assert sync() == ["removed dim_zz"]
+    assert sync() == ["removed dim_zz"] * 2
     assert sync() == []
     assert _fieldnames(site) == {"dim_cost_center", "other_field"}
     assert site.violations == [] and not site.held
@@ -681,7 +705,7 @@ def test_reads_follow_a_commit_under_the_lock_and_the_release_follows_the_last_c
     delete_doc's get_doc) are plain, so the snapshot must postdate the lock."""
     site = _site_with(dim_zz="Inactive")
     site.seed("dim_zz")
-    assert _sync(site)() == ["removed dim_zz"]
+    assert _sync(site)() == ["removed dim_zz"] * 2
     assert site.violations == [], site.violations
     assert _fieldnames(site) == set()
 
@@ -743,7 +767,7 @@ def test_the_adds_run_before_the_deletes():
     site = _site_with(dim_old="Inactive", dim_zz="Published")
     site.seed("dim_old")
     _field_lands_after_the_read(site, "dim_zz")
-    assert _sync(site)() == ["removed dim_old"]
+    assert _sync(site)() == ["removed dim_old"] * 2
     assert _fieldnames(site) == {"dim_zz"}, "dim_old removed, dim_zz synced"
     assert site.committed["Budget Line-dim_zz"]["creation"] == "theirs"
     assert site.violations == [] and not site.held
@@ -812,7 +836,7 @@ def test_the_job_waits_for_the_lock_then_raises_a_plain_error():
 def test_the_job_syncs_once_a_later_attempt_gets_the_lock():
     site = _site_with(dim_zz="Published")
     site.lock = [0, 1]
-    assert _sync(site)(in_job=True) == ["added dim_zz"]
+    assert _sync(site)(in_job=True) == ["added dim_zz"] * 2
     assert site.lock_calls == 2 and site.violations == []
 
 
@@ -883,9 +907,9 @@ def test_a_dimension_on_both_tables_gets_a_field_on_each():
     site.dimensions["dim_cc"] = {"label": "CC", "in_budget": 1, "in_journal": 1,
                                  "status": "Published"}
     sync = _sync(site)
-    assert sorted(sync()) == ["added dim_cc", "added dim_cc"]
+    assert sorted(sync()) == ["added dim_cc"] * 3
     dts = sorted(r.get("dt") for r in site.committed.values())
-    assert dts == ["Budget Line", "Consolidation Journal Line"], dts
+    assert dts == ["Budget Annual Input", "Budget Line", "Consolidation Journal Line"], dts
 
 
 def test_a_reported_removal_really_happened_across_both_tables():
@@ -905,17 +929,18 @@ def test_a_reported_removal_really_happened_across_both_tables():
     site = _Site()
     site.dimensions["dim_j"] = {"label": "J", "in_budget": 1, "in_journal": 1,
                                 "status": "Published"}
-    site.seed("dim_j", creation="old", dt="Budget Line")
-    site.seed("dim_old", creation="old", dt="Budget Line")   # the orphan to remove
+    site.seed("dim_j", creation="old")     # on both in_budget tables already
+    site.seed("dim_old", creation="old")   # the orphan to remove, on both
     # The journal's add fails AND another session already created that field,
     # so _created_elsewhere judges the goal met and rolls back to discard its
     # own pending work — taking any uncommitted delete with it.
     site.commit_elsewhere("dim_j", dt="Consolidation Journal Line")
     site.fail_insert = "db_table_validate"
-    assert _sync(site)() == ["removed dim_old"]
-    assert "Budget Line-dim_old" not in site.committed, (
-        "reported 'removed dim_old' while the row is still committed: a later "
-        "table's failed add rolled this delete back")
+    assert _sync(site)() == ["removed dim_old"] * 2
+    for dt in BUDGET_DTS:
+        assert f"{dt}-dim_old" not in site.committed, (
+            "reported 'removed dim_old' while the row is still committed: a "
+            "later table's failed add rolled this delete back")
 
 
 def test_a_dimension_the_sync_could_never_see_again_is_refused_not_created():
@@ -927,7 +952,8 @@ def test_a_dimension_the_sync_could_never_see_again_is_refused_not_created():
     site.dimensions["business_unit"] = {"label": "BU", "in_budget": 1, "in_journal": 0,
                                         "status": "Published"}
     actions = _sync(site)()
-    assert actions == ["refused business_unit"], actions
+    # refused once per in_budget table: Budget Line and Budget Annual Input
+    assert actions == ["refused business_unit"] * 2, actions
     assert not site.committed, "no Custom Field may be created for it"
 
 
@@ -956,7 +982,7 @@ def test_every_add_runs_before_every_delete_across_both_tables():
     ns["_sync_budget_custom_fields_locked"]()
 
     phases = [c[0] for c in calls]
-    assert phases.count("add") == 2 and phases.count("remove") == 2, calls
+    assert phases.count("add") == 3 and phases.count("remove") == 3, calls
     last_add = max(i for i, p in enumerate(phases) if p == "add")
     first_remove = min(i for i, p in enumerate(phases) if p == "remove")
     assert last_add < first_remove, (
@@ -964,4 +990,4 @@ def test_every_add_runs_before_every_delete_across_both_tables():
         f"then discard it. Order was {calls}")
     # and both tables are still covered, each named once per phase
     assert sorted(c[1] for c in calls if c[0] == "add") == \
-        ["Budget Line", "Consolidation Journal Line"], calls
+        ["Budget Annual Input", "Budget Line", "Consolidation Journal Line"], calls

@@ -150,56 +150,36 @@ def test_annual_budget_lock_holds_on_delete_too():
 def test_annual_budget_grain_is_unique():
     """gold_spread_budget unions with no dedup, so two rows at one grain produce
     two sets of twelve monthly rows and the budget doubles. autoname is `hash`,
-    so nothing enforces it structurally."""
+    so nothing enforces it structurally. The dimensions in the grain are the
+    site's declared budget dimensions (konsol#287), checked behaviourally in
+    test_budget_dimension_columns.py."""
     import os
 
     with open(os.path.join(_budget_annual_dir(), "budget_annual_input.py")) as f:
         src = f.read()
     body = src.split("def _validate_unique_grain")[1].split("\n    def ")[0]
     for field in ("scenario_id", "data_area_id", "fiscal_year", "main_account",
-                  "dim_cost_center", "dim_department"):
+                  "budget_dimension_fields()"):
         assert field in body, field
     assert "frappe.throw" in body
 
 
-def test_budget_ddl_covers_every_in_budget_dimension():
-    """The budget dimension set is site-configurable; the DDL is not.
-
-    `budget_grain.budget_dimension_names()` derives the columns from Dimension
-    rows with in_budget=1, and both Budget Sheet's sync and dbt's
-    get_budget_dimensions() follow it — but the DDL for
-    epm_gold.budget_monthly_input / budget_annual_input names its dimension
-    columns literally. The shipped fixture has dim_business_unit at in_budget=0;
-    flip it to 1 and the INSERT names a column the table does not have.
-    sync_rows swallows the HTTPError and only logs, so the budget would silently
-    stop reaching the warehouse.
-
-    This test does not fix that — it makes the coupling fail loudly here instead
-    of silently in ClickHouse. Adding an in_budget dimension means altering both
-    tables (and konsolidat's init-db.sql) in the same change.
-    """
-    import json
+def test_budget_ddl_names_no_dimension():
+    """konsol#287: the budget input tables were created with two customers'
+    dimensions as literal columns, so a site budgeting by dim_region wrote a
+    column the table did not have and the write-through failed. They now
+    name no dimension; schema_apply._sync_budget_dimension_columns adds the
+    declared ones, the same set to both tables."""
     import os
     import re
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, "clickhouse.py")) as f:
         ch = f.read()
-
-    # konsol ships no Dimensions (decided 17 September 2026), so the shipped
-    # in_budget set this used to compare against no longer exists. The
-    # invariant that survives is that the two budget tables must declare the
-    # SAME dimension columns as each other: a budget written at annual grain
-    # and spread to monthly cannot carry a dimension one table lacks. Keeping
-    # them in step with a site's declared dimensions is a live-site concern,
-    # not something a shipped file can anchor any more.
-    declared = {}
+    with open(os.path.join(root, "schema_apply.py")) as f:
+        schema_apply = f.read()
     for table in ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input"):
         block = ch.split(f'"{table}": (')[1].split("),")[0]
-        declared[table] = set(re.findall(r"(dim_\w+) String", block))
+        assert not re.findall(r"\bdim_\w+", block), (table, block)
+        assert f'"{table}"' in schema_apply.split("_BUDGET_INPUT_TABLES = ")[1].split("\n")[0], table
 
-    tables = list(declared)
-    assert declared[tables[0]] == declared[tables[1]], (
-        f"{tables[0]} declares {sorted(declared[tables[0]])} but {tables[1]} "
-        f"declares {sorted(declared[tables[1]])} — a budget cannot be spread "
-        "from annual to monthly across a dimension only one table has")
