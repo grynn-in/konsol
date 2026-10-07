@@ -105,6 +105,8 @@ class _Site:
         self.access_checked = []
         self.gaps = []                    # sign_off_problems()["config_gaps"]
         self.sign_off_problems_calls = []
+        self.reminders = []               # close_event.reminders(keys, topic)
+        self.deadlines = {}               # deadlines.period_deadlines(keys, today)
 
 
 def _match(value, cond):
@@ -197,6 +199,13 @@ def _load(site):
     gate.sign_off_problems = sign_off_problems
     close.signoff_model, close.signoff_gate = signoff_model, gate
     close.timefmt = _by_path("konsol.close.timefmt", TIMEFMT_PY)
+    # Wave 5b (C-X1): Y56/D56 lazily import close_event.reminders and
+    # deadlines.period_deadlines; the stub package carries both.
+    close_event = types.ModuleType("konsol.close.close_event")
+    close_event.reminders = lambda keys, topic=None: site.reminders
+    deadlines = types.ModuleType("konsol.close.deadlines")
+    deadlines.period_deadlines = lambda keys, today: site.deadlines
+    close.close_event, close.deadlines = close_event, deadlines
     calendar = types.ModuleType("konsol.fiscal_calendar")
     calendar.fiscal_period_rows = lambda: [dict(r) for r in site.rows]
     perms = types.ModuleType("konsol.entity_permissions")
@@ -233,6 +242,8 @@ def _load(site):
             "konsol.close.signoff_model": signoff_model,
             "konsol.close.signoff_gate": gate,
             "konsol.close.timefmt": close.timefmt,
+            "konsol.close.close_event": close_event,
+            "konsol.close.deadlines": deadlines,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status, "konsol.clickhouse": clickhouse,
             "konsol.tb_dimension": tb_dimension,
@@ -323,6 +334,35 @@ def test_is_a_get_endpoint_gated_on_every_close_role():
     _my_tbs(site)
     assert site.whitelisted["my_tbs"] == ["GET"]
     assert site.only_for == [ALL_CLOSE_ROLES]
+
+
+def test_stub_close_carries_reminders_and_deadlines():
+    """C-X1 guard (T51t): the stub konsol.close resolves close_event.reminders
+    and deadlines.period_deadlines, both as attributes and as imports."""
+    site = _Site()
+    site.reminders = [{"topic": "tb"}]
+    site.deadlines = {(2025, 9): "2025-10-10"}
+    _module, mods = _load(site)
+    close = mods["konsol.close"]
+    assert close.close_event.reminders([(2025, 9)]) == site.reminders
+    assert close.close_event.reminders([(2025, 9)], topic="tb") == site.reminders
+    assert close.deadlines.period_deadlines([(2025, 9)], "2025-10-01") == site.deadlines
+    saved = {n: sys.modules.get(n) for n in mods}
+    sys.modules.update(mods)
+    try:
+        from konsol.close import close_event, deadlines
+        from konsol.close.close_event import reminders
+        from konsol.close.deadlines import period_deadlines
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    assert close_event is close.close_event and deadlines is close.deadlines
+    assert reminders([(2025, 9)]) == site.reminders
+    assert period_deadlines([(2025, 9)], "2025-10-01") == site.deadlines
+    assert _Site().reminders == [] and _Site().deadlines == {}
 
 
 # --- who sees what ---------------------------------------------------------------
