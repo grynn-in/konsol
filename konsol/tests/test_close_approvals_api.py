@@ -1059,15 +1059,15 @@ def test_o58_a_change_draft_carries_the_real_models_effect():
         [dict(p) for p in site.periods],
         {(2026, 7): {"run": "RUN-1", "signed_on": "2026-08-04",
                      "signed_by_name": O64_LEAD_NAME}})
-    assert item["effect"] == expected
+    assert item["ownership_effect"] == expected
     # O64: the predecessor's name, and who signed the re-sign period.
-    assert item["effect"]["current_name"] == O58_PRED
-    assert item["effect"]["resign_detail"] == [
+    assert item["ownership_effect"]["current_name"] == O58_PRED
+    assert item["ownership_effect"]["resign_detail"] == [
         {"period": "FY2026 P07", "signed_on": "2026-08-04", "signed_by_name": O64_LEAD_NAME}]
-    assert item["effect"]["after"]["pct"] == 80.0
-    assert item["effect"]["before"]["pct"] == 100.0
-    assert item["effect"]["current_ends"] == "2026-06-30"
-    assert item["effect"]["resign"] == ["FY2026 P07"]
+    assert item["ownership_effect"]["after"]["pct"] == 80.0
+    assert item["ownership_effect"]["before"]["pct"] == 100.0
+    assert item["ownership_effect"]["current_ends"] == "2026-06-30"
+    assert item["ownership_effect"]["resign"] == ["FY2026 P07"]
     # The title and detail are unchanged (rates_model._op_item's own text).
     assert item["detail"] == "80% · full"
 
@@ -1083,20 +1083,20 @@ def test_r52f_failure_path_a_signed_closing_period_is_not_listed_for_re_signing(
                          "quarter": "", "status": "Open"})
     site.signed = {(2026, 7): "RUN-1", (2026, 13): "RUN-13"}
     item = _o58_item(_call(site), O58_CHANGE)
-    assert item["effect"]["resign"] == ["FY2026 P07"], item["effect"]["resign"]
-    assert [d["period"] for d in item["effect"]["resign_detail"]] == ["FY2026 P07"]
+    assert item["ownership_effect"]["resign"] == ["FY2026 P07"], item["ownership_effect"]["resign"]
+    assert [d["period"] for d in item["ownership_effect"]["resign_detail"]] == ["FY2026 P07"]
     assert ("gate", "period_row") in site.gate_reads, site.gate_reads
 
 
 def test_o58_failure_path_a_her_item_gets_no_effect_key():
     item = _o58_item(_call(_o58_site()), "HER-ZZ58")
-    assert "effect" not in item
+    assert "ownership_effect" not in item
 
 
 def test_o58_failure_path_a_desk_draft_without_supersedes_has_effect_none():
     """Never a guessed before/after: a Desk draft names no predecessor."""
     item = _o58_item(_call(_o58_site()), O58_DESK)
-    assert "effect" in item and item["effect"] is None
+    assert "ownership_effect" in item and item["ownership_effect"] is None
 
 
 R52I_BROKEN = "OP-ZZ58C-2026-07-01"
@@ -1120,19 +1120,19 @@ def _r52i_site():
 
 def _r52i_check(result):
     broken = _o58_item(result, R52I_BROKEN)
-    assert broken["effect"] is None
-    assert broken["effect_error"].startswith(
-        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken["effect_error"]
-    assert R52I_BROKEN_PRED in broken["effect_error"], broken["effect_error"]
-    assert ".." not in broken["effect_error"], broken["effect_error"]
-    assert broken["effect_error"].endswith(". Correct or delete the draft in Desk."), \
-        broken["effect_error"]
+    assert broken["ownership_effect"] is None
+    assert broken["ownership_effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken["ownership_effect_error"]
+    assert R52I_BROKEN_PRED in broken["ownership_effect_error"], broken["ownership_effect_error"]
+    assert ".." not in broken["ownership_effect_error"], broken["ownership_effect_error"]
+    assert broken["ownership_effect_error"].endswith(". Correct or delete the draft in Desk."), \
+        broken["ownership_effect_error"]
     assert broken["detail"] == "70% · full"
     good = _o58_item(result, O58_CHANGE)
     alone = _o58_item(_call(_o58_site()), O58_CHANGE)
     assert good == alone
-    assert good["effect"]["current_name"] == O58_PRED
-    assert good["effect_error"] is None
+    assert good["ownership_effect"]["current_name"] == O58_PRED
+    assert good["ownership_effect_error"] is None
 
 
 def test_r52i_failure_path_a_cancelled_supersedes_is_an_error_on_that_item_only():
@@ -1160,9 +1160,9 @@ def test_r52i_failure_path_queue_for_as_my_work_calls_it_keeps_its_waiting_count
 def test_r52i_every_visible_op_item_carries_effect_error():
     for item in _all_items(_call(_o58_site())):
         if item["doctype"] == OP:
-            assert "effect_error" in item and item["effect_error"] is None, item
+            assert "ownership_effect_error" in item and item["ownership_effect_error"] is None, item
         else:
-            assert "effect_error" not in item, item
+            assert "ownership_effect_error" not in item, item
 
 
 def test_o58_failure_path_a_hidden_draft_is_never_read_for_its_effect():
@@ -1195,7 +1195,7 @@ def test_o58_a_group_node_draft_is_visible_to_a_scoped_caller_and_carries_its_ef
     for row in site.ops[:2]:
         row["data_area_id"] = None
     item = _o58_item(_call(site), O58_CHANGE)
-    assert item["effect"]["after"]["pct"] == 80.0
+    assert item["ownership_effect"]["after"]["pct"] == 80.0
 
 
 # --- O62: the golden Approvals queue with Ownership Period effects -----------------
@@ -1214,6 +1214,39 @@ def test_o62_golden_op_queue_payload_equals_the_real_stub_site_call():
         golden = json.load(f)
     assert result == golden
     ops = {i["name"]: i for i in result["items"] if i["doctype"] == OP}
-    assert ops[O58_CHANGE]["effect"]["after"]["pct"] == 80.0
-    assert ops[O58_DESK]["effect"] is None
-    assert ops[O58_CHANGE]["effect"]["resign_detail"][0]["signed_by_name"] == O64_LEAD_NAME
+    assert ops[O58_CHANGE]["ownership_effect"]["after"]["pct"] == 80.0
+    assert ops[O58_DESK]["ownership_effect"] is None
+    assert ops[O58_CHANGE]["ownership_effect"]["resign_detail"][0]["signed_by_name"] == O64_LEAD_NAME
+
+
+# --- R52q (review S18, the O62 watch): one queue, two effect keys ---------------
+# An Ownership Period item carries ``ownership_effect``/``ownership_effect_error``;
+# a journal item keeps ``effect``. Neither carries the other's key.
+
+
+def test_r52q_op_items_carry_ownership_effect_and_the_journal_keeps_effect():
+    site = _o58_site()
+    site.journals = [_journal("CJ-1")]
+    site.lines = [
+        _line("CJ-1", 1, "DE02", "6100", debit_amount=100),
+        _line("CJ-1", 2, "DE02", "9999", credit_amount=100),
+    ]
+    items = {i["name"]: i for i in _all_items(_call(site))}
+    journal = items["CJ-1"]
+    assert journal["effect"]["no_heading"] == 1
+    assert "ownership_effect" not in journal and "ownership_effect_error" not in journal, sorted(journal)
+    change, desk = items[O58_CHANGE], items[O58_DESK]
+    assert change["ownership_effect"]["current_name"] == O58_PRED
+    assert change["ownership_effect"]["after"]["pct"] == 80.0
+    assert desk["ownership_effect"] is None
+    for op in (change, desk):
+        assert op["ownership_effect_error"] is None, op
+        assert "effect" not in op and "effect_error" not in op, sorted(op)
+
+
+def test_r52q_failure_path_a_broken_op_draft_names_its_error_under_the_ownership_key():
+    broken = _o58_item(_call(_r52i_site()), R52I_BROKEN)
+    assert broken["ownership_effect"] is None
+    assert broken["ownership_effect_error"].startswith(
+        "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken
+    assert "effect" not in broken and "effect_error" not in broken, sorted(broken)

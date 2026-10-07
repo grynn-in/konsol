@@ -36,7 +36,8 @@
         "ownership_pct": 80.0
       },
       "edited_by": [],
-      "effect": {
+      "name": "OP-ZZ5B1-2025-10-01",
+      "ownership_effect": {
         "after": {
           "from": "2025-10-01",
           "method": "full",
@@ -65,8 +66,7 @@
           }
         ]
       },
-      "effect_error": null,
-      "name": "OP-ZZ5B1-2025-10-01",
+      "ownership_effect_error": null,
       "preparer": "zz-analyst@example.com",
       "title": "ZZ5B1 in ECL_GROUP from 2025-10-01"
     },
@@ -80,9 +80,9 @@
       "doctype": "Ownership Period",
       "edit": null,
       "edited_by": [],
-      "effect": null,
-      "effect_error": null,
       "name": "OP-ZZ5B2-2025-10-01",
+      "ownership_effect": null,
+      "ownership_effect_error": null,
       "preparer": "zz-analyst@example.com",
       "title": "ZZ5B2 in ECL_GROUP from 2025-10-01"
     }

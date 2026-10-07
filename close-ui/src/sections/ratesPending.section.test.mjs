@@ -158,8 +158,8 @@ test("No v-html, no browser dialogs, no browser storage", () => {
 
 // ---------------------------------------------------------------------------
 // konsol#305 O61 (wireframe-4.2.md section 3, confirmed by Deepak Pai 7 Oct):
-// a pending Ownership Period item carrying `effect` shows the read-only
-// EFFECT IF APPROVED panel above Approve; an item with `effect: null` (a Desk
+// a pending Ownership Period item carrying `ownership_effect` (R52q) shows the read-only
+// EFFECT IF APPROVED panel above Approve; an item with `ownership_effect: null` (a Desk
 // "Record ownership" draft, O57) shows "Drafted in Desk: effect not
 // previewed." and never an empty panel. Fed the REAL O57 golden payload
 // through the REAL pendingView + ownershipEffectView (rates.js, O59).
@@ -194,7 +194,7 @@ test("O61: the golden OP draft with effect gives the wireframe's EFFECT IF APPRO
   const opEffect = loadOpEffect();
   const item = itemNamed("OP-ZZ5B1-2025-10-01");
   const panel = opEffect(item);
-  const real = ownershipEffectView(item.effect);
+  const real = ownershipEffectView(item.ownership_effect);
   assert.equal(panel.desk, undefined);
   assert.equal(panel.error, undefined);
   assert.deepEqual(
@@ -215,7 +215,7 @@ test("O61: the golden OP draft with effect gives the wireframe's EFFECT IF APPRO
   assert.equal(panel.view.notShown, "Goodwill, NCI and results are not previewed; they change at the next build.");
 });
 
-test("O61 failure path: the golden Desk draft (effect null) gives the sentence, never empty columns", () => {
+test("O61 failure path: the golden Desk draft (ownership_effect null) gives the sentence, never empty columns", () => {
   const opEffect = loadOpEffect();
   const panel = opEffect(itemNamed("OP-ZZ5B2-2025-10-01"));
   assert.deepEqual(panel, { desk: "Drafted in Desk: effect not previewed." });
@@ -225,22 +225,26 @@ test("O61 failure path: an HER item has no panel; an OP item whose effect is bro
   const opEffect = loadOpEffect();
   assert.equal(opEffect(itemNamed("HER-ZZ5B1-1")), null);
   const op = itemNamed("OP-ZZ5B1-2025-10-01");
-  const { resign, ...noResign } = op.effect;
-  const broken = opEffect({ ...op, effect: noResign });
+  const { resign, ...noResign } = op.ownership_effect;
+  const broken = opEffect({ ...op, ownership_effect: noResign });
   assert.equal(broken.view, undefined);
   assert.match(broken.error, /resign/);
-  const missing = { ...op };
-  delete missing.effect;
-  assert.match(opEffect(missing).error, /effect/, "an OP item with no effect key is a server regression, shown as such");
+  const missing = { ...op, effect: op.ownership_effect };
+  delete missing.ownership_effect;
+  assert.match(
+    opEffect(missing).error,
+    /OP-ZZ5B1-2025-10-01 has no ownership_effect$/,
+    "an OP item with no ownership_effect key (R52q: the old `effect` key included) is a server regression, shown as such",
+  );
 });
 
-test("R52o failure path (S2 consumer): an OP item carrying the server's effect_error shows that sentence in place of the panel", () => {
+test("R52o failure path (S2 consumer): an OP item carrying the server's ownership_effect_error shows that sentence in place of the panel", () => {
   const opEffect = loadOpEffect();
   const sentence =
     "The pending ownership change OP-ZZ5B3-2025-10-01 cannot be shown: OP-ZZ5B3-2025-10-01 supersedes " +
     "OP-ZZ5B3-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.";
   for (const name of ["OP-ZZ5B1-2025-10-01", "OP-ZZ5B2-2025-10-01"]) {
-    const broken = { ...itemNamed(name), effect: null, effect_error: sentence };
+    const broken = { ...itemNamed(name), ownership_effect: null, ownership_effect_error: sentence };
     assert.deepEqual(opEffect(broken), { error: sentence }, name);
   }
 });
