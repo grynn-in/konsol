@@ -335,3 +335,112 @@ test("(Y64) failure path: an unreadable reminded value throws, never a guessed l
 	assert.throws(() => remindedLine({ ...ea, reminded: noName }, Y64_NOW, Y64_TZ), /last_by_name/);
 	assert.throws(() => remindedLine({ ...ea, reminded: { ...ea.reminded, count: 0 } }, Y64_NOW, Y64_TZ), /count/);
 });
+
+// --- D62 (stories 1.1, 2.4): the due line and the overdue badge -------------
+// Fed the same golden My work items (D59 regenerated them from the real
+// stub-site get_my_work call). D58's `due` is {date, text, overdue} on a
+// period item with a step, null on a period item without one, and ABSENT on
+// the items no `_period_item` builds: setup gaps, the approvals item and
+// sent-back items (mywork_model.sent_back_items, coordinator note 7 Oct).
+// Engineering call (D62): the SPA reads an absent `due` like null, no line;
+// the server is not changed to add due:null. The date wording is D60's one
+// formatter (dueDate.js), never a second one.
+
+import { dueLine, MUTE_TONE } from "./myWork.js";
+import { OVERDUE_TONE, tbDue } from "./tbTable.js";
+
+test("(D62) golden: an overdue item reads 'Overdue since Thu 7 Aug 2025' in the amber warn tone", () => {
+	for (const [persona, id] of [["entity_accountant", "tb:2025-07:ZZA"], ["group_accountant", "tbs-waiting:2025-07"]]) {
+		const line = dueLine(goldenItem(persona, id));
+		assert.deepEqual(line, { text: "Overdue since Thu 7 Aug 2025", tone: OVERDUE_TONE, overdue: true }, `${persona} ${id}`);
+	}
+});
+
+test("(D62) golden: a not-yet-due item reads 'Due Tue 7 Oct 2025', not the warn tone", () => {
+	const line = dueLine(goldenItem("entity_accountant", "tb:2025-09:ZZA"));
+	assert.equal(line.text, "Due Tue 7 Oct 2025");
+	assert.equal(line.overdue, false);
+	assert.notEqual(line.tone, OVERDUE_TONE);
+	assert.doesNotMatch(line.tone, /amber|red/);
+});
+
+test("(D62) golden: an undeclared step shows the server's 'No due date declared' in the mute tone", () => {
+	const line = dueLine(goldenItem("group_accountant", "tbs-waiting:2025-09"));
+	assert.deepEqual(line, { text: "No due date declared", tone: MUTE_TONE, overdue: false });
+	assert.doesNotMatch(MUTE_TONE, /amber|red/);
+});
+
+test("(D62) the date wording is D60's one formatter (tbTable's tbDue), not a second one", () => {
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			if (!item.due || item.due.date === null) continue;
+			const d60 = tbDue({ deadline: { due: item.due.date, past: item.due.overdue, text: item.due.text } }).text;
+			const date = d60.replace(/^TB due /, "");
+			assert.ok(dueLine(item).text.endsWith(` ${date}`), `${item.id}: ${dueLine(item).text} vs ${d60}`);
+		}
+	}
+});
+
+test("(D62) failure path: the overdue badge is warn tone, never the block (red) tone", () => {
+	assert.match(OVERDUE_TONE, /amber/);
+	assert.doesNotMatch(OVERDUE_TONE, /red/);
+});
+
+test("(D62) failure path: due null renders nothing", () => {
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		for (const item of MYWORK_GOLDEN[persona]) {
+			assert.equal(dueLine({ ...item, due: null }), null, `${persona} ${item.id} with due null`);
+		}
+	}
+	// the golden's own null-due period items (checks-failing, rates, checks-run)
+	const nulls = MYWORK_GOLDEN.group_accountant.filter((i) => "due" in i && i.due === null);
+	assert.ok(nulls.length >= 3);
+	for (const item of nulls) assert.equal(dueLine(item), null, item.id);
+});
+
+test("(D62) an item with no due key (setup gap, approvals, sent back) renders nothing, never throws", () => {
+	const gaps = MYWORK_GOLDEN.group_accountant.filter((i) => !("due" in i));
+	assert.ok(gaps.length >= 3, "the golden has period-less items without a due key");
+	for (const item of gaps) assert.equal(dueLine(item), null, item.id);
+	// mywork_model.sent_back_items (mywork_model.py:666-686) builds a
+	// period-keyed sent-back item with `period` and no `due`.
+	const tb = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	const { due, reminded, ...rest } = tb;
+	const sentBack = { ...rest, id: "sent-back:Trial Balance Upload:TBU-1", kind: "todo", title: "Sent back: TB · ZZA" };
+	assert.equal(dueLine(sentBack), null);
+});
+
+test("(D62) failure path: an unreadable due throws, never a guessed date", () => {
+	const item = goldenItem("entity_accountant", "tb:2025-07:ZZA");
+	const bad = [
+		"Due 7 Aug",
+		{ date: "7 Aug", text: "Due 7 Aug", overdue: true },
+		{ date: "2025-02-30", text: "Due 2025-02-30", overdue: false },
+		{ date: "2025-08-07", text: "Due 2025-08-07" },
+		{ date: "2025-08-07", text: "Due 2025-08-07", overdue: "yes" },
+		{ date: null, text: "No due date declared", overdue: true },
+		{ date: null, overdue: false },
+		{ text: "Due 2025-08-07", overdue: true },
+	];
+	for (const due of bad) {
+		assert.throws(() => dueLine({ ...item, due }), /due/, JSON.stringify(due));
+	}
+});
+
+test("(D62) failure path: sections keeps the server's order, no client re-sort", () => {
+	const src = readFileSync(fileURLToPath(new URL("./myWork.js", import.meta.url)), "utf8");
+	const start = src.indexOf("export function sections(");
+	const end = src.indexOf("\n}\n", start);
+	assert.ok(start >= 0 && end > start);
+	assert.doesNotMatch(src.slice(start, end), /\.sort\(|\.reverse\(/);
+	for (const persona of Object.keys(MYWORK_GOLDEN)) {
+		const items = MYWORK_GOLDEN[persona];
+		for (const section of sections(items)) {
+			assert.deepEqual(
+				section.items.map((i) => i.id),
+				items.filter((i) => i.kind === section.kind).map((i) => i.id),
+				`${persona} ${section.kind}`,
+			);
+		}
+	}
+});

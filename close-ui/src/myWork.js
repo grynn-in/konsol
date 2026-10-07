@@ -20,6 +20,7 @@ import { format } from "./route.js";
 import { ageText as sharedAgeText, userTimeZone } from "./timefmt.js";
 import { periodName } from "./periodName.js";
 import { remindedText } from "./remind.js";
+import { OVERDUE_TONE, dueDateText } from "./dueDate.js";
 
 const KIND_ORDER = ["blocking", "todo", "waiting"];
 
@@ -196,4 +197,54 @@ export function remindedLine(item, now, timeZone) {
 		throw new Error(`${item.id}: unreadable reminded value ${JSON.stringify(reminded)}.`);
 	}
 	return `${r} of ${of} reminded`;
+}
+
+// --- D62 (stories 1.1, 2.4): the due line and the overdue badge -------------
+//
+// mywork_model (D58) puts `due: {date, text, overdue}` on a period item whose
+// step is known, and `due: null` on a period item with no step. The items no
+// `_period_item` builds (setup gaps, the approvals item, sent-back items,
+// mywork_model.sent_back_items) carry no `due` key at all. Engineering call
+// (D62, coordinator note 7 Oct): an absent `due` reads like null, no line;
+// the server is not changed to add due:null. Any other value throws.
+//
+// - overdue: "Overdue since Thu 7 Aug 2025", the warn (amber) tone, never the
+//   block tone; it disables nothing (#305-2.4-1);
+// - not yet due: "Due Tue 7 Oct 2025";
+// - undeclared (`date` null): the server's own sentence, "No due date
+//   declared", in the mute tone; never a guessed date.
+// The date wording is dueDate.js's, the one D60's TB header uses. The items
+// keep the server's rank (D58 ranks by due); nothing here re-sorts them.
+
+export const DUE_TONE = "bg-surface-gray-2 text-ink-gray-7";
+export const MUTE_TONE = "bg-surface-gray-1 text-ink-gray-5";
+
+/** `item` (A20's shape) -> `{text, tone, overdue}`, or null. */
+export function dueLine(item) {
+	if (!Object.prototype.hasOwnProperty.call(item, "due")) return null;
+	const due = item.due;
+	if (due === null) return null;
+	const who = `${item.id}: due`;
+	if (typeof due !== "object") {
+		throw new Error(`${who} is unreadable: ${JSON.stringify(due)}.`);
+	}
+	if (typeof due.overdue !== "boolean") {
+		throw new Error(`${who} has no overdue flag (D58 always sends it).`);
+	}
+	if (!("date" in due)) {
+		throw new Error(`${who} has no date (D58 sends it, null when undeclared).`);
+	}
+	if (due.date === null) {
+		if (due.overdue) {
+			throw new Error(`${who} is overdue with no date declared.`);
+		}
+		if (typeof due.text !== "string" || !due.text) {
+			throw new Error(`${who} is undeclared with no text (D58 always sends it).`);
+		}
+		return { text: due.text, tone: MUTE_TONE, overdue: false };
+	}
+	const date = dueDateText(due.date, who);
+	return due.overdue
+		? { text: `Overdue since ${date}`, tone: OVERDUE_TONE, overdue: true }
+		: { text: `Due ${date}`, tone: DUE_TONE, overdue: false };
 }

@@ -34,13 +34,19 @@
  * (timefmt.js). The lines are built inside `grouped`, so a value the screen
  * cannot read becomes the screen's error. There is no Remind button here
  * (C-R1: Remind lives on the TB list and the IC panel).
+ *
+ * D62 (stories 1.1, 2.4): an item with `due` shows myWork.js's `dueLine`
+ * under its title: the due date, the overdue text in the warn tone, or the
+ * server's undeclared sentence in the mute tone (the wording is myWork.js's). It is built inside `grouped` like the
+ * reminded line, so an unreadable `due` is the screen's error. Show-only: it
+ * disables nothing (#305-2.4-1), and the items keep the server's order.
  */
 import { computed, reactive, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { Badge, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get } from "../api.js";
-import { ageText, badgeFor, itemRoute, remindedLine, sections } from "../myWork.js";
+import { ageText, badgeFor, dueLine, itemRoute, remindedLine, sections } from "../myWork.js";
 import { parse } from "../route.js";
 import { userTimeZone } from "../timefmt.js";
 
@@ -122,14 +128,18 @@ watch(() => (current.value ? `${current.value.year}/${current.value.period}` : "
 
 /** B10 groups, in the server's order. An unknown kind is an error, not a dropped item. */
 const grouped = computed(() => {
-	if (work.status !== "ready") return { groups: [], reminded: {}, error: null };
+	if (work.status !== "ready") return { groups: [], reminded: {}, due: {}, error: null };
 	try {
 		const groups = sections(work.items);
 		const reminded = {};
-		for (const item of work.items) reminded[item.id] = remindedLine(item, today, timeZone);
-		return { groups, reminded, error: null };
+		const due = {};
+		for (const item of work.items) {
+			reminded[item.id] = remindedLine(item, today, timeZone);
+			due[item.id] = dueLine(item);
+		}
+		return { groups, reminded, due, error: null };
 	} catch (e) {
-		return { groups: [], reminded: {}, error: e.message };
+		return { groups: [], reminded: {}, due: {}, error: e.message };
 	}
 });
 const groups = computed(() => grouped.value.groups);
@@ -137,6 +147,11 @@ const groups = computed(() => grouped.value.groups);
 /** Y64: the item's reminded line (built in `grouped`), or null. */
 function remindedOf(item) {
 	return grouped.value.reminded[item.id] || null;
+}
+
+/** D62: the item's due line `{text, tone}` (built in `grouped`), or null. */
+function dueOf(item) {
+	return grouped.value.due[item.id] || null;
 }
 
 const loadState = computed(() => {
@@ -264,6 +279,9 @@ function ageOf(item) {
 									<span class="text-base font-medium text-ink-gray-9">{{ item.title }}</span>
 									<span v-if="ageOf(item)" class="text-xs text-ink-gray-5">{{ ageOf(item) }}</span>
 								</div>
+								<p v-if="dueOf(item)" class="mt-1">
+									<span class="inline-flex rounded px-1.5 py-0.5 text-xs font-medium" :class="dueOf(item).tone">{{ dueOf(item).text }}</span>
+								</p>
 								<p v-if="remindedOf(item)" class="mt-1 text-xs text-ink-gray-6">{{ remindedOf(item) }}</p>
 								<p v-if="item.detail" class="mt-1 break-words text-sm text-ink-gray-7">{{ item.detail }}</p>
 								<p class="mt-1 text-xs text-ink-gray-5">Owner: {{ ownerLabel(item.owner) }}</p>

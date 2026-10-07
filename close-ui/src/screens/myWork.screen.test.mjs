@@ -195,3 +195,30 @@ test("(Y64) failure path: a reminded value the screen cannot read is the screen'
   const grouped = s.slice(s.indexOf("const grouped = computed("), s.indexOf("const groups = computed("));
   assert.match(grouped, /remindedLine\(/, "lines are built inside grouped's try, so a throw becomes loadError");
 });
+
+// --- D62 (stories 1.1, 2.4): the due line and the overdue badge --------------
+
+test("(D62) MyWork shows myWork.js's dueLine under the title, with its tone", () => {
+  const source = read();
+  const s = script(source);
+  assert.match(s, /import\s*\{[^}]*\bdueLine\b[^}]*\}\s*from\s*["']\.\.\/myWork\.js["']/);
+  const t = template(source);
+  const title = t.indexOf("{{ item.title }}");
+  const due = t.search(/v-if="dueOf\(item\)"/);
+  assert.ok(title >= 0 && due > title, "the due line sits under the title");
+  assert.match(t, /:class="dueOf\(item\)\.tone"/, "the tone comes from dueLine");
+  assert.match(t, /\{\{\s*dueOf\(item\)\.text\s*\}\}/);
+});
+
+test("(D62) failure path: a due the screen cannot read is the screen's error, not a crash", () => {
+  const s = script(read());
+  const grouped = s.slice(s.indexOf("const grouped = computed("), s.indexOf("const groups = computed("));
+  assert.match(grouped, /dueLine\(/, "lines are built inside grouped's try, so a throw becomes loadError");
+});
+
+test("(D62) failure path: the screen writes no date wording and blocks nothing on overdue", () => {
+  const source = read();
+  assert.doesNotMatch(source, /Overdue since|No due date declared|DateTimeFormat|toLocaleDateString/, "the text comes from myWork.js only");
+  assert.doesNotMatch(source, /:disabled="[^"]*(due|overdue)/i, "an overdue item disables nothing (#305-2.4-1)");
+  assert.doesNotMatch(source, /\.sort\(/, "the server ranks the items; the screen never re-sorts");
+});
