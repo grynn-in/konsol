@@ -366,15 +366,51 @@ def group_csv(rows, source=None):
     return out.getvalue()
 
 
+def partner_on_non_ic_accounts(rows, chart):
+    """The rows that name a partner on an account the group chart says may not
+    carry intercompany (``allow_ic`` 0). Pure; host-testable.
+
+    konsol#317 (Deepak Pai, 9 Oct 2026): a warning, never a refusal (#247:
+    report what makes a number unexplained). Such a row loads, and no
+    elimination ever matches it. `chart` is konsol.group_chart.chart_accounts(),
+    the dict the caller already read for the chart errors. An account the chart
+    does not hold is not judged here: chart_errors refuses it by name. Returns
+    the accounts, one per row (sorted), as partnerless_ic_accounts does.
+
+    The single Trial Balance Submission imports this rule from here: this
+    module is the one every loader of konsol/tb_bulk.py hands over for real.
+    """
+    return sorted(r["main_account"] for r in rows
+                  if r.get(PARTNER) and r["main_account"] in chart
+                  and not chart[r["main_account"]]["allow_ic"])
+
+
+def non_ic_partner_warning(accounts):
+    """The warning shown for partner_on_non_ic_accounts(), or '' for none."""
+    if not accounts:
+        return ""
+    n, named = len(accounts), sorted(set(accounts))
+    one_row, one_account = n == 1, len(named) == 1
+    return (
+        f"{n} row{'' if one_row else 's'} name{'s' if one_row else ''} a partner on "
+        f"account{'' if one_account else 's'} {', '.join(named)}, which the chart says may not carry "
+        f"intercompany (allow_ic 0). {'It loads' if one_row else 'They load'}, but "
+        f"{'is' if one_row else 'are'} never eliminated: set allow_ic on the "
+        f"account{'' if one_account else 's'} in the chart, or remove the partner{'' if one_row else 's'}."
+    )
+
+
 def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_types, existing, validate_rows,
-                functional_currency, minor_unit, known_entities=None, warnings=(), partnerless_ic_rows=0):
+                functional_currency, minor_unit, known_entities=None, warnings=(), partnerless_ic_rows=0,
+                non_ic_partner_rows=0):
     """Everything that would stop this entity-period loading, as one report row.
 
     The facts come from the caller; `validate_rows` is the single-submission
     validator, so the bulk path can never accept what a single upload refuses.
     `known_entities` are the entities a partner may name. `warnings` never stop
     a load (an intercompany row without a partner is allowed, and reported:
-    `partnerless_ic_rows` counts them).
+    `partnerless_ic_rows` counts them; so is a partner on an account the chart
+    closes to intercompany, konsol#317: `non_ic_partner_rows` counts those).
 
     `period` is None when the (year, period) is not a declared period, else a
     dict with at least `code`, `type` (Opening/Regular/Closing/Adjustment) and
@@ -424,6 +460,7 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
         "total_credit": float(exact_total(rows, "credit")),
         "errors": errors, "ok": not errors, "existing": existing,
         "warnings": list(warnings), "partnerless_ic_rows": partnerless_ic_rows,
+        "non_ic_partner_rows": non_ic_partner_rows,
     }
 
 

@@ -251,6 +251,11 @@ def test_the_partner_is_optional():
 
 # -- konsol#317 (F6, Deepak Pai 9 Oct): a partner on an account whose chart says
 # allow_ic = 0 is reported (#247: say what makes a number unexplained), never refused.
+# The rule is konsol/tb_bulk_model.py's (one definition for the single and bulk
+# uploads); validate() imports it when it runs, and _validate below hands it over.
+_bulk_spec = importlib.util.spec_from_file_location("tb_bulk_model_f6", os.path.join(_HERE, "..", "tb_bulk_model.py"))
+_bulk = importlib.util.module_from_spec(_bulk_spec)
+_bulk_spec.loader.exec_module(_bulk)
 
 def _ic_chart():
     """The group chart as konsol.group_chart.chart_accounts() hands it out:
@@ -263,11 +268,11 @@ def _ic_chart():
 def test_a_partner_on_an_account_the_chart_closes_to_intercompany_is_named():
     chart = _ic_chart()
     rows = [_prow("6400", 10, 0, "ZZB"), _prow("1110", 0, 10, "ZZB")]
-    assert _m.partner_on_non_ic_accounts(rows, chart) == ["6400"]
+    assert _bulk.partner_on_non_ic_accounts(rows, chart) == ["6400"]
     # a blank partner on 6400 is an ordinary row
-    assert _m.partner_on_non_ic_accounts([_prow("6400", 10, 0), _prow("1110", 0, 10, "ZZB")], chart) == []
+    assert _bulk.partner_on_non_ic_accounts([_prow("6400", 10, 0), _prow("1110", 0, 10, "ZZB")], chart) == []
     # one per row, sorted
-    assert _m.partner_on_non_ic_accounts(
+    assert _bulk.partner_on_non_ic_accounts(
         [_prow("6400", 1, 0, "ZZC"), _prow("1110", 0, 1, "ZZB"), _prow("6400", 0, 1, "ZZB")], chart) == ["6400", "6400"]
     # it is a warning: the validator still accepts the file
     assert _m.validate_tb_rows(rows, chart=chart, entity="ZZA", known_entities={"ZZA", "ZZB"}) == []
@@ -277,21 +282,21 @@ def test_an_account_missing_from_the_chart_is_refused_elsewhere_not_judged_here(
     """chart_errors refuses it ("not in the group chart"); this rule says nothing
     about an account the chart does not hold, and does not raise."""
     rows = [_prow("ZZ7777", 10, 0, "ZZB")]
-    assert _m.partner_on_non_ic_accounts(rows, _ic_chart()) == []
+    assert _bulk.partner_on_non_ic_accounts(rows, _ic_chart()) == []
     assert _m.validate_tb_rows(rows, chart=_ic_chart()) == ["Account(s) not in the group chart: ZZ7777"]
 
 
 def test_the_non_ic_partner_warning_text():
-    assert _m.non_ic_partner_warning([]) == ""
-    assert _m.non_ic_partner_warning(["6400"]) == (
+    assert _bulk.non_ic_partner_warning([]) == ""
+    assert _bulk.non_ic_partner_warning(["6400"]) == (
         "1 row names a partner on account 6400, which the chart says may not carry intercompany "
         "(allow_ic 0). It loads, but is never eliminated: set allow_ic on the account in the chart, "
         "or remove the partner.")
-    assert _m.non_ic_partner_warning(["6400", "6400"]) == (
+    assert _bulk.non_ic_partner_warning(["6400", "6400"]) == (
         "2 rows name a partner on account 6400, which the chart says may not carry intercompany "
         "(allow_ic 0). They load, but are never eliminated: set allow_ic on the account in the chart, "
         "or remove the partners.")
-    assert _m.non_ic_partner_warning(["1240", "6400", "6400"]) == (
+    assert _bulk.non_ic_partner_warning(["1240", "6400", "6400"]) == (
         "3 rows name a partner on accounts 1240, 6400, which the chart says may not carry intercompany "
         "(allow_ic 0). They load, but are never eliminated: set allow_ic on the accounts in the chart, "
         "or remove the partners.")
@@ -325,10 +330,12 @@ def _validate(csv_text, chart, ic_accounts):
     group_chart = types.ModuleType("konsol.group_chart")
     group_chart.chart_accounts = chart_accounts
     saved_frappe, saved_chart = _m.frappe, sys.modules.get("konsol.group_chart")
+    saved_bulk = sys.modules.get("konsol.tb_bulk_model")
     _m.frappe = types.SimpleNamespace(
         throw=throw, msgprint=lambda msg, **k: shown.append((msg, k)),
         db=types.SimpleNamespace(sql=lambda *a, **k: None, get_value=get_value))
     sys.modules["konsol.group_chart"] = group_chart
+    sys.modules["konsol.tb_bulk_model"] = _bulk
     try:
         doc = _m.TrialBalanceSubmission()
         doc.name, doc.batch_id, doc.data_area_id = "TBS-ZZ", "b1", "ZZA"
@@ -346,6 +353,10 @@ def _validate(csv_text, chart, ic_accounts):
             sys.modules.pop("konsol.group_chart", None)
         else:
             sys.modules["konsol.group_chart"] = saved_chart
+        if saved_bulk is None:
+            sys.modules.pop("konsol.tb_bulk_model", None)
+        else:
+            sys.modules["konsol.tb_bulk_model"] = saved_bulk
 
 
 _PARTNER_FILE = ("main_account,debit,credit,currency,partner_data_area_id\n"
@@ -355,7 +366,7 @@ _PARTNER_FILE = ("main_account,debit,credit,currency,partner_data_area_id\n"
 def test_submit_keeps_both_warnings_and_shows_each_once():
     doc, shown, reads = _validate(_PARTNER_FILE, _ic_chart(), {"1110"})
     partnerless = _m.partnerless_warning(["1110"])
-    non_ic = _m.non_ic_partner_warning(["6400"])
+    non_ic = _bulk.non_ic_partner_warning(["6400"])
     assert doc.validation_status == "Valid"
     assert doc.validation_message == partnerless + "\n" + non_ic, doc.validation_message
     assert shown == [(partnerless, {"title": "Intercompany rows without a partner", "indicator": "orange"}),
@@ -367,7 +378,7 @@ def test_submit_keeps_both_warnings_and_shows_each_once():
 
 def test_submit_with_only_the_non_ic_partner_warning():
     doc, shown, _ = _validate(_PARTNER_FILE, _ic_chart(), set())
-    assert doc.validation_message == _m.non_ic_partner_warning(["6400"])
+    assert doc.validation_message == _bulk.non_ic_partner_warning(["6400"])
     assert [k["title"] for _, k in shown] == ["Partners on accounts that do not carry intercompany"]
 
 
