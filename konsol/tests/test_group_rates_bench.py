@@ -142,7 +142,8 @@ class GateBenchTest(unittest.TestCase):
                 "SETTINGS mutations_sync = 1")
 
     def test_equity_is_excluded_and_a_group_without_a_currency_blocks(self):
-        pairs, groups = group_rates.translation_needs(FY, P)
+        pairs, groups, entities = group_rates.translation_gaps(FY, P)
+        self.assertEqual(entities, [])
         self.assertIn(("VND", "USD"), pairs)
         self.assertNotIn(("KRW", "USD"), pairs, "ZZEQ is held at equity")
         self.assertEqual(groups, ["ZZ_NOCURRENCY"])
