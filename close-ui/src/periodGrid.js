@@ -55,11 +55,16 @@ function validateRow(row) {
 // Y57 always sends `tb.reminders` (null when none was sent), so a missing key
 // throws. Only a Missing cell shows the text; there is no Remind button on
 // the grid (C-R1: Remind lives on the TB list and the IC panel).
+// konsol#305 F2 (S9): "Missing" is the cell's `status` word, never its
+// display-only label; a cell without `status` throws.
 function tbReminded(row, now, timeZone) {
 	if (!("reminders" in row.tb)) {
 		throw new Error(`gridView: ${row.entity}'s Trial balance cell has no reminders entry (Y57 always sends it, null when none).`);
 	}
-	return row.tb.label === "Missing" ? remindedText(row.tb.reminders, now, timeZone) : null;
+	if (!("status" in row.tb)) {
+		throw new Error(`gridView: ${row.entity}'s Trial balance cell has no status entry (F2: the server always sends it).`);
+	}
+	return row.tb.status === "Missing" ? remindedText(row.tb.reminders, now, timeZone) : null;
 }
 
 // D61 (stories 2.4, 2.2): the deadlines strip above the grid. The steps and
