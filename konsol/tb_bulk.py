@@ -215,30 +215,49 @@ def _record_check(doc):
         _, report = _check(_read_table(doc.upload_file), doc.amount_basis or "")
     except ValueError as e:
         doc.status, doc.error, doc.report = "Failed", str(e), "[]"
-        doc.group_count = doc.valid_count = doc.total_rows = doc.loaded_count = 0
+        doc.group_count = doc.valid_count = doc.total_rows = 0
     else:
         report = M.merge_loaded(report, previous, doc.name)
         doc.report = json.dumps(report)
         doc.group_count = len(report)
         doc.valid_count = sum(1 for r in report if r["ok"])
-        doc.loaded_count = sum(1 for r in report if r.get("loaded"))
         doc.total_rows = sum(r["rows"] for r in report)
         doc.status, doc.error = "Checked", ""
     doc.failed_count = 0
     doc.save()
 
 
-def _payload(doc, refused=None):
+def _submitted(names):
+    """Which of these Trial Balance Submissions are submitted now."""
+    if not names:
+        return set()
+    return set(frappe.get_all("Trial Balance Submission", filters={"name": ["in", sorted(set(names))],
+                                                                   "docstatus": 1},
+                              pluck="name", limit_page_length=0))
+
+
+def upload_state(doc):
+    """The upload's report, loaded count and status as they are now: derived
+    from the submissions that exist when read, never from a stored figure
+    (konsol#332-2, Deepak Pai 9 Oct, #332 issuecomment-6089571467). A
+    cancelled submission lowers the count the moment it is cancelled; the
+    upload is never written to say so."""
     report = json.loads(doc.report or "[]")
+    return M.read_state(report, _submitted(M.claimed(report)), doc.status)
+
+
+def _payload(doc, refused=None):
+    state = upload_state(doc)
+    report = state["report"]
     return {
         # konsol#159: intercompany rows without a partner load but are never
         # eliminated; the check reports how many.
         "partnerless_ic_rows": sum(r.get("partnerless_ic_rows") or 0 for r in report),
-        "name": doc.name, "status": doc.status, "file_url": doc.upload_file,
+        "name": doc.name, "status": state["status"], "file_url": doc.upload_file,
         "file_name": (doc.upload_file or "").rsplit("/", 1)[-1],
         "amount_basis": doc.amount_basis or "",
         "group_count": doc.group_count, "valid_count": doc.valid_count, "total_rows": doc.total_rows,
-        "loaded_count": doc.loaded_count, "failed_count": doc.failed_count, "error": doc.error,
+        "loaded_count": state["loaded_count"], "failed_count": doc.failed_count, "error": doc.error,
         "report": report, "owner": frappe.utils.get_fullname(doc.owner),
         "creation": str(doc.creation),
         # Loading, but no job queued or running: the worker stopped.
@@ -331,9 +350,20 @@ def get_upload(name):
 
 @frappe.whitelist(methods=["GET"])
 def recent_uploads(limit=8):
-    return frappe.get_list(DOCTYPE, fields=["name", "status", "upload_file", "group_count", "valid_count",
-                                            "loaded_count", "failed_count", "owner", "creation"],
+    """The latest uploads, each with its loaded count and status derived now
+    (konsol#332-2): one read of every name they claim, never the stored count."""
+    rows = frappe.get_list(DOCTYPE, fields=["name", "status", "upload_file", "group_count", "valid_count",
+                                            "failed_count", "owner", "creation", "report"],
                            order_by="creation desc", limit_page_length=min(cint(limit) or 8, 50))
+    reports = [json.loads(r.report or "[]") for r in rows]
+    submitted = _submitted([n for report in reports for n in M.claimed(report)])
+    out = []
+    for row, report in zip(rows, reports):
+        state = M.read_state(report, submitted, row.status)
+        item = {k: v for k, v in row.items() if k != "report"}
+        item.update(status=state["status"], loaded_count=state["loaded_count"])
+        out.append(item)
+    return out
 
 
 # ── the warehouse claim, kept honest ───────────────────────────────────────
@@ -397,8 +427,10 @@ def _release_orphan_claims(report):
 
 # ── the load job ───────────────────────────────────────────────────────────
 
-def _save_progress(name, report, loaded, failed, status=None, error=None):
-    values = {"report": json.dumps(report), "loaded_count": loaded, "failed_count": failed}
+def _save_progress(name, report, failed, status=None, error=None):
+    """The job's progress. The loaded count is not stored: it is read from
+    the report's names and the submissions that exist (upload_state)."""
+    values = {"report": json.dumps(report), "failed_count": failed}
     if status:
         values["status"] = status
     if error is not None:
@@ -443,9 +475,7 @@ def run_load(upload):
     # konsol#281: a name in the stored report is a claim, not a load. Count
     # only submissions that are submitted now; a vanished one is a failure.
     claimed = [r["loaded"] for r in report if r.get("loaded")]
-    report = M.keep_submitted(report, set(frappe.get_all(
-        "Trial Balance Submission", filters={"name": ["in", claimed], "docstatus": 1},
-        pluck="name", limit_page_length=0)) if claimed else set())
+    report = M.keep_submitted(report, _submitted(claimed))
     loaded = sum(1 for r in report if r.get("loaded"))
     failed = len(claimed) - loaded
     in_flight = None
@@ -498,12 +528,12 @@ def run_load(upload):
                     item["load_error"] = strip_html(str(e)) or type(e).__name__
                     failed += 1
                     break
-            _save_progress(doc.name, report, loaded, failed)
+            _save_progress(doc.name, report, failed)
         if stopped:
-            _save_progress(doc.name, report, loaded, failed, status="Partly Loaded" if loaded else "Failed",
+            _save_progress(doc.name, report, failed, status="Partly Loaded" if loaded else "Failed",
                            error="Stopped at the time limit; resume the load to finish it.")
         else:
-            _save_progress(doc.name, report, loaded, failed, status=M.outcome(loaded, failed, total))
+            _save_progress(doc.name, report, failed, status=M.outcome(loaded, failed, total))
     except Exception as e:
         frappe.db.rollback()
         # A row caught mid-flight keeps its claim only if it committed; the
@@ -513,5 +543,5 @@ def run_load(upload):
             frappe.log_error(title=f"Trial balance upload {doc.name} failed")
         reason = ("The load ran out of time; resume it to finish." if isinstance(e, BaseTimeoutException)
                   else strip_html(str(e)) or type(e).__name__)
-        _save_progress(doc.name, report, loaded, failed, status="Partly Loaded" if loaded else "Failed",
+        _save_progress(doc.name, report, failed, status="Partly Loaded" if loaded else "Failed",
                        error=reason)

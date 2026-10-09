@@ -9,3 +9,12 @@ class TrialBalanceUpload(Document):
     ready entity-period becomes an ordinary Trial Balance Submission, which
     is where the rules live.
     """
+
+    @property
+    def loaded_count(self):
+        """Virtual: the submissions this upload loaded that are submitted
+        now (konsol#332-2). Never stored; an old column of that name on an
+        existing site is no longer read or written."""
+        from konsol.tb_bulk import upload_state
+
+        return upload_state(self)["loaded_count"]

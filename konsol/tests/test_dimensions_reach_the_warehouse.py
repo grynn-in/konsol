@@ -473,8 +473,8 @@ def _run_bulk_load(site, bulk, csv_text=BULK_CSV, name="TBU-1"):
     upload.status = "Loading"
     site.upload = upload
     site.progress = []
-    bulk._save_progress = lambda name, report, loaded, failed, status=None, error=None: (
-        site.progress.append({"report": report, "loaded": loaded, "failed": failed,
+    bulk._save_progress = lambda name, report, failed, status=None, error=None: (
+        site.progress.append({"report": report, "failed": failed,
                               "status": status, "error": error}))
 
     rq = types.ModuleType("rq")
