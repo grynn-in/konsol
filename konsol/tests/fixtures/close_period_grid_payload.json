@@ -62,6 +62,7 @@
           "last_by": "zz-lead@example.com",
           "last_by_name": "Zed Lead"
         },
+        "status": "Missing",
         "tone": "blocking"
       }
     },
@@ -83,6 +84,7 @@
         "label": "Received",
         "overdue": false,
         "reminders": null,
+        "status": "Received",
         "tone": "ok"
       }
     },
@@ -104,6 +106,7 @@
         "label": "Received",
         "overdue": false,
         "reminders": null,
+        "status": "Received",
         "tone": "ok"
       }
     },
@@ -125,6 +128,7 @@
         "label": "Not consolidated: no ownership for this period",
         "overdue": false,
         "reminders": null,
+        "status": "Not consolidated: no ownership for this period",
         "tone": "blocking"
       }
     }

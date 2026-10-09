@@ -150,6 +150,10 @@ def tb_cell(status, tb):
     ``tb`` is the entity's Trial Balance Submission record (``owner``,
     ``uploaded_on_behalf``, ...), or falsy when ``status`` is not
     ``RECEIVED``.
+
+    ``{tone, label, status}``: ``status`` is the status word itself, the
+    one a reader decides on (konsol#305 F2, review S9); ``label`` is
+    display-only and may be reworded (e.g. "Received · on behalf by ...").
     """
     if status not in _TB_TONE:
         raise ValueError(
@@ -158,7 +162,7 @@ def tb_cell(status, tb):
     label = status
     if status == RECEIVED and tb and tb.get("uploaded_on_behalf") == "Yes":
         label = "Received · on behalf by %s" % tb.get("owner")
-    return {"tone": _TB_TONE[status], "label": label}
+    return {"tone": _TB_TONE[status], "label": label, "status": status}
 
 
 RATE_TYPE = "Closing"

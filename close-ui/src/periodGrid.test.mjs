@@ -18,8 +18,10 @@ const GOLDEN_DEADLINES = JSON.parse(
 function ownership(tone, label) {
 	return { tone, label: label ?? `ownership ${tone}` };
 }
+// konsol#305 F2: the server sends each TB cell's status word (period_grid_model.tb_cell).
+const TB_STATUS = { ok: "Received", none: "Not expected this period", blocking: "Missing" };
 function tb(tone, label) {
-	return { tone, label: label ?? `tb ${tone}`, reminders: null, overdue: false };
+	return { tone, label: label ?? `tb ${tone}`, status: TB_STATUS[tone] ?? "Missing", reminders: null, overdue: false };
 }
 function rate(tone, label) {
 	return { tone, label: label ?? `rate ${tone}` };
@@ -317,6 +319,31 @@ test("Y63: only a Missing cell shows the text (a Received cell with an entry sho
 	const zzb = p.rows.find((r) => r.entity === "ZZB");
 	zzb.tb.reminders = clone(p.rows.find((r) => r.entity === "ZZA").tb.reminders);
 	assert.equal(goldenRow(gridView(p, false, NOW, TZ), "ZZB").tbReminded, null);
+});
+
+test("F2: a Missing cell whose label is reworded still shows the reminded text (status, not label)", () => {
+	const p = clone(goldenGrid);
+	const zza = p.rows.find((r) => r.entity === "ZZA");
+	assert.equal(zza.tb.status, "Missing");
+	zza.tb.label = "Not received yet";
+	const shown = goldenRow(gridView(p, false, NOW, TZ), "ZZA").tbReminded;
+	assert.equal(shown, remindedText(zza.tb.reminders, NOW, TZ));
+	assert.match(shown, /^Reminded 2× · last .+ by Zed Lead$/);
+});
+
+test("F2 failure path: a non-Missing status whose label reads \"Missing\" shows no reminded text", () => {
+	const p = clone(goldenGrid);
+	const zzb = p.rows.find((r) => r.entity === "ZZB");
+	assert.equal(zzb.tb.status, "Received");
+	zzb.tb.label = "Missing";
+	zzb.tb.reminders = clone(p.rows.find((r) => r.entity === "ZZA").tb.reminders);
+	assert.equal(goldenRow(gridView(p, false, NOW, TZ), "ZZB").tbReminded, null);
+});
+
+test("F2 failure path: a TB cell missing its status throws, never falls back to the label", () => {
+	const p = clone(goldenGrid);
+	delete p.rows.find((r) => r.entity === "ZZA").tb.status;
+	assert.throws(() => gridView(p, false, NOW, TZ), /ZZA.*status/);
 });
 
 test("Y63: the problems filter keeps the reminded text on the rows it keeps", () => {

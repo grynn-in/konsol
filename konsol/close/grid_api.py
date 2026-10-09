@@ -31,8 +31,11 @@ Deadlines (konsol#305 D57, decision #305-2.4-1; show-only, they block
 nothing): ``deadlines`` is the period's four steps (tb, ic, journals,
 signoff) as ``{due, past, text}``; an undeclared step reads "No due date
 declared", never a guessed date. Each TB cell carries ``overdue``: the TB
-due date is past and the cell is ``Missing`` (C-D4: past AND the step still
-open); every other cell is not overdue. ``signoff_overdue`` is the sign-off
+due date is past and the cell's ``status`` is ``Missing`` (C-D4: past AND
+the step still open); every other cell is not overdue. The cell's
+``status`` (``period_grid_model.tb_cell``) decides it, never its
+display-only ``label`` (konsol#305 F2, review S9); a cell without a
+``status`` raises. ``signoff_overdue`` is the sign-off
 date past and the period not signed: the latest close run's
 ``signoff_status`` is not in ``signoff_model.SIGNED_STATES`` (no run and
 "Re-sign Needed" count as not signed).
@@ -308,7 +311,7 @@ def get_period_grid(fiscal_year, fiscal_period):
             r["tb"] = dict(r["tb"], reminders=reminded.get(r["entity"]))
     for r in grid["rows"]:
         r["tb"]["overdue"] = bool(
-            r["tb"]["label"] == period_grid_model.MISSING and due["tb"]["past"])
+            r["tb"]["status"] == period_grid_model.MISSING and due["tb"]["past"])
     period = {"fiscal_year": key[0], "fiscal_period": key[1], "code": row.get("period_code"),
               "status": row.get("status"), "start_date": _iso(start)}
     ic_overdue, ic_overdue_error = _ic_overdue(key, due)
