@@ -242,19 +242,9 @@ def test_ownership_period_allows_a_group_node():
     assert not field.get("reqd"), "a group node has no entity code"
 
 
-def test_ownership_period_validates_its_node_exists():
-    """Ownership is the only grain now, so a period naming a node that does not
-    exist is read by nothing — the silent failure this doctype exists to
-    remove."""
-    src = _ownership_period_src()
-    assert "_validate_node_exists" in src
-    lookup = src.split("def _node")[1].split("\n    def ")[0]
-    assert "Consolidation Group" in lookup
-    # a blank Link is NULL: {"data_area_id": ""} would match no group node
-    assert "_BLANK" in lookup
-    # nobody owns the top of a hierarchy
-    guard = src.split("def _validate_node_exists")[1].split("\n    def ")[0]
-    assert "parent_consolidation_group" in guard
+# F8 (#290): the node check is tested by behaviour in
+# test_ownership_period.py (test_f8_*); the source grep that stood here could
+# not catch a behaviour change.
 
 
 def test_ownership_period_rejects_dates_clickhouse_would_clamp():

@@ -625,3 +625,60 @@ def test_s16_cancel_never_writes_a_cancelled_predecessor():
 def test_s10_the_dead_ownership_change_flag_is_gone():
     """S10: ``frappe.flags.from_ownership_change`` was set and read nowhere."""
     assert "from_ownership_change" not in _src()
+
+
+# --- F8 (#290): the node check, by behaviour (was a source grep in
+# test_consolidation.py) ------------------------------------------------------
+
+def _node_site(nodes):
+    """frappe.db.get_value for Consolidation Group: ``nodes`` maps
+    (group, entity) → parent. A blank entity must be asked as ["is", "not set"]
+    (a blank Link is NULL; ownership_period._BLANK)."""
+    module = _load(_no_flags())
+    asked = []
+
+    def get_value(doctype, filters, fields, as_dict=False):
+        assert doctype == "Consolidation Group", doctype
+        assert fields == ["name", "parent_consolidation_group"] and as_dict, (fields, as_dict)
+        asked.append(filters)
+        entity = filters["data_area_id"]
+        entity = "" if entity == ["is", "not set"] else entity
+        key = (filters["consolidation_group"], entity)
+        if key not in nodes:
+            return None
+        return types.SimpleNamespace(name=f"CG-{key[0]}-{key[1]}", parent_consolidation_group=nodes[key])
+
+    module.frappe.db = types.SimpleNamespace(get_value=get_value)
+    return module, asked
+
+
+def _node_refusal(module, **fields):
+    try:
+        module.OwnershipPeriod(**fields)._validate_node_exists()
+    except _Refused as e:
+        return str(e)
+    raise AssertionError("not refused")
+
+
+def test_f8_a_typo_group_is_refused_by_the_sentence():
+    module, _ = _node_site({("ZZG", "ZZ01"): "CG-ZZG-"})
+    assert _node_refusal(module, consolidation_group="ZZ_TYPO", data_area_id="ZZ01") == (
+        "No Consolidation Group node 'ZZ_TYPO' / entity 'ZZ01'. Create the node first — "
+        "an Ownership Period for a node that does not exist is read by nothing.")
+    assert _node_refusal(module, consolidation_group="ZZ_TYPO", data_area_id=None) == (
+        "No Consolidation Group node 'ZZ_TYPO' / the group node. Create the node first — "
+        "an Ownership Period for a node that does not exist is read by nothing.")
+
+
+def test_f8_a_real_node_passes_and_a_blank_entity_is_asked_as_not_set():
+    module, asked = _node_site({("ZZG", "ZZ01"): "CG-ZZG-", ("ZZSUB", ""): "CG-ZZG-"})
+    module.OwnershipPeriod(consolidation_group="ZZG", data_area_id="ZZ01")._validate_node_exists()
+    module.OwnershipPeriod(consolidation_group="ZZSUB", data_area_id="")._validate_node_exists()
+    assert asked[-1]["data_area_id"] == ["is", "not set"]
+
+
+def test_f8_a_root_node_takes_no_period():
+    module, _ = _node_site({("ZZG", ""): None})
+    assert _node_refusal(module, consolidation_group="ZZG", data_area_id="") == (
+        "'ZZG' is a root group: nobody owns the top of a hierarchy, so it is 100% by "
+        "construction and an Ownership Period on it would never be applied.")
