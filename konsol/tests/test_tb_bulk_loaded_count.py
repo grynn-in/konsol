@@ -35,6 +35,7 @@ class _Site:
         self.submitted = set(submitted)
         self.saves = []
         self.errors = []
+        self.list_calls = []
 
     def _match(self, filters):
         filters = dict(filters or {})
@@ -56,11 +57,23 @@ class _Site:
         return out
 
 
-def _load(site, report, table):
+class _Dict(dict):
+    """frappe._dict: what get_list returns."""
+    __getattr__ = dict.get
+
+
+class _Doc(types.SimpleNamespace):
+    def check_permission(self, ptype):
+        assert ptype == "read", ptype
+
+
+def _module(site, doc, table, uploads=None):
+    """tb_bulk.py loaded against the stand-in site. Returns (module, restore)."""
     frappe = types.ModuleType("frappe")
     frappe_utils = types.ModuleType("frappe.utils")
     frappe_utils.cint = lambda v: int(v or 0)
     frappe_utils.strip_html = lambda v: v
+    frappe_utils.get_fullname = lambda user: user
     frappe.utils = frappe_utils
     frappe.whitelist = lambda *a, **k: (lambda fn: fn)
     frappe.PermissionError = type("PermissionError", (Exception,), {})
@@ -68,15 +81,15 @@ def _load(site, report, table):
     frappe.clear_messages = lambda: None
     frappe.log_error = lambda *a, **k: site.errors.append(k.get("title") or a)
 
-    doc = types.SimpleNamespace(name=UPLOAD, report=json.dumps(report), upload_file="/private/files/tb.csv",
-                                amount_basis="Period movement", status="Checked")
-
     def get_doc(*args, **kwargs):
         if args and args[0] == "Trial Balance Upload":
             return doc
         raise AssertionError(f"run_load created a document: {args or kwargs}")
 
     def get_all(doctype, filters=None, fields=None, pluck=None, limit_page_length=None, **kw):
+        if doctype == "Trial Balance Upload":
+            site.list_calls.append({"fields": list(fields or []), **kw})
+            return [_Dict({f: u[f] for f in fields}) for u in uploads or []]
         assert doctype == "Trial Balance Submission", doctype
         names = site._match(filters)
         return names if pluck else [types.SimpleNamespace(name=n) for n in names]
@@ -116,20 +129,41 @@ def _load(site, report, table):
     }
     saved = {k: sys.modules.get(k) for k in stubs}
     sys.modules.update(stubs)
+
+    def restore():
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
     try:
         spec = importlib.util.spec_from_file_location("tb_bulk_281_under_test", TB_BULK_PATH)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         mod._read_table = lambda url: table
         mod._release_orphan_claims = lambda report: 0
+    except BaseException:
+        restore()
+        raise
+    return mod, restore
+
+
+def _load(site, report, table):
+    doc = _Doc(name=UPLOAD, report=json.dumps(report), upload_file="/private/files/tb.csv",
+               amount_basis="Period movement", status="Checked")
+    mod, restore = _module(site, doc, table)
+    try:
         mod.run_load(UPLOAD)
     finally:
-        for k, v in saved.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
+        restore()
     return site.final
+
+
+def _loaded(final, site):
+    """The loaded count as read now (konsol#332-2): from the saved report and
+    the submissions the site holds, never from a stored figure."""
+    return M.read_state(json.loads(final["report"]), site.submitted, final["status"])["loaded_count"]
 
 
 def _row(entity, loaded):
@@ -150,7 +184,7 @@ def test_a_report_naming_submissions_that_do_not_exist_is_not_a_load():
     report = [_row("AMDE", "TBS-1"), _row("AMUS", "TBS-2"), _row("AMHQ", "TBS-3")]
     final = _load(site, report, _table("AMDE", "AMUS", "AMHQ"))
     assert site.errors == []
-    assert final["loaded_count"] == 0, f"claimed {final['loaded_count']} loaded with no submission in the site"
+    assert _loaded(final, site) == 0, f"claimed {_loaded(final, site)} loaded with no submission in the site"
     assert final["status"] != "Loaded", final
     # the vanished rows are reported, not silently dropped
     assert final["failed_count"] == 3, final
@@ -164,7 +198,7 @@ def test_only_the_submissions_that_exist_count_as_loaded():
     report = [_row("AMDE", "TBS-1"), _row("AMUS", "TBS-2")]
     final = _load(site, report, _table("AMDE", "AMUS"))
     assert site.errors == []
-    assert final["loaded_count"] == 1, final
+    assert _loaded(final, site) == 1, final
     assert final["failed_count"] == 1, final
     assert final["status"] == "Partly Loaded", final
     rows = {r["entity"]: r for r in json.loads(final["report"])}
@@ -187,7 +221,7 @@ def test_an_earlier_problem_row_skipped_with_skip_invalid_is_not_a_failure():
     cancelled.pop("loaded")
     final = _load(site, [_row("AMDE", "TBS-1"), problem, cancelled], _table("AMDE", "AMUS", "AMHQ"))
     assert site.errors == []
-    assert (final["loaded_count"], final["failed_count"]) == (1, 0), final
+    assert (_loaded(final, site), final["failed_count"]) == (1, 0), final
     rows = {r["entity"]: r for r in json.loads(final["report"])}
     assert rows["AMHQ"]["was_loaded"] == "TBS-3" and not rows["AMHQ"]["ok"], rows
     assert "loaded" not in rows["AMUS"] and not rows["AMUS"]["ok"], rows
@@ -198,4 +232,109 @@ def test_a_load_whose_submissions_all_exist_is_still_loaded():
     site = _Site(submitted=["TBS-1", "TBS-2"])
     final = _load(site, [_row("AMDE", "TBS-1"), _row("AMUS", "TBS-2")], _table("AMDE", "AMUS"))
     assert site.errors == []
-    assert (final["status"], final["loaded_count"], final["failed_count"]) == ("Loaded", 2, 0), final
+    assert (final["status"], _loaded(final, site), final["failed_count"]) == ("Loaded", 2, 0), final
+
+
+# ── konsol#332-2 (F9): counts derived on read (Deepak Pai 9 Oct, #332
+#    issuecomment-6089571467). Live 9 Oct: TBU-00626 stored Loaded / 43 while
+#    every one of its 43 submissions is cancelled. ─────────────────────────
+
+DOCTYPE_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "trial_balance_upload")
+
+
+def _report(n, prefix="TBS-"):
+    return [_row(f"E{i:02d}", f"{prefix}{i}") for i in range(1, n + 1)]
+
+
+def _get_upload(site, **stored):
+    doc = _Doc(name=UPLOAD, upload_file="/private/files/tb.csv", amount_basis="Period movement",
+               group_count=3, valid_count=3, total_rows=6, failed_count=0, error="", owner="zz@example.com",
+               creation="2026-10-09 10:00:00", **stored)
+    mod, restore = _module(site, doc, [])
+    try:
+        return mod.get_upload(UPLOAD)
+    finally:
+        restore()
+
+
+def test_get_upload_reads_the_count_from_the_submissions_that_exist():
+    """3 loaded, 1 then cancelled: reads 2 and Partly Loaded, not the stored 3."""
+    report = _report(3)
+    out = _get_upload(_Site(["TBS-1", "TBS-3"]), status="Loaded", loaded_count=3, report=json.dumps(report))
+    assert (out["loaded_count"], out["status"]) == (2, "Partly Loaded"), (out["loaded_count"], out["status"])
+    rows = {r["entity"]: r for r in out["report"]}
+    assert "loaded" not in rows["E02"] and rows["E02"]["was_loaded"] == "TBS-2", rows["E02"]
+    out = _get_upload(_Site([]), status="Loaded", loaded_count=3, report=json.dumps(report))
+    assert out["loaded_count"] == 0 and out["status"] != "Loaded", (out["loaded_count"], out["status"])
+    out = _get_upload(_Site(["TBS-1", "TBS-2", "TBS-3"]), status="Loaded", loaded_count=3,
+                      report=json.dumps(report))
+    assert (out["loaded_count"], out["status"]) == (3, "Loaded"), (out["loaded_count"], out["status"])
+
+
+def test_recent_uploads_derives_the_count_and_never_reads_the_stored_one():
+    """The TBU-00626 shape: stored Loaded / 43, all 43 submissions cancelled."""
+    site = _Site(["TBS-B1", "TBS-B2"])
+    uploads = [
+        {"name": "TBU-00626", "status": "Loaded", "upload_file": "/private/files/p8.csv", "group_count": 43,
+         "valid_count": 43, "loaded_count": 43, "failed_count": 0, "owner": "a@example.com",
+         "creation": "2026-09-01", "report": json.dumps(_report(43))},
+        {"name": "TBU-00900", "status": "Loaded", "upload_file": "/private/files/p9.csv", "group_count": 2,
+         "valid_count": 2, "loaded_count": 2, "failed_count": 0, "owner": "a@example.com",
+         "creation": "2026-10-01", "report": json.dumps(_report(2, "TBS-B"))},
+    ]
+    mod, restore = _module(site, None, [], uploads)
+    try:
+        out = mod.recent_uploads(8)
+    finally:
+        restore()
+    got = {u["name"]: (u["loaded_count"], u["status"]) for u in out}
+    assert got == {"TBU-00626": (0, "Failed"), "TBU-00900": (2, "Loaded")}, got
+    assert all("report" not in u for u in out), "the report stays on the upload"
+    assert set(out[0]) == {"name", "status", "upload_file", "group_count", "valid_count", "loaded_count",
+                           "failed_count", "owner", "creation"}, sorted(out[0])
+    assert [c for c in site.list_calls if "loaded_count" in c["fields"]] == [], site.list_calls
+
+
+def test_the_load_job_never_stores_a_loaded_count():
+    """loaded_count is a virtual field: a fresh site has no column for it."""
+    site = _Site(submitted=["TBS-1"])
+    final = _load(site, [_row("AMDE", "TBS-1"), _row("AMUS", "TBS-2")], _table("AMDE", "AMUS"))
+    assert site.saves, "run_load saved its progress"
+    assert [sorted(s) for s in site.saves if "loaded_count" in s] == [], [sorted(s) for s in site.saves]
+    assert final["status"] == "Partly Loaded" and _loaded(final, site) == 1, final
+
+
+def test_the_upload_doctype_derives_loaded_count_in_a_virtual_field():
+    meta = json.load(open(os.path.join(DOCTYPE_DIR, "trial_balance_upload.json")))
+    field = next(f for f in meta["fields"] if f["fieldname"] == "loaded_count")
+    assert field.get("is_virtual") == 1, field
+
+    class Document:
+        pass
+
+    calls = []
+    stubs = {
+        "frappe": types.ModuleType("frappe"), "frappe.model": types.ModuleType("frappe.model"),
+        "frappe.model.document": types.ModuleType("frappe.model.document"),
+        "konsol": types.ModuleType("konsol"), "konsol.tb_bulk": types.ModuleType("konsol.tb_bulk"),
+    }
+    stubs["frappe.model.document"].Document = Document
+    stubs["konsol.tb_bulk"].upload_state = lambda doc: calls.append(doc) or {"loaded_count": 2, "status": "x"}
+    stubs["konsol"].tb_bulk = stubs["konsol.tb_bulk"]
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        spec = importlib.util.spec_from_file_location("tbu_under_test",
+                                                      os.path.join(DOCTYPE_DIR, "trial_balance_upload.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        doc = mod.TrialBalanceUpload()
+        doc.__dict__["loaded_count"] = 43     # the stale column, as Frappe loads it
+        assert doc.loaded_count == 2, doc.loaded_count
+        assert calls == [doc]
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
