@@ -995,3 +995,62 @@ def test_a_real_xlsx_with_a_formula_noise_cell_is_accepted_and_csv_text_is_not()
     _, report = mod._check(csv_table, PERIOD)
     assert not report[0]["ok"], report
     assert "Line 2: debit 110.00000000000001 has 14 decimal places; EUR has 2." in report[0]["errors"], report
+
+
+# ── konsol#332-2 (F9): the counts are derived on read, never stored ─────────
+
+def _loaded_row(entity, name):
+    return {"entity": entity, "fiscal_year": 2025, "fiscal_period": 8, "ok": True, "errors": [],
+            "rows": 2, "loaded": name}
+
+
+def test_read_state_counts_only_the_submissions_still_submitted():
+    """Deepak Pai 9 Oct (#332-2): an upload with 3 loaded submissions, 1 then
+    cancelled, reads 2 and Partly Loaded."""
+    report = [_loaded_row("AMDE", "TBS-1"), _loaded_row("AMUS", "TBS-2"), _loaded_row("AMHQ", "TBS-3")]
+    assert M.claimed(report) == ["TBS-1", "TBS-2", "TBS-3"]
+    state = M.read_state(report, {"TBS-1", "TBS-2", "TBS-3"}, "Loaded")
+    assert (state["loaded_count"], state["status"]) == (3, "Loaded"), state
+    state = M.read_state(report, {"TBS-1", "TBS-3"}, "Loaded")
+    assert (state["loaded_count"], state["status"]) == (2, "Partly Loaded"), state
+    rows = {r["entity"]: r for r in state["report"]}
+    assert "loaded" not in rows["AMUS"] and rows["AMUS"]["was_loaded"] == "TBS-2", rows
+    assert rows["AMUS"]["errors"] == ["Loaded earlier as TBS-2, which is no longer submitted. "
+                                      "Upload the file again if it should be loaded anew."], rows
+    assert rows["AMDE"]["loaded"] == "TBS-1" and rows["AMDE"]["ok"], rows
+    assert report[1]["loaded"] == "TBS-2", "the stored report is read, never changed"
+
+
+def test_read_state_with_every_submission_cancelled_is_not_loaded():
+    report = [_loaded_row("AMDE", "TBS-1"), _loaded_row("AMUS", "TBS-2"), _loaded_row("AMHQ", "TBS-3")]
+    state = M.read_state(report, set(), "Loaded")
+    assert state["loaded_count"] == 0, state
+    assert state["status"] == "Failed", state
+    state = M.read_state(report, set(), "Partly Loaded")
+    assert (state["loaded_count"], state["status"]) == (0, "Failed"), state
+
+
+def test_read_state_keeps_a_stopped_load_partly_loaded_and_a_job_state_as_it_is():
+    """No cancel: a load stopped at the time limit stays Partly Loaded (it is
+    not promoted to Loaded). Draft, Checked, Loading and Failed are the job's
+    states, kept as stored; only the count is derived."""
+    report = [_loaded_row("AMDE", "TBS-1"), {**_loaded_row("AMUS", None), "loaded": None}]
+    state = M.read_state(report, {"TBS-1"}, "Partly Loaded")
+    assert (state["loaded_count"], state["status"]) == (1, "Partly Loaded"), state
+    for status in ("Draft", "Checked", "Loading", "Failed"):
+        state = M.read_state(report, set(), status)
+        assert (state["loaded_count"], state["status"]) == (0, status), (status, state)
+        state = M.read_state(report, {"TBS-1"}, status)
+        assert (state["loaded_count"], state["status"]) == (1, status), (status, state)
+    assert M.read_state([], set(), "Draft") == {"report": [], "loaded_count": 0, "status": "Draft"}
+
+
+def test_module_imports_no_frappe():
+    tree = ast.parse(open(os.path.join(APP_DIR, "tb_bulk_model.py")).read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module.split(".")[0])
+    assert "frappe" not in names, names
