@@ -436,10 +436,12 @@ def merge_loaded(report, previous, upload_name=None):
     before recording it, by the submission's file, which this upload names
     "<upload>-<entity>-<year>-P<period>.csv". A row this upload loaded that
     has since been cancelled becomes a problem: resuming must not quietly
-    load old figures again.
+    load old figures again. It stays one on every later re-check (konsol#332):
+    the previous report's `was_loaded` (set here and by keep_submitted) counts
+    as loaded earlier, and is carried forward on the problem row.
     """
-    loaded = {(p["entity"], p["fiscal_year"], p["fiscal_period"]): p["loaded"]
-              for p in previous or [] if p.get("loaded")}
+    loaded = {(p["entity"], p["fiscal_year"], p["fiscal_period"]): p.get("loaded") or p.get("was_loaded")
+              for p in previous or [] if p.get("loaded") or p.get("was_loaded")}
     prefix = f"{upload_name}-" if upload_name else None
     out = []
     for r in report:
@@ -450,9 +452,13 @@ def merge_loaded(report, previous, upload_name=None):
         if ours:
             r = {**r, "ok": True, "errors": [], "loaded": existing}
         elif before and not existing:
-            r = {**r, "ok": False,
+            r = {**r, "ok": False, "was_loaded": before,
                  "errors": [f"Loaded earlier as {before}, which has since been cancelled. "
                             "Upload the file again if it should be loaded anew."]}
+        elif before:
+            # Refused by the fresh check (another submission holds the period);
+            # keep the name so that submission's cancel is never a reload.
+            r = {**r, "was_loaded": before}
         out.append(r)
     return out
 
@@ -460,12 +466,13 @@ def merge_loaded(report, previous, upload_name=None):
 def keep_submitted(report, submitted):
     """The report with a row counted as loaded only while the submission it
     names is in `submitted` (konsol#281). A row whose submission is gone is
-    a problem, as in merge_loaded: it is never quietly loaded again."""
+    a problem, as in merge_loaded: it is never quietly loaded again. Its name
+    moves to `was_loaded`, which merge_loaded reads (konsol#332)."""
     out = []
     for r in report:
         name = r.get("loaded")
         if name and name not in submitted:
-            r = {k: v for k, v in r.items() if k != "loaded"}
+            r = {**{k: v for k, v in r.items() if k != "loaded"}, "was_loaded": name}
             r.update(ok=False, errors=[f"Loaded earlier as {name}, which is no longer submitted. "
                                        "Upload the file again if it should be loaded anew."])
         out.append(r)
