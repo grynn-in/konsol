@@ -188,7 +188,11 @@ def _load():
 
     frappe.throw = throw
     nested = types.ModuleType("frappe.utils.nestedset")
-    nested.NestedSet = type("NestedSet", (), {})
+    # F8: on_trash calls super().on_trash() (Frappe's tree check); the stub
+    # records that it ran so a test can see the order.
+    nested.NestedSet = type("NestedSet", (), {
+        "on_trash": lambda self, *a, **k: self.__dict__.setdefault("_tree_checked", []).append(True),
+    })
     ch = types.ModuleType("konsol.clickhouse")
     ch.after_commit_once = ch.sync_doctype_after_commit = ch.sync_table = lambda *a, **k: None
     stubs = {"frappe": frappe, "frappe.utils": types.ModuleType("frappe.utils"),
@@ -395,3 +399,141 @@ def test_only_a_group_node_carries_a_policy():
     entity leaf is not checked, whatever the deal table says."""
     with _facts(deals={"ZZGRP"}, accounts=None):
         _root(is_group=0, data_area_id="ZZA")._validate_policy()
+
+
+# --- F8 (#290): a node an Ownership Period names cannot vanish or re-key -------
+#
+# Ownership Period.consolidation_group is Data, not a Link (a node's name is
+# CG-{group}-{entity}), so Frappe's link check never sees it. Deleting the node,
+# or changing the pair that names it, leaves ownership that covers nothing.
+
+#: What frappe.get_all answers for Ownership Period: (group, entity) → rows.
+#: Each row is (name, docstatus). The stub applies the controller's filters.
+_OPS = {
+    ("ZZGRP", "ZZA"): [("OP-ZZGRP-ZZA-2025-01-01", 1)],
+    ("ZZGRP", ""): [("OP-ZZGRP--2025-01-01", 0)],
+}
+
+
+@contextlib.contextmanager
+def _ownership(ops=None):
+    """Stub frappe.get_all for Ownership Period. A blank entity must be asked
+    for with ["is", "not set"]: a blank Link is NULL, so {"data_area_id": ""}
+    would match no group node (the trap ownership_period._BLANK names)."""
+    ops = _OPS if ops is None else ops
+    asked = []
+
+    def get_all(doctype, filters=None, pluck=None, **k):
+        assert doctype == "Ownership Period", doctype
+        asked.append(filters)
+        entity = filters["data_area_id"]
+        if entity == ["is", "not set"]:
+            entity = ""
+        else:
+            assert isinstance(entity, str) and entity, f"blank entity not asked as is-not-set: {entity!r}"
+        assert filters["docstatus"] == ["<", 2], filters
+        rows = [n for n, ds in ops.get((filters["consolidation_group"], entity), []) if ds < 2]
+        assert pluck == "name", pluck
+        return rows
+
+    old = getattr(M.frappe, "get_all", None)
+    M.frappe.get_all = get_all
+    M.frappe.db = types.SimpleNamespace(exists=lambda *a, **k: None,
+                                        table_exists=lambda *a, **k: False)
+    try:
+        yield asked
+    finally:
+        if old is None:
+            del M.frappe.get_all
+        else:
+            M.frappe.get_all = old
+
+
+def _node(group="ZZGRP", entity="ZZA", is_group=0, before=None):
+    d = M.ConsolidationGroup()
+    d.name = f"CG-{group}-{entity}"
+    d.consolidation_group, d.data_area_id, d.is_group = group, entity, is_group
+    d.reporting_currency = "EUR" if (is_group or not entity) else ""
+    d.ic_difference_account, d.ic_difference_tolerance = "", 0
+    d.get_doc_before_save = lambda: before
+    return d
+
+
+def _refusal(fn):
+    try:
+        fn()
+    except Refused as e:
+        return str(e)
+    raise AssertionError("not refused")
+
+
+def test_f8_deleting_a_node_an_ownership_period_names_is_refused_naming_it():
+    with _ownership():
+        d = _node()
+        msg = _refusal(d.on_trash)
+    assert msg == (
+        "Consolidation Group node CG-ZZGRP-ZZA is named by Ownership Period "
+        "OP-ZZGRP-ZZA-2025-01-01. Cancel or delete those periods first: deleting "
+        "the node would leave ownership that covers nothing.")
+
+
+def test_f8_a_draft_period_blocks_the_delete_too_and_a_blank_entity_is_asked_as_not_set():
+    with _ownership() as asked:
+        msg = _refusal(_node(entity="", is_group=1).on_trash)
+    assert "OP-ZZGRP--2025-01-01" in msg
+    assert asked[-1]["data_area_id"] == ["is", "not set"]
+
+
+def test_f8_a_node_no_period_names_is_deleted_after_the_tree_check():
+    # only a cancelled period names it: cancelled ownership covers nothing anyway
+    with _ownership({("ZZGRP", "ZZA"): [("OP-ZZGRP-ZZA-2024-01-01", 2)]}):
+        d = _node()
+        d.on_trash()
+    assert d._tree_checked == [True]
+    with _ownership({}):
+        d = _node(entity="ZZB")
+        d.on_trash()
+    assert d._tree_checked == [True]
+
+
+def _saved(group="ZZGRP", entity="ZZA"):
+    return types.SimpleNamespace(consolidation_group=group, data_area_id=entity)
+
+
+def test_f8_changing_the_group_of_a_saved_node_a_period_names_is_refused():
+    with _ownership():
+        d = _node(group="ZZNEW", before=_saved())
+        msg = _refusal(d.validate)
+    assert msg == (
+        "Consolidation Group node CG-ZZNEW-ZZA is named by Ownership Period "
+        "OP-ZZGRP-ZZA-2025-01-01 as ZZGRP / ZZA. Cancel or delete those periods "
+        "first: changing the node's group or entity would leave ownership that "
+        "covers nothing.")
+
+
+def test_f8_changing_the_entity_of_a_saved_node_a_period_names_is_refused():
+    with _ownership():
+        d = _node(entity="ZZB", before=_saved())
+        msg = _refusal(d.validate)
+    assert "OP-ZZGRP-ZZA-2025-01-01 as ZZGRP / ZZA" in msg
+
+
+def test_f8_a_group_node_rekey_is_refused_and_blank_spellings_are_no_change():
+    with _ownership() as asked:
+        d = _node(group="ZZNEW", entity="", is_group=1, before=_saved(entity=None))
+        msg = _refusal(d.validate)
+    assert "OP-ZZGRP--2025-01-01 as ZZGRP / (group node)" in msg
+    assert asked[-1]["data_area_id"] == ["is", "not set"]
+    # None before and "" now is the same blank entity: not a re-key, nothing read
+    with _ownership() as asked:
+        _node(entity="", is_group=1, before=_saved(entity=None)).validate()
+    assert asked == []
+
+
+def test_f8_a_new_node_an_unchanged_node_and_an_unnamed_rekey_pass():
+    with _ownership() as asked:
+        _node(before=None).validate()                 # new: nothing to orphan
+        _node(before=_saved()).validate()             # unchanged pair
+        assert asked == []
+    with _ownership({}):
+        _node(group="ZZNEW", before=_saved()).validate()   # nobody names the old pair

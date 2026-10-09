@@ -80,6 +80,7 @@ class ConsolidationGroup(NestedSet):
     ]
 
     def validate(self):
+        self._validate_not_rekeyed_under_ownership()
         self._validate_entity_in_one_node()
         self._validate_reporting_currency()
         self._validate_ic_difference()
@@ -202,6 +203,13 @@ class ConsolidationGroup(NestedSet):
         self._queue_sync()
 
     def on_trash(self):
+        # F8 (#290): before the tree check, so the sentence names the periods.
+        periods = self._ownership_periods_naming(self.consolidation_group, self.data_area_id)
+        if periods:
+            frappe.throw(
+                f"Consolidation Group node {self.name} is named by Ownership Period "
+                f"{', '.join(periods)}. Cancel or delete those periods first: deleting "
+                f"the node would leave ownership that covers nothing.")
         super().on_trash()   # the tree check; it may refuse the delete
 
     def after_delete(self):
@@ -215,6 +223,51 @@ class ConsolidationGroup(NestedSet):
         after_commit_once(("consolidation_hierarchy",), type(self).resync_staging)
 
     # -- validation ---------------------------------------------------------
+
+    @staticmethod
+    def _ownership_periods_naming(group, entity):
+        """The draft and submitted Ownership Periods that name the node
+        ``(group, entity)``, by name.
+
+        F8 (#290): Ownership Period.consolidation_group is Data, not a Link (a
+        node's name is CG-{group}-{entity}), so Frappe's link check never sees
+        it. A cancelled period is not counted: it covers nothing already. A
+        draft is counted (judgement): it would fail its own node check later.
+        A blank Link is stored as NULL, so {"data_area_id": ""} would match no
+        group node; ["is", "not set"] matches both spellings
+        (ownership_period._BLANK).
+        """
+        blank = ["is", "not set"]
+        return frappe.get_all(
+            "Ownership Period",
+            filters={"consolidation_group": group,
+                     "data_area_id": entity or blank,
+                     "docstatus": ["<", 2]},
+            pluck="name",
+            order_by="name asc",
+        )
+
+    def _validate_not_rekeyed_under_ownership(self):
+        """A saved node keeps its (group, entity) while a period names it.
+
+        F8 (#290): the pair is how an Ownership Period finds its node, and
+        neither field is set_only_once, so an edit would orphan the period
+        exactly as a delete would. A blank entity read back as NULL and posted
+        as "" is the same entity.
+        """
+        before = self.get_doc_before_save()
+        if before is None:
+            return
+        old = (before.consolidation_group or "", before.data_area_id or "")
+        if old == (self.consolidation_group or "", self.data_area_id or ""):
+            return
+        periods = self._ownership_periods_naming(*old)
+        if periods:
+            frappe.throw(
+                f"Consolidation Group node {self.name} is named by Ownership Period "
+                f"{', '.join(periods)} as {old[0]} / {old[1] or '(group node)'}. Cancel or "
+                f"delete those periods first: changing the node's group or entity would "
+                f"leave ownership that covers nothing.")
 
     def _validate_entity_in_one_node(self):
         """An entity belongs to exactly one node of the tree.
