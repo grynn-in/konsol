@@ -422,3 +422,114 @@ test("R52p: the golden journal item is unchanged — effect is the view, rawEffe
 	assert.deepEqual(item.effect, effectView(server.effect));
 	assert.ok(Array.isArray(item.effect.headings) && item.effect.headings.length > 0);
 });
+
+// ---------------------------------------------------------------------------
+// konsol#305 F4 (review U14): the Approvals detail is never a snapshot. After
+// a quiet reload of the queue, `reselect(view, selected)` re-reads the open
+// item from the NEW queueView by (doctype, name): `{item}` when it is still
+// waiting, or `{item: null, gone}` with a sentence naming it when it is not.
+// Fed the REAL golden queue (close_approvals_op_queue_payload.json) and
+// in-test copies of it for the changed and removed cases.
+// ---------------------------------------------------------------------------
+// A namespace import, so a missing export fails each F4 test on its own
+// ("reselect is not a function") rather than the whole file at link time.
+import * as approvalsModule from "./approvals.js";
+import { opEffectView } from "./rates.js";
+
+function reselect(view, selected) {
+	return approvalsModule.reselect(view, selected);
+}
+
+function f4View(server) {
+	return queueView(server, R52P_NOW, R52P_TZ);
+}
+
+function f4Selected() {
+	return f4View(r52pGolden(R52P_OP_QUEUE)).items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+}
+
+test("F4: the golden OP item, reloaded with a changed effect, is re-read — the detail's effect is the new one", () => {
+	const selected = f4Selected();
+	assert.deepEqual(
+		opEffectView(selected).view.rows.map((r) => [r.label, r.before, r.after]),
+		[
+			["Ownership", "100 %", "80 %"],
+			["Method", "full", "full"],
+		],
+	);
+	const reloaded = r52pGolden(R52P_OP_QUEUE);
+	const op = reloaded.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	op.ownership_effect.after.pct = 60.0;
+	op.ownership_effect.after.method = "equity";
+	op.ownership_effect.resign = [];
+	op.ownership_effect.resign_detail = [];
+	const next = reselect(f4View(reloaded), selected);
+	assert.equal(next.gone, undefined);
+	assert.equal(next.item.name, "OP-ZZ58-2026-07-01");
+	const panel = opEffectView(next.item).view;
+	assert.deepEqual(
+		panel.rows.map((r) => [r.label, r.before, r.after]),
+		[
+			["Ownership", "100 %", "60 %"],
+			["Method", "full", "equity"],
+		],
+	);
+	assert.deepEqual(panel.resign, []);
+	assert.equal(panel.resignNone, "No signed period is affected.");
+});
+
+test("F4: an unchanged reload re-reads the item from the new view, never hands back the old object", () => {
+	const selected = f4Selected();
+	const next = reselect(f4View(r52pGolden(R52P_OP_QUEUE)), selected);
+	assert.notEqual(next.item, selected);
+	assert.deepEqual(next.item, selected);
+});
+
+test("F4 failure path: the OP item is gone from the reloaded queue → no item, and a sentence naming it", () => {
+	const selected = f4Selected();
+	const reloaded = r52pGolden(R52P_OP_QUEUE);
+	reloaded.items = reloaded.items.filter((i) => i.name !== "OP-ZZ58-2026-07-01");
+	reloaded.waiting.count = 2;
+	assert.deepEqual(reselect(f4View(reloaded), selected), {
+		item: null,
+		gone: 'Ownership period "DE02 in G1 from 2026-07-01" is no longer in the approvals queue, so its detail was closed.',
+	});
+});
+
+test("F4 failure path: an item sent back by someone else is gone from the waiting items too (no approve controls on a sent-back item)", () => {
+	const selected = f4Selected();
+	const reloaded = r52pGolden(R52P_OP_QUEUE);
+	const op = reloaded.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	reloaded.items = reloaded.items.filter((i) => i !== op);
+	reloaded.sent_back = [
+		{ ...op, sent_back: true, rejection: { reason: "Wrong date", actor: "Zz Lead", at: "2026-07-02T08:00:00+01:00" } },
+	];
+	assert.equal(
+		reselect(f4View(reloaded), selected).gone,
+		'Ownership period "DE02 in G1 from 2026-07-01" is no longer in the approvals queue, so its detail was closed.',
+	);
+});
+
+test("F4 failure path: the match is by (doctype, name) — an item of another doctype with the same name is not the selected one", () => {
+	const selected = f4Selected();
+	const reloaded = r52pGolden(R52P_OP_QUEUE);
+	const her = reloaded.items.find((i) => i.name === "HER-ZZ58");
+	her.name = "OP-ZZ58-2026-07-01";
+	reloaded.items = reloaded.items.filter((i) => i.doctype !== "Ownership Period" || i.name !== "OP-ZZ58-2026-07-01");
+	const next = reselect(f4View(reloaded), selected);
+	assert.equal(next.item, null);
+	assert.match(next.gone, /^Ownership period "DE02 in G1 from 2026-07-01" is no longer/);
+});
+
+test("F4: the golden journal item is re-read the same way (the pattern is shared)", () => {
+	const server = r52pGolden(R52P_JOURNAL);
+	const selected = queueView(payload({ items: [server] }), NOW, TZ).items[0];
+	const changed = r52pGolden(R52P_JOURNAL);
+	changed.title = "ZZ accrue sales commission (revised)";
+	const next = reselect(queueView(payload({ items: [changed] }), NOW, TZ), selected);
+	assert.equal(next.item.title, "ZZ accrue sales commission (revised)");
+	assert.deepEqual(reselect(queueView(payload({ items: [] }), NOW, TZ), selected), {
+		item: null,
+		gone: 'Adjustment · CJ-W41 "ZZ accrue sales commission" is no longer in the approvals queue, so its detail was closed.',
+	});
+});
