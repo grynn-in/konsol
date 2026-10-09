@@ -199,3 +199,25 @@ export function rejectBody(doctype, name, reason) {
 	}
 	return { body: { doctype, name, reason: trimmed } };
 }
+
+/**
+ * konsol#305 F4 (review U14): the open Approvals detail is never a
+ * snapshot. `(view, selected)` -> the item to show after a (quiet) reload:
+ * `queueView`'s NEW item with `selected`'s `(doctype, name)` (A08/A10 key by
+ * both, never by name alone) as `{item}`, so its effect, approve mode and
+ * lines are the reloaded ones. When no waiting item matches (approved,
+ * deleted, or sent back by someone else: a sent-back item carries no
+ * approve controls, so it is never re-opened from `sentBack`), `{item:
+ * null, gone}`: a sentence naming the item, for the screen to show in place
+ * of the detail it closes.
+ */
+export function reselect(view, selected) {
+	const item = view.items.find((i) => i.doctype === selected.doctype && i.name === selected.name);
+	if (item) {
+		return { item };
+	}
+	return {
+		item: null,
+		gone: `${selected.kind_label} "${selected.title}" is no longer in the approvals queue, so its detail was closed.`,
+	};
+}
