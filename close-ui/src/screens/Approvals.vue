@@ -51,23 +51,36 @@
  * detail, which shows the same read-only EFFECT IF APPROVED block as the
  * Rates pending tab (O61), above that item's Approve / Reject. The block is
  * rates.js's `opEffectView` (R52o/R52p) over the item: `queueView` passes an
- * OP item's `effect` and `effect_error` through unchanged (only a journal's
- * effect becomes the journal view). A Desk "Record ownership" draft
- * (`effect: null`) says rates.js's DESK_DRAFT instead; a draft the server
- * could not read shows its `effect_error` sentence; an effect
+ * OP item's `ownership_effect` and `ownership_effect_error` (R52q) through
+ * unchanged (only a journal's effect becomes the journal view). A Desk
+ * "Record ownership" draft (`ownership_effect: null`) says rates.js's
+ * DESK_DRAFT instead; a draft the server could not read shows its
+ * `ownership_effect_error` sentence; an effect
  * `opEffectView` refuses (a server regression) shows its thrown sentence,
  * never a guessed block. Approve and Reject in the detail are the same `approve`/`reject`
  * functions as the row's (one call site each), gated by the same `canAct`.
  * An OP item never loads a statement.
  *
+ * konsol#305 F4 (review U14): an open detail (OP or journal) is never a
+ * snapshot. Every time the queue view changes (a quiet reload after an
+ * approve or reject of another item included), `followSelection` re-reads
+ * the open item from the new view through approvals.js's `reselect`, by
+ * `(doctype, name)`, so its effect, approve mode and lines are the reloaded
+ * ones. An item no longer waiting closes the detail and leaves `reselect`'s
+ * sentence naming it as a status line, until another item is selected. A
+ * journal keeps the statement it loaded (a queue reload does not change a
+ * statement); its Before / Change / After re-reads the new `rawEffect`
+ * against it. A failed reload (no view) leaves the detail as it was, beside
+ * the queue's own error.
+ *
  * Not built here: evidence attachments, and the wireframe's role-suffix
  * text, unless the payload sends it.
  */
-import { computed, inject, onMounted, reactive, ref } from "vue";
+import { computed, inject, onMounted, reactive, ref, watch } from "vue";
 import { Button, FeatherIcon } from "frappe-ui";
 import LoadState from "../components/LoadState.vue";
 import { get, post } from "../api.js";
-import { queueView, approveBody, rejectBody } from "../approvals.js";
+import { queueView, approveBody, rejectBody, reselect } from "../approvals.js";
 import { dimValueText } from "../adjustments.js";
 import { beforeAfter, statementView } from "../numbers.js";
 import { messageLines } from "../signoff.js";
@@ -116,6 +129,8 @@ const busyKey = ref(null);
 
 const selectedName = ref(null);
 const selectedItem = ref(null);
+// F4: reselect's sentence for a detail closed because its item left the queue.
+const goneNote = ref(null);
 
 // queueView throws when it is not given a time zone or a valid `now`
 // (mirrors Rates.vue's/Adjustments.vue's `view`, never swallowed).
@@ -227,6 +242,7 @@ const detailBeforeAfter = computed(() => {
 
 function selectJournal(item) {
 	if (item.doctype !== JOURNAL) return;
+	goneNote.value = null;
 	selectedName.value = item.name;
 	selectedItem.value = item;
 	loadDetailStatement(item);
@@ -255,6 +271,7 @@ function selectOwnership(item) {
 	detail.status = "idle";
 	detail.payload = null;
 	detail.error = null;
+	goneNote.value = null;
 	selectedName.value = item.name;
 	selectedItem.value = item;
 }
@@ -267,6 +284,24 @@ function closePanel() {
 	detail.payload = null;
 	detail.error = null;
 }
+
+/** F4 (U14): the open detail follows the queue. `nextView` is `view`'s new
+ * value: with an item open, `reselect` re-reads it from that view, or
+ * closes the detail and leaves its sentence in `goneNote` when the item is
+ * no longer waiting. Nothing open, or no view (a failed reload), changes
+ * nothing. */
+function followSelection(nextView) {
+	if (!selectedItem.value || !nextView) return;
+	const next = reselect(nextView, selectedItem.value);
+	if (next.gone) {
+		closePanel();
+		goneNote.value = next.gone;
+		return;
+	}
+	selectedItem.value = next.item;
+}
+
+watch(view, followSelection);
 
 async function approve(item) {
 	const key = refKey(item);
@@ -343,101 +378,6 @@ function balanceText(item) {
 
 <template>
 	<div class="mx-auto max-w-6xl px-6 py-6">
-		<!-- O62: the Ownership Period detail (fixed to the right, so its place in
-		     the markup does not move it): EFFECT IF APPROVED above Approve / Reject. -->
-		<div
-			v-if="selectedItem && selectedItem.doctype === OWNERSHIP"
-			role="dialog"
-			aria-label="Ownership change detail"
-			class="fixed inset-y-0 right-0 z-10 w-full max-w-md overflow-y-auto border-l border-outline-gray-2 bg-surface-white p-5 shadow-lg"
-		>
-			<div class="flex items-start justify-between gap-2">
-				<h2 class="text-base font-semibold text-ink-gray-9">{{ selectedItem.title }}</h2>
-				<Button variant="ghost" size="sm" aria-label="Close" @click="closePanel">
-					<FeatherIcon name="x" class="h-4 w-4" />
-				</Button>
-			</div>
-			<p class="mt-1 text-sm text-ink-gray-7">{{ selectedItem.detail }}</p>
-			<p class="mt-1 text-xs text-ink-gray-5">
-				Prepared by {{ selectedItem.preparer }}
-				<template v-if="selectedItem.edited_by && selectedItem.edited_by.length"> · edited by {{ selectedItem.edited_by.join(", ") }}</template>
-				· {{ selectedItem.createdText }}
-			</p>
-
-			<div
-				v-if="selectedEffect && selectedEffect.view"
-				class="mt-4 rounded border border-outline-gray-2 bg-surface-gray-1 px-3 py-2 text-sm text-ink-gray-8"
-			>
-				<p class="text-xs font-medium uppercase tracking-wide text-ink-gray-6">EFFECT IF APPROVED</p>
-				<dl class="mt-1 grid grid-cols-[6rem_1fr] gap-x-3 gap-y-0.5">
-					<template v-for="row in selectedEffect.view.rows" :key="row.label">
-						<dt class="text-ink-gray-6">{{ row.label }}</dt>
-						<dd>{{ row.before }} → {{ row.after }}</dd>
-					</template>
-					<dt class="text-ink-gray-6">Ends</dt>
-					<dd>{{ selectedEffect.view.endsLine }}</dd>
-					<dt class="text-ink-gray-6">Periods</dt>
-					<dd>{{ selectedEffect.view.periods }}</dd>
-					<dt class="text-ink-gray-6">Re-sign</dt>
-					<dd v-if="selectedEffect.view.resign.length">{{ selectedEffect.view.resign.join(", ") }} will be marked "Re-sign Needed"</dd>
-					<dd v-else>{{ selectedEffect.view.resignNone }}</dd>
-				</dl>
-				<p class="mt-1 text-xs text-ink-gray-6">ⓘ {{ selectedEffect.view.notShown }}</p>
-			</div>
-			<p v-else-if="selectedEffect && selectedEffect.desk" class="mt-4 text-sm text-ink-gray-7">{{ selectedEffect.desk }}</p>
-			<p
-				v-else-if="selectedEffect && selectedEffect.error"
-				role="alert"
-				class="mt-4 rounded border border-outline-red-1 bg-surface-red-1 px-3 py-2 text-sm text-ink-gray-8"
-			>
-				{{ selectedEffect.error }}
-			</p>
-
-			<div class="mt-4 flex flex-col items-end gap-1">
-				<template v-if="canAct(selectedItem)">
-					<template v-if="selectedItem.approve.kind === 'reason' && approveReasonOpen[refKey(selectedItem)]">
-						<label :for="`detail-approve-reason-${refKey(selectedItem)}`" class="text-xs text-ink-gray-6">
-							{{ selectedItem.approve.message }}
-						</label>
-						<input
-							:id="`detail-approve-reason-${refKey(selectedItem)}`"
-							v-model="approveReasonText[refKey(selectedItem)]"
-							type="text"
-							class="w-48 rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
-						/>
-					</template>
-					<Button size="sm" :loading="busyKey === refKey(selectedItem)" :disabled="busyKey !== null" @click="approve(selectedItem)"> Approve </Button>
-					<template v-if="!rejectOpen[refKey(selectedItem)]">
-						<Button variant="outline" size="sm" :disabled="busyKey !== null" @click="startReject(selectedItem)">Reject with reason…</Button>
-					</template>
-					<template v-else>
-						<label :for="`detail-reject-reason-${refKey(selectedItem)}`" class="text-xs text-ink-gray-6">Reason for rejecting</label>
-						<input
-							:id="`detail-reject-reason-${refKey(selectedItem)}`"
-							v-model="rejectReasonText[refKey(selectedItem)]"
-							type="text"
-							required
-							class="w-48 rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
-						/>
-						<div class="flex gap-1">
-							<Button variant="outline" theme="red" size="sm" :loading="busyKey === refKey(selectedItem)" :disabled="busyKey !== null" @click="reject(selectedItem)">
-								Submit reject
-							</Button>
-							<Button variant="ghost" size="sm" :disabled="busyKey !== null" @click="cancelReject(selectedItem)">Cancel</Button>
-						</div>
-					</template>
-				</template>
-				<p v-else class="max-w-xs text-right text-xs text-ink-gray-6">{{ selectedItem.approve.message }}</p>
-			</div>
-			<div
-				v-if="approveErrors[refKey(selectedItem)] || rejectErrors[refKey(selectedItem)]"
-				role="alert"
-				class="mt-2 rounded border border-outline-red-1 bg-surface-red-1 px-3 py-2 text-sm text-ink-gray-8"
-			>
-				<p v-for="(line, i) in lines(approveErrors[refKey(selectedItem)] || rejectErrors[refKey(selectedItem)])" :key="i">{{ line }}</p>
-			</div>
-		</div>
-
 		<header>
 			<h1 class="text-xl font-semibold text-ink-gray-9">Approvals</h1>
 			<p class="mt-1 text-sm text-ink-gray-6">
@@ -450,6 +390,14 @@ function balanceText(item) {
 
 		<LoadState class="mt-4" :state="loadState" :what="WHAT" :source="GET_QUEUE" :error="loadError" :busy="queue.busy" @retry="loadQueue">
 			<template v-if="view">
+				<p
+					v-if="goneNote"
+					role="status"
+					class="mb-3 rounded border border-outline-gray-2 bg-surface-gray-1 px-4 py-3 text-sm text-ink-gray-7"
+				>
+					{{ goneNote }}
+				</p>
+
 				<p
 					v-if="view.hiddenNote"
 					role="status"
@@ -572,6 +520,101 @@ function balanceText(item) {
 				</section>
 			</template>
 		</LoadState>
+
+		<!-- O62: the Ownership Period detail (fixed to the right, so its place in
+		     the markup does not move it): EFFECT IF APPROVED above Approve / Reject. -->
+		<div
+			v-if="selectedItem && selectedItem.doctype === OWNERSHIP"
+			role="dialog"
+			aria-label="Ownership change detail"
+			class="fixed inset-y-0 right-0 z-10 w-full max-w-md overflow-y-auto border-l border-outline-gray-2 bg-surface-white p-5 shadow-lg"
+		>
+			<div class="flex items-start justify-between gap-2">
+				<h2 class="text-base font-semibold text-ink-gray-9">{{ selectedItem.title }}</h2>
+				<Button variant="ghost" size="sm" aria-label="Close" @click="closePanel">
+					<FeatherIcon name="x" class="h-4 w-4" />
+				</Button>
+			</div>
+			<p class="mt-1 text-sm text-ink-gray-7">{{ selectedItem.detail }}</p>
+			<p class="mt-1 text-xs text-ink-gray-5">
+				Prepared by {{ selectedItem.preparer }}
+				<template v-if="selectedItem.edited_by && selectedItem.edited_by.length"> · edited by {{ selectedItem.edited_by.join(", ") }}</template>
+				· {{ selectedItem.createdText }}
+			</p>
+
+			<div
+				v-if="selectedEffect && selectedEffect.view"
+				class="mt-4 rounded border border-outline-gray-2 bg-surface-gray-1 px-3 py-2 text-sm text-ink-gray-8"
+			>
+				<p class="text-xs font-medium uppercase tracking-wide text-ink-gray-6">EFFECT IF APPROVED</p>
+				<dl class="mt-1 grid grid-cols-[6rem_1fr] gap-x-3 gap-y-0.5">
+					<template v-for="row in selectedEffect.view.rows" :key="row.label">
+						<dt class="text-ink-gray-6">{{ row.label }}</dt>
+						<dd>{{ row.before }} → {{ row.after }}</dd>
+					</template>
+					<dt class="text-ink-gray-6">Ends</dt>
+					<dd>{{ selectedEffect.view.endsLine }}</dd>
+					<dt class="text-ink-gray-6">Periods</dt>
+					<dd>{{ selectedEffect.view.periods }}</dd>
+					<dt class="text-ink-gray-6">Re-sign</dt>
+					<dd v-if="selectedEffect.view.resign.length">{{ selectedEffect.view.resign.join(", ") }} will be marked "Re-sign Needed"</dd>
+					<dd v-else>{{ selectedEffect.view.resignNone }}</dd>
+				</dl>
+				<p class="mt-1 text-xs text-ink-gray-6">ⓘ {{ selectedEffect.view.notShown }}</p>
+			</div>
+			<p v-else-if="selectedEffect && selectedEffect.desk" class="mt-4 text-sm text-ink-gray-7">{{ selectedEffect.desk }}</p>
+			<p
+				v-else-if="selectedEffect && selectedEffect.error"
+				role="alert"
+				class="mt-4 rounded border border-outline-red-1 bg-surface-red-1 px-3 py-2 text-sm text-ink-gray-8"
+			>
+				{{ selectedEffect.error }}
+			</p>
+
+			<div class="mt-4 flex flex-col items-end gap-1">
+				<template v-if="canAct(selectedItem)">
+					<template v-if="selectedItem.approve.kind === 'reason' && approveReasonOpen[refKey(selectedItem)]">
+						<label :for="`detail-approve-reason-${refKey(selectedItem)}`" class="text-xs text-ink-gray-6">
+							{{ selectedItem.approve.message }}
+						</label>
+						<input
+							:id="`detail-approve-reason-${refKey(selectedItem)}`"
+							v-model="approveReasonText[refKey(selectedItem)]"
+							type="text"
+							class="w-48 rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
+						/>
+					</template>
+					<Button size="sm" :loading="busyKey === refKey(selectedItem)" :disabled="busyKey !== null" @click="approve(selectedItem)"> Approve </Button>
+					<template v-if="!rejectOpen[refKey(selectedItem)]">
+						<Button variant="outline" size="sm" :disabled="busyKey !== null" @click="startReject(selectedItem)">Reject with reason…</Button>
+					</template>
+					<template v-else>
+						<label :for="`detail-reject-reason-${refKey(selectedItem)}`" class="text-xs text-ink-gray-6">Reason for rejecting</label>
+						<input
+							:id="`detail-reject-reason-${refKey(selectedItem)}`"
+							v-model="rejectReasonText[refKey(selectedItem)]"
+							type="text"
+							required
+							class="w-48 rounded border border-outline-gray-2 bg-surface-white px-2 py-1 text-ink-gray-8"
+						/>
+						<div class="flex gap-1">
+							<Button variant="outline" theme="red" size="sm" :loading="busyKey === refKey(selectedItem)" :disabled="busyKey !== null" @click="reject(selectedItem)">
+								Submit reject
+							</Button>
+							<Button variant="ghost" size="sm" :disabled="busyKey !== null" @click="cancelReject(selectedItem)">Cancel</Button>
+						</div>
+					</template>
+				</template>
+				<p v-else class="max-w-xs text-right text-xs text-ink-gray-6">{{ selectedItem.approve.message }}</p>
+			</div>
+			<div
+				v-if="approveErrors[refKey(selectedItem)] || rejectErrors[refKey(selectedItem)]"
+				role="alert"
+				class="mt-2 rounded border border-outline-red-1 bg-surface-red-1 px-3 py-2 text-sm text-ink-gray-8"
+			>
+				<p v-for="(line, i) in lines(approveErrors[refKey(selectedItem)] || rejectErrors[refKey(selectedItem)])" :key="i">{{ line }}</p>
+			</div>
+		</div>
 
 		<!-- Journal detail panel: lines, balance and the effect per heading. -->
 		<div
