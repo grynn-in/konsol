@@ -5,7 +5,7 @@
 rate grid, as ``rates_model.grid`` assembles it:
 
 - the required (from, to) pairs from the last build
-  (``group_rates.translation_needs``, a ClickHouse read). Any failure there is
+  (``group_rates.translation_gaps``, a ClickHouse read). Any failure there is
   reported as ``pairs_error`` and every pair with a rate is listed with
   ``required: None``: it fails closed and visibly (E4-P9);
 - the period's drafts and approved Group Exchange Rates, and the previous
@@ -147,14 +147,17 @@ def _quoted_per_options():
 
 
 def _required(fy, fp):
-    """(required pairs or None, pairs_error, blockers) — rate_gate's wording."""
+    """(required pairs or None, pairs_error, blockers) — rate_gate's wording and
+    order: each group with no reporting currency, then each entity with no
+    functional currency (konsol#311), so the screen names what the gate refuses."""
     try:
-        pairs, groups = group_rates.translation_needs(fy, fp)
+        pairs, groups, entities = group_rates.translation_gaps(fy, fp)
     except Exception as e:  # noqa: BLE001 — any failure to read means "can't say"
         names = sorted(group_rates.ch_error_names(e))
         return None, type(e).__name__ + (f" {', '.join(names)}" if names else ""), []
-    return set(pairs), None, [f"Consolidation Group {g} has no reporting currency"
-                              for g in groups]
+    return set(pairs), None, (
+        [f"Consolidation Group {g} has no reporting currency" for g in groups]
+        + [f"Entity {e} has no functional currency" for e in entities])
 
 
 def _docs(fy, fp):

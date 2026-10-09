@@ -436,10 +436,6 @@ def _group_rates(site):
             raise site.needs_error
         return site.needs
 
-    def translation_needs(fy, fp):
-        # F13 test-first only: today's product reads this two-part answer
-        return translation_gaps(fy, fp)[:2]
-
     def move_threshold():
         site.reads.append(("single", "Close Settings", "rate_move_threshold"))
         return site.threshold
@@ -450,7 +446,6 @@ def _group_rates(site):
         return site.move_answer
 
     gr.translation_gaps = translation_gaps
-    gr.translation_needs = translation_needs
     gr.move_threshold = move_threshold
     gr.move_problem = move_problem
     return gr

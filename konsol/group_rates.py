@@ -433,14 +433,6 @@ def translation_gaps(fiscal_year, fiscal_period):
     return split_needs(rows)
 
 
-def translation_needs(fiscal_year, fiscal_period):
-    """(pairs, groups without a currency): ``translation_gaps`` without the
-    entities with no functional currency. The close gate (``rate_gate``) reads
-    ``translation_gaps``; this two-part answer is what close.rates_api reads."""
-    pairs, groups, _entities = translation_gaps(fiscal_year, fiscal_period)
-    return pairs, groups
-
-
 def split_needs(rows):
     """(from, to, group, entity) rows -> ({(from, to)}, [groups with no
     currency], [entities with no currency]). ``entity`` is set only on a row
@@ -452,8 +444,8 @@ def split_needs(rows):
 
 def required_pairs(fiscal_year, fiscal_period):
     """The (entity currency, group reporting currency) pairs the period's
-    translation needs (``translation_needs``, without the blockers)."""
-    return translation_needs(fiscal_year, fiscal_period)[0]
+    translation needs (``translation_gaps``, without the blockers)."""
+    return translation_gaps(fiscal_year, fiscal_period)[0]
 
 
 def tree_pairs(fiscal_year, fiscal_period):
