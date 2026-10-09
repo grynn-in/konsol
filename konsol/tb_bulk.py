@@ -187,14 +187,18 @@ def _check(table, form_basis=""):
     for key, rows in groups.items():
         found = existing.get(key)
         partnerless = partnerless_ic_accounts(rows, ic)
+        # konsol#317: a partner on an account the chart closes to intercompany
+        # is reported, never refused; judged on the chart read above.
+        non_ic = M.partner_on_non_ic_accounts(rows, chart)
         item = M.check_group(key, rows, known_accounts=None, visible=key[0] in visible, leaf=key[0] in leaf,
                              period=periods.get((key[1], key[2])), postable_types=postable_types,
                              existing=found.name if found else None, validate_rows=validate_rows,
                              functional_currency=functional.get(key[0], ""),
                              minor_unit=minor_units.get(functional.get(key[0], "")),
                              known_entities=partners,
-                             warnings=[partnerless_warning(partnerless)] if partnerless else [],
-                             partnerless_ic_rows=len(partnerless))
+                             warnings=([partnerless_warning(partnerless)] if partnerless else [])
+                             + ([M.non_ic_partner_warning(non_ic)] if non_ic else []),
+                             partnerless_ic_rows=len(partnerless), non_ic_partner_rows=len(non_ic))
         item["existing_file"] = found.tb_file if found else None
         # konsolidat#199: the basis this entity-period will be submitted with.
         # A group with no basis anywhere is refused here, not the whole file.
@@ -253,6 +257,8 @@ def _payload(doc, refused=None):
         # konsol#159: intercompany rows without a partner load but are never
         # eliminated; the check reports how many.
         "partnerless_ic_rows": sum(r.get("partnerless_ic_rows") or 0 for r in report),
+        # konsol#317: partners on accounts the chart closes to intercompany.
+        "non_ic_partner_rows": sum(r.get("non_ic_partner_rows") or 0 for r in report),
         "name": doc.name, "status": state["status"], "file_url": doc.upload_file,
         "file_name": (doc.upload_file or "").rsplit("/", 1)[-1],
         "amount_basis": doc.amount_basis or "",
