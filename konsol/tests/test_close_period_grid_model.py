@@ -139,18 +139,31 @@ def test_tb_cell_each_status_and_tone():
         cell = M.tb_cell(status, None)
         assert cell["tone"] == tone, status
         assert cell["label"] == status, status
+        assert cell["status"] == status, status
 
 
 def test_tb_cell_received_on_behalf_label():
     tb = {"owner": "alice@example.com", "uploaded_on_behalf": "Yes"}
     cell = M.tb_cell(M.RECEIVED, tb)
-    assert cell == {"tone": M.OK, "label": "Received · on behalf by alice@example.com"}
+    assert cell == {"tone": M.OK, "label": "Received · on behalf by alice@example.com",
+                    "status": "Received"}
 
 
 def test_tb_cell_received_not_on_behalf_plain_label():
     tb = {"owner": "alice@example.com", "uploaded_on_behalf": "No"}
     cell = M.tb_cell(M.RECEIVED, tb)
     assert cell["label"] == M.RECEIVED
+
+
+def test_tb_cell_status_is_the_status_word_not_the_label():
+    """konsol#305 F2 (S9): the cell carries the status code its label comes
+    from; a reworded label (on behalf) never changes the status."""
+    tb = {"owner": "alice@example.com", "uploaded_on_behalf": "Yes"}
+    cell = M.tb_cell(M.RECEIVED, tb)
+    assert cell["status"] == "Received"
+    assert cell["label"] != cell["status"]
+    assert M.tb_cell(M.MISSING, None) == {"tone": "blocking", "label": "Missing",
+                                          "status": "Missing"}
 
 
 def test_tb_cell_unknown_status_raises_value_error():
@@ -339,7 +352,8 @@ def test_period_grid_three_in_scope_plus_one_unowned():
     assert set(by_entity) == {"ZZA", "ZZB", "ZZC", "ZZU"}
     unowned = by_entity["ZZU"]
     assert unowned["ownership"] == {"tone": M.BLOCKING, "label": "None for P08"}
-    assert unowned["tb"] == {"tone": M.BLOCKING, "label": M.NOT_CONSOLIDATED}
+    assert unowned["tb"] == {"tone": M.BLOCKING, "label": M.NOT_CONSOLIDATED,
+                            "status": M.NOT_CONSOLIDATED}
     assert unowned["problem"] is True
 
 
@@ -369,7 +383,8 @@ def test_period_grid_row_has_exactly_the_declared_columns():
 def test_period_grid_quarterly_entity_outside_quarter_end_is_not_expected_and_not_a_problem():
     result = _grid_fixture()
     quarterly = _by_entity(result)["ZZC"]
-    assert quarterly["tb"] == {"tone": M.NONE, "label": "Not expected this period"}
+    assert quarterly["tb"] == {"tone": M.NONE, "label": "Not expected this period",
+                              "status": "Not expected this period"}
     assert quarterly["problem"] is False
 
 
