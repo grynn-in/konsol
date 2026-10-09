@@ -173,6 +173,26 @@ def test_only_the_submissions_that_exist_count_as_loaded():
     assert "TBS-2" in rows["AMUS"]["errors"][0]
 
 
+def test_an_earlier_problem_row_skipped_with_skip_invalid_is_not_a_failure():
+    """konsol#332 (F7): failed = len(claimed) - loaded counts only the names
+    the report claims. A row that was a problem before this run (ok False,
+    never loaded) or whose load was cancelled before (was_loaded, no claim)
+    is skipped, never loaded, and not counted again as failed."""
+    site = _Site(submitted=["TBS-1"])
+    problem = {**_row("AMUS", None), "ok": False, "errors": ["Unknown account 9999"]}
+    problem.pop("loaded")
+    cancelled = {**_row("AMHQ", None), "ok": False, "was_loaded": "TBS-3",
+                 "errors": ["Loaded earlier as TBS-3, which has since been cancelled. "
+                            "Upload the file again if it should be loaded anew."]}
+    cancelled.pop("loaded")
+    final = _load(site, [_row("AMDE", "TBS-1"), problem, cancelled], _table("AMDE", "AMUS", "AMHQ"))
+    assert site.errors == []
+    assert (final["loaded_count"], final["failed_count"]) == (1, 0), final
+    rows = {r["entity"]: r for r in json.loads(final["report"])}
+    assert rows["AMHQ"]["was_loaded"] == "TBS-3" and not rows["AMHQ"]["ok"], rows
+    assert "loaded" not in rows["AMUS"] and not rows["AMUS"]["ok"], rows
+
+
 def test_a_load_whose_submissions_all_exist_is_still_loaded():
     """Control: the fix must not demote a load that is true."""
     site = _Site(submitted=["TBS-1", "TBS-2"])

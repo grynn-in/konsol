@@ -179,6 +179,53 @@ def test_a_loaded_row_since_cancelled_is_a_problem_not_a_reload():
     assert not out["ok"] and "since been cancelled" in out["errors"][0] and "loaded" not in out
 
 
+# --- konsol#332 (F7): a cancelled load stays a problem on every later resume ---
+
+def _fresh_ok():
+    return [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "ok": True, "errors": [], "existing": None}]
+
+
+def test_a_cancel_seen_by_the_load_is_still_a_problem_at_the_next_recheck():
+    """run_load's keep_submitted drops `loaded`; the next re-check must not
+    rebuild the row as ready (it would be loaded again on resume)."""
+    gone = M.keep_submitted([{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12,
+                              "ok": True, "errors": [], "loaded": "TBS-2"}], set())
+    out = M.merge_loaded(_fresh_ok(), gone, "TBU-00004")[0]
+    assert out["ok"] is False, out
+    assert out["errors"] == ["Loaded earlier as TBS-2, which has since been cancelled. "
+                             "Upload the file again if it should be loaded anew."], out
+    assert "loaded" not in out and out["was_loaded"] == "TBS-2"
+    assert gone[0]["was_loaded"] == "TBS-2" and "loaded" not in gone[0]
+    assert gone[0]["errors"] == ["Loaded earlier as TBS-2, which is no longer submitted. "
+                                 "Upload the file again if it should be loaded anew."]
+
+
+def test_a_cancel_seen_by_a_recheck_is_still_a_problem_one_recheck_later():
+    first = M.merge_loaded(_fresh_ok(), [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12,
+                                          "loaded": "TBS-1"}], "TBU-00004")
+    second = M.merge_loaded(_fresh_ok(), first, "TBU-00004")[0]
+    assert second["ok"] is False, second
+    assert second["errors"] == ["Loaded earlier as TBS-1, which has since been cancelled. "
+                                "Upload the file again if it should be loaded anew."], second
+    assert "loaded" not in second and second["was_loaded"] == "TBS-1"
+    # and every recheck after that
+    third = M.merge_loaded(_fresh_ok(), [second], "TBU-00004")[0]
+    assert third["ok"] is False and third["was_loaded"] == "TBS-1", third
+
+
+def test_a_cancelled_load_whose_entity_period_is_now_submitted_elsewhere_keeps_its_name():
+    """The fresh check already refuses it ("already submitted"); the name
+    rides along so a later cancel of that other submission is not a reload."""
+    fresh = [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "ok": False,
+              "errors": ["TBS-9 is already submitted for this entity and period; cancel or amend it first"],
+              "existing": "TBS-9", "existing_file": "/private/files/other.csv"}]
+    first = M.merge_loaded(fresh, [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12,
+                                    "was_loaded": "TBS-1"}], "TBU-00004")[0]
+    later = M.merge_loaded(_fresh_ok(), [first], "TBU-00004")[0]
+    assert later["ok"] is False and "TBS-1" in later["errors"][0], later
+    assert first["ok"] is False and first["was_loaded"] == "TBS-1" and "loaded" not in first
+
+
 def test_generated_files_name_their_upload_and_still_parse_as_a_single_upload():
     rows = [{"main_account": "1010", "debit": 1.0, "credit": 0.0, "description": ""}]
     text = M.group_csv(rows, source="TBU-00042")
