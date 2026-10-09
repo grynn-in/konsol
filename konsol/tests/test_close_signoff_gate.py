@@ -1956,3 +1956,67 @@ def test_r52f_record_data_change_calls_periods_marked_from():
     src = inspect.getsource(module.record_data_change)
     assert "periods_marked_from(" in src, src
     assert "REGULAR" not in src and "_first_close" not in src, src
+
+
+# --- konsol#305 F1 (S14): a period is signed only when its LATEST run is ------
+#
+# Signing run 2 leaves run 1's status alone (assertion_run.sign_off_close
+# writes only its own run), and a void marks only the latest signed run. So
+# run 1 "Signed Off" survives behind a run 2 that is later voided or never
+# signed. Every reader that names a signature (ownership change's "(signed …
+# by …)", R52f's re-sign list, the build fingerprint void) goes through
+# latest_signed_runs; it must not return that old run.
+
+def _s14_site():
+    """P08: RUN-8 (day 1) Signed Off; RUN-8-B (day 5) Signed Off, newer."""
+    site = _Site()
+    site.records["Assertion Run"].append(_run("RUN-8-B", 2025, 8, day=5))
+    return site
+
+
+def test_f1_a_voided_newer_run_leaves_the_period_unsigned():
+    site = _s14_site()
+    # The real producer: a data change voids the latest signed run (RUN-8-B)
+    # and leaves the older RUN-8 "Signed Off" untouched.
+    assert _call(site, "record_data_change", 2025, 8, CHANGED_TEXT, CHANGED_BY) == ["RUN-8-B"]
+    assert _run_rec(site, "RUN-8-B")["signoff_status"] == "Re-sign Needed"
+    assert _run_rec(site, "RUN-8")["signoff_status"] == "Signed Off"
+    latest = _call(site, "latest_signed_runs")
+    assert (2025, 8) not in latest, latest
+    assert sorted(r["name"] for r in latest.values()) == ["RUN-7"], latest
+
+
+def test_f1_a_second_change_does_not_void_the_old_run_again():
+    site = _s14_site()
+    _call(site, "record_data_change", 2025, 8, CHANGED_TEXT, CHANGED_BY)
+    site.close_events = []
+    assert _call(site, "record_data_change", 2025, 8, CHANGED_TEXT, CHANGED_BY) == []
+    assert site.close_events == [], site.close_events
+    assert _run_rec(site, "RUN-8")["signoff_status"] == "Signed Off"
+
+
+def test_f1_a_newer_unsigned_run_leaves_the_period_unsigned():
+    site = _Site()
+    site.records["Assertion Run"].append(
+        _run("RUN-8-B", 2025, 8, signoff="Not Signed Off", day=5))
+    latest = _call(site, "latest_signed_runs", ("signed_off_by",))
+    assert (2025, 8) not in latest, latest
+    # A reopen marks nothing in P08: its latest run is not signed.
+    marked = _call(site, "mark_resign_needed_on_reopen", 2025, 8, "P08", "why", "zz@example.com")
+    assert marked == [], marked
+    assert _run_rec(site, "RUN-8")["signoff_status"] == "Signed Off"
+
+
+def test_f1_re_signing_on_a_fresh_run_names_that_run():
+    site = _s14_site()
+    _call(site, "record_data_change", 2025, 8, CHANGED_TEXT, CHANGED_BY)
+    site.records["Assertion Run"].append(_run("RUN-8-C", 2025, 8, day=9))
+    latest = _call(site, "latest_signed_runs", ("signed_off_by",))
+    assert latest[(2025, 8)]["name"] == "RUN-8-C", latest
+    # Only the columns asked for: name, the period key and ``fields``.
+    assert set(latest[(2025, 8)]) == {"name", "fiscal_year", "fiscal_period",
+                                      "signed_off_by"}, latest[(2025, 8)]
+    # The latest run of each period, signed in every SIGNED_STATES value.
+    for state in SIGNED:
+        _run_rec(site, "RUN-8-C")["signoff_status"] = state
+        assert _call(site, "latest_signed_runs")[(2025, 8)]["name"] == "RUN-8-C", state
