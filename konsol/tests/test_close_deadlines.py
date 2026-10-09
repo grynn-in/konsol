@@ -140,7 +140,7 @@ def test_three_keys_read_settings_twice_and_calendar_once():
     for key, end in (((2025, 7), date(2025, 7, 31)), ((2025, 8), date(2025, 8, 31))):
         assert out[key] == MODEL.period_deadlines(site.rules, holidays, end, TODAY)
     # The real producer's numbers: P07 under the first rule, past the holiday.
-    assert out[(2025, 7)]["tb"] == {"due": date(2025, 8, 8), "past": True, "text": "Due 2025-08-08"}
+    assert out[(2025, 7)]["tb"] == {"due": date(2025, 8, 8), "past": True, "text": None}
     # P08 under the second rule: ic 0 and journals blank are undeclared.
     assert out[(2025, 8)]["ic"]["text"] == MODEL.UNDECLARED
     assert out[(2025, 8)]["journals"]["text"] == MODEL.UNDECLARED
@@ -179,7 +179,7 @@ def test_string_dates_from_the_database_read_as_dates():
     site.holidays = [{"holiday_date": "2025-08-04"}]
     reader = _load(site)
     out = reader.period_deadlines([(2025, 7)], "2025-08-20")
-    assert out[(2025, 7)]["tb"] == {"due": date(2025, 8, 8), "past": True, "text": "Due 2025-08-08"}
+    assert out[(2025, 7)]["tb"] == {"due": date(2025, 8, 8), "past": True, "text": None}
 
 
 def test_period_with_no_end_date_throws_naming_it():
@@ -219,7 +219,7 @@ def test_as_payload_is_json_safe():
     reader = _load(site)
     out = reader.period_deadlines([(2025, 8)], TODAY)
     payload = reader.as_payload(out[(2025, 8)])
-    assert payload["tb"] == {"due": "2025-09-03", "past": False, "text": "Due 2025-09-03"}
+    assert payload["tb"] == {"due": "2025-09-03", "past": False, "text": None}
     assert payload["ic"] == {"due": None, "past": False, "text": "No due date declared"}
     assert sorted(payload) == sorted(MODEL.STEPS)
     assert json.loads(json.dumps(payload)) == payload
