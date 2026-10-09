@@ -4,6 +4,7 @@ import ast
 import csv
 import importlib.util
 import io
+import json
 import os
 import sys
 import types
@@ -271,6 +272,76 @@ def test_check_group_hands_the_partner_facts_to_the_single_validator_and_reports
     assert _check()["warnings"] == [] and _check()["partnerless_ic_rows"] == 0
 
 
+# --- konsol#317 (F6, Deepak Pai 9 Oct): a partner on an account the chart says
+# may not carry intercompany (allow_ic 0) is reported, never refused (#247).
+
+#: The group chart as konsol.group_chart.chart_accounts() hands it out.
+IC_CHART = {"6400": {"main_account": "6400", "is_group": 0, "is_posting": 1, "is_suspended": 0, "allow_ic": 0},
+            "1110": {"main_account": "1110", "is_group": 0, "is_posting": 1, "is_suspended": 0, "allow_ic": 1}}
+
+
+def _prow(account, debit, credit, partner=""):
+    return {"main_account": account, "debit": debit, "credit": credit, "currency": "EUR",
+            "description": "", "partner_data_area_id": partner}
+
+
+def test_check_group_counts_partners_on_accounts_closed_to_intercompany_and_still_loads():
+    rows = [_prow("6400", 10.0, 0.0, "ZZB"), _prow("1110", 0.0, 10.0, "ZZB")]
+    accounts = M.partner_on_non_ic_accounts(rows, IC_CHART)
+    assert accounts == ["6400"]
+    warning = M.non_ic_partner_warning(accounts)
+    r = _check(warnings=[warning], non_ic_partner_rows=len(accounts))
+    assert r["ok"] is True and r["errors"] == []
+    assert r["non_ic_partner_rows"] == 1 and r["partnerless_ic_rows"] == 0
+    assert r["warnings"] == ["1 row names a partner on account 6400, which the chart says may not carry "
+                             "intercompany (allow_ic 0). It loads, but is never eliminated: set allow_ic on the "
+                             "account in the chart, or remove the partner."]
+    # a blank partner on 6400 is an ordinary row
+    assert M.partner_on_non_ic_accounts([_prow("6400", 10.0, 0.0), _prow("1110", 0.0, 10.0, "ZZB")], IC_CHART) == []
+    assert M.non_ic_partner_warning([]) == ""
+    assert _check()["non_ic_partner_rows"] == 0
+
+
+def test_the_single_upload_uses_the_bulk_rule_not_a_copy():
+    """One definition: the single submission imports the rule tb_bulk_model holds
+    (tb_bulk_model is the one module every tb_bulk.py loader hands over for real)."""
+    tbs_path = os.path.join(APP_DIR, "consolidation", "doctype", "trial_balance_submission",
+                            "trial_balance_submission.py")
+    with open(tbs_path) as f:
+        tree = ast.parse(f.read())
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    assert not defined & {"partner_on_non_ic_accounts", "non_ic_partner_warning"}, defined
+    imported = {(n.module, a.name) for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert ("konsol.tb_bulk_model", "partner_on_non_ic_accounts") in imported
+    assert ("konsol.tb_bulk_model", "non_ic_partner_warning") in imported
+
+
+def test_the_bulk_check_reports_partners_on_accounts_closed_to_intercompany():
+    table = [HEADER_ROW + ["partner_data_area_id"],
+             ["AMDE", "2025", "3", "6400", "5", "0", "EUR", "ZZB"],
+             ["AMDE", "2025", "3", "1110", "0", "5", "EUR", "ZZB"],
+             ["AMUS", "2025", "3", "6400", "5", "0", "EUR", ""],
+             ["AMUS", "2025", "3", "1110", "0", "5", "EUR", "ZZB"]]
+    period_lookup = {(2025, 3): {"code": "P03", "type": "Regular", "status": "Open"}}
+    mod, _ = _load_tb_bulk(entities=["AMDE", "AMUS", "ZZB"], postable={"Regular"},
+                           period_lookup=period_lookup, chart=IC_CHART)
+    _, report = mod._check(table, PERIOD)
+    by_entity = {r["entity"]: r for r in report}
+    assert by_entity["AMDE"]["ok"] is True, by_entity["AMDE"]
+    assert by_entity["AMDE"]["non_ic_partner_rows"] == 1
+    assert by_entity["AMDE"]["warnings"] == [M.non_ic_partner_warning(["6400"])]
+    assert by_entity["AMUS"]["ok"] is True and by_entity["AMUS"]["non_ic_partner_rows"] == 0
+    assert by_entity["AMUS"]["warnings"] == []
+    # the upload's payload sums the counter, beside partnerless_ic_rows
+    doc = types.SimpleNamespace(report=json.dumps(report + [dict(by_entity["AMDE"])]), name="TBU-ZZ",
+                                status="Checked", upload_file="/private/files/zz.csv", amount_basis=PERIOD,
+                                group_count=3, valid_count=3, total_rows=6, loaded_count=0, failed_count=0,
+                                error="", owner="zz@example.com", creation="2099-01-01")
+    mod.frappe.utils.get_fullname = lambda user: user
+    payload = mod._payload(doc)
+    assert payload["non_ic_partner_rows"] == 2 and payload["partnerless_ic_rows"] == 0
+
+
 # --- konsol#189 task 20: tb_bulk._check uses the real declared-period lookup ---
 # tb_bulk.py imports frappe and several konsol modules at the top level; every
 # one of them is stubbed here (the pattern test_chart_upload.py established),
@@ -285,7 +356,8 @@ HEADER_ROW = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "d
 MINOR_UNITS = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3}
 
 
-def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible=None, minor_units=None):
+def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible=None, minor_units=None,
+                  chart=None):
     """Load konsol/tb_bulk.py with every non-model import stubbed.
 
     `period_lookup` maps (year, period) -> a period fact dict; a pair absent
@@ -295,7 +367,8 @@ def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible
     Functional Currency ('' for none); an entity absent from it has EUR.
     `minor_units` maps a currency to its ISO Currency.minor_unit (MINOR_UNITS
     unless a test says otherwise; None stands for a blank one); a currency
-    absent from it has no ISO Currency row. Returns (module, calls), where calls
+    absent from it has no ISO Currency row. `chart` is what chart_accounts()
+    returns (an empty chart unless a test says otherwise). Returns (module, calls), where calls
     counts how many times postable_types() was called.
     """
     frappe = types.ModuleType("frappe")
@@ -368,7 +441,7 @@ def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible
     entity_permissions.allowed_entity_codes = lambda user=None: None
 
     group_chart = types.ModuleType("konsol.group_chart")
-    group_chart.chart_accounts = lambda: {}
+    group_chart.chart_accounts = lambda: dict(chart or {})
 
     # konsol#255: _check now reads the site's declared dimensions before it
     # splits the file. That reader binds frappe, so it is stubbed; these tests

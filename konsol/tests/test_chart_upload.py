@@ -397,7 +397,9 @@ def test_a_load_that_turns_an_unused_published_leaf_into_a_heading_loads():
 
 
 def test_a_chart_with_allow_ic_on_every_leaf_loads_and_publishes_cleanly():
-    """Guardrail: the real chart has allow_ic=1 on every postable account."""
+    """A chart may set allow_ic on every leaf, and then loads and publishes cleanly.
+    allow_ic is per account, not assumed: on live (9 Oct 2026) 7 of 87 published
+    accounts carry it (konsol#317)."""
     head = HEAD + ["allow_ic"]
     table = [head, ["ZZ9000", "Heading", "", "", "", "ZZCOA", ""]] + [
         [f"ZZ1{n}00", f"Asset {n}", "Asset", "BS", "ZZ9000", "ZZCOA", "yes"] for n in range(4)]

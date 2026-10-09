@@ -249,6 +249,134 @@ def test_the_partner_is_optional():
     assert _m.partnerless_warning([]) == ""
 
 
+# -- konsol#317 (F6, Deepak Pai 9 Oct): a partner on an account whose chart says
+# allow_ic = 0 is reported (#247: say what makes a number unexplained), never refused.
+
+def _ic_chart():
+    """The group chart as konsol.group_chart.chart_accounts() hands it out:
+    6400 may not carry intercompany, 1110 may."""
+    acct = {"is_group": 0, "is_posting": 1, "is_suspended": 0}
+    return {"6400": dict(acct, main_account="6400", allow_ic=0),
+            "1110": dict(acct, main_account="1110", allow_ic=1)}
+
+
+def test_a_partner_on_an_account_the_chart_closes_to_intercompany_is_named():
+    chart = _ic_chart()
+    rows = [_prow("6400", 10, 0, "ZZB"), _prow("1110", 0, 10, "ZZB")]
+    assert _m.partner_on_non_ic_accounts(rows, chart) == ["6400"]
+    # a blank partner on 6400 is an ordinary row
+    assert _m.partner_on_non_ic_accounts([_prow("6400", 10, 0), _prow("1110", 0, 10, "ZZB")], chart) == []
+    # one per row, sorted
+    assert _m.partner_on_non_ic_accounts(
+        [_prow("6400", 1, 0, "ZZC"), _prow("1110", 0, 1, "ZZB"), _prow("6400", 0, 1, "ZZB")], chart) == ["6400", "6400"]
+    # it is a warning: the validator still accepts the file
+    assert _m.validate_tb_rows(rows, chart=chart, entity="ZZA", known_entities={"ZZA", "ZZB"}) == []
+
+
+def test_an_account_missing_from_the_chart_is_refused_elsewhere_not_judged_here():
+    """chart_errors refuses it ("not in the group chart"); this rule says nothing
+    about an account the chart does not hold, and does not raise."""
+    rows = [_prow("ZZ7777", 10, 0, "ZZB")]
+    assert _m.partner_on_non_ic_accounts(rows, _ic_chart()) == []
+    assert _m.validate_tb_rows(rows, chart=_ic_chart()) == ["Account(s) not in the group chart: ZZ7777"]
+
+
+def test_the_non_ic_partner_warning_text():
+    assert _m.non_ic_partner_warning([]) == ""
+    assert _m.non_ic_partner_warning(["6400"]) == (
+        "1 row names a partner on account 6400, which the chart says may not carry intercompany "
+        "(allow_ic 0). It loads, but is never eliminated: set allow_ic on the account in the chart, "
+        "or remove the partner.")
+    assert _m.non_ic_partner_warning(["6400", "6400"]) == (
+        "2 rows name a partner on account 6400, which the chart says may not carry intercompany "
+        "(allow_ic 0). They load, but are never eliminated: set allow_ic on the account in the chart, "
+        "or remove the partners.")
+    assert _m.non_ic_partner_warning(["1240", "6400", "6400"]) == (
+        "3 rows name a partner on accounts 1240, 6400, which the chart says may not carry intercompany "
+        "(allow_ic 0). They load, but are never eliminated: set allow_ic on the accounts in the chart, "
+        "or remove the partners.")
+
+
+class _Refused(Exception):
+    pass
+
+
+def _validate(csv_text, chart, ic_accounts):
+    """Run validate() end to end on a draft for ZZA (EUR) whose file is
+    `csv_text`, against `chart` (what chart_accounts() returns) and the
+    Published Intercompany Accounts `ic_accounts`. Every gate before the file
+    passes. Returns (document, msgprints, chart reads)."""
+    shown, reads = [], []
+
+    def get_value(doctype, filters=None, fieldname=None, **k):
+        if doctype == "Entity" and fieldname == "functional_currency":
+            return "EUR"
+        if doctype == "ISO Currency" and fieldname == "minor_unit":
+            return 2
+        return None   # no other submission, no TB Exception
+
+    def throw(msg, *a, **k):
+        raise _Refused(msg)
+
+    def chart_accounts():
+        reads.append(True)
+        return chart
+
+    group_chart = types.ModuleType("konsol.group_chart")
+    group_chart.chart_accounts = chart_accounts
+    saved_frappe, saved_chart = _m.frappe, sys.modules.get("konsol.group_chart")
+    _m.frappe = types.SimpleNamespace(
+        throw=throw, msgprint=lambda msg, **k: shown.append((msg, k)),
+        db=types.SimpleNamespace(sql=lambda *a, **k: None, get_value=get_value))
+    sys.modules["konsol.group_chart"] = group_chart
+    try:
+        doc = _m.TrialBalanceSubmission()
+        doc.name, doc.batch_id, doc.data_area_id = "TBS-ZZ", "b1", "ZZA"
+        doc.fiscal_year, doc.fiscal_period, doc.amount_basis = 2099, 1, "Period movement"
+        doc.currency = None
+        doc._check_entity_access = lambda: None
+        doc._partner_entities = lambda rows: {"ZZA", "ZZB"}
+        doc._ic_accounts = lambda: ic_accounts
+        doc._parse_file = lambda: _m.parse_tb_csv(csv_text, ())
+        doc.validate()
+        return doc, shown, reads
+    finally:
+        _m.frappe = saved_frappe
+        if saved_chart is None:
+            sys.modules.pop("konsol.group_chart", None)
+        else:
+            sys.modules["konsol.group_chart"] = saved_chart
+
+
+_PARTNER_FILE = ("main_account,debit,credit,currency,partner_data_area_id\n"
+                 "6400,10,0,EUR,ZZB\n1110,0,10,EUR,\n")
+
+
+def test_submit_keeps_both_warnings_and_shows_each_once():
+    doc, shown, reads = _validate(_PARTNER_FILE, _ic_chart(), {"1110"})
+    partnerless = _m.partnerless_warning(["1110"])
+    non_ic = _m.non_ic_partner_warning(["6400"])
+    assert doc.validation_status == "Valid"
+    assert doc.validation_message == partnerless + "\n" + non_ic, doc.validation_message
+    assert shown == [(partnerless, {"title": "Intercompany rows without a partner", "indicator": "orange"}),
+                     (non_ic, {"title": "Partners on accounts that do not carry intercompany",
+                               "indicator": "orange"})], shown
+    # the chart is read once, and the same dict decides both the errors and the warning
+    assert reads == [True]
+
+
+def test_submit_with_only_the_non_ic_partner_warning():
+    doc, shown, _ = _validate(_PARTNER_FILE, _ic_chart(), set())
+    assert doc.validation_message == _m.non_ic_partner_warning(["6400"])
+    assert [k["title"] for _, k in shown] == ["Partners on accounts that do not carry intercompany"]
+
+
+def test_submit_with_no_warning_keeps_none():
+    clean = "main_account,debit,credit,currency,partner_data_area_id\n6400,10,0,EUR,\n1110,0,10,EUR,ZZB\n"
+    doc, shown, _ = _validate(clean, _ic_chart(), {"1110"})
+    assert doc.validation_message == "" and shown == []
+
+
 def _land(rows, columns=()):
     """Land `rows` and return the SQL sent. `columns` is what ClickHouse
     reports on the raw table when _land_rows asks."""
@@ -449,7 +577,9 @@ def test_single_and_bulk_uploads_pass_the_chart():
     import ast as _ast
     with open(_SRC) as f:
         src = f.read()
-    assert "validate_tb_rows(rows, chart=chart_accounts()," in src
+    # konsol#317 (F6): one read, kept in `chart`, so the partner warning judges the same dict
+    assert "chart = chart_accounts()" in src
+    assert "validate_tb_rows(rows, chart=chart," in src
     with open(os.path.join(_HERE, "..", "tb_bulk.py")) as f:
         bulk = f.read()
     assert "functools.partial(validate_tb_rows, chart=chart)" in bulk and "validate_rows=validate_rows," in bulk
