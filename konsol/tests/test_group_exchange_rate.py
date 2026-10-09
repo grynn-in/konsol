@@ -1057,7 +1057,7 @@ def test_the_pre_fill_falls_back_to_the_tree_for_the_period():
     assert str(r.period_end(2096, 2)) == "2096-02-29" and str(r.period_end(2099, 0)) == "2099-01-31"
 
 
-def _gate(pairs=None, approved=(), error=None, built=True, groups=()):
+def _gate(pairs=None, approved=(), error=None, built=True, groups=(), entities=()):
     record = {}
     frappe = _frappe(record)
     original_sql = frappe.db.sql
@@ -1075,11 +1075,18 @@ def _gate(pairs=None, approved=(), error=None, built=True, groups=()):
             raise error
         return set(pairs or ()), list(groups)
 
+    def gaps(fy, fp):
+        # konsol#311: translation_needs plus the entities with no functional currency
+        if error:
+            raise error
+        return set(pairs or ()), list(groups), list(entities)
+
     def ledgers():
         if isinstance(built, Exception):
             raise built
         return built
-    return _rules_module(frappe, {"translation_needs": needs, "ledgers_built": ledgers})
+    return _rules_module(frappe, {"translation_needs": needs, "translation_gaps": gaps,
+                                  "ledgers_built": ledgers})
 
 
 def test_the_close_gate():
@@ -1104,6 +1111,20 @@ def test_the_close_gate():
         assert "Consolidation Group ZZ_NOCURRENCY has no reporting currency" in str(e)
     else:
         raise AssertionError("a group with no reporting currency must refuse the close")
+    # konsol#311: an entity with ledger rows and no functional currency is named,
+    # never skipped, with every rate approved
+    r = _gate(pairs, full, entities=["ZZ_NOFC"])
+    assert r.rate_gate(2024, 3) == ([], None, ["Entity ZZ_NOFC has no functional currency"])
+    try:
+        r.assert_rates_complete(2024, 3)
+    except Refused as e:
+        assert "Entity ZZ_NOFC has no functional currency" in str(e), str(e)
+        assert "Set each entity's Functional Currency" in str(e), str(e)
+    else:
+        raise AssertionError("an entity with no functional currency must refuse the close")
+    r = _gate(pairs, full, groups=["ZZ_NOCURRENCY"], entities=["ZZ_NOFC"])
+    assert r.rate_gate(2024, 3)[2] == ["Consolidation Group ZZ_NOCURRENCY has no reporting currency",
+                                       "Entity ZZ_NOFC has no functional currency"]
 
 
 def test_rate_gate_reads_lock():
@@ -1143,7 +1164,8 @@ def test_rate_gate_lock_only_for_close():
         return original_sql(query, params, *a, **k)
     frappe.db.sql = sql
 
-    r = _rules_module(frappe, {"translation_needs": lambda fy, fp: (pairs, [])})
+    r = _rules_module(frappe, {"translation_needs": lambda fy, fp: (pairs, []),
+                               "translation_gaps": lambda fy, fp: (pairs, [], [])})
 
     r.rate_gate(2024, 3)
     home_queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
@@ -1183,11 +1205,23 @@ def test_the_gate_sorts_pairs_from_groups_with_no_currency():
     excluded, a group without a currency named, the pre-fill's fallback
     filtered); here, what the gate makes of the rows, and the bound period."""
     calls = []
-    rows = [("IDR", "USD", "GROUP_CORP"), ("VND", "USD", "GROUP_CORP"), ("EUR", "", "ZZ_NOCURRENCY"),
-            ("GBP", "", "ZZ_NOCURRENCY"), ("KRW", "", "ZZ_OTHER")]
+    # (entity currency, group currency, group, entity named only when its currency is blank)
+    rows = [("IDR", "USD", "GROUP_CORP", ""), ("VND", "USD", "GROUP_CORP", ""), ("EUR", "", "ZZ_NOCURRENCY", ""),
+            ("GBP", "", "ZZ_NOCURRENCY", ""), ("KRW", "", "ZZ_OTHER", ""),
+            # konsol#311: no functional currency, into a group with one and into one without
+            ("", "USD", "GROUP_CORP", "ZZ_NOFC"), ("", "", "ZZ_NOCURRENCY", "ZZ_NOFC2")]
     r = _rules_module(_frappe({}), {"_ch_rows": lambda sql, params=None: calls.append(params) or rows})
     assert r.translation_needs(2024, 3) == ({("IDR", "USD"), ("VND", "USD")}, ["ZZ_NOCURRENCY", "ZZ_OTHER"])
+    assert r.translation_gaps(2024, 3) == ({("IDR", "USD"), ("VND", "USD")}, ["ZZ_NOCURRENCY", "ZZ_OTHER"],
+                                           ["ZZ_NOFC", "ZZ_NOFC2"])
     assert r.required_pairs(2024, 3) == {("IDR", "USD"), ("VND", "USD")}
+    missing, error, blockers = r.rate_gate(2024, 3)
+    assert error is None
+    assert blockers == ["Consolidation Group ZZ_NOCURRENCY has no reporting currency",
+                        "Consolidation Group ZZ_OTHER has no reporting currency",
+                        "Entity ZZ_NOFC has no functional currency",
+                        "Entity ZZ_NOFC2 has no functional currency"], blockers
+    assert {(f, t) for f, t, _ in missing} == {("IDR", "USD"), ("VND", "USD")}, missing
     calls.clear()
     r._ch_rows = lambda sql, params=None: calls.append(params) or [("VND", "USD")]
     assert r.tree_pairs(2099, 13) == {("VND", "USD")}
