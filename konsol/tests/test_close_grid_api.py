@@ -896,18 +896,18 @@ def _run(signoff_status):
 def test_the_stub_deadlines_are_the_real_model_output():
     got = _DM.period_deadlines([_rule(date(2025, 1, 1), tb=5, signoff=10)], set(),
                                date(2025, 9, 28), date(2025, 10, 11))
-    assert got["tb"] == {"due": date(2025, 10, 3), "past": True, "text": "Due 2025-10-03"}
+    assert got["tb"] == {"due": date(2025, 10, 3), "past": True, "text": None}
     assert got["signoff"] == {"due": date(2025, 10, 10), "past": True,
-                              "text": "Due 2025-10-10"}
+                              "text": None}
 
 
 def test_the_grid_carries_all_four_steps():
     result = _call(_deadline_site(date(2025, 10, 6)))
     assert result["deadlines"] == {
-        "tb": {"due": "2025-10-03", "past": True, "text": "Due 2025-10-03"},
+        "tb": {"due": "2025-10-03", "past": True, "text": None},
         "ic": {"due": None, "past": False, "text": "No due date declared"},
         "journals": {"due": None, "past": False, "text": "No due date declared"},
-        "signoff": {"due": "2025-10-10", "past": False, "text": "Due 2025-10-10"},
+        "signoff": {"due": "2025-10-10", "past": False, "text": None},
     }
 
 
@@ -1056,7 +1056,7 @@ def test_the_deadlines_are_present_when_the_caller_sees_no_row():
     site.allowed = set()
     result = _call(site)
     assert result["rows"] == []
-    assert result["deadlines"]["tb"]["text"] == "Due 2025-10-03"
+    assert result["deadlines"]["tb"] == {"due": "2025-10-03", "past": True, "text": None}
     assert result["signoff_overdue"] is True
 
 
@@ -1081,6 +1081,11 @@ def test_the_golden_fixture_shows_overdue():
         golden = json.load(f)
     assert golden["signoff_overdue"] is True
     assert golden["deadlines"]["journals"]["text"] == "No due date declared"
+    # F3 (review S17): a dated step carries no server text; the SPA words it
+    # from ``due`` (dueDate.js). Only the undeclared step has a sentence.
+    assert {s: (d["due"], d["text"]) for s, d in golden["deadlines"].items()} == {
+        "tb": ("2025-10-03", None), "ic": ("2025-10-07", None),
+        "journals": (None, "No due date declared"), "signoff": ("2025-10-01", None)}
     assert [r["entity"] for r in golden["rows"] if r["tb"]["overdue"]] == ["ZZA"]
 
 

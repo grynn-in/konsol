@@ -14,7 +14,9 @@ calendar once, however many periods are asked for, and returns
 - Stored data the save would have refused (two rules on one Valid From), or a
   due date that cannot be computed, throws deadline_model's sentence.
 - ``as_payload(steps)`` is the JSON-safe form of one period's steps: ``due``
-  as an ISO string or None, plus ``past`` and ``text``.
+  as an ISO string or None, plus ``past`` and ``text`` (the "No due date
+  declared" sentence when ``due`` is None, else None: F3, the SPA words a
+  dated step from ``due``).
 
 "Overdue" (past AND the step still open) is decided by each caller (C-D4).
 Callers import this module lazily (C-X1).
@@ -72,7 +74,7 @@ def _child_rows(doctype, parentfield, fields):
 
 
 def period_deadlines(keys, today):
-    """``{(fy, fp): {step: {"due": date|None, "past": bool, "text": str}}}``
+    """``{(fy, fp): {step: {"due": date|None, "past": bool, "text": str|None}}}``
     for the Regular periods among ``keys``. Three reads in all."""
     wanted = {(int(fy), int(fp)) for fy, fp in keys}
     if not wanted:

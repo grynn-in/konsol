@@ -1309,7 +1309,7 @@ def _due_period(code, key, today, rules=None, **over):
 
 def test_the_real_producer_gives_the_dates_these_tests_rely_on():
     d = _deadlines(P07, date(2025, 8, 10))
-    assert d["tb"] == {"due": date(2025, 8, 7), "past": True, "text": "Due 2025-08-07"}
+    assert d["tb"] == {"due": date(2025, 8, 7), "past": True, "text": None}
     assert d["signoff"]["due"] == date(2025, 8, 14)
     assert d["signoff"]["past"] is False
 
@@ -1317,21 +1317,21 @@ def test_the_real_producer_gives_the_dates_these_tests_rely_on():
 def test_upload_tb_item_carries_due_date_text_and_overdue():
     per = {P07: _due_period("FY2025 P07", P07, date(2025, 8, 10), my_missing=["ZZA"])}
     (item,) = M.period_items("entity_accountant", per, FIRST)
-    assert item["due"] == {"date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+    assert item["due"] == {"date": "2025-08-07", "text": None, "overdue": True}
 
 
 def test_not_yet_due_item_is_not_overdue_and_due_day_itself_is_not_overdue():
     for today in (date(2025, 8, 1), date(2025, 8, 7)):
         per = {P07: _due_period("FY2025 P07", P07, today, my_missing=["ZZA"])}
         (item,) = M.period_items("entity_accountant", per, FIRST)
-        assert item["due"] == {"date": "2025-08-07", "text": "Due 2025-08-07",
+        assert item["due"] == {"date": "2025-08-07", "text": None,
                                "overdue": False}, today
 
 
 def test_step_map_for_the_close_lead_and_group_accountant():
     today = date(2025, 8, 10)
-    tb = {"date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
-    signoff = {"date": "2025-08-14", "text": "Due 2025-08-14", "overdue": False}
+    tb = {"date": "2025-08-07", "text": None, "overdue": True}
+    signoff = {"date": "2025-08-14", "text": None, "overdue": False}
     cases = [
         # Waiting on TBs -> tb; Sign off -> signoff
         ("close_lead", {"missing": ["ZZA"]},
@@ -1376,7 +1376,7 @@ def test_run_checks_item_has_due_none_even_with_deadlines():
 def test_ic_fix_item_carries_the_ic_due():
     per = {IC_P07: dict(_ic_period(), deadlines=_deadlines(P07, date(2025, 8, 10)))}
     (item,) = M.ic_fix_items({IC_P07: [_ic_fix()]}, per, {"UK01"})
-    assert item["due"] == {"date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+    assert item["due"] == {"date": "2025-08-07", "text": None, "overdue": True}
 
 
 def test_ic_fix_item_without_deadlines_has_due_none():
@@ -1391,7 +1391,7 @@ def test_an_iso_due_from_the_api_payload_is_carried_as_is():
     facts = _period("FY2025 P07", my_missing=["ZZA"])
     facts["deadlines"] = payload
     (item,) = M.period_items("entity_accountant", {P07: facts}, FIRST)
-    assert item["due"] == {"date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+    assert item["due"] == {"date": "2025-08-07", "text": None, "overdue": True}
 
 
 def test_undeclared_step_reads_no_due_date_declared_and_is_never_overdue():
@@ -1522,7 +1522,7 @@ def _r52a_items(signoff):
 
 def test_r52a_the_real_producer_puts_signoff_on_working_day_8_and_past():
     d = DM.period_deadlines(_R52A_RULES, set(), _END[P07], _R52A_TODAY)
-    assert d["signoff"] == {"due": date(2025, 8, 12), "past": True, "text": "Due 2025-08-12"}
+    assert d["signoff"] == {"due": date(2025, 8, 12), "past": True, "text": None}
 
 
 def test_r52a_signed_off_close_item_carries_no_due():
@@ -1534,7 +1534,7 @@ def test_r52a_signed_off_close_item_carries_no_due():
 def test_r52a_resign_item_carries_the_signoff_due_and_is_overdue():
     # Failure path at 843cdf7: ``due None`` on resign.
     _, items = _r52a_items("Re-sign Needed")
-    assert items["resign:2025-07"]["due"] == {"date": "2025-08-12", "text": "Due 2025-08-12",
+    assert items["resign:2025-07"]["due"] == {"date": "2025-08-12", "text": None,
                                               "overdue": True}
 
 

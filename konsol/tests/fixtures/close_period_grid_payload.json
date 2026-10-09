@@ -8,7 +8,7 @@
     "ic": {
       "due": "2025-10-07",
       "past": true,
-      "text": "Due 2025-10-07"
+      "text": null
     },
     "journals": {
       "due": null,
@@ -18,12 +18,12 @@
     "signoff": {
       "due": "2025-10-01",
       "past": true,
-      "text": "Due 2025-10-01"
+      "text": null
     },
     "tb": {
       "due": "2025-10-03",
       "past": true,
-      "text": "Due 2025-10-03"
+      "text": null
     }
   },
   "ic_overdue": true,

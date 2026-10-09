@@ -178,9 +178,23 @@ def test_period_deadlines_rule_starts_later_all_undeclared():
 def test_period_deadlines_zero_or_blank_offset_is_undeclared():
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5, ic=0, journals=None, signoff="")]
     out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 1))
-    assert out["tb"] == {"due": date(2025, 8, 7), "past": False, "text": "Due 2025-08-07"}
+    assert out["tb"] == {"due": date(2025, 8, 7), "past": False, "text": None}
     for step in ("ic", "journals", "signoff"):
         assert out[step] == {"due": None, "past": False, "text": M.UNDECLARED}
+
+
+def test_f3_a_dated_step_sends_no_text_and_only_an_undeclared_step_has_one():
+    """F3 (review S17): the SPA owns the date wording (dueDate.js), so a dated
+    step's ``text`` is None; only an undeclared step carries the sentence."""
+    rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5, ic=0, journals=None, signoff=8)]
+    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 1))
+    assert out == {
+        "tb": {"due": date(2025, 8, 7), "past": False, "text": None},
+        "ic": {"due": None, "past": False, "text": "No due date declared"},
+        "journals": {"due": None, "past": False, "text": "No due date declared"},
+        "signoff": {"due": date(2025, 8, 12), "past": False, "text": None},
+    }
+    assert M.UNDECLARED == "No due date declared"
 
 
 def test_period_deadlines_each_step_uses_its_own_offset():
@@ -204,9 +218,9 @@ def test_period_deadlines_uses_the_governing_rule():
 def test_period_deadlines_past_is_strictly_after_due():
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5)]
     on_due = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 7))
-    assert on_due["tb"] == {"due": date(2025, 8, 7), "past": False, "text": "Due 2025-08-07"}
+    assert on_due["tb"] == {"due": date(2025, 8, 7), "past": False, "text": None}
     day_after = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 8))
-    assert day_after["tb"] == {"due": date(2025, 8, 7), "past": True, "text": "Due 2025-08-07"}
+    assert day_after["tb"] == {"due": date(2025, 8, 7), "past": True, "text": None}
 
 
 def test_period_deadlines_ten_year_error_propagates():
