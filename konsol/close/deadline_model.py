@@ -17,6 +17,9 @@ Engineering calls (plan-w5b.md §3):
 - C-D4: "overdue" is ``past`` AND the step still open; the caller decides it.
   For IC and journals the "open" rule is ``ic_open`` / ``journals_open``
   (#305-Q5-1, konsol#305 D57b).
+- F3 (review S17): the SPA owns the date wording (close-ui dueDate.js), so a
+  dated step's ``text`` is None; only an undeclared step carries a sentence
+  (``UNDECLARED``). No surface shows a server-formatted date.
 
 Rules are dicts carrying the "Close Deadline Rule" child fields; dates are
 ``datetime.date``.
@@ -87,7 +90,8 @@ def _undeclared():
 
 
 def period_deadlines(rules, holidays, end_date, today):
-    """``{step: {"due": date|None, "past": bool, "text": str}}`` for one period."""
+    """``{step: {"due": date|None, "past": bool, "text": str|None}}`` for one
+    period. ``text`` is ``UNDECLARED`` when ``due`` is None, else None (F3)."""
     rule = governing_rule(rules, end_date)
     if rule is None:
         return {step: _undeclared() for step in STEPS}
@@ -100,7 +104,7 @@ def period_deadlines(rules, holidays, end_date, today):
             out[step] = _undeclared()
             continue
         due = due_date(end_date, offset, working_days, holidays)
-        out[step] = {"due": due, "past": today > due, "text": "Due %s" % due.isoformat()}
+        out[step] = {"due": due, "past": today > due, "text": None}
     return out
 
 

@@ -24,7 +24,7 @@
       "due": {
         "date": "2025-08-07",
         "overdue": true,
-        "text": "Due 2025-08-07"
+        "text": null
       },
       "id": "tb:2025-07:ZZA",
       "kind": "blocking",
@@ -50,7 +50,7 @@
       "due": {
         "date": "2025-10-07",
         "overdue": false,
-        "text": "Due 2025-10-07"
+        "text": null
       },
       "id": "tb:2025-09:ZZA",
       "kind": "todo",
@@ -174,7 +174,7 @@
       "due": {
         "date": "2025-08-07",
         "overdue": true,
-        "text": "Due 2025-08-07"
+        "text": null
       },
       "id": "tbs-waiting:2025-07",
       "kind": "waiting",
