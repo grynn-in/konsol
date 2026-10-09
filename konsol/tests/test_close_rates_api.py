@@ -9,7 +9,7 @@ preparers), the policy gaps, and whether the caller may enter or approve.
 
 Loaded against a stub frappe (pattern: test_close_checks_api.py ``_Site`` /
 ``_call``, copied, not imported). ``konsol.group_rates`` and
-``konsol.fiscal_calendar`` are stub modules: ``translation_needs`` is how the
+``konsol.fiscal_calendar`` are stub modules: ``translation_gaps`` is how the
 ClickHouse read is stubbed, so no ClickHouse client is imported. The real
 ``close_policy_model.py``, ``rates_model.py`` and ``self_approval.py`` are
 loaded by path under their dotted names, so the approve rule and the preparer
@@ -157,7 +157,7 @@ class _Site:
         self.user = LEAD
         self.roles = {"EPM Admin"}
         self.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Open")]
-        self.needs = ({("EUR", "GBP"), ("USD", "GBP")}, [])
+        self.needs = ({("EUR", "GBP"), ("USD", "GBP")}, [], [])
         self.needs_error = None
         self.threshold = 0.5
         self.policy = "Blocked"
@@ -429,11 +429,16 @@ def _group_rates(site):
     gr.true_rate = lambda q, p: float(decimal.Decimal(str(q or 0)) / int(p or 1))
     gr.ch_error_names = lambda e: set()
 
-    def translation_needs(fy, fp):
+    def translation_gaps(fy, fp):
+        # (pairs, groups with no reporting currency, entities with no functional currency)
         site.needs_calls.append((fy, fp))
         if site.needs_error is not None:
             raise site.needs_error
         return site.needs
+
+    def translation_needs(fy, fp):
+        # F13 test-first only: today's product reads this two-part answer
+        return translation_gaps(fy, fp)[:2]
 
     def move_threshold():
         site.reads.append(("single", "Close Settings", "rate_move_threshold"))
@@ -444,6 +449,7 @@ def _group_rates(site):
                                 "unit": unit, "threshold": threshold})
         return site.move_answer
 
+    gr.translation_gaps = translation_gaps
     gr.translation_needs = translation_needs
     gr.move_threshold = move_threshold
     gr.move_problem = move_problem
@@ -678,9 +684,28 @@ def test_failure_path_clickhouse_down_lists_the_docs_with_required_none():
 
 def test_a_group_with_no_reporting_currency_is_a_blocker():
     site = _Site()
-    site.needs = ({("EUR", "GBP")}, ["ZZGRP"])
+    site.needs = ({("EUR", "GBP")}, ["ZZGRP"], [])
     result = _call(site)
     assert result["blockers"] == ["Consolidation Group ZZGRP has no reporting currency"]
+
+
+def test_an_entity_with_no_functional_currency_is_a_blocker_after_the_groups():
+    """konsol#311 (F13): the Rates screen names what group_rates.rate_gate names,
+    in the same words and order: the groups, then the entities."""
+    site = _Site()
+    site.needs = ({("EUR", "GBP")}, ["ZZGRP"], ["ZZ_NOFC"])
+    result = _call(site)
+    assert result["blockers"] == ["Consolidation Group ZZGRP has no reporting currency",
+                                  "Entity ZZ_NOFC has no functional currency"], result["blockers"]
+    assert site.needs_calls == [(2025, 7)]
+
+
+def test_an_entity_with_no_functional_currency_alone_is_a_blocker():
+    site = _Site()
+    site.needs = ({("EUR", "GBP")}, [], ["ZZ_NOFC", "ZZ_NOFC2"])
+    result = _call(site)
+    assert result["blockers"] == ["Entity ZZ_NOFC has no functional currency",
+                                  "Entity ZZ_NOFC2 has no functional currency"], result["blockers"]
 
 
 def test_a_rate_for_an_unrequired_pair_is_listed_apart():
@@ -783,7 +808,7 @@ def test_an_approved_or_missing_cell_carries_no_approve_mode():
 def _pairs_site(n):
     currencies = ["EUR", "USD", "JPY", "CHF", "SEK", "NOK"][:n]
     site = _Site()
-    site.needs = ({(c, "GBP") for c in currencies}, [])
+    site.needs = ({(c, "GBP") for c in currencies}, [], [])
     site.docs = []
     site.earlier = []
     for i, c in enumerate(currencies):

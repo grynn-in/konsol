@@ -1070,13 +1070,8 @@ def _gate(pairs=None, approved=(), error=None, built=True, groups=(), entities=(
 
     frappe.db.sql = sql
 
-    def needs(fy, fp):
-        if error:
-            raise error
-        return set(pairs or ()), list(groups)
-
     def gaps(fy, fp):
-        # konsol#311: translation_needs plus the entities with no functional currency
+        # (pairs, groups with no reporting currency, entities with no functional currency; konsol#311)
         if error:
             raise error
         return set(pairs or ()), list(groups), list(entities)
@@ -1085,8 +1080,7 @@ def _gate(pairs=None, approved=(), error=None, built=True, groups=(), entities=(
         if isinstance(built, Exception):
             raise built
         return built
-    return _rules_module(frappe, {"translation_needs": needs, "translation_gaps": gaps,
-                                  "ledgers_built": ledgers})
+    return _rules_module(frappe, {"translation_gaps": gaps, "ledgers_built": ledgers})
 
 
 def test_the_close_gate():
@@ -1164,8 +1158,7 @@ def test_rate_gate_lock_only_for_close():
         return original_sql(query, params, *a, **k)
     frappe.db.sql = sql
 
-    r = _rules_module(frappe, {"translation_needs": lambda fy, fp: (pairs, []),
-                               "translation_gaps": lambda fy, fp: (pairs, [], [])})
+    r = _rules_module(frappe, {"translation_gaps": lambda fy, fp: (pairs, [], [])})
 
     r.rate_gate(2024, 3)
     home_queries = [q for q in record.get("sql", []) if "tabGroup Exchange Rate" in q]
@@ -1200,6 +1193,16 @@ def test_the_close_gate_fails_closed_when_the_warehouse_cannot_answer():
     assert _gate(error=ConnectionError("down")).rate_gate(2024, 3) == (None, "ConnectionError", [])
 
 
+def test_one_answer_for_what_translation_needs():
+    """konsol#311 (F13): translation_gaps is the one read of the period's
+    translation needs. The two-part translation_needs (which dropped the
+    entities with no functional currency) is gone, so no caller can read an
+    answer that leaves them out."""
+    r = _rules()
+    assert hasattr(r, "translation_gaps")
+    assert not hasattr(r, "translation_needs"), "translation_needs must be removed (F13)"
+
+
 def test_the_gate_sorts_pairs_from_groups_with_no_currency():
     """The SQL runs against ClickHouse in test_group_rates_bench (equity
     excluded, a group without a currency named, the pre-fill's fallback
@@ -1211,7 +1214,6 @@ def test_the_gate_sorts_pairs_from_groups_with_no_currency():
             # konsol#311: no functional currency, into a group with one and into one without
             ("", "USD", "GROUP_CORP", "ZZ_NOFC"), ("", "", "ZZ_NOCURRENCY", "ZZ_NOFC2")]
     r = _rules_module(_frappe({}), {"_ch_rows": lambda sql, params=None: calls.append(params) or rows})
-    assert r.translation_needs(2024, 3) == ({("IDR", "USD"), ("VND", "USD")}, ["ZZ_NOCURRENCY", "ZZ_OTHER"])
     assert r.translation_gaps(2024, 3) == ({("IDR", "USD"), ("VND", "USD")}, ["ZZ_NOCURRENCY", "ZZ_OTHER"],
                                            ["ZZ_NOFC", "ZZ_NOFC2"])
     assert r.required_pairs(2024, 3) == {("IDR", "USD"), ("VND", "USD")}
