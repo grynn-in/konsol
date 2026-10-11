@@ -133,6 +133,7 @@ def test_a_skipped_problem_row_is_not_counted_as_failed_by_the_cancel():
 
 def test_an_upload_whose_report_no_longer_has_the_row_is_left_alone():
     assert M.cancelled_upload_values(_upload([row(loaded="TBS-1")]), "TBS-9") is None
+    assert M.cancelled_upload_values(_upload([row(loaded="TBS-20")]), "TBS-2") is None, "names match exactly"
     assert M.cancelled_upload_values(_upload([]), "TBS-1") is None
     # already marked (the name appears only as the marker): nothing to do
     assert M.cancelled_upload_values(_upload([row(ok=False, was_loaded="TBS-1")]), "TBS-1") is None

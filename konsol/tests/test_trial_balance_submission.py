@@ -1365,10 +1365,15 @@ def _with_close_event(log, fn, raises=None):
     close = types.ModuleType("konsol.close")
     close.__path__ = []
     close.close_event = close_event
-    names = ("konsol.close", "konsol.close.close_event")
+    # konsol#332-1: on_cancel's lazy `from konsol.tb_bulk import
+    # on_submission_cancelled`, logged as ("upload", name)
+    tb_bulk = types.ModuleType("konsol.tb_bulk")
+    tb_bulk.on_submission_cancelled = lambda name: log.append(("upload", name))
+    names = ("konsol.close", "konsol.close.close_event", "konsol.tb_bulk")
     saved = {n: sys.modules.get(n) for n in names}
     saved_ch = (_m.execute, _m.ensure_raw_tables)
-    sys.modules.update({"konsol.close": close, "konsol.close.close_event": close_event})
+    sys.modules.update({"konsol.close": close, "konsol.close.close_event": close_event,
+                        "konsol.tb_bulk": tb_bulk})
     _m.execute = lambda sql, *a, **k: log.append(("ch", sql)) or ""
     _m.ensure_raw_tables = lambda: log.append(("ch", "ensure_raw_tables"))
     try:
@@ -1424,6 +1429,9 @@ def test_cancel_records_tb_cancelled_before_the_claim_is_deleted():
     assert log.index(events[0]) < first_ch, f"event after ClickHouse: {log}"
     assert events[0][2] == (2099, 3, "Trial Balance Submission", "TBS-00042")
     assert events[0][3]["entity"] == "ZZA"
+    # konsol#332-1: the upload is updated in the cancel's transaction, before
+    # the ClickHouse delete, which has no transaction
+    assert ("upload", "TBS-00042") in log and log.index(("upload", "TBS-00042")) < first_ch, log
 
 
 def test_a_failing_event_stops_the_submit_with_no_clickhouse_write():
@@ -1462,9 +1470,10 @@ def test_a_refused_data_change_writes_no_event_and_no_clickhouse():
 
 
 def test_the_close_event_stub_does_not_leak():
-    before = (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event"))
+    names = ("konsol.close", "konsol.close.close_event", "konsol.tb_bulk")
+    before = tuple(sys.modules.get(n) for n in names)
     _with_close_event([], _tb_doc().on_cancel)
-    assert (sys.modules.get("konsol.close"), sys.modules.get("konsol.close.close_event")) == before
+    assert tuple(sys.modules.get(n) for n in names) == before
 
 
 # -- konsol#334: a basis change requests the rebuild ----------------------------------------------

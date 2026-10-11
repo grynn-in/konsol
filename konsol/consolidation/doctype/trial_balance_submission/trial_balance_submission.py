@@ -808,6 +808,12 @@ class TrialBalanceSubmission(Document):
         close_event.record(
             "tb_cancelled", self.fiscal_year, self.fiscal_period,
             "Trial Balance Submission", self.name, entity=self.data_area_id)
+        # konsol#332-1: the bulk upload that loaded this marks its row and
+        # re-derives its counts, so it never reads as loaded after a cancel.
+        # Imported here: konsol.tb_bulk imports this module.
+        from konsol.tb_bulk import on_submission_cancelled
+
+        on_submission_cancelled(self.name)
         # Deleting the claim removes the batch from consolidation without
         # touching the landed rows — they age out via the reaper.
         # mutations_sync=1: the delete must be VISIBLE before this returns —

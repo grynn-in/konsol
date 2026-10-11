@@ -34,6 +34,7 @@ there is no default that does not guess.
 """
 import csv
 import io
+import json
 from decimal import Decimal
 
 from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN as BASIS, canonical
@@ -437,39 +438,101 @@ def merge_loaded(report, previous, upload_name=None):
     "<upload>-<entity>-<year>-P<period>.csv". A row this upload loaded that
     has since been cancelled becomes a problem: resuming must not quietly
     load old figures again.
+
+    konsol#332: a row whose load was undone keeps the name as ``was_loaded``
+    (see keep_submitted and cancelled_upload_values), and that marker counts
+    as the earlier name here, so it is carried to every later re-check. A
+    marked row is never claimed by its file: the submission now on that
+    entity-period (an amendment, say, which copies the file) was put there by
+    a person, not loaded by this upload, so it is reported as already
+    submitted.
     """
     loaded = {(p["entity"], p["fiscal_year"], p["fiscal_period"]): p["loaded"]
               for p in previous or [] if p.get("loaded")}
+    undone = {(p["entity"], p["fiscal_year"], p["fiscal_period"]): p["was_loaded"]
+              for p in previous or [] if p.get("was_loaded") and not p.get("loaded")}
     prefix = f"{upload_name}-" if upload_name else None
     out = []
     for r in report:
-        before = loaded.get((r["entity"], r["fiscal_year"], r["fiscal_period"]))
+        key = (r["entity"], r["fiscal_year"], r["fiscal_period"])
+        before = loaded.get(key)
+        was = undone.get(key)
         existing = r.get("existing")
         ours = bool(existing) and (existing == before or (
-            prefix and (r.get("existing_file") or "").rsplit("/", 1)[-1].startswith(prefix)))
+            not was and prefix and (r.get("existing_file") or "").rsplit("/", 1)[-1].startswith(prefix)))
         if ours:
             r = {**r, "ok": True, "errors": [], "loaded": existing}
-        elif before and not existing:
-            r = {**r, "ok": False,
-                 "errors": [f"Loaded earlier as {before}, which has since been cancelled. "
-                            "Upload the file again if it should be loaded anew."]}
+        elif (before or was) and not existing:
+            r = {**r, "ok": False, "was_loaded": before or was,
+                 "errors": [_cancelled_message(before or was)]}
+        elif was:
+            r = {**r, "was_loaded": was}
         out.append(r)
     return out
+
+
+def _cancelled_message(name):
+    return (f"Loaded earlier as {name}, which has since been cancelled. "
+            "Upload the file again if it should be loaded anew.")
 
 
 def keep_submitted(report, submitted):
     """The report with a row counted as loaded only while the submission it
     names is in `submitted` (konsol#281). A row whose submission is gone is
-    a problem, as in merge_loaded: it is never quietly loaded again."""
+    a problem, as in merge_loaded: it is never quietly loaded again. It keeps
+    the name as ``was_loaded`` (konsol#332) so the next re-check knows it."""
     out = []
     for r in report:
         name = r.get("loaded")
         if name and name not in submitted:
             r = {k: v for k, v in r.items() if k != "loaded"}
-            r.update(ok=False, errors=[f"Loaded earlier as {name}, which is no longer submitted. "
-                                       "Upload the file again if it should be loaded anew."])
+            r.update(ok=False, was_loaded=name,
+                     errors=[f"Loaded earlier as {name}, which is no longer submitted. "
+                             "Upload the file again if it should be loaded anew."])
         out.append(r)
     return out
+
+
+def undone_count(report):
+    """Rows this upload loaded whose submission has since gone (konsol#332):
+    the upload's failed rows before a run loads anything. A problem row that
+    was never loaded (skipped with skip_invalid) is not one."""
+    return sum(1 for r in report if r.get("was_loaded") and not r.get("loaded"))
+
+
+#: Upload statuses a cancel re-derives. Checked has loaded nothing in this
+#: run, and Loading belongs to the running job, which saves its own.
+_FINISHED = ("Loaded", "Partly Loaded", "Failed")
+
+
+def cancelled_upload_values(upload, name):
+    """konsol#332-1: what to write on an upload when submission `name` is cancelled.
+
+    `upload` holds its ``report`` (JSON), ``failed_count`` and ``status``.
+    None when no row of the report has `name` loaded (another upload's
+    submission, one entered by hand, or a report since rewritten). Otherwise
+    the row loses ``loaded``, keeps the name as ``was_loaded`` and becomes a
+    problem; loaded and valid counts are re-derived from the report, the
+    failed count goes up by the rows marked, and a finished upload's status
+    is re-derived (konsol#247: a cancelled load never reads as loaded).
+    """
+    report = json.loads(upload.get("report") or "[]")
+    marked = 0
+    for r in report:
+        if r.get("loaded") == name:
+            del r["loaded"]
+            r.update(ok=False, was_loaded=name, errors=[_cancelled_message(name)])
+            marked += 1
+    if not marked:
+        return None
+    loaded = sum(1 for r in report if r.get("loaded"))
+    failed = int(upload.get("failed_count") or 0) + marked
+    values = {"report": json.dumps(report), "loaded_count": loaded, "failed_count": failed,
+              "valid_count": sum(1 for r in report if r["ok"])}
+    if upload.get("status") in _FINISHED:
+        ready = sum(1 for r in report if r["ok"] and not r.get("loaded"))
+        values["status"] = outcome(loaded, failed, loaded + ready)
+    return values
 
 
 def outcome(loaded, failed, ready):

@@ -589,7 +589,15 @@ def _hook_modules(hooks):
             "konsol.clickhouse": clickhouse, "konsol.period_status": period_status,
             "konsol.schema_lifecycle": lifecycle, "konsol.close": close,
             "konsol.close.signoff_gate": gate,
-            "konsol.close.close_event": close_event}
+            "konsol.close.close_event": close_event,
+            # konsol#332-1: on_cancel updates the bulk upload that loaded it
+            "konsol.tb_bulk": _tb_bulk_stub()}
+
+
+def _tb_bulk_stub():
+    mod = types.ModuleType("konsol.tb_bulk")
+    mod.on_submission_cancelled = lambda name: None
+    return mod
 
 
 @contextlib.contextmanager
