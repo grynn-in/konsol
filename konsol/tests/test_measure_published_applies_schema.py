@@ -63,6 +63,8 @@ def _throw(msg, exc=None, **kwargs):
 _REBUILDS = []
 #: The stored row at each apply_and_rebuild call.
 _APPLIED_ROWS = []
+#: Rows of other doctypes install_defaults inserted, by name.
+_OTHER_INSERTS = []
 #: Whether the current user holds EPM Admin (check_epm_admin passes).
 _ADMIN = {"on": True}
 #: The committed Measure rows, by name: the stub database.
@@ -138,7 +140,7 @@ class _Doc:
         if fn:
             fn()
 
-    def save(self):
+    def save(self, **kwargs):
         # A new doc is inserted and has no doc-before-save; an existing one
         # loads its stored row first. The name is set once, on insert.
         if self.name is None:
@@ -177,13 +179,30 @@ def _apply_and_rebuild(doc, action):
     return f"ZZ-BAPR-{len(_REBUILDS):05d}"
 
 
-def _get_doc(doctype, name):
+def _get_doc(doctype, name=None):
+    if isinstance(doctype, dict):
+        # frappe.get_doc(dict): a new, unsaved doc (install_defaults).
+        row = dict(doctype)
+        if row.get("doctype") != "Measure":
+            _OTHER_INSERTS.append(row.get("name"))
+            return types.SimpleNamespace(insert=lambda **k: None)
+        doc = _m.Measure()
+        for field in _FIELDS:
+            if field in row:
+                setattr(doc, field, row[field])
+        return doc
     if name not in _STORE:
         raise _DoesNotExistError(name)
     doc = _m.Measure()
     doc.name = name
     doc.reload()
     return doc
+
+
+#: frappe.flags: in_install / in_migrate / in_patch are set here.
+_FRAPPE_FLAGS = _Flags()
+#: frappe.log_error calls.
+_LOGGED = []
 
 
 def _install_stubs():
@@ -196,10 +215,16 @@ def _install_stubs():
     frappe.MandatoryError = _MandatoryError
     frappe.DoesNotExistError = _DoesNotExistError
     frappe._dict = _Flags
+    frappe.flags = _FRAPPE_FLAGS
     frappe.db = types.SimpleNamespace(
-        exists=lambda doctype, name: name in _STORE,
+        exists=lambda doctype, name: (name in _STORE) if doctype == "Measure" else False,
+        table_exists=lambda doctype: True,
         commit=lambda: None,
     )
+    frappe.logger = lambda *a, **k: types.SimpleNamespace(
+        warning=lambda *a, **k: None, info=lambda *a, **k: None)
+    frappe.log_error = lambda *a, **k: _LOGGED.append((a, k))
+    frappe.get_traceback = lambda: "zz-traceback"
     frappe.new_doc = lambda doctype: _m.Measure()
     frappe.get_doc = _get_doc
     sys.modules["frappe"] = frappe
@@ -244,6 +269,9 @@ SCHEMA_EDITS = {
 
 
 def _reset(admin=True):
+    _FRAPPE_FLAGS.clear()
+    del _OTHER_INSERTS[:]
+    del _LOGGED[:]
     _STORE.clear()
     del _REBUILDS[:]
     del _APPLIED_ROWS[:]
@@ -532,3 +560,213 @@ def test_a_non_admin_may_still_save_metadata_on_a_draft():
     doc.save()
     assert _STORE[NAME]["label"] == "Period Debit"
     assert _REBUILDS == [], _REBUILDS
+
+
+# --- install, migrate and patches apply nothing (#351 review) --------------
+#
+# install_defaults (after_install, and install._seed_defaults in
+# after_migrate) inserts 15 Published Measures. With the hook live inside
+# them, each ran apply_and_rebuild: 15 applies, a full-refresh Build Approval
+# left on a brand-new site, and ~22 minutes against an unreachable ClickHouse.
+# The two Measure patches each ran one more. Under in_install, in_migrate and
+# in_patch the hook applies nothing; install and migrate regenerate the dbt
+# vars once, file only, at the end, so base_measures still reflects what was
+# seeded or patched.
+
+_INSTALL = os.path.join(_APP, "install.py")
+_HOOKS = os.path.join(_APP, "hooks.py")
+_PATCHES = os.path.join(_APP, "patches")
+
+
+def test_the_hook_applies_nothing_under_install_migrate_or_patch():
+    for flag in ("in_install", "in_migrate", "in_patch"):
+        _reset()
+        _FRAPPE_FLAGS[flag] = True
+        config_service.upsert_measure(_spec_for("Published"))
+        doc = _get_doc("Measure", NAME)
+        doc.expression = "sum(debit_amount)"
+        doc.save()
+        doc.status = "Inactive"
+        doc.save()
+        assert _STORE[NAME]["status"] == "Inactive"
+        assert _REBUILDS == [], (flag, _REBUILDS)
+
+
+def _load(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_a_patch_saving_a_published_measure_applies_nothing():
+    for patch, measure, field, value in (
+            ("declare_ytd_measure_as_last", "ytd_net_amount", "cube_type", "last"),
+            ("update_period_net_measure_expression", "period_net_amount", "expression",
+             "sum(debit_amount) - sum(credit_amount)")):
+        _reset()
+        _stored("Published", measure_name=measure)
+        _FRAPPE_FLAGS.in_patch = True
+        _load(os.path.join(_PATCHES, patch + ".py"), "zz_" + patch).execute()
+        assert _STORE[measure][field] == value, (patch, _STORE[measure])
+        assert _REBUILDS == [], (patch, _REBUILDS)
+
+
+class _Probe:
+    """konsol.dbt_config stand-in: counts regenerate_vars, records the order."""
+
+    def __init__(self, events, fail=False):
+        self.events = events
+        self.fail = fail
+        self.module = types.ModuleType("konsol.dbt_config")
+        self.module.regenerate_vars = self.regenerate_vars
+
+    def regenerate_vars(self):
+        self.events.append(("regenerate_vars", len(_STORE)))
+        if self.fail:
+            raise RuntimeError("zz dbt_project.yml unwritable")
+
+
+def _with_dbt_config(probe, fn):
+    saved = sys.modules.get("konsol.dbt_config")
+    sys.modules["konsol.dbt_config"] = probe.module
+    try:
+        return fn()
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.dbt_config", None)
+        else:
+            sys.modules["konsol.dbt_config"] = saved
+
+
+def _install_module(events):
+    """install.py, every after_migrate step but the seeding stubbed to a recorder."""
+    mod = _load(_INSTALL, "install_under_test_351")
+    for step in ("_restore_asset_manifest", "create_roles", "_seed_iso_currencies",
+                 "_sync_budget_line_custom_fields", "_reconcile_clickhouse",
+                 "_install_workflows", "_ensure_indexes", "_setup_dashboard",
+                 "_retire_konsol_control_page"):
+        assert hasattr(mod, step), step
+        setattr(mod, step, (lambda s: lambda *a, **k: events.append((s, None)))(step))
+    return mod
+
+
+def test_migrate_seeds_the_defaults_with_no_apply_and_regenerates_vars_once():
+    _reset()
+    events = []
+    probe = _Probe(events)
+    mod = _install_module(events)
+    _FRAPPE_FLAGS.in_migrate = True
+    _with_dbt_config(probe, mod.after_migrate)
+    assert len(_STORE) == 15, sorted(_STORE)
+    assert _REBUILDS == [], _REBUILDS
+    regenerated = [e for e in events if e[0] == "regenerate_vars"]
+    assert regenerated == [("regenerate_vars", 15)], events
+    assert events[-1][0] == "regenerate_vars", "regenerate after every other migrate step"
+
+
+def test_install_seeds_the_defaults_with_no_apply_and_regenerates_vars_once():
+    """hooks.after_install, run in order: install_defaults, then the regenerate."""
+    with open(_HOOKS) as f:
+        tree = ast.parse(f.read())
+    hooks = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                 and any(getattr(t, "id", None) == "after_install" for t in n.targets))
+    assert "konsol.defaults.install_defaults" in hooks, hooks
+    _reset()
+    events = []
+    probe = _Probe(events)
+    mod = _install_module(events)
+    import konsol.defaults as defaults
+    real = {"konsol.defaults.install_defaults": defaults.install_defaults}
+    real.update({f"konsol.install.{n}": getattr(mod, n) for n in dir(mod) if not n.startswith("_")})
+    _FRAPPE_FLAGS.in_install = "konsol"
+    for hook in hooks:
+        fn = real.get(hook) if hook.startswith(("konsol.defaults.", "konsol.install.regenerate")) else None
+        if fn is None:
+            events.append((hook, None))
+            continue
+        _with_dbt_config(probe, fn)
+    assert len(_STORE) == 15, sorted(_STORE)
+    assert _REBUILDS == [], _REBUILDS
+    assert [e for e in events if e[0] == "regenerate_vars"] == [("regenerate_vars", 15)], events
+
+
+def test_a_failed_regenerate_does_not_fail_the_migrate_and_says_so():
+    _reset()
+    events = []
+    probe = _Probe(events, fail=True)
+    mod = _install_module(events)
+    _FRAPPE_FLAGS.in_migrate = True
+    _with_dbt_config(probe, mod.after_migrate)
+    assert [e[0] for e in events].count("regenerate_vars") == 1
+    assert _LOGGED, "a failed regenerate must be logged, not swallowed"
+
+
+def test_dbt_config_does_no_clickhouse_io():
+    """The regenerate run at install and migrate is file only: dbt_config
+    imports nothing that reaches ClickHouse."""
+    with open(os.path.join(_APP, "dbt_config.py")) as f:
+        tree = ast.parse(f.read())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            imported.add(node.module or "")
+    assert imported <= {"re", "frappe", "yaml"}, imported
+
+
+# --- publish() says which Build Approval it queued (#351 review, as #350) --
+
+
+def test_publish_and_unpublish_return_the_build_approval_name():
+    _reset()
+    doc = _stored("Draft")
+    assert doc.publish() == "ZZ-BAPR-00001", _REBUILDS
+    assert doc.unpublish() == "ZZ-BAPR-00002", _REBUILDS
+
+
+def test_a_save_that_applies_nothing_reports_no_build_approval():
+    _reset()
+    doc = _stored("Draft")
+    doc.publish()
+    doc.label = "zz"
+    doc.status = "Draft"
+    doc.save()          # Unpublish: ZZ-BAPR-00002
+    doc.label = "zz2"
+    doc.save()          # nothing
+    assert doc.flags.build_approval is None, doc.flags
+
+
+def test_config_service_reports_the_build_approval():
+    _reset()
+    _stored("Draft")
+    assert config_service.publish_measure(NAME)["build_approval"] == "ZZ-BAPR-00001"
+    assert config_service.unpublish_measure(NAME)["build_approval"] == "ZZ-BAPR-00002"
+    _reset()
+    assert config_service.upsert_measure(_spec_for("Draft"), publish=True)["build_approval"] == "ZZ-BAPR-00001"
+    _reset()
+    assert config_service.upsert_measure(_spec_for("Draft"))["build_approval"] is None
+
+
+# --- a bundle may carry a `last` measure (#351 review) ---------------------
+
+
+def test_upsert_accepts_every_cube_type_the_doctype_allows():
+    allowed = next(f for f in _META["fields"] if f["fieldname"] == "cube_type")["options"].split("\n")
+    assert "last" in allowed
+    for cube_type in allowed:
+        _reset()
+        spec = _spec_for("Draft")
+        spec["cube_type"] = cube_type
+        config_service.upsert_measure(spec)
+        assert _STORE[NAME]["cube_type"] == cube_type
+
+
+def test_a_bundle_carrying_the_shipped_ytd_net_amount_applies():
+    with open(os.path.join(_APP, "defaults", "measure.json")) as f:
+        ytd = next(r for r in json.load(f) if r["name"] == "ytd_net_amount")
+    _reset()
+    spec = {k: v for k, v in ytd.items() if k not in ("doctype", "name")}
+    config_service.apply_config({"measures": [spec]})
+    assert _STORE["ytd_net_amount"]["cube_type"] == "last"
