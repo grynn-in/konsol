@@ -301,7 +301,11 @@ def get_measure(name):
 
 
 def upsert_measure(spec, publish=False):
-    """Create or update a Measure doc. Saves as Draft unless publish=True."""
+    """Create or update a Measure doc. Saves as Draft unless publish=True.
+
+    A spec whose ``status`` is Published applies the schema without
+    publish=True: the Measure's save does it (konsol#299).
+    """
     spec = dict(spec or {})
     name = spec.get("measure_name")
     if not name:
@@ -327,11 +331,14 @@ def upsert_measure(spec, publish=False):
         if "status" in spec and not publish:
             doc.status = spec["status"]
 
-    doc.save()
-    frappe.db.commit()
-
+    # One save either way, and the save applies the schema when the measure
+    # ends up Published or leaves it (konsol#299). publish() saves too (and
+    # inserts a new doc), so saving first and then publishing applied twice.
     if publish:
         doc.publish()
+    else:
+        doc.save()
+    frappe.db.commit()
 
     doc.reload()
 
