@@ -6,9 +6,11 @@ and epm_staging.* tables (PRD-8+ consolidation features).
 
 Each data doctype calls sync_doctype() in its on_update / on_trash hook.
 """
+from contextvars import ContextVar
 from datetime import date, datetime, timezone
 
 import functools
+import secrets
 
 import frappe
 import requests
@@ -86,6 +88,77 @@ def execute(sql, params=None):
 
 _WATERMARK_TABLE = "epm_staging.sync_watermark"
 
+# grynn-in/konsolidat#246, option #246-1 (Deepak Pai, 11 Oct 2026): every
+# watermark reconcile_all() writes carries that run's id; a write-through
+# leaves the column at its type default, ''. assert_staging_not_stale then
+# calls a table LAGGING when it has no row from the latest run, instead of
+# comparing it with the newest stamp of an unrelated table (one hierarchy
+# publish made 26 untouched tables "lag"). Rejected: #246-2 drop LAGGING,
+# #246-3 raise the lag hours.
+#
+# String, not Nullable(String). '' already means "not stamped by a run", and
+# that is also what the rows written before the column existed read. A NULL
+# would be a third state that join_use_nulls=0 turns back into '' in any
+# LEFT JOIN, and a Nullable column cannot be in the sorting key without
+# allow_nullable_key.
+#
+# The column is in the sorting key. ReplacingMergeTree keeps one row per key,
+# so keyed on table_name alone a write-through after a reconcile REPLACES that
+# table's run row when the parts merge, and the table falls out of the run it
+# was in. Keyed on (table_name, reconcile_run_id), each table keeps one row
+# per run plus its latest write-through. No DEFAULT clause: ClickHouse refuses
+# to put a newly added column with a default expression into the sorting key.
+# konsolidat's dbt_project.yml on-run-start creates the same table; keep the
+# two bodies identical.
+_WATERMARK_DDL = (
+    f"CREATE TABLE IF NOT EXISTS {_WATERMARK_TABLE} ("
+    "table_name String, "
+    "synced_at DateTime, "
+    "row_count UInt64, "
+    "source_max_modified DateTime, "
+    "reconcile_run_id String"
+    ") ENGINE = ReplacingMergeTree(synced_at) ORDER BY (table_name, reconcile_run_id)"
+)
+_WATERMARK_UPGRADE = (
+    f"ALTER TABLE {_WATERMARK_TABLE} "
+    "ADD COLUMN IF NOT EXISTS reconcile_run_id String, "
+    "MODIFY ORDER BY (table_name, reconcile_run_id)"
+)
+
+#: The id of the reconcile_all() call in progress, or None outside one. A
+#: ContextVar, not a module global or frappe.flags, so it is scoped to the call
+#: (reset in a finally, an abort included) and to the thread running it.
+_reconcile_run_id = ContextVar("konsol_reconcile_run_id", default=None)
+
+
+def _new_reconcile_run_id():
+    """UTC start time plus 8 random hex digits: readable, and unique even for
+    two reconciles started in the same second."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
+
+
+def _watermark_upgrade_ddl():
+    """The ALTER that gives an existing watermark the run id, or nothing.
+
+    Asked first, like _retired_watermark_cleanup: an ALTER that changes nothing
+    still rewrites the table's metadata_modification_time (measured on 24.8),
+    and assert_staging_not_stale measures its no-run-yet grace from that time,
+    so re-issuing the ALTER on every reconcile would restart the grace for
+    ever. A missing table is left to the first stamp, which creates it with
+    the new body.
+    """
+    try:
+        key = execute(
+            "SELECT sorting_key FROM system.tables "
+            "WHERE database = 'epm_staging' AND name = 'sync_watermark'"
+        )
+    except Exception:  # noqa: BLE001 — unreachable: the next reconcile asks again
+        return []
+    key = (key or "").strip()
+    if not key or "reconcile_run_id" in key:
+        return []
+    return [_WATERMARK_UPGRADE]
+
 
 def _stamp_watermark(table, row_count, source_max_modified=None):
     """Record that ``table`` was successfully synced, for dbt to check.
@@ -100,23 +173,28 @@ def _stamp_watermark(table, row_count, source_max_modified=None):
     Frappe process: it dies on restart and dbt cannot see it. This is the
     durable, ClickHouse-side half.
 
+    Inside reconcile_all() the stamp carries the run id (konsolidat#246).
+    Outside one, the INSERT does not name the column at all, so a write-through
+    also stamps a watermark that has not been upgraded yet.
+
     Best-effort — a watermark failure must never break a document save.
     """
     try:
-        execute(
-            f"CREATE TABLE IF NOT EXISTS {_WATERMARK_TABLE} ("
-            "table_name String, "
-            "synced_at DateTime, "
-            "row_count UInt64, "
-            "source_max_modified DateTime"
-            ") ENGINE = ReplacingMergeTree(synced_at) ORDER BY table_name"
-        )
+        execute(_WATERMARK_DDL)
         src = source_max_modified or "1970-01-01 00:00:00"
-        execute(
-            f"INSERT INTO {_WATERMARK_TABLE} "
-            "(table_name, synced_at, row_count, source_max_modified) VALUES "
-            f"('{table}', now(), {int(row_count)}, '{src}')"
-        )
+        run_id = _reconcile_run_id.get()
+        if run_id:
+            execute(
+                f"INSERT INTO {_WATERMARK_TABLE} "
+                "(table_name, synced_at, row_count, source_max_modified, reconcile_run_id) "
+                f"VALUES ('{table}', now(), {int(row_count)}, '{src}', '{run_id}')"
+            )
+        else:
+            execute(
+                f"INSERT INTO {_WATERMARK_TABLE} "
+                "(table_name, synced_at, row_count, source_max_modified) VALUES "
+                f"('{table}', now(), {int(row_count)}, '{src}')"
+            )
     except Exception as e:  # noqa: BLE001 — never break a save over telemetry
         frappe.logger().warning(f"watermark stamp failed for {table}: {e}")
 
@@ -1008,6 +1086,8 @@ def ensure_reference_tables():
           for t, cols in _RETIRED_COLUMNS.items() for c in cols],
         *[f"DROP TABLE IF EXISTS {t}" for t in _RETIRED_TABLES],
         *_retired_watermark_cleanup(),
+        # konsolidat#246: before reconcile_all stamps its run id
+        *_watermark_upgrade_ddl(),
     ]:
         _run(sql)
     # konsolidat#226: the retired databases, built AFTER the loop above has
@@ -1128,11 +1208,28 @@ def reconcile_all():
     repairs exactly that class of drift. Best-effort per table: one
     misconfigured doctype must not stop the rest.
 
+    Every watermark this call stamps carries one run id (konsolidat#246), set
+    for the duration of the call and reset in a finally. The stamps are
+    written as each table syncs, not collected for the end, so a reconcile
+    that fails or is killed partway leaves its partial run in the watermark,
+    where assert_staging_not_stale reports every table it did not reach.
+
     Returns a dict of table -> row count synced, for logging and tests.
     """
-    from frappe.model.base_document import get_controller
-
     ensure_reference_tables()
+
+    run_id = _new_reconcile_run_id()
+    frappe.logger().info(f"reconcile: run {run_id}")
+    token = _reconcile_run_id.set(run_id)
+    try:
+        return _reconcile_tables()
+    finally:
+        _reconcile_run_id.reset(token)
+
+
+def _reconcile_tables():
+    """reconcile_all's loop: one sync per write-through table."""
+    from frappe.model.base_document import get_controller
 
     synced = {}
     for doctype in _write_through_doctypes():
