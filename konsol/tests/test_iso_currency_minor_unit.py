@@ -140,6 +140,9 @@ def test_a_whole_number_given_as_text_is_read_as_that_number():
     assert "Minor Unit 3" in p, p
     (p,) = m.minor_unit_problems("EUR", True)
     assert "ISO 4217 gives EUR 2" in p, p
+    # a checkbox's True is not the whole number 1, even where the list says 1
+    (p,) = m.minor_unit_problems("ZZZ", True, shipped={"ZZZ": 1})
+    assert "has Minor Unit True" in p and "ISO 4217 gives ZZZ 1" in p, p
 
 
 def test_the_module_imports_no_frappe():
