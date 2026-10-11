@@ -395,6 +395,20 @@ def _release_orphan_claims(report):
     return released
 
 
+def on_submission_cancelled(name):
+    """konsol#332-1: Trial Balance Submission `name` was cancelled. Every
+    upload whose report has it loaded marks that row (``was_loaded``) and
+    re-derives its counts (tb_bulk_model.cancelled_upload_values), in the
+    cancel's own transaction. The report is matched loosely and checked
+    exactly; an upload that does not have the row loaded is not written."""
+    for up in frappe.get_all(DOCTYPE, filters={"report": ["like", f"%{json.dumps(name)}%"]},
+                             fields=["name", "report", "failed_count", "status"], limit_page_length=0):
+        values = M.cancelled_upload_values(
+            {"report": up.report, "failed_count": up.failed_count, "status": up.status}, name)
+        if values:
+            frappe.db.set_value(DOCTYPE, up.name, values, update_modified=False)
+
+
 # ── the load job ───────────────────────────────────────────────────────────
 
 def _save_progress(name, report, loaded, failed, status=None, error=None):
@@ -447,7 +461,9 @@ def run_load(upload):
         "Trial Balance Submission", filters={"name": ["in", claimed], "docstatus": 1},
         pluck="name", limit_page_length=0)) if claimed else set())
     loaded = sum(1 for r in report if r.get("loaded"))
-    failed = len(claimed) - loaded
+    # konsol#332: every row whose load was undone, the claims that vanished
+    # just now and those a cancel marked earlier; never a skipped problem row.
+    failed = M.undone_count(report)
     in_flight = None
     try:
         _release_orphan_claims(report)
