@@ -239,6 +239,13 @@ class Dimension(Document):
         by editing the status field. A save that applies nothing is not
         checked, so metadata edits keep the doctype's own permissions.
         """
+        # Not inside install, migrate or a patch (#351 review): seeding the
+        # defaults ran this once per Published row, each a ClickHouse apply
+        # and a full-refresh Build Approval. install.regenerate_dbt_vars
+        # rewrites the vars once, file only, at the end of install and
+        # migrate instead.
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
+            return
         action = self._schema_action()
         if not action:
             return

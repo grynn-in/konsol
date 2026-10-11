@@ -299,6 +299,32 @@ def after_migrate():
     _ensure_indexes()
     _setup_dashboard()
     _retire_konsol_control_page()
+    # Last: the Dimension and Measure hooks apply nothing during a migrate
+    # (#351 review), so the vars are rewritten once here, after every seed
+    # and patch has run.
+    regenerate_dbt_vars()
+
+
+def regenerate_dbt_vars():
+    """Rewrite dbt_project.yml's konsol-managed vars from the registry, once.
+
+    Run at the end of after_install and after_migrate (#351 review). The
+    Dimension and Measure on_update hooks apply nothing under in_install,
+    in_migrate or in_patch: seeding the defaults ran apply_and_rebuild once
+    per Published Measure, each a ClickHouse apply and a full-refresh Build
+    Approval. This is file only: dbt_config reads MariaDB and writes the
+    file, and imports nothing that reaches ClickHouse. ClickHouse columns are
+    the reconcile's job (after_migrate) and Apply Schema's.
+
+    Never fails the install or migrate; a failure is printed and logged.
+    """
+    try:
+        from konsol.dbt_config import regenerate_vars
+        regenerate_vars()
+    except Exception as e:  # noqa: BLE001
+        frappe.log_error("konsol: dbt vars not regenerated", frappe.get_traceback())
+        print(f"konsol: dbt vars NOT regenerated ({type(e).__name__}: {e}); "
+              "run Apply Schema (konsol.cli_api.apply_schema_api)")
 
 
 def _restore_asset_manifest():

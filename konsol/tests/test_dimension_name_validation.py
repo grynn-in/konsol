@@ -126,8 +126,10 @@ class _Flags(dict):
         self[key] = value
 
 
+# flags: the on_update hook reads frappe.flags.in_install / in_migrate /
+# in_patch (#351 review); real frappe always has it.
 _stub("frappe", whitelist=lambda *a, **k: (lambda fn: fn),
-      throw=_throw, ValidationError=_ValidationError)
+      throw=_throw, ValidationError=_ValidationError, flags=_Flags())
 # __path__ makes the stub a package so the controller's import of the REAL
 # pure konsol.tb_dimension_model resolves while schema_lifecycle stays stubbed.
 _stub("konsol", __path__=[_APP])

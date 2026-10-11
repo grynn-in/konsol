@@ -16,6 +16,8 @@ option #299-1: a Measure gets the same ``on_update`` transition hook as
 Dimension (konsol#295). Rejected: #299-2, publish() only, documented.
 
 Publish / Unpublish now set the status and save; the save does the rest, once.
+Install, migrate and patches apply nothing per row; install.regenerate_dbt_vars
+rewrites the vars once at their end.
 Writes that bypass the controller (``frappe.db.set_value``, raw SQL in a
 patch) still apply nothing; run Apply Schema after one.
 """
@@ -48,11 +50,22 @@ class Measure(Document):
         editing the status field. A save that applies nothing is not
         checked, so metadata edits keep the doctype's own permissions.
         """
+        # The Build Approval this save queued or debounced onto, for publish()
+        # and unpublish() to return (as Dimension, konsol#301). Reset first,
+        # so a save that applies nothing never reports an earlier one.
+        self.flags.build_approval = None
+        # Not inside install, migrate or a patch (#351 review): seeding the
+        # defaults ran this once per Published row, each a ClickHouse apply
+        # and a full-refresh Build Approval. install.regenerate_dbt_vars
+        # rewrites the vars once, file only, at the end of install and
+        # migrate instead.
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
+            return
         action = self._schema_action()
         if not action:
             return
         check_epm_admin()
-        apply_and_rebuild(self, action)
+        self.flags.build_approval = apply_and_rebuild(self, action)
 
     def _schema_action(self):
         """"Publish", "Unpublish" or None: what this save does to the schema.
@@ -82,7 +95,11 @@ class Measure(Document):
 
     @frappe.whitelist()
     def publish(self):
-        """Publish this measure. The save applies the schema, once (#299)."""
+        """Publish this measure. The save applies the schema, once (#299).
+
+        Returns the Build Approval the save queued, or the pending one it was
+        debounced onto.
+        """
         check_epm_admin()
         self.status = "Published"
         self.flags.apply_schema = True
@@ -92,10 +109,15 @@ class Measure(Document):
             # A save refused before on_update must not leave the flag to
             # force the next, unrelated save of this object.
             self.flags.pop("apply_schema", None)
+        return self.flags.build_approval
 
     @frappe.whitelist()
     def unpublish(self):
-        """Unpublish (deactivate) this measure. The save applies the schema, once (#299)."""
+        """Unpublish (deactivate) this measure. The save applies the schema, once (#299).
+
+        Returns the Build Approval the save queued, or the pending one it was
+        debounced onto.
+        """
         check_epm_admin()
         self.status = "Inactive"
         self.flags.apply_schema = True
@@ -105,3 +127,4 @@ class Measure(Document):
             # A save refused before on_update must not leave the flag to
             # force the next, unrelated save of this object.
             self.flags.pop("apply_schema", None)
+        return self.flags.build_approval
