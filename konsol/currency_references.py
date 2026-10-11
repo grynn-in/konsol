@@ -24,21 +24,14 @@ One reference per currency serves every period. A currency whose value moved
 more than 10x over the ledgers' history (ARS, LBP) needs a person to update it
 as it goes; see the PR notes.
 """
-import json
-import os
-
 import frappe
 
 from konsol.fx_reference import REFERENCE_CURRENCY, is_unset  # noqa: F401 — the one rule
+# konsol#330: the list is read in one place, the module that also holds its
+# minor_unit rule, so the seed inserts exactly the rows that rule accepts.
+from konsol.iso_currency_model import REFERENCE_FILE, reference_rows  # noqa: F401
 
-REFERENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_data", "iso_currencies.json")
 FIELDS = ("currency_code", "currency_name", "symbol", "minor_unit", "usd_log10")
-
-
-def reference_rows():
-    """The shipped ISO list, one dict per currency."""
-    with open(REFERENCE_FILE) as f:
-        return json.load(f)
 
 
 def usd_log10_defaults():
