@@ -272,3 +272,22 @@ def test_an_upgraded_watermark_is_not_altered_again():
 
 def test_a_missing_watermark_is_left_to_the_first_stamp():
     assert _upgrade_probe("") == []
+
+
+def test_the_watermark_ddl_is_konsolidats_verbatim():
+    """konsolidat's dbt_project.yml on-run-start creates the same table and its
+    sync_watermark_upgrade() macro issues the same ALTER; whichever runs first
+    wins, so the texts are a contract (konsolidat tests/test_sync_watermark_ddl.py
+    pins the same strings)."""
+    m, _ = _load({})
+    assert m._WATERMARK_DDL == (
+        "CREATE TABLE IF NOT EXISTS epm_staging.sync_watermark ("
+        "table_name String, synced_at DateTime, row_count UInt64, "
+        "source_max_modified DateTime, reconcile_run_id String"
+        ") ENGINE = ReplacingMergeTree(synced_at) ORDER BY (table_name, reconcile_run_id)"
+    ), m._WATERMARK_DDL
+    assert m._WATERMARK_UPGRADE == (
+        "ALTER TABLE epm_staging.sync_watermark "
+        "ADD COLUMN IF NOT EXISTS reconcile_run_id String, "
+        "MODIFY ORDER BY (table_name, reconcile_run_id)"
+    ), m._WATERMARK_UPGRADE
