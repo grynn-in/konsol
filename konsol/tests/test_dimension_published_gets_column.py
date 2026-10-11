@@ -229,6 +229,13 @@ def _apply_and_rebuild(doc, action):
     _REBUILDS.append((doc.name, action))
     # What apply_schema_for_publish would read: the row as written.
     _APPLIED_ROWS.append(dict(_STORE[doc.name]))
+    # schema_lifecycle.apply_and_rebuild returns the Build Approval it queued
+    # or debounced onto (konsol#301).
+    return _build_approval_name()
+
+
+def _build_approval_name():
+    return f"ZZ-BAPR-{len(_REBUILDS):05d}"
 
 
 #: The stored row at each apply_and_rebuild call.
@@ -642,3 +649,43 @@ def test_editing_dimension_name_is_reverted_and_applies_nothing():
     doc.save()
     assert _STORE[NAME]["dimension_name"] == NAME, _STORE[NAME]
     assert _REBUILDS == [], _REBUILDS
+
+
+# --- publish() says which Build Approval it queued (konsol#301) -----------
+#
+# apply_and_rebuild returns the Build Approval name, new or debounced onto an
+# existing pending one. publish() and unpublish() dropped it, so neither the
+# Desk, the CLI nor a bundle could tell the admin which approval their publish
+# went to (on live, a publish debounced silently onto a stale BAPR-00041).
+
+
+def test_publish_returns_the_build_approval_name():
+    _reset()
+    doc = _stored("Draft")
+    assert doc.publish() == "ZZ-BAPR-00001", _REBUILDS
+
+
+def test_unpublish_returns_the_build_approval_name():
+    _reset()
+    doc = _stored("Published")
+    assert doc.unpublish() == "ZZ-BAPR-00001", _REBUILDS
+
+
+def test_publish_dimension_reports_the_build_approval():
+    _reset()
+    _stored("Draft")
+    result = config_service.publish_dimension(NAME)
+    assert result["build_approval"] == "ZZ-BAPR-00001", result
+
+
+def test_unpublish_dimension_reports_the_build_approval():
+    _reset()
+    _stored("Published")
+    result = config_service.unpublish_dimension(NAME)
+    assert result["build_approval"] == "ZZ-BAPR-00001", result
+
+
+def test_upsert_with_publish_true_reports_the_build_approval():
+    _reset()
+    result = config_service.upsert_dimension(_spec_for("Published"), publish=True)
+    assert result["build_approval"] == "ZZ-BAPR-00001", result

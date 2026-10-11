@@ -1,7 +1,8 @@
 """Build Approval controller.
 
 Manages workflow transitions for governed dbt builds.
-Low-risk scopes (staging) auto-approve; high-risk scopes require EPM Admin approval.
+Low-risk scopes (staging, reporting) auto-approve; high-risk scopes require EPM Admin
+approval; a scope with no declared risk is refused (konsol#301).
 With the Build Approval Workflow active, a new row takes its Request transition
 (after_insert); without one, before_save moves it (konsol#215).
 A build that an approval requested carries auto_approve_reason, set only by
@@ -11,16 +12,27 @@ import frappe
 from frappe.model.document import Document
 
 
-# Scope → risk mapping
+# Scope → risk mapping. Every scope a build can carry (the build_scope
+# Select) is declared here; a scope that is not is refused in before_save,
+# never defaulted (konsol#301, option #301-1, Deepak Pai, 11 Oct 2026;
+# rejected: reporting high, and keeping the silent default to high).
 SCOPE_RISK = {
     "staging": "low",
     "actuals": "high",
     "scenarios": "high",
     "consolidation": "high",
+    # konsol#301: a reporting build rebuilds only the management-hierarchy
+    # rollups; no consolidated figure changes.
+    "reporting": "low",
     # konsol#182: a chart publish reclassifies every statement
     "chart": "high",
     "full": "high",
 }
+UNKNOWN_SCOPE_MESSAGE = (
+    "Build scope {scope!r} has no declared risk, so konsol cannot tell whether "
+    "it needs review. Declared scopes: {declared}. Add it to SCOPE_RISK in "
+    "build_approval.py with its risk (konsol#301)."
+)
 
 
 # konsol.build_lock.BUILD_WRITER_FLAG, by name: set only around konsol's own
@@ -109,7 +121,11 @@ class BuildApproval(Document):
             # A rerun is a person's request and follows the normal risk rules
             # (konsol#305-D2-10).
             self.auto_approve_reason = reason = None
-        self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
+        if self.build_scope not in SCOPE_RISK:
+            frappe.throw(
+                UNKNOWN_SCOPE_MESSAGE.format(scope=self.build_scope, declared=", ".join(SCOPE_RISK)),
+                frappe.ValidationError, title="Unknown build scope")
+        self.risk_level = SCOPE_RISK[self.build_scope]
 
         if not self.requested_by:
             self.requested_by = frappe.session.user

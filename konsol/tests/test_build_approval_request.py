@@ -769,3 +769,95 @@ def test_without_a_workflow_a_reset_of_an_auto_approved_row_waits_for_review():
     assert site.rows[name]["auto_approve_reason"] is None
     assert site.rows[name]["approved_by"] is None
     assert site.enqueued == []
+
+
+# --- every scope has a declared risk; an unknown one is refused (konsol#301) -
+#
+# Decided 11 Oct 2026, Deepak Pai, option #301-1: SCOPE_RISK declares
+# reporting as low (a reporting build rebuilds only the management-hierarchy
+# rollups; no consolidated figure changes), and a scope SCOPE_RISK does not
+# declare is refused, never defaulted to high. Rejected: #301-2 (reporting
+# high) and #301-3 (keep the silent default).
+
+import json as _json  # noqa: E402
+import re as _re  # noqa: E402
+
+#: The risk konsol declares for each scope. A scope added anywhere below and
+#: not here fails the coverage test: decide its risk, then add it.
+DECLARED_RISK = {
+    "staging": "low",
+    "actuals": "high",
+    "scenarios": "high",
+    "consolidation": "high",
+    "reporting": "low",
+    "chart": "high",
+    "full": "high",
+}
+
+
+def _scopes_a_build_can_carry():
+    """Every scope that can reach BuildApproval.before_save, by where it comes from."""
+    with open(os.path.join(os.path.dirname(BA_PY), "build_approval.json")) as f:
+        field = next(x for x in _json.load(f)["fields"] if x["fieldname"] == "build_scope")
+    select = {o for o in field["options"].split("\n") if o}
+    with open(os.path.join(APP_DIR, "fixtures", "build_scope.json")) as f:
+        fixture = {row["name"] for row in _json.load(f)}
+    # The literals konsol's callers pass: DOCTYPE_BUILD_MAP's "scope", every
+    # BUILD_SCOPE class or module constant, schema_lifecycle's publish scope.
+    produced = set()
+    pattern = _re.compile(r'(?:"scope":\s*|BUILD_SCOPE\s*=\s*)"([a-z_]+)"')
+    for root, dirs, files in os.walk(APP_DIR):
+        dirs[:] = [d for d in dirs if d not in ("tests", "node_modules", "__pycache__")]
+        for fn in files:
+            if fn.endswith(".py"):
+                with open(os.path.join(root, fn)) as f:
+                    produced |= set(pattern.findall(f.read()))
+    return select, fixture, produced
+
+
+def test_the_scope_sources_are_found():
+    """A guard on the scan below: if it found nothing it would check nothing."""
+    select, fixture, produced = _scopes_a_build_can_carry()
+    assert {"reporting", "full", "chart", "consolidation", "staging"} <= select
+    assert "reporting" in fixture
+    assert {"full", "chart", "consolidation", "reporting"} <= produced, produced
+
+
+def test_every_scope_a_caller_passes_is_a_build_scope_option():
+    select, fixture, produced = _scopes_a_build_can_carry()
+    assert (fixture | produced | {"full"}) <= select, (fixture | produced) - select
+
+
+def test_every_scope_a_build_can_carry_gets_its_declared_risk():
+    select, fixture, produced = _scopes_a_build_can_carry()
+    scopes = select | fixture | produced | {"full"}
+    assert scopes == set(DECLARED_RISK), scopes ^ set(DECLARED_RISK)
+    got = {}
+    for scope in sorted(scopes):
+        site = _Site()
+        got[scope] = site.insert(scope)["risk_level"]
+    assert got == DECLARED_RISK, got
+
+
+def test_a_reporting_build_is_low_risk_and_approved_on_request():
+    site = _Site()
+    row = site.insert("reporting")
+    assert row["risk_level"] == "low"
+    assert row["workflow_state"] == "Approved"
+    assert row["approved_by"] == "Administrator"
+
+
+def test_an_unknown_scope_is_refused_and_named_not_defaulted_to_high():
+    for workflow in (True, False):
+        site = _Site(workflow=workflow)
+        msg = _raised(site.insert, "zz_unknown_scope")
+        assert msg and "zz_unknown_scope" in msg, (workflow, msg)
+        assert site.rows == {}, "the refused insert must leave no row"
+        assert site.applied == []
+
+
+def test_a_missing_scope_is_refused():
+    site = _Site()
+    msg = _raised(site.insert, None)
+    assert msg and "None" in msg, msg
+    assert site.rows == {}

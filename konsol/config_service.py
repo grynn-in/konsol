@@ -237,8 +237,9 @@ def upsert_dimension(spec, publish=False):
     # One save either way, and the save applies the schema when the dimension
     # ends up Published or leaves it (konsol#295). publish() saves too (and
     # inserts a new doc), so saving first and then publishing applied twice.
+    build_approval = None
     if publish:
-        doc.publish()
+        build_approval = doc.publish()
     else:
         doc.save()
     frappe.db.commit()
@@ -248,6 +249,7 @@ def upsert_dimension(spec, publish=False):
     return {
         "created": created,
         "published": bool(publish),
+        "build_approval": build_approval,
         "dimension": _dimension_row(doc),
     }
 
@@ -258,11 +260,13 @@ def publish_dimension(name):
         frappe.throw(f"Dimension '{name}' not found", frappe.DoesNotExistError)
 
     doc = frappe.get_doc("Dimension", name)
-    doc.publish()
+    # The Build Approval queued, or the pending one debounced onto (konsol#301).
+    build_approval = doc.publish()
     doc.reload()
 
     return {
         "published": True,
+        "build_approval": build_approval,
         "dimension": _dimension_row(doc),
     }
 
@@ -273,11 +277,13 @@ def unpublish_dimension(name):
         frappe.throw(f"Dimension '{name}' not found", frappe.DoesNotExistError)
 
     doc = frappe.get_doc("Dimension", name)
-    doc.unpublish()
+    # The Build Approval queued, or the pending one debounced onto (konsol#301).
+    build_approval = doc.unpublish()
     doc.reload()
 
     return {
         "unpublished": True,
+        "build_approval": build_approval,
         "dimension": _dimension_row(doc),
     }
 
