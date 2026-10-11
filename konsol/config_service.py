@@ -59,7 +59,9 @@ _DIMENSION_WRITABLE_FIELDS = [
 _DIMENSION_TB_FLAGS = ("in_trial_balance", "survives_close")
 
 _DIMENSION_CUBE_TYPES = {"string", "number"}
-_MEASURE_CUBE_TYPES = {"sum", "count", "avg"}
+# measure.json's cube_type options. `last` was missing, so a bundle carrying
+# the shipped ytd_net_amount was refused (#351 review).
+_MEASURE_CUBE_TYPES = {"sum", "count", "avg", "last"}
 
 _MEASURE_WRITABLE_FIELDS = [
     "expression",
@@ -301,7 +303,11 @@ def get_measure(name):
 
 
 def upsert_measure(spec, publish=False):
-    """Create or update a Measure doc. Saves as Draft unless publish=True."""
+    """Create or update a Measure doc. Saves as Draft unless publish=True.
+
+    A spec whose ``status`` is Published applies the schema without
+    publish=True: the Measure's save does it (konsol#299).
+    """
     spec = dict(spec or {})
     name = spec.get("measure_name")
     if not name:
@@ -327,17 +333,22 @@ def upsert_measure(spec, publish=False):
         if "status" in spec and not publish:
             doc.status = spec["status"]
 
-    doc.save()
-    frappe.db.commit()
-
+    # One save either way, and the save applies the schema when the measure
+    # ends up Published or leaves it (konsol#299). publish() saves too (and
+    # inserts a new doc), so saving first and then publishing applied twice.
+    build_approval = None
     if publish:
-        doc.publish()
+        build_approval = doc.publish()
+    else:
+        doc.save()
+    frappe.db.commit()
 
     doc.reload()
 
     return {
         "created": created,
         "published": bool(publish),
+        "build_approval": build_approval,
         "measure": _measure_row(doc),
     }
 
@@ -410,11 +421,13 @@ def publish_measure(name):
         frappe.throw(f"Measure '{name}' not found", frappe.DoesNotExistError)
 
     doc = frappe.get_doc("Measure", name)
-    doc.publish()
+    # The Build Approval queued, or the pending one debounced onto.
+    build_approval = doc.publish()
     doc.reload()
 
     return {
         "published": True,
+        "build_approval": build_approval,
         "measure": _measure_row(doc),
     }
 
@@ -425,11 +438,13 @@ def unpublish_measure(name):
         frappe.throw(f"Measure '{name}' not found", frappe.DoesNotExistError)
 
     doc = frappe.get_doc("Measure", name)
-    doc.unpublish()
+    # The Build Approval queued, or the pending one debounced onto.
+    build_approval = doc.unpublish()
     doc.reload()
 
     return {
         "unpublished": True,
+        "build_approval": build_approval,
         "measure": _measure_row(doc),
     }
 

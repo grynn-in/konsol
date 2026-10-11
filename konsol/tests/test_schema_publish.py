@@ -215,9 +215,10 @@ def test_measure_imports_lifecycle():
     assert "from konsol.schema_lifecycle import" in content
 
 
-def test_measure_no_on_update():
-    methods = _get_class_methods(_load_py("measure"))
-    assert "on_update" not in methods
+# test_measure_no_on_update was deleted with konsol#299. It pinned "saves are
+# side-effect-free" for Measure, which Deepak Pai reversed on 11 Oct 2026
+# (option #299-1): a Measure gets the same on_update transition hook as
+# Dimension. test_measure_published_applies_schema.py tests what it does.
 
 
 # ---------------------------------------------------------------------------
