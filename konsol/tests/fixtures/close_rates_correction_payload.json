@@ -1,0 +1,153 @@
+{
+  "blockers": [],
+  "can_approve": true,
+  "can_enter": true,
+  "pairs_error": null,
+  "period": {
+    "fiscal_period": 7,
+    "fiscal_year": 2025,
+    "period_code": "P07",
+    "status": "Open"
+  },
+  "policy_gaps": [],
+  "quoted_per_options": [
+    "1",
+    "10",
+    "100",
+    "1000",
+    "10000"
+  ],
+  "rows": [
+    {
+      "average": {
+        "approve": null,
+        "approver": null,
+        "change_reason": null,
+        "correct": true,
+        "correction": null,
+        "delta": 0.03703703703703698,
+        "edited_by": null,
+        "extra_drafts": [],
+        "flag": null,
+        "name": "GER-4",
+        "owner": "zz-lead@example.com",
+        "previous": {
+          "fiscal_period": 6,
+          "fiscal_year": 2025,
+          "label": "FY2025 P6 (GER-00)",
+          "name": "GER-00",
+          "quoted_per": "1",
+          "rate": 0.81
+        },
+        "quote": 0.84,
+        "quoted_per": "1",
+        "rate": 0.84,
+        "source": "Manual",
+        "status": "approved"
+      },
+      "closing": {
+        "approve": null,
+        "approver": null,
+        "change_reason": null,
+        "correct": false,
+        "correction": {
+          "after": {
+            "quote": 0.86,
+            "quoted_per": "1",
+            "rate": 0.86
+          },
+          "approve": {
+            "message": null,
+            "mode": "direct"
+          },
+          "before": {
+            "quote": 0.85,
+            "quoted_per": "1",
+            "rate": 0.85
+          },
+          "change_reason": "ECB fixing corrected 31 Jul",
+          "edited_by": [],
+          "name": "GER-3",
+          "owner": "zz-analyst@example.com",
+          "supersedes": "GER-1"
+        },
+        "delta": 0.0625,
+        "edited_by": null,
+        "extra_drafts": [],
+        "flag": null,
+        "name": "GER-1",
+        "owner": "zz-lead@example.com",
+        "previous": {
+          "fiscal_period": 6,
+          "fiscal_year": 2025,
+          "label": "FY2025 P6 (GER-0)",
+          "name": "GER-0",
+          "quoted_per": "1",
+          "rate": 0.8
+        },
+        "quote": 0.85,
+        "quoted_per": "1",
+        "rate": 0.85,
+        "source": "Manual",
+        "status": "approved"
+      },
+      "from_currency": "EUR",
+      "required": true,
+      "to_currency": "GBP"
+    },
+    {
+      "average": {
+        "approve": null,
+        "approver": null,
+        "change_reason": null,
+        "correct": false,
+        "correction": null,
+        "delta": null,
+        "edited_by": null,
+        "extra_drafts": [],
+        "flag": null,
+        "name": null,
+        "owner": null,
+        "previous": null,
+        "quote": null,
+        "quoted_per": null,
+        "rate": null,
+        "source": null,
+        "status": "missing"
+      },
+      "closing": {
+        "approve": {
+          "message": null,
+          "mode": "direct"
+        },
+        "approver": null,
+        "change_reason": null,
+        "correct": false,
+        "correction": null,
+        "delta": null,
+        "edited_by": [],
+        "extra_drafts": [],
+        "flag": null,
+        "name": "GER-5",
+        "owner": "zz-analyst@example.com",
+        "previous": null,
+        "quote": 0.79,
+        "quoted_per": "1",
+        "rate": 0.79,
+        "source": "Manual",
+        "status": "awaiting_approval"
+      },
+      "from_currency": "USD",
+      "required": true,
+      "to_currency": "GBP"
+    }
+  ],
+  "self_approval": "Blocked",
+  "summary": {
+    "approved": 2,
+    "awaiting_approval": 1,
+    "missing": 1
+  },
+  "threshold_pct": 50.0,
+  "unrequired": []
+}
