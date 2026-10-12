@@ -152,6 +152,7 @@
   "summary": {
     "approved": 2,
     "awaiting_approval": 1,
+    "corrections_pending": 1,
     "missing": 1
   },
   "threshold_pct": 50.0,

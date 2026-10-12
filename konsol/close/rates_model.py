@@ -185,6 +185,12 @@ def grid(required, docs, earlier, threshold, move_problem):
 
     ``threshold`` is passed through to ``move_problem`` untouched: never
     replaced with a guessed value.
+
+    ``summary`` counts cells of ``rows`` only, never ``unrequired``: one of
+    ``missing`` / ``awaiting_approval`` / ``approved`` per cell (so the three
+    add up to twice the row count), and ``corrections_pending``, the cells
+    whose ``correction`` is not None (an approved rate with a correction
+    awaiting approval; an orphan is not one).
     """
     pair_type_docs = _by_pair_type(docs)
     previous_index = _previous_index(earlier)
@@ -216,10 +222,12 @@ def grid(required, docs, earlier, threshold, move_problem):
     unrequired = [build_row(from_currency, to_currency, False)
                   for from_currency, to_currency in unrequired_pairs]
 
-    summary = {"missing": 0, "awaiting_approval": 0, "approved": 0}
+    summary = {"missing": 0, "awaiting_approval": 0, "approved": 0, "corrections_pending": 0}
     for row in rows:
-        summary[row["closing"]["status"]] += 1
-        summary[row["average"]["status"]] += 1
+        for key in ("closing", "average"):
+            summary[row[key]["status"]] += 1
+            if row[key]["correction"] is not None:
+                summary["corrections_pending"] += 1
 
     return {"rows": rows, "unrequired": unrequired, "summary": summary}
 
