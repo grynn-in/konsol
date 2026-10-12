@@ -10,11 +10,11 @@ Decided by the user on 13 Sep 2026:
   currency are entered; cross rates are derived. Historical equity rates stay
   in Historical Equity Rate.
 * Submit is the approval (12 Sep conventions): EPM Analyst drafts, EPM Admin
-  submits. Cancel only while the period is open; a cancelled rate leaves the
-  warehouse and stays here as the audit trail.
+  submits. A cancelled rate leaves the warehouse and stays here as the audit
+  trail.
 * Rates lock when their period closes: submit and cancel are refused, so a
-  change is a reopen of the period (Period Status keeps who and when), a
-  cancel, and an amendment that must say why.
+  change is a reopen of the period (Period Status keeps who and when) and a
+  correction that must say why.
 * A correction supersedes (konsol#312: #312-3, Deepak Pai 9 Oct 2026, narrowed
   by #312-3b, 12 Oct 2026). A draft names the approved rate of its own key in
   ``supersedes`` and says why; it coexists with that rate, which stays
@@ -26,6 +26,15 @@ Decided by the user on 13 Sep 2026:
   correction is fixed by another correction. Rejected: #312-3a restore as an
   amended copy, #312-3d keep the old rate approved but marked, a raw
   docstatus write.
+* No plain cancel (#312-S3-2, Deepak Pai 13 Oct 2026, konsol#312
+  issuecomment-6133498784): every plain cancel of an approved rate is
+  refused, in Desk as in the close app, so a key never drops to no approved
+  rate. The only cancel is the one a correction's approval performs on the
+  rate it replaces. Amending therefore starts only from a rate a correction
+  already cancelled, and that amendment cannot be approved while the key has
+  its approved rate. Rejected: #312-S3-1 refuse only while a correction is
+  pending, #312-S3-3 keep the plain cancel and reword the messages. Accepted
+  trade-off: a rate entered by mistake is corrected, never removed.
 
 A rate is entered as a **quote per a unit**: ``quote`` units of the group
 currency per ``quoted_per`` (1, 10, 100, 1,000 or 10,000) units of the
@@ -320,19 +329,28 @@ class GroupExchangeRate(Document):
                 "Reason for Change instead.",
                 frappe.DuplicateEntryError)
         if supersedes and supersedes not in approved:
+            # Reached only when the key has NO approved rate (another approved
+            # rate is refused just above). Since #312-S3-2 that is a plain
+            # cancel made before the decision, so there is no rate to correct.
             frappe.throw(
-                f"{supersedes} is no longer the approved {self._key_label()}, so this correction "
-                "has nothing to replace. Delete it and correct the approved rate.",
+                f"{supersedes} is no longer approved, and the key has no approved "
+                f"{self._key_label()}, so this correction has nothing to replace. Delete it and "
+                "draft a new rate for the key.",
                 frappe.ValidationError)
 
     def before_cancel(self):
-        """Cancel only while the period is open (12 Sep conventions). A rate
-        that replaced another is never cancelled (#312-3b), except by the
-        approval of the correction that replaces it in turn."""
-        supersedes = self.get("supersedes")
-        if supersedes and self.flags.get("superseded_by") is None:
+        """No plain cancel of an approved rate (#312-S3-2, which widens
+        #312-3b's "a rate that replaced another is never cancelled"): the
+        only cancel is the approval of the correction that replaces it
+        (``flags.superseded_by``, set by _cancel_superseded alone; ``flags``
+        is a reserved key, so a request body cannot carry it). The refusal
+        comes before the period gate: reopening would not change it. The
+        allowed cancel still runs only while the period is open (12 Sep
+        conventions)."""
+        if not self.flags.get("superseded_by"):
             frappe.throw(
-                f"{self.name} replaced {supersedes}: correct it with another correction, not a cancel.",
+                f"{self.name} is the approved {self._key_label()}: an approved rate cannot be "
+                "cancelled. Correct it with a Reason for Change instead.",
                 frappe.ValidationError)
         assert_open(self.fiscal_year, self.fiscal_period, action="cancel a group exchange rate")
 
