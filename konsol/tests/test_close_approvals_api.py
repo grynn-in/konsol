@@ -172,12 +172,14 @@ def _journal(name, owner=ANALYST, creation=None, modified=None, docstatus=0, sta
 
 def _ger(name, owner=ANALYST, creation=None, modified=None, docstatus=0,
          from_currency="USD", to_currency="EUR", rate_type="Closing",
-         fiscal_year=2026, fiscal_period=7, quote_label="1.10 EUR per USD", change_reason=None):
+         fiscal_year=2026, fiscal_period=7, quote_label="1.10 EUR per USD", change_reason=None,
+         supersedes=None):
     return {"name": name, "owner": owner, "creation": creation or datetime(2026, 7, 1, 9, 0, 0),
             "modified": modified or datetime(2026, 7, 1, 9, 0, 0), "docstatus": docstatus,
             "from_currency": from_currency, "to_currency": to_currency, "rate_type": rate_type,
             "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
-            "quote_label": quote_label, "change_reason": change_reason}
+            "quote_label": quote_label, "change_reason": change_reason,
+            "supersedes": supersedes}
 
 
 def _her(name, owner=ANALYST, creation=None, modified=None, docstatus=0,
@@ -1250,3 +1252,85 @@ def test_r52q_failure_path_a_broken_op_draft_names_its_error_under_the_ownership
     assert broken["ownership_effect_error"].startswith(
         "The pending ownership change %s cannot be shown: " % R52I_BROKEN), broken
     assert "effect" not in broken and "effect_error" not in broken, sorted(broken)
+
+
+# --- FR5 (review S2): the queue says what a rate correction replaces ----------------
+# Approving GER-3 cancels GER-1 in the same transaction (group_exchange_rate.py
+# _cancel_superseded); the Approvals item now says so, as the Rates screen does.
+
+FR5_REASON = "ECB fixing corrected 31 Jul"
+FR5_DETAIL = ("FY2025 P07 · replaces GER-1 (0.85 GBP per EUR → 0.86 GBP per EUR)"
+              " · ECB fixing corrected 31 Jul")
+FR5_GONE = ("FY2025 P07 · replaces GER-1, which is no longer approved: this correction "
+            "cannot be approved; delete it on the Rates screen · ECB fixing corrected 31 Jul")
+
+
+def _fr5_site(approved_docstatus=1):
+    site = _Site()
+    site.gers = [
+        _ger("GER-1", docstatus=approved_docstatus, from_currency="EUR", to_currency="GBP",
+             fiscal_year=2025, fiscal_period=7, quote_label="0.85 GBP per EUR"),
+        _ger("GER-3", from_currency="EUR", to_currency="GBP", fiscal_year=2025,
+             fiscal_period=7, quote_label="0.86 GBP per EUR", change_reason=FR5_REASON,
+             supersedes="GER-1"),
+    ]
+    return site
+
+
+def _ger_reads(site):
+    return [r for r in site.reads if r[:2] == ("get_all", GER)]
+
+
+def test_fr5_a_correction_says_what_it_replaces_old_to_new():
+    site = _fr5_site()
+    items = {i["name"]: i for i in _all_items(_call(site))}
+    assert sorted(items) == ["GER-3"]
+    item = items["GER-3"]
+    assert item["detail"] == FR5_DETAIL
+    assert item["supersedes"] == "GER-1"
+    assert item["title"] == "0.86 GBP per EUR"
+    assert item["kind_label"] == "Group rate · EUR→GBP Closing"
+    # the pending read plus ONE read of the replaced rates
+    assert len(_ger_reads(site)) == 2, site.reads
+
+
+def test_fr5_failure_path_a_correction_of_a_cancelled_rate_says_it_cannot_be_approved():
+    site = _fr5_site(approved_docstatus=2)
+    item = next(i for i in _all_items(_call(site)) if i["name"] == "GER-3")
+    assert item["detail"] == FR5_GONE
+    assert item["supersedes"] == "GER-1"
+
+
+def test_fr5_two_corrections_cost_one_predecessor_read():
+    site = _fr5_site()
+    site.gers.append(_ger("GER-2", docstatus=1, rate_type="Average", quote_label="1.10 EUR per USD"))
+    site.gers.append(_ger("GER-4", rate_type="Average", quote_label="1.11 EUR per USD",
+                          change_reason="typo", supersedes="GER-2"))
+    items = {i["name"]: i for i in _all_items(_call(site))}
+    assert items["GER-4"]["detail"] == (
+        "FY2026 P07 · replaces GER-2 (1.10 EUR per USD → 1.11 EUR per USD) · typo")
+    assert items["GER-3"]["detail"] == FR5_DETAIL
+    assert len(_ger_reads(site)) == 2, site.reads
+
+
+def test_fr5_a_plain_draft_keeps_its_detail_and_reads_no_predecessor():
+    site = _Site()
+    site.gers = [_ger("GER-5", change_reason="ERP quote moved")]
+    item = next(i for i in _all_items(_call(site)) if i["name"] == "GER-5")
+    assert item["detail"] == "FY2026 P07 · ERP quote moved"
+    assert item["supersedes"] is None
+    assert len(_ger_reads(site)) == 1, site.reads
+
+
+def test_fr5_sent_back_for_reads_supersedes_and_keeps_its_label_only_items():
+    """A21: sent_back_for builds labels, never a detail; the correction's
+    sent-back item is unchanged by FR5 (no ``detail`` key at all)."""
+    site = _fr5_site()
+    site.user = ANALYST
+    site.gers[1]["modified"] = datetime(2026, 7, 2, 8, 0, 0)
+    site.rejections[GER] = {"GER-3": {
+        "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
+    items = _invoke(site, lambda api: api.sent_back_for(ANALYST))
+    assert [i["name"] for i in items] == ["GER-3"]
+    assert "detail" not in items[0], sorted(items[0])
+    assert items[0]["title"] == "0.86 GBP per EUR"

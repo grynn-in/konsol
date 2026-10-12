@@ -652,3 +652,68 @@ def test_d06_a_journal_item_carries_its_declared_dimensions_through():
     shaped = M._shape("Consolidation Journal", doc)
     assert shaped[3]["dimensions"] == dims
     assert shaped[3]["lines"] == lines
+
+
+
+# --- FR5 (review S2): a correction says what approving it replaces -------------------
+
+def _fr5_docs(replaced, **extra):
+    doc = _ger("GER-3", "EUR", "GBP", "Closing", 2025, 7, "0.86 GBP per EUR", "alice",
+               "2026-10-01T10:00:00", change_reason="ECB fixing corrected 31 Jul")
+    doc["supersedes"] = "GER-1"
+    if replaced is not _ABSENT:
+        doc["replaced"] = replaced
+    doc.update(extra)
+    return {"Group Exchange Rate": [doc]}
+
+
+_ABSENT = object()
+
+
+def _fr5_item(docs):
+    result = M.queue_items(docs, _preparers_for(docs), "bob", ("EPM Admin",),
+                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
+                            ENTITY_FIELDS, None, {}, _modified_for(docs))
+    return result["items"][0]
+
+
+def test_fr5_a_correction_of_the_approved_rate_names_old_and_new():
+    item = _fr5_item(_fr5_docs({"name": "GER-1", "quote_label": "0.85 GBP per EUR", "docstatus": 1}))
+    assert item["detail"] == ("FY2025 P07 · replaces GER-1 (0.85 GBP per EUR → 0.86 GBP per EUR)"
+                              " · ECB fixing corrected 31 Jul")
+    assert item["supersedes"] == "GER-1"
+
+
+def test_fr5_failure_path_a_replaced_rate_no_longer_approved_or_gone():
+    gone = ("FY2025 P07 · replaces GER-1, which is no longer approved: this correction "
+            "cannot be approved; delete it on the Rates screen · ECB fixing corrected 31 Jul")
+    cancelled = {"name": "GER-1", "quote_label": "0.85 GBP per EUR", "docstatus": 2}
+    assert _fr5_item(_fr5_docs(cancelled))["detail"] == gone
+    assert _fr5_item(_fr5_docs(None))["detail"] == gone  # not found: not approved
+
+
+def test_fr5_a_correction_without_reason_has_no_trailing_reason():
+    docs = _fr5_docs({"name": "GER-1", "quote_label": "0.85 GBP per EUR", "docstatus": 1},
+                     change_reason=None)
+    assert _fr5_item(docs)["detail"] == (
+        "FY2025 P07 · replaces GER-1 (0.85 GBP per EUR → 0.86 GBP per EUR)")
+
+
+def test_fr5_failure_path_a_correction_the_caller_did_not_resolve_raises():
+    """The replaced rate is read by the API; a correction handed over without
+    ``replaced`` is a broken contract, never shown as if it were plain."""
+    try:
+        _fr5_item(_fr5_docs(_ABSENT))
+    except KeyError as e:
+        assert "replaced" in str(e)
+    else:
+        raise AssertionError("a correction without 'replaced' must raise")
+
+
+def test_fr5_a_plain_rate_carries_supersedes_none_and_its_old_detail():
+    docs = {"Group Exchange Rate": [_ger("GER-2", "USD", "GBP", "Average", 2026, 7,
+                                          "0.80 GBP per USD", "alice", "2026-10-01T10:00:00",
+                                          change_reason="ERP quote moved")]}
+    item = _fr5_item(docs)
+    assert item["detail"] == "FY2026 P07 · ERP quote moved"
+    assert item["supersedes"] is None
