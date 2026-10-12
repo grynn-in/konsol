@@ -622,7 +622,8 @@ def test_the_close_lead_sees_two_rows_and_approves_another_users_draft_directly(
     assert eur["average"]["edited_by"] == []
     usd = _row(result, "USD")
     assert usd["closing"]["status"] == "missing" and usd["average"]["status"] == "missing"
-    assert result["summary"] == {"missing": 2, "awaiting_approval": 1, "approved": 1}
+    assert result["summary"] == {"missing": 2, "awaiting_approval": 1, "approved": 1,
+                                 "corrections_pending": 0}
     assert result["can_approve"] is True and result["can_enter"] is True
     assert result["period"] == {"fiscal_year": 2025, "fiscal_period": 7, "period_code": "P07",
                                 "status": "Open"}
@@ -3175,6 +3176,14 @@ def test_f11_failure_path_a_closed_period_never_gets_correct():
     site.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Closed")]
     eur = _row(_call(site), "EUR")
     assert eur["average"]["correct"] is False
+
+
+def test_fr4_get_rates_summary_counts_the_pending_correction():
+    # review-d2fu S6: GER-3 corrects the approved GER-1 and is pending, so the
+    # summary says so beside the three cell counts.
+    result = _call(_f11_grid_site())
+    assert result["summary"] == {"missing": 1, "awaiting_approval": 1, "approved": 2,
+                                 "corrections_pending": 1}
 
 
 def test_f11_the_correction_costs_no_extra_read():

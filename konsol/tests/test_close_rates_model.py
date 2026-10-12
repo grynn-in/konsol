@@ -226,8 +226,10 @@ def test_summary_counts_add_up_to_twice_row_count():
     result = M.grid(required={("EUR", "GBP"), ("USD", "GBP"), ("JPY", "GBP")}, docs=docs, earlier=[],
                      threshold=0.5, move_problem=_no_op_move_problem)
     summary = result["summary"]
-    assert sum(summary.values()) == 2 * len(result["rows"])
-    assert sum(summary.values()) == 6
+    statuses = summary["missing"] + summary["awaiting_approval"] + summary["approved"]
+    assert statuses == 2 * len(result["rows"])
+    assert statuses == 6
+    assert summary["corrections_pending"] == 0
 
 
 def test_approve_mode_by_an_analyst_is_not_approver_whatever_the_owner_or_policy():
@@ -921,3 +923,49 @@ def test_fr2_missing_cells_and_unrequired_rows_carry_orphans():
     [unrequired] = result["unrequired"]
     assert unrequired["closing"]["orphans"] == [{"name": "GER-7", "supersedes": "GER-0"}]
     assert unrequired["average"]["orphans"] == []
+
+
+# --- FR4 (konsol#305 review-d2fu S6): the summary counts pending corrections.
+# ``corrections_pending`` is the number of cells in ``rows`` whose
+# ``correction`` is not None. The three status counts stay cell counts, and
+# ``unrequired`` is outside the summary, as for the status counts. -------------
+
+def test_fr4_a_pending_correction_is_counted_and_the_status_counts_still_add_up():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    result = M.grid(required={("EUR", "GBP"), ("USD", "GBP")},
+                    docs=[approved, _f11_correction("GER-R2", "GER-R1", 1.09)], earlier=[],
+                    threshold=0.5, move_problem=_no_op_move_problem)
+    assert result["summary"] == {"missing": 3, "awaiting_approval": 0, "approved": 1,
+                                 "corrections_pending": 1}
+
+
+def test_fr4_failure_path_a_grid_with_no_correction_counts_zero():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    plain = _doc("GER-D", "EUR", "GBP", "Closing", 1.09, 0, "bob@example.com",
+                 "2026-09-02 09:00:00")
+    result = M.grid(required={("EUR", "GBP")}, docs=[approved, plain], earlier=[],
+                    threshold=0.5, move_problem=_no_op_move_problem)
+    assert result["summary"] == {"missing": 1, "awaiting_approval": 0, "approved": 1,
+                                 "corrections_pending": 0}
+
+
+def test_fr4_failure_path_an_orphan_is_not_a_pending_correction():
+    cell_docs = [_fr2_approved(), _f11_correction("GER-7", "GER-0", 0.87)]
+    result = M.grid(required={("EUR", "GBP")}, docs=cell_docs, earlier=[], threshold=0.5,
+                    move_problem=_no_op_move_problem)
+    assert result["rows"][0]["closing"]["orphans"] == [{"name": "GER-7", "supersedes": "GER-0"}]
+    assert result["summary"]["corrections_pending"] == 0
+
+
+def test_fr4_failure_path_a_correction_on_an_unrequired_row_is_not_counted():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    result = M.grid(required={("USD", "GBP")},
+                    docs=[approved, _f11_correction("GER-R2", "GER-R1", 1.09)], earlier=[],
+                    threshold=0.5, move_problem=_no_op_move_problem)
+    [unrequired] = result["unrequired"]
+    assert unrequired["closing"]["correction"]["name"] == "GER-R2"
+    assert result["summary"] == {"missing": 2, "awaiting_approval": 0, "approved": 0,
+                                 "corrections_pending": 0}
