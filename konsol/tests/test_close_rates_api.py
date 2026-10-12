@@ -3111,7 +3111,8 @@ def test_f11_the_pending_correction_carries_before_after_and_its_approve_mode():
         "name": "GER-3", "supersedes": "GER-1", "owner": ANALYST, "change_reason": F11_REASON,
         "before": {"quote": 0.85, "quoted_per": "1", "rate": 0.85},
         "after": {"quote": 0.86, "quoted_per": "1", "rate": 0.86},
-        "approve": {"mode": "direct", "message": None}, "edited_by": []}
+        "approve": {"mode": "direct", "message": None}, "edited_by": [],
+        "edit": True, "delete": True}
 
 
 def test_f11_failure_path_the_lead_cannot_approve_their_own_correction_under_blocked():
@@ -3286,3 +3287,147 @@ def test_fr1_delete_roles_are_the_save_roles_literal():
     assert literal == api.RATE_SAVE_ROLES == FR1_ROLES
     [deco] = fn.decorator_list
     assert ast.unparse(deco) == "frappe.whitelist(methods=['POST'])", ast.unparse(deco)
+
+
+# --- FR2 (konsol#305 review-d2fu S1; #312-3, #312-3b, Deepak Pai): the
+# server decides whether a correction can be edited or deleted, exactly when
+# ``save_rate`` / ``delete_rate`` would accept it, and lists each cell's orphan
+# corrections (drafts that correct a rate no longer approved) with ``delete``.
+
+FR2_ORPHAN = ("GER-7", "GER-0")  # EUR -> GBP Closing, corrects a rate no longer approved
+
+
+def _fr2_site(user=LEAD, roles=("EPM Admin",), closed=False, orphan=True):
+    """``_f11_grid_site()`` for ``user``, plus (``orphan``) the Analyst's draft
+    GER-7 correcting GER-0 on EUR -> GBP Closing, with every rate readable by
+    ``get_doc`` under its own name. ``closed``: FY2025 P07 is Closed."""
+    site = _f11_grid_site()
+    site.user, site.roles = user, set(roles)
+    if orphan:
+        site.docs.append(_ger(FR2_ORPHAN[0], "EUR", "GBP", "Closing", 0.87, 0, owner=ANALYST,
+                              supersedes=FR2_ORPHAN[1], change_reason="stale"))
+    if closed:
+        site.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Closed")]
+    for row in site.docs:
+        site.named[row["name"]] = _FakeDoc(dict(row, doctype="Group Exchange Rate"))
+    return site
+
+
+FR2_CALLERS = [
+    # (label, kwargs of _fr2_site, edit/delete expected)
+    ("analyst", {"user": ANALYST, "roles": ("EPM Analyst",)}, True),
+    ("close lead", {"user": LEAD, "roles": ("EPM Admin",)}, True),
+    ("system manager", {"user": LEAD, "roles": ("System Manager",)}, True),
+    ("viewer", {"user": VIEWER, "roles": ("EPM User",)}, False),
+    ("closed period", {"user": ANALYST, "roles": ("EPM Analyst",), "closed": True}, False),
+]
+
+
+def _fr2_cells(result):
+    for row in result["rows"] + result["unrequired"]:
+        for rate_type, key in (("Closing", "closing"), ("Average", "average")):
+            yield row, rate_type, row[key]
+
+
+def test_fr2_the_correction_carries_edit_and_delete_from_the_callers_roles_and_period():
+    for label, kwargs, expected in FR2_CALLERS:
+        cell = _row(_call(_fr2_site(**kwargs)), "EUR")["closing"]
+        assert cell["correction"]["name"] == "GER-3", label
+        assert cell["correction"]["edit"] is expected, label
+        assert cell["correction"]["delete"] is expected, label
+
+
+def test_fr2_every_cell_carries_orphans_and_the_orphan_carries_delete():
+    for label, kwargs, expected in FR2_CALLERS:
+        result = _call(_fr2_site(**kwargs))
+        cell = _row(result, "EUR")["closing"]
+        assert cell["orphans"] == [{"name": "GER-7", "supersedes": "GER-0",
+                                    "delete": expected}], (label, cell["orphans"])
+        assert cell["extra_drafts"] == ["GER-7"], label  # still counted there
+        others = [c["orphans"] for _, _, c in _fr2_cells(result) if c is not cell]
+        assert others == [[], [], []], (label, others)
+
+
+def test_fr2_failure_path_no_orphan_gives_an_empty_list_and_unchanged_extra_drafts():
+    result = _call(_fr2_site(orphan=False))
+    assert [c["orphans"] for _, _, c in _fr2_cells(result)] == [[], [], [], []]
+    assert _row(result, "EUR")["closing"]["extra_drafts"] == []
+
+
+def test_fr2_failure_path_cells_without_a_correction_still_carry_none():
+    result = _call(_fr2_site())
+    eur, usd = _row(result, "EUR"), _row(result, "USD")
+    for cell in (eur["average"], usd["closing"], usd["average"]):
+        assert cell["correction"] is None
+
+
+def test_fr2_delete_flags_are_pinned_to_delete_rate():
+    # For every correction and orphan the payload offers to delete,
+    # delete_rate on the same site accepts it; for every one it does not
+    # offer, delete_rate refuses it and deletes nothing.
+    checked = {True: 0, False: 0}
+    for label, kwargs, _ in FR2_CALLERS:
+        result = _call(_fr2_site(**kwargs))
+        items = []
+        for _, _, cell in _fr2_cells(result):
+            if cell["correction"] is not None:
+                items.append(cell["correction"])
+            items.extend(cell["orphans"])
+        assert sorted(i["name"] for i in items) == ["GER-3", "GER-7"], label
+        for item in items:
+            site = _fr2_site(**kwargs)
+            if item["delete"]:
+                assert _delete(site, item["name"]) == {"name": item["name"], "deleted": True}, \
+                    (label, item)
+                assert site.deleted == [(("Group Exchange Rate", item["name"]), {})], label
+            else:
+                err = _delete_raises(site, item["name"])
+                assert type(err).__name__ in ("PermissionError", "ValidationError"), (label, err)
+                assert site.deleted == [], (label, item)
+            checked[item["delete"]] += 1
+    assert checked[True] and checked[False], checked  # both directions ran
+
+
+def test_fr2_edit_flags_are_pinned_to_save_rate():
+    # For every correction the payload offers to edit, save_rate's edit path
+    # (name = the correction, supersedes = the approved cell) accepts it; for
+    # every one it does not offer, save_rate refuses it and saves nothing.
+    checked = {True: 0, False: 0}
+    for label, kwargs, _ in FR2_CALLERS:
+        result = _call(_fr2_site(**kwargs))
+        for row, rate_type, cell in _fr2_cells(result):
+            correction = cell["correction"]
+            if correction is None:
+                continue
+            site = _fr2_site(**kwargs)
+            args = {"from_currency": row["from_currency"], "to_currency": row["to_currency"],
+                    "rate_type": rate_type, "quote": 0.861,
+                    "quoted_per": correction["after"]["quoted_per"],
+                    "change_reason": correction["change_reason"],
+                    "name": correction["name"], "supersedes": cell["name"]}
+            doc = site.named[correction["name"]]
+            if correction["edit"]:
+                saved = _save(site, **args)
+                assert saved["name"] == correction["name"], (label, saved)
+                assert [c[0] for c in doc.calls] == ["save"], label
+                assert doc.supersedes == cell["name"] and doc.quote == 0.861, label
+            else:
+                err = _save_raises(site, **args)
+                assert type(err).__name__ in ("PermissionError", "ValidationError"), (label, err)
+                assert doc.calls == [] and site.new_docs == [], label
+            checked[correction["edit"]] += 1
+    assert checked[True] and checked[False], checked  # both directions ran
+
+
+def test_fr2_the_orphans_cost_no_extra_read():
+    plain, orphaned = _fr2_site(orphan=False), _fr2_site()
+    _call(plain), _call(orphaned)
+    assert plain.reads == orphaned.reads and len(orphaned.reads) == 8, orphaned.reads
+
+
+def test_fr2_the_draft_flag_is_named_for_what_it_decides():
+    # One name for the save role in an Open period, now driving correct, edit
+    # and delete; the old name is gone.
+    source = open(API_PY, encoding="utf-8").read()
+    assert "may_correct" not in source
+    assert "may_draft = " in source
