@@ -77,6 +77,17 @@
  * get_pending): the cell shows "<old> → <new>, replaces <name>" and its
  * Approve goes through approveCell/approve() like any GER draft; actionFor
  * finds it by name with rates.js gerApproveAction.
+ *
+ * FR8 (review S1): the pending correction offers "Edit correction" only
+ * where the server's `correction.edit` is true and "Delete correction" only
+ * where `correction.delete` is true (FR2; the screen never decides either).
+ * Edit reopens the correction form in mode "edit", pre-filled from the
+ * correction's new quote, Quoted Per and Reason, and posts
+ * correctionEditBody (name + supersedes) through sendSave. Each orphan
+ * correction (a draft superseding a rate that is no longer approved) shows
+ * one sentence, with Delete where its `delete` is true. Both Deletes post
+ * delete_rate through deleteDraft, the one DELETE_RATE call site; a refusal
+ * is the server's sentence under the cell.
  */
 import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -87,13 +98,14 @@ import OwnershipGaps from "../sections/OwnershipGaps.vue";
 import OwnershipChange from "../sections/OwnershipChange.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipDraftEdits, ownershipView, ownershipGapsCount, mergeDrafts, correctionBody, gerApproveAction } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipDraftEdits, ownershipView, ownershipGapsCount, mergeDrafts, correctionBody, correctionEditBody, deleteBody, gerApproveAction } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 import { periodName as formatPeriod } from "../periodName.js";
 
 const GET_RATES = "konsol.close.rates_api.get_rates";
 const SAVE_RATE = "konsol.close.rates_api.save_rate";
+const DELETE_RATE = "konsol.close.rates_api.delete_rate";
 const APPROVE = "konsol.close.approval_api.approve";
 const GET_PENDING = "konsol.close.rates_api.get_pending";
 const GET_OWNERSHIP = "konsol.close.rates_api.get_ownership";
@@ -136,10 +148,14 @@ const approveReasons = reactive({});
 const approveReasonOpen = reactive({});
 const saving = ref(false);
 const approving = ref(null);
-/** F12: open correction forms per cell key: `{quote, quotedPer, reason}`. */
+/** F12/FR8: open correction forms per cell key: `{mode: "correct", quote,
+ * quotedPer, reason}`, or `{mode: "edit", name, quote, quotedPer, reason}`
+ * for an edit of the cell's pending correction. */
 const correcting = reactive({});
-/** F12: a correction save's refusal per cell key (the server's sentence). */
+/** F12/FR8: a correction save's or delete's refusal per cell key (the server's sentence). */
 const correctionErrors = reactive({});
+/** FR8: the draft whose delete is in flight, or null. */
+const deleting = ref(null);
 
 function rowKey(row) {
 	return `${row.fromCurrency}|${row.toCurrency}`;
@@ -401,9 +417,26 @@ function openCorrection(row, rateType) {
 	const key = cellKey(row, rateType);
 	delete correctionErrors[key];
 	correcting[key] = {
+		mode: "correct",
 		quote: cell.value == null ? "" : String(cell.value),
 		quotedPer: cell.quotedPer == null ? "" : String(cell.quotedPer),
 		reason: "",
+	};
+}
+
+/** FR8: open the cell's pending correction for editing (the server's
+ * `correction.edit` mounts the control), from the correction's own new
+ * quote, Quoted Per and Reason. */
+function openCorrectionEdit(row, rateType) {
+	const correction = cellOf(row, rateType).correction;
+	const key = cellKey(row, rateType);
+	delete correctionErrors[key];
+	correcting[key] = {
+		mode: "edit",
+		name: correction.name,
+		quote: correction.quote == null ? "" : String(correction.quote),
+		quotedPer: correction.quotedPer == null ? "" : String(correction.quotedPer),
+		reason: correction.changeReason == null ? "" : correction.changeReason,
 	};
 }
 
@@ -422,11 +455,14 @@ async function saveCorrection(row, rateType) {
 	if (!period.value || !form || saving.value) return;
 	const mySeq = seq;
 	delete correctionErrors[key];
-	const built = correctionBody({ fiscal_year: period.value.year, fiscal_period: period.value.period }, row, rateType, {
-		quote: form.quote,
-		quotedPer: form.quotedPer,
-		changeReason: form.reason,
-	});
+	if (form.mode !== "correct" && form.mode !== "edit") {
+		throw new Error(`saveCorrection: the correction form has no mode (${form.mode})`);
+	}
+	const when = { fiscal_year: period.value.year, fiscal_period: period.value.period };
+	const input = { quote: form.quote, quotedPer: form.quotedPer, changeReason: form.reason };
+	const built = form.mode === "edit"
+		? correctionEditBody(when, row, rateType, input)
+		: correctionBody(when, row, rateType, input);
 	if (built.error) {
 		correctionErrors[key] = built.error;
 		return;
@@ -439,6 +475,29 @@ async function saveCorrection(row, rateType) {
 		return;
 	} finally {
 		saving.value = false;
+	}
+	if (mySeq !== seq) return;
+	delete correcting[key];
+	await loadRates({ quiet: true });
+}
+
+/** FR8: the one delete_rate call site — a pending correction's or an
+ * orphan's Delete (each mounted only where the server's `delete` is true).
+ * A refusal is the server's sentence under the cell; an accepted delete
+ * closes the cell's correction form and reloads the grid quietly. */
+async function deleteDraft(row, rateType, name) {
+	if (deleting.value) return;
+	const key = cellKey(row, rateType);
+	const mySeq = seq;
+	delete correctionErrors[key];
+	deleting.value = name;
+	try {
+		await post(DELETE_RATE, deleteBody(name).body);
+	} catch (e) {
+		if (mySeq === seq) correctionErrors[key] = e.message;
+		return;
+	} finally {
+		deleting.value = null;
 	}
 	if (mySeq !== seq) return;
 	delete correcting[key];
@@ -796,6 +855,45 @@ const TABS = computed(() => [
 												</Button>
 												<p v-else-if="cellOf(row, rateType).correction.approve.kind === 'refused'" class="text-ink-gray-6">{{ cellOf(row, rateType).correction.approve.message }}</p>
 												<p v-else class="text-ink-gray-6">The Close Lead approves (R2)</p>
+												<div class="flex gap-1">
+													<Button
+														v-if="cellOf(row, rateType).correction.edit"
+														size="sm"
+														variant="subtle"
+														:disabled="Boolean(correcting[cellKey(row, rateType)]) || deleting !== null"
+														@click="openCorrectionEdit(row, rateType)"
+													>
+														Edit correction
+													</Button>
+													<Button
+														v-if="cellOf(row, rateType).correction.delete"
+														size="sm"
+														variant="subtle"
+														:loading="deleting === cellOf(row, rateType).correction.name"
+														:disabled="deleting !== null || saving"
+														@click="deleteDraft(row, rateType, cellOf(row, rateType).correction.name)"
+													>
+														Delete correction
+													</Button>
+												</div>
+											</div>
+											<div
+												v-for="orphan in cellOf(row, rateType).orphans"
+												:key="orphan.name"
+												class="flex max-w-xs flex-col gap-1 text-xs text-ink-gray-7"
+											>
+												<span>{{ orphan.text }}</span>
+												<Button
+													v-if="orphan.delete"
+													size="sm"
+													variant="subtle"
+													class="self-start"
+													:loading="deleting === orphan.name"
+													:disabled="deleting !== null || saving"
+													@click="deleteDraft(row, rateType, orphan.name)"
+												>
+													Delete
+												</Button>
 											</div>
 											<Button
 												v-if="cellOf(row, rateType).correct"
@@ -833,7 +931,8 @@ const TABS = computed(() => [
 													@submit.prevent="saveCorrection(row, rateType)"
 												>
 													<p class="w-full text-xs font-medium uppercase tracking-wide text-ink-gray-6">
-														Correct {{ rateType }} {{ cellOf(row, rateType).name }} ({{ cellOf(row, rateType).value }} per {{ cellOf(row, rateType).quotedPer }})
+														<template v-if="correcting[cellKey(row, rateType)].mode === 'edit'">Edit correction {{ correcting[cellKey(row, rateType)].name }} of {{ rateType }} {{ cellOf(row, rateType).name }} ({{ cellOf(row, rateType).value }} per {{ cellOf(row, rateType).quotedPer }})</template>
+														<template v-else>Correct {{ rateType }} {{ cellOf(row, rateType).name }} ({{ cellOf(row, rateType).value }} per {{ cellOf(row, rateType).quotedPer }})</template>
 													</p>
 													<input
 														v-model="correcting[cellKey(row, rateType)].quote"

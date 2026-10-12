@@ -86,11 +86,12 @@ test("It names get_rates, save_rate and approval_api.approve", () => {
   assert.match(js, /APPROVE\s*=\s*["']konsol\.close\.approval_api\.approve["']/);
 });
 
-test("Exactly one post(APPROVE and exactly one post(SAVE_RATE call site, and no other post(", () => {
+test("Exactly one post(APPROVE, one post(SAVE_RATE and one post(DELETE_RATE call site, and no other post(", () => {
   const js = script(read());
   assert.equal((js.match(/\bpost\(\s*APPROVE\b/g) || []).length, 1, "one approve call site");
   assert.equal((js.match(/\bpost\(\s*SAVE_RATE\b/g) || []).length, 1, "one save call site");
-  assert.equal((js.match(/\bpost\(/g) || []).length, 2, "no third POST");
+  assert.equal((js.match(/\bpost\(\s*DELETE_RATE\b/g) || []).length, 1, "one delete call site (FR8)");
+  assert.equal((js.match(/\bpost\(/g) || []).length, 3, "no fourth POST");
 });
 
 test("The single approve call lives in approve(doctype, name, reason)", () => {
@@ -272,7 +273,7 @@ test("Rates.vue names get_pending, and still has exactly one post(APPROVE call s
   const js = script(read());
   assert.match(js, /GET_PENDING\s*=\s*["']konsol\.close\.rates_api\.get_pending["']/);
   assert.equal((js.match(/\bpost\(\s*APPROVE\b/g) || []).length, 1, "still one approve call site");
-  assert.equal((js.match(/\bpost\(/g) || []).length, 2, "no third POST (get_pending is a GET)");
+  assert.equal((js.match(/\bpost\(/g) || []).length, 3, "approve, save_rate and delete_rate (FR8) only (get_pending is a GET)");
 });
 
 test("Rates.vue mounts RatesPending in the Historical equity rates tab, fed by pendingView", () => {
@@ -505,19 +506,19 @@ test("F12: Correct renders only where the server's correct is true (the v-if eva
   assert.deepEqual(shown, ["GER-4"], "only GER-4 (approved, nothing pending)");
 });
 
-/** Rates.vue's own saveCorrection, run with the real correctionBody and a stub send. */
-async function runSaveCorrection({ form, send }) {
-  const { gridView, correctionBody } = await import("../rates.js");
+/** Rates.vue's own saveCorrection, run with the real body builders and a stub send. */
+async function runSaveCorrection({ form, send, rateType = "Average", payload = F12_GOLDEN }) {
+  const { gridView, correctionBody, correctionEditBody } = await import("../rates.js");
   const js = script(read());
   const fn = js.match(/\nasync function saveCorrection\(row, rateType\)\s*\{[\s\S]*?\n\}\n/);
   assert.ok(fn, "Rates.vue declares async function saveCorrection(row, rateType)");
-  const row = gridView(F12_GOLDEN).rows[0];
-  const correcting = { "EUR|GBP|Average": form };
+  const row = gridView(payload).rows[0];
+  const correcting = { [`EUR|GBP|${rateType}`]: form };
   const correctionErrors = {};
   const reloads = [];
   const sent = [];
   const run = new Function(
-    "cellKey", "correcting", "correctionErrors", "period", "saving", "seq", "correctionBody", "sendSave", "loadRates",
+    "cellKey", "correcting", "correctionErrors", "period", "saving", "seq", "correctionBody", "correctionEditBody", "sendSave", "loadRates",
     `${fn[0]}return saveCorrection;`,
   )(
     (r, t) => `${r.fromCurrency}|${r.toCurrency}|${t}`,
@@ -527,19 +528,20 @@ async function runSaveCorrection({ form, send }) {
     { value: false },
     1,
     correctionBody,
+    correctionEditBody,
     async (built) => {
       sent.push(built.body);
       return send(built);
     },
     async (opts) => reloads.push(opts),
   );
-  await run(row, "Average");
+  await run(row, rateType);
   return { sent, correctionErrors, correcting, reloads };
 }
 
 test("F12: the correction posts supersedes + reason, then closes its form and reloads the grid", async () => {
   const out = await runSaveCorrection({
-    form: { quote: "0.845", quotedPer: "1", reason: "ECB fixing corrected" },
+    form: { mode: "correct", quote: "0.845", quotedPer: "1", reason: "ECB fixing corrected" },
     send: async () => ({ name: "GER-6", docstatus: 0 }),
   });
   assert.deepEqual(out.sent, [{
@@ -554,7 +556,7 @@ test("F12: the correction posts supersedes + reason, then closes its form and re
 test("F12 failure path: the server's refusal is kept verbatim, the form stays open, nothing reloads", async () => {
   const sentence = "Say why this rate replaces GER-4 (Reason for Change).";
   const out = await runSaveCorrection({
-    form: { quote: "0.845", quotedPer: "1", reason: "" },
+    form: { mode: "correct", quote: "0.845", quotedPer: "1", reason: "" },
     send: async () => { throw new Error(sentence); },
   });
   assert.equal(out.sent[0].change_reason, null, "no reason invented");
@@ -610,4 +612,190 @@ test("F12: a correction refusal is shown through lines() under its row", () => {
   const fn = js.match(/function rowNotes\(row\)\s*\{([\s\S]*?)\n\}/);
   assert.match(fn[1], /correctionErrors\[/);
   assert.match(fn[1], /\.correction\b[\s\S]*approveErrors\[/, "an approve refusal of the correction shows too");
+});
+
+// -- FR8 (review S1): Edit and Delete of a pending correction, Delete of an
+// orphan. The server's flags alone mount the controls (FR2); Edit reuses the
+// correction form (mode "edit") and posts correctionEditBody through the one
+// save call site; Delete posts delete_rate through one call site; a refusal
+// is the server's sentence. Fed the REAL F11 golden (FR2-regenerated).
+
+function fr8Viewer() {
+  const payload = structuredClone(F12_GOLDEN);
+  payload.rows[0].closing.correction.edit = false;
+  payload.rows[0].closing.correction.delete = false;
+  return payload;
+}
+
+function fr8Orphaned(del = true) {
+  const payload = structuredClone(F12_GOLDEN);
+  payload.rows[0].closing.orphans = [{ name: "GER-7", supersedes: "GER-0", delete: del }];
+  return payload;
+}
+
+async function fr8Cells(payload) {
+  const { gridView } = await import("../rates.js");
+  const out = [];
+  for (const row of gridView(payload).rows) for (const rateType of ["Closing", "Average"]) out.push({ row, rateType });
+  return out;
+}
+
+/** The v-if of the one control whose opening tag carries `needle`, evaluated
+ * per cell that carries a pending correction: the control must sit inside the
+ * correction block (`v-if="cellOf(row, rateType).correction"`), which gates it. */
+async function fr8Shown(needle, payload, pick) {
+  const tpl = template(read());
+  const block = tpl.indexOf('<div v-if="cellOf(row, rateType).correction"');
+  const blockEnd = tpl.indexOf('v-for="orphan in cellOf(row, rateType).orphans"');
+  const at = tpl.indexOf(needle);
+  assert.ok(block >= 0 && at > block && at < blockEnd, `${needle} sits inside the correction block`);
+  const tags = tagsWith(tpl, needle);
+  assert.equal(tags.length, 1, `one control with ${needle}`);
+  const vIf = tags[0].match(/v-if="([^"]*)"/);
+  assert.ok(vIf, `${needle} is gated`);
+  assert.doesNotMatch(vIf[1], /status|canEnter|canApprove|approved|correct\b/, "the screen never decides edit/delete itself");
+  const gate = new Function("cellOf", "row", "rateType", `return Boolean(${vIf[1]});`);
+  const shown = [];
+  for (const { row, rateType } of await fr8Cells(payload)) {
+    if (f12CellOf(row, rateType).correction && gate(f12CellOf, row, rateType)) shown.push(pick(f12CellOf(row, rateType)));
+  }
+  return shown;
+}
+
+test("FR8: Rates.vue imports correctionEditBody and deleteBody and names delete_rate once", () => {
+  const source = read();
+  const imp = source.match(/import\s*\{([^}]*)\}\s*from\s*["']\.\.\/rates\.js["']/);
+  assert.match(imp[1], /\bcorrectionEditBody\b/);
+  assert.match(imp[1], /\bdeleteBody\b/);
+  const js = script(source);
+  assert.match(js, /DELETE_RATE\s*=\s*["']konsol\.close\.rates_api\.delete_rate["']/);
+});
+
+test("FR8: Edit correction renders only where the server's correction.edit is true", async () => {
+  const pick = (cell) => cell.correction.name;
+  assert.deepEqual(await fr8Shown('@click="openCorrectionEdit(', F12_GOLDEN, pick), ["GER-3"]);
+  assert.deepEqual(await fr8Shown('@click="openCorrectionEdit(', fr8Viewer(), pick), [], "a Viewer or a Closed period: no Edit");
+});
+
+test("FR8: Delete correction renders only where the server's correction.delete is true", async () => {
+  const needle = '@click="deleteDraft(row, rateType, cellOf(row, rateType).correction.name)"';
+  const pick = (cell) => cell.correction.name;
+  assert.deepEqual(await fr8Shown(needle, F12_GOLDEN, pick), ["GER-3"]);
+  assert.deepEqual(await fr8Shown(needle, fr8Viewer(), pick), [], "a Viewer or a Closed period: no Delete");
+});
+
+test("FR8: each orphan shows its sentence, and Delete only where its delete is true", async () => {
+  const tpl = template(read());
+  const i = tpl.indexOf("{{ orphan.text }}");
+  assert.ok(i >= 0, "the template shows orphan.text");
+  const loop = tpl.slice(tpl.lastIndexOf("<", tpl.lastIndexOf('v-for="orphan in cellOf(row, rateType).orphans"', i)), i);
+  assert.match(loop, /v-for="orphan in cellOf\(row, rateType\)\.orphans"/, "one line per orphan of the cell");
+  const tags = tagsWith(tpl, '@click="deleteDraft(row, rateType, orphan.name)"');
+  assert.equal(tags.length, 1, "one orphan Delete control");
+  const vIf = tags[0].match(/v-if="([^"]*)"/);
+  assert.ok(vIf);
+  assert.equal(vIf[1], "orphan.delete", "gated on the server's delete alone");
+  const { gridView } = await import("../rates.js");
+  const [orphan] = gridView(fr8Orphaned()).rows[0].closing.orphans;
+  assert.equal(orphan.text, "GER-7 corrects GER-0, which is no longer the approved rate: it can never be approved.");
+  assert.equal(new Function("orphan", `return Boolean(${vIf[1]});`)(orphan), true);
+  const [locked] = gridView(fr8Orphaned(false)).rows[0].closing.orphans;
+  assert.equal(new Function("orphan", `return Boolean(${vIf[1]});`)(locked), false);
+});
+
+test("FR8: Edit opens the correction form pre-filled from the correction (mode edit); Correct opens mode correct", async () => {
+  const { gridView } = await import("../rates.js");
+  const js = script(read());
+  const edit = js.match(/\nfunction openCorrectionEdit\(row, rateType\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(edit, "Rates.vue declares function openCorrectionEdit(row, rateType)");
+  const open = js.match(/\nfunction openCorrection\(row, rateType\)\s*\{[\s\S]*?\n\}\n/);
+  const row = gridView(F12_GOLDEN).rows[0];
+  const correcting = {};
+  const correctionErrors = { "EUR|GBP|Closing": "old refusal" };
+  const args = ["cellOf", "cellKey", "correcting", "correctionErrors"];
+  const vals = [f12CellOf, (r, t) => `${r.fromCurrency}|${r.toCurrency}|${t}`, correcting, correctionErrors];
+  new Function(...args, `${edit[0]}openCorrectionEdit(arguments[4], "Closing");`)(...vals, row);
+  assert.deepEqual(correcting["EUR|GBP|Closing"], {
+    mode: "edit",
+    name: "GER-3",
+    quote: "0.86",
+    quotedPer: "1",
+    reason: "ECB fixing corrected 31 Jul",
+  });
+  assert.deepEqual(correctionErrors, {});
+  new Function(...args, `${open[0]}openCorrection(arguments[4], "Average");`)(...vals, row);
+  assert.deepEqual(correcting["EUR|GBP|Average"], { mode: "correct", quote: "0.84", quotedPer: "1", reason: "" }, "GER-4's approved quote");
+});
+
+test("FR8: an edit posts correctionEditBody (name + supersedes) through sendSave, then closes and reloads", async () => {
+  const out = await runSaveCorrection({
+    rateType: "Closing",
+    form: { mode: "edit", name: "GER-3", quote: "0.861", quotedPer: "1", reason: "ECB fixing corrected 1 Aug" },
+    send: async () => ({ name: "GER-3", docstatus: 0 }),
+  });
+  assert.deepEqual(out.sent, [{
+    fiscal_year: 2025, fiscal_period: 7, from_currency: "EUR", to_currency: "GBP", rate_type: "Closing",
+    quote: 0.861, quoted_per: "1", change_reason: "ECB fixing corrected 1 Aug", name: "GER-3", supersedes: "GER-1",
+  }]);
+  assert.equal("EUR|GBP|Closing" in out.correcting, false);
+  assert.deepEqual(out.reloads, [{ quiet: true }]);
+});
+
+test("FR8 failure path: an edit refused by the server keeps its sentence and the form", async () => {
+  const sentence = "GER-3 is not a draft any more: reload the Rates screen.";
+  const out = await runSaveCorrection({
+    rateType: "Closing",
+    form: { mode: "edit", name: "GER-3", quote: "0.861", quotedPer: "1", reason: "x" },
+    send: async () => { throw new Error(sentence); },
+  });
+  assert.deepEqual(out.correctionErrors, { "EUR|GBP|Closing": sentence });
+  assert.ok(out.correcting["EUR|GBP|Closing"]);
+  assert.deepEqual(out.reloads, []);
+});
+
+/** Rates.vue's own deleteDraft, run with the real deleteBody and a stub post. */
+async function runDeleteDraft({ name, send }) {
+  const { gridView, deleteBody } = await import("../rates.js");
+  const js = script(read());
+  const fn = js.match(/\nasync function deleteDraft\(row, rateType, name\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(fn, "Rates.vue declares async function deleteDraft(row, rateType, name)");
+  const row = gridView(F12_GOLDEN).rows[0];
+  const correcting = { "EUR|GBP|Closing": { mode: "edit", name: "GER-3", quote: "0.86", quotedPer: "1", reason: "" } };
+  const correctionErrors = {};
+  const posted = [];
+  const reloads = [];
+  const run = new Function(
+    "cellKey", "correcting", "correctionErrors", "deleting", "seq", "deleteBody", "post", "DELETE_RATE", "loadRates",
+    `${fn[0]}return deleteDraft;`,
+  )(
+    (r, t) => `${r.fromCurrency}|${r.toCurrency}|${t}`,
+    correcting,
+    correctionErrors,
+    { value: null },
+    1,
+    deleteBody,
+    async (method, body) => {
+      posted.push([method, body]);
+      return send(body);
+    },
+    "konsol.close.rates_api.delete_rate",
+    async (opts) => reloads.push(opts),
+  );
+  await run(row, "Closing", name);
+  return { posted, correctionErrors, correcting, reloads };
+}
+
+test("FR8: Delete posts delete_rate with the draft's name, closes its form and reloads", async () => {
+  const out = await runDeleteDraft({ name: "GER-3", send: async () => ({ deleted: "GER-3" }) });
+  assert.deepEqual(out.posted, [["konsol.close.rates_api.delete_rate", { name: "GER-3" }]]);
+  assert.equal("EUR|GBP|Closing" in out.correcting, false);
+  assert.deepEqual(out.correctionErrors, {});
+  assert.deepEqual(out.reloads, [{ quiet: true }]);
+});
+
+test("FR8 failure path: a refused Delete shows the server's sentence under the cell, nothing reloads", async () => {
+  const sentence = "2025 P07 is Closed: group rates lock when their period closes.";
+  const out = await runDeleteDraft({ name: "GER-7", send: async () => { throw new Error(sentence); } });
+  assert.deepEqual(out.correctionErrors, { "EUR|GBP|Closing": sentence });
+  assert.deepEqual(out.reloads, []);
 });

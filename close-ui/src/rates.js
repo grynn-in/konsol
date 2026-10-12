@@ -204,6 +204,12 @@ export function moveFlagView(cell, thresholdDeclared) {
 // formatter in close-ui).
 const CORRECTION_KEYS = ["name", "supersedes", "owner", "change_reason", "before", "after", "approve", "edited_by"];
 const CORRECTION_SIDE_KEYS = ["quote", "quoted_per"];
+// FR8 (review S1): the server decides whether the pending correction can be
+// edited or deleted (FR2: exactly when save_rate / delete_rate accept it), and
+// lists the key's orphan corrections (drafts superseding a rate that is no
+// longer approved) with their own `delete`. The view only carries the flags.
+const CORRECTION_FLAGS = ["edit", "delete"];
+const ORPHAN_KEYS = ["name", "supersedes", "delete"];
 
 function quoteText(side) {
   return `${side.quote} per ${side.quoted_per}`;
@@ -223,6 +229,11 @@ function correctionView(correction, cellName) {
       }
     }
   }
+  for (const key of CORRECTION_FLAGS) {
+    if (typeof correction[key] !== "boolean") {
+      throw new Error(`gridView: the correction ${where} has no ${key}`);
+    }
+  }
   return {
     name: correction.name,
     supersedes: correction.supersedes,
@@ -230,7 +241,25 @@ function correctionView(correction, cellName) {
     changeReason: correction.change_reason,
     editedBy: correction.edited_by,
     approve: approveAction(correction.approve),
+    edit: correction.edit,
+    delete: correction.delete,
+    quote: correction.after.quote,
+    quotedPer: correction.after.quoted_per,
     text: `${quoteText(correction.before)} → ${quoteText(correction.after)}, replaces ${correction.supersedes}`,
+  };
+}
+
+function orphanView(orphan, cellName) {
+  for (const key of ORPHAN_KEYS) {
+    if (!(key in orphan) || (key === "delete" && typeof orphan.delete !== "boolean")) {
+      throw new Error(`gridView: an orphan of ${cellName ?? "a missing rate"} has no ${key}`);
+    }
+  }
+  return {
+    name: orphan.name,
+    supersedes: orphan.supersedes,
+    delete: orphan.delete,
+    text: `${orphan.name} corrects ${orphan.supersedes}, which is no longer the approved rate: it can never be approved.`,
   };
 }
 
@@ -241,6 +270,9 @@ function cellView(cell, thresholdDeclared) {
   }
   if (!("correction" in cell)) {
     throw new Error(`gridView: ${where} has no correction`);
+  }
+  if (!Array.isArray(cell.orphans)) {
+    throw new Error(`gridView: ${where} has no orphans`);
   }
   const prevQuote = previousQuote(cell.previous);
   const moveFlag = moveFlagView(cell, thresholdDeclared);
@@ -264,6 +296,7 @@ function cellView(cell, thresholdDeclared) {
     source: cell.source ?? null,
     correct: cell.correct,
     correction: cell.correction === null ? null : correctionView(cell.correction, cell.name),
+    orphans: cell.orphans.map((orphan) => orphanView(orphan, cell.name)),
   };
 }
 
@@ -410,6 +443,46 @@ export function correctionBody(period, row, rateType, input) {
   }
   const { name, ...body } = built.body;
   return { body: { ...body, supersedes: cell.name } };
+}
+
+/**
+ * FR8: `(period, row, rateType, input)` -> `{body}` or `{error}` for
+ * `rates_api.save_rate` editing the cell's pending correction. The body is
+ * saveBody's (the same quote and Quoted Per checks) with `name` = the
+ * correction and `supersedes` = the approved rate it replaces, which is
+ * save_rate's edit path for a correction. A blank reason goes as null, for
+ * the server to refuse in its own words. Throws when the server's
+ * `correction.edit` is not true: Edit renders only then, so reaching here
+ * otherwise is a wiring bug.
+ */
+export function correctionEditBody(period, row, rateType, input) {
+  const key = rateType === "Closing" ? "closing" : rateType === "Average" ? "average" : null;
+  if (!key) {
+    throw new Error(`Unknown rate type: ${rateType}`);
+  }
+  const cell = row[key];
+  if (!cell.correction || cell.correction.edit !== true) {
+    throw new Error(`correctionEditBody: the server does not offer an edit of a correction of ${cell.name ?? "a missing rate"}`);
+  }
+  const reason = typeof input.changeReason === "string" ? input.changeReason.trim() : input.changeReason;
+  const built = saveBody(period, row, rateType, { ...input, changeReason: reason });
+  if (built.error) {
+    return built;
+  }
+  const { name, ...body } = built.body;
+  return { body: { ...body, name: cell.correction.name, supersedes: cell.name } };
+}
+
+/**
+ * FR8: the `rates_api.delete_rate` body for one draft correction (a pending
+ * correction or an orphan): its name and nothing else. The server decides
+ * whether it may go; a blank name is a wiring bug and throws.
+ */
+export function deleteBody(name) {
+  if (isBlank(name)) {
+    throw new Error("deleteBody: no draft named to delete");
+  }
+  return { body: { name } };
 }
 
 /**
