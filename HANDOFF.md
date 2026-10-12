@@ -4,6 +4,16 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (12 Oct): konsol#305 D2 follow-ups on branch close-d2fu (PR pending).** Decisions by Deepak Pai: budget out of D2 (9 Oct, #305; epic konsol#348); #332-2 upload counts derived on read (9 Oct) and #332-2-D1 Desk status (12 Oct); #312-3 rate correction supersedes on approval (9 Oct) narrowed by #312-3b no undo by cancel (12 Oct); #317 warning only (9 Oct).
+- **What ships:**
+  - S14: a period counts as signed only when its latest run is signed. S9: the grid TB cell carries `status`. S17: deadline `text` only when undeclared. U14: Approvals detail re-reads on reload.
+  - #311/F13: the rate gate and the Rates screen name an entity with no functional currency. #317: a TB partner on an allow_ic 0 account is a warning (single and bulk upload). #290: a Consolidation Group node named by an Ownership Period cannot be deleted or re-keyed. #332: a resumed upload never reloads a cancelled TB; counts and status derived on read ("Cancelled" when all were cancelled; Desk list column "Job status").
+  - #312: correct an approved group rate in the close app (Correct / Edit / Delete, old → new on the cell and in Approvals, "replaces / replaced by" in the audit trail). Approval cancels the replaced rate in the same transaction; a correction cannot be cancelled — fix it with another correction.
+- **Upgrade:** migrate (Group Exchange Rate `supersedes`; Trial Balance Upload virtual `loaded_count` and "Job status" label). The approver of a correction needs Cancel on Group Exchange Rate as well as Submit (EPM Admin and System Manager have it today). The old stored `loaded_count` column stays, unread (`bench trim-tables` removes it).
+- **Open (Deepak):** #312-S3 — may an approved rate still be plain-cancelled in Desk (leaving the key with no rate)? Recommended ★ refuse every plain cancel. First close period: live says FY2024 P12, #303's note said FY2025 P7 — not traced to a decision.
+- **Not covered:** the close app's own TB check shows no warnings (the new #317 warning appears on upload, not there).
+- **Local test stack:** backend and worker run close-d2fu (54b8828a); Group Exchange Rate, Trial Balance Upload and Consolidation Group reloaded.
+
 **Update (7 Oct): konsol#305 Delivery 2 wave 5b is on branch close-d2w5b (PR pending).** Decisions by Deepak Pai on #305: S8-1, 1.5-1, 2.4-1, 4.2-1 (6 Oct); Q1-1, Q2-1, Q5-1 and the 4.2 wireframe (7 Oct); R52-1..4 (7 Oct, issuecomment-6038773696). Claude's engineering calls are logged in archive/konsol-305-d2/tasks.md and r52-fix-plan.md.
 - **What ships:**
   - **S8:** a draft IC Balance that has a matching rule blocks sign-off ("approve, or delete the draft"); each IC Balance row carries `pending_rule`.
