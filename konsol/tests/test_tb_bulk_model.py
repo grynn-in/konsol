@@ -1094,13 +1094,19 @@ def test_read_state_counts_only_the_submissions_still_submitted():
     assert report[1]["loaded"] == "TBS-2", "the stored report is read, never changed"
 
 
-def test_read_state_with_every_submission_cancelled_is_not_loaded():
+def test_read_state_with_every_submission_cancelled_reads_cancelled():
+    """Deepak Pai 12 Oct (#332-2-D1, #332 issuecomment-6131860387): every
+    loaded submission cancelled reads "Cancelled", not "Failed" -- the load
+    did not fail, its results were withdrawn."""
     report = [_loaded_row("AMDE", "TBS-1"), _loaded_row("AMUS", "TBS-2"), _loaded_row("AMHQ", "TBS-3")]
     state = M.read_state(report, set(), "Loaded")
     assert state["loaded_count"] == 0, state
-    assert state["status"] == "Failed", state
+    assert state["status"] == "Cancelled", state
     state = M.read_state(report, set(), "Partly Loaded")
-    assert (state["loaded_count"], state["status"]) == (0, "Failed"), state
+    assert (state["loaded_count"], state["status"]) == (0, "Cancelled"), state
+    # one left standing is still Partly Loaded, never Cancelled
+    state = M.read_state(report, {"TBS-2"}, "Loaded")
+    assert (state["loaded_count"], state["status"]) == (1, "Partly Loaded"), state
 
 
 def test_read_state_keeps_a_stopped_load_partly_loaded_and_a_job_state_as_it_is():
