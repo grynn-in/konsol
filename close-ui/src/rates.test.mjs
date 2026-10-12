@@ -1254,7 +1254,8 @@ test("F12 failure path: a correction missing a key, or a side missing its quote,
   for (const key of ["name", "supersedes", "owner", "change_reason", "before", "after", "approve", "edited_by"]) {
     const bad = structuredClone(CORRECTION);
     delete bad.rows[0].closing.correction[key];
-    assert.throws(() => gridView(bad), new RegExp(`GER-3 has no ${key}`), key);
+    const who = key === "name" ? "of GER-1" : "GER-3";
+    assert.throws(() => gridView(bad), new RegExp(`correction ${who} has no ${key}`), key);
   }
   for (const side of ["before", "after"]) {
     for (const key of ["quote", "quoted_per"]) {
