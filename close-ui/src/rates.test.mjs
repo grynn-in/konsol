@@ -51,6 +51,7 @@ function cell(overrides = {}) {
     edited_by: null,
     correct: false,
     correction: null,
+    orphans: [], // FR8: rates_model._cell's shape (FR2): every cell carries orphans
     ...overrides,
   };
 }

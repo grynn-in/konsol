@@ -273,7 +273,7 @@ test("Rates.vue names get_pending, and still has exactly one post(APPROVE call s
   const js = script(read());
   assert.match(js, /GET_PENDING\s*=\s*["']konsol\.close\.rates_api\.get_pending["']/);
   assert.equal((js.match(/\bpost\(\s*APPROVE\b/g) || []).length, 1, "still one approve call site");
-  assert.equal((js.match(/\bpost\(/g) || []).length, 2, "no third POST (get_pending is a GET)");
+  assert.equal((js.match(/\bpost\(/g) || []).length, 3, "approve, save_rate and delete_rate (FR8) only (get_pending is a GET)");
 });
 
 test("Rates.vue mounts RatesPending in the Historical equity rates tab, fed by pendingView", () => {
@@ -640,9 +640,16 @@ async function fr8Cells(payload) {
   return out;
 }
 
-/** The v-if of the one control whose opening tag carries `needle`, evaluated per cell. */
+/** The v-if of the one control whose opening tag carries `needle`, evaluated
+ * per cell that carries a pending correction: the control must sit inside the
+ * correction block (`v-if="cellOf(row, rateType).correction"`), which gates it. */
 async function fr8Shown(needle, payload, pick) {
-  const tags = tagsWith(template(read()), needle);
+  const tpl = template(read());
+  const block = tpl.indexOf('<div v-if="cellOf(row, rateType).correction"');
+  const blockEnd = tpl.indexOf('v-for="orphan in cellOf(row, rateType).orphans"');
+  const at = tpl.indexOf(needle);
+  assert.ok(block >= 0 && at > block && at < blockEnd, `${needle} sits inside the correction block`);
+  const tags = tagsWith(tpl, needle);
   assert.equal(tags.length, 1, `one control with ${needle}`);
   const vIf = tags[0].match(/v-if="([^"]*)"/);
   assert.ok(vIf, `${needle} is gated`);
@@ -650,7 +657,7 @@ async function fr8Shown(needle, payload, pick) {
   const gate = new Function("cellOf", "row", "rateType", `return Boolean(${vIf[1]});`);
   const shown = [];
   for (const { row, rateType } of await fr8Cells(payload)) {
-    if (gate(f12CellOf, row, rateType)) shown.push(pick(f12CellOf(row, rateType)));
+    if (f12CellOf(row, rateType).correction && gate(f12CellOf, row, rateType)) shown.push(pick(f12CellOf(row, rateType)));
   }
   return shown;
 }
@@ -717,7 +724,7 @@ test("FR8: Edit opens the correction form pre-filled from the correction (mode e
   });
   assert.deepEqual(correctionErrors, {});
   new Function(...args, `${open[0]}openCorrection(arguments[4], "Average");`)(...vals, row);
-  assert.deepEqual(correcting["EUR|GBP|Average"], { mode: "correct", quote: "0.85", quotedPer: "1", reason: "" });
+  assert.deepEqual(correcting["EUR|GBP|Average"], { mode: "correct", quote: "0.84", quotedPer: "1", reason: "" }, "GER-4's approved quote");
 });
 
 test("FR8: an edit posts correctionEditBody (name + supersedes) through sendSave, then closes and reloads", async () => {
