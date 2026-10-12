@@ -29,6 +29,7 @@
   "col_break_2",
   "source_note",
   "change_reason",
+  "supersedes",
   "amended_from"
  ],
  "fields": [
@@ -150,8 +151,17 @@
    "fieldtype": "Small Text",
    "label": "Reason for Change",
    "no_copy": 1,
-   "mandatory_depends_on": "eval:doc.amended_from",
-   "description": "Required when this rate amends a cancelled one, and when it moves more than the Rate Move Needing a Reason in Close Settings from the previous approved rate or the ERP quote. A rate in a closed period changes only after the period is reopened; the reopen, the cancelled rate and this reason are the audit trail."
+   "mandatory_depends_on": "eval:doc.amended_from || doc.supersedes",
+   "description": "Required when this rate corrects an approved one (Supersedes) or amends a cancelled one, and when it moves more than the Rate Move Needing a Reason in Close Settings from the previous approved rate or the ERP quote. A rate in a closed period changes only after the period is reopened; the reopen, the cancelled rate and this reason are the audit trail."
+  },
+  {
+   "fieldname": "supersedes",
+   "fieldtype": "Link",
+   "options": "Group Exchange Rate",
+   "label": "Supersedes",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The approved rate of the same key this correction replaces (konsol#312). Approving this rate cancels that one in the same step, so the key always has one approved rate. A rate that replaced another is never cancelled: correct it with another correction."
   },
   {
    "fieldname": "amended_from",
