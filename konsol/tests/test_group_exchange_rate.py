@@ -481,8 +481,18 @@ def test_only_the_system_adoption_skips_the_lock():
 
 
 def test_a_second_approved_rate_for_one_key_is_refused():
+    """The refusal names the route #312-3b decided (Deepak Pai, 12 Oct 2026):
+    correct the approved rate with a Reason for Change, not a cancel and an
+    amendment (konsol#305 F15)."""
     module, _ = _controller(duplicate="GER-2099-12-EUR-CHF-Closing-01")
-    assert _refused(_doc(module, name="GER-2099-12-EUR-CHF-Closing-02").before_submit)
+    try:
+        _doc(module, name="GER-2099-12-EUR-CHF-Closing-02").before_submit()
+    except Refused as e:
+        msg = str(e)
+    else:
+        msg = None
+    assert msg == ("GER-2099-12-EUR-CHF-Closing-01 is already the approved Closing rate EUR → CHF "
+                   "for FY2099 P12. Correct it with a Reason for Change instead."), msg
 
 
 def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
@@ -659,7 +669,8 @@ def test_a_correction_still_refuses_a_third_approved_rate():
         msg = str(e)
     else:
         msg = None
-    assert msg and msg.startswith(f"{R3} is already the approved Closing rate EUR → CHF for FY2099 P12."), msg
+    assert msg == (f"{R3} is already the approved Closing rate EUR → CHF for FY2099 P12. "
+                   "Correct it with a Reason for Change instead."), msg
     assert record["cancels"] == []
 
 

@@ -520,13 +520,27 @@ def test_reject_without_a_workflow_keeps_the_draft_with_a_comment_and_an_event()
 
 
 def test_reject_without_a_workflow_of_a_submitted_document_is_refused():
-    # Failure path: a submitted document is corrected by cancel and amendment.
+    # Failure path: a submitted document is not rejected. A Group Exchange Rate
+    # is corrected by a superseding draft with a Reason for Change (#312-3b,
+    # Deepak Pai 12 Oct 2026), never by cancel and amendment (konsol#305 F15).
     site = _Site(owner=ANALYST, fields={"docstatus": 1})
     msg = _raises(lambda: _call(site, "reject", "Group Exchange Rate", "ZZ-GER-1",
                                 reason="ZZ why"), "ValidationError")
-    assert "cancel and an amendment" in msg, msg
-    assert "Group Exchange Rate ZZ-GER-1" in msg, msg
+    assert msg == ("Group Exchange Rate ZZ-GER-1 is already approved: correct it with a "
+                   "Reason for Change instead."), msg
     assert site.comments == [] and site.events == [] and site.saved == []
+
+
+def test_reject_of_another_submitted_doctype_keeps_the_cancel_and_amend_route():
+    # Only Group Exchange Rate has the correction route (#312-3b); the others
+    # are still corrected by a cancel and an amendment.
+    for doctype in ("Historical Equity Rate", "Ownership Period", "IC Balance"):
+        site = _Site(owner=ANALYST, fields={"docstatus": 1, "data_area_id": "ZZ01"})
+        msg = _raises(lambda: _call(site, "reject", doctype, "ZZ-1", reason="ZZ why"),
+                      "ValidationError")
+        assert msg == ("%s ZZ-1 is already approved; a correction is a cancel and an "
+                       "amendment." % doctype), (doctype, msg)
+        assert site.comments == [] and site.events == [] and site.saved == []
 
 
 def test_reject_without_a_workflow_and_a_blank_reason_leaves_nothing():
