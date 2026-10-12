@@ -27,6 +27,8 @@ import {
   moveFlagView,
   ownershipChangeBody,
   ownershipEffectView,
+  correctionBody,
+  gerApproveAction,
 } from "./rates.js";
 import * as ratesModule from "./rates.js";
 
@@ -47,6 +49,8 @@ function cell(overrides = {}) {
     approver: null,
     approve: null,
     edited_by: null,
+    correct: false,
+    correction: null,
     ...overrides,
   };
 }
@@ -1198,4 +1202,114 @@ test("R52q failure path: an item carrying the old effect key but no ownership_ef
   delete old.ownership_effect;
   delete old.ownership_effect_error;
   assert.throws(() => ratesModule.opEffectView(old), /OP-ZZ5B1-2025-10-01 has no ownership_effect/);
+});
+
+// -- F12 (#312-3, #312-3b; Deepak Pai 9 Oct): correct an approved rate --------
+// Fed the REAL F11 golden (konsol/tests/fixtures/close_rates_correction_payload.json,
+// pinned equal to the stub-site get_rates by its host test). The server decides
+// `correct`; the screen only reads it. A pending correction rides on its grid
+// cell (`correction`), not in get_pending.
+
+const CORRECTION = JSON.parse(
+  fs.readFileSync(new URL("../../konsol/tests/fixtures/close_rates_correction_payload.json", import.meta.url), "utf8"),
+);
+const F12_PERIOD = { fiscal_year: 2025, fiscal_period: 7 };
+
+test("F12: gridView carries the server's correct, never its own guess", () => {
+  const view = gridView(CORRECTION);
+  const [eur, usd] = view.rows;
+  assert.equal(eur.closing.correct, false, "GER-1 has a pending correction: the server says no");
+  assert.equal(eur.average.correct, true, "GER-4 is approved with nothing pending: the server says yes");
+  assert.equal(usd.closing.correct, false, "a draft awaiting approval");
+  assert.equal(usd.average.correct, false, "a missing cell");
+});
+
+test("F12: the pending correction reads old → new and names the rate it replaces", () => {
+  const view = gridView(CORRECTION);
+  assert.deepEqual(view.rows[0].closing.correction, {
+    name: "GER-3",
+    supersedes: "GER-1",
+    preparer: "zz-analyst@example.com",
+    changeReason: "ECB fixing corrected 31 Jul",
+    editedBy: [],
+    approve: { kind: "button", message: null },
+    text: "0.85 per 1 → 0.86 per 1, replaces GER-1",
+  });
+  assert.equal(view.rows[0].average.correction, null);
+});
+
+test("F12 failure path: a cell without correct or correction throws, naming the cell", () => {
+  const noCorrect = structuredClone(CORRECTION);
+  delete noCorrect.rows[0].average.correct;
+  assert.throws(() => gridView(noCorrect), /GER-4 has no correct/);
+  const notBool = structuredClone(CORRECTION);
+  notBool.rows[0].average.correct = "yes";
+  assert.throws(() => gridView(notBool), /GER-4 has no correct/);
+  const noCorrection = structuredClone(CORRECTION);
+  delete noCorrection.rows[0].average.correction;
+  assert.throws(() => gridView(noCorrection), /GER-4 has no correction/);
+});
+
+test("F12 failure path: a correction missing a key, or a side missing its quote, throws", () => {
+  for (const key of ["name", "supersedes", "owner", "change_reason", "before", "after", "approve", "edited_by"]) {
+    const bad = structuredClone(CORRECTION);
+    delete bad.rows[0].closing.correction[key];
+    assert.throws(() => gridView(bad), new RegExp(`GER-3 has no ${key}`), key);
+  }
+  for (const side of ["before", "after"]) {
+    for (const key of ["quote", "quoted_per"]) {
+      const bad = structuredClone(CORRECTION);
+      delete bad.rows[0].closing.correction[side][key];
+      assert.throws(() => gridView(bad), new RegExp(`GER-3 has no ${side}\\.${key}`), `${side}.${key}`);
+    }
+  }
+});
+
+test("F12: correctionBody posts the new rate, the reason and the rate it supersedes", () => {
+  const eur = gridView(CORRECTION).rows[0];
+  assert.deepEqual(
+    correctionBody(F12_PERIOD, eur, "Average", { quote: "0.845", quotedPer: "1", changeReason: "ECB fixing corrected" }),
+    {
+      body: {
+        fiscal_year: 2025,
+        fiscal_period: 7,
+        from_currency: "EUR",
+        to_currency: "GBP",
+        rate_type: "Average",
+        quote: 0.845,
+        quoted_per: "1",
+        change_reason: "ECB fixing corrected",
+        supersedes: "GER-4",
+      },
+    },
+  );
+});
+
+test("F12 failure path: no reason is sent as null, for the server to refuse in its own words", () => {
+  const eur = gridView(CORRECTION).rows[0];
+  const built = correctionBody(F12_PERIOD, eur, "Average", { quote: "0.845", quotedPer: "1", changeReason: "  " });
+  assert.equal(built.body.change_reason, null);
+  assert.equal(built.body.supersedes, "GER-4");
+  assert.equal("name" in built.body, false, "a correction is a new draft, never an edit of the approved rate");
+});
+
+test("F12 failure path: correctionBody refuses a cell the server does not offer to correct", () => {
+  const view = gridView(CORRECTION);
+  assert.throws(
+    () => correctionBody(F12_PERIOD, view.rows[0], "Closing", { quote: "0.86", quotedPer: "1", changeReason: "x" }),
+    /the server does not offer a correction of GER-1/,
+  );
+  assert.throws(
+    () => correctionBody(F12_PERIOD, view.rows[1], "Average", { quote: "0.86", quotedPer: "1", changeReason: "x" }),
+    /the server does not offer a correction of a missing rate/,
+  );
+  assert.throws(() => correctionBody(F12_PERIOD, view.rows[0], "Spot", {}), /Unknown rate type: Spot/);
+});
+
+test("F12: gerApproveAction finds a grid draft and a pending correction by name", () => {
+  assert.deepEqual(gerApproveAction(CORRECTION, "GER-3"), { kind: "button", message: null }, "the correction on GER-1's cell");
+  assert.deepEqual(gerApproveAction(CORRECTION, "GER-5"), { kind: "button", message: null }, "a plain draft");
+  assert.equal(gerApproveAction(CORRECTION, "GER-1"), null, "an approved rate has nothing to approve");
+  assert.equal(gerApproveAction(CORRECTION, "GER-99"), null);
+  assert.equal(gerApproveAction(null, "GER-3"), null, "nothing loaded");
 });

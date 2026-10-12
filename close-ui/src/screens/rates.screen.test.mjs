@@ -463,3 +463,151 @@ test("O67: the form gets the server's editable drafts (ownershipDraftEdits of th
   assert.match(tags[0], /@edit-opened="openEdit = null"/, "a draft is opened once, not again on the next mount");
   assert.doesNotMatch(js, /\.title\b[^;]*(split|match)|\.detail\b[^;]*(split|match)/, "no title or detail parsing");
 });
+
+// -- F12 (#312-3, #312-3b; Deepak Pai 9 Oct): "Correct" on an approved rate --
+// The server's `correct` alone mounts Correct; the form posts through the one
+// save call site with correctionBody (supersedes + reason); a refusal is the
+// server's sentence; the pending correction (on its grid cell, F11) shows
+// old → new and is approved through the one approve(). Fed the REAL F11 golden.
+
+const F12_GOLDEN = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "konsol", "tests", "fixtures", "close_rates_correction_payload.json"), "utf8"),
+);
+const f12CellOf = (row, rateType) => (rateType === "Closing" ? row.closing : row.average);
+
+async function f12Cells() {
+  const { gridView } = await import("../rates.js");
+  const view = gridView(F12_GOLDEN);
+  const out = [];
+  for (const row of view.rows) for (const rateType of ["Closing", "Average"]) out.push({ row, rateType });
+  return out;
+}
+
+test("F12: Rates.vue imports correctionBody and gerApproveAction from ../rates.js", () => {
+  const source = read();
+  const imp = source.match(/import\s*\{([^}]*)\}\s*from\s*["']\.\.\/rates\.js["']/);
+  assert.match(imp[1], /\bcorrectionBody\b/);
+  assert.match(imp[1], /\bgerApproveAction\b/);
+});
+
+test("F12: Correct renders only where the server's correct is true (the v-if evaluated on the golden)", async () => {
+  const tpl = template(read());
+  const tags = tagsWith(tpl, '@click="openCorrection(');
+  assert.equal(tags.length, 1, "one Correct control");
+  const vIf = tags[0].match(/v-if="([^"]*)"/);
+  assert.ok(vIf, "Correct is gated");
+  assert.doesNotMatch(vIf[1], /status|canEnter|canApprove|approved/, "the screen never decides correct itself");
+  const gate = new Function("cellOf", "row", "rateType", `return Boolean(${vIf[1]});`);
+  const shown = [];
+  for (const { row, rateType } of await f12Cells()) {
+    if (gate(f12CellOf, row, rateType)) shown.push(f12CellOf(row, rateType).name);
+  }
+  assert.deepEqual(shown, ["GER-4"], "only GER-4 (approved, nothing pending)");
+});
+
+/** Rates.vue's own saveCorrection, run with the real correctionBody and a stub send. */
+async function runSaveCorrection({ form, send }) {
+  const { gridView, correctionBody } = await import("../rates.js");
+  const js = script(read());
+  const fn = js.match(/\nasync function saveCorrection\(row, rateType\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(fn, "Rates.vue declares async function saveCorrection(row, rateType)");
+  const row = gridView(F12_GOLDEN).rows[0];
+  const correcting = { "EUR|GBP|Average": form };
+  const correctionErrors = {};
+  const reloads = [];
+  const sent = [];
+  const run = new Function(
+    "cellKey", "correcting", "correctionErrors", "period", "saving", "seq", "correctionBody", "sendSave", "loadRates",
+    `${fn[0]}return saveCorrection;`,
+  )(
+    (r, t) => `${r.fromCurrency}|${r.toCurrency}|${t}`,
+    correcting,
+    correctionErrors,
+    { value: { year: 2025, period: 7 } },
+    { value: false },
+    1,
+    correctionBody,
+    async (built) => {
+      sent.push(built.body);
+      return send(built);
+    },
+    async (opts) => reloads.push(opts),
+  );
+  await run(row, "Average");
+  return { sent, correctionErrors, correcting, reloads };
+}
+
+test("F12: the correction posts supersedes + reason, then closes its form and reloads the grid", async () => {
+  const out = await runSaveCorrection({
+    form: { quote: "0.845", quotedPer: "1", reason: "ECB fixing corrected" },
+    send: async () => ({ name: "GER-6", docstatus: 0 }),
+  });
+  assert.deepEqual(out.sent, [{
+    fiscal_year: 2025, fiscal_period: 7, from_currency: "EUR", to_currency: "GBP", rate_type: "Average",
+    quote: 0.845, quoted_per: "1", change_reason: "ECB fixing corrected", supersedes: "GER-4",
+  }]);
+  assert.deepEqual(out.correctionErrors, {});
+  assert.equal("EUR|GBP|Average" in out.correcting, false, "the form closes");
+  assert.deepEqual(out.reloads, [{ quiet: true }]);
+});
+
+test("F12 failure path: the server's refusal is kept verbatim, the form stays open, nothing reloads", async () => {
+  const sentence = "Say why this rate replaces GER-4 (Reason for Change).";
+  const out = await runSaveCorrection({
+    form: { quote: "0.845", quotedPer: "1", reason: "" },
+    send: async () => { throw new Error(sentence); },
+  });
+  assert.equal(out.sent[0].change_reason, null, "no reason invented");
+  assert.deepEqual(out.correctionErrors, { "EUR|GBP|Average": sentence });
+  assert.ok(out.correcting["EUR|GBP|Average"], "the form stays open with what was typed");
+  assert.deepEqual(out.reloads, []);
+});
+
+test("F12: one save call site still — the grid save and the correction both go through sendSave", () => {
+  const js = script(read());
+  assert.equal((js.match(/\bpost\(\s*SAVE_RATE\b/g) || []).length, 1);
+  const send = js.match(/function sendSave\(built\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(send, "function sendSave(built)");
+  assert.match(send[1], /post\(\s*SAVE_RATE\s*,\s*built\.body\s*\)/);
+  const save = js.match(/async function saveRates\(\)\s*\{([\s\S]*?)\n\}/);
+  assert.match(save[1], /sendSave\(built\)/);
+  const corr = js.match(/async function saveCorrection\(row, rateType\)\s*\{([\s\S]*?)\n\}/);
+  assert.match(corr[1], /correctionBody\(/);
+  assert.match(corr[1], /sendSave\(built\)/);
+});
+
+test("F12: the pending correction shows its text where the cell carries one (the v-if evaluated on the golden)", async () => {
+  const tpl = template(read());
+  const i = tpl.indexOf(".correction.text }}");
+  assert.ok(i >= 0, "the template shows correction.text");
+  const holder = tpl.slice(tpl.lastIndexOf("<div", i), i);
+  const vIf = holder.match(/v-if="([^"]*)"/);
+  assert.ok(vIf, "the correction block is gated");
+  const gate = new Function("cellOf", "row", "rateType", `return Boolean(${vIf[1]});`);
+  const shown = [];
+  for (const { row, rateType } of await f12Cells()) {
+    if (gate(f12CellOf, row, rateType)) shown.push(f12CellOf(row, rateType).correction.text);
+  }
+  assert.deepEqual(shown, ["0.85 per 1 → 0.86 per 1, replaces GER-1"]);
+});
+
+test("F12: the correction is approved through approveCell, gated on its own approve kind", () => {
+  const tpl = template(read());
+  const tags = tagsWith(tpl, '@click="approveCell(cellOf(row, rateType).correction)"');
+  assert.equal(tags.length, 1);
+  assert.match(tags[0], /v-if="[^"]*\bcanApproveNow\(cellOf\(row, rateType\)\.correction\)/);
+});
+
+test("F12 failure path: actionFor(GER) finds the correction through gerApproveAction, not the approved cell", () => {
+  const js = script(read());
+  const fn = js.match(/function actionFor\(([^)]*)\)\s*\{([\s\S]*?)\n\}/);
+  assert.match(fn[2], /gerApproveAction\(\s*rates\.payload\s*,\s*name\s*\)/);
+  assert.match(fn[2], /pending\.payload/, "HER/OP still read the pending payload");
+});
+
+test("F12: a correction refusal is shown through lines() under its row", () => {
+  const js = script(read());
+  const fn = js.match(/function rowNotes\(row\)\s*\{([\s\S]*?)\n\}/);
+  assert.match(fn[1], /correctionErrors\[/);
+  assert.match(fn[1], /\.correction\b[\s\S]*approveErrors\[/, "an approve refusal of the correction shows too");
+});
