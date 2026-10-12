@@ -537,14 +537,18 @@ def read_state(report, submitted, status):
     submission cancelled since the load leaves its row a problem, as
     keep_submitted words it.
 
-    The stored status is the load job's own state. Draft, Checked, Loading
-    and Failed are kept as stored. A finished load (Loaded, Partly Loaded)
-    is only ever demoted: once one of its submissions is gone it reads
-    Partly Loaded while any remain, else Failed (what run_load would record
-    for those claims). A load stopped at the time limit is never promoted.
+    The stored status is the load job's own state ("Job status" in Desk).
+    Draft, Checked, Loading and Failed are kept as stored. A finished load
+    (Loaded, Partly Loaded) is only ever demoted: once one of its
+    submissions is gone it reads Partly Loaded while any remain, else
+    Cancelled (Deepak Pai 12 Oct, #332-2-D1: the load did not fail, what it
+    loaded was withdrawn). "Cancelled" is derived only: it is not one of the
+    stored Select options, and load() decides resume from the stored job
+    status, never from this. A load stopped at the time limit is never
+    promoted.
     """
     now = keep_submitted(report, submitted)
     loaded = sum(1 for r in now if r.get("loaded"))
     if status in ("Loaded", "Partly Loaded") and loaded < len(claimed(report)):
-        status = "Partly Loaded" if loaded else "Failed"
+        status = "Partly Loaded" if loaded else "Cancelled"
     return {"report": now, "loaded_count": loaded, "status": status}
