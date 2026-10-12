@@ -799,3 +799,84 @@ test("FR8 failure path: a refused Delete shows the server's sentence under the c
   assert.deepEqual(out.correctionErrors, { "EUR|GBP|Closing": sentence });
   assert.deepEqual(out.reloads, []);
 });
+
+// -- FR9 (review S5): a correction form the server no longer offers closes
+// with a sentence on a reload, and a body builder that throws never escapes
+// saveCorrection as an unhandled rejection. Rates.vue's own functions run on
+// the REAL F11 golden and in-test copies of it.
+
+/** Rates.vue's own loadRates, run with a stub get returning `payload` and the
+ * real gridView / staleCorrectionForms behind `view`. */
+async function runLoadRates({ payload, correcting, correctionErrors = {} }) {
+  const { gridView, staleCorrectionForms } = await import("../rates.js");
+  const js = script(read());
+  const fn = js.match(/\nasync function loadRates\(\{ quiet = false \} = \{\}\)\s*\{[\s\S]*?\n\}\n/);
+  assert.ok(fn, "Rates.vue declares async function loadRates({ quiet = false } = {})");
+  const rates = { status: "ready", payload: null, error: null, busy: false };
+  const view = { get value() { return rates.payload ? gridView(rates.payload) : null; } };
+  const resets = [];
+  const run = new Function(
+    "period", "rates", "seq", "get", "GET_RATES", "resetDrafts", "view", "staleCorrectionForms", "correcting", "correctionErrors",
+    `${fn[0]}return loadRates;`,
+  )(
+    { value: { year: 2025, period: 7 } },
+    rates,
+    0,
+    async () => structuredClone(payload),
+    "konsol.close.rates_api.get_rates",
+    () => resets.push(true),
+    view,
+    staleCorrectionForms,
+    correcting,
+    correctionErrors,
+  );
+  await run({ quiet: true });
+  return { rates, correcting, correctionErrors, resets };
+}
+
+test("FR9: a quiet reload closes a Correct form the server no longer offers, with its sentence, and keeps the rest", async () => {
+  const average = { mode: "correct", quote: "0.845", quotedPer: "1", reason: "typing" };
+  const out = await runLoadRates({
+    payload: F12_GOLDEN,
+    correcting: { "EUR|GBP|Closing": { mode: "correct", quote: "0.85", quotedPer: "1", reason: "" }, "EUR|GBP|Average": average },
+  });
+  assert.equal(out.rates.status, "ready");
+  assert.equal(out.resets.length, 1);
+  assert.deepEqual(out.correcting, { "EUR|GBP|Average": average }, "the offered form is untouched");
+  assert.deepEqual(out.correctionErrors, {
+    "EUR|GBP|Closing": "The correction form for GER-1 closed: after the reload the server no longer offers a correction of GER-1.",
+  });
+});
+
+test("FR9 failure path: a quiet reload without the correction closes its Edit form with the edit sentence", async () => {
+  const payload = structuredClone(F12_GOLDEN);
+  payload.rows[0].closing.correction = null;
+  const out = await runLoadRates({
+    payload,
+    correcting: { "EUR|GBP|Closing": { mode: "edit", name: "GER-3", quote: "0.86", quotedPer: "1", reason: "x" } },
+  });
+  assert.deepEqual(out.correcting, {});
+  assert.deepEqual(out.correctionErrors, {
+    "EUR|GBP|Closing": "The edit of GER-3 closed: after the reload the server no longer offers an edit of GER-3.",
+  });
+});
+
+test("FR9 failure path: a body builder that throws lands in correctionErrors, nothing is posted, nothing reloads", async () => {
+  const out = await runSaveCorrection({
+    rateType: "Closing",
+    form: { mode: "correct", quote: "0.85", quotedPer: "1", reason: "stale form" },
+    send: async () => ({ name: "GER-9", docstatus: 0 }),
+  });
+  assert.deepEqual(out.sent, []);
+  assert.deepEqual(out.correctionErrors, { "EUR|GBP|Closing": "correctionBody: the server does not offer a correction of GER-1" });
+  assert.deepEqual(out.reloads, []);
+});
+
+test("FR9 failure path: a form with no known mode lands in correctionErrors, never an unhandled rejection", async () => {
+  const out = await runSaveCorrection({
+    form: { mode: "spot", quote: "0.85", quotedPer: "1", reason: "x" },
+    send: async () => ({ name: "GER-9", docstatus: 0 }),
+  });
+  assert.deepEqual(out.sent, []);
+  assert.deepEqual(out.correctionErrors, { "EUR|GBP|Average": "saveCorrection: the correction form has no mode (spot)" });
+});

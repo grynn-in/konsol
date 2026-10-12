@@ -1426,3 +1426,52 @@ test("FR8: deleteBody posts only the draft's name; a blank name throws", () => {
     assert.throws(() => ratesModule.deleteBody(blank), /deleteBody: no draft named/);
   }
 });
+
+// -- FR9 (review S5): a correction form the server no longer offers closes
+// with a sentence after a reload. Fed the REAL F11 golden (CORRECTION) and
+// in-test copies of it; the expected sentences are literal.
+
+function fr9WithoutCorrection() {
+  const payload = structuredClone(CORRECTION);
+  payload.rows[0].closing.correction = null;
+  return payload;
+}
+
+test("FR9: staleCorrectionForms closes a correct form whose cell the server no longer offers to correct", () => {
+  assert.equal(typeof ratesModule.staleCorrectionForms, "function", "rates.js exports staleCorrectionForms");
+  const open = {
+    "EUR|GBP|Closing": { mode: "correct", quote: "0.85", quotedPer: "1", reason: "" },
+    "EUR|GBP|Average": { mode: "correct", quote: "0.84", quotedPer: "1", reason: "" },
+  };
+  assert.deepEqual(ratesModule.staleCorrectionForms(open, gridView(CORRECTION)), {
+    "EUR|GBP|Closing": "The correction form for GER-1 closed: after the reload the server no longer offers a correction of GER-1.",
+  });
+});
+
+test("FR9: an edit form stays while the server still offers its edit", () => {
+  const open = { "EUR|GBP|Closing": { mode: "edit", name: "GER-3", quote: "0.86", quotedPer: "1", reason: "x" } };
+  assert.deepEqual(ratesModule.staleCorrectionForms(open, gridView(CORRECTION)), {});
+});
+
+test("FR9 failure path: an edit form whose correction is gone, renamed or no longer editable closes with the edit sentence", () => {
+  const open = { "EUR|GBP|Closing": { mode: "edit", name: "GER-3", quote: "0.86", quotedPer: "1", reason: "x" } };
+  const sentence = "The edit of GER-3 closed: after the reload the server no longer offers an edit of GER-3.";
+  assert.deepEqual(ratesModule.staleCorrectionForms(open, gridView(fr9WithoutCorrection())), { "EUR|GBP|Closing": sentence });
+  assert.deepEqual(ratesModule.staleCorrectionForms(open, gridView(fr8Viewer())), { "EUR|GBP|Closing": sentence });
+  const renamed = structuredClone(CORRECTION);
+  renamed.rows[0].closing.correction.name = "GER-9";
+  assert.deepEqual(ratesModule.staleCorrectionForms(open, gridView(renamed)), { "EUR|GBP|Closing": sentence });
+});
+
+test("FR9 failure path: a form whose cell is no longer on the grid closes; an unknown mode throws", () => {
+  const gone = structuredClone(CORRECTION);
+  gone.rows = gone.rows.slice(1);
+  assert.deepEqual(
+    ratesModule.staleCorrectionForms({ "EUR|GBP|Average": { mode: "correct" } }, gridView(gone)),
+    { "EUR|GBP|Average": "The correction form for EUR|GBP|Average closed: after the reload the server no longer offers a correction of EUR|GBP|Average." },
+  );
+  assert.throws(
+    () => ratesModule.staleCorrectionForms({ "EUR|GBP|Average": { mode: "spot" } }, gridView(CORRECTION)),
+    /staleCorrectionForms: the correction form EUR\|GBP\|Average has no mode \(spot\)/,
+  );
+});
