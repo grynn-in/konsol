@@ -750,3 +750,96 @@ def test_r52q_a_doc_without_the_effect_key_has_neither_ownership_key():
              "2026-09-01T09:00:00")
     [item] = _o57_items(op)
     assert "ownership_effect" not in item and "ownership_effect_error" not in item, sorted(item)
+
+
+# --- F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): a draft
+# naming the cell's approved rate in ``supersedes`` is that rate's pending
+# correction. The approved rate stays the cell (it is still published until
+# the correction is approved); the correction rides on it as ``correction``
+# with its before -> after, and leaves ``extra_drafts``. ---------------------
+
+def _f11_correction(name, approved, rate, quoted_per=1, modified="2026-09-02 09:00:00",
+                    owner="bob@example.com", reason="RBI corrected its fixing"):
+    doc = _doc(name, "EUR", "GBP", "Closing", rate, 0, owner, modified,
+               quoted_per=quoted_per, change_reason=reason)
+    doc["supersedes"] = approved
+    return doc
+
+
+def _f11_cell(docs):
+    result = M.grid(required={("EUR", "GBP")}, docs=docs, earlier=[], threshold=0.5,
+                    move_problem=_no_op_move_problem)
+    return result["rows"][0]["closing"]
+
+
+def test_f11_a_correction_rides_on_the_approved_cell_with_before_and_after():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    cell = _f11_cell([approved, _f11_correction("GER-R2", "GER-R1", 1.09)])
+    assert cell["status"] == "approved"
+    assert cell["name"] == "GER-R1"
+    assert cell["extra_drafts"] == []
+    assert cell["correction"] == {
+        "name": "GER-R2",
+        "supersedes": "GER-R1",
+        "owner": "bob@example.com",
+        "change_reason": "RBI corrected its fixing",
+        "before": {"quote": 1.085, "quoted_per": 1, "rate": 1.085},
+        "after": {"quote": 1.09, "quoted_per": 1, "rate": 1.09},
+    }
+
+
+def test_f11_failure_path_a_plain_draft_beside_an_approved_rate_is_not_a_correction():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    plain = _doc("GER-D", "EUR", "GBP", "Closing", 1.09, 0, "bob@example.com",
+                 "2026-09-02 09:00:00")
+    cell = _f11_cell([approved, plain])
+    assert cell["correction"] is None
+    assert cell["extra_drafts"] == ["GER-D"]
+
+
+def test_f11_failure_path_a_correction_of_another_rate_stays_an_extra_draft():
+    # GER-R1 was already replaced by GER-R3; a stale correction of GER-R1 is
+    # not GER-R3's correction.
+    approved = _doc("GER-R3", "EUR", "GBP", "Closing", 1.087, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    stale = _f11_correction("GER-R2", "GER-R1", 1.09)
+    cell = _f11_cell([approved, stale])
+    assert cell["correction"] is None
+    assert cell["extra_drafts"] == ["GER-R2"]
+
+
+def test_f11_the_latest_of_two_corrections_is_the_correction_the_other_is_extra():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    old = _f11_correction("GER-R2", "GER-R1", 1.09, modified="2026-09-02 09:00:00")
+    new = _f11_correction("GER-R4", "GER-R1", 1.095, modified="2026-09-03 09:00:00")
+    cell = _f11_cell([approved, old, new])
+    assert cell["correction"]["name"] == "GER-R4"
+    assert cell["extra_drafts"] == ["GER-R2"]
+
+
+def test_f11_a_correction_keeps_its_own_unit_before_and_after():
+    approved = _doc("GER-R1", "JPY", "GBP", "Closing", 0.0052, 1, "alice@example.com",
+                    "2026-09-01 09:00:00", quote=0.52, quoted_per=100)
+    corr = _doc("GER-R2", "JPY", "GBP", "Closing", 0.00053, 0, "bob@example.com",
+                "2026-09-02 09:00:00", quote=5.3, quoted_per=1000, change_reason="x")
+    corr["supersedes"] = "GER-R1"
+    result = M.grid(required={("JPY", "GBP")}, docs=[approved, corr], earlier=[],
+                    threshold=0.5, move_problem=_no_op_move_problem)
+    cell = result["rows"][0]["closing"]
+    assert cell["correction"]["before"] == {"quote": 0.52, "quoted_per": 100, "rate": 0.0052}
+    assert cell["correction"]["after"] == {"quote": 5.3, "quoted_per": 1000, "rate": 0.00053}
+
+
+def test_f11_missing_and_awaiting_cells_carry_correction_none():
+    draft = _doc("GER-D", "EUR", "GBP", "Closing", 1.09, 0, "bob@example.com",
+                 "2026-09-02 09:00:00")
+    result = M.grid(required={("EUR", "GBP")}, docs=[draft], earlier=[], threshold=0.5,
+                    move_problem=_no_op_move_problem)
+    row = result["rows"][0]
+    assert row["closing"]["status"] == "awaiting_approval"
+    assert row["closing"]["correction"] is None
+    assert row["average"]["status"] == "missing"
+    assert row["average"]["correction"] is None
