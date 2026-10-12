@@ -3277,7 +3277,8 @@ def test_fr1_delete_roles_are_the_save_roles_literal():
 
     tree = ast.parse(open(API_PY, encoding="utf-8").read())
     [fn] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "delete_rate"]
-    first = fn.body[0].value
+    body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
+    first = body[0].value  # the first statement after the docstring
     assert first.func.attr == "only_for"
     assert isinstance(first.args[0], ast.Tuple)  # a literal tuple, not a name
     literal = ast.literal_eval(first.args[0])
