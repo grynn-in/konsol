@@ -30,6 +30,7 @@
         "extra_drafts": [],
         "flag": null,
         "name": "GER-4",
+        "orphans": [],
         "owner": "zz-lead@example.com",
         "previous": {
           "fiscal_period": 6,
@@ -66,6 +67,8 @@
             "rate": 0.85
           },
           "change_reason": "ECB fixing corrected 31 Jul",
+          "delete": true,
+          "edit": true,
           "edited_by": [],
           "name": "GER-3",
           "owner": "zz-analyst@example.com",
@@ -76,6 +79,7 @@
         "extra_drafts": [],
         "flag": null,
         "name": "GER-1",
+        "orphans": [],
         "owner": "zz-lead@example.com",
         "previous": {
           "fiscal_period": 6,
@@ -107,6 +111,7 @@
         "extra_drafts": [],
         "flag": null,
         "name": null,
+        "orphans": [],
         "owner": null,
         "previous": null,
         "quote": null,
@@ -129,6 +134,7 @@
         "extra_drafts": [],
         "flag": null,
         "name": "GER-5",
+        "orphans": [],
         "owner": "zz-analyst@example.com",
         "previous": null,
         "quote": 0.79,

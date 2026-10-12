@@ -54,6 +54,15 @@ its rate before and after (``rates_model._correction``), its approve mode and
 ``edited_by``, or None. It costs no extra read: the grid's own read carries
 ``supersedes``.
 
+FR2 (review-d2fu S1): the server, not the SPA, decides what may be done with
+a correction. The pending correction carries ``edit`` and ``delete``, and
+every cell carries ``orphans`` (``rates_model._orphans``: the key's draft
+corrections of a rate no longer approved, which can never be approved), each
+with ``delete``. All three equal ``may_draft`` (a save role and the period
+Open), which is exactly when ``save_rate``'s edit path and ``delete_rate``
+accept them: a correction or orphan is always a draft with ``supersedes`` in
+this period. Tests pin each flag against the two endpoints.
+
 ``get_pending()`` (GET, E405) lists every Historical Equity Rate and
 Ownership Period draft (docstatus 0; both have no submit for the Analyst, so
 a draft always awaits the Close Lead), with the preparer, who else edited it
@@ -242,15 +251,23 @@ def get_rates(fiscal_year, fiscal_period):
 
     user = frappe.session.user
     roles = frappe.get_roles(user)
-    may_correct = bool(set(roles) & set(RATE_SAVE_ROLES)) and period.get("status") == "Open"
+    # FR2: save_rate and delete_rate admit exactly RATE_SAVE_ROLES in an Open
+    # period, so this one flag decides correct, a correction's edit and delete,
+    # and an orphan's delete (a correction or orphan is always a draft with
+    # supersedes, in this period).
+    may_draft = bool(set(roles) & set(RATE_SAVE_ROLES)) and period.get("status") == "Open"
     for correction in corrections:
         correction_preparers = preparers[correction["name"]]
         correction["approve"] = rates_model.approve_mode(
             user, roles, correction_preparers, GER, correction["name"], policy,
             close_policy_model.APPROVER_ROLES, close_policy_model.self_approval_problem)
         correction["edited_by"] = sorted(correction_preparers - {correction["owner"]})
+        correction["edit"] = may_draft
+        correction["delete"] = may_draft
     for cell in cells:
-        cell["correct"] = (may_correct and cell["status"] == "approved"
+        for orphan in cell["orphans"]:
+            orphan["delete"] = may_draft
+        cell["correct"] = (may_draft and cell["status"] == "approved"
                            and cell["correction"] is None and not cell["extra_drafts"])
         if cell["status"] != "awaiting_approval":
             cell["approve"] = None
