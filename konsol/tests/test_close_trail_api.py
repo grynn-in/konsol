@@ -593,3 +593,46 @@ def test_the_filtered_trail_golden_fixture_is_the_producers_output():
     with open(TRAIL_FIXTURE) as fh:
         golden = json.load(fh)
     assert json.loads(json.dumps(out)) == golden
+
+
+# --- konsol#305 FR11 (review S4): the correction golden ------------------------
+#
+# Approving a rate correction (GER-3, supersedes GER-1) cancels GER-1 in the
+# same transaction (GroupExchangeRate._cancel_superseded). The two Close
+# Events carry exactly the detail dicts FR6's tests assert:
+# test_close_self_approval.test_approving_a_rate_correction_names_the_rate_it_replaces
+# and test_close_cancel_event.test_a_superseded_rate_cancel_names_the_correction_that_replaced_it.
+# close-ui's auditTrail.test.mjs reads this golden.
+CORRECTION_FIXTURE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fixtures", "close_trail_correction.json")
+
+
+def _correction_site():
+    site = _Site()
+    site.roles = {"EPM Admin"}
+    site.user = "lead@example.com"
+    site.events = [
+        _produced("CE-11", "approved", _dt(12), "lead@example.com",
+                  reference_doctype="Group Exchange Rate", reference_name="GER-3",
+                  detail={"preparer": "analyst@example.com",
+                          "preparers": ["analyst@example.com"], "policy": None,
+                          "exempt": None, "supersedes": "GER-1"}),
+        _produced("CE-12", "approval_cancelled", _dt(12), "lead@example.com",
+                  reference_doctype="Group Exchange Rate", reference_name="GER-1",
+                  detail={"preparer": "analyst@example.com", "exempt": None,
+                          "superseded_by": "GER-3"}),
+    ]
+    site.users = [_user("lead@example.com", "L Lead"),
+                  _user("analyst@example.com", "N Analyst")]
+    return site
+
+
+def test_the_correction_trail_golden_fixture_is_the_producers_output():
+    out = _call(_correction_site(), 2026, 9)
+    with open(CORRECTION_FIXTURE) as fh:
+        golden = json.load(fh)
+    assert json.loads(json.dumps(out)) == golden
+    # The golden carries the FR6 keys the SPA reads (not dropped by get_trail).
+    by_name = {e["name"]: e["detail"] for e in golden["events"]}
+    assert by_name["CE-11"]["supersedes"] == "GER-1", by_name
+    assert by_name["CE-12"]["superseded_by"] == "GER-3", by_name
