@@ -339,10 +339,17 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
     supersedes = _reason(supersedes)  # stripped; blank is no correction
 
     if not name:
-        grain = {"to_currency": to_currency, "from_currency": from_currency,
-                 "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp}
-        existing = frappe.get_all(GER, filters=dict(grain, docstatus=["in", [0, 1]]),
-                                  fields=["name", "docstatus", "supersedes"])
+        # FR3 (review-d2fu N8): a locking read on the grain index (REPEATABLE
+        # READ), so a second correction of one rate waits on the first's row
+        # lock, then sees its draft and is refused. Newest first, as get_all's
+        # default order was. An empty key locks only a gap: two concurrent
+        # first drafts may then deadlock, and one fails visibly.
+        existing = frappe.db.sql(
+            "SELECT name, docstatus, supersedes FROM `tabGroup Exchange Rate` "
+            "WHERE to_currency = %s AND from_currency = %s AND fiscal_year = %s "
+            "AND fiscal_period = %s AND rate_type = %s AND docstatus IN (0, 1) "
+            "ORDER BY modified DESC FOR UPDATE",
+            (to_currency, from_currency, fy, fp, rate_type), as_dict=True)
         approved = [r["name"] for r in existing if r["docstatus"] == 1]
         drafts = [r for r in existing if r["docstatus"] == 0]
         values = {"doctype": GER, "to_currency": to_currency, "from_currency": from_currency,
