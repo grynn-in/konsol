@@ -36,6 +36,24 @@ flag, so the doctype's own validate decides (magnitude, digits, group currency,
 the move and its reason), and Frappe sets the owner. The Analyst has no submit
 on Group Exchange Rate, so the Analyst never approves (R2).
 
+F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): a change
+of an approved rate is a correction, drafted in the app. ``save_rate`` takes
+``supersedes``, the approved rate of the asked key, and saves a draft beside
+it; the Group Exchange Rate controller (F10) cancels the old rate in the
+transaction that approves the correction, so the key keeps one approved
+rate. Every refusal (no approved rate of that name on that key, a draft
+already pending on the key, an edit that would change what a draft corrects)
+is thrown before any write; the controller's validate refuses a correction
+with no Reason for Change. The roles are the save's own
+(``RATE_SAVE_ROLES``: R2, the Analyst drafts and the Close Lead approves;
+the Close Lead may draft too). ``get_rates`` adds to every cell ``correct``
+(the caller holds a save role, the period is Open, the cell is approved and
+nothing is pending on its key: exactly when the correction would be
+accepted) and ``correction``: the pending correction of an approved cell with
+its rate before and after (``rates_model._correction``), its approve mode and
+``edited_by``, or None. It costs no extra read: the grid's own read carries
+``supersedes``.
+
 ``get_pending()`` (GET, E405) lists every Historical Equity Rate and
 Ownership Period draft (docstatus 0; both have no submit for the Analyst, so
 a draft always awaits the Close Lead), with the preparer, who else edited it
@@ -114,7 +132,11 @@ period_name = _load_period_name()
 RATES_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
 GER = "Group Exchange Rate"
 DOC_FIELDS = ["name", "from_currency", "to_currency", "rate_type", "quote", "quoted_per",
-              "erp_quote", "docstatus", "owner", "modified", "change_reason", "source"]
+              "erp_quote", "docstatus", "owner", "modified", "change_reason", "source",
+              "supersedes"]
+#: F11: the roles ``save_rate`` admits (its ``frappe.only_for`` literal; a
+#: test pins the two together). ``get_rates.correct`` is decided by them.
+RATE_SAVE_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
 
 
 def _period(fiscal_year, fiscal_period):
@@ -214,11 +236,22 @@ def get_rates(fiscal_year, fiscal_period):
 
     cells = [row[k] for row in result["rows"] + result["unrequired"] for k in ("closing", "average")]
     awaiting = [c for c in cells if c["status"] == "awaiting_approval"]
-    preparers = self_approval.preparers_for(GER, {c["name"]: c["owner"] for c in awaiting})
+    corrections = [c["correction"] for c in cells if c["correction"] is not None]
+    preparers = self_approval.preparers_for(
+        GER, {c["name"]: c["owner"] for c in awaiting + corrections})
 
     user = frappe.session.user
     roles = frappe.get_roles(user)
+    may_correct = bool(set(roles) & set(RATE_SAVE_ROLES)) and period.get("status") == "Open"
+    for correction in corrections:
+        correction_preparers = preparers[correction["name"]]
+        correction["approve"] = rates_model.approve_mode(
+            user, roles, correction_preparers, GER, correction["name"], policy,
+            close_policy_model.APPROVER_ROLES, close_policy_model.self_approval_problem)
+        correction["edited_by"] = sorted(correction_preparers - {correction["owner"]})
     for cell in cells:
+        cell["correct"] = (may_correct and cell["status"] == "approved"
+                           and cell["correction"] is None and not cell["extra_drafts"])
         if cell["status"] != "awaiting_approval":
             cell["approve"] = None
             cell["edited_by"] = None
@@ -257,9 +290,23 @@ def _grain_text(from_currency, to_currency, rate_type, fy, fp):
     return f"{rate_type} {from_currency} → {to_currency} {period_name(fy, fp)}"
 
 
+def _correction_refusal(supersedes, approved, drafts, grain_text):
+    """F11: the sentence refusing a correction of ``supersedes``, or None.
+    ``approved`` and ``drafts`` are the asked key's rows (name, supersedes)."""
+    if supersedes not in approved:
+        return (f"{supersedes} is not the approved {grain_text}: "
+                + (f"correct {approved[0]}." if approved else "there is no approved rate to correct."))
+    if drafts:
+        draft = drafts[0]
+        if draft.get("supersedes") == supersedes:
+            return f"{draft['name']} already corrects {supersedes} and awaits approval: edit it."
+        return f"{draft['name']} is already a draft for this rate: edit it."
+    return None
+
+
 @frappe.whitelist(methods=["POST"])
 def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type, quote,
-              quoted_per, change_reason=None, name=None):
+              quoted_per, change_reason=None, name=None, supersedes=None):
     frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
     if rate_type not in group_rates.RATE_TYPES:
         frappe.throw(f"Rate Type {rate_type} is not a group rate type: "
@@ -272,31 +319,45 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
         frappe.throw(f"{period_name(fy, fp)} is {status}: group rates lock when their period "
                      "closes (reopen it first).")
     reason = _reason(change_reason)
+    supersedes = _reason(supersedes)  # stripped; blank is no correction
 
     if not name:
         grain = {"to_currency": to_currency, "from_currency": from_currency,
                  "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp}
         existing = frappe.get_all(GER, filters=dict(grain, docstatus=["in", [0, 1]]),
-                                  fields=["name", "docstatus"])
+                                  fields=["name", "docstatus", "supersedes"])
         approved = [r["name"] for r in existing if r["docstatus"] == 1]
-        if approved:
+        drafts = [r for r in existing if r["docstatus"] == 0]
+        values = {"doctype": GER, "to_currency": to_currency, "from_currency": from_currency,
+                  "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp,
+                  "quote": quote, "quoted_per": quoted_per, "change_reason": reason}
+        if supersedes:
+            refusal = _correction_refusal(
+                supersedes, approved, drafts,
+                f"{rate_type} rate {from_currency} → {to_currency} for {period_name(fy, fp)}")
+            if refusal:
+                frappe.throw(refusal)
+            values["supersedes"] = supersedes
+        elif approved:
             frappe.throw(
                 f"{approved[0]} is already the approved {rate_type} rate {from_currency} → "
-                f"{to_currency} for {period_name(fy, fp)}; a change is a cancel and an amendment "
-                "with a Reason for Change (Desk; E4-P7).")
-        if existing:
+                f"{to_currency} for {period_name(fy, fp)}: correct it with a Reason for Change "
+                "instead.")
+        elif existing:
             frappe.throw(f"{existing[0]['name']} is already a draft for this rate: edit it.")
-        doc = frappe.get_doc({"doctype": GER, "to_currency": to_currency,
-                              "from_currency": from_currency, "rate_type": rate_type,
-                              "fiscal_year": fy, "fiscal_period": fp, "quote": quote,
-                              "quoted_per": quoted_per, "change_reason": reason})
+        doc = frappe.get_doc(values)
         doc.insert()
     else:
         doc = frappe.get_doc(GER, name)
         if doc.docstatus != 0:
             frappe.throw(
-                f"{name} is {'approved' if doc.docstatus == 1 else 'cancelled'}, not a draft: "
-                "a change is a cancel and an amendment with a Reason for Change (Desk; E4-P7).")
+                f"{name} is approved, not a draft: correct it with a Reason for Change instead."
+                if doc.docstatus == 1 else
+                f"{name} is cancelled, not a draft: correct the approved rate with a Reason for "
+                "Change instead.")
+        if supersedes and supersedes != doc.get("supersedes"):
+            frappe.throw(f"{name} corrects {doc.get('supersedes') or 'no approved rate'}, not "
+                         f"{supersedes}: a draft keeps the rate it corrects.")
         theirs = (doc.from_currency, doc.to_currency, doc.rate_type,
                   int(doc.fiscal_year), int(doc.fiscal_period))
         asked = (from_currency, to_currency, rate_type, fy, fp)
