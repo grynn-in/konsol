@@ -474,6 +474,42 @@ export function correctionEditBody(period, row, rateType, input) {
 }
 
 /**
+ * FR9 (review S5): `(openForms, view)` -> `{key: sentence}` for each open
+ * correction form (keyed `<from>|<to>|<Closing|Average>`, as Rates.vue keys
+ * them) whose offer is gone from the reloaded `gridView` view: a `correct`
+ * form whose cell's `correct` is not true, an `edit` form whose cell carries
+ * no correction of that name or whose `correction.edit` is not true. A form
+ * whose cell is no longer on the grid at all is gone too; its sentence names
+ * the key, as there is no cell name to name. An unknown mode throws (a
+ * wiring bug, as in saveCorrection).
+ */
+export function staleCorrectionForms(openForms, view) {
+  const cells = new Map();
+  for (const row of [...(view.rows || []), ...(view.unrequired || [])]) {
+    cells.set(`${row.fromCurrency}|${row.toCurrency}|Closing`, row.closing);
+    cells.set(`${row.fromCurrency}|${row.toCurrency}|Average`, row.average);
+  }
+  const stale = {};
+  for (const [key, form] of Object.entries(openForms)) {
+    const cell = cells.get(key) ?? null;
+    if (form.mode === "correct") {
+      if (!cell || cell.correct !== true) {
+        const name = cell?.name ?? key;
+        stale[key] = `The correction form for ${name} closed: after the reload the server no longer offers a correction of ${name}.`;
+      }
+    } else if (form.mode === "edit") {
+      const correction = cell ? cell.correction : null;
+      if (!correction || correction.name !== form.name || correction.edit !== true) {
+        stale[key] = `The edit of ${form.name} closed: after the reload the server no longer offers an edit of ${form.name}.`;
+      }
+    } else {
+      throw new Error(`staleCorrectionForms: the correction form ${key} has no mode (${form.mode})`);
+    }
+  }
+  return stale;
+}
+
+/**
  * FR8: the `rates_api.delete_rate` body for one draft correction (a pending
  * correction or an orphan): its name and nothing else. The server decides
  * whether it may go; a blank name is a wiring bug and throws.

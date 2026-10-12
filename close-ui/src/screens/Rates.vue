@@ -98,7 +98,7 @@ import OwnershipGaps from "../sections/OwnershipGaps.vue";
 import OwnershipChange from "../sections/OwnershipChange.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipDraftEdits, ownershipView, ownershipGapsCount, mergeDrafts, correctionBody, correctionEditBody, deleteBody, gerApproveAction } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipDraftEdits, ownershipView, ownershipGapsCount, mergeDrafts, correctionBody, correctionEditBody, deleteBody, gerApproveAction, staleCorrectionForms } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 import { periodName as formatPeriod } from "../periodName.js";
@@ -304,6 +304,15 @@ async function loadRates({ quiet = false } = {}) {
 		rates.error = null;
 		rates.status = "ready";
 		resetDrafts();
+		// FR9: a correction form the reloaded grid no longer offers closes,
+		// with a sentence under its cell, instead of staying open on a stale offer.
+		if (view.value) {
+			const stale = staleCorrectionForms(correcting, view.value);
+			for (const [key, sentence] of Object.entries(stale)) {
+				delete correcting[key];
+				correctionErrors[key] = sentence;
+			}
+		}
 	} catch (e) {
 		if (mine !== seq) return;
 		rates.error = e.message;
@@ -455,14 +464,22 @@ async function saveCorrection(row, rateType) {
 	if (!period.value || !form || saving.value) return;
 	const mySeq = seq;
 	delete correctionErrors[key];
-	if (form.mode !== "correct" && form.mode !== "edit") {
-		throw new Error(`saveCorrection: the correction form has no mode (${form.mode})`);
+	// FR9: a builder that throws (the offer is gone, or the form has no mode)
+	// is shown under the cell, never left as an unhandled rejection.
+	let built;
+	try {
+		if (form.mode !== "correct" && form.mode !== "edit") {
+			throw new Error(`saveCorrection: the correction form has no mode (${form.mode})`);
+		}
+		const when = { fiscal_year: period.value.year, fiscal_period: period.value.period };
+		const input = { quote: form.quote, quotedPer: form.quotedPer, changeReason: form.reason };
+		built = form.mode === "edit"
+			? correctionEditBody(when, row, rateType, input)
+			: correctionBody(when, row, rateType, input);
+	} catch (e) {
+		correctionErrors[key] = e.message;
+		return;
 	}
-	const when = { fiscal_year: period.value.year, fiscal_period: period.value.period };
-	const input = { quote: form.quote, quotedPer: form.quotedPer, changeReason: form.reason };
-	const built = form.mode === "edit"
-		? correctionEditBody(when, row, rateType, input)
-		: correctionBody(when, row, rateType, input);
 	if (built.error) {
 		correctionErrors[key] = built.error;
 		return;
