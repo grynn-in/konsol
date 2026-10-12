@@ -256,6 +256,8 @@ def _doc(doctype="IC Balance", name="ICB-1", owner=ADMIN, before=None, values=No
     doc = types.SimpleNamespace(doctype=doctype, name=name, owner=owner, comments=comments,
                                 **fields)
     doc.add_comment = lambda kind, text=None, **k: comments.append((kind, text))
+    # Frappe's Document.get: a field the doctype lacks reads None.
+    doc.get = lambda key, default=None: getattr(doc, key, default)
     doc.values = dict(values if values is not None else (before or {}), docstatus=1)
     saved = None
     if before is not None:
@@ -702,6 +704,69 @@ def test_a_derived_ownership_period_under_blocked_records_approved_with_exempt_d
     assert event["reason"] is None and event["entity"] == "ZZ01", event
     assert event["detail"] == {"preparer": ADMIN, "preparers": [ADMIN], "policy": None,
                                "exempt": "derived"}, event
+
+
+# --- FR6 (review S4): an approval that replaces another names it --------------
+
+def test_approving_a_rate_correction_names_the_rate_it_replaces():
+    mod, frappe, _ = _load(policy="Blocked")
+    doc = _doc(doctype="Group Exchange Rate", name="GER-3", owner=OTHER,
+               before=GER_DRAFT, supersedes="GER-1")
+    mod.check(doc, "before_submit")
+    assert len(frappe.events) == 1, frappe.events
+    event = frappe.events[0]
+    assert (event["kind"], event["reference_name"]) == ("approved", "GER-3"), event
+    assert event["detail"] == {"preparer": OTHER, "preparers": [OTHER], "policy": None,
+                               "exempt": None, "supersedes": "GER-1"}, event
+
+
+def test_a_self_approved_rate_correction_names_the_rate_it_replaces():
+    mod, frappe, _ = _load(policy="Allowed with reason", flags={
+        "konsol_self_approval_reason": {("Group Exchange Rate", "GER-3"): "ZZ fix"}})
+    doc = _doc(doctype="Group Exchange Rate", name="GER-3", supersedes="GER-1")
+    mod.check(doc, "before_submit")
+    assert [e["kind"] for e in frappe.events] == ["self_approved"], frappe.events
+    assert frappe.events[0]["detail"] == {
+        "preparer": ADMIN, "preparers": [ADMIN], "policy": "Allowed with reason",
+        "exempt": None, "supersedes": "GER-1"}, frappe.events[0]
+
+
+def test_a_system_submit_of_a_correction_names_the_rate_it_replaces():
+    mod, frappe, _ = _load(policy="Blocked", flags={"in_patch": True})
+    mod.check(_doc(doctype="Group Exchange Rate", name="GER-3", supersedes="GER-1"),
+              "before_submit")
+    assert [e["detail"] for e in frappe.events] == [{
+        "preparer": ADMIN, "preparers": [ADMIN], "policy": None, "exempt": "system",
+        "supersedes": "GER-1"}], frappe.events
+
+
+def test_an_ownership_period_change_names_the_period_it_replaces():
+    # An Ownership Period carries `supersedes` too (ownership_period.json);
+    # approving the change replaces that period, so its event says so.
+    mod, frappe, _ = _load(policy="Blocked")
+    mod.check(_doc(doctype="Ownership Period", name="OP-2", owner=OTHER,
+                   data_area_id="ZZ01", supersedes="OP-1"), "before_submit")
+    assert [e["detail"].get("supersedes") for e in frappe.events] == ["OP-1"], frappe.events
+
+
+def test_an_approval_that_replaces_nothing_has_no_supersedes_key():
+    # No new key with None: a plain rate (blank or unset `supersedes`) and a
+    # doctype without the field keep the detail they had before FR6.
+    cases = (
+        _doc(doctype="Group Exchange Rate", name="GER-5", owner=OTHER, before=GER_DRAFT),
+        _doc(doctype="Group Exchange Rate", name="GER-5", owner=OTHER, before=GER_DRAFT,
+             supersedes=None),
+        _doc(doctype="Group Exchange Rate", name="GER-5", owner=OTHER, before=GER_DRAFT,
+             supersedes=""),
+        _doc(owner=OTHER),
+    )
+    for doc in cases:
+        mod, frappe, _ = _load(policy="Blocked")
+        mod.check(doc, "before_submit")
+        assert len(frappe.events) == 1, frappe.events
+        assert "supersedes" not in frappe.events[0]["detail"], frappe.events
+        assert sorted(frappe.events[0]["detail"]) == [
+            "exempt", "policy", "preparer", "preparers"], frappe.events
 
 
 def test_a_doctype_outside_the_list_records_no_event():

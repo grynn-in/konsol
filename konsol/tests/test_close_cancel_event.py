@@ -173,8 +173,9 @@ def _load(flags=None, record_raises=None, period_raises=None, table_exists=True)
 
 def _doc(doctype="Group Exchange Rate", name="GER-1", owner=ANALYST, **fields):
     # A Frappe document has every field of its doctype; blank unless given.
-    fields = dict({"data_area_id": None, "acquired_entity": None, "disposed_entity": None},
-                  **fields)
+    # A Frappe document always carries ``flags`` (a frappe._dict), empty unless set.
+    fields = dict({"data_area_id": None, "acquired_entity": None, "disposed_entity": None,
+                   "flags": _Flags()}, **fields)
     return types.SimpleNamespace(doctype=doctype, name=name, owner=owner, **fields)
 
 
@@ -227,6 +228,30 @@ def test_a_group_rate_cancel_records_one_group_level_event():
     assert e["reason"] is None, "Frappe's cancel takes no reason"
     assert e["entity"] is None, "a group rate is group-level (W2-9)"
     assert e["detail"] == {"preparer": ANALYST, "exempt": None}, e["detail"]
+
+
+def test_a_superseded_rate_cancel_names_the_correction_that_replaced_it():
+    # konsol#305 FR6 (review S4): GroupExchangeRate._cancel_superseded sets
+    # flags.superseded_by = the correction's name before cancelling the
+    # approved rate (group_exchange_rate.py:356), and this hook runs on that
+    # cancel with the flag set.
+    mod, frappe = _load()
+    mod.record(_doc(flags=_Flags(superseded_by="GER-3")), "on_cancel")
+    assert len(frappe.events) == 1, frappe.events
+    e = frappe.events[0]
+    assert (e["kind"], e["reference_name"]) == ("approval_cancelled", "GER-1"), e
+    assert e["detail"] == {"preparer": ANALYST, "exempt": None, "superseded_by": "GER-3"}, \
+        e["detail"]
+
+
+def test_a_cancel_without_the_flag_keeps_its_detail_unchanged():
+    # No new key with None: a manual withdrawal, and every other approval
+    # doctype's cancel, keeps the detail it had before FR6.
+    for flags in (_Flags(), _Flags(superseded_by=None), _Flags(superseded_by="")):
+        mod, frappe = _load()
+        mod.record(_doc(flags=flags), "on_cancel")
+        assert [e["detail"] for e in frappe.events] == [
+            {"preparer": ANALYST, "exempt": None}], (flags, frappe.events)
 
 
 def test_an_ownership_period_cancel_carries_its_entity():

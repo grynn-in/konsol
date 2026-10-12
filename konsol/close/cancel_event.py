@@ -42,7 +42,14 @@ def record(doc, method=None):
             % (doc.doctype, doc.name))
         return
     fiscal_year, fiscal_period = close_event.period_of(doc)
+    detail = {"preparer": doc.owner, "exempt": exempt}
+    superseded_by = doc.flags.get("superseded_by")
+    if superseded_by:
+        # konsol#305 FR6 (review S4): approving a correction cancels the rate
+        # it replaces (GroupExchangeRate._cancel_superseded sets this flag), so
+        # the trail tells that cancel from a manual withdrawal. Without the
+        # flag the detail keeps its shape: no key with None.
+        detail["superseded_by"] = superseded_by
     close_event.record(
         "approval_cancelled", fiscal_year, fiscal_period, doc.doctype, doc.name,
-        entity=close_event.entity_of(doc),
-        detail={"preparer": doc.owner, "exempt": exempt})
+        entity=close_event.entity_of(doc), detail=detail)

@@ -67,8 +67,21 @@ def _record_system_submit(doc, close_event):
     close_event.record(
         "approved", fiscal_year, fiscal_period, doc.doctype, doc.name,
         entity=entity,
-        detail={"preparer": doc.owner, "preparers": [doc.owner],
-                "policy": None, "exempt": "system"})
+        detail=_with_supersedes(doc, {"preparer": doc.owner, "preparers": [doc.owner],
+                                      "policy": None, "exempt": "system"}))
+
+
+def _with_supersedes(doc, detail):
+    """konsol#305 FR6 (review S4): an approval that replaces an approved
+    document (a Group Exchange Rate correction, an Ownership Period change)
+    names it, so the trail links it to the cancel it causes. A document that
+    replaces nothing, or whose doctype has no ``supersedes`` field (only
+    Group Exchange Rate and Ownership Period declare it), keeps its detail:
+    no key with None."""
+    supersedes = getattr(doc, "supersedes", None)
+    if supersedes:
+        detail["supersedes"] = supersedes
+    return detail
 
 
 def _reason(doc):
@@ -171,5 +184,5 @@ def check(doc, method=None):
     close_event.record(
         kind, fiscal_year, fiscal_period, doc.doctype, doc.name,
         reason=reason, entity=entity,
-        detail={"preparer": doc.owner, "preparers": sorted(preparers),
-                "policy": policy, "exempt": exempt})
+        detail=_with_supersedes(doc, {"preparer": doc.owner, "preparers": sorted(preparers),
+                                      "policy": policy, "exempt": exempt}))
