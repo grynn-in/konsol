@@ -128,6 +128,9 @@ def _reject_draft(doctype, name, reason):
     rejection is the Comment and the ``rejected`` event, in the request's
     transaction. The document itself is not saved."""
     doc = frappe.get_doc(doctype, name)
+    if int(doc.docstatus) == 2:
+        # konsol#305 FR7 (review N7): a cancelled document is not approved.
+        frappe.throw("%s %s is cancelled: there is nothing to reject." % (doctype, name))
     if int(doc.docstatus) != 0:
         if doctype == "Group Exchange Rate":
             # #312-3b (Deepak Pai, 12 Oct 2026): a rate is corrected by a
