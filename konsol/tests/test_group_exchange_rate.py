@@ -496,8 +496,12 @@ def test_a_second_approved_rate_for_one_key_is_refused():
 
 
 def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
+    """The one cancel left (a correction's approval cancelling the rate it
+    replaces, #312-S3-2) still meets the period gate."""
     module, record = _controller(period_open=False)
-    assert _refused(_doc(module, docstatus=1).before_cancel)
+    d = _doc(module, docstatus=1)
+    d.flags.superseded_by = "GER-2099-12-EUR-CHF-Closing-02"
+    assert _refused(d.before_cancel)
     assert record["gates"] == [(2099, 12, "cancel a group exchange rate")]
     module, _ = _controller()
     assert _refused(_doc(module, docstatus=2).on_trash)
@@ -675,8 +679,9 @@ def test_a_correction_still_refuses_a_third_approved_rate():
 
 
 def test_approving_a_correction_whose_rate_is_no_longer_approved_is_refused():
-    """The locking read is the authority: R1 was cancelled after the draft was
-    saved, so the key has no approved rate for this one to replace."""
+    """The locking read is the authority. Since #312-S3-2 a key loses its
+    approved rate only through a plain cancel made before that decision, so the
+    sentence must not point at an approved rate that does not exist."""
     module, record, _ = _supersede_site(duplicate=None)
     d = _doc(module, name=R2, supersedes=R1, change_reason="Board rate")
     try:
@@ -685,8 +690,9 @@ def test_approving_a_correction_whose_rate_is_no_longer_approved_is_refused():
         msg = str(e)
     else:
         msg = None
-    assert msg == (f"{R1} is no longer the approved Closing rate EUR → CHF for FY2099 P12, so this "
-                   f"correction has nothing to replace. Delete it and correct the approved rate."), msg
+    assert msg == (f"{R1} is no longer approved, and the key has no approved Closing rate EUR → CHF "
+                   f"for FY2099 P12, so this correction has nothing to replace. Delete it and draft "
+                   f"a new rate for the key."), msg
 
 
 def test_a_correction_in_a_closed_period_is_not_approved():
@@ -697,23 +703,62 @@ def test_a_correction_in_a_closed_period_is_not_approved():
     assert record["cancels"] == [] and _approved(store) == [R1]
 
 
-def test_a_rate_that_replaced_another_is_never_cancelled():
-    """#312-3b: no restore, so no cancel; the sentence names the way out. The
-    refusal comes before the period gate: reopening would not change it."""
-    module, record, _ = _supersede_site()
-    d = _doc(module, name=R2, docstatus=1, supersedes=R1)
+# -- an approved rate is never plain-cancelled (#312-S3-2) -----------------------
+#
+# Decision #312-S3-2 (Deepak Pai, 13 Oct 2026, konsol#312
+# issuecomment-6133498784): every plain cancel of an approved Group Exchange
+# Rate is refused, in Desk as in the close app; the only cancel allowed is the
+# one an approved correction performs on the rate it replaces. Rejected:
+# #312-S3-1 refuse only while a correction is pending; #312-S3-3 keep the
+# plain cancel and reword the messages.
+
+def _plain_cancel(module, record, **fields):
+    """(refused message or None) for one plain before_cancel of an approved rate."""
+    d = _doc(module, **dict(dict(docstatus=1), **fields))
     try:
         d.before_cancel()
     except Refused as e:
-        msg = str(e)
-    else:
-        msg = None
-    assert msg == f"{R2} replaced {R1}: correct it with another correction, not a cancel.", msg
-    assert record["gates"] == []
-    # a rate that replaced nothing is cancelled as before
+        return str(e)
+    return None
+
+
+def test_an_approved_rate_is_never_plain_cancelled():
+    """No correction, a rate that replaced another, an open or a closed period:
+    the same sentence, before the period gate (reopening would not change it)."""
+    expected = ("{0} is the approved Closing rate EUR → CHF for FY2099 P12: an approved rate "
+                "cannot be cancelled. Correct it with a Reason for Change instead.")
+    for label, ctx, fields in (
+        ("a rate that replaced nothing", {}, dict(name=R1)),
+        ("a rate that replaced another", {}, dict(name=R2, supersedes=R1)),
+        ("a closed period", dict(period_open=False), dict(name=R1)),
+    ):
+        module, record, _ = _supersede_site(**ctx)
+        msg = _plain_cancel(module, record, **fields)
+        assert msg == expected.format(fields["name"]), (label, msg)
+        assert record["gates"] == [], (label, record["gates"])
+
+
+def test_only_the_approval_of_a_correction_cancels_an_approved_rate():
+    """The flag only _cancel_superseded sets is the one way through; it then
+    meets the period gate like any cancel."""
     module, record, _ = _supersede_site()
-    _doc(module, name=R1, docstatus=1).before_cancel()
+    d = _doc(module, name=R1, docstatus=1)
+    d.flags.superseded_by = R2
+    d.before_cancel()
     assert record["gates"] == [(2099, 12, "cancel a group exchange rate")]
+
+
+def test_a_draft_rate_can_still_be_deleted():
+    module, _, _ = _supersede_site()
+    _doc(module, name=R2, docstatus=0, supersedes=R1).on_trash()
+    _doc(module, name=R1, docstatus=0).on_trash()
+    assert _refused(_doc(module, name=R1, docstatus=2).on_trash)
+
+
+def test_the_supersedes_help_says_an_approved_rate_is_never_cancelled_on_its_own():
+    text = _fields()["supersedes"]["description"]
+    assert "the key always has one approved rate" in text, text
+    assert "An approved rate is never cancelled on its own (konsol#312-S3-2)" in text, text
 
 
 def test_a_bad_correction_is_fixed_by_another_correction():

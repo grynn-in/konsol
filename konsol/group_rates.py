@@ -347,7 +347,7 @@ def plan_adoption(used, governed, quote_rows_by_period, today):
                           "a rate that matches no current ERP quote")
                 note = (f"Adopted at the konsol#103 upgrade on {today}: the {rate_type} rate "
                         f"FY{fy} P{fp} was already translated at, {origin}. Authored by the system, "
-                        "not reviewed by a person. Replace it (cancel and amend, while the period is "
+                        "not reviewed by a person. Correct it with a Reason for Change (while the period is "
                         "open) if group finance sets another.")
                 actions.append(("adopt", key, rate, match["rate"] if match else None, note))
     return actions

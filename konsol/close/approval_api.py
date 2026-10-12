@@ -94,7 +94,8 @@ def reject(doctype, name, reason=None):
     draft stays as it is (no save, no docstatus change), and the reason is a
     Comment and a ``rejected`` Close Event. A submitted document is refused:
     a Group Exchange Rate is corrected by a superseding draft with a Reason for
-    Change (#312-3b), any other by a cancel and an amendment.
+    Change (#312-3b; never plain-cancelled, #312-S3-2), any other by a cancel
+    and an amendment.
 
     Both paths return ``{"name", "docstatus", "status"}``.
     """
@@ -134,7 +135,8 @@ def _reject_draft(doctype, name, reason):
     if int(doc.docstatus) != 0:
         if doctype == "Group Exchange Rate":
             # #312-3b (Deepak Pai, 12 Oct 2026): a rate is corrected by a
-            # superseding draft; cancelling a correction is refused.
+            # superseding draft; #312-S3-2 (13 Oct 2026): no approved rate is
+            # plain-cancelled.
             frappe.throw(
                 "%s %s is already approved: correct it with a Reason for Change instead."
                 % (doctype, name))
