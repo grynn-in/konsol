@@ -147,6 +147,14 @@ def _konsol(rules, clickhouse=None):
                 sys.modules[n] = old
 
 
+class _Flags(dict):
+    """frappe._dict: a dict read and written as attributes."""
+    __getattr__ = dict.get
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+
 def _controller(**kw):
     record = {"gates": [], "published": []}
     frappe = _frappe(record, **{k: v for k, v in kw.items()
@@ -158,6 +166,8 @@ def _controller(**kw):
         """A draft: new unless ``_before`` (the saved version) is given."""
         def __init__(self, **fields):
             self.__dict__.update(fields)
+            # frappe's Document always carries flags (a frappe._dict)
+            self.__dict__.setdefault("flags", _Flags())
 
         def __getattr__(self, name):
             if name.startswith("__"):
@@ -245,7 +255,7 @@ def test_the_grain_and_the_approval_shape():
     assert "rate" not in f and "inverse_quote" not in f and "erp_rate" not in f
     assert f["erp_quote"]["read_only"] == 1
     assert f["amended_from"]["options"] == "Group Exchange Rate"
-    assert f["change_reason"]["mandatory_depends_on"] == "eval:doc.amended_from"
+    assert f["change_reason"]["mandatory_depends_on"] == "eval:doc.amended_from || doc.supersedes"
     assert f["source"]["read_only"] == 1 and f["source"]["no_copy"] == 1
     assert f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Adoption"]
     assert set(_json()["field_order"]) == set(f)
@@ -482,6 +492,233 @@ def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
     module, _ = _controller()
     assert _refused(_doc(module, docstatus=2).on_trash)
     _doc(module, docstatus=0).on_trash()
+
+
+# -- a correction supersedes the approved rate (#312-3, narrowed by #312-3b) -------
+#
+# Decisions: #312-3 (Deepak Pai, 9 Oct 2026, #312 issuecomment-6089571815) and
+# #312-3b (Deepak Pai, 12 Oct 2026, #312 issuecomment-6131860001): a draft
+# names the approved rate of the same key it replaces (``supersedes``); its
+# approval cancels that rate in the same transaction; a rate that replaced
+# another is never cancelled (a bad correction is fixed by another
+# correction), so the key always has exactly one approved rate. Rejected:
+# #312-3a restore as an amended copy, #312-3d keep the old one approved and
+# marked, a raw docstatus write.
+
+R1 = "GER-2099-12-EUR-CHF-Closing-01"
+R2 = "GER-2099-12-EUR-CHF-Closing-02"
+R3 = "GER-2099-12-EUR-CHF-Closing-03"
+KEY = dict(to_currency="CHF", from_currency="EUR", rate_type="Closing", fiscal_year=2099, fiscal_period=12)
+
+
+def _stored(name, docstatus=1, **fields):
+    return dict(dict(KEY, name=name, docstatus=docstatus, quote=0.9478, quoted_per="1", source="Manual"),
+                **fields)
+
+
+def _supersede_site(store=None, **ctx):
+    """The controller with a store of saved rates (name -> fields): the stub
+    frappe answers ``db.get_value`` and ``get_doc`` from it, and a stub
+    ``cancel()`` runs the rate's own ``before_cancel``, then marks it
+    cancelled in the store. ``record['cancels']`` holds (name, the doc's
+    ``superseded_by`` flag, its ``ignore_linked_doctypes``) per cancel."""
+    module, record = _controller(**ctx)
+    store = {R1: _stored(R1)} if store is None else store
+    f = module.frappe
+    record["cancels"] = []
+
+    def get_value(doctype, name, fieldname=None, as_dict=False, **k):
+        assert doctype == "Group Exchange Rate", doctype
+        row = store.get(name)
+        if row is None:
+            return None
+        fields = [fieldname] if isinstance(fieldname, str) else list(fieldname)
+        if as_dict:
+            return _Flags({n: row.get(n) for n in fields})
+        return tuple(row.get(n) for n in fields) if len(fields) > 1 else row.get(fields[0])
+
+    def get_doc(doctype, name, **k):
+        assert doctype == "Group Exchange Rate", doctype
+        if name not in store:
+            raise Refused(f"Group Exchange Rate {name} not found")
+        d = module.GroupExchangeRate(**store[name])
+
+        def cancel(d=d):
+            d.before_cancel()
+            record["cancels"].append((d.name, d.flags.get("superseded_by"),
+                                      tuple(d.__dict__.get("ignore_linked_doctypes") or ())))
+            store[d.name]["docstatus"] = 2
+
+        d.cancel = cancel
+        return d
+
+    f.db.get_value = get_value
+    f.get_doc = get_doc
+    return module, record, store
+
+
+def _approved(store):
+    return sorted(n for n, r in store.items()
+                  if r["docstatus"] == 1 and all(r[k] == v for k, v in KEY.items()))
+
+
+def _clickhouse():
+    ch = types.ModuleType("konsol.clickhouse")
+    ch.after_commit_once = lambda key, fn: None
+    return ch
+
+
+def _supersede_validate(store=None, **fields):
+    """(refused message or None) for one validate() of a draft R2 with ``fields``."""
+    module, _, _ = _supersede_site(store)
+    d = _doc(module, **dict(dict(name=R2), **fields))
+    with _konsol(_rules_module(_frappe({}))):
+        try:
+            d.validate()
+        except Refused as e:
+            return str(e)
+    return None
+
+
+def test_supersedes_is_a_read_only_link_to_a_rate():
+    f = _fields()
+    s = f["supersedes"]
+    assert (s["fieldtype"], s["options"], s.get("read_only"), s.get("no_copy")) == \
+        ("Link", "Group Exchange Rate", 1, 1)
+    assert "supersedes" in _json()["field_order"]
+    assert f["change_reason"]["mandatory_depends_on"] == "eval:doc.amended_from || doc.supersedes"
+
+
+def test_a_correction_of_the_approved_rate_saves_beside_it():
+    """The draft coexists with the approved rate it names: saving it is not an approval."""
+    assert _supersede_validate(supersedes=R1, quote=0.95, change_reason="Board rate, 31 Dec") is None
+
+
+def test_a_correction_must_say_why():
+    msg = _supersede_validate(supersedes=R1, quote=0.95, change_reason="")
+    assert msg == f"Say why this rate replaces {R1} (Reason for Change).", msg
+    assert _supersede_validate(supersedes=R1, quote=0.95, change_reason="   ") == msg
+
+
+def test_a_correction_supersedes_only_the_approved_rate_of_its_own_key():
+    expected = (f"{{0}} cannot be superseded by this rate: a correction supersedes the approved "
+                f"Closing rate EUR → CHF for FY2099 P12.")
+    other_key = "GER-2099-12-EUR-CHF-Average-01"
+    cases = {
+        "another rate type": ({other_key: dict(_stored(other_key), rate_type="Average")}, other_key),
+        "another period": ({"GER-2099-11-EUR-CHF-Closing-01": dict(_stored("GER-2099-11-EUR-CHF-Closing-01"),
+                                                                    fiscal_period=11)},
+                           "GER-2099-11-EUR-CHF-Closing-01"),
+        "another from-currency": ({"GER-2099-12-USD-CHF-Closing-01": dict(_stored("GER-2099-12-USD-CHF-Closing-01"),
+                                                                           from_currency="USD")},
+                                  "GER-2099-12-USD-CHF-Closing-01"),
+        "a draft": ({R1: _stored(R1, docstatus=0)}, R1),
+        "a cancelled rate": ({R1: _stored(R1, docstatus=2)}, R1),
+        "no such rate": ({}, R1),
+        "itself": ({R2: _stored(R2, docstatus=1)}, R2),
+    }
+    for label, (store, target) in cases.items():
+        msg = _supersede_validate(store, supersedes=target, quote=0.95, change_reason="Board rate")
+        assert msg == expected.format(target), (label, msg)
+
+
+def test_approving_a_correction_cancels_the_rate_it_replaces():
+    """approved R1; R2 supersedes R1 -> approval cancels R1 in the same
+    transaction (inside on_submit, no commit), with the canceller's normal
+    cancel (its own before_cancel, so its period gate and the audit trail's
+    on_cancel hooks run), and leaves exactly one approved rate for the key."""
+    module, record, store = _supersede_site(duplicate=R1)   # the locking read sees R1 approved
+    store[R2] = _stored(R2, docstatus=0, supersedes=R1, quote=0.95, change_reason="Board rate")
+    d = _doc(module, **store[R2])
+    with _konsol(_rules_module(_frappe({})), _clickhouse()):
+        d.validate()
+        d.before_submit()                       # R1 is exempt: it is the rate this one replaces
+        store[R2]["docstatus"] = d.docstatus = 1
+        d.on_submit()
+    assert record["cancels"] == [(R1, R2, ("Group Exchange Rate",))], record["cancels"]
+    assert store[R1]["docstatus"] == 2
+    assert _approved(store) == [R2]
+    assert (2099, 12, "cancel a group exchange rate") in record["gates"]
+
+
+def test_a_rate_with_no_correction_cancels_nothing_on_approval():
+    module, record, store = _supersede_site()
+    with _konsol(_rules_module(_frappe({})), _clickhouse()):
+        _doc(module, name=R2, docstatus=1).on_submit()
+    assert record["cancels"] == [] and store[R1]["docstatus"] == 1
+
+
+def test_a_correction_still_refuses_a_third_approved_rate():
+    """Only the rate it names is exempt: another approved rate of the key is
+    still the second one (the plain refusal, unchanged)."""
+    module, record, _ = _supersede_site(duplicate=R3)
+    d = _doc(module, name=R2, supersedes=R1, change_reason="Board rate")
+    try:
+        d.before_submit()
+    except Refused as e:
+        msg = str(e)
+    else:
+        msg = None
+    assert msg and msg.startswith(f"{R3} is already the approved Closing rate EUR → CHF for FY2099 P12."), msg
+    assert record["cancels"] == []
+
+
+def test_approving_a_correction_whose_rate_is_no_longer_approved_is_refused():
+    """The locking read is the authority: R1 was cancelled after the draft was
+    saved, so the key has no approved rate for this one to replace."""
+    module, record, _ = _supersede_site(duplicate=None)
+    d = _doc(module, name=R2, supersedes=R1, change_reason="Board rate")
+    try:
+        d.before_submit()
+    except Refused as e:
+        msg = str(e)
+    else:
+        msg = None
+    assert msg == (f"{R1} is no longer the approved Closing rate EUR → CHF for FY2099 P12, so this "
+                   f"correction has nothing to replace. Delete it and correct the approved rate."), msg
+
+
+def test_a_correction_in_a_closed_period_is_not_approved():
+    module, record, store = _supersede_site(duplicate=R1, period_open=False)
+    d = _doc(module, name=R2, supersedes=R1, change_reason="Board rate")
+    assert _refused(d.before_submit)
+    assert record["gates"] == [(2099, 12, "approve a group exchange rate")]
+    assert record["cancels"] == [] and _approved(store) == [R1]
+
+
+def test_a_rate_that_replaced_another_is_never_cancelled():
+    """#312-3b: no restore, so no cancel; the sentence names the way out. The
+    refusal comes before the period gate: reopening would not change it."""
+    module, record, _ = _supersede_site()
+    d = _doc(module, name=R2, docstatus=1, supersedes=R1)
+    try:
+        d.before_cancel()
+    except Refused as e:
+        msg = str(e)
+    else:
+        msg = None
+    assert msg == f"{R2} replaced {R1}: correct it with another correction, not a cancel.", msg
+    assert record["gates"] == []
+    # a rate that replaced nothing is cancelled as before
+    module, record, _ = _supersede_site()
+    _doc(module, name=R1, docstatus=1).before_cancel()
+    assert record["gates"] == [(2099, 12, "cancel a group exchange rate")]
+
+
+def test_a_bad_correction_is_fixed_by_another_correction():
+    """R3 supersedes R2 (which replaced R1): approving R3 cancels R2, whose own
+    refusal yields only to the approval that replaces it."""
+    store = {R1: _stored(R1, docstatus=2), R2: _stored(R2, docstatus=1, supersedes=R1, quote=0.95)}
+    module, record, store = _supersede_site(store, duplicate=R2)
+    store[R3] = _stored(R3, docstatus=0, supersedes=R2, quote=0.9478, change_reason="R2 was a typo")
+    d = _doc(module, **store[R3])
+    with _konsol(_rules_module(_frappe({})), _clickhouse()):
+        d.validate()
+        d.before_submit()
+        store[R3]["docstatus"] = d.docstatus = 1
+        d.on_submit()
+    assert record["cancels"] == [(R2, R3, ("Group Exchange Rate",))], record["cancels"]
+    assert _approved(store) == [R3]
 
 
 def test_ger_locks_year_before_own_row():
