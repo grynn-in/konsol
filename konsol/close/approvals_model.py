@@ -141,6 +141,19 @@ def _kind_label_and_title(doctype, doc):
     raise ValueError("%r is not one of the 7 approval doctypes." % (doctype,))
 
 
+def _replaces_text(supersedes, replaced, quote_label):
+    """FR5 (review S2): what approving a rate correction replaces.
+    ``replaced`` is the API's read of the ``supersedes`` rate
+    (``{name, quote_label, docstatus}``), or None when no such rate exists.
+    Only an approved (docstatus 1) rate is replaced by the approval; any
+    other state means the correction can never be approved
+    (group_exchange_rate.py ``_refuse_second_approved_rate``)."""
+    if replaced is not None and int(replaced["docstatus"]) == 1:
+        return "replaces %s (%s → %s)" % (supersedes, replaced["quote_label"], quote_label)
+    return ("replaces %s, which is no longer approved: this correction cannot be "
+            "approved; delete it on the Rates screen" % supersedes)
+
+
 def _shape(doctype, doc):
     """``(kind_label, title, detail, extra)`` for one of the 5 doctypes not
     covered by ``rates_model.pending_items``. ``extra`` holds the keys a
@@ -171,9 +184,12 @@ def _shape(doctype, doc):
         return kind_label, title, detail, extra
     if doctype == GER:
         detail = _fy_p(doc["fiscal_year"], doc["fiscal_period"])
+        supersedes = doc.get("supersedes") or None
+        if supersedes:
+            detail += " · %s" % _replaces_text(supersedes, doc["replaced"], doc["quote_label"])
         if doc.get("change_reason"):
             detail += " · %s" % doc["change_reason"]
-        return kind_label, title, detail, {}
+        return kind_label, title, detail, {"supersedes": supersedes}
     if doctype == IC_BALANCE:
         detail = "%s · IC sales %.2f" % (
             _fy_p(doc["fiscal_year"], doc["fiscal_period"]), doc["ic_sales_amount"])
