@@ -543,6 +543,19 @@ def test_reject_of_another_submitted_doctype_keeps_the_cancel_and_amend_route():
         assert site.comments == [] and site.events == [] and site.saved == []
 
 
+def test_reject_of_a_cancelled_document_says_it_is_cancelled_not_approved():
+    # Failure path (konsol#305 FR7, review N7): a cancelled document is not
+    # "already approved". Any doctype gets the cancelled sentence, and nothing
+    # is written: no Comment, no event, no save.
+    for doctype in ("Group Exchange Rate", "IC Balance"):
+        site = _Site(owner=ANALYST, fields={"docstatus": 2, "data_area_id": "ZZ01"})
+        msg = _raises(lambda: _call(site, "reject", doctype, "ZZ-C-1", reason="ZZ why"),
+                      "ValidationError")
+        assert msg == "%s ZZ-C-1 is cancelled: there is nothing to reject." % doctype, (
+            doctype, msg)
+        assert site.comments == [] and site.events == [] and site.saved == [], doctype
+
+
 def test_reject_without_a_workflow_and_a_blank_reason_leaves_nothing():
     for reason in (None, "", "   "):
         site = _Site(owner=ANALYST)
