@@ -253,7 +253,8 @@ def _clickhouse(controllers):
     frappe.flags = types.SimpleNamespace(
         in_install=False, in_import=False, in_migrate=False, in_patch=False)
     frappe.logger = lambda *a, **k: types.SimpleNamespace(
-        warning=lambda *a, **k: None, error=lambda *a, **k: None)
+        warning=lambda *a, **k: None, error=lambda *a, **k: None,
+        info=lambda *a, **k: None)   # reconcile_all logs its run id (konsolidat#246)
     frappe.publish_realtime = lambda *a, **k: None
     frappe.get_meta = lambda dt: types.SimpleNamespace(is_submittable=0)
 

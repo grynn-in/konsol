@@ -183,6 +183,10 @@ class _Doc:
             setattr(self, field, value)
 
 
+#: frappe.flags: in_install / in_migrate / in_patch are set here.
+_FRAPPE_FLAGS = _Flags()
+
+
 def _install_stubs():
     """Install the frappe/konsol stand-ins, replacing any a prior file left.
 
@@ -197,6 +201,7 @@ def _install_stubs():
     frappe.MandatoryError = _MandatoryError
     frappe.DoesNotExistError = _DoesNotExistError
     frappe._dict = _Flags
+    frappe.flags = _FRAPPE_FLAGS
     frappe.db = types.SimpleNamespace(
         exists=lambda doctype, name: name in _STORE,
         commit=lambda: None,
@@ -285,6 +290,7 @@ SCHEMA_EDITS = {
 
 
 def _reset(admin=True):
+    _FRAPPE_FLAGS.clear()
     _STORE.clear()
     del _REBUILDS[:]
     del _APPLIED_ROWS[:]
@@ -642,3 +648,27 @@ def test_editing_dimension_name_is_reverted_and_applies_nothing():
     doc.save()
     assert _STORE[NAME]["dimension_name"] == NAME, _STORE[NAME]
     assert _REBUILDS == [], _REBUILDS
+
+
+# --- install, migrate and patches apply nothing (#351 review) --------------
+#
+# The same hook on Measure ran apply_and_rebuild 15 times inside
+# install_defaults. Dimension's is latent (no Dimension is seeded today), but
+# a patch or seed that saves a Published Dimension would do the same: apply
+# per row, leave a full-refresh Build Approval behind, and wait on ClickHouse
+# timeouts. install.after_migrate and after_install regenerate the dbt vars
+# once, file only, instead.
+
+
+def test_the_hook_applies_nothing_under_install_migrate_or_patch():
+    for flag in ("in_install", "in_migrate", "in_patch"):
+        _reset()
+        _FRAPPE_FLAGS[flag] = True
+        config_service.upsert_dimension(_spec_for("Published"))
+        doc = _get_doc("Dimension", NAME)
+        doc.label = "Sales Region"
+        doc.save()
+        doc.status = "Inactive"
+        doc.save()
+        assert _STORE[NAME]["status"] == "Inactive"
+        assert _REBUILDS == [], (flag, _REBUILDS)

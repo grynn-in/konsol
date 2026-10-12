@@ -9,8 +9,8 @@ Reads all config doctypes (Dimension, Measure, Dataset) and applies:
 
 Called deliberately, and by the publish path (apply_and_rebuild). Since
 konsol#295 that path also runs on a Dimension save that moves it into or out
-of Published, or edits a field read here while Published; any other save
-does not trigger it.
+of Published, or edits a field read here while Published, and since
+konsol#299 on the same saves of a Measure; any other save does not trigger it.
 """
 import json
 import re
