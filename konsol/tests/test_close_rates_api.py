@@ -187,6 +187,7 @@ class _Site:
         self.get_doc_calls = []  # what get_doc received
         self.get_doc_kwargs = []  # FR1: the keyword arguments of each get_doc(doctype, name)
         self.deleted = []  # FR1: each frappe.delete_doc call, as (args, kwargs)
+        self.locking_values = []  # FR3: the values of each locking read of a key's rates
         self.new_docs = []  # every _FakeDoc built from a dict
         self.signed = []  # signoff_gate.latest_signed_runs() keys (O55)
         #: R52f: the declared first close (fy, fp), None = undeclared, read by
@@ -321,6 +322,17 @@ def _frappe(site):
     def sql(query, values=None, as_dict=False, **k):
         site.reads.append(("sql", query))
         assert "tabGroup Exchange Rate" in query, query
+        if "FOR UPDATE" in query:
+            # FR3: save_rate's locking read of the key's draft and approved
+            # rows, answered from site.docs on the five grain values.
+            assert as_dict, "the key's rates are read as_dict"
+            site.locking_values.append(tuple(values))
+            to, frm, fy, fp, rate_type = values
+            grain = {"to_currency": to, "from_currency": frm, "fiscal_year": fy,
+                     "fiscal_period": fp, "rate_type": rate_type}
+            return [{"name": r["name"], "docstatus": r["docstatus"],
+                     "supersedes": r.get("supersedes")}
+                    for r in site.docs if _match(r, grain) and r["docstatus"] in (0, 1)]
         assert "docstatus = 1" in query, query
         assert as_dict, "the earlier approved rates are read as_dict"
         fy, fy2, fp = values
@@ -903,10 +915,20 @@ def test_save_rate_creates_a_new_draft_through_insert_with_only_the_nine_keys():
                       "source": "Manual"}
 
 
+#: FR3 (review-d2fu N8): the new-draft path reads the key's draft and
+#: approved rows with a locking read, so a second correction of one rate waits
+#: on the first and then sees it (MariaDB REPEATABLE READ).
+FR3_LOCKING_READ = (
+    "SELECT name, docstatus, supersedes FROM `tabGroup Exchange Rate` "
+    "WHERE to_currency = %s AND from_currency = %s AND fiscal_year = %s "
+    "AND fiscal_period = %s AND rate_type = %s AND docstatus IN (0, 1) "
+    "ORDER BY modified DESC FOR UPDATE")
+
+
 def test_save_rate_reads_the_period_and_the_grain_once_each():
     site = _analyst_site()
     _save(site)
-    assert site.reads == [("sql", "fiscal_period_rows"), ("get_all", "Group Exchange Rate")], \
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], \
         site.reads
 
 
@@ -1031,7 +1053,7 @@ def test_failure_path_a_closed_period_is_refused_before_any_get_doc():
     assert "is Closed" in str(err) and "reopen" in str(err), err
     assert "FY2025 P06" in str(err), err
     assert site.get_doc_calls == []
-    assert ("get_all", "Group Exchange Rate") not in site.reads
+    assert site.reads == [("sql", "fiscal_period_rows")], site.reads
 
 
 def test_failure_path_an_undeclared_period_is_refused():
@@ -2939,7 +2961,7 @@ def test_f11_correct_an_approved_rate_saves_a_draft_that_supersedes_it():
     assert result == {"name": "GER-NEW", "docstatus": 0, "quote_label": doc.quote_label,
                       "source": "Manual"}
     assert site.only_for_calls == [("EPM Analyst", "EPM Admin", "System Manager")]
-    assert site.reads == [("sql", "fiscal_period_rows"), ("get_all", "Group Exchange Rate")]
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)]
 
 
 def test_f11_the_close_lead_may_draft_a_correction_too():
@@ -2967,7 +2989,7 @@ def test_f11_failure_path_a_closed_period_is_refused_before_any_read_of_rates():
                        change_reason=F11_REASON, supersedes="GER-1")
     assert str(err) == ("FY2025 P06 is Closed: group rates lock when their period closes "
                         "(reopen it first)."), err
-    assert ("get_all", "Group Exchange Rate") not in site.reads
+    assert site.reads == [("sql", "fiscal_period_rows")], site.reads
     assert site.new_docs == []
 
 
@@ -3431,3 +3453,68 @@ def test_fr2_the_draft_flag_is_named_for_what_it_decides():
     source = open(API_PY, encoding="utf-8").read()
     assert "may_correct" not in source
     assert "may_draft = " in source
+
+
+# --- FR3 (review-d2fu N8): save_rate's new-draft path reads the key's draft
+# and approved rows with one locking read (SELECT ... FOR UPDATE on the grain
+# index), not get_all, so two users correcting one approved rate cannot both
+# draft a correction: the second waits on the first's row lock, then reads
+# its draft and is refused. Everything after the read is unchanged. ---------
+
+
+def test_fr3_a_new_draft_reads_the_key_once_with_a_locking_read_on_the_grain():
+    site = _analyst_site()
+    _save(site, from_currency="USD", to_currency="GBP", rate_type="Closing")
+    sqls = [q for kind, q in [r[:2] for r in site.reads] if kind == "sql"
+            and "Group Exchange Rate" in q]
+    assert sqls == [FR3_LOCKING_READ], site.reads
+    query = sqls[0]
+    assert query.endswith(" FOR UPDATE"), query
+    for field in ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"):
+        assert ("%s = %%s" % field) in query, (field, query)
+    assert "docstatus IN (0, 1)" in query, query
+    assert site.locking_values == [("GBP", "USD", 2025, 7, "Closing")], site.locking_values
+    assert ("get_all", "Group Exchange Rate") not in site.reads, site.reads
+
+
+def test_fr3_a_correction_reads_the_key_with_the_locking_read_too():
+    site = _f11_correction_site()
+    result = _save(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
+                   supersedes="GER-1")
+    assert result["name"] == "GER-NEW"
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
+    assert site.locking_values == [("GBP", "EUR", 2025, 7, "Closing")], site.locking_values
+
+
+def test_fr3_failure_path_the_second_correction_is_refused_on_what_the_locking_read_returns():
+    # The first correction GER-3 is what the second user's locking read sees
+    # once the first commits; the refusal is the existing sentence, nothing is
+    # inserted, and no get_all of Group Exchange Rate is made.
+    site = _f11_correction_site()
+    site.docs.append(_ger("GER-3", "EUR", "GBP", "Closing", 0.86, 0, supersedes="GER-1",
+                          change_reason=F11_REASON))
+    err = _save_raises(site, from_currency="EUR", quote=0.87, change_reason="again",
+                       supersedes="GER-1")
+    assert str(err) == "GER-3 already corrects GER-1 and awaits approval: edit it.", err
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
+    assert site.new_docs == []
+
+
+def test_fr3_failure_path_an_approved_key_is_refused_on_the_locking_read():
+    site = _analyst_site()
+    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1)]
+    err = _save_raises(site, from_currency="EUR")
+    assert str(err) == ("GER-1 is already the approved Closing rate EUR → GBP for FY2025 P07: "
+                        "correct it with a Reason for Change instead."), err
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
+    assert site.new_docs == []
+
+
+def test_fr3_an_edit_by_name_makes_no_locking_read_of_the_key():
+    # The edit path reads the named draft (get_doc) and nothing else: the row
+    # does not widen to it.
+    site = _analyst_site()
+    _named(site)
+    _save(site, name="GER-2", from_currency="EUR", rate_type="Average", quote=0.9)
+    assert site.locking_values == [], site.locking_values
+    assert site.reads == [("sql", "fiscal_period_rows"), ("get_doc", "Group Exchange Rate")]
