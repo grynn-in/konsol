@@ -348,6 +348,28 @@ function thresholdText(thresholdPct, policyGaps) {
 }
 
 /**
+ * FR10 (review S6): the Rates summary line, from `get_rates`' `summary`
+ * (`{missing, awaiting_approval, approved, corrections_pending}`). The pending
+ * corrections count follows the awaiting count and appears only when it is
+ * above zero. A summary missing any count is a broken contract and throws; it
+ * never reads as zero.
+ */
+export function summaryText(summary) {
+  for (const key of ["missing", "awaiting_approval", "corrections_pending", "approved"]) {
+    if (!summary || summary[key] === undefined || summary[key] === null) {
+      throw new Error(`summaryText: the summary has no ${key}.`);
+    }
+  }
+  const parts = [`${summary.missing} missing`, `${summary.awaiting_approval} awaiting approval`];
+  const n = summary.corrections_pending;
+  if (n > 0) {
+    parts.push(`${n} ${n === 1 ? "correction" : "corrections"} awaiting approval`);
+  }
+  parts.push(`${summary.approved} approved`);
+  return parts.join(" · ");
+}
+
+/**
  * `get_rates` payload -> `{rows, unrequired, banner, summary, canEnter,
  * canApprove, thresholdText}`. `banner` is an array of sentences, in order:
  * the pairs_error sentence (if any), each blockers sentence, each

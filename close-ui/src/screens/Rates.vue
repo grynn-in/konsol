@@ -98,7 +98,7 @@ import OwnershipGaps from "../sections/OwnershipGaps.vue";
 import OwnershipChange from "../sections/OwnershipChange.vue";
 import { get, post } from "../api.js";
 import { parse } from "../route.js";
-import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipDraftEdits, ownershipView, ownershipGapsCount, mergeDrafts, correctionBody, correctionEditBody, deleteBody, gerApproveAction, staleCorrectionForms } from "../rates.js";
+import { gridView, saveBody, approveAction, approveBody, pendingView, pendingCount, ownershipDraftEdits, ownershipView, ownershipGapsCount, mergeDrafts, correctionBody, correctionEditBody, deleteBody, gerApproveAction, staleCorrectionForms, summaryText } from "../rates.js";
 import { messageLines } from "../signoff.js";
 import { CONTEXT_RELOAD } from "../contextRefresh.js";
 import { periodName as formatPeriod } from "../periodName.js";
@@ -724,8 +724,7 @@ const TABS = computed(() => [
 					</div>
 
 					<p class="mb-3 text-sm text-ink-gray-6">
-						<template v-if="view.thresholdText">{{ view.thresholdText }} · </template><template v-if="view.summary">{{ view.summary.missing }} missing · {{ view.summary.awaiting_approval }} awaiting approval
-							· {{ view.summary.approved }} approved</template>
+						<template v-if="view.thresholdText">{{ view.thresholdText }} · </template><template v-if="view.summary">{{ summaryText(view.summary) }}</template>
 					</p>
 
 					<template v-for="(secRows, s) in [view.rows, view.unrequired]" :key="s">
