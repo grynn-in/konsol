@@ -843,3 +843,81 @@ def test_f11_missing_and_awaiting_cells_carry_correction_none():
     assert row["closing"]["correction"] is None
     assert row["average"]["status"] == "missing"
     assert row["average"]["correction"] is None
+
+
+# --- FR2 (konsol#305 review-d2fu S1; #312-3, #312-3b, Deepak Pai): a draft
+# correction that can never be approved is an orphan. Every cell carries
+# ``orphans``: the key's drafts whose ``supersedes`` is set and is not the
+# key's approved rate (or any such draft when nothing is approved),
+# ``[{"name", "supersedes"}]`` sorted by name, ``[]`` when none. The pending
+# correction is never an orphan; orphans stay counted in ``extra_drafts``.
+# The API adds each orphan's ``delete``. -------------------------------------
+
+def _fr2_approved(name="GER-1"):
+    return _doc(name, "EUR", "GBP", "Closing", 0.85, 1, "alice@example.com",
+                "2026-09-01 09:00:00")
+
+
+def test_fr2_a_correction_of_a_rate_no_longer_approved_is_an_orphan():
+    cell = _f11_cell([_fr2_approved(), _f11_correction("GER-3", "GER-1", 0.86),
+                      _f11_correction("GER-7", "GER-0", 0.87)])
+    assert cell["status"] == "approved" and cell["name"] == "GER-1"
+    assert cell["correction"]["name"] == "GER-3"
+    assert cell["orphans"] == [{"name": "GER-7", "supersedes": "GER-0"}]
+    assert cell["extra_drafts"] == ["GER-7"]
+
+
+def test_fr2_with_nothing_approved_every_correction_is_an_orphan_even_the_shown_draft():
+    cell = _f11_cell([_f11_correction("GER-7", "GER-1", 0.87)])
+    assert cell["status"] == "awaiting_approval" and cell["name"] == "GER-7"
+    assert cell["correction"] is None
+    assert cell["orphans"] == [{"name": "GER-7", "supersedes": "GER-1"}]
+    assert cell["extra_drafts"] == []
+
+
+def test_fr2_failure_path_a_plain_draft_beside_an_approved_rate_is_not_an_orphan():
+    plain = _doc("GER-D", "EUR", "GBP", "Closing", 1.09, 0, "bob@example.com",
+                 "2026-09-02 09:00:00")
+    cell = _f11_cell([_fr2_approved(), plain])
+    assert cell["orphans"] == []
+    assert cell["extra_drafts"] == ["GER-D"]
+    # nothing approved: a plain draft is the cell, not an orphan either
+    assert _f11_cell([plain])["orphans"] == []
+
+
+def test_fr2_failure_path_the_pending_correction_is_never_an_orphan():
+    cell = _f11_cell([_fr2_approved(), _f11_correction("GER-3", "GER-1", 0.86)])
+    assert cell["correction"]["name"] == "GER-3"
+    assert cell["orphans"] == []
+
+
+def test_fr2_a_second_correction_of_the_approved_rate_is_extra_not_an_orphan():
+    # Its supersedes IS the approved rate: approving it is still possible
+    # (the definition names a rate no longer approved), so it is not an orphan.
+    old = _f11_correction("GER-R2", "GER-1", 1.09, modified="2026-09-02 09:00:00")
+    new = _f11_correction("GER-R4", "GER-1", 1.095, modified="2026-09-03 09:00:00")
+    cell = _f11_cell([_fr2_approved(), old, new])
+    assert cell["correction"]["name"] == "GER-R4"
+    assert cell["extra_drafts"] == ["GER-R2"]
+    assert cell["orphans"] == []
+
+
+def test_fr2_orphans_are_sorted_by_name():
+    cell = _f11_cell([_fr2_approved(), _f11_correction("GER-9", "GER-0", 0.87),
+                      _f11_correction("GER-10", "GER-00", 0.88),
+                      _f11_correction("GER-8", "GER-0", 0.89)])
+    assert cell["orphans"] == [{"name": "GER-10", "supersedes": "GER-00"},
+                               {"name": "GER-8", "supersedes": "GER-0"},
+                               {"name": "GER-9", "supersedes": "GER-0"}]
+
+
+def test_fr2_missing_cells_and_unrequired_rows_carry_orphans():
+    stray = _f11_correction("GER-7", "GER-0", 0.87)
+    stray["from_currency"] = "USD"
+    result = M.grid(required={("EUR", "GBP")}, docs=[stray], earlier=[], threshold=0.5,
+                    move_problem=_no_op_move_problem)
+    row = result["rows"][0]
+    assert row["closing"]["orphans"] == [] and row["average"]["orphans"] == []
+    [unrequired] = result["unrequired"]
+    assert unrequired["closing"]["orphans"] == [{"name": "GER-7", "supersedes": "GER-0"}]
+    assert unrequired["average"]["orphans"] == []

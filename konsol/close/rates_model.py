@@ -85,6 +85,7 @@ def _empty_cell():
         "extra_drafts": [],
         "approver": None,
         "correction": None,
+        "orphans": [],
     }
 
 
@@ -111,6 +112,17 @@ def _correction(approved, drafts):
     }
 
 
+def _orphans(approved, drafts):
+    """FR2 (review-d2fu S1): the drafts among ``drafts`` that correct a rate
+    and can never be approved: their ``supersedes`` is set and is not
+    ``approved`` (the key's approved rate name, or None when nothing is
+    approved). ``[{"name", "supersedes"}]`` sorted by name; the API adds
+    ``delete``. A draft correcting the approved rate is never one."""
+    return [{"name": d["name"], "supersedes": d["supersedes"]}
+            for d in sorted(drafts, key=lambda d: d["name"])
+            if d.get("supersedes") and d.get("supersedes") != approved]
+
+
 def _cell(from_currency, to_currency, rate_type, pair_type_docs, previous_index, threshold, move_problem):
     """One grid cell for ``(from_currency, to_currency, rate_type)``. With no
     doc at all, ``missing`` and ``move_problem`` is never called."""
@@ -119,6 +131,7 @@ def _cell(from_currency, to_currency, rate_type, pair_type_docs, previous_index,
     drafts = [d for d in docs if d.get("docstatus") == 0]
 
     correction = None
+    orphans = _orphans(approved[0]["name"] if approved else None, drafts)
     if approved:
         shown = approved[0]
         correction = _correction(shown, drafts)
@@ -157,6 +170,7 @@ def _cell(from_currency, to_currency, rate_type, pair_type_docs, previous_index,
         "extra_drafts": extra_names,
         "approver": None,
         "correction": correction,
+        "orphans": orphans,
     }
 
 
