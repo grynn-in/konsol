@@ -373,6 +373,40 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
             "source": doc.get("source")}
 
 
+@frappe.whitelist(methods=["POST"])
+def delete_rate(name):
+    """FR1 (review-d2fu S1; #312-3, #312-3b): delete one draft correction (a
+    draft Group Exchange Rate with ``supersedes``), so a pending correction or
+    an orphan that can never be approved is never a dead end. It names only
+    ``name``, so a forged ``docstatus``, ``ignore_permissions``, ``force`` or
+    ``supersedes`` never reaches it. The doc is read with a row lock, so a
+    parallel approval of the same draft waits and the docstatus read is
+    current. Every refusal is thrown before the delete; a plain first draft is
+    edited, not deleted here. ``frappe.delete_doc`` runs with the caller's own
+    delete permission; Frappe's Deleted Document keeps the record, and no Close
+    Event is written (a draft delete is not an approval event)."""
+    frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
+    name = _reason(name) or ""
+    if not name or not frappe.db.exists(GER, name):
+        frappe.throw(f"{name} is not a group exchange rate: reload the Rates screen.")
+    doc = frappe.get_doc(GER, name, for_update=True)
+    if doc.docstatus == 1:
+        frappe.throw(f"{name} is approved, not a draft: correct it with a Reason for Change "
+                     "instead.")
+    if doc.docstatus == 2:
+        frappe.throw(f"{name} is cancelled, not a draft: a cancelled rate is kept as the audit "
+                     "trail.")
+    if not doc.get("supersedes"):
+        frappe.throw(f"{name} corrects no approved rate: edit it instead.")
+    fy, fp = int(doc.fiscal_year), int(doc.fiscal_period)
+    status = _period_row((fy, fp)).get("status")
+    if status != "Open":
+        frappe.throw(f"{period_name(fy, fp)} is {status}: group rates lock when their period "
+                     "closes (reopen it first).")
+    frappe.delete_doc(GER, name)
+    return {"name": name, "deleted": True}
+
+
 HER = "Historical Equity Rate"
 OP = "Ownership Period"
 HER_FIELDS = ["name", "consolidation_group", "data_area_id", "main_account", "rate_date",
