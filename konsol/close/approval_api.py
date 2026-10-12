@@ -92,8 +92,9 @@ def reject(doctype, name, reason=None):
 
     With no active workflow (A04, #305-D2-8), there is no state to move: the
     draft stays as it is (no save, no docstatus change), and the reason is a
-    Comment and a ``rejected`` Close Event. A submitted document is refused;
-    its correction is a cancel and an amendment.
+    Comment and a ``rejected`` Close Event. A submitted document is refused:
+    a Group Exchange Rate is corrected by a superseding draft with a Reason for
+    Change (#312-3b), any other by a cancel and an amendment.
 
     Both paths return ``{"name", "docstatus", "status"}``.
     """
@@ -128,6 +129,12 @@ def _reject_draft(doctype, name, reason):
     transaction. The document itself is not saved."""
     doc = frappe.get_doc(doctype, name)
     if int(doc.docstatus) != 0:
+        if doctype == "Group Exchange Rate":
+            # #312-3b (Deepak Pai, 12 Oct 2026): a rate is corrected by a
+            # superseding draft; cancelling a correction is refused.
+            frappe.throw(
+                "%s %s is already approved: correct it with a Reason for Change instead."
+                % (doctype, name))
         frappe.throw(
             "%s %s is already approved; a correction is a cancel and an amendment."
             % (doctype, name))

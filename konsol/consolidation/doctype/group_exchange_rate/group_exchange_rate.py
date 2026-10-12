@@ -316,8 +316,8 @@ class GroupExchangeRate(Document):
         others = [name for name in approved if name != supersedes]
         if others:
             frappe.throw(
-                f"{others[0]} is already the approved {self._key_label()}. Cancel it "
-                "(while the period is open) and amend it instead.",
+                f"{others[0]} is already the approved {self._key_label()}. Correct it with a "
+                "Reason for Change instead.",
                 frappe.DuplicateEntryError)
         if supersedes and supersedes not in approved:
             frappe.throw(
