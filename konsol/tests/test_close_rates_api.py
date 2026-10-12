@@ -185,6 +185,8 @@ class _Site:
         self.reads = []  # one entry per MariaDB read
         self.named = {}  # name -> _FakeDoc, for get_doc(doctype, name)
         self.get_doc_calls = []  # what get_doc received
+        self.get_doc_kwargs = []  # FR1: the keyword arguments of each get_doc(doctype, name)
+        self.deleted = []  # FR1: each frappe.delete_doc call, as (args, kwargs)
         self.new_docs = []  # every _FakeDoc built from a dict
         self.signed = []  # signoff_gate.latest_signed_runs() keys (O55)
         #: R52f: the declared first close (fy, fp), None = undeclared, read by
@@ -344,6 +346,7 @@ def _frappe(site):
             site.new_docs.append(doc)
             return doc
         site.reads.append(("get_doc", arg))
+        site.get_doc_kwargs.append(dict(k))
         assert arg in ("Group Exchange Rate", "Ownership Period"), arg
         if name not in site.named:
             raise frappe.ValidationError("%s %s not found" % (arg, name))
@@ -359,7 +362,17 @@ def _frappe(site):
         fields = {"quoted_per": types.SimpleNamespace(options=site.quoted_per_options)}
         return types.SimpleNamespace(get_field=lambda f: fields[f])
 
+    def exists(doctype, name=None, *a, **k):
+        site.reads.append(("exists", doctype))
+        assert doctype == "Group Exchange Rate", doctype
+        assert isinstance(name, str), name  # FR1: the name is a string before it is looked up
+        return name if name in site.named else None
+
+    def delete_doc(*a, **k):
+        site.deleted.append((a, k))
+
     frappe.get_doc = get_doc
+    frappe.delete_doc = delete_doc
     frappe.throw = throw
     frappe._ = lambda s: s
     frappe.only_for = only_for
@@ -370,7 +383,7 @@ def _frappe(site):
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.flags = {}
     frappe.db = types.SimpleNamespace(sql=sql, get_single_value=get_single_value,
-                                      get_value=get_value)
+                                      get_value=get_value, exists=exists)
     frappe.session = types.SimpleNamespace(user=site.user)
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
     return frappe
@@ -3146,3 +3159,129 @@ def test_f11_the_correction_costs_no_extra_read():
     plain.docs = [d for d in plain.docs if d["name"] != "GER-3"]
     _call(plain), _call(corrected)
     assert len(plain.reads) == len(corrected.reads) == 8, corrected.reads
+
+
+# --- FR1 (konsol#305 review-d2fu S1; #312-3, #312-3b, Deepak Pai): a draft
+# correction is never a dead end. ``delete_rate(name)`` deletes one draft Group
+# Exchange Rate that carries ``supersedes``: a pending correction, or an
+# orphan that can never be approved. Every refusal is thrown before any write.
+
+FR1_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
+
+
+def _fr1_site(user=ANALYST, roles=("EPM Analyst",)):
+    """``_f11_grid_site()`` as the Analyst, with each of its rates (and a
+    cancelled correction GER-C) readable by ``get_doc`` under its own name."""
+    site = _f11_grid_site()
+    site.user, site.roles = user, set(roles)
+    site.docs.append(_ger("GER-C", "EUR", "GBP", "Closing", 0.84, 2, supersedes="GER-1",
+                          change_reason=F11_REASON))
+    for row in site.docs:
+        site.named[row["name"]] = _FakeDoc(dict(row, doctype="Group Exchange Rate"))
+    return site
+
+
+def _delete(site, name):
+    return _invoke(site, lambda api: api.delete_rate(name))
+
+
+def _delete_raises(site, name):
+    with pytest.raises(Exception) as info:
+        _delete(site, name)
+    return info.value
+
+
+def test_fr1_the_analyst_deletes_a_pending_correction():
+    site = _fr1_site()
+    result = _delete(site, "GER-3")
+    assert result == {"name": "GER-3", "deleted": True}, result
+    assert site.deleted == [(("Group Exchange Rate", "GER-3"), {})], site.deleted
+    assert site.only_for_calls == [FR1_ROLES]
+    assert site.reads == [("exists", "Group Exchange Rate"), ("get_doc", "Group Exchange Rate"),
+                          ("sql", "fiscal_period_rows")], site.reads
+    assert site.get_doc_kwargs == [{"for_update": True}], site.get_doc_kwargs
+    assert site.new_docs == [] and site.named["GER-3"].calls == []
+
+
+def test_fr1_the_close_lead_deletes_a_correction_too_and_the_name_is_stripped():
+    site = _fr1_site(user=LEAD, roles=("EPM Admin",))
+    assert _delete(site, "  GER-3 ") == {"name": "GER-3", "deleted": True}
+    assert site.deleted == [(("Group Exchange Rate", "GER-3"), {})], site.deleted
+
+
+def test_fr1_failure_paths_each_refused_with_its_sentence_and_nothing_deleted():
+    cases = [
+        ("GER-1", "GER-1 is approved, not a draft: correct it with a Reason for Change instead."),
+        ("GER-C", "GER-C is cancelled, not a draft: a cancelled rate is kept as the audit trail."),
+        ("GER-5", "GER-5 corrects no approved rate: edit it instead."),
+        ("GER-NOPE", "GER-NOPE is not a group exchange rate: reload the Rates screen."),
+        (["GER-3"], "['GER-3'] is not a group exchange rate: reload the Rates screen."),
+        ({"name": "GER-3"}, "{'name': 'GER-3'} is not a group exchange rate: reload the Rates "
+                            "screen."),
+        ("", " is not a group exchange rate: reload the Rates screen."),
+    ]
+    for name, sentence in cases:
+        site = _fr1_site()
+        err = _delete_raises(site, name)
+        assert type(err).__name__ == "ValidationError", (name, err)
+        assert str(err) == sentence, (name, str(err))
+        assert site.deleted == [], name
+        assert site.new_docs == [], name
+
+
+def test_fr1_failure_path_a_correction_in_a_closed_period_is_refused():
+    site = _fr1_site()
+    site.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Closed")]
+    err = _delete_raises(site, "GER-3")
+    assert str(err) == ("FY2025 P07 is Closed: group rates lock when their period closes "
+                        "(reopen it first)."), err
+    assert site.deleted == []
+
+
+def test_fr1_failure_path_the_period_read_is_the_drafts_own():
+    # P07 is Open; the draft sits in P06, which is Closed: the doc's own period decides.
+    site = _fr1_site()
+    site.named["GER-3"].fiscal_period = 6
+    err = _delete_raises(site, "GER-3")
+    assert str(err) == ("FY2025 P06 is Closed: group rates lock when their period closes "
+                        "(reopen it first)."), err
+    assert site.deleted == []
+
+
+def test_fr1_failure_path_a_viewer_and_an_entity_accountant_read_nothing():
+    for role in ("EPM User", "Entity Accountant"):
+        site = _fr1_site(user=VIEWER, roles=(role,))
+        err = _delete_raises(site, "GER-3")
+        assert type(err).__name__ == "PermissionError", (role, err)
+        assert site.reads == [] and site.get_doc_calls == [], (role, site.reads)
+        assert site.deleted == [], role
+
+
+def test_fr1_forge_extra_keys_never_reach_it():
+    # Frappe's whitelisted-args path drops keys a function does not name; a
+    # direct call with them raises TypeError before any read.
+    import inspect
+
+    site = _fr1_site()
+    with pytest.raises(TypeError):
+        _invoke(site, lambda api: api.delete_rate(name="GER-1", docstatus=0,
+                                                  ignore_permissions=True))
+    assert site.reads == [] and site.deleted == [] and site.only_for_calls == []
+    params = _invoke(site, lambda api: [(p.name, p.kind) for p in
+                                        inspect.signature(api.delete_rate).parameters.values()])
+    assert params == [("name", inspect.Parameter.POSITIONAL_OR_KEYWORD)], params
+
+
+def test_fr1_delete_roles_are_the_save_roles_literal():
+    import ast
+
+    tree = ast.parse(open(API_PY, encoding="utf-8").read())
+    [fn] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "delete_rate"]
+    first = fn.body[0].value
+    assert first.func.attr == "only_for"
+    assert isinstance(first.args[0], ast.Tuple)  # a literal tuple, not a name
+    literal = ast.literal_eval(first.args[0])
+    api = _load_rates_api(_Site())
+    assert literal == api.RATE_SAVE_ROLES == FR1_ROLES
+    [deco] = fn.decorator_list
+    assert ast.unparse(deco) == "frappe.whitelist(methods=['POST'])", ast.unparse(deco)
