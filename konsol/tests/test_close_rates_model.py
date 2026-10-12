@@ -226,8 +226,10 @@ def test_summary_counts_add_up_to_twice_row_count():
     result = M.grid(required={("EUR", "GBP"), ("USD", "GBP"), ("JPY", "GBP")}, docs=docs, earlier=[],
                      threshold=0.5, move_problem=_no_op_move_problem)
     summary = result["summary"]
-    assert sum(summary.values()) == 2 * len(result["rows"])
-    assert sum(summary.values()) == 6
+    statuses = summary["missing"] + summary["awaiting_approval"] + summary["approved"]
+    assert statuses == 2 * len(result["rows"])
+    assert statuses == 6
+    assert summary["corrections_pending"] == 0
 
 
 def test_approve_mode_by_an_analyst_is_not_approver_whatever_the_owner_or_policy():
@@ -750,3 +752,220 @@ def test_r52q_a_doc_without_the_effect_key_has_neither_ownership_key():
              "2026-09-01T09:00:00")
     [item] = _o57_items(op)
     assert "ownership_effect" not in item and "ownership_effect_error" not in item, sorted(item)
+
+
+# --- F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): a draft
+# naming the cell's approved rate in ``supersedes`` is that rate's pending
+# correction. The approved rate stays the cell (it is still published until
+# the correction is approved); the correction rides on it as ``correction``
+# with its before -> after, and leaves ``extra_drafts``. ---------------------
+
+def _f11_correction(name, approved, rate, quoted_per=1, modified="2026-09-02 09:00:00",
+                    owner="bob@example.com", reason="RBI corrected its fixing"):
+    doc = _doc(name, "EUR", "GBP", "Closing", rate, 0, owner, modified,
+               quoted_per=quoted_per, change_reason=reason)
+    doc["supersedes"] = approved
+    return doc
+
+
+def _f11_cell(docs):
+    result = M.grid(required={("EUR", "GBP")}, docs=docs, earlier=[], threshold=0.5,
+                    move_problem=_no_op_move_problem)
+    return result["rows"][0]["closing"]
+
+
+def test_f11_a_correction_rides_on_the_approved_cell_with_before_and_after():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    cell = _f11_cell([approved, _f11_correction("GER-R2", "GER-R1", 1.09)])
+    assert cell["status"] == "approved"
+    assert cell["name"] == "GER-R1"
+    assert cell["extra_drafts"] == []
+    assert cell["correction"] == {
+        "name": "GER-R2",
+        "supersedes": "GER-R1",
+        "owner": "bob@example.com",
+        "change_reason": "RBI corrected its fixing",
+        "before": {"quote": 1.085, "quoted_per": 1, "rate": 1.085},
+        "after": {"quote": 1.09, "quoted_per": 1, "rate": 1.09},
+    }
+
+
+def test_f11_failure_path_a_plain_draft_beside_an_approved_rate_is_not_a_correction():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    plain = _doc("GER-D", "EUR", "GBP", "Closing", 1.09, 0, "bob@example.com",
+                 "2026-09-02 09:00:00")
+    cell = _f11_cell([approved, plain])
+    assert cell["correction"] is None
+    assert cell["extra_drafts"] == ["GER-D"]
+
+
+def test_f11_failure_path_a_correction_of_another_rate_stays_an_extra_draft():
+    # GER-R1 was already replaced by GER-R3; a stale correction of GER-R1 is
+    # not GER-R3's correction.
+    approved = _doc("GER-R3", "EUR", "GBP", "Closing", 1.087, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    stale = _f11_correction("GER-R2", "GER-R1", 1.09)
+    cell = _f11_cell([approved, stale])
+    assert cell["correction"] is None
+    assert cell["extra_drafts"] == ["GER-R2"]
+
+
+def test_f11_the_latest_of_two_corrections_is_the_correction_the_other_is_extra():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    old = _f11_correction("GER-R2", "GER-R1", 1.09, modified="2026-09-02 09:00:00")
+    new = _f11_correction("GER-R4", "GER-R1", 1.095, modified="2026-09-03 09:00:00")
+    cell = _f11_cell([approved, old, new])
+    assert cell["correction"]["name"] == "GER-R4"
+    assert cell["extra_drafts"] == ["GER-R2"]
+
+
+def test_f11_a_correction_keeps_its_own_unit_before_and_after():
+    approved = _doc("GER-R1", "JPY", "GBP", "Closing", 0.0052, 1, "alice@example.com",
+                    "2026-09-01 09:00:00", quote=0.52, quoted_per=100)
+    corr = _doc("GER-R2", "JPY", "GBP", "Closing", 0.00053, 0, "bob@example.com",
+                "2026-09-02 09:00:00", quote=5.3, quoted_per=1000, change_reason="x")
+    corr["supersedes"] = "GER-R1"
+    result = M.grid(required={("JPY", "GBP")}, docs=[approved, corr], earlier=[],
+                    threshold=0.5, move_problem=_no_op_move_problem)
+    cell = result["rows"][0]["closing"]
+    assert cell["correction"]["before"] == {"quote": 0.52, "quoted_per": 100, "rate": 0.0052}
+    assert cell["correction"]["after"] == {"quote": 5.3, "quoted_per": 1000, "rate": 0.00053}
+
+
+def test_f11_missing_and_awaiting_cells_carry_correction_none():
+    draft = _doc("GER-D", "EUR", "GBP", "Closing", 1.09, 0, "bob@example.com",
+                 "2026-09-02 09:00:00")
+    result = M.grid(required={("EUR", "GBP")}, docs=[draft], earlier=[], threshold=0.5,
+                    move_problem=_no_op_move_problem)
+    row = result["rows"][0]
+    assert row["closing"]["status"] == "awaiting_approval"
+    assert row["closing"]["correction"] is None
+    assert row["average"]["status"] == "missing"
+    assert row["average"]["correction"] is None
+
+
+# --- FR2 (konsol#305 review-d2fu S1; #312-3, #312-3b, Deepak Pai): a draft
+# correction that can never be approved is an orphan. Every cell carries
+# ``orphans``: the key's drafts whose ``supersedes`` is set and is not the
+# key's approved rate (or any such draft when nothing is approved),
+# ``[{"name", "supersedes"}]`` sorted by name, ``[]`` when none. The pending
+# correction is never an orphan; orphans stay counted in ``extra_drafts``.
+# The API adds each orphan's ``delete``. -------------------------------------
+
+def _fr2_approved(name="GER-1"):
+    return _doc(name, "EUR", "GBP", "Closing", 0.85, 1, "alice@example.com",
+                "2026-09-01 09:00:00")
+
+
+def test_fr2_a_correction_of_a_rate_no_longer_approved_is_an_orphan():
+    cell = _f11_cell([_fr2_approved(), _f11_correction("GER-3", "GER-1", 0.86),
+                      _f11_correction("GER-7", "GER-0", 0.87)])
+    assert cell["status"] == "approved" and cell["name"] == "GER-1"
+    assert cell["correction"]["name"] == "GER-3"
+    assert cell["orphans"] == [{"name": "GER-7", "supersedes": "GER-0"}]
+    assert cell["extra_drafts"] == ["GER-7"]
+
+
+def test_fr2_with_nothing_approved_every_correction_is_an_orphan_even_the_shown_draft():
+    cell = _f11_cell([_f11_correction("GER-7", "GER-1", 0.87)])
+    assert cell["status"] == "awaiting_approval" and cell["name"] == "GER-7"
+    assert cell["correction"] is None
+    assert cell["orphans"] == [{"name": "GER-7", "supersedes": "GER-1"}]
+    assert cell["extra_drafts"] == []
+
+
+def test_fr2_failure_path_a_plain_draft_beside_an_approved_rate_is_not_an_orphan():
+    plain = _doc("GER-D", "EUR", "GBP", "Closing", 1.09, 0, "bob@example.com",
+                 "2026-09-02 09:00:00")
+    cell = _f11_cell([_fr2_approved(), plain])
+    assert cell["orphans"] == []
+    assert cell["extra_drafts"] == ["GER-D"]
+    # nothing approved: a plain draft is the cell, not an orphan either
+    assert _f11_cell([plain])["orphans"] == []
+
+
+def test_fr2_failure_path_the_pending_correction_is_never_an_orphan():
+    cell = _f11_cell([_fr2_approved(), _f11_correction("GER-3", "GER-1", 0.86)])
+    assert cell["correction"]["name"] == "GER-3"
+    assert cell["orphans"] == []
+
+
+def test_fr2_a_second_correction_of_the_approved_rate_is_extra_not_an_orphan():
+    # Its supersedes IS the approved rate: approving it is still possible
+    # (the definition names a rate no longer approved), so it is not an orphan.
+    old = _f11_correction("GER-R2", "GER-1", 1.09, modified="2026-09-02 09:00:00")
+    new = _f11_correction("GER-R4", "GER-1", 1.095, modified="2026-09-03 09:00:00")
+    cell = _f11_cell([_fr2_approved(), old, new])
+    assert cell["correction"]["name"] == "GER-R4"
+    assert cell["extra_drafts"] == ["GER-R2"]
+    assert cell["orphans"] == []
+
+
+def test_fr2_orphans_are_sorted_by_name():
+    cell = _f11_cell([_fr2_approved(), _f11_correction("GER-9", "GER-0", 0.87),
+                      _f11_correction("GER-10", "GER-00", 0.88),
+                      _f11_correction("GER-8", "GER-0", 0.89)])
+    assert cell["orphans"] == [{"name": "GER-10", "supersedes": "GER-00"},
+                               {"name": "GER-8", "supersedes": "GER-0"},
+                               {"name": "GER-9", "supersedes": "GER-0"}]
+
+
+def test_fr2_missing_cells_and_unrequired_rows_carry_orphans():
+    stray = _f11_correction("GER-7", "GER-0", 0.87)
+    stray["from_currency"] = "USD"
+    result = M.grid(required={("EUR", "GBP")}, docs=[stray], earlier=[], threshold=0.5,
+                    move_problem=_no_op_move_problem)
+    row = result["rows"][0]
+    assert row["closing"]["orphans"] == [] and row["average"]["orphans"] == []
+    [unrequired] = result["unrequired"]
+    assert unrequired["closing"]["orphans"] == [{"name": "GER-7", "supersedes": "GER-0"}]
+    assert unrequired["average"]["orphans"] == []
+
+
+# --- FR4 (konsol#305 review-d2fu S6): the summary counts pending corrections.
+# ``corrections_pending`` is the number of cells in ``rows`` whose
+# ``correction`` is not None. The three status counts stay cell counts, and
+# ``unrequired`` is outside the summary, as for the status counts. -------------
+
+def test_fr4_a_pending_correction_is_counted_and_the_status_counts_still_add_up():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    result = M.grid(required={("EUR", "GBP"), ("USD", "GBP")},
+                    docs=[approved, _f11_correction("GER-R2", "GER-R1", 1.09)], earlier=[],
+                    threshold=0.5, move_problem=_no_op_move_problem)
+    assert result["summary"] == {"missing": 3, "awaiting_approval": 0, "approved": 1,
+                                 "corrections_pending": 1}
+
+
+def test_fr4_failure_path_a_grid_with_no_correction_counts_zero():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    plain = _doc("GER-D", "EUR", "GBP", "Closing", 1.09, 0, "bob@example.com",
+                 "2026-09-02 09:00:00")
+    result = M.grid(required={("EUR", "GBP")}, docs=[approved, plain], earlier=[],
+                    threshold=0.5, move_problem=_no_op_move_problem)
+    assert result["summary"] == {"missing": 1, "awaiting_approval": 0, "approved": 1,
+                                 "corrections_pending": 0}
+
+
+def test_fr4_failure_path_an_orphan_is_not_a_pending_correction():
+    cell_docs = [_fr2_approved(), _f11_correction("GER-7", "GER-0", 0.87)]
+    result = M.grid(required={("EUR", "GBP")}, docs=cell_docs, earlier=[], threshold=0.5,
+                    move_problem=_no_op_move_problem)
+    assert result["rows"][0]["closing"]["orphans"] == [{"name": "GER-7", "supersedes": "GER-0"}]
+    assert result["summary"]["corrections_pending"] == 0
+
+
+def test_fr4_failure_path_a_correction_on_an_unrequired_row_is_not_counted():
+    approved = _doc("GER-R1", "EUR", "GBP", "Closing", 1.085, 1, "alice@example.com",
+                    "2026-09-01 09:00:00")
+    result = M.grid(required={("USD", "GBP")},
+                    docs=[approved, _f11_correction("GER-R2", "GER-R1", 1.09)], earlier=[],
+                    threshold=0.5, move_problem=_no_op_move_problem)
+    [unrequired] = result["unrequired"]
+    assert unrequired["closing"]["correction"]["name"] == "GER-R2"
+    assert result["summary"] == {"missing": 2, "awaiting_approval": 0, "approved": 0,
+                                 "corrections_pending": 0}

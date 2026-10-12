@@ -9,7 +9,7 @@ preparers), the policy gaps, and whether the caller may enter or approve.
 
 Loaded against a stub frappe (pattern: test_close_checks_api.py ``_Site`` /
 ``_call``, copied, not imported). ``konsol.group_rates`` and
-``konsol.fiscal_calendar`` are stub modules: ``translation_needs`` is how the
+``konsol.fiscal_calendar`` are stub modules: ``translation_gaps`` is how the
 ClickHouse read is stubbed, so no ClickHouse client is imported. The real
 ``close_policy_model.py``, ``rates_model.py`` and ``self_approval.py`` are
 loaded by path under their dotted names, so the approve rule and the preparer
@@ -137,13 +137,13 @@ def _period(fy, fp, status="Open"):
 
 
 def _ger(name, frm, to, rate_type, quote, docstatus, owner=ANALYST, quoted_per="1",
-         erp_quote=None, modified=None, change_reason=None, source="Manual"):
+         erp_quote=None, modified=None, change_reason=None, source="Manual", supersedes=None):
     return {"name": name, "from_currency": frm, "to_currency": to, "rate_type": rate_type,
             "quote": quote, "quoted_per": quoted_per, "erp_quote": erp_quote,
             "docstatus": docstatus, "owner": owner,
             "modified": modified or datetime(2025, 7, 31, 10, 0, 0),
             "change_reason": change_reason, "source": source,
-            "fiscal_year": 2025, "fiscal_period": 7}
+            "fiscal_year": 2025, "fiscal_period": 7, "supersedes": supersedes}
 
 
 def _earlier(name, frm, to, rate_type, quote, fy, fp, quoted_per="1"):
@@ -157,7 +157,7 @@ class _Site:
         self.user = LEAD
         self.roles = {"EPM Admin"}
         self.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Open")]
-        self.needs = ({("EUR", "GBP"), ("USD", "GBP")}, [])
+        self.needs = ({("EUR", "GBP"), ("USD", "GBP")}, [], [])
         self.needs_error = None
         self.threshold = 0.5
         self.policy = "Blocked"
@@ -185,6 +185,9 @@ class _Site:
         self.reads = []  # one entry per MariaDB read
         self.named = {}  # name -> _FakeDoc, for get_doc(doctype, name)
         self.get_doc_calls = []  # what get_doc received
+        self.get_doc_kwargs = []  # FR1: the keyword arguments of each get_doc(doctype, name)
+        self.deleted = []  # FR1: each frappe.delete_doc call, as (args, kwargs)
+        self.locking_values = []  # FR3: the values of each locking read of a key's rates
         self.new_docs = []  # every _FakeDoc built from a dict
         self.signed = []  # signoff_gate.latest_signed_runs() keys (O55)
         #: R52f: the declared first close (fy, fp), None = undeclared, read by
@@ -319,6 +322,17 @@ def _frappe(site):
     def sql(query, values=None, as_dict=False, **k):
         site.reads.append(("sql", query))
         assert "tabGroup Exchange Rate" in query, query
+        if "FOR UPDATE" in query:
+            # FR3: save_rate's locking read of the key's draft and approved
+            # rows, answered from site.docs on the five grain values.
+            assert as_dict, "the key's rates are read as_dict"
+            site.locking_values.append(tuple(values))
+            to, frm, fy, fp, rate_type = values
+            grain = {"to_currency": to, "from_currency": frm, "fiscal_year": fy,
+                     "fiscal_period": fp, "rate_type": rate_type}
+            return [{"name": r["name"], "docstatus": r["docstatus"],
+                     "supersedes": r.get("supersedes")}
+                    for r in site.docs if _match(r, grain) and r["docstatus"] in (0, 1)]
         assert "docstatus = 1" in query, query
         assert as_dict, "the earlier approved rates are read as_dict"
         fy, fy2, fp = values
@@ -344,6 +358,7 @@ def _frappe(site):
             site.new_docs.append(doc)
             return doc
         site.reads.append(("get_doc", arg))
+        site.get_doc_kwargs.append(dict(k))
         assert arg in ("Group Exchange Rate", "Ownership Period"), arg
         if name not in site.named:
             raise frappe.ValidationError("%s %s not found" % (arg, name))
@@ -359,7 +374,17 @@ def _frappe(site):
         fields = {"quoted_per": types.SimpleNamespace(options=site.quoted_per_options)}
         return types.SimpleNamespace(get_field=lambda f: fields[f])
 
+    def exists(doctype, name=None, *a, **k):
+        site.reads.append(("exists", doctype))
+        assert doctype == "Group Exchange Rate", doctype
+        assert isinstance(name, str), name  # FR1: the name is a string before it is looked up
+        return name if name in site.named else None
+
+    def delete_doc(*a, **k):
+        site.deleted.append((a, k))
+
     frappe.get_doc = get_doc
+    frappe.delete_doc = delete_doc
     frappe.throw = throw
     frappe._ = lambda s: s
     frappe.only_for = only_for
@@ -370,7 +395,7 @@ def _frappe(site):
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.flags = {}
     frappe.db = types.SimpleNamespace(sql=sql, get_single_value=get_single_value,
-                                      get_value=get_value)
+                                      get_value=get_value, exists=exists)
     frappe.session = types.SimpleNamespace(user=site.user)
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
     return frappe
@@ -429,7 +454,8 @@ def _group_rates(site):
     gr.true_rate = lambda q, p: float(decimal.Decimal(str(q or 0)) / int(p or 1))
     gr.ch_error_names = lambda e: set()
 
-    def translation_needs(fy, fp):
+    def translation_gaps(fy, fp):
+        # (pairs, groups with no reporting currency, entities with no functional currency)
         site.needs_calls.append((fy, fp))
         if site.needs_error is not None:
             raise site.needs_error
@@ -444,7 +470,7 @@ def _group_rates(site):
                                 "unit": unit, "threshold": threshold})
         return site.move_answer
 
-    gr.translation_needs = translation_needs
+    gr.translation_gaps = translation_gaps
     gr.move_threshold = move_threshold
     gr.move_problem = move_problem
     return gr
@@ -596,7 +622,8 @@ def test_the_close_lead_sees_two_rows_and_approves_another_users_draft_directly(
     assert eur["average"]["edited_by"] == []
     usd = _row(result, "USD")
     assert usd["closing"]["status"] == "missing" and usd["average"]["status"] == "missing"
-    assert result["summary"] == {"missing": 2, "awaiting_approval": 1, "approved": 1}
+    assert result["summary"] == {"missing": 2, "awaiting_approval": 1, "approved": 1,
+                                 "corrections_pending": 0}
     assert result["can_approve"] is True and result["can_enter"] is True
     assert result["period"] == {"fiscal_year": 2025, "fiscal_period": 7, "period_code": "P07",
                                 "status": "Open"}
@@ -678,9 +705,28 @@ def test_failure_path_clickhouse_down_lists_the_docs_with_required_none():
 
 def test_a_group_with_no_reporting_currency_is_a_blocker():
     site = _Site()
-    site.needs = ({("EUR", "GBP")}, ["ZZGRP"])
+    site.needs = ({("EUR", "GBP")}, ["ZZGRP"], [])
     result = _call(site)
     assert result["blockers"] == ["Consolidation Group ZZGRP has no reporting currency"]
+
+
+def test_an_entity_with_no_functional_currency_is_a_blocker_after_the_groups():
+    """konsol#311 (F13): the Rates screen names what group_rates.rate_gate names,
+    in the same words and order: the groups, then the entities."""
+    site = _Site()
+    site.needs = ({("EUR", "GBP")}, ["ZZGRP"], ["ZZ_NOFC"])
+    result = _call(site)
+    assert result["blockers"] == ["Consolidation Group ZZGRP has no reporting currency",
+                                  "Entity ZZ_NOFC has no functional currency"], result["blockers"]
+    assert site.needs_calls == [(2025, 7)]
+
+
+def test_an_entity_with_no_functional_currency_alone_is_a_blocker():
+    site = _Site()
+    site.needs = ({("EUR", "GBP")}, [], ["ZZ_NOFC", "ZZ_NOFC2"])
+    result = _call(site)
+    assert result["blockers"] == ["Entity ZZ_NOFC has no functional currency",
+                                  "Entity ZZ_NOFC2 has no functional currency"], result["blockers"]
 
 
 def test_a_rate_for_an_unrequired_pair_is_listed_apart():
@@ -783,7 +829,7 @@ def test_an_approved_or_missing_cell_carries_no_approve_mode():
 def _pairs_site(n):
     currencies = ["EUR", "USD", "JPY", "CHF", "SEK", "NOK"][:n]
     site = _Site()
-    site.needs = ({(c, "GBP") for c in currencies}, [])
+    site.needs = ({(c, "GBP") for c in currencies}, [], [])
     site.docs = []
     site.earlier = []
     for i, c in enumerate(currencies):
@@ -822,7 +868,7 @@ def test_a_changed_meta_changes_the_quoted_per_options_payload():
 # --- save_rate (E404): the Analyst saves a draft; nothing else can be set -----------
 
 SAVE_PARAMS = ["fiscal_year", "fiscal_period", "from_currency", "to_currency", "rate_type",
-               "quote", "quoted_per", "change_reason", "name"]
+               "quote", "quoted_per", "change_reason", "name", "supersedes"]
 NEW_KEYS = {"doctype", "to_currency", "from_currency", "rate_type", "fiscal_year",
             "fiscal_period", "quote", "quoted_per", "change_reason"}
 FORGED = ("docstatus", "source", "erp_quote", "source_note", "owner", "amended_from")
@@ -870,14 +916,24 @@ def test_save_rate_creates_a_new_draft_through_insert_with_only_the_nine_keys():
                       "source": "Manual"}
 
 
+#: FR3 (review-d2fu N8): the new-draft path reads the key's draft and
+#: approved rows with a locking read, so a second correction of one rate waits
+#: on the first and then sees it (MariaDB REPEATABLE READ).
+FR3_LOCKING_READ = (
+    "SELECT name, docstatus, supersedes FROM `tabGroup Exchange Rate` "
+    "WHERE to_currency = %s AND from_currency = %s AND fiscal_year = %s "
+    "AND fiscal_period = %s AND rate_type = %s AND docstatus IN (0, 1) "
+    "ORDER BY modified DESC FOR UPDATE")
+
+
 def test_save_rate_reads_the_period_and_the_grain_once_each():
     site = _analyst_site()
     _save(site)
-    assert site.reads == [("sql", "fiscal_period_rows"), ("get_all", "Group Exchange Rate")], \
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], \
         site.reads
 
 
-def test_forge_save_rate_takes_no_kwargs_and_names_only_the_nine_parameters():
+def test_forge_save_rate_takes_no_kwargs_and_names_only_the_ten_parameters():
     import inspect
 
     site = _analyst_site()
@@ -900,12 +956,14 @@ def test_forge_a_forged_status_field_cannot_be_passed_at_all():
     assert site.new_docs == []
 
 
-def test_failure_path_an_approved_key_with_no_name_is_refused_naming_the_amendment():
+def test_failure_path_an_approved_key_with_no_name_is_refused_naming_the_correction():
+    # F11 (#312-3): a change of an approved rate is a correction in the app,
+    # no longer "a cancel and an amendment (Desk)".
     site = _analyst_site()
     site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1)]
     err = _save_raises(site, from_currency="EUR")
-    assert "GER-1" in str(err) and "amendment" in str(err), err
-    assert "already the approved Closing rate" in str(err), err
+    assert str(err) == ("GER-1 is already the approved Closing rate EUR → GBP for FY2025 P07: "
+                        "correct it with a Reason for Change instead."), err
     assert site.new_docs == []
 
 
@@ -962,7 +1020,17 @@ def test_failure_path_a_named_approved_rate_is_refused():
     site = _analyst_site()
     doc = _named(site, docstatus=1)
     err = _save_raises(site, name="GER-2", from_currency="EUR", rate_type="Average")
-    assert "GER-2" in str(err) and "amend" in str(err), err
+    assert str(err) == ("GER-2 is approved, not a draft: correct it with a Reason for Change "
+                        "instead."), err
+    assert doc.calls == []
+
+
+def test_failure_path_a_named_cancelled_rate_is_refused():
+    site = _analyst_site()
+    doc = _named(site, docstatus=2)
+    err = _save_raises(site, name="GER-2", from_currency="EUR", rate_type="Average")
+    assert str(err) == ("GER-2 is cancelled, not a draft: correct the approved rate with a "
+                        "Reason for Change instead."), err
     assert doc.calls == []
 
 
@@ -986,7 +1054,7 @@ def test_failure_path_a_closed_period_is_refused_before_any_get_doc():
     assert "is Closed" in str(err) and "reopen" in str(err), err
     assert "FY2025 P06" in str(err), err
     assert site.get_doc_calls == []
-    assert ("get_all", "Group Exchange Rate") not in site.reads
+    assert site.reads == [("sql", "fiscal_period_rows")], site.reads
 
 
 def test_failure_path_an_undeclared_period_is_refused():
@@ -2856,3 +2924,606 @@ def test_r53e_the_servers_decision_fed_back_to_the_save():
             assert fresh.new_docs == [], roles
     # Both branches ran.
     assert _o63_call(_o63_site(roles=("EPM User",), user=VIEWER))["can_change"] is False
+
+
+# --- F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): the
+# close app drafts a correction of an approved rate. ``save_rate`` takes
+# ``supersedes`` (the approved rate of the same key) and saves a draft beside
+# it; the Group Exchange Rate controller (F10) cancels the old rate when the
+# correction is approved. ``get_rates`` says per cell whether the caller may
+# correct it (``correct``) and carries a pending correction with its
+# before -> after and approve mode. R2: the Analyst drafts, the Close Lead
+# approves; the save's own roles (Analyst, Close Lead, System Manager) draft
+# a correction too. -----------------------------------------------------------
+
+F11_GOLDEN = os.path.join(FIXTURES, "close_rates_correction_payload.json")
+F11_REASON = "ECB fixing corrected 31 Jul"
+
+
+def _f11_correction_site():
+    """Approved Closing EUR → GBP GER-1 (0.85); nothing pending on it."""
+    site = _analyst_site()
+    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1, owner=LEAD)]
+    return site
+
+
+def test_f11_correct_an_approved_rate_saves_a_draft_that_supersedes_it():
+    site = _f11_correction_site()
+    result = _save(site, from_currency="EUR", quote=0.86, change_reason="  " + F11_REASON + " ",
+                   supersedes="GER-1")
+    dicts = [c for c in site.get_doc_calls if isinstance(c, dict)]
+    assert dicts == [{"doctype": "Group Exchange Rate", "to_currency": "GBP",
+                      "from_currency": "EUR", "rate_type": "Closing", "fiscal_year": 2025,
+                      "fiscal_period": 7, "quote": 0.86, "quoted_per": "1",
+                      "change_reason": F11_REASON, "supersedes": "GER-1"}], dicts
+    doc = site.new_docs[0]
+    assert [c[0] for c in doc.calls] == ["insert"]
+    _no_ignore_flags(site, doc)
+    assert result == {"name": "GER-NEW", "docstatus": 0, "quote_label": doc.quote_label,
+                      "source": "Manual"}
+    assert site.only_for_calls == [("EPM Analyst", "EPM Admin", "System Manager")]
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)]
+
+
+def test_f11_the_close_lead_may_draft_a_correction_too():
+    site = _f11_correction_site()
+    site.user, site.roles = LEAD, {"EPM Admin"}
+    result = _save(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
+                   supersedes="GER-1")
+    assert result["name"] == "GER-NEW"
+
+
+def test_f11_failure_path_a_viewer_and_an_entity_accountant_cannot_correct():
+    for role in ("EPM User", "Entity Accountant"):
+        site = _f11_correction_site()
+        site.user, site.roles = VIEWER, {role}
+        err = _save_raises(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
+                           supersedes="GER-1")
+        assert type(err).__name__ == "PermissionError", (role, err)
+        assert site.reads == [] and site.get_doc_calls == [] and site.new_docs == []
+
+
+def test_f11_failure_path_a_closed_period_is_refused_before_any_read_of_rates():
+    site = _f11_correction_site()
+    site.docs = [dict(site.docs[0], fiscal_period=6)]
+    err = _save_raises(site, from_currency="EUR", fiscal_period=6, quote=0.86,
+                       change_reason=F11_REASON, supersedes="GER-1")
+    assert str(err) == ("FY2025 P06 is Closed: group rates lock when their period closes "
+                        "(reopen it first)."), err
+    assert site.reads == [("sql", "fiscal_period_rows")], site.reads
+    assert site.new_docs == []
+
+
+def test_f11_failure_path_a_second_correction_while_one_is_pending_is_refused_naming_it():
+    site = _f11_correction_site()
+    site.docs.append(_ger("GER-3", "EUR", "GBP", "Closing", 0.86, 0, supersedes="GER-1",
+                          change_reason=F11_REASON))
+    err = _save_raises(site, from_currency="EUR", quote=0.87, change_reason="again",
+                       supersedes="GER-1")
+    assert str(err) == "GER-3 already corrects GER-1 and awaits approval: edit it.", err
+    assert site.new_docs == []
+
+
+def test_f11_failure_path_a_plain_draft_of_the_key_refuses_a_correction_naming_it():
+    site = _f11_correction_site()
+    site.docs.append(_ger("GER-3", "EUR", "GBP", "Closing", 0.86, 0))
+    err = _save_raises(site, from_currency="EUR", quote=0.87, change_reason="x",
+                       supersedes="GER-1")
+    assert str(err) == "GER-3 is already a draft for this rate: edit it.", err
+    assert site.new_docs == []
+
+
+def test_f11_forge_supersedes_must_be_the_approved_rate_of_the_asked_key():
+    # A draft, a cancelled rate, another key's rate and an unknown name are
+    # each refused before any write; the sentence names the rate to correct.
+    cases = [
+        ("GER-D", "GER-D is not the approved Closing rate EUR → GBP for FY2025 P07: "
+                  "correct GER-1."),
+        ("GER-C", "GER-C is not the approved Closing rate EUR → GBP for FY2025 P07: "
+                  "correct GER-1."),
+        ("GER-A", "GER-A is not the approved Closing rate EUR → GBP for FY2025 P07: "
+                  "correct GER-1."),
+        ("GER-NOPE", "GER-NOPE is not the approved Closing rate EUR → GBP for FY2025 P07: "
+                     "correct GER-1."),
+    ]
+    for supersedes, sentence in cases:
+        site = _f11_correction_site()
+        site.docs += [_ger("GER-C", "EUR", "GBP", "Closing", 0.84, 2),
+                      _ger("GER-A", "EUR", "GBP", "Average", 0.84, 1)]
+        if supersedes == "GER-D":
+            # A draft of the key would be refused as "already a draft" first;
+            # put it on another key so the supersedes check is what refuses.
+            site.docs.append(_ger("GER-D", "USD", "GBP", "Closing", 0.79, 0))
+        err = _save_raises(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
+                           supersedes=supersedes)
+        assert str(err) == sentence, (supersedes, err)
+        assert site.new_docs == [], supersedes
+
+
+def test_f11_failure_path_nothing_approved_to_correct():
+    site = _analyst_site()
+    site.docs = [_ger("GER-C", "EUR", "GBP", "Closing", 0.84, 2)]
+    err = _save_raises(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
+                       supersedes="GER-C")
+    assert str(err) == ("GER-C is not the approved Closing rate EUR → GBP for FY2025 P07: "
+                        "there is no approved rate to correct."), err
+    assert site.new_docs == []
+
+
+def test_f11_a_blank_supersedes_is_no_correction():
+    site = _analyst_site()
+    result = _save(site, supersedes="  ")
+    dicts = [c for c in site.get_doc_calls if isinstance(c, dict)]
+    assert set(dicts[0]) == NEW_KEYS, dicts[0]
+    assert result["name"] == "GER-NEW"
+
+
+def test_f11_editing_a_correction_keeps_what_it_corrects():
+    site = _analyst_site()
+    doc = _named(site, name="GER-3", rate_type="Closing", supersedes="GER-1",
+                 source="Manual", erp_quote=None)
+    for supersedes in (None, "GER-1"):
+        _save(site, name="GER-3", from_currency="EUR", quote=0.861, change_reason=F11_REASON,
+              supersedes=supersedes)
+        assert doc.supersedes == "GER-1"
+        assert doc.quote == 0.861
+    assert [c[0] for c in doc.calls] == ["save", "save"]
+
+
+def test_f11_failure_path_an_edit_cannot_change_what_a_draft_corrects():
+    site = _analyst_site()
+    doc = _named(site, name="GER-3", rate_type="Closing", supersedes="GER-1")
+    err = _save_raises(site, name="GER-3", from_currency="EUR", quote=0.86,
+                       change_reason=F11_REASON, supersedes="GER-9")
+    assert str(err) == "GER-3 corrects GER-1, not GER-9: a draft keeps the rate it corrects.", err
+    plain = _named(site, name="GER-2")
+    err = _save_raises(site, name="GER-2", from_currency="EUR", rate_type="Average",
+                       supersedes="GER-9")
+    assert str(err) == ("GER-2 corrects no approved rate, not GER-9: a draft keeps the rate it "
+                        "corrects."), err
+    assert doc.calls == [] and plain.calls == []
+
+
+def test_f11_save_roles_are_the_save_rate_literal():
+    import ast
+
+    tree = ast.parse(open(API_PY, encoding="utf-8").read())
+    [fn] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "save_rate"]
+    first = fn.body[0].value
+    assert first.func.attr == "only_for"
+    literal = ast.literal_eval(first.args[0])
+    api = _load_rates_api(_Site())
+    assert api.RATE_SAVE_ROLES == literal == ("EPM Analyst", "EPM Admin", "System Manager")
+
+
+# get_rates: ``correct`` on every cell, and the pending correction.
+
+def _f11_grid_site():
+    """The golden's site: the Close Lead under Blocked reads FY2025 P07 with
+    EUR → GBP Closing GER-1 approved (0.85) and the Analyst's correction GER-3
+    (0.86, supersedes GER-1) pending; EUR → GBP Average GER-4 approved with
+    nothing pending; USD → GBP Closing GER-5 a first draft; USD → GBP Average
+    missing."""
+    site = _Site()
+    site.user, site.roles = LEAD, {"EPM Admin"}
+    site.policy = "Blocked"
+    site.docs = [
+        _ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1, owner=LEAD,
+             modified=datetime(2025, 7, 31, 9, 0, 0)),
+        _ger("GER-3", "EUR", "GBP", "Closing", 0.86, 0, owner=ANALYST,
+             modified=datetime(2025, 8, 2, 9, 0, 0), change_reason=F11_REASON,
+             supersedes="GER-1"),
+        _ger("GER-4", "EUR", "GBP", "Average", 0.84, 1, owner=LEAD),
+        _ger("GER-5", "USD", "GBP", "Closing", 0.79, 0, owner=ANALYST),
+    ]
+    return site
+
+
+def test_f11_get_rates_matches_the_golden_payload():
+    site = _f11_grid_site()
+    result = _call(site)
+    assert result == _golden(F11_GOLDEN), json.dumps(result, indent=1, ensure_ascii=False)
+
+
+def test_f11_the_pending_correction_carries_before_after_and_its_approve_mode():
+    result = _call(_f11_grid_site())
+    cell = _row(result, "EUR")["closing"]
+    assert (cell["name"], cell["status"], cell["extra_drafts"]) == ("GER-1", "approved", [])
+    assert cell["correct"] is False  # one is already pending
+    assert cell["correction"] == {
+        "name": "GER-3", "supersedes": "GER-1", "owner": ANALYST, "change_reason": F11_REASON,
+        "before": {"quote": 0.85, "quoted_per": "1", "rate": 0.85},
+        "after": {"quote": 0.86, "quoted_per": "1", "rate": 0.86},
+        "approve": {"mode": "direct", "message": None}, "edited_by": [],
+        "edit": True, "delete": True}
+
+
+def test_f11_failure_path_the_lead_cannot_approve_their_own_correction_under_blocked():
+    site = _f11_grid_site()
+    site.docs[1]["owner"] = LEAD
+    cell = _row(_call(site), "EUR")["closing"]
+    assert cell["correction"]["approve"]["mode"] == "refused"
+
+
+def test_f11_correct_is_true_only_on_an_approved_cell_with_nothing_pending():
+    result = _call(_f11_grid_site())
+    eur, usd = _row(result, "EUR"), _row(result, "USD")
+    assert eur["average"]["correct"] is True
+    assert eur["closing"]["correct"] is False
+    assert usd["closing"]["correct"] is False  # a first draft: edit it
+    assert usd["average"]["correct"] is False  # missing: enter it
+    for cell in (eur["average"], usd["closing"], usd["average"]):
+        assert cell["correction"] is None
+
+
+def test_f11_the_analyst_may_correct_too():
+    site = _f11_grid_site()
+    site.user, site.roles = ANALYST, {"EPM Analyst"}
+    assert _row(_call(site), "EUR")["average"]["correct"] is True
+
+
+def test_f11_failure_path_a_viewer_never_gets_correct():
+    site = _f11_grid_site()
+    site.user, site.roles = VIEWER, {"EPM User"}
+    result = _call(site)
+    eur = _row(result, "EUR")
+    assert eur["average"]["correct"] is False
+    assert eur["closing"]["correction"]["approve"]["mode"] == "not_approver"
+
+
+def test_f11_failure_path_a_closed_period_never_gets_correct():
+    site = _f11_grid_site()
+    site.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Closed")]
+    eur = _row(_call(site), "EUR")
+    assert eur["average"]["correct"] is False
+
+
+def test_fr4_get_rates_summary_counts_the_pending_correction():
+    # review-d2fu S6: GER-3 corrects the approved GER-1 and is pending, so the
+    # summary says so beside the three cell counts.
+    result = _call(_f11_grid_site())
+    assert result["summary"] == {"missing": 1, "awaiting_approval": 1, "approved": 2,
+                                 "corrections_pending": 1}
+
+
+def test_f11_the_correction_costs_no_extra_read():
+    plain, corrected = _f11_grid_site(), _f11_grid_site()
+    plain.docs = [d for d in plain.docs if d["name"] != "GER-3"]
+    _call(plain), _call(corrected)
+    assert len(plain.reads) == len(corrected.reads) == 8, corrected.reads
+
+
+# --- FR1 (konsol#305 review-d2fu S1; #312-3, #312-3b, Deepak Pai): a draft
+# correction is never a dead end. ``delete_rate(name)`` deletes one draft Group
+# Exchange Rate that carries ``supersedes``: a pending correction, or an
+# orphan that can never be approved. Every refusal is thrown before any write.
+
+FR1_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
+
+
+def _fr1_site(user=ANALYST, roles=("EPM Analyst",)):
+    """``_f11_grid_site()`` as the Analyst, with each of its rates (and a
+    cancelled correction GER-C) readable by ``get_doc`` under its own name."""
+    site = _f11_grid_site()
+    site.user, site.roles = user, set(roles)
+    site.docs.append(_ger("GER-C", "EUR", "GBP", "Closing", 0.84, 2, supersedes="GER-1",
+                          change_reason=F11_REASON))
+    for row in site.docs:
+        site.named[row["name"]] = _FakeDoc(dict(row, doctype="Group Exchange Rate"))
+    return site
+
+
+def _delete(site, name):
+    return _invoke(site, lambda api: api.delete_rate(name))
+
+
+def _delete_raises(site, name):
+    with pytest.raises(Exception) as info:
+        _delete(site, name)
+    return info.value
+
+
+def test_fr1_the_analyst_deletes_a_pending_correction():
+    site = _fr1_site()
+    result = _delete(site, "GER-3")
+    assert result == {"name": "GER-3", "deleted": True}, result
+    assert site.deleted == [(("Group Exchange Rate", "GER-3"), {})], site.deleted
+    assert site.only_for_calls == [FR1_ROLES]
+    assert site.reads == [("exists", "Group Exchange Rate"), ("get_doc", "Group Exchange Rate"),
+                          ("sql", "fiscal_period_rows")], site.reads
+    assert site.get_doc_kwargs == [{"for_update": True}], site.get_doc_kwargs
+    assert site.new_docs == [] and site.named["GER-3"].calls == []
+
+
+def test_fr1_the_close_lead_deletes_a_correction_too_and_the_name_is_stripped():
+    site = _fr1_site(user=LEAD, roles=("EPM Admin",))
+    assert _delete(site, "  GER-3 ") == {"name": "GER-3", "deleted": True}
+    assert site.deleted == [(("Group Exchange Rate", "GER-3"), {})], site.deleted
+
+
+def test_fr1_failure_paths_each_refused_with_its_sentence_and_nothing_deleted():
+    cases = [
+        ("GER-1", "GER-1 is approved, not a draft: correct it with a Reason for Change instead."),
+        ("GER-C", "GER-C is cancelled, not a draft: a cancelled rate is kept as the audit trail."),
+        ("GER-5", "GER-5 corrects no approved rate: edit it instead."),
+        ("GER-NOPE", "GER-NOPE is not a group exchange rate: reload the Rates screen."),
+        (["GER-3"], "['GER-3'] is not a group exchange rate: reload the Rates screen."),
+        ({"name": "GER-3"}, "{'name': 'GER-3'} is not a group exchange rate: reload the Rates "
+                            "screen."),
+        ("", " is not a group exchange rate: reload the Rates screen."),
+    ]
+    for name, sentence in cases:
+        site = _fr1_site()
+        err = _delete_raises(site, name)
+        assert type(err).__name__ == "ValidationError", (name, err)
+        assert str(err) == sentence, (name, str(err))
+        assert site.deleted == [], name
+        assert site.new_docs == [], name
+
+
+def test_fr1_failure_path_a_correction_in_a_closed_period_is_refused():
+    site = _fr1_site()
+    site.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Closed")]
+    err = _delete_raises(site, "GER-3")
+    assert str(err) == ("FY2025 P07 is Closed: group rates lock when their period closes "
+                        "(reopen it first)."), err
+    assert site.deleted == []
+
+
+def test_fr1_failure_path_the_period_read_is_the_drafts_own():
+    # P07 is Open; the draft sits in P06, which is Closed: the doc's own period decides.
+    site = _fr1_site()
+    site.named["GER-3"].fiscal_period = 6
+    err = _delete_raises(site, "GER-3")
+    assert str(err) == ("FY2025 P06 is Closed: group rates lock when their period closes "
+                        "(reopen it first)."), err
+    assert site.deleted == []
+
+
+def test_fr1_failure_path_a_viewer_and_an_entity_accountant_read_nothing():
+    for role in ("EPM User", "Entity Accountant"):
+        site = _fr1_site(user=VIEWER, roles=(role,))
+        err = _delete_raises(site, "GER-3")
+        assert type(err).__name__ == "PermissionError", (role, err)
+        assert site.reads == [] and site.get_doc_calls == [], (role, site.reads)
+        assert site.deleted == [], role
+
+
+def test_fr1_forge_extra_keys_never_reach_it():
+    # Frappe's whitelisted-args path drops keys a function does not name; a
+    # direct call with them raises TypeError before any read.
+    import inspect
+
+    site = _fr1_site()
+    with pytest.raises(TypeError):
+        _invoke(site, lambda api: api.delete_rate(name="GER-1", docstatus=0,
+                                                  ignore_permissions=True))
+    assert site.reads == [] and site.deleted == [] and site.only_for_calls == []
+    params = _invoke(site, lambda api: [(p.name, p.kind) for p in
+                                        inspect.signature(api.delete_rate).parameters.values()])
+    assert params == [("name", inspect.Parameter.POSITIONAL_OR_KEYWORD)], params
+
+
+def test_fr1_delete_roles_are_the_save_roles_literal():
+    import ast
+
+    tree = ast.parse(open(API_PY, encoding="utf-8").read())
+    [fn] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "delete_rate"]
+    body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
+    first = body[0].value  # the first statement after the docstring
+    assert first.func.attr == "only_for"
+    assert isinstance(first.args[0], ast.Tuple)  # a literal tuple, not a name
+    literal = ast.literal_eval(first.args[0])
+    api = _load_rates_api(_Site())
+    assert literal == api.RATE_SAVE_ROLES == FR1_ROLES
+    [deco] = fn.decorator_list
+    assert ast.unparse(deco) == "frappe.whitelist(methods=['POST'])", ast.unparse(deco)
+
+
+# --- FR2 (konsol#305 review-d2fu S1; #312-3, #312-3b, Deepak Pai): the
+# server decides whether a correction can be edited or deleted, exactly when
+# ``save_rate`` / ``delete_rate`` would accept it, and lists each cell's orphan
+# corrections (drafts that correct a rate no longer approved) with ``delete``.
+
+FR2_ORPHAN = ("GER-7", "GER-0")  # EUR -> GBP Closing, corrects a rate no longer approved
+
+
+def _fr2_site(user=LEAD, roles=("EPM Admin",), closed=False, orphan=True):
+    """``_f11_grid_site()`` for ``user``, plus (``orphan``) the Analyst's draft
+    GER-7 correcting GER-0 on EUR -> GBP Closing, with every rate readable by
+    ``get_doc`` under its own name. ``closed``: FY2025 P07 is Closed."""
+    site = _f11_grid_site()
+    site.user, site.roles = user, set(roles)
+    if orphan:
+        site.docs.append(_ger(FR2_ORPHAN[0], "EUR", "GBP", "Closing", 0.87, 0, owner=ANALYST,
+                              supersedes=FR2_ORPHAN[1], change_reason="stale"))
+    if closed:
+        site.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Closed")]
+    for row in site.docs:
+        site.named[row["name"]] = _FakeDoc(dict(row, doctype="Group Exchange Rate"))
+    return site
+
+
+FR2_CALLERS = [
+    # (label, kwargs of _fr2_site, edit/delete expected)
+    ("analyst", {"user": ANALYST, "roles": ("EPM Analyst",)}, True),
+    ("close lead", {"user": LEAD, "roles": ("EPM Admin",)}, True),
+    ("system manager", {"user": LEAD, "roles": ("System Manager",)}, True),
+    ("viewer", {"user": VIEWER, "roles": ("EPM User",)}, False),
+    ("closed period", {"user": ANALYST, "roles": ("EPM Analyst",), "closed": True}, False),
+]
+
+
+def _fr2_cells(result):
+    for row in result["rows"] + result["unrequired"]:
+        for rate_type, key in (("Closing", "closing"), ("Average", "average")):
+            yield row, rate_type, row[key]
+
+
+def test_fr2_the_correction_carries_edit_and_delete_from_the_callers_roles_and_period():
+    for label, kwargs, expected in FR2_CALLERS:
+        cell = _row(_call(_fr2_site(**kwargs)), "EUR")["closing"]
+        assert cell["correction"]["name"] == "GER-3", label
+        assert cell["correction"]["edit"] is expected, label
+        assert cell["correction"]["delete"] is expected, label
+
+
+def test_fr2_every_cell_carries_orphans_and_the_orphan_carries_delete():
+    for label, kwargs, expected in FR2_CALLERS:
+        result = _call(_fr2_site(**kwargs))
+        cell = _row(result, "EUR")["closing"]
+        assert cell["orphans"] == [{"name": "GER-7", "supersedes": "GER-0",
+                                    "delete": expected}], (label, cell["orphans"])
+        assert cell["extra_drafts"] == ["GER-7"], label  # still counted there
+        others = [c["orphans"] for _, _, c in _fr2_cells(result) if c is not cell]
+        assert others == [[], [], []], (label, others)
+
+
+def test_fr2_failure_path_no_orphan_gives_an_empty_list_and_unchanged_extra_drafts():
+    result = _call(_fr2_site(orphan=False))
+    assert [c["orphans"] for _, _, c in _fr2_cells(result)] == [[], [], [], []]
+    assert _row(result, "EUR")["closing"]["extra_drafts"] == []
+
+
+def test_fr2_failure_path_cells_without_a_correction_still_carry_none():
+    result = _call(_fr2_site())
+    eur, usd = _row(result, "EUR"), _row(result, "USD")
+    for cell in (eur["average"], usd["closing"], usd["average"]):
+        assert cell["correction"] is None
+
+
+def test_fr2_delete_flags_are_pinned_to_delete_rate():
+    # For every correction and orphan the payload offers to delete,
+    # delete_rate on the same site accepts it; for every one it does not
+    # offer, delete_rate refuses it and deletes nothing.
+    checked = {True: 0, False: 0}
+    for label, kwargs, _ in FR2_CALLERS:
+        result = _call(_fr2_site(**kwargs))
+        items = []
+        for _, _, cell in _fr2_cells(result):
+            if cell["correction"] is not None:
+                items.append(cell["correction"])
+            items.extend(cell["orphans"])
+        assert sorted(i["name"] for i in items) == ["GER-3", "GER-7"], label
+        for item in items:
+            site = _fr2_site(**kwargs)
+            if item["delete"]:
+                assert _delete(site, item["name"]) == {"name": item["name"], "deleted": True}, \
+                    (label, item)
+                assert site.deleted == [(("Group Exchange Rate", item["name"]), {})], label
+            else:
+                err = _delete_raises(site, item["name"])
+                assert type(err).__name__ in ("PermissionError", "ValidationError"), (label, err)
+                assert site.deleted == [], (label, item)
+            checked[item["delete"]] += 1
+    assert checked[True] and checked[False], checked  # both directions ran
+
+
+def test_fr2_edit_flags_are_pinned_to_save_rate():
+    # For every correction the payload offers to edit, save_rate's edit path
+    # (name = the correction, supersedes = the approved cell) accepts it; for
+    # every one it does not offer, save_rate refuses it and saves nothing.
+    checked = {True: 0, False: 0}
+    for label, kwargs, _ in FR2_CALLERS:
+        result = _call(_fr2_site(**kwargs))
+        for row, rate_type, cell in _fr2_cells(result):
+            correction = cell["correction"]
+            if correction is None:
+                continue
+            site = _fr2_site(**kwargs)
+            args = {"from_currency": row["from_currency"], "to_currency": row["to_currency"],
+                    "rate_type": rate_type, "quote": 0.861,
+                    "quoted_per": correction["after"]["quoted_per"],
+                    "change_reason": correction["change_reason"],
+                    "name": correction["name"], "supersedes": cell["name"]}
+            doc = site.named[correction["name"]]
+            if correction["edit"]:
+                saved = _save(site, **args)
+                assert saved["name"] == correction["name"], (label, saved)
+                assert [c[0] for c in doc.calls] == ["save"], label
+                assert doc.supersedes == cell["name"] and doc.quote == 0.861, label
+            else:
+                err = _save_raises(site, **args)
+                assert type(err).__name__ in ("PermissionError", "ValidationError"), (label, err)
+                assert doc.calls == [] and site.new_docs == [], label
+            checked[correction["edit"]] += 1
+    assert checked[True] and checked[False], checked  # both directions ran
+
+
+def test_fr2_the_orphans_cost_no_extra_read():
+    plain, orphaned = _fr2_site(orphan=False), _fr2_site()
+    _call(plain), _call(orphaned)
+    assert plain.reads == orphaned.reads and len(orphaned.reads) == 8, orphaned.reads
+
+
+def test_fr2_the_draft_flag_is_named_for_what_it_decides():
+    # One name for the save role in an Open period, now driving correct, edit
+    # and delete; the old name is gone.
+    source = open(API_PY, encoding="utf-8").read()
+    assert "may_correct" not in source
+    assert "may_draft = " in source
+
+
+# --- FR3 (review-d2fu N8): save_rate's new-draft path reads the key's draft
+# and approved rows with one locking read (SELECT ... FOR UPDATE on the grain
+# index), not get_all, so two users correcting one approved rate cannot both
+# draft a correction: the second waits on the first's row lock, then reads
+# its draft and is refused. Everything after the read is unchanged. ---------
+
+
+def test_fr3_a_new_draft_reads_the_key_once_with_a_locking_read_on_the_grain():
+    site = _analyst_site()
+    _save(site, from_currency="USD", to_currency="GBP", rate_type="Closing")
+    sqls = [q for kind, q in [r[:2] for r in site.reads] if kind == "sql"
+            and "Group Exchange Rate" in q]
+    assert sqls == [FR3_LOCKING_READ], site.reads
+    query = sqls[0]
+    assert query.endswith(" FOR UPDATE"), query
+    for field in ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"):
+        assert ("%s = %%s" % field) in query, (field, query)
+    assert "docstatus IN (0, 1)" in query, query
+    assert site.locking_values == [("GBP", "USD", 2025, 7, "Closing")], site.locking_values
+    assert ("get_all", "Group Exchange Rate") not in site.reads, site.reads
+
+
+def test_fr3_a_correction_reads_the_key_with_the_locking_read_too():
+    site = _f11_correction_site()
+    result = _save(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
+                   supersedes="GER-1")
+    assert result["name"] == "GER-NEW"
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
+    assert site.locking_values == [("GBP", "EUR", 2025, 7, "Closing")], site.locking_values
+
+
+def test_fr3_failure_path_the_second_correction_is_refused_on_what_the_locking_read_returns():
+    # The first correction GER-3 is what the second user's locking read sees
+    # once the first commits; the refusal is the existing sentence, nothing is
+    # inserted, and no get_all of Group Exchange Rate is made.
+    site = _f11_correction_site()
+    site.docs.append(_ger("GER-3", "EUR", "GBP", "Closing", 0.86, 0, supersedes="GER-1",
+                          change_reason=F11_REASON))
+    err = _save_raises(site, from_currency="EUR", quote=0.87, change_reason="again",
+                       supersedes="GER-1")
+    assert str(err) == "GER-3 already corrects GER-1 and awaits approval: edit it.", err
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
+    assert site.new_docs == []
+
+
+def test_fr3_failure_path_an_approved_key_is_refused_on_the_locking_read():
+    site = _analyst_site()
+    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1)]
+    err = _save_raises(site, from_currency="EUR")
+    assert str(err) == ("GER-1 is already the approved Closing rate EUR → GBP for FY2025 P07: "
+                        "correct it with a Reason for Change instead."), err
+    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
+    assert site.new_docs == []
+
+
+def test_fr3_an_edit_by_name_makes_no_locking_read_of_the_key():
+    # The edit path reads the named draft (get_doc) and nothing else: the row
+    # does not widen to it.
+    site = _analyst_site()
+    _named(site)
+    _save(site, name="GER-2", from_currency="EUR", rate_type="Average", quote=0.9)
+    assert site.locking_values == [], site.locking_values
+    assert site.reads == [("sql", "fiscal_period_rows"), ("get_doc", "Group Exchange Rate")]

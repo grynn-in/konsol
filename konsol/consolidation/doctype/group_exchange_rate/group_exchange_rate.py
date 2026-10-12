@@ -15,6 +15,17 @@ Decided by the user on 13 Sep 2026:
 * Rates lock when their period closes: submit and cancel are refused, so a
   change is a reopen of the period (Period Status keeps who and when), a
   cancel, and an amendment that must say why.
+* A correction supersedes (konsol#312: #312-3, Deepak Pai 9 Oct 2026, narrowed
+  by #312-3b, 12 Oct 2026). A draft names the approved rate of its own key in
+  ``supersedes`` and says why; it coexists with that rate, which stays
+  approved and published until the correction is approved. Approval cancels
+  the superseded rate in the same transaction (its normal cancel, so its
+  audit-trail event is written), so the key always has exactly one approved
+  rate. A rate that replaced another is never cancelled: Frappe cannot return
+  a cancelled rate to approved (frappe/model/document.py:917-918), so a bad
+  correction is fixed by another correction. Rejected: #312-3a restore as an
+  amended copy, #312-3d keep the old rate approved but marked, a raw
+  docstatus write.
 
 A rate is entered as a **quote per a unit**: ``quote`` units of the group
 currency per ``quoted_per`` (1, 10, 100, 1,000 or 10,000) units of the
@@ -74,6 +85,7 @@ class GroupExchangeRate(Document):
         self._validate_group_currency()
         self._track_source()
         self._set_label()
+        self._validate_supersedes()
         self._require_reasons()
 
     def _saved_version(self):
@@ -190,6 +202,25 @@ class GroupExchangeRate(Document):
 
         self.quote_label = group_rates.quote_label(self.quote, self._per(), self.from_currency, self.to_currency)
 
+    def _key_label(self):
+        return (f"{self.rate_type} rate {self.from_currency} → {self.to_currency} "
+                f"for FY{self.fiscal_year} P{self.fiscal_period}")
+
+    def _validate_supersedes(self):
+        """A correction names the approved rate of its own key (#312-3). Read
+        without a lock here; before_submit's locking read is the authority."""
+        name = self.get("supersedes")
+        if not name:
+            return
+        other = None if name == self.name else frappe.db.get_value(
+            self.doctype, name, list(GRAIN) + ["docstatus"], as_dict=True)
+        same_key = other is not None and int(other.docstatus or 0) == 1 and all(
+            str(other.get(f)) == str(self.get(f)) for f in GRAIN)
+        if not same_key:
+            frappe.throw(
+                f"{name} cannot be superseded by this rate: a correction supersedes the approved "
+                f"{self._key_label()}.", frappe.ValidationError)
+
     def _require_reasons(self):
         """Say why: always for an amendment, and for a move over the declared
         Rate Move threshold (Close Settings, konsol#305-D2-9) from the
@@ -199,6 +230,9 @@ class GroupExchangeRate(Document):
 
         if (self.change_reason or "").strip():
             return
+        if self.get("supersedes"):
+            frappe.throw(f"Say why this rate replaces {self.supersedes} (Reason for Change).",
+                         frappe.MandatoryError)
         if self.amended_from:
             frappe.throw(
                 "Say why this rate replaces the one it amends (Reason for Change). "
@@ -268,26 +302,60 @@ class GroupExchangeRate(Document):
 
     def _refuse_second_approved_rate(self):
         """One approved rate per grain. A locking read, so two approvals of the
-        same key in parallel cannot both pass (REPEATABLE READ; indexed below)."""
-        other = frappe.db.sql(
+        same key in parallel cannot both pass (REPEATABLE READ; indexed below).
+        The rate a correction supersedes is exempt, and only that one: on_submit
+        cancels it in this transaction. It must still be approved now; the
+        lock holds it so until the cancel."""
+        approved = [row[0] for row in frappe.db.sql(
             "SELECT name FROM `tabGroup Exchange Rate` WHERE to_currency = %s AND from_currency = %s "
             "AND fiscal_year = %s AND fiscal_period = %s AND rate_type = %s AND docstatus = 1 "
             "AND name != %s FOR UPDATE",
             tuple(self.get(f) for f in GRAIN) + (self.name,),
-        )
-        if other:
+        )]
+        supersedes = self.get("supersedes")
+        others = [name for name in approved if name != supersedes]
+        if others:
             frappe.throw(
-                f"{other[0][0]} is already the approved {self.rate_type} rate {self.from_currency} → "
-                f"{self.to_currency} for FY{self.fiscal_year} P{self.fiscal_period}. Cancel it "
-                "(while the period is open) and amend it instead.",
+                f"{others[0]} is already the approved {self._key_label()}. Correct it with a "
+                "Reason for Change instead.",
                 frappe.DuplicateEntryError)
+        if supersedes and supersedes not in approved:
+            frappe.throw(
+                f"{supersedes} is no longer the approved {self._key_label()}, so this correction "
+                "has nothing to replace. Delete it and correct the approved rate.",
+                frappe.ValidationError)
 
     def before_cancel(self):
-        """Cancel only while the period is open (12 Sep conventions)."""
+        """Cancel only while the period is open (12 Sep conventions). A rate
+        that replaced another is never cancelled (#312-3b), except by the
+        approval of the correction that replaces it in turn."""
+        supersedes = self.get("supersedes")
+        if supersedes and self.flags.get("superseded_by") is None:
+            frappe.throw(
+                f"{self.name} replaced {supersedes}: correct it with another correction, not a cancel.",
+                frappe.ValidationError)
         assert_open(self.fiscal_year, self.fiscal_period, action="cancel a group exchange rate")
 
     def on_submit(self):
+        self._cancel_superseded()
         self._publish()
+
+    def _cancel_superseded(self):
+        """Approval of a correction cancels the rate it replaces, in this
+        transaction: no commit here, and the rate's own cancel runs (its
+        period gate, and the on_cancel hooks that write the audit trail's
+        approval_cancelled event and republish). This rate is already
+        submitted and links to it through ``supersedes``, so Frappe's
+        back-link check on cancel (document.py check_no_back_links_exist)
+        would refuse it; only Group Exchange Rate links are ignored for this
+        one cancel."""
+        name = self.get("supersedes")
+        if not name:
+            return
+        superseded = frappe.get_doc(self.doctype, name, for_update=True)
+        superseded.flags.superseded_by = self.name
+        superseded.ignore_linked_doctypes = [self.doctype]
+        superseded.cancel()
 
     def on_cancel(self):
         self._publish()

@@ -429,12 +429,13 @@ def test_a_clean_site_gives_four_rows_with_the_unowned_tb_a_problem():
     assert zzx["in_scope"] is False
     assert zzx["ownership"] == {"tone": "blocking", "label": "None for P09"}
     assert zzx["tb"] == {"tone": "blocking", "label": "Not consolidated: no ownership for this period",
+                         "status": "Not consolidated: no ownership for this period",
                          "reminders": None, "overdue": False}
     zza = rows["ZZA"]
     assert zza["problem"] is False, zza
     assert zza["ownership"]["label"] == "Full · 100%"
-    assert zza["tb"] == {"tone": "ok", "label": "Received", "reminders": None,
-                         "overdue": False}
+    assert zza["tb"] == {"tone": "ok", "label": "Received", "status": "Received",
+                         "reminders": None, "overdue": False}
     # Group currency comes from the root group only (data_area_id not set):
     # USD, not the sub-group's GBP; EUR->USD Closing is approved.
     assert zza["rate"] == {"tone": "ok", "label": "Approved"}
@@ -454,7 +455,7 @@ def test_other_periods_records_do_not_count():
     site = _Site()
     site.data["Trial Balance Submission"][0]["fiscal_period"] = 8
     rows = {r["entity"]: r for r in _call(site)["rows"]}
-    assert rows["ZZA"]["tb"] == {"tone": "blocking", "label": "Missing",
+    assert rows["ZZA"]["tb"] == {"tone": "blocking", "label": "Missing", "status": "Missing",
                                  "reminders": None, "overdue": False}
 
 
@@ -703,7 +704,7 @@ def test_the_events_are_the_real_summary_input():
 def test_a_reminded_tb_cell_carries_count_last_at_and_the_latest_sender():
     rows = _by_row(_call(_reminded_site()))
     assert rows["ZZA"]["tb"] == {
-        "tone": "blocking", "label": "Missing",
+        "tone": "blocking", "label": "Missing", "status": "Missing",
         "reminders": {"count": 2, "last_at": "2025-10-06T10:00:00+01:00",
                       "last_by": "zz-lead@example.com", "last_by_name": "Zed Lead"},
         "overdue": False}, rows["ZZA"]
@@ -854,6 +855,10 @@ def test_get_period_grid_matches_the_golden_fixture():
         golden = json.load(f)
     assert out == golden
     assert [r["entity"] for r in golden["rows"] if r["tb"]["reminders"]] == ["ZZA"]
+    # F2: every golden TB cell carries its status word.
+    assert [(r["entity"], r["tb"]["status"]) for r in golden["rows"]] == [
+        ("ZZA", "Missing"), ("ZZB", "Received"), ("ZZC", "Received"),
+        ("ZZX", "Not consolidated: no ownership for this period")]
 
 
 # --- D57: the period's four due dates, TB overdue and signoff_overdue (2.4) ------
@@ -891,18 +896,18 @@ def _run(signoff_status):
 def test_the_stub_deadlines_are_the_real_model_output():
     got = _DM.period_deadlines([_rule(date(2025, 1, 1), tb=5, signoff=10)], set(),
                                date(2025, 9, 28), date(2025, 10, 11))
-    assert got["tb"] == {"due": date(2025, 10, 3), "past": True, "text": "Due 2025-10-03"}
+    assert got["tb"] == {"due": date(2025, 10, 3), "past": True, "text": None}
     assert got["signoff"] == {"due": date(2025, 10, 10), "past": True,
-                              "text": "Due 2025-10-10"}
+                              "text": None}
 
 
 def test_the_grid_carries_all_four_steps():
     result = _call(_deadline_site(date(2025, 10, 6)))
     assert result["deadlines"] == {
-        "tb": {"due": "2025-10-03", "past": True, "text": "Due 2025-10-03"},
+        "tb": {"due": "2025-10-03", "past": True, "text": None},
         "ic": {"due": None, "past": False, "text": "No due date declared"},
         "journals": {"due": None, "past": False, "text": "No due date declared"},
-        "signoff": {"due": "2025-10-10", "past": False, "text": "Due 2025-10-10"},
+        "signoff": {"due": "2025-10-10", "past": False, "text": None},
     }
 
 
@@ -911,6 +916,74 @@ def test_a_past_tb_due_makes_the_missing_cell_overdue_and_no_other():
     assert rows["ZZA"]["tb"]["label"] == "Missing" and rows["ZZA"]["tb"]["overdue"] is True
     for code in ("ZZB", "ZZC", "ZZX"):
         assert rows[code]["tb"]["overdue"] is False, rows[code]
+
+
+def _call_relabelled(site, relabel):
+    """``get_period_grid`` with the REAL ``period_grid_model.tb_cell`` wrapped
+    so its label is replaced by ``relabel(status, label)`` (konsol#305 F2):
+    the status the real model decided is untouched, only the display text
+    changes."""
+    api = _load_api(site)
+    model = api.period_grid_model
+    real = model.tb_cell
+
+    def tb_cell(status, tb):
+        cell = real(status, tb)
+        return dict(cell, label=relabel(status, cell["label"]))
+
+    model.tb_cell = tb_cell
+    try:
+        result = _installed(site, api.get_period_grid, 2025, 9)
+    finally:
+        model.tb_cell = real
+    json.dumps(result)
+    return result
+
+
+def test_every_tb_cell_carries_its_status_word():
+    """konsol#305 F2 (S9): the TB cell sends the status its label comes from."""
+    rows = _by_row(_call(_deadline_site(date(2025, 10, 6))))
+    assert {code: r["tb"]["status"] for code, r in rows.items()} == {
+        "ZZA": "Missing", "ZZB": "Received", "ZZC": "Received",
+        "ZZX": "Not consolidated: no ownership for this period"}
+
+
+def test_a_reworded_missing_label_is_still_overdue():
+    """F2: overdue reads the status, not the label: a Missing cell whose
+    label reads otherwise is still overdue past the TB date."""
+    rows = _by_row(_call_relabelled(
+        _deadline_site(date(2025, 10, 6)),
+        lambda status, label: "Not received yet" if status == "Missing" else label))
+    assert rows["ZZA"]["tb"]["label"] == "Not received yet"
+    assert rows["ZZA"]["tb"]["status"] == "Missing"
+    assert rows["ZZA"]["tb"]["overdue"] is True
+
+
+def test_a_label_reading_missing_on_another_status_is_not_overdue():
+    """F2 failure path: a non-Missing status whose label text is "Missing"
+    is never overdue."""
+    rows = _by_row(_call_relabelled(
+        _deadline_site(date(2025, 10, 6)),
+        lambda status, label: "Missing" if status == "Received" else label))
+    for code in ("ZZB", "ZZC"):
+        assert rows[code]["tb"]["label"] == "Missing", rows[code]
+        assert rows[code]["tb"]["status"] == "Received", rows[code]
+        assert rows[code]["tb"]["overdue"] is False, rows[code]
+
+
+def test_a_tb_cell_without_a_status_raises_never_reads_the_label():
+    """F2 failure path: a cell without its status is a broken contract; the
+    endpoint raises instead of falling back to the label."""
+    site = _deadline_site(date(2025, 10, 6))
+    api = _load_api(site)
+    model = api.period_grid_model
+    real = model.tb_cell
+    model.tb_cell = lambda status, tb: {k: v for k, v in real(status, tb).items() if k != "status"}
+    try:
+        with pytest.raises(KeyError):
+            _installed(site, api.get_period_grid, 2025, 9)
+    finally:
+        model.tb_cell = real
 
 
 def test_on_the_tb_due_date_nothing_is_overdue():
@@ -983,7 +1056,7 @@ def test_the_deadlines_are_present_when_the_caller_sees_no_row():
     site.allowed = set()
     result = _call(site)
     assert result["rows"] == []
-    assert result["deadlines"]["tb"]["text"] == "Due 2025-10-03"
+    assert result["deadlines"]["tb"] == {"due": "2025-10-03", "past": True, "text": None}
     assert result["signoff_overdue"] is True
 
 
@@ -1008,6 +1081,11 @@ def test_the_golden_fixture_shows_overdue():
         golden = json.load(f)
     assert golden["signoff_overdue"] is True
     assert golden["deadlines"]["journals"]["text"] == "No due date declared"
+    # F3 (review S17): a dated step carries no server text; the SPA words it
+    # from ``due`` (dueDate.js). Only the undeclared step has a sentence.
+    assert {s: (d["due"], d["text"]) for s, d in golden["deadlines"].items()} == {
+        "tb": ("2025-10-03", None), "ic": ("2025-10-07", None),
+        "journals": (None, "No due date declared"), "signoff": ("2025-10-01", None)}
     assert [r["entity"] for r in golden["rows"] if r["tb"]["overdue"]] == ["ZZA"]
 
 

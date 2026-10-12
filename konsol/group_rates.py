@@ -397,42 +397,55 @@ _GROUP_NODES = "(SELECT consolidation_group, reporting_currency FROM epm_gold.co
 _TRANSLATED = "consolidation_method NOT IN ('equity', 'none') AND has_complete_chain = 1"
 
 
-def translation_needs(fiscal_year, fiscal_period):
-    """(pairs, groups without a currency) for exactly the rows
+def translation_gaps(fiscal_year, fiscal_period):
+    """(pairs, groups without a currency, entities without a currency) for exactly the rows
     gold_consolidated_trial_balance translates in the period: an entity with
     ledger rows, into each group gold_entity_ownership places it under for the
     period, with the translation's own filter (method not 'equity' or 'none',
     a complete chain, so nothing outside the ownership window). An equity
     associate's currency owes no rate. A group node with no reporting
     currency cannot be translated into at all; the warehouse guard refuses
-    it, so the gate names it.
+    it, so the gate names it. An entity in that set whose functional currency
+    is blank in silver_entity_currencies (or which has no row there) cannot be
+    translated either: konsol#311, the gate names it rather than skipping it.
+    konsol#252 refuses such a TB at intake, but Entity.validate still lets the
+    currency be cleared after a TB is submitted.
+
+    The currencies are LEFT-JOINed (join_use_nulls=0, so an entity with no row
+    reads ''), and the entity code is selected only for a blank currency, so
+    DISTINCT stays per currency pair for every other entity.
 
     Read from the last build: ownership changed since then is seen at the next."""
     rows = _ch_rows(
-        "SELECT DISTINCT ec.accounting_currency, g.reporting_currency, eo.consolidation_group "
+        "SELECT DISTINCT ec.accounting_currency, g.reporting_currency, eo.consolidation_group, "
+        "       if(ec.accounting_currency = '', tb.data_area_id, '') "
         "FROM (SELECT DISTINCT data_area_id FROM epm_gold.gold_trial_balance "
         "      WHERE fiscal_year = {fy:UInt16} AND fiscal_period = {fp:UInt16}) AS tb "
-        "INNER JOIN (SELECT data_area_id, accounting_currency FROM epm_silver.silver_entity_currencies "
-        "            WHERE accounting_currency != '') AS ec ON ec.data_area_id = tb.data_area_id "
+        "LEFT JOIN (SELECT data_area_id, accounting_currency FROM epm_silver.silver_entity_currencies) AS ec "
+        "    ON ec.data_area_id = tb.data_area_id "
         "INNER JOIN (SELECT consolidation_group, data_area_id FROM epm_gold.gold_entity_ownership "
         f"            WHERE fiscal_year = {{fy:UInt16}} AND fiscal_period = {{fp:UInt16}} AND {_TRANSLATED}) AS eo "
         "    ON eo.data_area_id = tb.data_area_id "
         f"LEFT JOIN {_GROUP_NODES} AS g ON g.consolidation_group = eo.consolidation_group "
-        "WHERE ec.accounting_currency != g.reporting_currency",
+        "WHERE ec.accounting_currency = '' OR ec.accounting_currency != g.reporting_currency",
         {"fy": int(fiscal_year), "fp": int(fiscal_period)},
     )
     return split_needs(rows)
 
 
 def split_needs(rows):
-    """(from, to, group) rows -> ({(from, to)}, [groups with no currency]). Pure."""
-    return ({(f, t) for f, t, _ in rows if t}, sorted({g for _, t, g in rows if not t}))
+    """(from, to, group, entity) rows -> ({(from, to)}, [groups with no
+    currency], [entities with no currency]). ``entity`` is set only on a row
+    whose ``from`` is blank; such a row makes no pair. Pure."""
+    return ({(f, t) for f, t, _, _ in rows if f and t},
+            sorted({g for _, t, g, _ in rows if not t}),
+            sorted({e for f, _, _, e in rows if not f}))
 
 
 def required_pairs(fiscal_year, fiscal_period):
     """The (entity currency, group reporting currency) pairs the period's
-    translation needs (``translation_needs``, without the blockers)."""
-    return translation_needs(fiscal_year, fiscal_period)[0]
+    translation needs (``translation_gaps``, without the blockers)."""
+    return translation_gaps(fiscal_year, fiscal_period)[0]
 
 
 def tree_pairs(fiscal_year, fiscal_period):
@@ -638,7 +651,8 @@ def missing_rates(fiscal_year, fiscal_period, pairs=None, lock=False):
 def rate_gate(fiscal_year, fiscal_period, lock=False):
     """What the close gate says: (missing keys, None, blockers), or (None, why
     the warehouse can't answer, []). ``blockers`` names each group the period
-    translates into that has no reporting currency. The close app's My work
+    translates into that has no reporting currency, then each entity it
+    translates that has no functional currency (konsol#311). The close app's My work
     screen shows the same answer.
 
     ``lock`` is opt-in and passed through to ``_approved_keys``: plain by
@@ -654,7 +668,7 @@ def rate_gate(fiscal_year, fiscal_period, lock=False):
     a missing gold_entity_ownership beside a built trial balance included,
     means the rates cannot be checked."""
     try:
-        pairs, groups = translation_needs(fiscal_year, fiscal_period)
+        pairs, groups, entities = translation_gaps(fiscal_year, fiscal_period)
     except Exception as e:  # noqa: BLE001 — any failure to read means "can't verify"
         names = sorted(ch_error_names(e))
         if _not_built(e):
@@ -664,15 +678,17 @@ def rate_gate(fiscal_year, fiscal_period, lock=False):
             except Exception:  # noqa: BLE001 — can't tell, so fail closed
                 pass
         return None, type(e).__name__ + (f" {', '.join(names)}" if names else ""), []
-    return missing_rates(fiscal_year, fiscal_period, pairs, lock=lock), None, [
-        f"Consolidation Group {g} has no reporting currency" for g in groups]
+    return missing_rates(fiscal_year, fiscal_period, pairs, lock=lock), None, (
+        [f"Consolidation Group {g} has no reporting currency" for g in groups]
+        + [f"Entity {e} has no functional currency" for e in entities])
 
 
 def assert_rates_complete(fiscal_year, fiscal_period):
     """Refuse to close a period while a translated currency lacks an approved
-    rate, or a group it translates into has no reporting currency.
+    rate, a group it translates into has no reporting currency, or an entity
+    it translates has no functional currency.
 
-    The pairs come from the last build (``translation_needs``): the gate checks
+    The pairs come from the last build (``translation_gaps``): the gate checks
     what that build translates, not ownership edited since."""
     missing, error, blockers = rate_gate(fiscal_year, fiscal_period, lock=True)
     if error:
@@ -687,7 +703,7 @@ def assert_rates_complete(fiscal_year, fiscal_period):
     if problems:
         frappe.throw(
             f"Cannot close fiscal period {fiscal_period} of FY{fiscal_year}: " + "; ".join(problems)
-            + ". Set each group's Reporting Currency, pre-fill the rates from the ERP (or enter them) "
+            + ". Set each entity's Functional Currency and each group's Reporting Currency, pre-fill the rates from the ERP (or enter them) "
             "and approve each.", frappe.ValidationError)
 
 

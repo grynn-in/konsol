@@ -16,6 +16,13 @@ and ``pending_items``. The self-approval rule itself is not copied here
 either: ``close_policy_model.self_approval_problem`` is taken **injected**,
 so this module stays import-free.
 
+F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): a draft
+naming the cell's approved rate in ``supersedes`` is that rate's pending
+correction. The approved rate stays the cell (it is published until the
+correction is approved, which cancels it); the correction rides on the cell
+as ``correction`` (``_correction``) with the rate before and after, and is
+not listed in ``extra_drafts``.
+
 Imports nothing from frappe or konsol.
 """
 
@@ -77,7 +84,43 @@ def _empty_cell():
         "source": None,
         "extra_drafts": [],
         "approver": None,
+        "correction": None,
+        "orphans": [],
     }
+
+
+def _quoted(doc):
+    """A rate as quoted and as the true rate: the before or after of a correction."""
+    return {"quote": doc.get("quote"), "quoted_per": doc.get("quoted_per"), "rate": doc.get("rate")}
+
+
+def _correction(approved, drafts):
+    """F11: the pending correction of ``approved`` among ``drafts`` (the one
+    whose ``supersedes`` is its name; of two, the latest modified), or None.
+    The API adds its ``approve`` and ``edited_by``."""
+    mine = [d for d in drafts if d.get("supersedes") and d.get("supersedes") == approved["name"]]
+    if not mine:
+        return None
+    doc = max(mine, key=lambda d: d["modified"])
+    return {
+        "name": doc["name"],
+        "supersedes": approved["name"],
+        "owner": doc.get("owner"),
+        "change_reason": doc.get("change_reason"),
+        "before": _quoted(approved),
+        "after": _quoted(doc),
+    }
+
+
+def _orphans(approved, drafts):
+    """FR2 (review-d2fu S1): the drafts among ``drafts`` that correct a rate
+    and can never be approved: their ``supersedes`` is set and is not
+    ``approved`` (the key's approved rate name, or None when nothing is
+    approved). ``[{"name", "supersedes"}]`` sorted by name; the API adds
+    ``delete``. A draft correcting the approved rate is never one."""
+    return [{"name": d["name"], "supersedes": d["supersedes"]}
+            for d in sorted(drafts, key=lambda d: d["name"])
+            if d.get("supersedes") and d.get("supersedes") != approved]
 
 
 def _cell(from_currency, to_currency, rate_type, pair_type_docs, previous_index, threshold, move_problem):
@@ -87,9 +130,13 @@ def _cell(from_currency, to_currency, rate_type, pair_type_docs, previous_index,
     approved = [d for d in docs if d.get("docstatus") == 1]
     drafts = [d for d in docs if d.get("docstatus") == 0]
 
+    correction = None
+    orphans = _orphans(approved[0]["name"] if approved else None, drafts)
     if approved:
         shown = approved[0]
-        extra_names = [d["name"] for d in approved[1:]] + [d["name"] for d in drafts]
+        correction = _correction(shown, drafts)
+        extra_names = [d["name"] for d in approved[1:]] + [
+            d["name"] for d in drafts if correction is None or d["name"] != correction["name"]]
     elif drafts:
         shown = max(drafts, key=lambda d: d["modified"])
         extra_names = [d["name"] for d in drafts if d["name"] != shown["name"]]
@@ -122,6 +169,8 @@ def _cell(from_currency, to_currency, rate_type, pair_type_docs, previous_index,
         "source": shown.get("source"),
         "extra_drafts": extra_names,
         "approver": None,
+        "correction": correction,
+        "orphans": orphans,
     }
 
 
@@ -136,6 +185,12 @@ def grid(required, docs, earlier, threshold, move_problem):
 
     ``threshold`` is passed through to ``move_problem`` untouched: never
     replaced with a guessed value.
+
+    ``summary`` counts cells of ``rows`` only, never ``unrequired``: one of
+    ``missing`` / ``awaiting_approval`` / ``approved`` per cell (so the three
+    add up to twice the row count), and ``corrections_pending``, the cells
+    whose ``correction`` is not None (an approved rate with a correction
+    awaiting approval; an orphan is not one).
     """
     pair_type_docs = _by_pair_type(docs)
     previous_index = _previous_index(earlier)
@@ -167,10 +222,12 @@ def grid(required, docs, earlier, threshold, move_problem):
     unrequired = [build_row(from_currency, to_currency, False)
                   for from_currency, to_currency in unrequired_pairs]
 
-    summary = {"missing": 0, "awaiting_approval": 0, "approved": 0}
+    summary = {"missing": 0, "awaiting_approval": 0, "approved": 0, "corrections_pending": 0}
     for row in rows:
-        summary[row["closing"]["status"]] += 1
-        summary[row["average"]["status"]] += 1
+        for key in ("closing", "average"):
+            summary[row[key]["status"]] += 1
+            if row[key]["correction"] is not None:
+                summary["corrections_pending"] += 1
 
     return {"rows": rows, "unrequired": unrequired, "summary": summary}
 

@@ -1114,12 +1114,12 @@ def test_the_stub_deadlines_are_the_real_model_output():
     site = _deadline_site(date(2025, 10, 8))
     got = DEADLINE_MODEL.period_deadlines(site.deadline_rules, set(), date(2025, 9, 30),
                                           site.today)
-    assert got["tb"] == {"due": date(2025, 10, 7), "past": True, "text": "Due 2025-10-07"}
+    assert got["tb"] == {"due": date(2025, 10, 7), "past": True, "text": None}
 
 
 def test_a_past_tb_due_makes_the_missing_rows_overdue_and_no_other():
     result = _my_tbs(_deadline_site(date(2025, 10, 8)))
-    assert result["deadline"] == {"due": "2025-10-07", "past": True, "text": "Due 2025-10-07"}
+    assert result["deadline"] == {"due": "2025-10-07", "past": True, "text": None}
     by = _by_entity(result)
     assert by["ZZB"]["status"] == by["ZZC"]["status"] == "Missing"
     assert by["ZZB"]["overdue"] is True and by["ZZC"]["overdue"] is True
@@ -1129,7 +1129,7 @@ def test_a_past_tb_due_makes_the_missing_rows_overdue_and_no_other():
 
 def test_on_the_due_date_nothing_is_overdue():
     result = _my_tbs(_deadline_site(date(2025, 10, 7)))
-    assert result["deadline"] == {"due": "2025-10-07", "past": False, "text": "Due 2025-10-07"}
+    assert result["deadline"] == {"due": "2025-10-07", "past": False, "text": None}
     assert all(e["overdue"] is False for e in result["entities"])
 
 
@@ -1176,7 +1176,7 @@ def test_the_deadline_is_present_when_the_caller_sees_no_entity():
     site.allowed = set()
     result = _my_tbs(site)
     assert result["entities"] == []
-    assert result["deadline"]["text"] == "Due 2025-10-07"
+    assert result["deadline"] == {"due": "2025-10-07", "past": True, "text": None}
 
 
 def test_a_regular_period_missing_from_the_deadline_read_raises():
@@ -1209,6 +1209,6 @@ def test_the_no_due_date_docstring_line_is_gone():
 def test_the_golden_fixture_carries_the_deadline_and_overdue():
     with open(MY_TBS_FIXTURE) as f:
         golden = json.load(f)
-    assert golden["deadline"] == {"due": "2025-10-07", "past": True, "text": "Due 2025-10-07"}
+    assert golden["deadline"] == {"due": "2025-10-07", "past": True, "text": None}
     overdue = sorted(e["entity"] for e in golden["entities"] if e["overdue"])
     assert overdue == ["ZZB", "ZZC"], overdue

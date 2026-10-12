@@ -194,7 +194,86 @@ export function moveFlagView(cell, thresholdDeclared) {
   return { tag: "no threshold declared", message: null };
 }
 
+// F12 (#312-3, #312-3b; Deepak Pai 9 Oct): an approved rate is corrected by
+// a superseding draft (F10/F11). The server decides `correct` (save role,
+// period Open, approved, nothing pending on the key); this view only reads
+// it, and a cell without it throws. A pending correction rides on its grid
+// cell as `correction` (F11: not in get_pending), shown as "<old> → <new>,
+// replaces <name>". Quotes are written the way the grid writes a quote: the
+// server's number as is, then "per <Quoted Per>" (there is no other rate
+// formatter in close-ui).
+const CORRECTION_KEYS = ["name", "supersedes", "owner", "change_reason", "before", "after", "approve", "edited_by"];
+const CORRECTION_SIDE_KEYS = ["quote", "quoted_per"];
+// FR8 (review S1): the server decides whether the pending correction can be
+// edited or deleted (FR2: exactly when save_rate / delete_rate accept it), and
+// lists the key's orphan corrections (drafts superseding a rate that is no
+// longer approved) with their own `delete`. The view only carries the flags.
+const CORRECTION_FLAGS = ["edit", "delete"];
+const ORPHAN_KEYS = ["name", "supersedes", "delete"];
+
+function quoteText(side) {
+  return `${side.quote} per ${side.quoted_per}`;
+}
+
+function correctionView(correction, cellName) {
+  const where = correction.name ?? `of ${cellName}`;
+  for (const key of CORRECTION_KEYS) {
+    if (!(key in correction)) {
+      throw new Error(`gridView: the correction ${where} has no ${key}`);
+    }
+  }
+  for (const side of ["before", "after"]) {
+    for (const key of CORRECTION_SIDE_KEYS) {
+      if (!correction[side] || typeof correction[side] !== "object" || !(key in correction[side])) {
+        throw new Error(`gridView: the correction ${where} has no ${side}.${key}`);
+      }
+    }
+  }
+  for (const key of CORRECTION_FLAGS) {
+    if (typeof correction[key] !== "boolean") {
+      throw new Error(`gridView: the correction ${where} has no ${key}`);
+    }
+  }
+  return {
+    name: correction.name,
+    supersedes: correction.supersedes,
+    preparer: correction.owner,
+    changeReason: correction.change_reason,
+    editedBy: correction.edited_by,
+    approve: approveAction(correction.approve),
+    edit: correction.edit,
+    delete: correction.delete,
+    quote: correction.after.quote,
+    quotedPer: correction.after.quoted_per,
+    text: `${quoteText(correction.before)} → ${quoteText(correction.after)}, replaces ${correction.supersedes}`,
+  };
+}
+
+function orphanView(orphan, cellName) {
+  for (const key of ORPHAN_KEYS) {
+    if (!(key in orphan) || (key === "delete" && typeof orphan.delete !== "boolean")) {
+      throw new Error(`gridView: an orphan of ${cellName ?? "a missing rate"} has no ${key}`);
+    }
+  }
+  return {
+    name: orphan.name,
+    supersedes: orphan.supersedes,
+    delete: orphan.delete,
+    text: `${orphan.name} corrects ${orphan.supersedes}, which is no longer the approved rate: it can never be approved.`,
+  };
+}
+
 function cellView(cell, thresholdDeclared) {
+  const where = cell.name ?? `a ${cell.status} cell`;
+  if (typeof cell.correct !== "boolean") {
+    throw new Error(`gridView: ${where} has no correct`);
+  }
+  if (!("correction" in cell)) {
+    throw new Error(`gridView: ${where} has no correction`);
+  }
+  if (!Array.isArray(cell.orphans)) {
+    throw new Error(`gridView: ${where} has no orphans`);
+  }
   const prevQuote = previousQuote(cell.previous);
   const moveFlag = moveFlagView(cell, thresholdDeclared);
   return {
@@ -215,6 +294,9 @@ function cellView(cell, thresholdDeclared) {
     editedBy: cell.edited_by ?? null,
     extraDraftsText: extraDraftsText(cell.extra_drafts),
     source: cell.source ?? null,
+    correct: cell.correct,
+    correction: cell.correction === null ? null : correctionView(cell.correction, cell.name),
+    orphans: cell.orphans.map((orphan) => orphanView(orphan, cell.name)),
   };
 }
 
@@ -263,6 +345,28 @@ function thresholdText(thresholdPct, policyGaps) {
     return null;
   }
   return `Moves over ${formatPct(thresholdPct)}% need a Reason for Change`;
+}
+
+/**
+ * FR10 (review S6): the Rates summary line, from `get_rates`' `summary`
+ * (`{missing, awaiting_approval, approved, corrections_pending}`). The pending
+ * corrections count follows the awaiting count and appears only when it is
+ * above zero. A summary missing any count is a broken contract and throws; it
+ * never reads as zero.
+ */
+export function summaryText(summary) {
+  for (const key of ["missing", "awaiting_approval", "corrections_pending", "approved"]) {
+    if (!summary || summary[key] === undefined || summary[key] === null) {
+      throw new Error(`summaryText: the summary has no ${key}.`);
+    }
+  }
+  const parts = [`${summary.missing} missing`, `${summary.awaiting_approval} awaiting approval`];
+  const n = summary.corrections_pending;
+  if (n > 0) {
+    parts.push(`${n} ${n === 1 ? "correction" : "corrections"} awaiting approval`);
+  }
+  parts.push(`${summary.approved} approved`);
+  return parts.join(" · ");
 }
 
 /**
@@ -333,6 +437,130 @@ export function saveBody(period, row, rateType, input) {
     body.name = cell.name;
   }
   return { body };
+}
+
+/**
+ * F12: `(period, row, rateType, input)` -> `{body}` or `{error}` for
+ * `rates_api.save_rate` drafting a correction of the cell's approved rate.
+ * `input` is `{quote, quotedPer, changeReason}`. The body is saveBody's (the
+ * same quote and Quoted Per checks) with `supersedes` = the approved rate and
+ * no `name`: a correction is a new draft, never an edit of the approved one.
+ * A blank reason goes as null, so the server refuses it in its own words.
+ * Throws when the server's `correct` is not true for that cell: the Correct
+ * control renders only then, so reaching here otherwise is a wiring bug.
+ */
+export function correctionBody(period, row, rateType, input) {
+  const key = rateType === "Closing" ? "closing" : rateType === "Average" ? "average" : null;
+  if (!key) {
+    throw new Error(`Unknown rate type: ${rateType}`);
+  }
+  const cell = row[key];
+  if (!cell.correct) {
+    throw new Error(`correctionBody: the server does not offer a correction of ${cell.name ?? "a missing rate"}`);
+  }
+  const reason = typeof input.changeReason === "string" ? input.changeReason.trim() : input.changeReason;
+  const built = saveBody(period, row, rateType, { ...input, changeReason: reason });
+  if (built.error) {
+    return built;
+  }
+  const { name, ...body } = built.body;
+  return { body: { ...body, supersedes: cell.name } };
+}
+
+/**
+ * FR8: `(period, row, rateType, input)` -> `{body}` or `{error}` for
+ * `rates_api.save_rate` editing the cell's pending correction. The body is
+ * saveBody's (the same quote and Quoted Per checks) with `name` = the
+ * correction and `supersedes` = the approved rate it replaces, which is
+ * save_rate's edit path for a correction. A blank reason goes as null, for
+ * the server to refuse in its own words. Throws when the server's
+ * `correction.edit` is not true: Edit renders only then, so reaching here
+ * otherwise is a wiring bug.
+ */
+export function correctionEditBody(period, row, rateType, input) {
+  const key = rateType === "Closing" ? "closing" : rateType === "Average" ? "average" : null;
+  if (!key) {
+    throw new Error(`Unknown rate type: ${rateType}`);
+  }
+  const cell = row[key];
+  if (!cell.correction || cell.correction.edit !== true) {
+    throw new Error(`correctionEditBody: the server does not offer an edit of a correction of ${cell.name ?? "a missing rate"}`);
+  }
+  const reason = typeof input.changeReason === "string" ? input.changeReason.trim() : input.changeReason;
+  const built = saveBody(period, row, rateType, { ...input, changeReason: reason });
+  if (built.error) {
+    return built;
+  }
+  const { name, ...body } = built.body;
+  return { body: { ...body, name: cell.correction.name, supersedes: cell.name } };
+}
+
+/**
+ * FR9 (review S5): `(openForms, view)` -> `{key: sentence}` for each open
+ * correction form (keyed `<from>|<to>|<Closing|Average>`, as Rates.vue keys
+ * them) whose offer is gone from the reloaded `gridView` view: a `correct`
+ * form whose cell's `correct` is not true, an `edit` form whose cell carries
+ * no correction of that name or whose `correction.edit` is not true. A form
+ * whose cell is no longer on the grid at all is gone too; its sentence names
+ * the key, as there is no cell name to name. An unknown mode throws (a
+ * wiring bug, as in saveCorrection).
+ */
+export function staleCorrectionForms(openForms, view) {
+  const cells = new Map();
+  for (const row of [...(view.rows || []), ...(view.unrequired || [])]) {
+    cells.set(`${row.fromCurrency}|${row.toCurrency}|Closing`, row.closing);
+    cells.set(`${row.fromCurrency}|${row.toCurrency}|Average`, row.average);
+  }
+  const stale = {};
+  for (const [key, form] of Object.entries(openForms)) {
+    const cell = cells.get(key) ?? null;
+    if (form.mode === "correct") {
+      if (!cell || cell.correct !== true) {
+        const name = cell?.name ?? key;
+        stale[key] = `The correction form for ${name} closed: after the reload the server no longer offers a correction of ${name}.`;
+      }
+    } else if (form.mode === "edit") {
+      const correction = cell ? cell.correction : null;
+      if (!correction || correction.name !== form.name || correction.edit !== true) {
+        stale[key] = `The edit of ${form.name} closed: after the reload the server no longer offers an edit of ${form.name}.`;
+      }
+    } else {
+      throw new Error(`staleCorrectionForms: the correction form ${key} has no mode (${form.mode})`);
+    }
+  }
+  return stale;
+}
+
+/**
+ * FR8: the `rates_api.delete_rate` body for one draft correction (a pending
+ * correction or an orphan): its name and nothing else. The server decides
+ * whether it may go; a blank name is a wiring bug and throws.
+ */
+export function deleteBody(name) {
+  if (isBlank(name)) {
+    throw new Error("deleteBody: no draft named to delete");
+  }
+  return { body: { name } };
+}
+
+/**
+ * F12: the server's approve mode for a Group Exchange Rate on the loaded
+ * `get_rates` payload, by name: a grid cell's own draft, or the pending
+ * correction riding on an approved cell (F11). `null` when no loaded cell or
+ * correction of that name carries an approve mode.
+ */
+export function gerApproveAction(payload, name) {
+  if (!payload) return null;
+  for (const row of [...(payload.rows || []), ...(payload.unrequired || [])]) {
+    for (const cell of [row.closing, row.average]) {
+      if (!cell) continue;
+      if (cell.name === name && cell.approve) return approveAction(cell.approve);
+      if (cell.correction && cell.correction.name === name && cell.correction.approve) {
+        return approveAction(cell.correction.approve);
+      }
+    }
+  }
+  return null;
 }
 
 /**

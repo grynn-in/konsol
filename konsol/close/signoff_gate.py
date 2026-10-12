@@ -441,10 +441,18 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
 
 
 def latest_signed_runs(fields=()):
-    """{(fy, fp): run} — the latest signed terminal Assertion Run of each
-    period, the run ``_mark_latest_signed`` marks. ``fields`` adds columns
-    to name, fiscal_year and fiscal_period (konsol#338 reads
-    ``numbers_fingerprint``)."""
+    """{(fy, fp): run} — each period whose LATEST terminal Assertion Run is
+    signed (``SIGNED_STATES``), with that run; the run ``_mark_latest_signed``
+    marks. ``fields`` adds columns to name, fiscal_year and fiscal_period
+    (konsol#338 reads ``numbers_fingerprint``).
+
+    konsol#305 F1 (S14): a period whose latest run is Re-sign Needed or Not
+    Signed Off is absent, even when an OLDER run of it is still "Signed Off".
+    That older run survives because signing a newer run never touches it
+    (``assertion_run.sign_off_close`` writes only its own run) and a void
+    marks only the latest signed run. "Latest" is the order
+    ``assertion_run.latest_close_run`` and ``_latest_runs`` use, so every
+    reader that names a signature agrees with the close and order gates."""
     # Imported here: assertion_run imports this module's callers (A22).
     from konsol.consolidation.doctype.assertion_run.assertion_run import (
         SIGNED_STATES, TERMINAL_STATUSES)
@@ -452,18 +460,24 @@ def latest_signed_runs(fields=()):
     latest = {}
     for r in frappe.get_all(
         "Assertion Run",
-        filters={"status": ["in", list(TERMINAL_STATUSES)],
-                 "signoff_status": ["in", list(SIGNED_STATES)]},
-        fields=["name", "fiscal_year", "fiscal_period"] + list(fields),
+        filters={"status": ["in", list(TERMINAL_STATUSES)]},
+        fields=["name", "fiscal_year", "fiscal_period", "signoff_status"] + list(fields),
         order_by="completed_at desc, creation desc", limit_page_length=0,
     ):
         latest.setdefault(_key(r["fiscal_year"], r["fiscal_period"]), r)
-    return latest
+    signed = {}
+    for key, r in latest.items():
+        if r["signoff_status"] not in SIGNED_STATES:
+            continue
+        if "signoff_status" not in fields:
+            r.pop("signoff_status")
+        signed[key] = r
+    return signed
 
 
 def _mark_latest_signed(affected, affected_by, entity=None, detail=None):
-    """Mark the latest signed terminal run of each period in ``affected``
-    "Re-sign Needed" with ``affected_by``; return the marked run names. Each
+    """Mark the latest terminal run of each period in ``affected``, when it
+    is signed (``latest_signed_runs``, F1), "Re-sign Needed" with ``affected_by``; return the marked run names. Each
     mark also records a ``signoff_voided`` Close Event in the caller's own
     transaction (E10-P6a, konsol#305 T04b, my judgement): a reopen or a data
     change voids a signature, and the trail should say why. ``entity``

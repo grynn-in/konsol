@@ -366,15 +366,51 @@ def group_csv(rows, source=None):
     return out.getvalue()
 
 
+def partner_on_non_ic_accounts(rows, chart):
+    """The rows that name a partner on an account the group chart says may not
+    carry intercompany (``allow_ic`` 0). Pure; host-testable.
+
+    konsol#317 (Deepak Pai, 9 Oct 2026): a warning, never a refusal (#247:
+    report what makes a number unexplained). Such a row loads, and no
+    elimination ever matches it. `chart` is konsol.group_chart.chart_accounts(),
+    the dict the caller already read for the chart errors. An account the chart
+    does not hold is not judged here: chart_errors refuses it by name. Returns
+    the accounts, one per row (sorted), as partnerless_ic_accounts does.
+
+    The single Trial Balance Submission imports this rule from here: this
+    module is the one every loader of konsol/tb_bulk.py hands over for real.
+    """
+    return sorted(r["main_account"] for r in rows
+                  if r.get(PARTNER) and r["main_account"] in chart
+                  and not chart[r["main_account"]]["allow_ic"])
+
+
+def non_ic_partner_warning(accounts):
+    """The warning shown for partner_on_non_ic_accounts(), or '' for none."""
+    if not accounts:
+        return ""
+    n, named = len(accounts), sorted(set(accounts))
+    one_row, one_account = n == 1, len(named) == 1
+    return (
+        f"{n} row{'' if one_row else 's'} name{'s' if one_row else ''} a partner on "
+        f"account{'' if one_account else 's'} {', '.join(named)}, which the chart says may not carry "
+        f"intercompany (allow_ic 0). {'It loads' if one_row else 'They load'}, but "
+        f"{'is' if one_row else 'are'} never eliminated: set allow_ic on the "
+        f"account{'' if one_account else 's'} in the chart, or remove the partner{'' if one_row else 's'}."
+    )
+
+
 def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_types, existing, validate_rows,
-                functional_currency, minor_unit, known_entities=None, warnings=(), partnerless_ic_rows=0):
+                functional_currency, minor_unit, known_entities=None, warnings=(), partnerless_ic_rows=0,
+                non_ic_partner_rows=0):
     """Everything that would stop this entity-period loading, as one report row.
 
     The facts come from the caller; `validate_rows` is the single-submission
     validator, so the bulk path can never accept what a single upload refuses.
     `known_entities` are the entities a partner may name. `warnings` never stop
     a load (an intercompany row without a partner is allowed, and reported:
-    `partnerless_ic_rows` counts them).
+    `partnerless_ic_rows` counts them; so is a partner on an account the chart
+    closes to intercompany, konsol#317: `non_ic_partner_rows` counts those).
 
     `period` is None when the (year, period) is not a declared period, else a
     dict with at least `code`, `type` (Opening/Regular/Closing/Adjustment) and
@@ -424,6 +460,7 @@ def check_group(key, rows, *, known_accounts, visible, leaf, period, postable_ty
         "total_credit": float(exact_total(rows, "credit")),
         "errors": errors, "ok": not errors, "existing": existing,
         "warnings": list(warnings), "partnerless_ic_rows": partnerless_ic_rows,
+        "non_ic_partner_rows": non_ic_partner_rows,
     }
 
 
@@ -436,10 +473,12 @@ def merge_loaded(report, previous, upload_name=None):
     before recording it, by the submission's file, which this upload names
     "<upload>-<entity>-<year>-P<period>.csv". A row this upload loaded that
     has since been cancelled becomes a problem: resuming must not quietly
-    load old figures again.
+    load old figures again. It stays one on every later re-check (konsol#332):
+    the previous report's `was_loaded` (set here and by keep_submitted) counts
+    as loaded earlier, and is carried forward on the problem row.
     """
-    loaded = {(p["entity"], p["fiscal_year"], p["fiscal_period"]): p["loaded"]
-              for p in previous or [] if p.get("loaded")}
+    loaded = {(p["entity"], p["fiscal_year"], p["fiscal_period"]): p.get("loaded") or p.get("was_loaded")
+              for p in previous or [] if p.get("loaded") or p.get("was_loaded")}
     prefix = f"{upload_name}-" if upload_name else None
     out = []
     for r in report:
@@ -450,9 +489,13 @@ def merge_loaded(report, previous, upload_name=None):
         if ours:
             r = {**r, "ok": True, "errors": [], "loaded": existing}
         elif before and not existing:
-            r = {**r, "ok": False,
+            r = {**r, "ok": False, "was_loaded": before,
                  "errors": [f"Loaded earlier as {before}, which has since been cancelled. "
                             "Upload the file again if it should be loaded anew."]}
+        elif before:
+            # Refused by the fresh check (another submission holds the period);
+            # keep the name so that submission's cancel is never a reload.
+            r = {**r, "was_loaded": before}
         out.append(r)
     return out
 
@@ -460,12 +503,13 @@ def merge_loaded(report, previous, upload_name=None):
 def keep_submitted(report, submitted):
     """The report with a row counted as loaded only while the submission it
     names is in `submitted` (konsol#281). A row whose submission is gone is
-    a problem, as in merge_loaded: it is never quietly loaded again."""
+    a problem, as in merge_loaded: it is never quietly loaded again. Its name
+    moves to `was_loaded`, which merge_loaded reads (konsol#332)."""
     out = []
     for r in report:
         name = r.get("loaded")
         if name and name not in submitted:
-            r = {k: v for k, v in r.items() if k != "loaded"}
+            r = {**{k: v for k, v in r.items() if k != "loaded"}, "was_loaded": name}
             r.update(ok=False, errors=[f"Loaded earlier as {name}, which is no longer submitted. "
                                        "Upload the file again if it should be loaded anew."])
         out.append(r)
@@ -479,3 +523,32 @@ def outcome(loaded, failed, ready):
     if loaded:
         return "Partly Loaded"
     return "Failed"
+
+
+def claimed(report):
+    """The submission names the report says this upload loaded."""
+    return [r["loaded"] for r in report if r.get("loaded")]
+
+
+def read_state(report, submitted, status):
+    """The upload as it stands now (konsol#332-2, Deepak Pai 9 Oct): the
+    loaded count and the Loaded / Partly Loaded status are derived from the
+    submissions in `submitted` (docstatus 1) when read, never stored. A
+    submission cancelled since the load leaves its row a problem, as
+    keep_submitted words it.
+
+    The stored status is the load job's own state ("Job status" in Desk).
+    Draft, Checked, Loading and Failed are kept as stored. A finished load
+    (Loaded, Partly Loaded) is only ever demoted: once one of its
+    submissions is gone it reads Partly Loaded while any remain, else
+    Cancelled (Deepak Pai 12 Oct, #332-2-D1: the load did not fail, what it
+    loaded was withdrawn). "Cancelled" is derived only: it is not one of the
+    stored Select options, and load() decides resume from the stored job
+    status, never from this. A load stopped at the time limit is never
+    promoted.
+    """
+    now = keep_submitted(report, submitted)
+    loaded = sum(1 for r in now if r.get("loaded"))
+    if status in ("Loaded", "Partly Loaded") and loaded < len(claimed(report)):
+        status = "Partly Loaded" if loaded else "Cancelled"
+    return {"report": now, "loaded_count": loaded, "status": status}

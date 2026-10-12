@@ -351,7 +351,10 @@ def validate_tb_rows(rows, known_accounts=None, entity=None, known_entities=None
     Partners (konsol#159): `entity` is the submitting entity, and a row may
     not name it as its own partner. known_entities is every entity a partner
     may be (the non-group Entities), or None to skip that check. A blank
-    partner is always valid: the partner is optional (decision 2).
+    partner is never an error: the partner is optional (decision 2); a blank
+    one on an intercompany account is warned about (partnerless_ic_accounts).
+    A partner on an account the chart says may not carry intercompany is a
+    warning too, never an error (konsol#317: partner_on_non_ic_accounts).
 
     chart (konsol#182) is the group chart, konsol.group_chart.chart_accounts();
     when given it decides the accounts (chart_errors) and known_accounts is
@@ -714,8 +717,12 @@ class TrialBalanceSubmission(Document):
         # konsol#182: the one chart reader, the Published Main Accounts in
         # MariaDB. No warehouse read: a site with nothing built still validates.
         from konsol.group_chart import chart_accounts
+        # konsol#317: the partner-on-a-non-IC-account rule is the bulk model's,
+        # so the single and bulk uploads cannot disagree (one definition).
+        from konsol.tb_bulk_model import non_ic_partner_warning, partner_on_non_ic_accounts
 
-        errors = validate_tb_rows(rows, chart=chart_accounts(),
+        chart = chart_accounts()
+        errors = validate_tb_rows(rows, chart=chart,
                                   entity=self.data_area_id,
                                   known_entities=self._partner_entities(rows))
         # konsolidat#199: the form's basis is required, and a file that
@@ -753,13 +760,18 @@ class TrialBalanceSubmission(Document):
         # whatever the Entity says later. Not landed in epm_raw: the read side
         # is konsol#253's.
         self.currency = declared_currency(declared)
-        # A warning, not an error (decision 2): kept on the document so the
-        # submitter and the reviewer both see it.
-        self.validation_message = partnerless_warning(
-            partnerless_ic_accounts(rows, self._ic_accounts()))
-        if self.validation_message:
-            frappe.msgprint(self.validation_message, title="Intercompany rows without a partner",
-                            indicator="orange")
+        # Warnings, not errors (decision 2; konsol#317): kept on the document
+        # so the submitter and the reviewer both see them, one message each.
+        warnings = [
+            (partnerless_warning(partnerless_ic_accounts(rows, self._ic_accounts())),
+             "Intercompany rows without a partner"),
+            (non_ic_partner_warning(partner_on_non_ic_accounts(rows, chart)),
+             "Partners on accounts that do not carry intercompany"),
+        ]
+        self.validation_message = "\n".join(text for text, _ in warnings if text)
+        for text, title in warnings:
+            if text:
+                frappe.msgprint(text, title=title, indicator="orange")
 
     def on_submit(self):
         # A63: recorded before ClickHouse is touched (see _record_data_change).

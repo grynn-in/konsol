@@ -42,11 +42,12 @@
   },
   {
    "default": "Draft",
+   "description": "What the last check or load did. Whether its submissions still stand is the form's indicator (konsol#332-2).",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Status",
+   "label": "Job status",
    "options": "Draft\nChecked\nLoading\nLoaded\nPartly Loaded\nFailed",
    "read_only": 1
   },
@@ -78,9 +79,10 @@
    "fieldtype": "Column Break"
   },
   {
+   "description": "Derived when read: the submissions this upload loaded that are still submitted (konsol#332-2). Never stored.",
    "fieldname": "loaded_count",
    "fieldtype": "Int",
-   "in_list_view": 1,
+   "is_virtual": 1,
    "label": "Loaded",
    "read_only": 1
   },
@@ -111,7 +113,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-12 22:00:00.000000",
+ "modified": "2026-10-12 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Trial Balance Upload",

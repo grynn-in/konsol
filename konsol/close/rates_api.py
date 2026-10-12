@@ -5,7 +5,7 @@
 rate grid, as ``rates_model.grid`` assembles it:
 
 - the required (from, to) pairs from the last build
-  (``group_rates.translation_needs``, a ClickHouse read). Any failure there is
+  (``group_rates.translation_gaps``, a ClickHouse read). Any failure there is
   reported as ``pairs_error`` and every pair with a rate is listed with
   ``required: None``: it fails closed and visibly (E4-P9);
 - the period's drafts and approved Group Exchange Rates, and the previous
@@ -35,6 +35,33 @@ reaches it. It goes through ``insert()`` / ``save()`` with no ``ignore_*``
 flag, so the doctype's own validate decides (magnitude, digits, group currency,
 the move and its reason), and Frappe sets the owner. The Analyst has no submit
 on Group Exchange Rate, so the Analyst never approves (R2).
+
+F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): a change
+of an approved rate is a correction, drafted in the app. ``save_rate`` takes
+``supersedes``, the approved rate of the asked key, and saves a draft beside
+it; the Group Exchange Rate controller (F10) cancels the old rate in the
+transaction that approves the correction, so the key keeps one approved
+rate. Every refusal (no approved rate of that name on that key, a draft
+already pending on the key, an edit that would change what a draft corrects)
+is thrown before any write; the controller's validate refuses a correction
+with no Reason for Change. The roles are the save's own
+(``RATE_SAVE_ROLES``: R2, the Analyst drafts and the Close Lead approves;
+the Close Lead may draft too). ``get_rates`` adds to every cell ``correct``
+(the caller holds a save role, the period is Open, the cell is approved and
+nothing is pending on its key: exactly when the correction would be
+accepted) and ``correction``: the pending correction of an approved cell with
+its rate before and after (``rates_model._correction``), its approve mode and
+``edited_by``, or None. It costs no extra read: the grid's own read carries
+``supersedes``.
+
+FR2 (review-d2fu S1): the server, not the SPA, decides what may be done with
+a correction. The pending correction carries ``edit`` and ``delete``, and
+every cell carries ``orphans`` (``rates_model._orphans``: the key's draft
+corrections of a rate no longer approved, which can never be approved), each
+with ``delete``. All three equal ``may_draft`` (a save role and the period
+Open), which is exactly when ``save_rate``'s edit path and ``delete_rate``
+accept them: a correction or orphan is always a draft with ``supersedes`` in
+this period. Tests pin each flag against the two endpoints.
 
 ``get_pending()`` (GET, E405) lists every Historical Equity Rate and
 Ownership Period draft (docstatus 0; both have no submit for the Analyst, so
@@ -114,7 +141,11 @@ period_name = _load_period_name()
 RATES_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
 GER = "Group Exchange Rate"
 DOC_FIELDS = ["name", "from_currency", "to_currency", "rate_type", "quote", "quoted_per",
-              "erp_quote", "docstatus", "owner", "modified", "change_reason", "source"]
+              "erp_quote", "docstatus", "owner", "modified", "change_reason", "source",
+              "supersedes"]
+#: F11: the roles ``save_rate`` admits (its ``frappe.only_for`` literal; a
+#: test pins the two together). ``get_rates.correct`` is decided by them.
+RATE_SAVE_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
 
 
 def _period(fiscal_year, fiscal_period):
@@ -147,14 +178,17 @@ def _quoted_per_options():
 
 
 def _required(fy, fp):
-    """(required pairs or None, pairs_error, blockers) — rate_gate's wording."""
+    """(required pairs or None, pairs_error, blockers) — rate_gate's wording and
+    order: each group with no reporting currency, then each entity with no
+    functional currency (konsol#311), so the screen names what the gate refuses."""
     try:
-        pairs, groups = group_rates.translation_needs(fy, fp)
+        pairs, groups, entities = group_rates.translation_gaps(fy, fp)
     except Exception as e:  # noqa: BLE001 — any failure to read means "can't say"
         names = sorted(group_rates.ch_error_names(e))
         return None, type(e).__name__ + (f" {', '.join(names)}" if names else ""), []
-    return set(pairs), None, [f"Consolidation Group {g} has no reporting currency"
-                              for g in groups]
+    return set(pairs), None, (
+        [f"Consolidation Group {g} has no reporting currency" for g in groups]
+        + [f"Entity {e} has no functional currency" for e in entities])
 
 
 def _docs(fy, fp):
@@ -211,11 +245,30 @@ def get_rates(fiscal_year, fiscal_period):
 
     cells = [row[k] for row in result["rows"] + result["unrequired"] for k in ("closing", "average")]
     awaiting = [c for c in cells if c["status"] == "awaiting_approval"]
-    preparers = self_approval.preparers_for(GER, {c["name"]: c["owner"] for c in awaiting})
+    corrections = [c["correction"] for c in cells if c["correction"] is not None]
+    preparers = self_approval.preparers_for(
+        GER, {c["name"]: c["owner"] for c in awaiting + corrections})
 
     user = frappe.session.user
     roles = frappe.get_roles(user)
+    # FR2: save_rate and delete_rate admit exactly RATE_SAVE_ROLES in an Open
+    # period, so this one flag decides correct, a correction's edit and delete,
+    # and an orphan's delete (a correction or orphan is always a draft with
+    # supersedes, in this period).
+    may_draft = bool(set(roles) & set(RATE_SAVE_ROLES)) and period.get("status") == "Open"
+    for correction in corrections:
+        correction_preparers = preparers[correction["name"]]
+        correction["approve"] = rates_model.approve_mode(
+            user, roles, correction_preparers, GER, correction["name"], policy,
+            close_policy_model.APPROVER_ROLES, close_policy_model.self_approval_problem)
+        correction["edited_by"] = sorted(correction_preparers - {correction["owner"]})
+        correction["edit"] = may_draft
+        correction["delete"] = may_draft
     for cell in cells:
+        for orphan in cell["orphans"]:
+            orphan["delete"] = may_draft
+        cell["correct"] = (may_draft and cell["status"] == "approved"
+                           and cell["correction"] is None and not cell["extra_drafts"])
         if cell["status"] != "awaiting_approval":
             cell["approve"] = None
             cell["edited_by"] = None
@@ -254,9 +307,23 @@ def _grain_text(from_currency, to_currency, rate_type, fy, fp):
     return f"{rate_type} {from_currency} → {to_currency} {period_name(fy, fp)}"
 
 
+def _correction_refusal(supersedes, approved, drafts, grain_text):
+    """F11: the sentence refusing a correction of ``supersedes``, or None.
+    ``approved`` and ``drafts`` are the asked key's rows (name, supersedes)."""
+    if supersedes not in approved:
+        return (f"{supersedes} is not the approved {grain_text}: "
+                + (f"correct {approved[0]}." if approved else "there is no approved rate to correct."))
+    if drafts:
+        draft = drafts[0]
+        if draft.get("supersedes") == supersedes:
+            return f"{draft['name']} already corrects {supersedes} and awaits approval: edit it."
+        return f"{draft['name']} is already a draft for this rate: edit it."
+    return None
+
+
 @frappe.whitelist(methods=["POST"])
 def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type, quote,
-              quoted_per, change_reason=None, name=None):
+              quoted_per, change_reason=None, name=None, supersedes=None):
     frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
     if rate_type not in group_rates.RATE_TYPES:
         frappe.throw(f"Rate Type {rate_type} is not a group rate type: "
@@ -269,31 +336,52 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
         frappe.throw(f"{period_name(fy, fp)} is {status}: group rates lock when their period "
                      "closes (reopen it first).")
     reason = _reason(change_reason)
+    supersedes = _reason(supersedes)  # stripped; blank is no correction
 
     if not name:
-        grain = {"to_currency": to_currency, "from_currency": from_currency,
-                 "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp}
-        existing = frappe.get_all(GER, filters=dict(grain, docstatus=["in", [0, 1]]),
-                                  fields=["name", "docstatus"])
+        # FR3 (review-d2fu N8): a locking read on the grain index (REPEATABLE
+        # READ), so a second correction of one rate waits on the first's row
+        # lock, then sees its draft and is refused. Newest first, as get_all's
+        # default order was. An empty key locks only a gap: two concurrent
+        # first drafts may then deadlock, and one fails visibly.
+        existing = frappe.db.sql(
+            "SELECT name, docstatus, supersedes FROM `tabGroup Exchange Rate` "
+            "WHERE to_currency = %s AND from_currency = %s AND fiscal_year = %s "
+            "AND fiscal_period = %s AND rate_type = %s AND docstatus IN (0, 1) "
+            "ORDER BY modified DESC FOR UPDATE",
+            (to_currency, from_currency, fy, fp, rate_type), as_dict=True)
         approved = [r["name"] for r in existing if r["docstatus"] == 1]
-        if approved:
+        drafts = [r for r in existing if r["docstatus"] == 0]
+        values = {"doctype": GER, "to_currency": to_currency, "from_currency": from_currency,
+                  "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp,
+                  "quote": quote, "quoted_per": quoted_per, "change_reason": reason}
+        if supersedes:
+            refusal = _correction_refusal(
+                supersedes, approved, drafts,
+                f"{rate_type} rate {from_currency} → {to_currency} for {period_name(fy, fp)}")
+            if refusal:
+                frappe.throw(refusal)
+            values["supersedes"] = supersedes
+        elif approved:
             frappe.throw(
                 f"{approved[0]} is already the approved {rate_type} rate {from_currency} → "
-                f"{to_currency} for {period_name(fy, fp)}; a change is a cancel and an amendment "
-                "with a Reason for Change (Desk; E4-P7).")
-        if existing:
+                f"{to_currency} for {period_name(fy, fp)}: correct it with a Reason for Change "
+                "instead.")
+        elif existing:
             frappe.throw(f"{existing[0]['name']} is already a draft for this rate: edit it.")
-        doc = frappe.get_doc({"doctype": GER, "to_currency": to_currency,
-                              "from_currency": from_currency, "rate_type": rate_type,
-                              "fiscal_year": fy, "fiscal_period": fp, "quote": quote,
-                              "quoted_per": quoted_per, "change_reason": reason})
+        doc = frappe.get_doc(values)
         doc.insert()
     else:
         doc = frappe.get_doc(GER, name)
         if doc.docstatus != 0:
             frappe.throw(
-                f"{name} is {'approved' if doc.docstatus == 1 else 'cancelled'}, not a draft: "
-                "a change is a cancel and an amendment with a Reason for Change (Desk; E4-P7).")
+                f"{name} is approved, not a draft: correct it with a Reason for Change instead."
+                if doc.docstatus == 1 else
+                f"{name} is cancelled, not a draft: correct the approved rate with a Reason for "
+                "Change instead.")
+        if supersedes and supersedes != doc.get("supersedes"):
+            frappe.throw(f"{name} corrects {doc.get('supersedes') or 'no approved rate'}, not "
+                         f"{supersedes}: a draft keeps the rate it corrects.")
         theirs = (doc.from_currency, doc.to_currency, doc.rate_type,
                   int(doc.fiscal_year), int(doc.fiscal_period))
         asked = (from_currency, to_currency, rate_type, fy, fp)
@@ -307,6 +395,40 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
 
     return {"name": doc.name, "docstatus": doc.docstatus, "quote_label": doc.get("quote_label"),
             "source": doc.get("source")}
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_rate(name):
+    """FR1 (review-d2fu S1; #312-3, #312-3b): delete one draft correction (a
+    draft Group Exchange Rate with ``supersedes``), so a pending correction or
+    an orphan that can never be approved is never a dead end. It names only
+    ``name``, so a forged ``docstatus``, ``ignore_permissions``, ``force`` or
+    ``supersedes`` never reaches it. The doc is read with a row lock, so a
+    parallel approval of the same draft waits and the docstatus read is
+    current. Every refusal is thrown before the delete; a plain first draft is
+    edited, not deleted here. ``frappe.delete_doc`` runs with the caller's own
+    delete permission; Frappe's Deleted Document keeps the record, and no Close
+    Event is written (a draft delete is not an approval event)."""
+    frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
+    name = _reason(name) or ""
+    if not name or not frappe.db.exists(GER, name):
+        frappe.throw(f"{name} is not a group exchange rate: reload the Rates screen.")
+    doc = frappe.get_doc(GER, name, for_update=True)
+    if doc.docstatus == 1:
+        frappe.throw(f"{name} is approved, not a draft: correct it with a Reason for Change "
+                     "instead.")
+    if doc.docstatus == 2:
+        frappe.throw(f"{name} is cancelled, not a draft: a cancelled rate is kept as the audit "
+                     "trail.")
+    if not doc.get("supersedes"):
+        frappe.throw(f"{name} corrects no approved rate: edit it instead.")
+    fy, fp = int(doc.fiscal_year), int(doc.fiscal_period)
+    status = _period_row((fy, fp)).get("status")
+    if status != "Open":
+        frappe.throw(f"{period_name(fy, fp)} is {status}: group rates lock when their period "
+                     "closes (reopen it first).")
+    frappe.delete_doc(GER, name)
+    return {"name": name, "deleted": True}
 
 
 HER = "Historical Equity Rate"

@@ -183,15 +183,6 @@ test("Failure path, BC/BD: a deskLink item renders an anchor and no Approve", ()
 	assert.doesNotMatch(block, /Approve/, "no Approve control in the Desk-only branch");
 });
 
-test("Failure path: a sent-back item renders no Approve or Reject control", () => {
-	const tpl = template(read());
-	const liIdx = tpl.indexOf('v-for="item in view.sentBack"');
-	assert.ok(liIdx >= 0, "renders the sent-back list");
-	const block = tpl.slice(liIdx);
-	assert.doesNotMatch(block, /@click="(approve|startReject|reject)\(/, "no action control in the sent-back list");
-	assert.doesNotMatch(block, /canAct\(/, "no approve/reject gate reused in the sent-back list");
-});
-
 test("No raw fetch( — W44 now builds Before/After columns (A19's wave-4 stub above), but every server call still goes through api.js", () => {
 	const source = read();
 	assert.doesNotMatch(source, /\bfetch\(/, "all server calls go through api.js");
@@ -282,14 +273,8 @@ test("Names konsol.close.statement_api.get_statement exactly once; exactly one g
 	assert.equal(gets.length, 1, "exactly one get(GET_STATEMENT call site");
 });
 
-test("The statement loads only for a journal item: loadDetailStatement is called from selectJournal, after its doctype !== JOURNAL return guard", () => {
+test("The statement loader reads the item's own period and group, and is the one get(GET_STATEMENT call site", () => {
 	const js = script(read());
-	const selectFn = js.match(/function selectJournal\(item\)\s*\{([\s\S]*?)\n\}/);
-	assert.ok(selectFn, "selectJournal(item) is defined");
-	const guardIdx = selectFn[1].search(/item\.doctype\s*!==\s*JOURNAL/);
-	assert.ok(guardIdx >= 0, "selectJournal still refuses a non-journal item first");
-	const loaderCallIdx = selectFn[1].search(/loadDetailStatement\(/);
-	assert.ok(loaderCallIdx > guardIdx, "the statement loader is only reached past the JOURNAL guard, so BC/BD items never load one");
 	const loaderFn = js.match(/async function loadDetailStatement\(item\)\s*\{([\s\S]*?)\n\}/);
 	assert.ok(loaderFn, "loadDetailStatement(item) is defined");
 	assert.match(loaderFn[1], /get\(\s*GET_STATEMENT\b/, "loadDetailStatement is the one get(GET_STATEMENT call site");
@@ -485,21 +470,6 @@ test("R52p: the Desk sentence is rates.js's DESK_DRAFT, through queueView and th
 	assert.deepEqual(opEffect(opQueueItem("OP-ZZ58B-2026-07-01")), { desk: DESK_DRAFT });
 });
 
-test("O62: an OP item's title opens the Ownership change detail, which loads no statement", () => {
-	const source = read();
-	const js = script(source);
-	assert.match(
-		source,
-		/import\s*\{[^}]*\bopEffectView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/,
-		"imports opEffectView from rates.js",
-	);
-	const fn = js.match(/function selectOwnership\(item\)\s*\{([\s\S]*?)\n\}/);
-	assert.ok(fn, "selectOwnership(item) is defined");
-	assert.match(fn[1], /item\.doctype\s*!==\s*OWNERSHIP/, "refuses a non-OP item first");
-	assert.doesNotMatch(fn[1], /loadDetailStatement|GET_STATEMENT/, "an OP item never fetches a statement");
-	assert.match(template(source), /@click="selectOwnership\(item\)"/);
-});
-
 test("O62: the detail shows EFFECT IF APPROVED, read-only, above Approve / Reject; the Desk sentence and the error have their own branches", () => {
 	const tpl = template(read());
 	const dialog = opDialog(tpl);
@@ -543,4 +513,211 @@ test("O62: the sent-back list itself renders no action control", () => {
 	const ulAt = tpl.lastIndexOf("<ul", at);
 	const { start, end } = blockFor(tpl, ulAt, "ul");
 	assert.doesNotMatch(tpl.slice(start, end), /@click|canAct\(/);
+});
+
+// ---------------------------------------------------------------------------
+// konsol#305 F4 (review U14): the detail is never a snapshot. The screen's
+// OWN selection functions (selectJournal, selectOwnership, closePanel,
+// followSelection, opEffect) are built from its <script> source — the code
+// the component runs, not a copy — with plain `{value}` refs, the real
+// approvals.js `reselect` and rates.js `opEffectView` injected, and fed the
+// real golden queue (close_approvals_op_queue_payload.json) and in-test
+// copies of it for the changed and removed cases.
+// ---------------------------------------------------------------------------
+import * as approvalsModule from "../approvals.js";
+
+const SCREEN_FUNCTIONS = ["selectJournal", "selectOwnership", "closePanel", "followSelection", "opEffect"];
+
+function loadSelection() {
+	const js = script(read());
+	const found = {};
+	for (const name of SCREEN_FUNCTIONS) {
+		const m = js.match(new RegExp(`function ${name}\\([^)]*\\)\\s*\\{[\\s\\S]*?\\n\\}\\n`));
+		if (m) found[name] = m[0];
+	}
+	const state = {
+		selectedName: { value: null },
+		selectedItem: { value: null },
+		goneNote: { value: null },
+		detail: { status: "idle", payload: null, error: null },
+		statementLoads: [],
+	};
+	const names = Object.keys(found);
+	const fns = new Function(
+		"selectedName",
+		"selectedItem",
+		"goneNote",
+		"detail",
+		"loadDetailStatement",
+		"opEffectView",
+		"reselect",
+		"OWNERSHIP",
+		"JOURNAL",
+		`let detailSeq = 0;\n${names.map((n) => found[n]).join("\n")}\nreturn { ${names.join(", ")} };`,
+	)(
+		state.selectedName,
+		state.selectedItem,
+		state.goneNote,
+		state.detail,
+		(item) => state.statementLoads.push(item.name),
+		opEffectView,
+		(view, selected) => approvalsModule.reselect(view, selected),
+		"Ownership Period",
+		"Consolidation Journal",
+	);
+	return { ...fns, state };
+}
+
+function requireFollow(screen) {
+	assert.equal(typeof screen.followSelection, "function", "the screen declares function followSelection(nextView)");
+}
+
+function opView(payload) {
+	return queueView(payload, O62_NOW, O62_TZ);
+}
+
+const OP_GONE =
+	'Ownership period "DE02 in G1 from 2026-07-01" is no longer in the approvals queue, so its detail was closed.';
+
+test("O62 (behaviour): an OP item's title opens the Ownership change detail and loads no statement; a non-OP item opens nothing", () => {
+	assert.match(read(), /import\s*\{[^}]*\bopEffectView\b[^}]*\}\s*from\s*["']\.\.\/rates\.js["']/, "imports opEffectView from rates.js");
+	assert.match(template(read()), /@click="selectOwnership\(item\)"/);
+	const screen = loadSelection();
+	const view = opView(golden(OP_QUEUE_FIXTURE));
+	screen.selectOwnership(view.items.find((i) => i.name === "HER-ZZ58"));
+	assert.equal(screen.state.selectedItem.value, null, "an HER item never opens the OP detail");
+	const op = view.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	screen.selectOwnership(op);
+	assert.equal(screen.state.selectedItem.value, op);
+	assert.equal(screen.state.selectedName.value, "OP-ZZ58-2026-07-01");
+	assert.deepEqual(screen.state.statementLoads, [], "an OP item never fetches a statement");
+	assert.deepEqual(
+		screen.opEffect(screen.state.selectedItem.value).view.rows.map((r) => [r.label, r.before, r.after]),
+		[
+			["Ownership", "100 %", "80 %"],
+			["Method", "full", "full"],
+		],
+	);
+});
+
+test("W44 (behaviour): only a journal item loads a statement — selectJournal refuses the golden OP item", () => {
+	const screen = loadSelection();
+	screen.selectJournal(opView(golden(OP_QUEUE_FIXTURE)).items.find((i) => i.name === "OP-ZZ58-2026-07-01"));
+	assert.equal(screen.state.selectedItem.value, null);
+	assert.deepEqual(screen.state.statementLoads, []);
+	const journal = queueView(queuePayloadFor(golden(ITEM_FIXTURE)), O62_NOW, O62_TZ).items[0];
+	screen.selectJournal(journal);
+	assert.equal(screen.state.selectedItem.value, journal);
+	assert.deepEqual(screen.state.statementLoads, ["CJ-W41"]);
+});
+
+test("F4: an open OP detail, after a quiet reload where its effect changed, shows the NEW effect", () => {
+	const screen = loadSelection();
+	requireFollow(screen);
+	screen.selectOwnership(opView(golden(OP_QUEUE_FIXTURE)).items.find((i) => i.name === "OP-ZZ58-2026-07-01"));
+	const reloaded = golden(OP_QUEUE_FIXTURE);
+	const op = reloaded.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	op.ownership_effect.after.pct = 60.0;
+	op.ownership_effect.after.method = "equity";
+	op.ownership_effect.resign = [];
+	op.ownership_effect.resign_detail = [];
+	screen.followSelection(opView(reloaded));
+	const panel = screen.opEffect(screen.state.selectedItem.value);
+	assert.deepEqual(
+		panel.view.rows.map((r) => [r.label, r.before, r.after]),
+		[
+			["Ownership", "100 %", "60 %"],
+			["Method", "full", "equity"],
+		],
+	);
+	assert.deepEqual(panel.view.resign, []);
+	assert.equal(panel.view.resignNone, "No signed period is affected.");
+	assert.equal(screen.state.goneNote.value, null);
+});
+
+test("F4: an open OP detail whose draft became a Desk-unreadable one shows the server's new sentence", () => {
+	const screen = loadSelection();
+	requireFollow(screen);
+	screen.selectOwnership(opView(golden(OP_QUEUE_FIXTURE)).items.find((i) => i.name === "OP-ZZ58-2026-07-01"));
+	const reloaded = golden(OP_QUEUE_FIXTURE);
+	const op = reloaded.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	op.ownership_effect = null;
+	op.ownership_effect_error =
+		"The pending ownership change OP-ZZ58-2026-07-01 cannot be shown: OP-ZZ58-2026-07-01 supersedes " +
+		"OP-ZZ58-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.";
+	screen.followSelection(opView(reloaded));
+	assert.deepEqual(screen.opEffect(screen.state.selectedItem.value), {
+		error:
+			"The pending ownership change OP-ZZ58-2026-07-01 cannot be shown: OP-ZZ58-2026-07-01 supersedes " +
+			"OP-ZZ58-1, which is not an approved Ownership Period. Correct or delete the draft in Desk.",
+	});
+});
+
+test("F4 failure path: the open OP item is gone from the reloaded queue → the detail closes and the sentence names it", () => {
+	const screen = loadSelection();
+	requireFollow(screen);
+	screen.selectOwnership(opView(golden(OP_QUEUE_FIXTURE)).items.find((i) => i.name === "OP-ZZ58-2026-07-01"));
+	const reloaded = golden(OP_QUEUE_FIXTURE);
+	reloaded.items = reloaded.items.filter((i) => i.name !== "OP-ZZ58-2026-07-01");
+	reloaded.waiting.count = 2;
+	screen.followSelection(opView(reloaded));
+	assert.equal(screen.state.selectedItem.value, null);
+	assert.equal(screen.state.selectedName.value, null);
+	assert.equal(screen.state.goneNote.value, OP_GONE);
+});
+
+test("F4: selecting another item clears the closed-detail sentence", () => {
+	const screen = loadSelection();
+	requireFollow(screen);
+	const first = opView(golden(OP_QUEUE_FIXTURE));
+	screen.selectOwnership(first.items.find((i) => i.name === "OP-ZZ58-2026-07-01"));
+	const reloaded = golden(OP_QUEUE_FIXTURE);
+	reloaded.items = reloaded.items.filter((i) => i.name !== "OP-ZZ58-2026-07-01");
+	const next = opView(reloaded);
+	screen.followSelection(next);
+	assert.equal(screen.state.goneNote.value, OP_GONE);
+	screen.selectOwnership(next.items.find((i) => i.name === "OP-ZZ58B-2026-07-01"));
+	assert.equal(screen.state.goneNote.value, null);
+	assert.deepEqual(screen.opEffect(screen.state.selectedItem.value), { desk: "Drafted in Desk: effect not previewed." });
+});
+
+test("F4: a reload with nothing open changes nothing; a reload that failed (no view) leaves the open detail as it was", () => {
+	const screen = loadSelection();
+	requireFollow(screen);
+	const view = opView(golden(OP_QUEUE_FIXTURE));
+	screen.followSelection(view);
+	assert.equal(screen.state.selectedItem.value, null);
+	assert.equal(screen.state.goneNote.value, null);
+	const op = view.items.find((i) => i.name === "OP-ZZ58-2026-07-01");
+	screen.selectOwnership(op);
+	screen.followSelection(null);
+	assert.equal(screen.state.selectedItem.value, op);
+	assert.equal(screen.state.goneNote.value, null);
+});
+
+test("F4: an open journal detail is re-read the same way and keeps its statement (no second fetch)", () => {
+	const screen = loadSelection();
+	requireFollow(screen);
+	screen.selectJournal(queueView(queuePayloadFor(golden(ITEM_FIXTURE)), O62_NOW, O62_TZ).items[0]);
+	const changed = golden(ITEM_FIXTURE);
+	changed.title = "ZZ accrue sales commission (revised)";
+	screen.followSelection(queueView(queuePayloadFor(changed), O62_NOW, O62_TZ));
+	assert.equal(screen.state.selectedItem.value.title, "ZZ accrue sales commission (revised)");
+	assert.deepEqual(screen.state.statementLoads, ["CJ-W41"]);
+	screen.followSelection(queueView({ ...queuePayloadFor(changed), items: [] }, O62_NOW, O62_TZ));
+	assert.equal(screen.state.selectedItem.value, null);
+	assert.equal(
+		screen.state.goneNote.value,
+		'Adjustment · CJ-W41 "ZZ accrue sales commission (revised)" is no longer in the approvals queue, so its detail was closed.',
+	);
+});
+
+test("F4: every queue (re)load runs followSelection, and the closed-detail sentence is shown as a status line", () => {
+	const source = read();
+	assert.match(script(source), /\bwatch\(\s*view\s*,\s*followSelection\s*\)/);
+	const note = blockMatching(template(source), "p", /v-if="goneNote"/);
+	assert.ok(note, "a <p v-if=\"goneNote\"> exists");
+	const inner = template(source).slice(note.start, note.end);
+	assert.match(inner, /role="status"/);
+	assert.match(inner, /\{\{ goneNote \}\}/);
 });

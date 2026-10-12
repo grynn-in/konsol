@@ -171,7 +171,8 @@ function byText(event) {
 }
 
 /** The detail line: a quoted reason, "Prepared by" for an `approved`
- * event, the year-action note, the unrecorded-reason note and the
+ * event, "replaces"/"replaced by" for a correction (FR11), the
+ * year-action note, the unrecorded-reason note and the
  * recovered-from-backfill note, joined by " · ". */
 function detailText(event) {
 	const detail = event.detail || {};
@@ -185,6 +186,17 @@ function detailText(event) {
 	}
 	if (event.kind === "approved") {
 		parts.push(`Prepared by ${detail.preparer}`);
+	}
+	// konsol#305 FR11 (review S4): approving a correction cancels the rate it
+	// replaces in the same transaction. FR6 writes `supersedes` on the
+	// approval and `superseded_by` on that cancel only when set (no key with
+	// None), so the two rows name each other and a manual withdrawal reads
+	// as before.
+	if ((event.kind === "approved" || event.kind === "self_approved") && detail.supersedes) {
+		parts.push(`replaces ${detail.supersedes}`);
+	}
+	if (event.kind === "approval_cancelled" && detail.superseded_by) {
+		parts.push(`replaced by ${detail.superseded_by}`);
 	}
 	if (detail.via === "year") {
 		parts.push("by the year action");

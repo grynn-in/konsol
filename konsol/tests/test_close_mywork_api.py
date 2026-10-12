@@ -1792,9 +1792,9 @@ def test_an_item_carries_its_due_date():
     ea = _call(_reminded_site(roles=("Entity Accountant",), user="zz-ea@example.com",
                               allowed={"ZZA"}))
     assert _item(ea, "tb:2025-07:ZZA")["due"] == {
-        "date": "2025-08-07", "text": "Due 2025-08-07", "overdue": True}
+        "date": "2025-08-07", "text": None, "overdue": True}
     assert _item(ea, "tb:2025-09:ZZA")["due"] == {
-        "date": "2025-10-07", "text": "Due 2025-10-07", "overdue": False}
+        "date": "2025-10-07", "text": None, "overdue": False}
 
 
 def test_an_undeclared_step_reads_no_due_date_declared():
@@ -1838,3 +1838,7 @@ def test_the_golden_file_carries_every_due_form():
     assert any(d["overdue"] for d in dues), dues
     assert any(d["date"] and not d["overdue"] for d in dues), dues
     assert any(d["text"] == "No due date declared" for d in dues), dues
+    # F3 (review S17): a dated due carries no server text; an undeclared one
+    # carries the sentence.
+    assert all(d["text"] is None for d in dues if d["date"]), dues
+    assert all(d["text"] == "No due date declared" for d in dues if not d["date"]), dues

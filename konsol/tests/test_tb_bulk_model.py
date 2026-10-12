@@ -4,6 +4,7 @@ import ast
 import csv
 import importlib.util
 import io
+import json
 import os
 import sys
 import types
@@ -179,6 +180,53 @@ def test_a_loaded_row_since_cancelled_is_a_problem_not_a_reload():
     assert not out["ok"] and "since been cancelled" in out["errors"][0] and "loaded" not in out
 
 
+# --- konsol#332 (F7): a cancelled load stays a problem on every later resume ---
+
+def _fresh_ok():
+    return [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "ok": True, "errors": [], "existing": None}]
+
+
+def test_a_cancel_seen_by_the_load_is_still_a_problem_at_the_next_recheck():
+    """run_load's keep_submitted drops `loaded`; the next re-check must not
+    rebuild the row as ready (it would be loaded again on resume)."""
+    gone = M.keep_submitted([{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12,
+                              "ok": True, "errors": [], "loaded": "TBS-2"}], set())
+    out = M.merge_loaded(_fresh_ok(), gone, "TBU-00004")[0]
+    assert out["ok"] is False, out
+    assert out["errors"] == ["Loaded earlier as TBS-2, which has since been cancelled. "
+                             "Upload the file again if it should be loaded anew."], out
+    assert "loaded" not in out and out["was_loaded"] == "TBS-2"
+    assert gone[0]["was_loaded"] == "TBS-2" and "loaded" not in gone[0]
+    assert gone[0]["errors"] == ["Loaded earlier as TBS-2, which is no longer submitted. "
+                                 "Upload the file again if it should be loaded anew."]
+
+
+def test_a_cancel_seen_by_a_recheck_is_still_a_problem_one_recheck_later():
+    first = M.merge_loaded(_fresh_ok(), [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12,
+                                          "loaded": "TBS-1"}], "TBU-00004")
+    second = M.merge_loaded(_fresh_ok(), first, "TBU-00004")[0]
+    assert second["ok"] is False, second
+    assert second["errors"] == ["Loaded earlier as TBS-1, which has since been cancelled. "
+                                "Upload the file again if it should be loaded anew."], second
+    assert "loaded" not in second and second["was_loaded"] == "TBS-1"
+    # and every recheck after that
+    third = M.merge_loaded(_fresh_ok(), [second], "TBU-00004")[0]
+    assert third["ok"] is False and third["was_loaded"] == "TBS-1", third
+
+
+def test_a_cancelled_load_whose_entity_period_is_now_submitted_elsewhere_keeps_its_name():
+    """The fresh check already refuses it ("already submitted"); the name
+    rides along so a later cancel of that other submission is not a reload."""
+    fresh = [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12, "ok": False,
+              "errors": ["TBS-9 is already submitted for this entity and period; cancel or amend it first"],
+              "existing": "TBS-9", "existing_file": "/private/files/other.csv"}]
+    first = M.merge_loaded(fresh, [{"entity": "AMDE", "fiscal_year": 2025, "fiscal_period": 12,
+                                    "was_loaded": "TBS-1"}], "TBU-00004")[0]
+    later = M.merge_loaded(_fresh_ok(), [first], "TBU-00004")[0]
+    assert later["ok"] is False and "TBS-1" in later["errors"][0], later
+    assert first["ok"] is False and first["was_loaded"] == "TBS-1" and "loaded" not in first
+
+
 def test_generated_files_name_their_upload_and_still_parse_as_a_single_upload():
     rows = [{"main_account": "1010", "debit": 1.0, "credit": 0.0, "description": ""}]
     text = M.group_csv(rows, source="TBU-00042")
@@ -224,6 +272,76 @@ def test_check_group_hands_the_partner_facts_to_the_single_validator_and_reports
     assert _check()["warnings"] == [] and _check()["partnerless_ic_rows"] == 0
 
 
+# --- konsol#317 (F6, Deepak Pai 9 Oct): a partner on an account the chart says
+# may not carry intercompany (allow_ic 0) is reported, never refused (#247).
+
+#: The group chart as konsol.group_chart.chart_accounts() hands it out.
+IC_CHART = {"6400": {"main_account": "6400", "is_group": 0, "is_posting": 1, "is_suspended": 0, "allow_ic": 0},
+            "1110": {"main_account": "1110", "is_group": 0, "is_posting": 1, "is_suspended": 0, "allow_ic": 1}}
+
+
+def _prow(account, debit, credit, partner=""):
+    return {"main_account": account, "debit": debit, "credit": credit, "currency": "EUR",
+            "description": "", "partner_data_area_id": partner}
+
+
+def test_check_group_counts_partners_on_accounts_closed_to_intercompany_and_still_loads():
+    rows = [_prow("6400", 10.0, 0.0, "ZZB"), _prow("1110", 0.0, 10.0, "ZZB")]
+    accounts = M.partner_on_non_ic_accounts(rows, IC_CHART)
+    assert accounts == ["6400"]
+    warning = M.non_ic_partner_warning(accounts)
+    r = _check(warnings=[warning], non_ic_partner_rows=len(accounts))
+    assert r["ok"] is True and r["errors"] == []
+    assert r["non_ic_partner_rows"] == 1 and r["partnerless_ic_rows"] == 0
+    assert r["warnings"] == ["1 row names a partner on account 6400, which the chart says may not carry "
+                             "intercompany (allow_ic 0). It loads, but is never eliminated: set allow_ic on the "
+                             "account in the chart, or remove the partner."]
+    # a blank partner on 6400 is an ordinary row
+    assert M.partner_on_non_ic_accounts([_prow("6400", 10.0, 0.0), _prow("1110", 0.0, 10.0, "ZZB")], IC_CHART) == []
+    assert M.non_ic_partner_warning([]) == ""
+    assert _check()["non_ic_partner_rows"] == 0
+
+
+def test_the_single_upload_uses_the_bulk_rule_not_a_copy():
+    """One definition: the single submission imports the rule tb_bulk_model holds
+    (tb_bulk_model is the one module every tb_bulk.py loader hands over for real)."""
+    tbs_path = os.path.join(APP_DIR, "consolidation", "doctype", "trial_balance_submission",
+                            "trial_balance_submission.py")
+    with open(tbs_path) as f:
+        tree = ast.parse(f.read())
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    assert not defined & {"partner_on_non_ic_accounts", "non_ic_partner_warning"}, defined
+    imported = {(n.module, a.name) for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert ("konsol.tb_bulk_model", "partner_on_non_ic_accounts") in imported
+    assert ("konsol.tb_bulk_model", "non_ic_partner_warning") in imported
+
+
+def test_the_bulk_check_reports_partners_on_accounts_closed_to_intercompany():
+    table = [HEADER_ROW + ["partner_data_area_id"],
+             ["AMDE", "2025", "3", "6400", "5", "0", "EUR", "ZZB"],
+             ["AMDE", "2025", "3", "1110", "0", "5", "EUR", "ZZB"],
+             ["AMUS", "2025", "3", "6400", "5", "0", "EUR", ""],
+             ["AMUS", "2025", "3", "1110", "0", "5", "EUR", "ZZB"]]
+    period_lookup = {(2025, 3): {"code": "P03", "type": "Regular", "status": "Open"}}
+    mod, _ = _load_tb_bulk(entities=["AMDE", "AMUS", "ZZB"], postable={"Regular"},
+                           period_lookup=period_lookup, chart=IC_CHART)
+    _, report = mod._check(table, PERIOD)
+    by_entity = {r["entity"]: r for r in report}
+    assert by_entity["AMDE"]["ok"] is True, by_entity["AMDE"]
+    assert by_entity["AMDE"]["non_ic_partner_rows"] == 1
+    assert by_entity["AMDE"]["warnings"] == [M.non_ic_partner_warning(["6400"])]
+    assert by_entity["AMUS"]["ok"] is True and by_entity["AMUS"]["non_ic_partner_rows"] == 0
+    assert by_entity["AMUS"]["warnings"] == []
+    # the upload's payload sums the counter, beside partnerless_ic_rows
+    doc = types.SimpleNamespace(report=json.dumps(report + [dict(by_entity["AMDE"])]), name="TBU-ZZ",
+                                status="Checked", upload_file="/private/files/zz.csv", amount_basis=PERIOD,
+                                group_count=3, valid_count=3, total_rows=6, loaded_count=0, failed_count=0,
+                                error="", owner="zz@example.com", creation="2099-01-01")
+    mod.frappe.utils.get_fullname = lambda user: user
+    payload = mod._payload(doc)
+    assert payload["non_ic_partner_rows"] == 2 and payload["partnerless_ic_rows"] == 0
+
+
 # --- konsol#189 task 20: tb_bulk._check uses the real declared-period lookup ---
 # tb_bulk.py imports frappe and several konsol modules at the top level; every
 # one of them is stubbed here (the pattern test_chart_upload.py established),
@@ -238,7 +356,8 @@ HEADER_ROW = ["data_area_id", "fiscal_year", "fiscal_period", "main_account", "d
 MINOR_UNITS = {"EUR": 2, "USD": 2, "JPY": 0, "KWD": 3}
 
 
-def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible=None, minor_units=None):
+def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible=None, minor_units=None,
+                  chart=None):
     """Load konsol/tb_bulk.py with every non-model import stubbed.
 
     `period_lookup` maps (year, period) -> a period fact dict; a pair absent
@@ -248,7 +367,8 @@ def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible
     Functional Currency ('' for none); an entity absent from it has EUR.
     `minor_units` maps a currency to its ISO Currency.minor_unit (MINOR_UNITS
     unless a test says otherwise; None stands for a blank one); a currency
-    absent from it has no ISO Currency row. Returns (module, calls), where calls
+    absent from it has no ISO Currency row. `chart` is what chart_accounts()
+    returns (an empty chart unless a test says otherwise). Returns (module, calls), where calls
     counts how many times postable_types() was called.
     """
     frappe = types.ModuleType("frappe")
@@ -321,7 +441,7 @@ def _load_tb_bulk(*, entities, postable, period_lookup, currencies=None, visible
     entity_permissions.allowed_entity_codes = lambda user=None: None
 
     group_chart = types.ModuleType("konsol.group_chart")
-    group_chart.chart_accounts = lambda: {}
+    group_chart.chart_accounts = lambda: dict(chart or {})
 
     # konsol#255: _check now reads the site's declared dimensions before it
     # splits the file. That reader binds frappe, so it is stubbed; these tests
@@ -948,3 +1068,68 @@ def test_a_real_xlsx_with_a_formula_noise_cell_is_accepted_and_csv_text_is_not()
     _, report = mod._check(csv_table, PERIOD)
     assert not report[0]["ok"], report
     assert "Line 2: debit 110.00000000000001 has 14 decimal places; EUR has 2." in report[0]["errors"], report
+
+
+# ── konsol#332-2 (F9): the counts are derived on read, never stored ─────────
+
+def _loaded_row(entity, name):
+    return {"entity": entity, "fiscal_year": 2025, "fiscal_period": 8, "ok": True, "errors": [],
+            "rows": 2, "loaded": name}
+
+
+def test_read_state_counts_only_the_submissions_still_submitted():
+    """Deepak Pai 9 Oct (#332-2): an upload with 3 loaded submissions, 1 then
+    cancelled, reads 2 and Partly Loaded."""
+    report = [_loaded_row("AMDE", "TBS-1"), _loaded_row("AMUS", "TBS-2"), _loaded_row("AMHQ", "TBS-3")]
+    assert M.claimed(report) == ["TBS-1", "TBS-2", "TBS-3"]
+    state = M.read_state(report, {"TBS-1", "TBS-2", "TBS-3"}, "Loaded")
+    assert (state["loaded_count"], state["status"]) == (3, "Loaded"), state
+    state = M.read_state(report, {"TBS-1", "TBS-3"}, "Loaded")
+    assert (state["loaded_count"], state["status"]) == (2, "Partly Loaded"), state
+    rows = {r["entity"]: r for r in state["report"]}
+    assert "loaded" not in rows["AMUS"] and rows["AMUS"]["was_loaded"] == "TBS-2", rows
+    assert rows["AMUS"]["errors"] == ["Loaded earlier as TBS-2, which is no longer submitted. "
+                                      "Upload the file again if it should be loaded anew."], rows
+    assert rows["AMDE"]["loaded"] == "TBS-1" and rows["AMDE"]["ok"], rows
+    assert report[1]["loaded"] == "TBS-2", "the stored report is read, never changed"
+
+
+def test_read_state_with_every_submission_cancelled_reads_cancelled():
+    """Deepak Pai 12 Oct (#332-2-D1, #332 issuecomment-6131860387): every
+    loaded submission cancelled reads "Cancelled", not "Failed" -- the load
+    did not fail, its results were withdrawn."""
+    report = [_loaded_row("AMDE", "TBS-1"), _loaded_row("AMUS", "TBS-2"), _loaded_row("AMHQ", "TBS-3")]
+    state = M.read_state(report, set(), "Loaded")
+    assert state["loaded_count"] == 0, state
+    assert state["status"] == "Cancelled", state
+    state = M.read_state(report, set(), "Partly Loaded")
+    assert (state["loaded_count"], state["status"]) == (0, "Cancelled"), state
+    # one left standing is still Partly Loaded, never Cancelled
+    state = M.read_state(report, {"TBS-2"}, "Loaded")
+    assert (state["loaded_count"], state["status"]) == (1, "Partly Loaded"), state
+
+
+def test_read_state_keeps_a_stopped_load_partly_loaded_and_a_job_state_as_it_is():
+    """No cancel: a load stopped at the time limit stays Partly Loaded (it is
+    not promoted to Loaded). Draft, Checked, Loading and Failed are the job's
+    states, kept as stored; only the count is derived."""
+    report = [_loaded_row("AMDE", "TBS-1"), {**_loaded_row("AMUS", None), "loaded": None}]
+    state = M.read_state(report, {"TBS-1"}, "Partly Loaded")
+    assert (state["loaded_count"], state["status"]) == (1, "Partly Loaded"), state
+    for status in ("Draft", "Checked", "Loading", "Failed"):
+        state = M.read_state(report, set(), status)
+        assert (state["loaded_count"], state["status"]) == (0, status), (status, state)
+        state = M.read_state(report, {"TBS-1"}, status)
+        assert (state["loaded_count"], state["status"]) == (1, status), (status, state)
+    assert M.read_state([], set(), "Draft") == {"report": [], "loaded_count": 0, "status": "Draft"}
+
+
+def test_module_imports_no_frappe():
+    tree = ast.parse(open(os.path.join(APP_DIR, "tb_bulk_model.py")).read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module.split(".")[0])
+    assert "frappe" not in names, names

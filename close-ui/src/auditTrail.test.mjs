@@ -841,3 +841,74 @@ test("failure path: reminder_sent with no recipients throws (Y54 always writes t
 		/reminder_sent event has no detail\.recipients/
 	);
 });
+
+
+// --- konsol#305 FR11 (review S4): a correction's approval and the cancel ----
+//
+// CORRECTION is the real producer's output: trail_api.get_trail on a stub
+// site whose two events carry exactly FR6's detail dicts (approving GER-3,
+// which supersedes GER-1, cancels GER-1 in the same transaction).
+// test_close_trail_api.py asserts it equals the fixture.
+
+const CORRECTION = JSON.parse(
+	readFileSync(
+		fileURLToPath(new URL("../../konsol/tests/fixtures/close_trail_correction.json", import.meta.url)),
+		"utf8",
+	),
+);
+
+test("FR11: the correction's approval says what it replaces; the cancel says what replaced it", () => {
+	const v = trailView(CORRECTION, NOW, TZ);
+	assert.deepEqual(
+		v.rows.map((r) => [r.name, r.label, r.detail]),
+		[
+			["CE-12", "Approval cancelled", "replaced by GER-3"],
+			["CE-11", "Approved", "Prepared by analyst@example.com · replaces GER-1"],
+		],
+	);
+});
+
+test("FR11: a self-approved correction says what it replaces", () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "self_approved",
+				reference_name: "GER-3",
+				reason: "ZZ fix",
+				detail: { preparer: "lead@example.com", exempt: null, supersedes: "GER-1" },
+			}),
+		]),
+		NOW,
+		TZ,
+	);
+	assert.equal(v.rows[0].detail, 'Reason: "ZZ fix" · replaces GER-1');
+});
+
+test("FR11: without the keys the detail is unchanged", () => {
+	const v = trailView(
+		payload([
+			event({ name: "CE-1", detail: { preparer: "owner@example.com", exempt: null } }),
+			event({ name: "CE-2", kind: "self_approved", detail: { preparer: "owner@example.com" } }),
+			event({ name: "CE-3", kind: "approval_cancelled", detail: { preparer: "owner@example.com", exempt: null } }),
+		]),
+		NOW,
+		TZ,
+	);
+	assert.deepEqual(v.rows.map((r) => r.detail), ["Prepared by owner@example.com", "", ""]);
+	assert.deepEqual(
+		trailView(FILTERED, NOW, TZ).rows.map((r) => r.detail),
+		["Prepared by zz-a@example.com", ""],
+	);
+});
+
+test("FR11: the keys are read only on their own kinds", () => {
+	const v = trailView(
+		payload([
+			event({ name: "CE-1", kind: "approval_cancelled", detail: { supersedes: "GER-1" } }),
+			event({ name: "CE-2", kind: "approved", detail: { preparer: "o@example.com", superseded_by: "GER-3" } }),
+		]),
+		NOW,
+		TZ,
+	);
+	assert.deepEqual(v.rows.map((r) => r.detail), ["", "Prepared by o@example.com"]);
+});
