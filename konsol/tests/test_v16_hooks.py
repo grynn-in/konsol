@@ -100,7 +100,7 @@ def test_apps_screen_hook_points_at_a_shipped_logo_and_the_close_app():
                  and getattr(n.targets[0], "id", None) == "add_to_apps_screen")
     assert len(value) == 1
     entry = value[0]
-    assert entry["name"] == "konsol" and entry["route"] == "/close"
+    assert entry["name"] == "konsol" and entry["route"] == "/desk/konsol"
     assert entry["logo"].startswith("/assets/konsol/")
     shipped = os.path.join(APP_DIR, "public", entry["logo"][len("/assets/konsol/"):])
     assert os.path.isfile(shipped), f"logo {entry['logo']} is not in konsol/public"

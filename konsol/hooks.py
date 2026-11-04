@@ -73,13 +73,14 @@ website_route_rules = [
 ]
 
 # Frappe v16 builds the desktop and sidebar from this hook; an app without it
-# has no icon on the desktop. The route is the Close app, konsol's main screen.
+# has no icon on the desktop. The route is the Konsol Desk workspace
+# (konsol/consolidation/workspace/konsol), whose sidebar and dock ship beside it.
 add_to_apps_screen = [
 	{
 		"name": "konsol",
 		"logo": "/assets/konsol/images/konsol-logo.svg",
 		"title": "Konsol",
-		"route": "/close",
+		"route": "/desk/konsol",
 	}
 ]
 
