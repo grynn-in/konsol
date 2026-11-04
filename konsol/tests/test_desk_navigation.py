@@ -85,6 +85,9 @@ def test_dock_opens_the_sidebar():
     dock = _load(DOCK)
     assert dock["standard"] == 1 and dock["app"] == "konsol"
     assert [i["link_to"] for i in dock["items"]] == [sidebar["name"]]
+    # An item without an icon renders the app logo, a second K beside the
+    # logo itself (5 Nov 2026): every dock item names one of frappe's icons.
+    assert all(i["icon"] for i in dock["items"]), dock["items"]
 
 
 def test_workspace_shortcuts_and_cards_resolve():
