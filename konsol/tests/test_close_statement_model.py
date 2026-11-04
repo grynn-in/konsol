@@ -386,6 +386,27 @@ def test_unexplained_is_exact_when_the_residual_is_explained():
     assert residual["unexplained"] == 0.0, residual
 
 
+def test_residual_breakdown_foots_with_a_visible_rounding_line():
+    """Review of konsol#360: with the residual and its parts each rounded
+    once, the displayed breakdown could miss the residual by a cent (a red
+    residual of 0.01 explained by "CTA not placed 0.00" and "unexplained
+    0.00"). A cent of difference is shown as its own "Rounding" line, so
+    the breakdown always foots and is never called unexplained."""
+    def breakdown(rows):
+        result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(cta_account=None))
+        r = _residual_line(result)
+        return r, round(sum(e["amount"] for e in r["explained"]) + r["unexplained"], 2)
+
+    r, footed = breakdown([_row("1110", 1.236), _row("2100", -1.0), _row("CTA", -0.233, adjustment_type="cta")])
+    assert footed == r["current"], r
+    assert r["unexplained"] == 0.0, r
+
+    r, footed = breakdown([_row("1110", 0.006), _row("CTA", -0.004, adjustment_type="cta")])
+    assert footed == r["current"], r
+    assert r["unexplained"] == 0.0, r
+    assert any(e["label"] == M.ROUNDING_LABEL for e in r["explained"]), r
+
+
 def test_both_undeclared_residual_is_the_unplaced_total_never_balanced_silently():
     """Failure path: never silently balanced. Residual 246.50 =
     241.43 + 5.07, explained naming both parts, unexplained 0.00."""
