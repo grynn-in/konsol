@@ -348,6 +348,27 @@ def test_balanced_fixture_both_declared_residual_is_zero_and_bs_balances():
     assert round(assets["current"] - (liabilities["current"] + equity["current"]), 2) == 0.0
 
 
+def test_residual_is_rounded_once_not_built_from_rounded_parts():
+    """konsol#358 demo prep (5 Nov): a balanced group showed a red
+    "Unmatched residual (0.01)" on Numbers. Each BS heading, the CTA and the
+    current-year result were rounded to cents and the ROUNDED parts summed,
+    so up to five half-cents of rounding noise surfaced as an unexplained
+    difference. Here the unrounded rows sum to exactly 0.000 but every part
+    rounds down: 1735.10 - 803.70 - 684.90 - 5.07 - 241.42 = 0.01. The
+    residual must be the exact sum rounded once: 0.00."""
+    rows = [
+        _row("1110", 1735.104),
+        _row("2100", -803.704),
+        _row("3200", -684.904),
+        _row("CTA", -5.074, adjustment_type="cta"),
+        _row("4100", -241.422),
+    ]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    residual = _residual_line(result)
+    assert residual["current"] == 0.0, residual
+    assert "explained" not in residual
+
+
 def test_both_undeclared_residual_is_the_unplaced_total_never_balanced_silently():
     """Failure path: never silently balanced. Residual 246.50 =
     241.43 + 5.07, explained naming both parts, unexplained 0.00."""
