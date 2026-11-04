@@ -52,4 +52,4 @@ jobs:
           cache-dependency-path: close-ui/yarn.lock
       - run: yarn install --frozen-lockfile
       - name: Run node --test
-        run: node --test src/
+        run: yarn test

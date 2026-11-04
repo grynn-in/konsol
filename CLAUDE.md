@@ -22,7 +22,7 @@ f-string expressions. Check with `docker exec <backend> python --version`.
 ## Testing: host tests, then live. Never deploy.
 
 - Host tests: `.venv/bin/python scripts/run-host-tests.py`. JS:
-  `cd close-ui && node --test src/`.
+  `cd close-ui && yarn test`.
 - **Do not run `deploy.sh`** to verify anything (user rule; it takes 10–20 min
   and OOMs without `COMPOSE_PARALLEL_LIMIT=1`). Test on the running stack:
   - `docker cp` changed files into `konsolidat_backend`, **and into

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test src/"
+    "test": "node --test $(find src -name '*.test.mjs' | sort)"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.5",
