@@ -621,7 +621,7 @@ def get_ownership(fiscal_year, fiscal_period):
              f"{e} has a submitted trial balance for {period_name(fy, fp)} but no approved "
              f"ownership period covering {start_iso}: it is not consolidated. Record its "
              "ownership, or cancel the trial balance (#305-W2-2)."),
-         "desk": "/app/ownership-period/new?data_area_id=" + quote(e)}
+         "desk": "/desk/ownership-period/new?data_area_id=" + quote(e)}
         for e in blocking_visible
     ]
 

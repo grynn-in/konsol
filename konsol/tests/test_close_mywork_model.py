@@ -82,7 +82,7 @@ def test_three_entities_without_ownership_is_one_item():
     item = items[0]
     assert item["entities"] == ["DE01", "FR01", "US01"]
     assert "3 entities" in item["title"]
-    assert item["action"] == {"desk": "/app/ownership-period"}
+    assert item["action"] == {"desk": "/desk/ownership-period"}
 
 
 def test_one_entity_title_is_singular():
@@ -132,15 +132,15 @@ def test_desk_actions_point_at_configuration():
         ownership_missing=["DE01"], accountants_without_entities=["zz-a@example.com"],
         policy_gaps=_BOTH_POLICY_GAPS, ic_accounts_gap=_IC_ACCOUNTS_GAP,
         ic_tolerance_gap=_IC_TOLERANCE_GAP)))
-    assert items["gap:first_close"]["action"] == {"desk": "/app/close-settings"}
-    assert items["gap:self_approval"]["action"] == {"desk": "/app/close-settings"}
-    assert items["gap:rate_move"]["action"] == {"desk": "/app/close-settings"}
-    assert items["gap:chart"]["action"] == {"desk": "/app/main-account"}
-    assert items["gap:ic_accounts"]["action"] == {"desk": "/app/intercompany-account"}
-    assert items["gap:ic_tolerance"]["action"] == {"desk": "/app/consolidation-group"}
-    assert items["gap:frequency"]["action"] == {"desk": "/app/entity"}
-    assert items["gap:ownership"]["action"] == {"desk": "/app/ownership-period"}
-    assert items["gap:accountants"]["action"] == {"desk": "/app/user"}
+    assert items["gap:first_close"]["action"] == {"desk": "/desk/close-settings"}
+    assert items["gap:self_approval"]["action"] == {"desk": "/desk/close-settings"}
+    assert items["gap:rate_move"]["action"] == {"desk": "/desk/close-settings"}
+    assert items["gap:chart"]["action"] == {"desk": "/desk/main-account"}
+    assert items["gap:ic_accounts"]["action"] == {"desk": "/desk/intercompany-account"}
+    assert items["gap:ic_tolerance"]["action"] == {"desk": "/desk/consolidation-group"}
+    assert items["gap:frequency"]["action"] == {"desk": "/desk/entity"}
+    assert items["gap:ownership"]["action"] == {"desk": "/desk/ownership-period"}
+    assert items["gap:accountants"]["action"] == {"desk": "/desk/user"}
     assert items["gap:accountants"]["users"] == ["zz-a@example.com"]
     assert items["gap:accountants"]["entities"] == []
 
@@ -164,7 +164,7 @@ def test_ic_accounts_gap_is_one_item_pointed_at_the_desk():
     assert item["title"] == "No intercompany accounts declared"
     assert item["detail"] == _IC_ACCOUNTS_GAP
     assert item["owner"] == "EPM Admin"
-    assert item["action"] == {"desk": "/app/intercompany-account"}
+    assert item["action"] == {"desk": "/desk/intercompany-account"}
 
 
 def test_ic_accounts_gap_none_gives_no_item():
@@ -184,7 +184,7 @@ def test_ic_tolerance_gap_is_one_blocking_item():
     item = items[0]
     assert item["detail"] == _IC_TOLERANCE_GAP["message"]
     assert item["owner"] == "EPM Admin"
-    assert item["action"] == {"desk": "/app/consolidation-group"}
+    assert item["action"] == {"desk": "/desk/consolidation-group"}
     assert "1 group" in item["title"]
     assert "groups" not in item["title"]
 
@@ -213,7 +213,7 @@ def test_a_policy_gap_is_one_item_with_owner_action_and_no_since():
     assert [i["id"] for i in items] == ["gap:self_approval"]
     item = items[0]
     assert item["owner"] == "EPM Admin"
-    assert item["action"] == {"desk": "/app/close-settings"}
+    assert item["action"] == {"desk": "/desk/close-settings"}
     assert item["since"] is None
     assert item["detail"] == "Declare it in Close Settings."
     assert item["title"] == "Self-approval policy not declared"
@@ -247,7 +247,7 @@ def test_statement_accounts_gap_is_one_blocking_item_with_no_since():
     item = items[0]
     assert item["kind"] == "blocking"
     assert item["owner"] == "EPM Admin"
-    assert item["action"] == {"desk": "/app/close-settings"}
+    assert item["action"] == {"desk": "/desk/close-settings"}
     assert item["since"] is None
     assert item["detail"] == _STATEMENT_GAP["message"]
     assert item["title"] == "Statement setup incomplete"
@@ -448,7 +448,7 @@ def test_close_lead_unowned_tb_is_one_blocking_item():
     items = M.period_items("close_lead", per, FIRST)
     item = next(i for i in items if i["id"] == "unowned:2025-07")
     assert item["kind"] == "blocking"
-    assert item["action"] == {"desk": "/app/ownership-period"}
+    assert item["action"] == {"desk": "/desk/ownership-period"}
     assert item["entities"] == ["ZZX"]
     assert item["title"] == "Trial balance with no ownership (1)"
 
@@ -855,9 +855,9 @@ def test_sent_back_items_desk_actions_for_ic_bc_bd():
     bd = _sb_row("Business Disposal", "BD-1", "Business disposal · UK01",
                 "Business disposal · UK01")
     items = M.sent_back_items([ic, bc, bd], M.CLOSE_LEAD, {(2025, 7): "P07"})
-    assert items[0]["action"] == {"desk": "/app/ic-balance/ICB-1"}
-    assert items[1]["action"] == {"desk": "/app/business-combination/BC-1"}
-    assert items[2]["action"] == {"desk": "/app/business-disposal/BD-1"}
+    assert items[0]["action"] == {"desk": "/desk/ic-balance/ICB-1"}
+    assert items[1]["action"] == {"desk": "/desk/business-combination/BC-1"}
+    assert items[2]["action"] == {"desk": "/desk/business-disposal/BD-1"}
 
 
 def test_sent_back_items_viewer_raises():
@@ -1048,7 +1048,7 @@ def test_ic_rule_gap_is_one_blocking_item_naming_the_pairs():
     assert item["detail"] == gap["message"]
     assert "UK01 → DE01" in item["detail"] and "FR01 → DE01" in item["detail"]
     assert item["owner"] == "EPM Admin"
-    assert item["action"] == {"desk": "/app/ic-elimination-rule"}
+    assert item["action"] == {"desk": "/desk/ic-elimination-rule"}
     assert item["entities"] == ["DE01", "FR01", "UK01"]
 
 
@@ -1082,7 +1082,7 @@ def test_ic_rule_ambiguous_gap_is_one_blocking_item_naming_pairs_and_rules():
     assert item["detail"] == gap["message"]
     assert "UK01 → DE01 (R1, R2)" in item["detail"]
     assert item["owner"] == "EPM Admin"
-    assert item["action"] == {"desk": "/app/ic-elimination-rule"}
+    assert item["action"] == {"desk": "/desk/ic-elimination-rule"}
     assert item["entities"] == ["DE01", "FR01", "UK01"]
     one = M.setup_gap_items(_facts(ic_rule_gaps=[_ic_rule_ambiguous_gap(("UK01", "DE01"))]))[0]
     assert one["title"] == "More than one unrealised-profit rule for 1 IC Balance pair"
@@ -1112,7 +1112,7 @@ def test_commentary_threshold_gap_is_one_blocking_item_after_the_statement_gap()
     item = items[1]
     assert item["kind"] == "blocking"
     assert item["owner"] == "EPM Admin"
-    assert item["action"] == {"desk": "/app/close-settings"}
+    assert item["action"] == {"desk": "/desk/close-settings"}
     assert item["since"] is None
     assert item["detail"] == _COMMENTARY_GAP["message"]
     assert item["title"] == "Commentary threshold not declared"

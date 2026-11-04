@@ -632,13 +632,13 @@ test("ownershipView: counts out-of-scope and surfaces the hidden count", () => {
   const view = ownershipView({
     period: { fiscal_year: 2026, fiscal_period: 8 },
     start_date: "2026-08-01",
-    blocking: [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }],
+    blocking: [{ entity: "ZZB", message: "m", desk: "/desk/ownership-period/new?data_area_id=ZZB" }],
     out_of_scope: ["ZZC", "ZZD"],
     in_scope_count: 306,
     can_record: true,     can_change: false,     change: null,
     hidden: 3,
   });
-  assert.deepEqual(view.blocking, [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }]);
+  assert.deepEqual(view.blocking, [{ entity: "ZZB", message: "m", desk: "/desk/ownership-period/new?data_area_id=ZZB" }]);
   assert.equal(view.outOfScopeCount, 2);
   assert.equal(view.inScopeCount, 306);
   assert.equal(view.canRecord, true);
@@ -748,7 +748,7 @@ test("ownershipEmptyMessage: no blocking and nothing hidden says there are no ga
 
 test("ownershipEmptyMessage: null when there are visible blocking entries, regardless of blocking_hidden", () => {
   const view = ownershipView({
-    blocking: [{ entity: "ZZB", message: "m", desk: "/app/ownership-period/new?data_area_id=ZZB" }],
+    blocking: [{ entity: "ZZB", message: "m", desk: "/desk/ownership-period/new?data_area_id=ZZB" }],
     out_of_scope: [],
     in_scope_count: 1,
     can_record: true,     can_change: false,     change: null,

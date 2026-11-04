@@ -285,7 +285,7 @@ def test_get_lists_draft_and_approved_of_the_period_with_margin():
     assert uk["status"] == "Draft" and uk["rules"] == [
         {"rule_id": "R-UK", "rule_name": "R-UK", "margin_pct": 12.5}]
     assert out["period"]["fiscal_year"] == 2025 and out["period"]["status"] == "Open"
-    assert out["rules_desk"] == "/app/ic-elimination-rule"
+    assert out["rules_desk"] == "/desk/ic-elimination-rule"
 
 
 def test_get_gap_names_the_uncovered_pair():

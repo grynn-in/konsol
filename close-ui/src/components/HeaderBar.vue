@@ -173,7 +173,7 @@ const FRESHNESS_TONE = {
 					<span v-else>Checking whether the numbers are current</span>
 				</div>
 
-				<a href="/app" class="flex items-center gap-1 rounded px-2 py-1 text-sm text-ink-gray-6 hover:bg-surface-gray-2">
+				<a href="/desk" class="flex items-center gap-1 rounded px-2 py-1 text-sm text-ink-gray-6 hover:bg-surface-gray-2">
 					Desk
 					<FeatherIcon name="external-link" class="h-3.5 w-3.5" />
 				</a>

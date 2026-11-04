@@ -1263,7 +1263,7 @@ def test_failure_path_a_tb_with_no_ownership_is_blocking_and_a_covered_entity_is
         "message": "ZZB has a submitted trial balance for FY2025 P07 but no approved ownership "
                    "period covering 2025-07-01: it is not consolidated. Record its ownership, or "
                    "cancel the trial balance (#305-W2-2).",
-        "desk": "/app/ownership-period/new?data_area_id=ZZB",
+        "desk": "/desk/ownership-period/new?data_area_id=ZZB",
     }]
     # ZZA is covered and has a TB: not listed anywhere.
     # ZZC is an Active leaf with no OP and no TB: out_of_scope only, never blocking.

@@ -332,7 +332,7 @@ async function exportExcel() {
 		<div v-if="view && view.gapText" role="status" class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded border border-outline-amber-1 bg-surface-amber-1 px-4 py-3 text-sm text-ink-amber-3">
 			<span>{{ view.gapText }}</span>
 			<a
-				href="/app/close-settings"
+				href="/desk/close-settings"
 				target="_blank"
 				rel="noopener noreferrer"
 				class="inline-flex items-center gap-1.5 shrink-0 rounded border border-outline-gray-2 bg-surface-white px-3 py-1.5 text-sm text-ink-gray-8 hover:bg-surface-gray-2"
@@ -382,7 +382,7 @@ async function exportExcel() {
 					</div>
 					<div v-if="view.state.kind === 'setup_gap'" class="mt-3">
 						<a
-							href="/app/close-settings"
+							href="/desk/close-settings"
 							target="_blank"
 							rel="noopener noreferrer"
 							class="inline-flex items-center gap-1.5 rounded border border-outline-gray-2 bg-surface-white px-3 py-1.5 text-sm text-ink-gray-8 hover:bg-surface-gray-2"

@@ -182,7 +182,7 @@ function vueFiles(dir) {
 }
 
 test("failure path: the scanner flags each forbidden pattern", () => {
-  assert.deepEqual(offences(`<a @click="window.open('/app/x')">`), ["window.open("]);
+  assert.deepEqual(offences(`<a @click="window.open('/desk/x')">`), ["window.open("]);
   assert.deepEqual(offences(`const n = window.prompt("Name");`), ["window.prompt("]);
   assert.deepEqual(offences(`<div>Loading…</div>`), ["bare Loading…"]);
   assert.deepEqual(offences(`<p> Loading... </p>`), ["bare Loading…"]);

@@ -182,7 +182,7 @@ test("The declared-accounts gap sentence (view.gapText) offers a Desk link to Cl
 	const tpl = template(source);
 	const inner = tpl.slice(block.start, block.end);
 	assert.match(inner, /view\.gapText/);
-	assert.match(inner, /href="\/app\/close-settings"/);
+	assert.match(inner, /href="\/desk\/close-settings"/);
 	assert.match(inner, /Open Close Settings/);
 });
 
@@ -212,7 +212,7 @@ test("setup_gap: the state banner shows the server's message and offers Open Clo
 	const block = blockMatching(tpl, "div", /v-if="view\.state\.kind === 'setup_gap'"/);
 	assert.ok(block, "a div's v-if tests view.state.kind === 'setup_gap'");
 	const inner = tpl.slice(block.start, block.end);
-	assert.match(inner, /href="\/app\/close-settings"/);
+	assert.match(inner, /href="\/desk\/close-settings"/);
 	assert.match(inner, /Open Close Settings/);
 	// The message itself is the shared <p>{{ view.state.message }}</p> above
 	// every state banner, not a second, duplicated literal.

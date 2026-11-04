@@ -692,7 +692,7 @@ def test_close_lead_gets_the_unowned_tb_item():
     result = _call(site)
     item = next(i for i in result["items"] if i["id"] == "unowned:2025-09")
     assert item["kind"] == "blocking"
-    assert item["action"] == {"desk": "/app/ownership-period"}
+    assert item["action"] == {"desk": "/desk/ownership-period"}
     assert item["entities"] == ["ZZX"]
     _assert_counts_add_up(result, "close_lead")
 
@@ -766,7 +766,7 @@ def test_undeclared_policies_are_gap_items_for_the_close_lead():
     for gap in ("gap:self_approval", "gap:rate_move"):
         item = next(i for i in result["items"] if i["id"] == gap)
         assert item["owner"] == "EPM Admin"
-        assert item["action"] == {"desk": "/app/close-settings"}
+        assert item["action"] == {"desk": "/desk/close-settings"}
     _assert_counts_add_up(result, "close_lead")
 
 
@@ -1063,7 +1063,7 @@ def test_ic_rule_gap_reaches_the_group_personas():
         gap = _gap(result, "ic_rule")
         assert gap is not None, (roles, _ids(result))
         assert "UK01 → DE01" in gap["detail"], gap
-        assert gap["kind"] == "blocking" and gap["action"] == {"desk": "/app/ic-elimination-rule"}
+        assert gap["kind"] == "blocking" and gap["action"] == {"desk": "/desk/ic-elimination-rule"}
 
 
 def test_entity_accountant_never_gets_the_ic_rule_gap_and_it_is_not_read():
@@ -1289,7 +1289,7 @@ def test_statement_gap_reaches_the_group_personas():
         assert item is not None, (roles, _ids(result))
         assert item["detail"] == gap["message"], item
         assert item["kind"] == "blocking", item
-        assert item["action"] == {"desk": "/app/close-settings"}, item
+        assert item["action"] == {"desk": "/desk/close-settings"}, item
         _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
 
 
@@ -1401,7 +1401,7 @@ def test_commentary_gap_reaches_the_group_personas():
         item = _gap(result, "commentary_threshold")
         assert item is not None, (roles, _ids(result))
         assert item["detail"] == gap["message"], item
-        assert item["action"] == {"desk": "/app/close-settings"}, item
+        assert item["action"] == {"desk": "/desk/close-settings"}, item
         _assert_counts_add_up(result, "group_accountant" if roles == ("EPM Analyst",) else "close_lead")
 
 
@@ -1425,7 +1425,7 @@ def test_ic_rule_ambiguous_gap_reaches_the_group_personas():
         gap = _gap(result, "ic_rule_ambiguous")
         assert gap is not None, (roles, _ids(result))
         assert "UK01 → DE01 (R1, R2)" in gap["detail"], gap
-        assert gap["kind"] == "blocking" and gap["action"] == {"desk": "/app/ic-elimination-rule"}
+        assert gap["kind"] == "blocking" and gap["action"] == {"desk": "/desk/ic-elimination-rule"}
         assert _gap(result, "ic_rule") is None
 
 

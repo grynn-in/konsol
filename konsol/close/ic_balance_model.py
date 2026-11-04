@@ -50,7 +50,7 @@ DRAFT_PENDING = "ic_balance_draft_pending"
 RULE_TYPE = "unrealized_profit"
 WILDCARD = "*"
 #: Where the rule is configured (the brief: configuration stays in Desk).
-RULES_DESK = "/app/ic-elimination-rule"
+RULES_DESK = "/desk/ic-elimination-rule"
 
 _STATUS = {0: "Draft", 1: "Approved"}
 
