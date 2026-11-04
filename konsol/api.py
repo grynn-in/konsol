@@ -1639,7 +1639,9 @@ def get_hierarchy_tree(consolidation_group=None, as_of=None):
             filters={"consolidation_group": consolidation_group},
             fields=["lft", "rgt"],
             limit=1,
-            order_by="modified desc",
+            # The filter matches the root and every member row; the root of
+            # the nested set is the smallest lft (konsol#358).
+            order_by="lft asc",
         )
         if root:
             filters = [

@@ -185,7 +185,6 @@ def reminders(keys, topic=None):
         filters={"kind": "reminder_sent", "fiscal_year": ["in", sorted({fy for fy, _ in wanted})]},
         fields=["name", "fiscal_year", "fiscal_period", "entity", "actor", "at", "detail"],
         limit_page_length=0,
-        order_by="modified desc",
     )
     result = []
     for row in rows:
