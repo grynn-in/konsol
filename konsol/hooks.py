@@ -77,7 +77,7 @@ website_route_rules = [
 add_to_apps_screen = [
 	{
 		"name": "konsol",
-		"logo": "/assets/konsol/excel-addin/assets/icon-80.png",
+		"logo": "/assets/konsol/images/konsol-logo.svg",
 		"title": "Konsol",
 		"route": "/close",
 	}
