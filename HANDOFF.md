@@ -14,7 +14,7 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
   - A ZZ Entity insert/update/delete syncs to ClickHouse and back.
 - **Upgrade, in this order, for an existing stack:**
   1. Take a site backup: `bench --site <site> backup --with-files`. The v16 migrate cannot be undone.
-  2. In the stack's `.env`, set `FRAPPE_BRANCH=version-16`, or delete the line. Live's `.env` pins `version-15`, which overrides the new compose default.
+  2. In the stack's `.env`, delete the `FRAPPE_BRANCH` line or set it to `version-16`. Live's `.env` pins `version-15`; `deploy.sh` refuses to run until it is changed (konsolidat#272).
   3. Rebuild the image and run the configurator. It runs `bench migrate`.
   4. Desk links move to `/desk`; old `/app/...` URLs redirect.
 - **Bring the v16 stack up again:** `docker compose -p konsolidat16 --env-file .env.v16 -f docker-compose.yml -f docker-compose.v16.yml up -d`, run in the worktree. `.env.v16` is gitignored: copy it from `.env` and move every host port. Remove it with `down -v` when done.
