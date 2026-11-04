@@ -4,6 +4,21 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (4 Nov): Frappe v16 (konsol#358).** Deepak Pai asked for konsol on Frappe v16 (4 Nov) and chose to verify it on a side-by-side stack; upgrading live in place was rejected.
+- **Branches:** konsol `v16-migration`, konsolidat `v16-image` (worktree `repo/docker/worktrees/v16-image`).
+- **Verified on the side-by-side v16 stack** (project `konsolidat16`, port 8169, restored from a 4 Nov backup of `konsolidat.local`):
+  - `bench migrate` exits 0.
+  - `reconcile_all` gives 43/43 synced `epm_staging` tables identical to live v15.
+  - dbt runs on Python 3.14: PASS=326 ERROR=0. A full-refresh `epm_gold` is identical to the same dbt code run under Python 3.11 (56/56 tables).
+  - All 23 Close/REST/Desk requests return 200, the same as live.
+  - A ZZ Entity insert/update/delete syncs to ClickHouse and back.
+- **Upgrade, in this order, for an existing stack:**
+  1. Take a site backup: `bench --site <site> backup --with-files`. The v16 migrate cannot be undone.
+  2. In the stack's `.env`, set `FRAPPE_BRANCH=version-16`, or delete the line. Live's `.env` pins `version-15`, which overrides the new compose default.
+  3. Rebuild the image and run the configurator. It runs `bench migrate`.
+  4. Desk links move to `/desk`; old `/app/...` URLs redirect.
+- **Bring the v16 stack up again:** `docker compose -p konsolidat16 --env-file .env.v16 -f docker-compose.yml -f docker-compose.v16.yml up -d`, run in the worktree. `.env.v16` is gitignored: copy it from `.env` and move every host port. Remove it with `down -v` when done.
+
 **Update (12 Oct): konsol#305 D2 follow-ups on branch close-d2fu (PR pending).** Decisions by Deepak Pai: budget out of D2 (9 Oct, #305; epic konsol#348); #332-2 upload counts derived on read (9 Oct) and #332-2-D1 Desk status (12 Oct); #312-3 rate correction supersedes on approval (9 Oct) narrowed by #312-3b no undo by cancel (12 Oct); #317 warning only (9 Oct).
 - **What ships:**
   - S14: a period counts as signed only when its latest run is signed. S9: the grid TB cell carries `status`. S17: deadline `text` only when undeclared. U14: Approvals detail re-reads on reload.

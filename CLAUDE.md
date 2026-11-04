@@ -1,6 +1,6 @@
 # konsol — working notes for Claude
 
-konsol is the Frappe v15 app for Konsolidat (EPM: consolidation, budgets,
+konsol is the Frappe v16 app for Konsolidat (EPM: consolidation, budgets,
 allocation). The warehouse (ClickHouse + dbt + Cube) lives in the konsolidat repo.
 Read `HANDOFF.md` first each session; project memory is in `.claude/memory/`
 (Engram: `bash .claude/scripts/engram-start "<topic>"`).
@@ -14,9 +14,10 @@ Read `HANDOFF.md` first each session; project memory is in `.claude/memory/`
 | Deploy-owned checkout: never edit | `repo/docker/frappe/konsol` |
 | Live stack | `http://localhost:8069`, site `konsolidat.local`, creds `repo/.credentials` |
 
-Frappe never runs natively on the Mac (host Python 3.14; the containers run
-**Python 3.11**, so no backslashes inside f-string expressions in scripts you
-copy in).
+Frappe never runs natively on the Mac. konsol targets **Frappe v16** (Python
+3.14, Node 24) from 4 Nov 2026. A stack still on the v15 image runs **Python
+3.11**: until it is rebuilt, scripts you copy in must not put backslashes inside
+f-string expressions. Check with `docker exec <backend> python --version`.
 
 ## Testing: host tests, then live. Never deploy.
 
@@ -61,6 +62,13 @@ copy in).
 
 ## Frappe rules that have bitten this project
 
+- **Frappe v16 (4 Nov 2026):** a `has_permission` hook must return exactly
+  `True` to allow (`None` or a truthy set now denies; `test_v16_hooks.py`
+  pins it). `get_all`/`get_list`/`get_value` sort by `creation`, not
+  `modified`: give `order_by` wherever a result depends on order. The Desk
+  lives at `/desk` (`/app` redirects). `frappe.db.commit()` inside a document
+  hook raises. A wrapper around a framework method forwards `*args, **kwargs`:
+  copying its signature broke every request when v16 added a keyword.
 - **On submit, Frappe runs `on_update` BEFORE `on_submit`, and the controller
   method before `doc_events` hooks.** A commit in either lands `docstatus=1`
   before `on_submit` has run.
