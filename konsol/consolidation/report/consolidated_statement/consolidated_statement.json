@@ -1,0 +1,26 @@
+{
+ "add_total_row": 0,
+ "creation": "2026-11-05 00:00:00",
+ "disabled": 0,
+ "doctype": "Report",
+ "is_standard": "Yes",
+ "modified": "2026-11-05 12:00:00.000000",
+ "module": "Consolidation",
+ "name": "Consolidated Statement",
+ "owner": "Administrator",
+ "prepared_report": 0,
+ "ref_doctype": "Trial Balance Submission",
+ "report_name": "Consolidated Statement",
+ "report_type": "Script Report",
+ "roles": [
+  {
+   "role": "EPM Admin"
+  },
+  {
+   "role": "EPM Analyst"
+  },
+  {
+   "role": "EPM User"
+  }
+ ]
+}

@@ -91,6 +91,7 @@ f-string expressions. Check with `docker exec <backend> python --version`.
 - Links case-correct (`usd` → `USD`); a blank Link is stored as NULL, and
   `["in", ["", None]]` never matches NULL (use `["is", "not set"]`).
 - A Float column is `not null default 0`: unset and 0 are the same.
+- A shipped Sidebar, Dock, Workspace or Number Card file re-imports on migrate only when its `modified` changes: bump it with every edit, or the edit silently does not ship (v16 Desk navigation, 5 Nov 2026).
 - `konsol/fixtures/` is force-reimported on EVERY migrate. It holds reference
   data only (enforced by `test_fixtures_reference_only.py`).
 - Frappe never drops a column removed from the DocType JSON; a patch must. A
