@@ -348,6 +348,65 @@ def test_balanced_fixture_both_declared_residual_is_zero_and_bs_balances():
     assert round(assets["current"] - (liabilities["current"] + equity["current"]), 2) == 0.0
 
 
+def test_residual_is_rounded_once_not_built_from_rounded_parts():
+    """konsol#358 demo prep (5 Nov): a balanced group showed a red
+    "Unmatched residual (0.01)" on Numbers. Each BS heading, the CTA and the
+    current-year result were rounded to cents and the ROUNDED parts summed,
+    so up to five half-cents of rounding noise surfaced as an unexplained
+    difference. Here the unrounded rows sum to exactly 0.000 but every part
+    rounds down: 1735.10 - 803.70 - 684.90 - 5.07 - 241.42 = 0.01. The
+    residual must be the exact sum rounded once: 0.00."""
+    rows = [
+        _row("1110", 1735.104),
+        _row("2100", -803.704),
+        _row("3200", -684.904),
+        _row("CTA", -5.074, adjustment_type="cta"),
+        _row("4100", -241.422),
+    ]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    residual = _residual_line(result)
+    assert residual["current"] == 0.0, residual
+    assert "explained" not in residual
+
+
+def test_unexplained_is_exact_when_the_residual_is_explained():
+    """Same rounding fixture, CTA not declared: the residual is the CTA
+    (5.07) and the "CTA not placed" line explains all of it. Built from
+    rounded parts it was 5.08 with 0.01 unexplained."""
+    rows = [
+        _row("1110", 1735.104),
+        _row("2100", -803.704),
+        _row("3200", -684.904),
+        _row("CTA", -5.074, adjustment_type="cta"),
+        _row("4100", -241.422),
+    ]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(cta_account=None))
+    residual = _residual_line(result)
+    assert residual["current"] == 5.07, residual
+    assert residual["unexplained"] == 0.0, residual
+
+
+def test_residual_breakdown_foots_with_a_visible_rounding_line():
+    """Review of konsol#360: with the residual and its parts each rounded
+    once, the displayed breakdown could miss the residual by a cent (a red
+    residual of 0.01 explained by "CTA not placed 0.00" and "unexplained
+    0.00"). A cent of difference is shown as its own "Rounding" line, so
+    the breakdown always foots and is never called unexplained."""
+    def breakdown(rows):
+        result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(cta_account=None))
+        r = _residual_line(result)
+        return r, round(sum(e["amount"] for e in r["explained"]) + r["unexplained"], 2)
+
+    r, footed = breakdown([_row("1110", 1.236), _row("2100", -1.0), _row("CTA", -0.233, adjustment_type="cta")])
+    assert footed == r["current"], r
+    assert r["unexplained"] == 0.0, r
+
+    r, footed = breakdown([_row("1110", 0.006), _row("CTA", -0.004, adjustment_type="cta")])
+    assert footed == r["current"], r
+    assert r["unexplained"] == 0.0, r
+    assert any(e["label"] == M.ROUNDING_LABEL for e in r["explained"]), r
+
+
 def test_both_undeclared_residual_is_the_unplaced_total_never_balanced_silently():
     """Failure path: never silently balanced. Residual 246.50 =
     241.43 + 5.07, explained naming both parts, unexplained 0.00."""
