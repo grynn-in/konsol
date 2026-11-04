@@ -261,6 +261,7 @@ def _trial_balance_measure_names():
         filters={"dbt_model": _TRIAL_BALANCE_DBT_MODEL, "status": "Published"},
         fields=["name", "reroute_measure"],
         limit_page_length=1,
+        order_by="modified desc",
     )
     if not fact:
         raise TrialBalanceMeasuresNotDeclared(

@@ -81,5 +81,5 @@
     "period_code": "P07",
     "status": "Open"
   },
-  "rules_desk": "/app/ic-elimination-rule"
+  "rules_desk": "/desk/ic-elimination-rule"
 }

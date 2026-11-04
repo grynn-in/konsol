@@ -336,6 +336,7 @@ class BusinessCombination(Document):
                          "rate_type": "Closing"},
                 fields=["quote", "quoted_per"],
                 limit_page_length=1,
+                order_by="modified desc",
             )
             if not rows:
                 return None

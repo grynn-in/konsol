@@ -165,6 +165,7 @@ class ReportingHierarchyMember(Document):
                 "name": ["!=", self.name],
             },
             fields=["name", "effective_from", "effective_to"],
+            order_by="modified desc",
         )
         for other in others:
             o_start, o_end = _window(other.effective_from, other.effective_to)

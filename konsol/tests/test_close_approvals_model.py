@@ -176,8 +176,8 @@ def test_seven_doctypes_give_seven_items_in_created_order_with_inline_and_desk()
     for other in ("OP-1", "HER-1", "CJ-1", "GER-1", "ICB-1"):
         assert by_name[other]["inline"] is True
         assert by_name[other]["desk"] is None
-    assert by_name["BC-1"]["desk"] == "/app/business-combination/BC-1"
-    assert by_name["BD-1"]["desk"] == "/app/business-disposal/BD-1"
+    assert by_name["BC-1"]["desk"] == "/desk/business-combination/BC-1"
+    assert by_name["BD-1"]["desk"] == "/desk/business-disposal/BD-1"
 
     cj = by_name["CJ-1"]
     assert cj["kind_label"] == "Adjustment · CJ-1"

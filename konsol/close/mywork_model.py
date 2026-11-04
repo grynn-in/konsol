@@ -113,23 +113,23 @@ def setup_gap_items(facts):
     if not _declared(facts["first_close"]):
         items.append(_item("first_close", "First close period not declared",
                            "Set the first close period in Close Settings.", "EPM Admin",
-                           "/app/close-settings"))
+                           "/desk/close-settings"))
     for gap in facts["policy_gaps"] or ():
         gap_id, title = _POLICY_GAPS[gap["code"]]
-        items.append(_item(gap_id, title, gap["message"], "EPM Admin", "/app/close-settings"))
+        items.append(_item(gap_id, title, gap["message"], "EPM Admin", "/desk/close-settings"))
     if not facts["chart_published"]:
         items.append(_item("chart", "Group chart not published",
                            "Publish the Main Accounts of the group chart.", "EPM Admin",
-                           "/app/main-account"))
+                           "/desk/main-account"))
     if facts["ic_accounts_gap"]:
         items.append(_item("ic_accounts", "No intercompany accounts declared",
-                           facts["ic_accounts_gap"], "EPM Admin", "/app/intercompany-account"))
+                           facts["ic_accounts_gap"], "EPM Admin", "/desk/intercompany-account"))
     if facts["ic_tolerance_gap"]:
         tol_gap = facts["ic_tolerance_gap"]
         groups = tol_gap["groups"]
         title = "Intercompany tolerance not declared for %s" % _groups(len(groups))
         items.append(_item("ic_tolerance", title, tol_gap["message"], "EPM Admin",
-                           "/app/consolidation-group"))
+                           "/desk/consolidation-group"))
     by_code = {}
     for rule_gap in facts["ic_rule_gaps"] or ():
         if rule_gap["code"] not in _IC_RULE_GAPS:
@@ -143,20 +143,20 @@ def setup_gap_items(facts):
         n = len(rule_gap["pairs"])
         title = "%s %d IC Balance pair%s" % (title_text, n, "" if n == 1 else "s")
         items.append(_item(gap_id, title, rule_gap["message"], "EPM Admin",
-                           "/app/ic-elimination-rule", entities=rule_gap["entities"]))
+                           "/desk/ic-elimination-rule", entities=rule_gap["entities"]))
     freq = sorted(set(facts["frequency_missing"] or ()))
     if freq:
         items.append(_item("frequency", f"Reporting frequency missing for {_entities(len(freq))}",
-                           ", ".join(freq), "EPM Admin", "/app/entity", entities=freq))
+                           ", ".join(freq), "EPM Admin", "/desk/entity", entities=freq))
     own = sorted(set(facts["ownership_missing"] or ()))
     if own:
         items.append(_item("ownership", f"Ownership missing for {_entities(len(own))}",
-                           ", ".join(own), "EPM Admin", "/app/ownership-period", entities=own))
+                           ", ".join(own), "EPM Admin", "/desk/ownership-period", entities=own))
     users = sorted(set(facts["accountants_without_entities"] or ()))
     if users:
         n = len(users)
         items.append(_item("accountants", f"{n} Entity Accountant{'s' if n > 1 else ''} with no entity",
-                           ", ".join(users), "System Manager", "/app/user", users=users))
+                           ", ".join(users), "System Manager", "/desk/user", users=users))
     return items
 
 
@@ -415,7 +415,7 @@ def _close_lead(key, facts, earlier_open):
     if unowned:
         item = _period_item(p, key, facts, "unowned", "blocking",
                             "Trial balance with no ownership (%d)" % len(unowned),
-                            {"desk": "/app/ownership-period"})
+                            {"desk": "/desk/ownership-period"})
         item["detail"] = ", ".join(unowned)
         item["entities"] = unowned
         items.append(item)
@@ -649,9 +649,9 @@ _SENT_BACK_SCREEN = {
     "Ownership Period": "rates",
 }
 _SENT_BACK_DESK = {
-    "IC Balance": "/app/ic-balance/%s",
-    "Business Combination": "/app/business-combination/%s",
-    "Business Disposal": "/app/business-disposal/%s",
+    "IC Balance": "/desk/ic-balance/%s",
+    "Business Combination": "/desk/business-combination/%s",
+    "Business Disposal": "/desk/business-disposal/%s",
 }
 #: Doctypes whose row names a period (the journal, Group Exchange Rate and IC
 #: Balance; mirrors approvals_model.sent_back_items).

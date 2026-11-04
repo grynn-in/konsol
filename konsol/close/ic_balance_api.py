@@ -233,7 +233,7 @@ def save_ic_balance(fiscal_year, fiscal_period, selling_entity, buying_entity, i
         existing = frappe.get_all(
             IC_BALANCE, filters={"selling_entity": selling_entity, "buying_entity": buying_entity,
                                  "fiscal_year": fy, "fiscal_period": fp},
-            fields=["name", "docstatus"], limit_page_length=0)
+            fields=["name", "docstatus"], limit_page_length=0, order_by="modified desc")
         by_state = {}
         for r in existing:
             by_state.setdefault(int(r["docstatus"]), r["name"])

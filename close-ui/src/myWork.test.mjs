@@ -72,8 +72,8 @@ test("an action with no entity carries no query string (failure path: never inve
 });
 
 test("a gap item with action.desk gets an external Desk link, the only Desk link", () => {
-	const item = { id: "gap:first_close", kind: "blocking", title: "First close period not declared", owner: "EPM Admin", action: { desk: "/app/close-settings" } };
-	assert.deepEqual(itemRoute(item), { external: "/app/close-settings" });
+	const item = { id: "gap:first_close", kind: "blocking", title: "First close period not declared", owner: "EPM Admin", action: { desk: "/desk/close-settings" } };
+	assert.deepEqual(itemRoute(item), { external: "/desk/close-settings" });
 });
 
 // --- A20: a period-less screen item routes to the URL's current period ----
@@ -95,8 +95,8 @@ test("A20 failure path: a period item still routes to its own period, never curr
 });
 
 test("A20: a Desk item still gives {external}, with a current supplied", () => {
-	const item = { id: "gap:first_close", kind: "blocking", title: "First close period not declared", owner: "EPM Admin", action: { desk: "/app/close-settings" } };
-	assert.deepEqual(itemRoute(item, { year: 2025, period: 9 }), { external: "/app/close-settings" });
+	const item = { id: "gap:first_close", kind: "blocking", title: "First close period not declared", owner: "EPM Admin", action: { desk: "/desk/close-settings" } };
+	assert.deepEqual(itemRoute(item, { year: 2025, period: 9 }), { external: "/desk/close-settings" });
 });
 
 test("failure path: an item with an unknown kind throws, and is not silently dropped", () => {
@@ -200,7 +200,7 @@ test("U7: a configuration-gap item (mywork_model.setup_gap_items) gets Setup", (
 	const item = {
 		id: "gap:first_close", kind: "blocking", title: "First close period not declared",
 		detail: "Set the first close period in Close Settings.", owner: "EPM Admin",
-		entities: [], users: [], action: { desk: "/app/close-settings" },
+		entities: [], users: [], action: { desk: "/desk/close-settings" },
 		since: null, since_reason: "configuration gap",
 	};
 	assert.deepEqual(badgeFor(item), { theme: "orange", label: "Setup" });
@@ -229,7 +229,7 @@ test("U7: a sent-back Business Disposal (mywork_model.sent_back_items, Desk acti
 		id: "sent-back:Business Disposal:ZZBD-001", kind: "todo",
 		title: "Sent back: Disposal · ZZE disposes ZZSub",
 		detail: "jane on 2026-09-18: wrong date", owner: "EPM Admin",
-		action: { desk: "/app/business-disposal/ZZBD-001" }, since: "2026-09-18",
+		action: { desk: "/desk/business-disposal/ZZBD-001" }, since: "2026-09-18",
 		since_reason: "sent back",
 	};
 	assert.deepEqual(badgeFor(item), { theme: "blue", label: "To do" });

@@ -82,8 +82,8 @@ IC_BALANCE = "IC Balance"
 #: (the engineering call, konsol#305 W3-1..4 comment): never inline.
 _DESK_ONLY = (BC, BD)
 _DESK_PATHS = {
-    BC: "/app/business-combination/%s",
-    BD: "/app/business-disposal/%s",
+    BC: "/desk/business-combination/%s",
+    BD: "/desk/business-disposal/%s",
 }
 
 #: Historical Equity Rate and Ownership Period items come from

@@ -513,6 +513,7 @@ def _apply_fact_tables():
         fields=["fact_name", "label", "clickhouse_table", "dbt_model", "measures",
                 "dimensions", "extra_columns"],
         limit_page_length=0,
+        order_by="modified desc",
     )
     if not facts:
         return [], []

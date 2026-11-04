@@ -307,7 +307,7 @@ def _commentary(key):
     # ic_api's root-group filter (ic_api.py:176, :284): a root Consolidation
     # Group has no entity (``data_area_id`` not set).
     groups = frappe.get_all("Consolidation Group", filters={"data_area_id": ["is", "not set"]},
-                            fields=["consolidation_group"], limit_page_length=0)
+                            fields=["consolidation_group"], limit_page_length=0, order_by="modified desc")
     return commentary_model.missing_commentary(
         headings, rows, [g["consolidation_group"] for g in groups])
 

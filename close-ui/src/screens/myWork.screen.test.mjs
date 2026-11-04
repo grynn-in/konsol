@@ -5,7 +5,7 @@
 // screen must reuse the pure modules rather than re-implement them:
 // myWork.js (B10) `sections` / `itemRoute`, LoadState (B17), api.js (B06)
 // and route.js (B07). Story 0.4: the Desk opens only for a configuration
-// gap, so no `/app/` literal and no new-tab link may appear outside the
+// gap, so no `/desk/` literal and no new-tab link may appear outside the
 // gap-item branch, which is fenced by the markers below.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -154,10 +154,10 @@ test("(B18b) each item's age comes from myWork.js's ageText, with today injected
   assert.match(t, /ageOf\(item\)|ageText\(/, "the age is rendered per item");
 });
 
-test("failure path: no /app/ literal and no new-tab link outside the gap-item branch (story 0.4)", () => {
+test("failure path: no Desk path literal and no new-tab link outside the gap-item branch (story 0.4)", () => {
   const source = read();
   const outside = outsideGapBranch(source);
-  assert.doesNotMatch(outside, /\/app\//, "a Desk path appears only in the gap-item branch");
+  assert.doesNotMatch(outside, /\/(desk|app)\//, "a Desk path appears only in the gap-item branch");
   assert.doesNotMatch(outside, /target="_blank"/, "only the gap-item Desk link opens a new tab");
   assert.doesNotMatch(source, /window\.open\(|window\.location/, "no navigation around the router");
 });

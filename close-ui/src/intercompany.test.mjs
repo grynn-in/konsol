@@ -611,7 +611,7 @@ function balancesPayload(overrides) {
 		hidden: 0,
 		entities: ["DE01", "FR01", "UK01"],
 		can_draft: true,
-		rules_desk: "/app/ic-elimination-rule",
+		rules_desk: "/desk/ic-elimination-rule",
 		...overrides,
 	};
 }
@@ -636,7 +636,7 @@ test("icBalancesView: the gap is shown naming each pair, with the Desk link", ()
 	const view = icBalancesView(balancesPayload());
 	assert.deepEqual(view.gap.pairs, ["FR01 → DE01"]);
 	assert.deepEqual(view.gap.lines, [GAP_MESSAGE]);
-	assert.equal(view.rulesDesk, "/app/ic-elimination-rule");
+	assert.equal(view.rulesDesk, "/desk/ic-elimination-rule");
 });
 
 test("icBalancesView: no gap, no balances, hidden note", () => {

@@ -51,16 +51,25 @@ def test_close_ui_job_uses_close_ui_working_directory():
     assert "working-directory: close-ui" in block
 
 
-def test_close_ui_job_runs_node_test_src():
+def test_close_ui_job_runs_every_test_file():
+    """Node 24 refuses a directory argument (`node --test src/` fails with
+    "Cannot find module .../src"), so the file list is expanded by the shell
+    in package.json's test script, which CI runs."""
     block = _job_block(_read_workflow(), "close-ui-js-tests")
     assert block is not None
-    assert "run: node --test src/" in block
+    assert "run: yarn test" in block
+    import json, os
+    pkg = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "close-ui", "package.json")
+    with open(pkg) as f:
+        script = json.load(f)["scripts"]["test"]
+    assert script == "node --test $(find src -name '*.test.mjs' | sort)"
 
 
-def test_close_ui_job_uses_node_20():
+def test_close_ui_job_uses_node_24():
+    """Frappe v16 requires Node 24 (konsol#358)."""
     block = _job_block(_read_workflow(), "close-ui-js-tests")
     assert block is not None
-    assert "node-version: '20'" in block
+    assert "node-version: '24'" in block
 
 
 def test_close_ui_job_installs_with_frozen_lockfile():

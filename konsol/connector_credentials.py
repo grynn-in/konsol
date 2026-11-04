@@ -240,7 +240,7 @@ def find_connector_for_entity(entity_id, *, erp_type=None):
     if erp_type:
         filters["erp_type"] = erp_type
 
-    for name in frappe.get_all("Connector", filters=filters, pluck="name"):
+    for name in frappe.get_all("Connector", filters=filters, pluck="name", order_by="modified desc"):
         doc = frappe.get_doc("Connector", name)
         for row in doc.legal_entities or []:
             if row.entity_id == entity_id:

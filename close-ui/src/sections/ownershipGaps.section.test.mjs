@@ -58,7 +58,7 @@ test("It never posts or fetches, and never builds a Desk URL itself: no api.js i
   const js = script(source);
   assert.doesNotMatch(js, /\bpost\(/, "the section never posts");
   assert.doesNotMatch(js, /\bget\(/, "the section never fetches");
-  assert.doesNotMatch(source, /\/app\/ownership-period/, "the server owns the Desk path, not the section");
+  assert.doesNotMatch(source, /\/(desk|app)\/ownership-period/, "the server owns the Desk path, not the section");
 });
 
 test("Takes ownershipView(payload) as a view prop, plus the raw out-of-scope names as a separate prop", () => {

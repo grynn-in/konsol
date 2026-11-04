@@ -2,7 +2,7 @@
   "entity_accountant": [
     {
       "action": {
-        "desk": "/app/entity"
+        "desk": "/desk/entity"
       },
       "detail": "ZZA",
       "entities": [
@@ -72,7 +72,7 @@
   "group_accountant": [
     {
       "action": {
-        "desk": "/app/entity"
+        "desk": "/desk/entity"
       },
       "detail": "ZZA, ZZB",
       "entities": [
@@ -89,7 +89,7 @@
     },
     {
       "action": {
-        "desk": "/app/ownership-period"
+        "desk": "/desk/ownership-period"
       },
       "detail": "ZZC: FY2025 P07, FY2025 P08, FY2025 P09, FY2025 P10, FY2025 P11",
       "entities": [
@@ -105,7 +105,7 @@
     },
     {
       "action": {
-        "desk": "/app/user"
+        "desk": "/desk/user"
       },
       "detail": "zz-idle@example.com",
       "entities": [],

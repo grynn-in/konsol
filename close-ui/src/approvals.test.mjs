@@ -73,7 +73,7 @@ function bcItem(overrides = {}) {
 		created: "2026-09-18T08:00:00+00:00",
 		approve: { mode: "direct", message: null },
 		inline: false,
-		desk: "/app/business-combination/BC-1",
+		desk: "/desk/business-combination/BC-1",
 		entity: "ZZ-ACQ",
 		sent_back: false,
 		rejection: null,
@@ -230,7 +230,7 @@ test("U9: Approvals.vue's own gate (canAct) and reason label, fed queueView's re
 test("Business Combination / Disposal items have a deskLink and inline false, with no approve action", () => {
 	const view = queueView(payload({ items: [bcItem()] }), NOW, TZ);
 	assert.equal(view.items[0].inline, false);
-	assert.equal(view.items[0].deskLink, "/app/business-combination/BC-1");
+	assert.equal(view.items[0].deskLink, "/desk/business-combination/BC-1");
 	assert.equal(view.items[0].approve, null);
 });
 
@@ -264,7 +264,7 @@ test("a sent-back Desk item (BC/BD) still carries its deskLink", () => {
 			rejection: { reason: "Wrong entity", actor: "dave@example.com", at: "2026-09-21T09:30:00+00:00" },
 		})],
 	}), NOW, TZ);
-	assert.equal(view.sentBack[0].deskLink, "/app/business-combination/BC-1");
+	assert.equal(view.sentBack[0].deskLink, "/desk/business-combination/BC-1");
 	assert.equal("approve" in view.sentBack[0], false);
 });
 

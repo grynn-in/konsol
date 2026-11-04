@@ -6,30 +6,15 @@ from frappe.auth import CookieManager
 _original_set_cookie = CookieManager.set_cookie
 
 
-def _excel_set_cookie(
-    self,
-    key,
-    value,
-    expires=None,
-    secure=False,
-    httponly=False,
-    samesite="Lax",
-    max_age=None,
-):
+def _excel_set_cookie(self, key, value, *args, **kwargs):
+    """Force SameSite=None; Secure on /api/ cookies, and pass every other
+    argument through untouched. Copying the framework's signature broke on
+    Frappe v16, which added ``deduplicate``."""
     request = getattr(frappe.local, "request", None)
     if request is not None and request.path.startswith("/api/"):
-        samesite = "None"
-        secure = True
-    return _original_set_cookie(
-        self,
-        key,
-        value,
-        expires=expires,
-        secure=secure,
-        httponly=httponly,
-        samesite=samesite,
-        max_age=max_age,
-    )
+        kwargs["samesite"] = "None"
+        kwargs["secure"] = True
+    return _original_set_cookie(self, key, value, *args, **kwargs)
 
 
 CookieManager.set_cookie = _excel_set_cookie

@@ -717,6 +717,7 @@ def _resolve_connector_name(spec):
             filters={"connector_name": connector_name},
             pluck="name",
             limit=1,
+            order_by="modified desc",
         )
         if matches:
             return matches[0]
@@ -779,6 +780,7 @@ def _resolve_connector_docname(name):
         filters={"connector_name": name},
         pluck="name",
         limit=1,
+        order_by="modified desc",
     )
     if matches:
         return matches[0]

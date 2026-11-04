@@ -72,6 +72,17 @@ website_route_rules = [
 	{"from_route": "/close/<path:app_path>", "to_route": "close"},
 ]
 
+# Frappe v16 builds the desktop and sidebar from this hook; an app without it
+# has no icon on the desktop. The route is the Close app, konsol's main screen.
+add_to_apps_screen = [
+	{
+		"name": "konsol",
+		"logo": "/assets/konsol/excel-addin/assets/icon-80.png",
+		"title": "Konsol",
+		"route": "/close",
+	}
+]
+
 # Scheduled Tasks
 # ---------------
 

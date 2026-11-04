@@ -14,7 +14,7 @@
 // Item shape (A20, mywork_model.py): {id, kind: "blocking"|"todo"|"waiting",
 // title, period: {fiscal_year, fiscal_period, code} | absent for a setup gap,
 // owner, action}. `action` is either {screen, entity?} (an in-app route) or
-// {desk: "/app/..."} (a configuration gap; story 0.4 — the only Desk link).
+// {desk: "/desk/..."} (a configuration gap; story 0.4 — the only Desk link).
 
 import { format } from "./route.js";
 import { ageText as sharedAgeText, userTimeZone } from "./timefmt.js";
@@ -67,7 +67,7 @@ export function sections(items) {
 /**
  * `item` (A20's shape) and `current` (`{year, period}`, the URL's period,
  * or null/absent) → the in-app route path for a period item, or
- * `{external: "/app/..."}` for a setup-gap item (story 0.4). A period
+ * `{external: "/desk/..."}` for a setup-gap item (story 0.4). A period
  * item's route never depends on client-side "last viewed" state (D5): the
  * period comes from the item itself, never from `current`.
  *
