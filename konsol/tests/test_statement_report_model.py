@@ -192,6 +192,37 @@ def test_message_carries_the_comparison_note_when_there_is_one():
     assert "No rows in the warehouse for FY2025 P06" in R.message(payload)
 
 
+def test_message_names_the_first_entities_not_included_and_counts_the_rest():
+    codes = ["ZZ%02d" % i for i in range(R.NOT_INCLUDED_SHOWN + 5)]
+    payload = _payload(not_included={"count": len(codes), "entities": codes, "hidden": 0})
+    text = R.message(payload)
+    assert "%d entities" % len(codes) in text
+    assert codes[R.NOT_INCLUDED_SHOWN - 1] in text
+    assert codes[R.NOT_INCLUDED_SHOWN] not in text
+    assert "and 5 more" in text
+
+
+def test_a_negative_zero_amount_is_shown_as_zero():
+    """A residual rounded from a tiny negative is -0.0; it shows as 0.00."""
+    payload = _payload()
+    residual = payload["statement"]["sections"][1]["lines"][-1]
+    residual["current"], residual["comparison"] = -0.0, -0.0
+    row = _by_label(R.rows(payload), "Unmatched residual")
+    assert str(row["current"]) == "0.0" and str(row["comparison"]) == "0.0"
+
+
+def test_message_lines_are_html_escaped_and_joined_by_br():
+    """Desk renders the report message as HTML."""
+    text = R.message(_payload(consolidation_group="ZZ<b>G</b>"))
+    assert "<b>" not in text and "ZZ&lt;b&gt;G&lt;/b&gt;" in text
+    assert "<br>" in text
+
+
+def test_message_carries_the_declared_accounts_gap_message():
+    payload = _payload(gap={"code": "ZZ_GAP", "message": "Declare the CTA account."})
+    assert "Declare the CTA account." in R.message(payload)
+
+
 def test_message_names_entities_not_included():
     payload = _payload(not_included={"count": 2, "entities": ["ZZA", "ZZB"], "hidden": 0})
     text = R.message(payload)
