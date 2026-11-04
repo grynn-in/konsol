@@ -244,6 +244,9 @@ NET_RESULT_LABEL = "Net result"
 _NO_HEADING_LABEL = "No heading"
 _NOT_IN_CHART_LABEL = "Not in the group chart"
 _RESIDUAL_LABEL = "Unmatched residual"
+#: The cent by which separately rounded parts miss the rounded residual:
+#: shown as its own line so the breakdown foots, never called unexplained.
+ROUNDING_LABEL = "Rounding"
 _CTA_INCLUDES_LABEL = "of which currency translation (CTA)"
 _RESULT_INCLUDES_LABEL = "of which current-year result"
 _CTA_NOT_PLACED = "CTA not placed (declare the CTA account)"
@@ -538,6 +541,10 @@ def statement(rows, accounts, period_rows, key, declared):
     if residual_raw:
         residual_line["explained"] = explained
         residual_line["unexplained"] = _round(residual_exact - explained_exact)
+        rounding = round(residual_raw - sum(e["amount"] for e in explained)
+                         - residual_line["unexplained"], 2)
+        if rounding:
+            explained.append({"label": ROUNDING_LABEL, "amount": rounding})
     bs_lines.append(residual_line)
 
     return {
