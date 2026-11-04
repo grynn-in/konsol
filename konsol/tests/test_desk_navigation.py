@@ -1,7 +1,6 @@
 """The Konsol Desk navigation shipped for Frappe v16 (demo prep, 5 Nov 2026).
 
-konsol ships a Sidebar (konsol/consolidation/sidebar/konsol), a Dock
-(konsol/dock/konsol), a home Workspace (konsol/consolidation/workspace/konsol)
+konsol ships a Sidebar (konsol/consolidation/sidebar/konsol), a home Workspace (konsol/consolidation/workspace/konsol)
 and its Number Cards. Every link in them names a DocType, Report or Workspace
 by string, and nothing in Frappe refuses a dead one at import: the item just
 renders and fails when clicked. These tests fail instead.
@@ -50,7 +49,6 @@ def _reports():
 
 SIDEBAR = "consolidation/sidebar/konsol/konsol.json"
 WORKSPACE = "consolidation/workspace/konsol/konsol.json"
-DOCK = "dock/konsol/konsol.json"
 
 
 def test_every_sidebar_link_resolves():
@@ -80,14 +78,11 @@ def test_sidebar_claims_its_doctypes_and_starts_at_home():
             assert item["is_default_module"] == 1, item["link_to"]
 
 
-def test_dock_opens_the_sidebar():
-    sidebar = _load(SIDEBAR)
-    dock = _load(DOCK)
-    assert dock["standard"] == 1 and dock["app"] == "konsol"
-    assert [i["link_to"] for i in dock["items"]] == [sidebar["name"]]
-    # An item without an icon renders the app logo, a second K beside the
-    # logo itself (5 Nov 2026): every dock item names one of frappe's icons.
-    assert all(i["icon"] for i in dock["items"]), dock["items"]
+def test_no_dock_ships():
+    """konsol has one sidebar, so a dock item only repeated the app logo as a
+    second K in the rail (Deepak Pai, 5 Nov 2026: "it looks stupid"); with no
+    dock the rail disappears and the logo shows once."""
+    assert not os.path.exists(os.path.join(APP_DIR, "dock"))
 
 
 def test_workspace_shortcuts_and_cards_resolve():

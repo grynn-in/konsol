@@ -35,5 +35,12 @@ def _group_code(value):
     one that is not a root group)."""
     if not value:
         return None
-    code = frappe.db.get_value("Consolidation Group", value, "consolidation_group")
-    return code or value
+    row = frappe.db.get_value("Consolidation Group", value, ["consolidation_group", "data_area_id"], as_dict=True)
+    if row is None:
+        return value
+    # Every member row carries its root's code: resolving one would show the
+    # whole root group's statement as if it were the member's (review of #362).
+    if row.data_area_id:
+        frappe.throw(f"{value} is a member of {row.consolidation_group}, not a root consolidation group. "
+                     "Choose the root group.")
+    return row.consolidation_group

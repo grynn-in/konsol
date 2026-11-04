@@ -74,7 +74,7 @@ website_route_rules = [
 
 # Frappe v16 builds the desktop and sidebar from this hook; an app without it
 # has no icon on the desktop. The route is the Konsol Desk workspace
-# (konsol/consolidation/workspace/konsol), whose sidebar and dock ship beside it.
+# (konsol/consolidation/workspace/konsol), whose sidebar ships beside it.
 add_to_apps_screen = [
 	{
 		"name": "konsol",
