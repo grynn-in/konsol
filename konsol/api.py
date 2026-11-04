@@ -1639,6 +1639,7 @@ def get_hierarchy_tree(consolidation_group=None, as_of=None):
             filters={"consolidation_group": consolidation_group},
             fields=["lft", "rgt"],
             limit=1,
+            order_by="modified desc",
         )
         if root:
             filters = [

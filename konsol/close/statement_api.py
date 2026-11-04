@@ -516,7 +516,7 @@ def signoff_commentary(fiscal_year, fiscal_period):
     period_rows = fiscal_calendar.fiscal_period_rows()
     _find_period(key, period_rows)
     groups = frappe.get_all("Consolidation Group", filters=_ROOT_FILTER,
-                            fields=["consolidation_group"], limit_page_length=0)
+                            fields=["consolidation_group"], limit_page_length=0, order_by="modified desc")
     declared = signoff_gate.statement_accounts()
     accounts_map = _chart()
     texts = {}

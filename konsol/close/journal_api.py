@@ -241,7 +241,7 @@ def _groups():
     """``[{"consolidation_group", "reporting_currency", "entities"}]``, one
     read of every Consolidation Group row (a root has a blank
     ``data_area_id``, consolidation_journal.py's ``_BLANK`` pattern)."""
-    rows = frappe.get_all("Consolidation Group", fields=GROUP_FIELDS, limit_page_length=0)
+    rows = frappe.get_all("Consolidation Group", fields=GROUP_FIELDS, limit_page_length=0, order_by="modified desc")
     roots = {}
     members = {}
     for row in rows:

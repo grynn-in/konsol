@@ -197,6 +197,7 @@ def _docs(fy, fp):
         filters={"fiscal_year": fy, "fiscal_period": fp, "docstatus": ["in", [0, 1]]},
         fields=DOC_FIELDS,
         limit_page_length=0,
+        order_by="modified desc",
     )
     out = []
     for doc in docs:

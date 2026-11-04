@@ -37,6 +37,7 @@ def execute():
         filters={"erp_type": "d365_fo"},
         pluck="name",
         limit=1,
+        order_by="modified desc",
     )
     if matches:
         doc = frappe.get_doc("Connector", matches[0])

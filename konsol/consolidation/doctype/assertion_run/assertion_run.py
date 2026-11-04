@@ -448,6 +448,7 @@ def _failed_assertion_names(close_run, limit=10):
         filters={"parent": close_run, "status": ["in", ("Fail", "Error")]},
         pluck="assertion",
         limit=limit,
+        order_by="modified desc",
     )
 
 

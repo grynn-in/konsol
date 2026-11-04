@@ -324,6 +324,7 @@ class OwnershipPeriod(Document):
             },
             fields=["name", "effective_date", "end_date", "docstatus"],
             limit_page_length=0,
+            order_by="modified desc",
         )
         supersedes = self.get("supersedes")
         # #305-Q1-1: the period this change supersedes is exempt ONLY when it is
