@@ -369,6 +369,23 @@ def test_residual_is_rounded_once_not_built_from_rounded_parts():
     assert "explained" not in residual
 
 
+def test_unexplained_is_exact_when_the_residual_is_explained():
+    """Same rounding fixture, CTA not declared: the residual is the CTA
+    (5.07) and the "CTA not placed" line explains all of it. Built from
+    rounded parts it was 5.08 with 0.01 unexplained."""
+    rows = [
+        _row("1110", 1735.104),
+        _row("2100", -803.704),
+        _row("3200", -684.904),
+        _row("CTA", -5.074, adjustment_type="cta"),
+        _row("4100", -241.422),
+    ]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(cta_account=None))
+    residual = _residual_line(result)
+    assert residual["current"] == 5.07, residual
+    assert residual["unexplained"] == 0.0, residual
+
+
 def test_both_undeclared_residual_is_the_unplaced_total_never_balanced_silently():
     """Failure path: never silently balanced. Residual 246.50 =
     241.43 + 5.07, explained naming both parts, unexplained 0.00."""

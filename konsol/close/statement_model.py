@@ -199,6 +199,16 @@ def heading_amounts(rows, accounts, keys):
         "not_in_chart": {k: _round(v) for k, v in not_in_chart.items()},
         "cta": _round(cta_total),
         "pl_total": _round(pl_total),
+        # The same totals unrounded, for sums that must be rounded once at
+        # the end (the residual): summing the rounded parts above turned up
+        # to five half-cents of noise into a red "Unmatched residual".
+        "exact": {
+            "headings": dict(headings),
+            "no_heading": dict(no_heading),
+            "not_in_chart": dict(not_in_chart),
+            "cta": cta_total,
+            "pl_total": pl_total,
+        },
     }
 
 
@@ -258,11 +268,28 @@ def _any_row_at(rows, keys):
     return any((row["fiscal_year"], row["fiscal_period"]) in keys for row in rows)
 
 
-def _current_year_result_raw(rows, accounts, period_rows, key):
+def _current_year_result_raw(rows, accounts, period_rows, key, exact=False):
     """The P&L YTD total (net debit, unflipped) at ``key`` — the same FY's
-    keys only, never the full BS cumulative history (#305-W4-7 7a)."""
+    keys only, never the full BS cumulative history (#305-W4-7 7a).
+    ``exact=True`` returns the unrounded Decimal, for the residual."""
     ytd_keys = period_keys(period_rows, key)["ytd"]
-    return heading_amounts(rows, accounts, ytd_keys)["pl_total"]
+    amounts = heading_amounts(rows, accounts, ytd_keys)
+    return amounts["exact"]["pl_total"] if exact else amounts["pl_total"]
+
+
+def _residual_exact(ha_cum, bs_order, result_exact, cta_placed, result_placed):
+    """The BS residual, net debit, as an UNROUNDED Decimal (round it once):
+    every BS heading, BS rows with no heading, rows not in the chart, plus
+    the CTA and the current-year result when each is placed."""
+    exact = ha_cum["exact"]
+    total = sum((exact["headings"].get(code, Decimal("0")) for code in bs_order), Decimal("0"))
+    total += exact["no_heading"].get(BS, Decimal("0"))
+    total += sum(exact["not_in_chart"].values(), Decimal("0"))
+    if cta_placed:
+        total += exact["cta"]
+    if result_placed:
+        total += result_exact
+    return total
 
 
 def _bs_heading_sides(bs_order, accounts):
@@ -475,34 +502,34 @@ def statement(rows, accounts, period_rows, key, declared):
         })
 
     # -- residual: the sum of the BS lines, net-debit terms, unflipped -----
-    residual_raw = sum(bs_raw_cur.values()) + no_heading_bs_cur + sum(not_in_chart_cur.values())
+    # Built from the UNROUNDED totals and rounded once; summing the rounded
+    # parts turned rounding noise into a red "Unmatched residual (0.01)".
+    result_exact_cur = _current_year_result_raw(rows, accounts, period_rows, current, exact=True)
+    residual_exact = _residual_exact(ha_cum_current, bs_order, result_exact_cur,
+                                     bool(cta_account), bool(result_account))
+    residual_raw = _round(residual_exact)
+
     explained = []
-    if cta_account:
-        residual_raw += cta_cur
-    else:
+    explained_exact = Decimal("0")
+    if not cta_account:
         explained.append({"label": _CTA_NOT_PLACED, "amount": round(-cta_cur, 2)})
-    if result_account:
-        residual_raw += result_cur
-    else:
+        explained_exact -= ha_cum_current["exact"]["cta"]
+    if not result_account:
         explained.append({"label": _RESULT_NOT_PLACED, "amount": round(-result_cur, 2)})
+        explained_exact -= result_exact_cur
     if not_in_chart_cur:
         explained.append({"label": _NOT_IN_CHART_LABEL, "amount": round(sum(not_in_chart_cur.values()), 2)})
-
-    residual_raw = round(residual_raw, 2)
+        explained_exact += sum(ha_cum_current["exact"]["not_in_chart"].values(), Decimal("0"))
 
     # The comparison residual, same formula, net-debit terms — ``None``
     # only when the comparison period itself wasn't loaded (S8: the
     # residual line carried no comparison at all).
     residual_comp = None
     if bs_raw_comp is not None:
-        residual_comp = sum(bs_raw_comp.values()) + (no_heading_bs_comp or 0.0)
-        if not_in_chart_comp:
-            residual_comp += sum(not_in_chart_comp.values())
-        if cta_account:
-            residual_comp += (cta_comp or 0.0)
-        if result_account:
-            residual_comp += (result_comp or 0.0)
-        residual_comp = round(residual_comp, 2)
+        residual_comp = _round(_residual_exact(
+            ha_cum_comparison, bs_order,
+            _current_year_result_raw(rows, accounts, period_rows, comparison, exact=True),
+            bool(cta_account), bool(result_account)))
 
     residual_line = {
         "kind": "residual", "label": _RESIDUAL_LABEL,
@@ -510,7 +537,7 @@ def statement(rows, accounts, period_rows, key, declared):
     }
     if residual_raw:
         residual_line["explained"] = explained
-        residual_line["unexplained"] = round(residual_raw - sum(e["amount"] for e in explained), 2)
+        residual_line["unexplained"] = _round(residual_exact - explained_exact)
     bs_lines.append(residual_line)
 
     return {
