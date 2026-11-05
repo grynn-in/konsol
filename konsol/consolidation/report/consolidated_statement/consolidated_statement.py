@@ -6,6 +6,10 @@ Consolidation Group and period. The numbers are ``statement_api``'s own
 lays them out (``statement_report_model``). A non-ok statement (no group
 chosen, no chart, warehouse not built, setup gap, error) is refused with
 its own message, never shown as an empty table.
+
+The Prior year column reads the same period and group a year earlier; a
+prior year that is not available leaves the column blank and the report
+message says why — it never fails the report.
 """
 import frappe
 
@@ -17,15 +21,28 @@ def execute(filters=None):
     if not filters.get("fiscal_year") or not filters.get("fiscal_period"):
         frappe.throw("Choose a fiscal year and a fiscal period.")
 
-    payload = statement_api.get_statement(
-        filters.fiscal_year, filters.fiscal_period, _group_code(filters.get("consolidation_group")),
-    )
+    group = _group_code(filters.get("consolidation_group"))
+    payload = statement_api.get_statement(filters.fiscal_year, filters.fiscal_period, group)
+    prior = _prior_year(filters.fiscal_year, filters.fiscal_period, group)
     try:
-        data = statement_report_model.rows(payload)
-        message = statement_report_model.message(payload)
+        data = statement_report_model.rows(payload, prior)
+        message = statement_report_model.message(payload, prior)
     except ValueError as e:
         frappe.throw(str(e))
     return statement_report_model.columns(), data, message
+
+
+def _prior_year(fiscal_year, fiscal_period, group):
+    """The same period and group a year earlier, for the Prior year column.
+    A refused read (e.g. the prior year is not a declared period) becomes
+    a non-ok payload carrying the refusal: the report still renders, and
+    its message says why the column is blank."""
+    try:
+        return statement_api.get_statement(int(fiscal_year) - 1, fiscal_period, group)
+    except frappe.ValidationError as e:
+        # The refusal is shown in the report message, not as a dialog too.
+        frappe.clear_last_message()
+        return {"state": "error", "message": str(e), "statement": None}
 
 
 def _group_code(value):

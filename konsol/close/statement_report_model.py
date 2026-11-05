@@ -15,6 +15,14 @@ exactly what the Close app's Numbers screen shows.
   explanation and its "Unexplained" remainder follow it at ``indent`` 1.
 - ``ytd`` is set on Profit and Loss lines only; the Balance Sheet has none.
 - Every row carries the reporting currency (the Currency columns' options).
+- ``prior_year``: the prior year's value for the SAME line, from a second
+  payload (``get_statement(fiscal_year - 1, fiscal_period, group)``): a
+  P&L line takes the prior year's year to date, a Balance Sheet line the
+  prior year's balance at the same period (its ``current``). Matched by
+  heading code, by include kind, and by kind for the other lines. A line
+  absent last year, a non-ok prior payload, a section header and a
+  residual explanation row are blank, never 0. ``prior_year_change`` is
+  this year's value on the same basis (YTD or ``current``) minus it.
 
 A non-ok payload raises ``ValueError`` with the payload's own message: the
 report refuses, it never shows an empty statement. An unknown line kind
@@ -58,6 +66,8 @@ def columns():
         amount("comparison", "Comparison"),
         amount("variance", "Variance"),
         amount("ytd", "Year to date"),
+        amount("prior_year", "Prior year"),
+        amount("prior_year_change", "Change vs prior year"),
         {"fieldname": "currency", "label": "Currency", "fieldtype": "Link",
          "options": "Currency", "width": 80},
     ]
@@ -75,37 +85,99 @@ def _row(label, currency, line=None, fields=_AMOUNT_FIELDS, code=None, indent=0,
     row = {"label": label, "code": code, "indent": indent, "currency": currency}
     for field in _AMOUNT_FIELDS:
         value = line.get(field) if (line is not None and field in fields) else None
-        # -0.0 (a rounded tiny negative, e.g. the residual) shows as "-0.00";
-        # it is zero (statement_export_model._amount's precedent).
-        row[field] = 0.0 if value == 0 and value is not None else value
+        row[field] = _zero(value)
+    row["prior_year"] = row["prior_year_change"] = None
     row.update(flags)
     return row
 
 
-def rows(payload):
-    """The report rows for ``payload`` (see the module docstring)."""
+def _zero(value):
+    """-0.0 (a rounded tiny negative, e.g. the residual) shows as "-0.00";
+    it is zero (statement_export_model._amount's precedent)."""
+    return 0.0 if value == 0 and value is not None else value
+
+
+def _basis(line):
+    """The value a line is compared with year on year: the year to date on
+    a P&L line (the only lines that carry ``ytd``), else ``current``."""
+    return line.get("ytd") if "ytd" in line else line.get("current")
+
+
+def _line_keys(section, line):
+    """``(key, item)`` for a line and each of its includes: a heading by its
+    code, an include by its heading and kind, any other line by kind."""
+    kind = line.get("kind")
+    if kind == "heading":
+        yield (section, kind, line.get("heading")), line
+        for include in line.get("includes") or []:
+            yield (section, "include", line.get("heading"), include.get("kind")), include
+    else:
+        yield (section, kind), line
+
+
+def _prior_values(prior):
+    """``{key: basis value}`` of an ok prior-year payload; ``None`` when
+    there is no prior payload or it is not ok (the message says why)."""
+    if not prior or prior.get("state") != "ok" or not prior.get("statement"):
+        return None
+    values = {}
+    for section in prior["statement"]["sections"]:
+        for line in section["lines"]:
+            for key, item in _line_keys(section["section"], line):
+                values[key] = _basis(item)
+    return values
+
+
+def _with_prior(row, section, line, prior_values, include=None):
+    """``row`` with the prior year's value for the same line, and the
+    change on the same basis. Absent last year: left blank, never 0."""
+    if prior_values is not None:
+        key, item = ((section, "include", line["heading"], include.get("kind")), include) \
+            if include is not None else next(_line_keys(section, line))
+        prior = prior_values.get(key)
+        if prior is not None:
+            this = _basis(item)
+            row["prior_year"] = _zero(prior)
+            row["prior_year_change"] = _zero(round(this - prior, 2)) if this is not None else None
+    return row
+
+
+def rows(payload, prior=None):
+    """The report rows for ``payload``, with the prior year's payload
+    ``prior`` (or ``None``) on the prior-year columns (see the module
+    docstring)."""
     _refuse_unless_ok(payload)
     currency = payload.get("reporting_currency")
+    prior_values = _prior_values(prior)
     out = []
     for section in payload["statement"]["sections"]:
-        out.append(_row(section["section"], currency, is_section=1, bold=1))
+        name = section["section"]
+        out.append(_row(name, currency, is_section=1, bold=1))
         for line in section["lines"]:
             kind = line.get("kind")
             if kind == "heading":
-                out.append(_row(line.get("heading_name") or line["heading"], currency, line,
-                                code=line["heading"]))
+                out.append(_with_prior(
+                    _row(line.get("heading_name") or line["heading"], currency, line,
+                         code=line["heading"]),
+                    name, line, prior_values))
                 for include in line.get("includes") or []:
-                    out.append(_row(include["label"], currency, include,
-                                    fields=("current", "comparison"), indent=1))
+                    out.append(_with_prior(
+                        _row(include["label"], currency, include,
+                             fields=("current", "comparison"), indent=1),
+                        name, line, prior_values, include=include))
             elif kind in ("no_heading", "net_result"):
-                out.append(_row(line["label"], currency, line, bold=int(kind == "net_result")))
+                out.append(_with_prior(
+                    _row(line["label"], currency, line, bold=int(kind == "net_result")),
+                    name, line, prior_values))
             elif kind == "not_in_chart":
                 codes = ", ".join(line.get("codes") or [])
                 label = f"{line['label']} ({codes})" if codes else line["label"]
-                out.append(_row(label, currency, line))
+                out.append(_with_prior(_row(label, currency, line), name, line, prior_values))
             elif kind == "residual":
-                out.append(_row(line["label"], currency, line,
-                                fields=("current", "comparison"), bold=1))
+                out.append(_with_prior(
+                    _row(line["label"], currency, line,
+                         fields=("current", "comparison"), bold=1),
+                    name, line, prior_values))
                 if line.get("current"):
                     for item in line.get("explained") or []:
                         out.append(_row(item["label"], currency, {"current": item["amount"]},
@@ -140,10 +212,25 @@ def _not_included_text(not_included):
     return text
 
 
-def message(payload):
+def _prior_year_text(period, prior):
+    """The message's prior-year line: the prior period and its basis when
+    the prior payload is ok, else why the column is blank (the prior
+    payload's own message, or its state)."""
+    if prior is None:
+        return None
+    name = period_name(int(period["fiscal_year"]) - 1, period["fiscal_period"])
+    if _prior_values(prior) is not None:
+        return ("Prior year: %s (Profit and Loss year to date; Balance Sheet at the "
+                "period end)" % name)
+    reason = prior.get("message") or "the statement is not available (state: %s)" % prior.get("state")
+    return "Prior year (%s) is blank: %s" % (name, reason)
+
+
+def message(payload, prior=None):
     """The report message: ``Numbers · FY2025 P07 · <group> · <currency>``,
-    the legend, and every note the Numbers screen shows (comparison note,
-    declared-accounts gap, entities not included), each escaped, joined by ``<br>``: Desk renders
+    the legend, every note the Numbers screen shows (comparison note,
+    declared-accounts gap, entities not included), and the prior-year line
+    (``_prior_year_text``), each escaped, joined by ``<br>``: Desk renders
     the report message as HTML."""
     _refuse_unless_ok(payload)
     period = payload["period"]
@@ -164,4 +251,5 @@ def message(payload):
     not_included = _not_included_text(payload.get("not_included"))
     if not_included:
         lines.append(not_included)
+    lines.append(_prior_year_text(period, prior))
     return "<br>".join(_html.escape(line) for line in lines if line)
