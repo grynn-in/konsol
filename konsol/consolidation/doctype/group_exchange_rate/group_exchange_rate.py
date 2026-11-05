@@ -117,12 +117,31 @@ class GroupExchangeRate(Document):
             frappe.msgprint(group_rates.MAGNITUDE_WARNING_UNDECLARED, title="Magnitude Warning Factor",
                             indicator="orange")
             return
-        if (self.change_reason or "").strip():
-            return
         problem = group_rates.magnitude_warning(self.from_currency, self.to_currency, self.quote, self._per(),
                                                 factor)
-        if problem:
+        if not problem:
+            return
+        reason = (self.change_reason or "").strip()
+        if not reason:
             frappe.throw(problem, frappe.MandatoryError)
+        if self._reason_predates_quote(reason):
+            frappe.throw(
+                problem + " The Reason for Change was given before Quote or Quoted Per changed: "
+                "update it to say why this quote is right.", frappe.MandatoryError)
+
+    def _reason_predates_quote(self, reason):
+        """PR #385 review: a Reason for Change covers the magnitude warning
+        only for the quote it was given with. True when the last version that
+        carried this same reason (the saved draft, or for an amendment the
+        rate it amends) had a different Quote or Quoted Per: the reason was
+        given for something else, such as a rate move."""
+        prior = self._saved_version()
+        if prior is None and self.amended_from:
+            prior = frappe.db.get_value(self.doctype, self.amended_from,
+                                        ["quote", "quoted_per", "change_reason"], as_dict=True)
+        if prior is None or (prior.change_reason or "").strip() != reason:
+            return False
+        return (float(prior.quote or 0), int(prior.quoted_per or 1)) != (float(self.quote or 0), self._per())
 
     def _saved_version(self):
         """The saved version of this document, or None for a new one."""
