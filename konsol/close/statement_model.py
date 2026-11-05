@@ -280,6 +280,19 @@ def _current_year_result_raw(rows, accounts, period_rows, key, exact=False):
     return amounts["exact"]["pl_total"] if exact else amounts["pl_total"]
 
 
+def _heading_exact(ha_cum, code, mult, with_cta, result):
+    """A BS heading's displayed amount: its unrounded total, plus the
+    unrounded CTA when the CTA is placed under it, plus the current-year
+    result (as displayed) when that is, signed and rounded once."""
+    exact = ha_cum["exact"]
+    total = exact["headings"].get(code, Decimal("0"))
+    if with_cta:
+        total += exact["cta"]
+    if result is not None:
+        total += _dec(result)
+    return _round(mult * total)
+
+
 def _residual_exact(ha_cum, bs_order, result_exact, cta_placed, result_placed):
     """The BS residual, net debit, as an UNROUNDED Decimal (round it once):
     every BS heading, BS rows with no heading, rows not in the chart, plus
@@ -463,8 +476,15 @@ def statement(rows, accounts, period_rows, key, declared):
                 "current": round(mult * result_cur, 2),
                 "comparison": round(mult * result_comp, 2) if result_comp is not None else None,
             })
-        cur = round(mult * raw_cur, 2)
-        comp = round(mult * raw_comp, 2) if raw_comp is not None else None
+        # The line's own amount, rounded ONCE from the unrounded heading and
+        # CTA plus the current-year result as displayed: the same sum
+        # drill_model checks its drill against (summing the parts after each
+        # was rounded left equity a cent off its drill, live 5 Nov).
+        cur = _heading_exact(ha_cum_current, code, mult, code == cta_heading,
+                             result_cur if code == result_heading else None)
+        comp = (_heading_exact(ha_cum_comparison, code, mult, code == cta_heading,
+                               (result_comp or 0.0) if code == result_heading else None)
+                if raw_comp is not None else None)
         line = {
             "kind": "heading", "heading": code, "heading_name": entry.get("account_name"),
             "current": cur, "comparison": comp,
