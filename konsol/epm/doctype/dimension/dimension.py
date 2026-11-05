@@ -277,7 +277,7 @@ class Dimension(Document):
             frappe.throw(
                 f"Dimension {self.name} is Published, so konsol will not delete "
                 f"it: its dbt vars entry and its budget and journal fields would "
-                f"stay behind. Unpublish it first (Actions > Unpublish), then "
+                f"stay behind. Unpublish it first (press Unpublish), then "
                 f"delete it.",
                 frappe.ValidationError,
             )
