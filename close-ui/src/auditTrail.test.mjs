@@ -223,6 +223,15 @@ test("tb_cancelled / tb_exception_declared / tb_exception_cancelled labels and t
 	assert.equal(excCancelled.rows[0].tone, "mute");
 });
 
+// konsol#283 (PR #381 review, finding 3): a re-land restores a submitted
+// TB's warehouse rows, possibly in a closed period; the trail names it.
+test("tb_relanded is a trial-balance row labelled Re-landed", () => {
+	const relanded = trailView(payload([event({ kind: "tb_relanded", entity: "ZZAA" })]), NOW, TZ);
+	assert.equal(relanded.rows[0].label, "Re-landed");
+	assert.equal(relanded.rows[0].tone, "warn");
+	assert.equal(relanded.rows[0].item, "Trial balance · ZZAA");
+});
+
 // --- ic_sent_back (konsol#305 X02, #305-W3-1) ---------------------------
 
 test('ic_sent_back -> "Sent back", warn, and the pair in item and reason in detail', () => {

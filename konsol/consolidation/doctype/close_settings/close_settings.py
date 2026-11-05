@@ -149,6 +149,8 @@ class CloseSettings(Document):
         (close_policy_model.policy_gaps), never guessed."""
         problems = close_policy_model.settings_problems(
             self.self_approval, self.rate_move_threshold)
+        # konsol#179: blank / 0 is undeclared (every rate save warns).
+        problems += close_policy_model.magnitude_factor_problems(self.magnitude_warning_factor)
         if problems:
             frappe.throw("<br>".join(problems))
 

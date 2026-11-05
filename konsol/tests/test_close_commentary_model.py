@@ -286,7 +286,7 @@ _ROWS = [
 
 def _statement(rows=None, key=(2025, 7)):
     return SM.statement(_ROWS if rows is None else rows, _CHART, _calendar(), key,
-                        CPM.statement_accounts("", "", {}))
+                        CPM.statement_accounts("", "", {}), minor_unit=2)
 
 
 def _threshold(amount=0, percent=0, combine=""):

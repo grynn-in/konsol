@@ -30,7 +30,7 @@ def execute(filters=None):
         message = statement_report_model.message(payload, prior)
     except ValueError as e:
         frappe.throw(str(e))
-    return statement_report_model.columns(), data, message
+    return statement_report_model.columns(payload["statement"]["minor_unit"]), data, message
 
 
 def _drill_group(value, payload):

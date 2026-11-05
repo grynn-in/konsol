@@ -422,7 +422,7 @@ def _statement(fiscal_year, fiscal_period, consolidation_group):
         return result, None
 
     accounts_map = _chart()
-    built = _group_statement(key, period_rows, chosen, declared, accounts_map)
+    built = _group_statement(key, period_rows, chosen, declared, accounts_map, reporting_currency)
     if built["state"] != "ok":
         result["state"], result["message"] = built["state"], built["message"]
         return result, None
@@ -448,12 +448,21 @@ def _chart():
     return {a["name"]: a for a in accounts}
 
 
-def _group_statement(key, period_rows, group, declared, accounts_map):
+def _minor_unit(currency):
+    """``ISO Currency.minor_unit`` of ``currency``, or None when there is no
+    such row (konsol#354; konsol#330 ties the value to the ISO 4217 list)."""
+    if not currency:
+        return None
+    return frappe.db.get_value("ISO Currency", currency, "minor_unit")
+
+
+def _group_statement(key, period_rows, group, declared, accounts_map, reporting_currency):
     """One group's statement for ``key``: ``{"state", "message",
     "statement", "entity_rows", "tb_rows"}``. ``state`` is ``ok``,
     ``no_chart`` (no ClickHouse read), ``not_built`` / ``error`` (the
     warehouse read failed, or a NULL amount), or ``setup_gap`` (a BS
-    heading's side undeclared). The ONE statement build: ``_statement``
+    heading's side undeclared, or the reporting currency has no ISO
+    Currency, so no minor unit to round to: konsol#354). The ONE statement build: ``_statement``
     (``get_statement``, ``export_statement``) and ``signoff_commentary``
     both call it, so the sign-off and the export check the statement the
     Numbers screen shows."""
@@ -461,6 +470,14 @@ def _group_statement(key, period_rows, group, declared, accounts_map):
            "tb_rows": None}
     if not accounts_map:
         out.update(state="no_chart", message=_NO_CHART_MESSAGE)
+        return out
+    minor_unit = _minor_unit(reporting_currency)
+    if minor_unit is None:
+        # Refused, never rounded to a guessed 2 places (konsol#354).
+        out.update(state="setup_gap", message=(
+            f"{statement_model.STATEMENT_CURRENCY_PRECISION_UNDECLARED}: the reporting currency "
+            f"{reporting_currency or '(none)'} of {group} has no ISO Currency, so its minor unit "
+            "is undeclared. Add it to ISO Currency, or set the group's reporting currency."))
         return out
 
     try:
@@ -475,7 +492,7 @@ def _group_statement(key, period_rows, group, declared, accounts_map):
         return out
 
     try:
-        stmt = statement_model.statement(tb_rows, accounts_map, period_rows, key, declared)
+        stmt = statement_model.statement(tb_rows, accounts_map, period_rows, key, declared, minor_unit)
     except ValueError as e:
         # A NULL warehouse amount is a warehouse failure ("error"); a BS
         # heading with no declared normal_balance
@@ -483,7 +500,8 @@ def _group_statement(key, period_rows, group, declared, accounts_map):
         # outage, so it gets its own state (S5) — never a 500, never a
         # guessed statement either way.
         message = str(e)
-        is_setup_gap = message.startswith(statement_model.STATEMENT_HEADING_SIDE_UNDECLARED)
+        is_setup_gap = message.startswith((statement_model.STATEMENT_HEADING_SIDE_UNDECLARED,
+                                           statement_model.STATEMENT_CURRENCY_PRECISION_UNDECLARED))
         out.update(state="setup_gap" if is_setup_gap else "error", message=message)
         return out
 
@@ -516,7 +534,8 @@ def signoff_commentary(fiscal_year, fiscal_period):
     period_rows = fiscal_calendar.fiscal_period_rows()
     _find_period(key, period_rows)
     groups = frappe.get_all("Consolidation Group", filters=_ROOT_FILTER,
-                            fields=["consolidation_group"], limit_page_length=0, order_by="modified desc")
+                            fields=["consolidation_group", "reporting_currency"], limit_page_length=0,
+                            order_by="modified desc")
     declared = signoff_gate.statement_accounts()
     accounts_map = _chart()
     texts = {}
@@ -527,7 +546,8 @@ def signoff_commentary(fiscal_year, fiscal_period):
     inputs = []
     for g in groups:
         name = g["consolidation_group"]
-        built = _group_statement(key, period_rows, name, declared, accounts_map)
+        built = _group_statement(key, period_rows, name, declared, accounts_map,
+                                 g.get("reporting_currency"))
         inputs.append({"consolidation_group": name, "state": built["state"],
                        "message": built["message"], "statement": built["statement"],
                        "texts": texts.get(name, {})})
@@ -600,15 +620,17 @@ def get_drill(fiscal_year, fiscal_period, consolidation_group, heading):
         return result
 
     try:
-        stmt = statement_model.statement(tb_rows, accounts_map, period_rows, key, declared)
+        minor_unit = _minor_unit(group_by_name[consolidation_group].get("reporting_currency"))
+        stmt = statement_model.statement(tb_rows, accounts_map, period_rows, key, declared, minor_unit)
         line = _line_for_heading(stmt, heading)
         keys = _drill_keys(period_rows, key, entry.get("statement_section"))
         allowed = allowed_entity_codes()
         drill = drill_model.drill(
-            drill_rows, journal_rows, accounts_map, heading, keys, declared, allowed, line)
+            drill_rows, journal_rows, accounts_map, heading, keys, declared, allowed, line,
+            stmt["minor_unit"])
     except ValueError as e:
-        # A NULL warehouse amount, an undeclared BS heading side, or a
-        # drill/statement total mismatch: a visible error state, never a
+        # A NULL warehouse amount, an undeclared BS heading side or minor
+        # unit (konsol#354), or a drill/statement total mismatch: a visible error state, never a
         # 500, never a silently wrong breakdown.
         result["state"] = "error"
         result["message"] = str(e)
@@ -673,7 +695,7 @@ def _all_drills(payload, reads, drill_rows, journal_rows):
         keys = _drill_keys(reads["period_rows"], key, accounts[heading].get("statement_section"))
         drills[heading] = drill_model.drill(
             drill_rows, journal_rows, accounts, heading, keys, declared, allowed,
-            _line_for_heading(stmt, heading))
+            _line_for_heading(stmt, heading), stmt["minor_unit"])
     return drills
 
 

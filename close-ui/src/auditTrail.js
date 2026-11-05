@@ -71,6 +71,8 @@ const KIND_LABEL = {
 	commentary_saved: { label: "Commentary", tone: "mute" },
 	// konsol#305 Y51 (story 1.5, #305-1.5-1): a Remind sent.
 	reminder_sent: { label: "Reminder", tone: "mute" },
+	// konsol#283: a submitted TB's warehouse rows re-landed from its file.
+	tb_relanded: { label: "Re-landed", tone: "warn" },
 };
 
 const SIGNOFF_LABEL = {
@@ -89,6 +91,7 @@ const PERSONA_LABEL = {
 
 const TB_KINDS = new Set([
 	"tb_submitted", "tb_cancelled", "tb_exception_declared", "tb_exception_cancelled",
+	"tb_relanded",
 ]);
 const PERIOD_KINDS = new Set(["period_closed", "period_locked", "period_reopened"]);
 const YEAR_KINDS = new Set(["year_closed", "year_locked", "year_reopened"]);

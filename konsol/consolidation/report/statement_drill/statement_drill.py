@@ -36,7 +36,7 @@ def execute(filters=None):
         message = statement_drill_report_model.message(payload, submissions)
     except ValueError as e:
         frappe.throw(str(e))
-    return statement_drill_report_model.columns(), data, message
+    return statement_drill_report_model.columns((payload.get("drill") or {}).get("minor_unit")), data, message
 
 
 def _submissions(payload):

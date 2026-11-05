@@ -34,7 +34,7 @@ SM = F.M
 def _payload(rows=None, declared=None, **overrides):
     stmt = SM.statement(
         rows if rows is not None else F._s_rows(), F._s_accounts(), F._S_CALENDAR,
-        F._S_KEY, declared if declared is not None else F._s_declared(),
+        F._S_KEY, declared if declared is not None else F._s_declared(),minor_unit=2
     )
     payload = {
         "state": "ok", "message": None, "statement": stmt,
