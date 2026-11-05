@@ -75,8 +75,8 @@ def test_addin_js_threads_layer():
     js = _read(os.path.join(APP_DIR, "public", "excel-addin", "functions.js"))
     assert "if (layer) req.layer = String(layer);" in js
     # both the generic and budget helpers forward layer
-    assert "function epmBudget(entity, year, period, account, costCenter, " \
-           "department, scenarioId, hierarchy, node, layer)" in js
+    assert "function epmBudget(entity, year, period, account, dimensions, " \
+           "scenarioId, hierarchy, node, layer)" in js
 
 
 def test_addin_metadata_declares_layer_param():

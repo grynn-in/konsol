@@ -272,6 +272,31 @@ def _active_budget_scenarios():
     )
 
 
+def _scenario_ids():
+    """Every Scenario's scenario_id, of any type, active or not."""
+    import frappe
+
+    return set(frappe.get_all("Scenario", pluck="scenario_id", limit_page_length=0))
+
+
+def scenario_id_error(scenario_id, *, has_column, known, label):
+    """Why a named ``scenario_id`` cannot filter a read, or None (konsol#287).
+
+    A table with no scenario column would ignore it and read the total; a
+    scenario_id that names no Scenario would filter to nothing and read 0.
+    Either is a wrong number, so both are refused. ``known`` is a callable
+    returning the set of Scenario ids, called only when needed.
+    """
+    if not scenario_id:
+        return None
+    if not has_column:
+        return (f"{label} has no scenario column, so scenario_id "
+                f"'{scenario_id}' cannot filter it. Leave scenario_id blank.")
+    if _SAFE_SCENARIO_ID.match(scenario_id) and scenario_id not in known():
+        return f"Scenario '{scenario_id}' does not exist, so there is nothing to read for it."
+    return None
+
+
 def _active_budget_scenarios_by_year():
     """{fiscal_year: [scenario_id, ...]} of the active budget scenarios.
 
@@ -345,6 +370,12 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     groups = defaultdict(list)
     budgets_by_year = None  # looked up once per call, when first needed
     active_budgets = None  # likewise, for named variance scenarios
+    known_cache = []  # every Scenario id, looked up once when first needed
+
+    def known_scenarios():
+        if not known_cache:
+            known_cache.append(_scenario_ids())
+        return known_cache[0]
     for idx, req in enumerate(requests_list):
         sc = _normalize_scenario(req.get("scenario", "actuals"))
         cfg = HIERARCHY_SCENARIO_CONFIG.get(sc)
@@ -386,6 +417,15 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             if active_budgets is None:
                 active_budgets = set(_active_budget_scenarios())
             err = named_budget_scenario_error(scenario_id, active_budgets)
+            if err:
+                errors[idx] = err
+                continue
+        elif scenario_id:
+            # Not a variance table: the id must have a column to filter and
+            # name a Scenario that exists (konsol#287 review).
+            err = scenario_id_error(
+                scenario_id, has_column=cfg.get("has_scenario_id"),
+                known=known_scenarios, label=f"Hierarchy scenario '{sc}'")
             if err:
                 errors[idx] = err
                 continue

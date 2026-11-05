@@ -373,12 +373,6 @@ def _parse_dimensions_arg(dimensions):
     return parsed
 
 
-_LEGACY_DIM_MAP = {
-    "cost_center": "dim_cost_center",
-    "department": "dim_department",
-}
-
-
 def _hierarchy_node_from_req(req):
     """Extract hierarchy node code from batch/GET params."""
     if isinstance(req, dict):
@@ -397,15 +391,152 @@ def _is_hierarchy_mode(req):
     return bool(_hierarchy_node_from_req(req))
 
 
+#: The keys an epm_batch row may carry. Dimensions are not among them: they go
+#: in the one ``dimensions`` dict, whose names the Dataset validates.
+_BATCH_ROW_KEYS = frozenset({
+    "entity", "year", "period", "account", "measure", "scenario", "fact",
+    "scenario_id", "layer", "dimensions",
+    "hierarchy", "hierarchy_name", "hierarchy_node", "node",
+})
+
+
+def _batch_row_error(req):
+    """Why an epm_batch row is malformed, or None (konsol#287).
+
+    A key outside ``_BATCH_ROW_KEYS`` is refused, not ignored. The Excel
+    add-in once sent two dimensions as top-level keys; a workbook still on
+    that add-in would otherwise be answered with the total over every value
+    of the dimension it meant to filter on.
+    """
+    if not isinstance(req, dict):
+        return "Each request must be a JSON object"
+    unknown = sorted(k for k in req if k not in _BATCH_ROW_KEYS)
+    if unknown:
+        return (
+            f"Unknown request key {', '.join(repr(k) for k in unknown)}. "
+            "Dimensions go in 'dimensions', e.g. "
+            '{"dimensions": {"<name>": "<value>"}}.'
+        )
+    dims = req.get("dimensions")
+    if dims is not None and not isinstance(dims, dict):
+        return "'dimensions' must be an object of dimension name to value"
+    for key in ("hierarchy", "hierarchy_name", "hierarchy_node", "node"):
+        value = req.get(key)
+        if value is not None and not isinstance(value, str):
+            return f"'{key}' must be text, not {value!r}"
+    return (_hierarchy_without_node_error(req)
+            or _fact_with_node_error(req.get("fact"), _hierarchy_node_from_req(req)))
+
+
+def _fact_with_node_error(fact, node):
+    """A ``fact`` named on a hierarchy read, or None (konsol#287 re-review).
+
+    A hierarchy read's table comes from its scenario, not from a Dataset, so a
+    ``fact`` there would decide only which dimensions are checked, not what
+    is read. Refused rather than half-honoured.
+    """
+    if fact and node:
+        return (
+            f"'fact' ('{fact}') cannot be given with a hierarchy node: a "
+            "hierarchy read's table comes from its scenario. Give the "
+            "scenario, or drop the node for a flat read."
+        )
+    return None
+
+
+def _hierarchy_dimension_error(scenario, dim_names, cache=None):
+    """Why a hierarchy read cannot filter on ``dim_names``, or None (konsol#287
+    review).
+
+    The hierarchy query checks a name only against an identifier pattern, so
+    any column of its table would be accepted as a filter. The names must be
+    the declared dimensions of the scenario's Dataset, as on the flat path.
+    The scenario is normalised as the hierarchy read normalises it. ``cache``
+    (a dict, one per batch) holds each scenario's (fact_name, dimensions).
+    """
+    if not dim_names:
+        return None
+    from konsol.hierarchy_query import _normalize_scenario
+
+    scenario = _normalize_scenario(scenario)
+    if cache is None:
+        cache = {}
+    if scenario not in cache:
+        fact = _get_fact(scenario=scenario)
+        cache[scenario] = (
+            (fact.fact_name, _get_fact_dimensions(fact)) if fact else None)
+    found = cache[scenario]
+    if found is None:
+        return (
+            f"No Dataset is registered for scenario '{scenario}', so a "
+            f"hierarchy read cannot filter on {', '.join(sorted(dim_names))}"
+        )
+    fact_name, declared = found
+    for name in sorted(dim_names):
+        if name not in declared:
+            return (
+                f"Invalid dimension '{name}' for fact '{fact_name}'. "
+                f"Allowed: {', '.join(sorted(declared)) or 'none'}"
+            )
+    return None
+
+
+def _hierarchy_without_node_error(req):
+    """A hierarchy named with no node, or None (konsol#287).
+
+    It used to be ignored. Since the add-in's arguments moved one place left,
+    an old formula's scenario id lands in the hierarchy slot, and ignoring it
+    would read every scenario (or write without the hierarchy).
+    """
+    hierarchy = _hierarchy_name_from_req(req)
+    if hierarchy and not _hierarchy_node_from_req(req):
+        return (
+            f"Hierarchy '{hierarchy}' is given without a node. Give a node, "
+            "or leave the hierarchy blank."
+        )
+    return None
+
+
 def _extract_batch_dimensions(req):
-    """Merge explicit dimensions dict with legacy Excel cost_center/department."""
+    """The request's ``dimensions`` dict, without blank values."""
     raw_dims = req.get("dimensions") if isinstance(req.get("dimensions"), dict) else {}
-    dimensions = {k: v for k, v in raw_dims.items() if v}
-    for legacy_key, dim_name in _LEGACY_DIM_MAP.items():
-        val = req.get(legacy_key, "")
-        if val and dim_name not in dimensions:
-            dimensions[dim_name] = str(val)
-    return dimensions
+    return {k: v for k, v in raw_dims.items() if v}
+
+
+def _apply_budget_dimensions(data, dims):
+    """Move a budget write's ``dimensions`` dict onto ``data`` (konsol#287).
+
+    ``dims`` is ``_budget_dims()``: the in_budget dimensions provisioned on
+    Budget Line. A name outside it is refused, never ignored: an ignored
+    dimension would write the amount to the line without it. A name given
+    both in the dict and as a top-level key must agree.
+    """
+    raw = data.pop("dimensions", None)
+    if raw is None:
+        return
+    if isinstance(raw, str):
+        raw = _parse_dimensions_arg(raw)
+    if not isinstance(raw, dict):
+        frappe.throw(
+            "'dimensions' must be an object of dimension name to value",
+            frappe.ValidationError,
+        )
+    for name, value in raw.items():
+        if name not in dims:
+            frappe.throw(
+                f"Dimension '{name}' is not a budget dimension on this site. "
+                f"Declared: {', '.join(sorted(dims)) or 'none'}",
+                frappe.ValidationError,
+            )
+        value = "" if value is None else str(value)
+        if data.get(name) and value and data[name] != value:
+            frappe.throw(
+                f"Dimension '{name}' is given twice, as '{data[name]}' and "
+                f"'{value}'",
+                frappe.ValidationError,
+            )
+        if value:
+            data[name] = value
 
 
 def _resolve_and_validate(fact_name, scenario, measure, dim_names):
@@ -674,7 +805,16 @@ def _batch_query_clickhouse(requests_list):
         _active_budget_scenarios_by_year,
         choose_budget_scenario,
         named_budget_scenario_error,
+        _scenario_ids,
+        scenario_id_error,
     )
+
+    known_cache = []  # every Scenario id, looked up once when first needed
+
+    def known_scenarios():
+        if not known_cache:
+            known_cache.append(_scenario_ids())
+        return known_cache[0]
 
     ch_settings = _get_ch_connection()
     n = len(requests_list)
@@ -699,6 +839,18 @@ def _batch_query_clickhouse(requests_list):
         dims = req.get("dimensions", {})
         fact_key = req.get("fact") or req.get("scenario")
         scenario_id = req.get("scenario_id", "")
+        if scenario_id:
+            # The id must have a column to filter, and (outside the variance
+            # dataset, checked below) name a Scenario that exists. Ignored, it
+            # read the total; filtering to nothing, it read 0 (konsol#287).
+            fact = resolve_fact(fact_key)
+            if fact and not _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+                err = scenario_id_error(
+                    scenario_id, has_column=fact.has_scenario_id,
+                    known=known_scenarios, label=f"Dataset '{fact.fact_name}'")
+                if err:
+                    errors[idx] = err
+                    continue
         if scenario_id and _SAFE_SCENARIO_ID.match(scenario_id):
             # A named scenario must be one the dataset keeps: an active
             # budget. Any other id (actuals, inactive, misspelled) would
@@ -951,7 +1103,7 @@ def epm_value(entity, year, period, account, measure="",
     Range periods return the sum across constituent months.
 
     Dimensions are passed as a generic dict (JSON string on this GET endpoint),
-    e.g. dimensions={"dim_cost_center":"CC001","dim_project":"P01"}. Keys are
+    e.g. dimensions={"dim_region":"EU","dim_product":"X"}. Keys are
     canonical dimension names, validated against the fact's allowed dimensions.
     `fact` (a Fact registry name) selects the source table and wins over
     `scenario`; if neither pins a fact, `scenario` resolves it via scenario_key.
@@ -983,6 +1135,9 @@ def epm_value(entity, year, period, account, measure="",
         frappe.throw(str(exc), frappe.ValidationError)
 
     if node_code:
+        fact_err = _fact_with_node_error(fact, node_code)
+        if fact_err:
+            frappe.throw(fact_err, frappe.ValidationError)
         info, err = validate_hierarchy_read(
             _hierarchy_name_from_req({"hierarchy": hierarchy}),
             node_code,
@@ -1007,6 +1162,9 @@ def epm_value(entity, year, period, account, measure="",
         measure, measure_err = _hierarchy_measure(scenario, measure)
         if measure_err:
             frappe.throw(measure_err, frappe.ValidationError)
+        dim_err = _hierarchy_dimension_error(scenario, set(req_dims))
+        if dim_err:
+            frappe.throw(dim_err, frappe.ValidationError)
         result = batch_query_hierarchy([{
             "entity": entity,
             "year": int(year),
@@ -1252,7 +1410,13 @@ def epm_batch():
     errors_list = [None] * n
     # Resolve the caller's entity allow-list once for the whole batch.
     allowed_entities = _allowed_entities()
+    # Each hierarchy scenario's Dataset dimensions, looked up once per batch.
+    dataset_dims = {}
     for i, req in enumerate(requests_list):
+        row_error = _batch_row_error(req)
+        if row_error:
+            errors_list[i] = row_error
+            continue
         scenario = req.get("scenario", "actuals")
         measure = req.get("measure") or ""
         dimensions = _extract_batch_dimensions(req)
@@ -1306,6 +1470,11 @@ def epm_batch():
             measure, measure_err = _hierarchy_measure(scenario, measure)
             if measure_err:
                 errors_list[i] = measure_err
+                continue
+            dim_err = _hierarchy_dimension_error(
+                scenario, set(dimensions), dataset_dims)
+            if dim_err:
+                errors_list[i] = dim_err
                 continue
             normalized[i] = {
                 "entity": entity,
@@ -1505,6 +1674,15 @@ def budget_cell_save():
 
     amount = float(data["amount"])
 
+    # The add-in's one `dimensions` argument (konsol#287): checked against the
+    # declared budget dimensions and moved onto the fields every check below
+    # reads, before any of them runs.
+    dims = _budget_dims()
+    _apply_budget_dimensions(data, dims)
+    hierarchy_err = _hierarchy_without_node_error(data)
+    if hierarchy_err:
+        frappe.throw(hierarchy_err, frappe.ValidationError)
+
     node_code = _hierarchy_node_from_req(data)
     if node_code:
         from konsol.hierarchy_query import validate_hierarchy_write
@@ -1516,6 +1694,13 @@ def budget_cell_save():
         )
         if err:
             frappe.throw(err, frappe.ValidationError)
+        given = data.get(info["dimension"])
+        if given and given != info["member_code"]:
+            frappe.throw(
+                f"Dimension '{info['dimension']}' is given as '{given}', but "
+                f"node '{node_code}' writes it as '{info['member_code']}'",
+                frappe.ValidationError,
+            )
         data[info["dimension"]] = info["member_code"]
 
     _assert_budget_write_access(data)
@@ -1523,7 +1708,6 @@ def budget_cell_save():
     cycle = _resolve_budget_cycle(data)
     _assert_cycle_open(cycle)
 
-    dims = _budget_dims()
     ident = _line_identity(data, dims)
     base_modified = data.get("base_modified")
     sheet_filters = {
