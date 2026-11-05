@@ -69,7 +69,8 @@ def test_module_imports_nothing_from_frappe_or_konsol():
 
 def test_columns_are_label_code_four_amounts_and_currency():
     fieldnames = [c["fieldname"] for c in R.columns()]
-    assert fieldnames == ["label", "code", "current", "comparison", "variance", "ytd", "currency"]
+    assert fieldnames == ["label", "code", "current", "comparison", "variance", "ytd",
+                          "prior_year", "prior_year_change", "currency"]
     for column in R.columns():
         if column["fieldname"] in ("current", "comparison", "variance", "ytd"):
             assert column["fieldtype"] == "Currency"
@@ -227,3 +228,135 @@ def test_message_names_entities_not_included():
     payload = _payload(not_included={"count": 2, "entities": ["ZZA", "ZZB"], "hidden": 0})
     text = R.message(payload)
     assert "ZZA" in text and "ZZB" in text
+
+
+# --- Prior year (demo, 6 Nov 2026) -----------------------------------------
+#
+# ``rows(payload, prior)`` puts the prior year's value for the SAME line on
+# every statement row: P&L lines the prior year's year to date, Balance
+# Sheet lines the prior year's balance at the same period (its "current").
+# Matched by heading code, by include kind, by kind for the other lines.
+# A line absent last year shows a blank prior year, never 0.
+
+def _prior(declared=None, **overrides):
+    """The prior-year payload: the same fixture with every amount doubled,
+    so each prior value differs from this year's."""
+    doubled = [dict(r, amount=r["amount"] * 2) for r in F._s_rows()]
+    overrides.setdefault("period", {"fiscal_year": 2024, "fiscal_period": 7, "code": "P07",
+                                    "status": "Closed", "period_type": "Regular"})
+    return _payload(rows=doubled, declared=declared, **overrides)
+
+
+def _line(payload, section, match):
+    lines = payload["statement"]["sections"][section]["lines"]
+    found = [line for line in lines if all(line.get(k) == v for k, v in match.items())]
+    assert len(found) == 1, match
+    return found[0]
+
+
+def test_columns_add_prior_year_and_change_after_ytd():
+    fieldnames = [c["fieldname"] for c in R.columns()]
+    assert fieldnames[fieldnames.index("ytd") + 1:] == ["prior_year", "prior_year_change", "currency"]
+    by_name = {c["fieldname"]: c for c in R.columns()}
+    assert by_name["prior_year"]["label"] == "Prior year"
+    assert by_name["prior_year_change"]["label"] == "Change vs prior year"
+    for name in ("prior_year", "prior_year_change"):
+        assert by_name[name]["fieldtype"] == "Currency"
+        assert by_name[name]["options"] == "currency"
+
+
+def test_pl_heading_takes_the_prior_years_ytd_matched_by_code():
+    payload, prior = _payload(), _prior()
+    row = _by_label(R.rows(payload, prior), "COST OF SALES")
+    this_line = _line(payload, 0, {"heading": "4"})
+    prior_line = _line(prior, 0, {"heading": "4"})
+    assert prior_line["ytd"] != this_line["ytd"]
+    assert row["prior_year"] == prior_line["ytd"]
+    assert row["prior_year_change"] == round(this_line["ytd"] - prior_line["ytd"], 2)
+
+
+def test_bs_heading_takes_the_prior_years_balance_matched_by_code():
+    payload, prior = _payload(), _prior()
+    data = R.rows(payload, prior)
+    for code, label in (("1", "ASSETS"), ("2", "LIABILITIES"), ("3", "EQUITY")):
+        prior_line = _line(prior, 1, {"heading": code})
+        row = _by_label(data, label)
+        assert row["prior_year"] == prior_line["current"]
+        assert row["prior_year_change"] == round(row["current"] - prior_line["current"], 2)
+    assert _by_label(data, "ASSETS")["prior_year"] == 3470.20
+
+
+def test_equity_includes_take_the_prior_years_include_of_the_same_kind():
+    payload, prior = _payload(), _prior()
+    data = R.rows(payload, prior)
+    includes = {i["kind"]: i for i in _line(prior, 1, {"heading": "3"})["includes"]}
+    cta = _by_label(data, "of which currency translation (CTA)")
+    result = _by_label(data, "of which current-year result")
+    assert cta["prior_year"] == includes["cta"]["current"] == 10.14
+    assert result["prior_year"] == includes["current_year_result"]["current"] == 482.86
+    assert cta["prior_year_change"] == round(5.07 - 10.14, 2)
+
+
+def test_net_result_takes_the_prior_years_net_result_ytd():
+    payload, prior = _payload(), _prior()
+    row = _by_label(R.rows(payload, prior), SM.NET_RESULT_LABEL)
+    prior_line = _line(prior, 0, {"kind": "net_result"})
+    assert row["prior_year"] == prior_line["ytd"] == 482.86
+    assert row["prior_year_change"] == round(241.43 - 482.86, 2)
+
+
+def test_residual_takes_the_prior_years_residual():
+    declared = F._s_declared(cta_account=None)
+    payload, prior = _payload(declared=declared), _prior(declared=declared)
+    data = R.rows(payload, prior)
+    prior_residual = _line(prior, 1, {"kind": "residual"})["current"]
+    row = _by_label(data, "Unmatched residual")
+    assert prior_residual and prior_residual != row["current"]
+    assert row["prior_year"] == prior_residual
+    assert row["prior_year_change"] == round(row["current"] - prior_residual, 2)
+    # The residual's explanation rows are this year's breakdown only.
+    at = [r["label"] for r in data].index("Unmatched residual")
+    assert all(r["prior_year"] is None for r in data[at + 1:])
+
+
+def test_a_heading_absent_last_year_has_a_blank_prior_year_not_zero():
+    payload, prior = _payload(), _prior()
+    bs_lines = prior["statement"]["sections"][1]["lines"]
+    bs_lines[:] = [line for line in bs_lines if line.get("heading") != "2"]
+    row = _by_label(R.rows(payload, prior), "LIABILITIES")
+    assert row["prior_year"] is None
+    assert row["prior_year_change"] is None
+
+
+def test_section_header_rows_carry_no_prior_year():
+    data = R.rows(_payload(), _prior())
+    for row in data:
+        if row.get("is_section"):
+            assert row["prior_year"] is None and row["prior_year_change"] is None
+
+
+def test_without_a_prior_payload_the_prior_columns_are_blank():
+    data = R.rows(_payload())
+    assert all(row["prior_year"] is None and row["prior_year_change"] is None for row in data)
+
+
+def test_a_non_ok_prior_year_renders_blank_and_the_message_says_why():
+    prior = {"state": "not_built", "message": "No rows in the warehouse for FY2024.",
+             "statement": None}
+    payload = _payload()
+    data = R.rows(payload, prior)
+    assert data == R.rows(payload)
+    assert all(row["prior_year"] is None for row in data)
+    text = R.message(payload, prior)
+    assert "Prior year" in text and "FY2024 P07" in text
+    assert "No rows in the warehouse for FY2024." in text
+
+
+def test_a_non_ok_prior_year_with_no_message_names_its_state():
+    text = R.message(_payload(), {"state": "error", "message": None, "statement": None})
+    assert "Prior year" in text and "error" in text
+
+
+def test_an_ok_prior_year_is_named_in_the_message_with_its_basis():
+    text = R.message(_payload(), _prior())
+    assert "Prior year: FY2024 P07" in text
