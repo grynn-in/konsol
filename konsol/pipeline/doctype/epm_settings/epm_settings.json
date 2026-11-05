@@ -57,6 +57,24 @@
    "description": "Validate the ClickHouse server certificate. Disable only for self-signed certs on a trusted network."
   },
   {
+   "fieldname": "measure_check_section",
+   "fieldtype": "Section Break",
+   "label": "Measure Expression Check",
+   "description": "A Measure expression is SQL an EPM Admin writes. konsol runs it before publishing as this ClickHouse user, which may SELECT only epm_silver.silver_gl_entries, never as the user above. Left blank, expressions are published unchecked and the Measure says so."
+  },
+  {
+   "fieldname": "clickhouse_check_user",
+   "fieldtype": "Data",
+   "label": "Measure-Check ClickHouse User",
+   "description": "konsolidat creates konsol_measure_check when CLICKHOUSE_MEASURE_CHECK_PASSWORD is set."
+  },
+  {
+   "fieldname": "clickhouse_check_password",
+   "fieldtype": "Password",
+   "label": "Measure-Check ClickHouse Password",
+   "mandatory_depends_on": "clickhouse_check_user"
+  },
+  {
    "fieldname": "tab_airbyte",
    "fieldtype": "Tab Break",
    "label": "Airbyte"

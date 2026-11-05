@@ -10,14 +10,30 @@ module a bad expression saved and published cleanly and failed the next dbt
 build, in another system, naming a column rather than the measure.
 
 The check runs the expression over the same table, grouped the same way,
-with ``LIMIT 0`` and ``readonly=1``. ClickHouse decides, as it will at build
-time; konsol keeps no column list of its own, because ``dim_*`` columns are
+with ``WHERE 0`` (nothing is read or aggregated), ``readonly=1`` and a
+5-second server-side limit. ClickHouse decides, as it will at build time;
+konsol keeps no column list of its own, because ``dim_*`` columns are
 declared per site. A refusal names the measure and lists the table's columns.
 
-When the warehouse cannot answer (unreachable, or the table not built yet on
-a new site), the save goes through and the user is told on screen that the
-expression was not checked. A bad expression stops the build; it does not
-make a number wrong, so it is reported rather than refused there.
+It runs as a dedicated ClickHouse user that may SELECT only
+``epm_silver.silver_gl_entries`` (EPM Settings: Measure-Check ClickHouse
+User; defined in konsolidat ``clickhouse/set-password.sh``). An expression is
+SQL an EPM Admin writes, and ClickHouse runs a scalar subquery inside it
+before ``WHERE 0`` applies, so under the site's main user the check would
+let them read any table in the shared warehouse and see the answer in the
+error text. The grants are the control. Refusing ``SELECT``, table functions
+and ``system.`` in the expression before sending is defence in depth only.
+When the check user is not configured the expression is not run at all: it
+never falls back to the main user.
+
+Whether the warehouse can answer is decided by a probe (``EXISTS TABLE`` as
+the check user), not by the expression's error. When the probe fails (the
+user is refused, ClickHouse is unreachable, the table is not built yet on a
+new site) the save goes through and the user is told, on screen and in the
+Measure's Expression Check field, that the expression was not checked. A bad
+expression stops the build; it does not make a number wrong, so it is
+reported rather than refused there. Once the probe answers, any error from
+the expression refuses the save.
 
 Chosen under Deepak Pai's standing rule of 5 Nov 2026 (product,
 configurable, not opinionated); the HMD table is on konsol#229. Rejected: a
@@ -43,13 +59,28 @@ GRAIN = ("data_area_id", "fiscal_year", "fiscal_period", "main_account")
 FORBIDDEN = {";": "a semicolon", "--": "a line comment (--)", "/*": "a block comment (/*)",
              "\n": "a line break", "\r": "a line break"}
 
-#: ClickHouse error names that mean the warehouse could not answer, not that
-#: the expression is wrong. Anything else is the expression's fault.
-CANNOT_ANSWER = {
-    "UNKNOWN_TABLE", "UNKNOWN_DATABASE", "AUTHENTICATION_FAILED", "REQUIRED_PASSWORD",
-    "TIMEOUT_EXCEEDED", "MEMORY_LIMIT_EXCEEDED", "TOO_MANY_SIMULTANEOUS_QUERIES",
-    "ACCESS_DENIED", "NOT_ENOUGH_PRIVILEGES",
-}
+#: Defence in depth, matched case-insensitively before anything is sent: a
+#: subquery, a system table, or a table function. The control is the check
+#: user's grants; this only keeps an obvious probe off the warehouse.
+SUSPECT = (
+    (re.compile(r"\bselect\b", re.I), "a subquery (SELECT)"),
+    (re.compile(r"\bsystem\s*\.", re.I), "a system table (system.)"),
+    (re.compile(r"\b(url|file|remote|remoteSecure|cluster|clusterAllReplicas|s3|s3Cluster|"
+                r"gcs|azureBlobStorage|hdfs|mysql|postgresql|mongodb|redis|sqlite|jdbc|odbc|"
+                r"input|executable|viewIfPermitted|generateRandom|"
+                r"numbers|numbers_mt|zeros|deltaLake|iceberg|hudi)\s*\(", re.I),
+     "a table function"),
+)
+
+#: Sent with every statement. The check user's profile sets the same values
+#: (readonly=1 refuses any other), so neither side can relax them.
+SETTINGS = {"readonly": "1", "max_execution_time": "5",
+            "cancel_http_readonly_queries_on_client_close": "1"}
+
+#: The HTTP timeout, above max_execution_time so ClickHouse stops first.
+HTTP_TIMEOUT = 10
+
+NOT_CONFIGURED = "the measure-check ClickHouse user is not configured"
 
 
 class CannotCheck(Exception):
@@ -63,14 +94,64 @@ def static_problem(expression):
     for token, what in FORBIDDEN.items():
         if token in expression:
             return f"it contains {what}"
+    for pattern, what in SUSPECT:
+        if pattern.search(expression):
+            return f"it contains {what}, which a measure expression has no use for"
     return None
+
+
+def requests_post(*args, **kwargs):
+    import requests
+
+    return requests.post(*args, **kwargs)
+
+
+def check_connection():
+    """The measure-check user's connection, or None when it is not configured.
+
+    Host, port and TLS are the main connection's; the user and password are
+    its own. There is no fallback to the main user."""
+    settings = frappe.get_single("EPM Settings")
+    user = (settings.clickhouse_check_user or "").strip()
+    password = settings.get_password("clickhouse_check_password", raise_exception=False) or ""
+    if not user or not password:
+        return None
+    from konsol.clickhouse import get_connection
+
+    conn = dict(get_connection())
+    conn.update(user=user, password=password)
+    return conn
+
+
+def checker():
+    """A ``run(sql, params)`` that sends as the check user; CannotCheck when
+    that user is not configured."""
+    conn = check_connection()
+    if conn is None:
+        raise CannotCheck(NOT_CONFIGURED)
+    import requests
+
+    from konsol.clickhouse import connection_url
+
+    url = connection_url(conn)
+
+    def run(sql, params=None):
+        resp = requests_post(url, params=dict(params or {}), data=sql.encode("utf-8"),
+                             auth=(conn["user"], conn["password"]), timeout=HTTP_TIMEOUT,
+                             verify=conn.get("verify", True))
+        if resp.status_code >= 400:
+            raise requests.HTTPError(
+                f"{resp.status_code} from ClickHouse: {resp.text.strip()[:500]}", response=resp)
+        return resp.text.strip()
+
+    return run
 
 
 def dry_run_sql(name, expression):
     """The statement the check runs: the expression as dbt writes it."""
     return (
         f"SELECT {', '.join(GRAIN)}, {expression} as `{name}` "
-        f"FROM {SOURCE_TABLE} GROUP BY {', '.join(GRAIN)} LIMIT 0"
+        f"FROM {SOURCE_TABLE} WHERE 0 GROUP BY {', '.join(GRAIN)}"
     )
 
 
@@ -88,7 +169,8 @@ def compiled_measure_names():
 def _error_name(text):
     """ClickHouse's error name, e.g. UNKNOWN_IDENTIFIER, from its message."""
     found = re.findall(r"\(([A-Z][A-Z0-9_]+)\)", text or "")
-    return found[0] if found else None
+    # The last: ClickHouse echoes the query, which may contain "(NAME)" itself.
+    return found[-1] if found else None
 
 
 def _first_line(text):
@@ -99,45 +181,66 @@ def _first_line(text):
 
 def _columns(run):
     try:
-        out = run(f"DESCRIBE TABLE {SOURCE_TABLE} FORMAT TabSeparated", {"readonly": "1"})
+        out = run(f"DESCRIBE TABLE {SOURCE_TABLE} FORMAT TabSeparated", SETTINGS)
     except Exception:
         return []
     return [line.split("\t", 1)[0] for line in (out or "").splitlines() if line.strip()]
 
 
+def probe(run):
+    """Whether the check user can reach SOURCE_TABLE. Raise CannotCheck if not."""
+    import requests
+
+    try:
+        exists = run(f"EXISTS TABLE {SOURCE_TABLE}", SETTINGS)
+    except requests.HTTPError as exc:
+        raise CannotCheck(f"ClickHouse refused the check user ({_first_line(str(exc))})") from exc
+    except requests.RequestException as exc:
+        raise CannotCheck(f"ClickHouse is unreachable ({type(exc).__name__})") from exc
+    if (exists or "").strip() != "1":
+        raise CannotCheck(f"{SOURCE_TABLE} is not built yet")
+
+
 def dry_run(name, expression, run=None):
-    """Run the expression over SOURCE_TABLE. Raise frappe.ValidationError when
-    ClickHouse refuses it; raise CannotCheck when ClickHouse cannot answer."""
+    """Run the expression over SOURCE_TABLE as the check user. Raise
+    frappe.ValidationError when ClickHouse refuses it; raise CannotCheck when
+    the probe shows ClickHouse cannot answer."""
     import requests
 
     if run is None:
-        from konsol.clickhouse import execute as run
+        run = checker()
+    probe(run)
     try:
-        run(dry_run_sql(name, expression), {"readonly": "1"})
+        run(dry_run_sql(name, expression), SETTINGS)
     except requests.HTTPError as exc:
         text = str(exc)
-        code = _error_name(text)
-        if code is None or code in CANNOT_ANSWER:
-            raise CannotCheck(_first_line(text)) from exc
-        columns = _columns(run)
-        listed = f" Columns you can use: {', '.join(columns)}." if columns else ""
-        frappe.throw(
-            f"Measure {name}: ClickHouse refused the expression {expression!r} when run "
-            f"over {SOURCE_TABLE}, which is what dbt compiles it into "
-            f"(gold_trial_balance), so the next build would fail. ClickHouse said: "
-            f"{_first_line(text)}.{listed} The expression must be one aggregate "
-            f"over those columns, for example sum(<column>).",
-            frappe.ValidationError,
-            title="Measure expression refused",
-        )
-    except (requests.ConnectionError, requests.Timeout) as exc:
+    except requests.Timeout:
+        text = f"no answer within {HTTP_TIMEOUT} seconds"
+    except requests.RequestException as exc:
+        # The probe answered a moment ago; the connection, not the expression, failed.
         raise CannotCheck(f"ClickHouse is unreachable ({type(exc).__name__})") from exc
+    else:
+        return
+    columns = _columns(run)
+    listed = f" Columns you can use: {', '.join(columns)}." if columns else ""
+    frappe.throw(
+        f"Measure {name}: ClickHouse refused the expression {expression!r} when run "
+        f"over {SOURCE_TABLE}, which is what dbt compiles it into "
+        f"(gold_trial_balance), so the next build would fail. ClickHouse said: "
+        f"{_first_line(text)}.{listed} The expression must be one aggregate "
+        f"over those columns, for example sum(<column>).",
+        frappe.ValidationError,
+        title="Measure expression refused",
+    )
 
 
 def check_measure(name, expression, publishing, compiled=None, run=None):
     """Refuse an expression that cannot work; dry-run it when it is being published
-    into a measure dbt compiles. Returns "checked", "not compiled", "unchecked"
-    or None (nothing to run)."""
+    into a measure dbt compiles.
+
+    Returns None when nothing was run (not publishing), else
+    ``{"status": "checked" | "not checked" | "not compiled", "line": ...}``;
+    ``line`` is what the Measure's Expression Check field records."""
     problem = static_problem(expression)
     if problem:
         frappe.throw(
@@ -150,19 +253,21 @@ def check_measure(name, expression, publishing, compiled=None, run=None):
         return None
     names = compiled_measure_names() if compiled is None else compiled
     if name not in names:
-        return "not compiled"
+        return {"status": "not compiled",
+                "line": "Not compiled: dbt does not compile this measure, so it was not run."}
     try:
         dry_run(name, expression, run=run)
     except CannotCheck as exc:
         frappe.msgprint(
             f"Measure {name} was saved but its expression was not checked: {exc}. "
             f"If it is wrong, the next dbt build will fail. Publish it again once "
-            f"the warehouse answers to check it.",
+            f"this is fixed to check it.",
             title="Expression not checked",
             indicator="orange",
         )
-        return "unchecked"
-    return "checked"
+        return {"status": "not checked", "line": f"Not checked: {exc}."}
+    return {"status": "checked",
+            "line": f"Checked: ClickHouse ran it over {SOURCE_TABLE} as dbt will."}
 
 
 def describe_compilation(name):

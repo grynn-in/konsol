@@ -62,8 +62,22 @@ class Measure(Document):
             return
         from konsol.measure_check import check_measure
 
-        check_measure(self.measure_name or self.name, self.expression,
-                      publishing=self._publishes_expression())
+        result = check_measure(self.measure_name or self.name, self.expression,
+                               publishing=self._publishes_expression())
+        self.flags.expression_check = result
+        if result:
+            # Recorded on the Measure, not only shown in a pop-up (#229 review).
+            self.expression_check = result["line"]
+        elif self._expression_changed():
+            # A Draft expression is not run: an earlier "Checked" no longer holds.
+            self.expression_check = ("Not checked: the expression is checked when the "
+                                     "measure is published.")
+
+    def _expression_changed(self):
+        before = self.get_doc_before_save()
+        if not before:
+            return True
+        return (before.get("expression") or "") != (self.expression or "")
 
     def _publishes_expression(self):
         """Whether this save puts an expression into Published: the measure

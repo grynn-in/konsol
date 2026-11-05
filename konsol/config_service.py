@@ -36,6 +36,7 @@ _MEASURE_FIELDS = [
     "label",
     "cube_type",
     "status",
+    "expression_check",
 ]
 
 _DIMENSION_WRITABLE_FIELDS = [
@@ -344,6 +345,8 @@ def upsert_measure(spec, publish=False):
         build_approval = doc.publish()
     else:
         doc.save()
+    # The expression check's outcome (konsol#229): None when the save ran none.
+    expression_check = doc.flags.get("expression_check")
     frappe.db.commit()
 
     doc.reload()
@@ -352,6 +355,7 @@ def upsert_measure(spec, publish=False):
         "created": created,
         "published": bool(publish),
         "build_approval": build_approval,
+        "expression_check": expression_check,
         "measure": _measure_row(doc),
     }
 
@@ -891,6 +895,8 @@ def _export_rows(doctype, list_fn, status=None):
     rows = list_fn(filters)
     for row in rows:
         row.pop("name", None)
+        # This site's check outcome, not configuration: a bundle does not carry it.
+        row.pop("expression_check", None)
     return rows
 
 
