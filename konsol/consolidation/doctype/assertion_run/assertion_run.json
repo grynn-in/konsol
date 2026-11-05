@@ -276,6 +276,7 @@
     {
       "role": "System Manager",
       "read": 1,
+      "report": 1,
       "write": 1,
       "create": 1,
       "delete": 1
@@ -283,6 +284,7 @@
     {
       "role": "EPM Admin",
       "read": 1,
+      "report": 1,
       "write": 1,
       "create": 1
     },
