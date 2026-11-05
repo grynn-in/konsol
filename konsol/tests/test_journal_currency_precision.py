@@ -71,11 +71,13 @@ def test_a_journal_with_no_currency_is_refused():
 
 
 def test_a_currency_finer_than_the_warehouse_column_is_refused_naming_the_scale():
-    """BHD (3) cannot be stored in Decimal(18,2) without losing its third
-    decimal: refused until the column is widened (option C)."""
-    problems = M.currency_problems("BHD", 3, [_line(1, debit=1.5), _line(2, credit=1.5)], L)
+    """A declared 5-place unit cannot be stored in Decimal(20,4) without
+    losing its fifth decimal: refused, naming the scale (option B's guard,
+    which option C keeps above 4 places)."""
+    problems = M.currency_problems("ZZFIVE", 5, [_line(1, debit=1.5), _line(2, credit=1.5)], L,
+                                   declared=True)
     assert len(problems) == 1, problems
-    assert "BHD" in problems[0] and "3" in problems[0] and str(M.STORED_PLACES) in problems[0]
+    assert "ZZFIVE" in problems[0] and "5" in problems[0] and str(M.STORED_PLACES) in problems[0]
 
 
 def test_stored_places_is_the_warehouse_columns_scale():
@@ -205,3 +207,37 @@ def test_totals_that_sum_past_the_limit_are_refused():
         "1,000,000,000,000 (10^12): a Currency field stores 12 whole digits.",
     ]
     assert M.total_problems(999999999999.99, 999999999999.99) == []
+
+
+# --- konsol#353 option C (Deepak Pai, 5 Nov 2026): the warehouse keeps 4 places
+
+
+def test_the_warehouse_keeps_four_decimal_places():
+    assert M.STORED_PLACES == 4
+
+
+def test_a_three_decimal_journal_is_accepted_and_balances_exactly():
+    """BHD, KWD and OMR (3) and CLF (4) can post journals now."""
+    lines = [_line(i, debit=0.004) for i in range(1, 6)] + [_line(6, credit="0.020")]
+    for code, unit in (("BHD", 3), ("KWD", 3), ("OMR", 3), ("CLF", 4)):
+        assert M.currency_problems(code, unit, lines, L) == [], code
+    assert M.line_problems(lines) == []
+    total_debit, total_credit = M.totals(lines)
+    assert (total_debit, total_credit) == (0.02, 0.02)
+    assert M.balance_problem(total_debit, total_credit) is None
+
+
+def test_a_three_decimal_imbalance_is_refused_not_rounded_away():
+    """0.016 against 0.004 was 0.02 against 0.00 in cents; 0.0101 against
+    0.0100 (CLF) balanced at the cent. Judged at the stored scale now."""
+    total_debit, total_credit = M.totals([_line(1, debit=0.016), _line(2, credit=0.004)])
+    assert (total_debit, total_credit) == (0.016, 0.004)
+    assert "0.016" in M.balance_problem(total_debit, total_credit)
+    total_debit, total_credit = M.totals([_line(1, debit="0.0101"), _line(2, credit="0.0100")])
+    assert M.balance_problem(total_debit, total_credit) is not None
+
+
+def test_a_sub_cent_line_is_an_amount_not_a_blank_line():
+    """A BHD line of 0.004 is a debit: line_problems used to read it as 0.00
+    and say "enter a debit or a credit"."""
+    assert M.line_problems([_line(1, debit=0.004), _line(2, credit=0.004)]) == []
