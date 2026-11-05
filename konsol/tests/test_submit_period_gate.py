@@ -41,6 +41,14 @@ SUBMIT_CANDIDATES = frozenset({
     "Historical Equity Rate", "IC Balance", "Ownership Period", "Trial Balance Submission"})
 
 
+
+def _iso_reference_rows():
+    """The shipped ISO 4217 list, as konsol.currency_references.reference_rows."""
+    import json as _json
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "reference_data", "iso_currencies.json")) as f:
+        return _json.load(f)
+
 def _controller_paths():
     """doctype -> controller path, for every doctype in the app."""
     out = {}
@@ -182,6 +190,9 @@ def _load(path, period_open):
     mods["frappe.utils"].now_datetime = lambda: "NOW"
     mods["frappe.utils"].getdate = lambda v=None: v
     mods["konsol.clickhouse"].sync_doctype = lambda *a: None
+    # PR #387 review: the controller reads the shipped ISO 4217 list (konsol#330).
+    mods["konsol.currency_references"] = types.ModuleType("konsol.currency_references")
+    mods["konsol.currency_references"].reference_rows = _iso_reference_rows
     mods["konsol.clickhouse"].sync_doctype_after_commit = lambda *a: None
     mods["konsol.clickhouse"].execute = lambda *a, **k: None
     mods["konsol.clickhouse"].ensure_raw_tables = lambda *a, **k: None

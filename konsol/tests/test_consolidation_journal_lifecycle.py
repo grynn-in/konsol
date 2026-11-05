@@ -33,6 +33,14 @@ class Refused(Exception):
     pass
 
 
+
+def _iso_reference_rows():
+    """The shipped ISO 4217 list, as konsol.currency_references.reference_rows."""
+    import json as _json
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "reference_data", "iso_currencies.json")) as f:
+        return _json.load(f)
+
 def _line(idx, data_area_id="ZZE1", main_account="4000", debit_amount=0, credit_amount=0):
     return types.SimpleNamespace(idx=idx, data_area_id=data_area_id, main_account=main_account,
                                   debit_amount=debit_amount, credit_amount=credit_amount)
@@ -158,6 +166,9 @@ def _load(states=None, period_open=True, declared=True,
     mods["frappe.utils"].cint = lambda v: int(v or 0)
     mods["frappe.utils"].now_datetime = lambda: "NOW"
     mods["konsol.clickhouse"].sync_doctype = lambda *a: None
+    # PR #387 review: the controller reads the shipped ISO 4217 list (konsol#330).
+    mods["konsol.currency_references"] = types.ModuleType("konsol.currency_references")
+    mods["konsol.currency_references"].reference_rows = _iso_reference_rows
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_declared = assert_declared
 

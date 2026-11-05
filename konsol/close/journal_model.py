@@ -185,22 +185,34 @@ def balance_problem(total_debit, total_credit):
 STORED_PLACES = 2
 
 
+#: Frappe keeps a Currency field to 9 decimal places (``decimal(21,9)``).
+#: Places are counted on the value as stored, so a computed float such as
+#: 0.1 + 0.2 (0.30000000000000004) counts as 0.3, one place (PR #387 review).
+STORED_BY_FRAPPE = Decimal("1e-9")
+
+
 def _decimal_places(amount):
-    """How many decimal places ``amount`` (int, float, str or None) carries."""
+    """How many decimal places ``amount`` (int, float, str or None) carries,
+    once rounded to the 9 places Frappe stores; trailing zeros do not count."""
     value = Decimal(str(amount if amount is not None else 0))
-    exponent = value.normalize().as_tuple().exponent
+    value = value.quantize(STORED_BY_FRAPPE, rounding=ROUND_HALF_UP).normalize()
+    exponent = value.as_tuple().exponent
     return max(-exponent, 0) if isinstance(exponent, int) else 0
 
 
-def currency_problems(currency, minor_unit, lines):
+def currency_problems(currency, minor_unit, lines, listed_unit=None):
     """The journal's amounts judged in its currency (konsol#353 option B,
     chosen under Deepak Pai's standing rule of 5 Nov 2026).
 
     ``currency`` is the journal's currency (the root group's reporting
     currency); ``minor_unit`` its ``ISO Currency.minor_unit`` as stored (None
-    when there is no ISO Currency row). Refused, each with a sentence:
+    when there is no ISO Currency row); ``listed_unit`` the minor unit the
+    shipped ISO 4217 list gives it (None: ISO sets none, so the stored,
+    declared value is used; konsol#330). Refused, each with a sentence:
 
     - no currency, or no whole-number minor unit: never read as 2;
+    - a stored minor unit that disagrees with the listed one: named as the
+      konsol#330 disagreement, never judged as if it were right;
     - a minor unit above ``STORED_PLACES``: the warehouse would drop places;
     - a line amount with more decimal places than the minor unit, so the
       totals ``balance_problem`` compares are exact in the currency's unit
@@ -210,6 +222,10 @@ def currency_problems(currency, minor_unit, lines):
         return ["The journal has no currency: set the reporting currency of its consolidation group."]
     if isinstance(minor_unit, bool) or not isinstance(minor_unit, int) or minor_unit < 0:
         return [f"{currency} has no Minor Unit: add {currency} to ISO Currency before posting "
+                "a journal in it."]
+    if listed_unit is not None and minor_unit != listed_unit:
+        return [f"ISO Currency {currency} has a Minor Unit of {minor_unit} stored, but ISO 4217 gives "
+                f"{currency} {listed_unit} (konsol#330). Fix ISO Currency {currency} before posting "
                 "a journal in it."]
     if minor_unit > STORED_PLACES:
         return [f"A journal in {currency} ({minor_unit} decimal places) cannot be stored yet: the "

@@ -15,7 +15,7 @@ from frappe.model.document import Document
 from frappe.model.workflow import get_workflow_name
 from frappe.utils import cint, now_datetime
 
-from konsol import clickhouse
+from konsol import clickhouse, currency_references
 from konsol.close import journal_model
 from konsol.period_status import assert_declared, assert_open
 
@@ -98,6 +98,10 @@ class ConsolidationJournal(Document):
         self.currency = root.reporting_currency
         minor_unit = (frappe.db.get_value("ISO Currency", self.currency, "minor_unit")
                       if self.currency else None)
+        # PR #387 review: the shipped ISO 4217 list is the judge (konsol#330);
+        # a stored value that disagrees is refused as that, not used.
+        listed_unit = next((r["minor_unit"] for r in currency_references.reference_rows()
+                            if r["currency_code"] == self.currency), None)
         lines = [
             {
                 "idx": line.idx,
@@ -108,7 +112,8 @@ class ConsolidationJournal(Document):
             for line in (self.get("lines") or [])
         ]
         found = journal_model.line_problems(lines)
-        found.extend(journal_model.currency_problems(self.currency, minor_unit, lines))
+        found.extend(journal_model.currency_problems(self.currency, minor_unit, lines,
+                                                     listed_unit=listed_unit))
         total_debit, total_credit = journal_model.totals(lines)
         problem = journal_model.balance_problem(total_debit, total_credit)
         if problem:
