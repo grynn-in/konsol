@@ -33,7 +33,6 @@ import os
 from decimal import Decimal
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_CENTS = Decimal("0.01")
 
 
 def _load_sibling(name):
@@ -91,8 +90,9 @@ def _dec(amount):
     return Decimal(str(amount))
 
 
-def _round(amount):
-    return float(amount.quantize(_CENTS))
+def _round(amount, minor_unit):
+    """Rounded to the reporting currency's minor unit (konsol#354)."""
+    return float(amount.quantize(Decimal(1).scaleb(-minor_unit)))
 
 
 def _heading_of(code, accounts):
@@ -101,13 +101,13 @@ def _heading_of(code, accounts):
     return (accounts.get(code) or {}).get("parent_account")
 
 
-def _accounts_list(code_amounts, accounts, mult):
+def _accounts_list(code_amounts, accounts, mult, minor_unit):
     ordered = sorted(code_amounts, key=lambda c: accounts[c]["lft"])
     return [
         {
             "main_account": code,
             "account_name": accounts[code].get("account_name"),
-            "amount": _round(mult * code_amounts[code]),
+            "amount": _round(mult * code_amounts[code], minor_unit),
         }
         for code in ordered
     ]
@@ -123,7 +123,7 @@ def _find_include(statement_line, kind, heading):
     )
 
 
-def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_line):
+def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_line, minor_unit):
     """One statement heading's amount, broken into layer rows (konsol#305
     N50).
 
@@ -140,13 +140,16 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
     ``statement_line`` is the matching line from
     ``statement_model.statement(...)``: this drill's ``total`` must equal
     its ``"current"`` exactly, or this raises ``ValueError`` — a bug, never
-    shown as a silent difference.
+    shown as a silent difference. ``minor_unit`` is the statement's own
+    (``statement_model.statement``'s ``minor_unit``): every amount is
+    rounded to it; an undeclared one raises (konsol#354).
 
     Returns ``{"heading", "heading_name", "section", "rows", "total",
     "dimensions_note"}``. Each row in ``rows`` is ``{"layer", "label",
     "entity"|None, "amount", "accounts": [...], "source"}``; amounts are in
     the heading's display sign.
     """
+    minor_unit = statement_model.places(minor_unit)
     keys = set(keys)
     if not keys:
         raise ValueError(f"{heading}: no keys given to drill into")
@@ -220,8 +223,8 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
             continue
         out_rows.append({
             "layer": "entity", "label": None, "entity": data_area_id,
-            "amount": _round(mult * bucket["amount"]),
-            "accounts": _accounts_list(bucket["accounts"], accounts, mult),
+            "amount": _round(mult * bucket["amount"], minor_unit),
+            "accounts": _accounts_list(bucket["accounts"], accounts, mult, minor_unit),
             "source": {
                 "kind": "tb", "entity": data_area_id,
                 "fiscal_year": cur_key[0], "fiscal_period": cur_key[1],
@@ -231,7 +234,7 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
     if outside_count:
         out_rows.append({
             "layer": "entity", "label": "%d entities outside your scope" % outside_count,
-            "entity": None, "amount": _round(mult * outside_amount),
+            "entity": None, "amount": _round(mult * outside_amount, minor_unit),
             "accounts": [], "source": None,
         })
 
@@ -239,7 +242,7 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
     if heading == cta_heading:
         out_rows.append({
             "layer": "cta", "label": "Currency translation (CTA)", "entity": None,
-            "amount": _round(mult * cta_amount),
+            "amount": _round(mult * cta_amount, minor_unit),
             "accounts": [],
             "source": {
                 "kind": "tb", "entity": None,
@@ -253,8 +256,8 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
         row = {
             "layer": _LAYER_KEY_BY_LABEL.get(slot, slot),
             "label": slot, "entity": None,
-            "amount": _round(mult * bucket["amount"]),
-            "accounts": _accounts_list(bucket["accounts"], accounts, mult),
+            "amount": _round(mult * bucket["amount"], minor_unit),
+            "accounts": _accounts_list(bucket["accounts"], accounts, mult, minor_unit),
         }
         if slot == _TOPSIDE_LABEL:
             heading_codes = set(bucket["accounts"])
@@ -262,7 +265,7 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
                 {
                     "journal_id": journal["journal_id"],
                     "description": journal.get("description"),
-                    "amount": _round(mult * _dec(journal["net_amount"])),
+                    "amount": _round(mult * _dec(journal["net_amount"]), minor_unit),
                     "posted_by": journal.get("posted_by"),
                     "approved_by": journal.get("approved_by"),
                     # #305 story 6.5: an auto-reversal row keeps the original
@@ -313,20 +316,20 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
     raw_total = mult * (entity_raw_total + other_raw_total + cta_amount)
     if result_amount is not None:
         raw_total += _dec(result_amount)
-    true_total = _round(raw_total)
+    true_total = _round(raw_total, minor_unit)
 
-    displayed_total = _round(sum((_dec(row["amount"]) for row in out_rows), Decimal("0")))
+    displayed_total = _round(sum((_dec(row["amount"]) for row in out_rows), Decimal("0")), minor_unit)
     if displayed_total != true_total:
         # The per-row rounding above lost (or gained) a few cents against
         # the true, once-rounded total. Show it, never hide it.
         out_rows.append({
             "layer": "rounding", "label": "Rounding", "entity": None,
-            "amount": _round(_dec(true_total) - _dec(displayed_total)),
+            "amount": _round(_dec(true_total) - _dec(displayed_total), minor_unit),
             "accounts": [], "source": None,
         })
 
     total = true_total
-    expected = _round(_dec(statement_line["current"]))
+    expected = _round(_dec(statement_line["current"]), minor_unit)
     if total != expected:
         raise ValueError(
             f"{heading}: drill total {total} does not match the statement "
@@ -341,4 +344,5 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
         "rows": out_rows,
         "total": total,
         "dimensions_note": DIMENSIONS_NOTE,
+        "minor_unit": minor_unit,
     }

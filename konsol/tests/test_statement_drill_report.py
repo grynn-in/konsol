@@ -46,7 +46,7 @@ def _execute_with(drill_payload, submissions=()):
 
     class Model:
         @staticmethod
-        def columns():
+        def columns(minor_unit=None):
             return ["cols"]
 
         @staticmethod
