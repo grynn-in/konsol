@@ -4,6 +4,19 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (5 Nov 2026, night): approvals in the record's Actions menu; the Desk can upload trial balances (#370, merged 69be0ad6).** Deepak Pai asked for approvals to work the way they do in the compliance app (5 Nov).
+- **Approvals:** a reviewer opens the sidebar's **Approvals** section (lists filtered to what is waiting, Builds included), opens the record, and picks **Actions → Approve / Reject**.
+  - The form asks `approval_api.approve_mode` (GET) whether a self-approval reason is needed.
+  - The Approvals Script Report is gone; the patch `delete_approvals_report` deletes it.
+  - Rejected: Frappe Workflows on the rate doctypes. Code creates and submits Ownership Periods and rates directly, and a workflow refuses new documents in any state but its first.
+- **Trial Balance Upload** in the Desk now has **Check file** (`tb_bulk.check_upload`), **Load**, and **Resume load**. Before #370 the Desk form loaded nothing.
+- **Found by a recorded browser walk (rrweb) on the v16 copy, not by host tests:**
+  - `frappe.xcall` defaults to POST, so a GET-only endpoint answers 403.
+  - A workspace shortcut `stats_filter` whose first filter has five elements is dropped whole by `frappe.utils.cleanup_filters`.
+- **Upgrade:** `bench migrate`. It runs the patch and re-imports the sidebar and workspace.
+- **Follow-ups:** #371 (server-side refusal of a sent-back draft on every submit path; the sign-off dialog should list the warnings it acknowledges; developer text on screen) and #369.
+
+
 **Update (4 Nov): Frappe v16 (konsol#358).** Deepak Pai asked for konsol on Frappe v16 (4 Nov) and chose to verify it on a side-by-side stack; upgrading live in place was rejected.
 - **Branches:** konsol `v16-migration`, konsolidat `v16-image` (worktree `repo/docker/worktrees/v16-image`).
 - **Verified on the side-by-side v16 stack** (project `konsolidat16`, port 8169, restored from a 4 Nov backup of `konsolidat.local`):
