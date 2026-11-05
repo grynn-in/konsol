@@ -937,3 +937,31 @@ def test_upsert_measure_returns_the_expression_check():
                                                   "line": "zz-not checked"}, (publish, result)
         assert result["measure"].get("expression_check") == "zz-not checked", result
     _CHECK_STATUS["status"] = "checked"
+
+
+def test_a_save_that_runs_no_check_cannot_forge_the_record():
+    """read_only is enforced by the Desk only: a REST save that sets just
+    expression_check must not change it (re-review)."""
+    _reset()
+    _reset_checks()
+    doc = _stored("Published", expression_check="Not checked: zz.")
+    doc.expression_check = "Checked: forged"
+    doc.save()
+    assert _STORE[NAME]["expression_check"] == "Not checked: zz.", _STORE[NAME]
+    # and a Draft save that does not touch the expression
+    doc = _stored("Draft", expression_check="Not checked: zz.")
+    doc.expression_check = "Checked: forged"
+    doc.label = "ZZ Other Label"
+    doc.save()
+    assert _STORE[NAME]["expression_check"] == "Not checked: zz.", _STORE[NAME]
+
+
+def test_a_new_measure_cannot_arrive_with_a_forged_record():
+    _reset()
+    _reset_checks()
+    _STORE.clear()
+    doc = _m.Measure()
+    doc.measure_name, doc.expression, doc.label, doc.status = NAME, "sum(amount)", "ZZ", "Draft"
+    doc.expression_check = "Checked: forged"
+    doc.save()
+    assert (_STORE[NAME]["expression_check"] or "").startswith("Not checked"), _STORE[NAME]

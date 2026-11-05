@@ -307,3 +307,15 @@ def test_epm_settings_holds_the_check_user_beside_the_main_connection():
     fn = fns.get("setup_measure_check_user")
     assert fn, sorted(fns)
     assert [a.arg for a in fn.args.args] == ["user", "password"]
+
+
+def test_a_hash_line_comment_is_refused_without_the_warehouse():
+    """ClickHouse reads ``#`` as a line comment: ``sum(x) #`` would comment out
+    the dry run's own FROM / WHERE 0 / GROUP BY and dbt's ``as <name>``, so the
+    check would test a different statement than dbt builds (re-review)."""
+    wh = _Warehouse()
+    for bad in ("sum(debit_amount) #", "sum(debit_amount) # tail", "sum(x)#"):
+        msg = _refused(lambda: _m.check_measure(NAME, bad, publishing=True,
+                                                compiled=[NAME], run=wh))
+        assert NAME in msg and "#" in msg, msg
+    assert wh.calls == []
