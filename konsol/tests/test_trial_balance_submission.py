@@ -768,7 +768,8 @@ def test_set_amount_basis_is_an_admin_post_endpoint_that_re_claims():
     assert "now()" in claim and "_sql_str(basis)" in claim
     insert = _inspect.getsource(_m._claim_insert)
     assert "INSERT INTO {CONTROL_TABLE}" in insert and "amount_basis) VALUES" in insert
-    assert "_claim_values(self, self.amount_basis)" in _inspect.getsource(_m.TrialBalanceSubmission.on_submit)
+    # konsol#283: on_submit lands through _land_batch, shared with the re-land
+    assert "_claim_values(self, self.amount_basis)" in _inspect.getsource(_m.TrialBalanceSubmission._land_batch)
     assert "docstatus" in body and "not submitted" in body
     # the gate runs over every document before any write: a closed period on
     # the third document must not leave the first two re-claimed
@@ -1664,3 +1665,762 @@ def test_the_basis_rebuild_goes_through_the_one_enqueue_path():
         else:
             sys.modules["konsol.tasks"] = saved
     assert calls == [("Trial Balance Submission", "TBS-1", "on_update_after_submit")], calls
+
+
+# -- konsol#283: re-land epm_raw from the submitted trial balances -------------------------------
+
+def test_on_submit_lands_through_the_one_batch_helper_the_re_land_uses():
+    """on_submit and the re-land run ONE code path: parse, delete the batch's
+    rows, land, claim. A second copy would drift."""
+    on_submit = _inspect.getsource(_m.TrialBalanceSubmission.on_submit)
+    assert "self._land_batch()" in on_submit
+    assert "_land_rows(" not in on_submit and "_claim_insert(" not in on_submit
+    body = _inspect.getsource(_m.TrialBalanceSubmission._land_batch)
+    order = [body.index(s) for s in ("self._parse_file()", "self._ensure_tables()",
+                                     "ALTER TABLE {RAW_TABLE} DELETE", "self._land_rows(rows)",
+                                     "_claim_insert([_claim_values(self, self.amount_basis)])")]
+    assert order == sorted(order), order
+
+
+def test_land_batch_replaces_the_rows_then_claims():
+    log = []
+    _m.execute = lambda sql, *a, **k: log.append(sql) or ""
+    doc = _m.TrialBalanceSubmission()
+    doc.__dict__.update(name="TBS-1", batch_id="b1", data_area_id="ZZA", fiscal_year=2099,
+                        fiscal_period=3, row_count=2, amount_basis="Period movement")
+    doc._parse_file = lambda: _m.parse_tb_csv(GOOD, ())
+    doc._ensure_tables = lambda: log.append("ensure")
+    doc._land_batch()
+    assert log[0] == "ensure"
+    assert log[1].startswith(f"ALTER TABLE {_m.RAW_TABLE} DELETE WHERE batch_id = 'b1'")
+    assert log[2].startswith(f"INSERT INTO {_m.RAW_TABLE} ")
+    assert log[3].startswith(f"INSERT INTO {_m.CONTROL_TABLE} ")
+    assert "'b1', 'TBS-1', 'ZZA', 2099, 3, 2, now(), 'Period movement'" in log[3]
+
+
+#: A file as every trial balance on a site from before konsol#252 was landed:
+#: no currency column, which today's intake refuses (PR #381 review, finding 1).
+OLD_FILE = ("main_account,debit,credit,description,partner_data_area_id,source_upload\n"
+            "1010,100.50,0,Cash,,u1\n2010,0,100.50,AP,ZZB,u1\n")
+
+
+#: The real functions the re-land tests below replace, put back by _wire_reland.
+_RELAND_REAL = {n: getattr(_m, n) for n in ("_reland", "_record_relanded", "_notify_reland",
+                                            "_period_is_open")}
+
+
+class _RelandDoc:
+    """A submitted TB as the re-land sees it: its file read back, then landed."""
+
+    def __init__(self, name, log, fail=None, read_fail=None, rows=2):
+        self.name, self._log, self._fail, self._read_fail = name, log, fail, read_fail
+        self.batch_id = "b" + name[-1]
+        self.data_area_id, self.fiscal_year, self.fiscal_period = "ZZA", 2099, int(name[-1])
+        self.row_count, self.total_debit, self.total_credit = rows, 100.5, 100.5
+
+    def _read_landed_file(self):
+        self._log.append(("read", self.name))
+        if self._read_fail:
+            raise _Thrown(self._read_fail)
+        return _m.parse_tb_csv(OLD_FILE, (), stored=True)
+
+    def _assert_dimension_columns(self, dims):
+        pass
+
+    def _land_batch(self, rows=None):
+        assert rows is not None, "the re-land lands the rows it read, never a second parse"
+        if self._fail:
+            raise _Thrown(self._fail)
+        self._log.append(("land", self.name, len(rows)))
+
+    def add_comment(self, kind, text):
+        self._log.append(("comment", self.name, kind, text))
+
+
+def _wire_reland(docs, claims, landed, docstatus=None, fail=None, read_fail=None, existing=None,
+                 reland_lock=1):
+    """docs: {name: row_count} submitted; claims: [(batch, name, fy, fp)];
+    landed: {batch: n}; existing: {name: {docstatus, batch_id}} for the
+    documents a claim names (absent: no such document). Returns (log, gates, changes)."""
+    log, gates, changes = [], [], []
+    rows = [{"name": n, "batch_id": "b" + n[-1], "row_count": c} for n, c in docs.items()]
+
+    def get_all(doctype, filters=None, fields=None, **kw):
+        assert doctype == "Trial Balance Submission" and filters["docstatus"] == 1
+        return list(rows)
+
+    def execute(sql, *a, **k):
+        if sql.startswith("SELECT") and _m.CONTROL_TABLE in sql:
+            assert sql.endswith("FORMAT JSON")
+            return _json.dumps({"data": [
+                {"batch_id": b, "submission_name": n, "fiscal_year": fy, "fiscal_period": fp}
+                for b, n, fy, fp in claims]})
+        if sql.startswith("SELECT") and _m.RAW_TABLE in sql:
+            return _json.dumps({"data": [{"batch_id": b, "n": str(n)} for b, n in landed.items()]})
+        log.append(("ch", sql))
+        return ""
+
+    def get_value(doctype, name, field, **kw):
+        assert kw.get("for_update") is True, "a locking read: it waits for a submit or cancel in flight"
+        if isinstance(field, list):
+            log.append(("locked", name))
+            return (existing or {}).get(name)
+        return (docstatus or {}).get(name, 1 if name in docs else None)
+
+    for n, fn in _RELAND_REAL.items():
+        setattr(_m, n, fn)
+    # The stub module itself, as _wire does: other tests set attributes on it.
+    _m.frappe = sys.modules["frappe"]
+    _m.frappe.get_all = get_all
+    _m.frappe.throw = _raise
+    _m.frappe.PermissionError = _PermissionError
+    def sql(query, values=()):
+        log.append(("sql", query, tuple(values)))
+        return [[reland_lock]] if "GET_LOCK" in query else [[1]]
+
+    _m.frappe.db = types.SimpleNamespace(get_value=get_value, commit=lambda: log.append(("commit",)),
+                                         rollback=lambda: log.append(("rollback",)), sql=sql)
+    _m.frappe.get_doc = lambda doctype, name: _RelandDoc(
+        name, log, (fail or {}).get(name), (read_fail or {}).get(name), rows=docs.get(name, 2))
+    _m.frappe.enqueue = lambda *a, **k: log.append(("enqueue", a, k))
+    _m.execute = execute
+    _m.ensure_raw_tables = lambda: None
+    _m.assert_open = lambda fy, fp, action="run": gates.append((fy, fp, action))
+    _m._record_data_change = lambda fy, fp, text, entity=None: changes.append((fy, fp, text))
+    _m._record_relanded = lambda doc, why: log.append(("event", doc.name))
+    _m._period_is_open = lambda fy, fp: True
+    _m._request_reland_build = lambda name: log.append(("build", name))
+    _m._reland_job_queued = lambda: False
+    del _ADMIN_CHECKS[:]
+    return log, gates, changes
+
+
+def test_reland_is_an_admin_post_endpoint():
+    with open(_SRC) as f:
+        src = f.read()
+    assert "def reland_submitted(names=None, apply=0, remove_orphans=0)" in src
+    head = src[src.index("def reland_submitted(") - 60:src.index("def reland_submitted(")]
+    assert 'whitelist(methods=["POST"])' in head
+    _wire_reland({}, [], {})
+    _m.reland_submitted()
+    assert _ADMIN_CHECKS, "check_epm_admin() was not called"
+
+
+def test_reland_dry_run_reports_and_writes_nothing():
+    log, gates, changes = _wire_reland(
+        {"TBS-1": 2, "TBS-2": 2}, claims=[("b2", "TBS-2", 2099, 1), ("b9", "TBS-9", 2099, 4)],
+        landed={"b2": 2, "b9": 5})
+    out = _m.reland_submitted()
+    assert out["applied"] is False
+    assert [tuple(r) for r in out["reland"]] == [("TBS-1", "no claim in the warehouse")]
+    assert [o["batch_id"] for o in out["orphans"]] == ["b9"]
+    assert out["matched"] == 1
+    assert not [e for e in log if e[0] in ("ch", "land", "comment", "event", "enqueue", "build")], log
+    assert gates == [] and changes == []
+
+
+def test_reland_dry_run_lists_a_document_whose_file_cannot_be_read():
+    """The dry run reads each file it would re-land, so the dialog names an
+    unreadable one before anything is written."""
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={},
+                                       read_fail={"TBS-1": "File not found"})
+    out = _m.reland_submitted()
+    assert [tuple(f) for f in out["failed"]] == [("TBS-1", "File not found")]
+
+
+def test_reland_apply_queues_one_job_on_the_long_queue_and_writes_nothing_itself():
+    """PR #381 review, finding 5: a restore re-lands every TB on the site,
+    minutes of ClickHouse mutations, longer than a web request may run."""
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={})
+    out = _m.reland_submitted(names='["TBS-1"]', apply=1, remove_orphans="1")
+    assert out["queued"] is True and out["applied"] is False
+    queued = [e for e in log if e[0] == "enqueue"]
+    assert len(queued) == 1, log
+    args, kw = queued[0][1], queued[0][2]
+    assert (args[0] if args else kw["method"]) == _m.RELAND_JOB
+    assert kw["queue"] == "long" and kw["enqueue_after_commit"] is True
+    assert kw["job_id"] == _m.RELAND_JOB_ID and kw["deduplicate"] is True
+    assert kw["timeout"] == _m.RELAND_JOB_TIMEOUT
+    assert kw["names"] == ["TBS-1"] and kw["remove_orphans"] == 1
+    assert not [e for e in log if e[0] in ("ch", "land", "comment", "event", "build")], log
+
+
+def test_reland_apply_refuses_while_a_rebuild_is_already_queued_or_running():
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={})
+    _m._reland_job_queued = lambda: True
+    try:
+        _m.reland_submitted(apply=1)
+        assert False, "expected a refusal"
+    except _Thrown as e:
+        assert "already" in str(e)
+    assert not [e for e in log if e[0] == "enqueue"]
+
+
+class _Lock:
+    def __init__(self, log):
+        self._log = log
+
+    def __enter__(self):
+        self._log.append("lock")
+
+    def __exit__(self, *exc):
+        self._log.append("unlock")
+
+
+def _with_orchestrator_api(log, fn, active=None):
+    """Run ``fn`` with konsol.orchestrator.api stubbed: single_flight_lock
+    logs lock/unlock; _assert_no_active_run logs, and refuses once ``active``
+    (a list) is non-empty."""
+    def no_active_run():
+        log.append("no active run")
+        if active:
+            raise _Thrown("A pipeline run is already active (%s)." % active[0])
+
+    api = types.ModuleType("konsol.orchestrator.api")
+    api.single_flight_lock = lambda: _Lock(log)
+    api._assert_no_active_run = no_active_run
+    orchestrator = types.ModuleType("konsol.orchestrator")
+    orchestrator.__path__ = []
+    saved = {n: sys.modules.get(n) for n in ("konsol.orchestrator", "konsol.orchestrator.api")}
+    sys.modules.update({"konsol.orchestrator": orchestrator, "konsol.orchestrator.api": api})
+    try:
+        return fn()
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+
+
+def test_the_job_refuses_fast_then_hands_the_build_lock_to_each_document():
+    """PR #381 re-review, finding 1: the job held the build lock for the
+    whole re-land (minutes), so a governed build starting meanwhile waited
+    10 s on GET_LOCK, threw, and its Build Approval failed. The job now
+    takes the lock only for a fast refusal at its start, and passes _reland
+    a guard that takes it (and refuses while a run is active) per document.
+    The build it requests is asked for after the lock is released."""
+    log, gates, changes = _wire_reland({}, [], {})
+    seen = {}
+
+    def reland(names=None, remove_orphans=0, apply=False, commit=False, guard=None, progress=None):
+        log.append(("reland", names, remove_orphans, apply, commit))
+        seen["progress"] = progress
+        with guard():
+            log.append("document")
+        progress.update(relanded=["TBS-1"], orphans_removed=0, failed=[], build_for="TBS-1")
+        return progress
+
+    _m._reland = reland
+    _m._notify_reland = lambda out: log.append("notify")
+    try:
+        _with_orchestrator_api(log, lambda: _m.run_reland(names=["TBS-1"], remove_orphans=1))
+    finally:
+        _wire_reland({}, [], {})  # puts the real _reland back
+    steps = [e for e in log if not (isinstance(e, tuple) and e[0] == "sql")]
+    assert steps[:4] == ["lock", "no active run", "unlock", ("reland", ["TBS-1"], 1, True, True)], steps
+    # the guard: the lock, then the active-run check, around the document only
+    assert steps[4:8] == ["lock", "no active run", "document", "unlock"], steps
+    assert steps.index(("build", "TBS-1")) > 7 and "notify" in steps
+    assert isinstance(seen["progress"], dict)
+
+
+def test_the_job_holds_its_own_lock_for_its_whole_run():
+    """PR #381 re-review, finding 3: two applies close together could both
+    be queued (the request-time check runs before either enqueue). The job
+    takes a non-blocking named lock of its own for its whole run."""
+    log, gates, changes = _wire_reland({}, [], {})
+    _m._reland = lambda *a, **k: (log.append("reland") or dict(
+        k["progress"], relanded=[], orphans_removed=0, failed=[], build_for=None))
+    _m._notify_reland = lambda out: log.append("notify")
+    try:
+        _with_orchestrator_api(log, lambda: _m.run_reland())
+    finally:
+        _wire_reland({}, [], {})
+    sqls = [i for i, e in enumerate(log) if isinstance(e, tuple) and e[0] == "sql"]
+    take, release = log[sqls[0]], log[sqls[-1]]
+    assert "GET_LOCK" in take[1] and take[2] == (_m.RELAND_LOCK, 0), log
+    assert "RELEASE_LOCK" in release[1] and release[2] == (_m.RELAND_LOCK,), log
+    assert sqls[0] < log.index("lock") and log.index("notify") < sqls[-1], log
+
+
+def test_a_second_job_ends_at_once_saying_another_is_running():
+    log, gates, changes = _wire_reland({"TBS-1": 2}, [], {}, reland_lock=0)
+    notes = []
+    _m._reland = lambda *a, **k: log.append("reland")
+    _m._notify_reland = lambda out: notes.append(out)
+    try:
+        out = _with_orchestrator_api(log, lambda: _m.run_reland())
+    finally:
+        _wire_reland({}, [], {})
+    assert "reland" not in log and "lock" not in log, log
+    assert not [e for e in log if isinstance(e, tuple) and "RELEASE_LOCK" in str(e)], log
+    assert notes == [{"busy": True}] and out == {"busy": True}
+    assert ("commit",) in log
+
+
+def test_the_notification_for_a_second_job_says_it_did_nothing():
+    sent = []
+    _m.frappe = sys.modules["frappe"]
+    _m.frappe.session = types.SimpleNamespace(user="ZZ@example.com")
+    _m.frappe.utils = types.SimpleNamespace(escape_html=lambda s: s)
+    _m.frappe.get_doc = lambda d: types.SimpleNamespace(insert=lambda **k: sent.append(d))
+    _RELAND_REAL["_notify_reland"]({"busy": True})
+    assert sent[0]["subject"] == (
+        "Another Rebuild Warehouse Rows is already running; this request did nothing.")
+    _RELAND_REAL["_notify_reland"]({"error": "ClickHouse is down", "relanded": ["TBS-1", "TBS-2"],
+                                    "orphans_removed": 1, "failed": []})
+    assert sent[1]["subject"] == ("Rebuild Warehouse Rows stopped after re-landing 2 and "
+                                  "removing 1 claims: ClickHouse is down")
+    _RELAND_REAL["_notify_reland"]({"error": "ClickHouse is down"})
+    assert sent[2]["subject"] == "Rebuild Warehouse Rows stopped: ClickHouse is down"
+
+
+def test_a_job_that_stops_requests_the_build_for_what_it_re_landed():
+    """PR #381 re-review, finding 2: the except path rolled back, notified
+    and re-raised without a build, so documents re-landed (and committed)
+    before the failure were never consolidated."""
+    log, gates, changes = _wire_reland({}, [], {})
+    notes = []
+
+    def reland(names=None, remove_orphans=0, apply=False, commit=False, guard=None, progress=None):
+        progress.update(relanded=["TBS-1"], orphans_removed=0, failed=[], build_for="TBS-1")
+        raise _Thrown("ClickHouse is down")
+
+    _m._reland = reland
+    _m._notify_reland = lambda out: (log.append("notify"), notes.append(out))
+    try:
+        _with_orchestrator_api(log, lambda: _m.run_reland())
+        assert False, "the job's failure is raised"
+    except _Thrown as e:
+        assert str(e) == "ClickHouse is down"
+    finally:
+        _wire_reland({}, [], {})
+    assert log.index(("rollback",)) < log.index(("build", "TBS-1")) < log.index("notify"), log
+    assert notes[0]["error"] == "ClickHouse is down" and notes[0]["relanded"] == ["TBS-1"]
+    assert log.index("notify") < len(log) - 1 - log[::-1].index(("commit",)), log
+
+
+def test_a_job_that_stops_before_re_landing_anything_requests_no_build():
+    log, gates, changes = _wire_reland({}, [], {})
+    _m._reland = lambda **k: (_ for _ in ()).throw(_Thrown("boom"))
+    _m._notify_reland = lambda out: log.append("notify")
+    try:
+        _with_orchestrator_api(log, lambda: _m.run_reland())
+        assert False
+    except _Thrown:
+        pass
+    finally:
+        _wire_reland({}, [], {})
+    assert not [e for e in log if e[0] == "build"], log
+
+
+def _guard(log, refuse_at=None):
+    """A guard factory as run_reland's: logs enter/exit; the ``refuse_at``-th
+    entry refuses as _assert_no_active_run does when a build became active."""
+    import contextlib
+
+    calls = []
+
+    @contextlib.contextmanager
+    def guard():
+        calls.append(1)
+        if refuse_at is not None and len(calls) >= refuse_at:
+            raise _Thrown("A pipeline run is already active (PR-1).")
+        log.append(("guard", "enter"))
+        try:
+            yield
+        finally:
+            log.append(("guard", "exit"))
+    return guard
+
+
+def test_the_build_lock_is_taken_per_document_and_released_between_them():
+    log, gates, changes = _wire_reland({"TBS-1": 2, "TBS-2": 2}, claims=[], landed={})
+    out = _m._reland(apply=True, commit=True, guard=_guard(log))
+    assert out["relanded"] == ["TBS-1", "TBS-2"]
+    enters = [i for i, e in enumerate(log) if e == ("guard", "enter")]
+    exits = [i for i, e in enumerate(log) if e == ("guard", "exit")]
+    assert len(enters) == len(exits) == 2, log
+    assert exits[0] < enters[1], "the lock is released between documents"
+    for name, batch, enter, exit_ in (("TBS-1", "b1", enters[0], exits[0]),
+                                      ("TBS-2", "b2", enters[1], exits[1])):
+        event = log.index(("event", name))
+        drop = next(i for i, e in enumerate(log) if e[0] == "ch" and f"'{batch}'" in e[1])
+        land = log.index(("land", name, 2))
+        comment = next(i for i, e in enumerate(log) if e[0] == "comment" and e[1] == name)
+        assert enter < event < drop < land < comment < exit_, log
+        # the audit commits before ClickHouse is touched, and again after it
+        assert [i for i in range(event, drop) if log[i] == ("commit",)], log
+        assert [i for i in range(comment, exit_) if log[i] == ("commit",)], log
+
+
+def test_a_build_that_becomes_active_stops_the_loop_and_lists_the_rest():
+    log, gates, changes = _wire_reland(
+        {"TBS-1": 2, "TBS-2": 2, "TBS-3": 2}, claims=[("b9", "TBS-9", 2099, 4)], landed={"b9": 5})
+    progress = {}
+    out = _m._reland(apply=True, commit=True, remove_orphans=1, guard=_guard(log, refuse_at=2),
+                     progress=progress)
+    assert out is progress
+    assert out["relanded"] == ["TBS-1"]
+    assert [tuple(f) for f in out["failed"]] == [
+        ("TBS-2", _m.RELAND_BUILD_STARTED), ("TBS-3", _m.RELAND_BUILD_STARTED),
+        ("TBS-9", _m.RELAND_BUILD_STARTED)]
+    assert _m.RELAND_BUILD_STARTED == "a build started; run Rebuild Warehouse Rows again after it"
+    assert not [e for e in log if e[0] == "ch" and ("'b2'" in e[1] or "'b3'" in e[1] or "'b9'" in e[1])]
+    assert ("event", "TBS-2") not in log
+    assert out["orphans_removed"] == 0 and out["build_for"] == "TBS-1"
+
+
+def test_orphans_are_removed_per_period_under_the_guard():
+    claims = [("b8", "TBS-8", 2099, 4), ("b9", "TBS-9", 2099, 5)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={})
+    out = _m._reland(apply=True, commit=True, remove_orphans=1, guard=_guard(log))
+    assert out["orphans_removed"] == 2
+    enters = [i for i, e in enumerate(log) if e == ("guard", "enter")]
+    exits = [i for i, e in enumerate(log) if e == ("guard", "exit")]
+    deletes = [i for i, e in enumerate(log) if e[0] == "ch"]
+    assert len(enters) == 2 and len(deletes) == 2, log
+    for enter, delete, exit_ in zip(enters, deletes, exits):
+        assert enter < delete < exit_, log
+    assert [c[:2] for c in changes] == [(2099, 4), (2099, 5)]
+
+
+def test_an_orphan_whose_document_became_submitted_after_the_plan_is_kept():
+    """PR #381 re-review, finding 4: the plan judged orphans under locks
+    the first commit released. Each is re-read with a lock and re-judged
+    immediately before its delete."""
+    claims = [("b9", "TBS-9", 2099, 4), ("b8", "TBS-8", 2099, 4)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={})
+    reads = {}
+    plan_get_value = _m.frappe.db.get_value
+
+    def get_value(doctype, name, field, **kw):
+        if isinstance(field, list) and name == "TBS-9":
+            assert kw.get("for_update") is True
+            reads[name] = reads.get(name, 0) + 1
+            log.append(("locked", name))
+            # cancelled at the plan; amended back and submitted with this batch since
+            return {"docstatus": 2 if reads[name] == 1 else 1, "batch_id": "b9"}
+        return plan_get_value(doctype, name, field, **kw)
+
+    _m.frappe.db.get_value = get_value
+    out = _m._reland(apply=True, commit=True, remove_orphans=1, guard=_guard(log))
+    assert reads["TBS-9"] == 2, "re-read immediately before the delete"
+    assert out["orphans_removed"] == 1
+    assert ("TBS-9", "TBS-9 is submitted with this batch") in [tuple(k) for k in out["kept"]]
+    deletes = [e[1] for e in log if e[0] == "ch"]
+    assert deletes == [f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id IN ('b8') "
+                       "SETTINGS mutations_sync = 1"]
+    assert "TBS-9" not in changes[0][2] and "TBS-8" in changes[0][2]
+    assert out["build_for"] == "TBS-8"
+
+
+def test_an_orphan_period_commits_its_data_change_before_the_delete():
+    """PR #381 re-review 2, finding 1: the orphan data change was uncommitted
+    when the ClickHouse delete ran; a delete that applied but whose call
+    raised was rolled back by run_reland: claim gone, no data change, the
+    sign-off still standing and no build. In job mode the data change now
+    commits first, as the per-document path's audit does."""
+    claims = [("b9", "TBS-9", 2099, 4)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={})
+    _m._record_data_change = lambda fy, fp, text, entity=None: (
+        changes.append((fy, fp, text)), log.append(("change", fy, fp)))
+    _m._reland(apply=True, commit=True, remove_orphans=1, guard=_guard(log))
+    change = log.index(("change", 2099, 4))
+    delete = next(i for i, e in enumerate(log) if e[0] == "ch")
+    assert [i for i in range(change, delete) if log[i] == ("commit",)], log
+
+
+def test_an_orphan_delete_that_fails_is_listed_and_the_rest_still_run():
+    """A failed delete for one period is listed under failed with its error;
+    the next period still runs, and a build is still asked for (the delete
+    may have applied before the call raised)."""
+    claims = [("b8", "TBS-8", 2099, 4), ("b9", "TBS-9", 2099, 5)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={})
+    real_execute = _m.execute
+
+    def execute(sql, *a, **k):
+        if sql.startswith("ALTER") and "'b8'" in sql:
+            log.append(("ch", sql))
+            raise _Thrown("Timeout exceeded while reading from socket")
+        return real_execute(sql, *a, **k)
+
+    _m.execute = execute
+    out = _m._reland(apply=True, commit=True, remove_orphans=1, guard=_guard(log))
+    assert [tuple(f) for f in out["failed"]] == [
+        ("TBS-8", "Timeout exceeded while reading from socket")]
+    assert out["orphans_removed"] == 1
+    assert [c[:2] for c in changes] == [(2099, 4), (2099, 5)]
+    assert out["build_for"] == "TBS-8", "a delete that may have applied is built for"
+    assert log[-1] == ("guard", "exit") and ("commit",) in log[-3:], log
+
+
+def test_an_orphan_period_closed_since_the_plan_keeps_its_claims():
+    """PR #381 re-review 2, finding 2: the open-period gate ran once before
+    any write; a period closed while documents were re-landed lost its
+    claims anyway. Each period is checked again under the guard."""
+    claims = [("b8", "TBS-8", 2099, 4), ("b9", "TBS-9", 2099, 5)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={})
+    _m._period_is_open = lambda fy, fp: fp != 4
+    out = _m._reland(apply=True, commit=True, remove_orphans=1, guard=_guard(log))
+    assert ("TBS-8", "period closed since the plan") in [tuple(k) for k in out["kept"]]
+    deletes = [e[1] for e in log if e[0] == "ch"]
+    assert deletes == [f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id IN ('b9') "
+                       "SETTINGS mutations_sync = 1"]
+    assert [c[:2] for c in changes] == [(2099, 5)]
+    assert out["orphans_removed"] == 1 and out["build_for"] == "TBS-9"
+
+
+def test_a_document_cancelled_after_its_audit_commit_is_commented():
+    """PR #381 re-review 2, finding 4: the committed tb_relanded event stood
+    alone when the re-read after the commit found the document cancelled."""
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={})
+    reads = []
+    plan_get_value = _m.frappe.db.get_value
+
+    def get_value(doctype, name, field, **kw):
+        if field == "docstatus" and name == "TBS-1":
+            reads.append(1)
+            return 1 if len(reads) == 1 else 2
+        return plan_get_value(doctype, name, field, **kw)
+
+    _m.frappe.db.get_value = get_value
+    out = _m._reland(apply=True, commit=True)
+    assert [tuple(f) for f in out["failed"]] == [("TBS-1", "no longer submitted")]
+    assert ("event", "TBS-1") in log and not [e for e in log if e[0] == "ch"]
+    comments = [e for e in log if e[0] == "comment" and e[1] == "TBS-1"]
+    assert len(comments) == 1 and "skipped" in comments[0][3], log
+    assert log.index(comments[0]) < len(log) - 1 - log[::-1].index(("commit",)), log
+
+
+def test_the_re_land_docstring_says_a_build_waits_for_at_most_one_document():
+    doc = _RELAND_REAL["_reland"].__doc__ + (_m.run_reland.__doc__ or "")
+    assert "at most one document" in doc and "_SINGLE_FLIGHT_TIMEOUT" in doc
+
+
+def test_reland_reads_every_file_before_it_touches_a_claim_then_audits_then_lands():
+    log, gates, changes = _wire_reland(
+        {"TBS-1": 2, "TBS-2": 2}, claims=[("b2", "TBS-2", 2099, 2)], landed={"b2": 7})
+    out = _m._reland(apply=True)
+    assert out["applied"] is True and sorted(out["relanded"]) == ["TBS-1", "TBS-2"]
+    reads = [i for i, e in enumerate(log) if e[0] == "read"]
+    first_ch = next(i for i, e in enumerate(log) if e[0] == "ch")
+    assert len(reads) == 2 and max(reads) < first_ch, log
+    for name, batch in (("TBS-1", "b1"), ("TBS-2", "b2")):
+        event = log.index(("event", name))
+        drop = next(i for i, e in enumerate(log) if e[0] == "ch" and e[1].startswith(
+            f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id = '{batch}'"))
+        land = log.index(("land", name, 2))
+        # the Close Event is in MariaDB before ClickHouse is touched; the
+        # claim goes before the rows, so a failed landing is never claimed
+        assert event < drop < land, log
+    assert [e[1] for e in log if e[0] == "comment"] == ["TBS-1", "TBS-2"]
+    assert not [e for e in log if e[0] == "build"], "the job requests the build, once, after the lock"
+    assert out["build_for"] == "TBS-1"
+    assert gates == []
+
+
+def test_a_document_whose_file_cannot_be_read_keeps_its_claim_and_rows():
+    """PR #381 review, finding 2: the claim used to go first and the file was
+    read afterwards, so an unreadable file dropped a submitted TB out of
+    consolidation."""
+    log, gates, changes = _wire_reland(
+        {"TBS-1": 2, "TBS-2": 2}, claims=[("b1", "TBS-1", 2099, 1)], landed={"b1": 5},
+        read_fail={"TBS-1": "Could not read the trial balance file: Missing column(s) currency"})
+    out = _m._reland(apply=True)
+    assert [tuple(f) for f in out["failed"]] == [
+        ("TBS-1", "Could not read the trial balance file: Missing column(s) currency")]
+    assert out["relanded"] == ["TBS-2"]
+    assert not [e for e in log if e[0] == "ch" and "'b1'" in e[1]], log
+    assert ("event", "TBS-1") not in log
+
+
+def test_a_file_that_is_not_what_the_document_landed_keeps_its_claim():
+    log, gates, changes = _wire_reland({"TBS-1": 3}, claims=[("b1", "TBS-1", 2099, 1)], landed={"b1": 5})
+    out = _m._reland(apply=True)
+    assert out["relanded"] == []
+    assert out["failed"] and out["failed"][0][0] == "TBS-1"
+    assert "the file has 2 rows, the document recorded 3" in out["failed"][0][1]
+    assert not [e for e in log if e[0] == "ch"], log
+
+
+def test_a_landing_that_fails_is_listed_and_commented_and_stays_audited():
+    log, gates, changes = _wire_reland({"TBS-1": 2, "TBS-2": 2}, claims=[], landed={},
+                                       fail={"TBS-1": "ClickHouse said no"})
+    out = _m._reland(apply=True, commit=True)
+    assert [tuple(f) for f in out["failed"]] == [("TBS-1", "ClickHouse said no")]
+    assert out["relanded"] == ["TBS-2"]
+    assert ("event", "TBS-1") in log
+    comment = next(e for e in log if e[0] == "comment" and e[1] == "TBS-1")
+    assert "failed" in comment[3] and "ClickHouse said no" in comment[3]
+    # each document's audit commits before ClickHouse is touched, and its
+    # ClickHouse work commits after it, never once at the end
+    assert log.count(("commit",)) == 4
+
+
+def test_reland_skips_a_document_cancelled_since_the_plan():
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={}, docstatus={"TBS-1": 2})
+    out = _m._reland(apply=True)
+    assert out["relanded"] == [] and [tuple(s) for s in out["failed"]] == [("TBS-1", "no longer submitted")]
+    assert not [e for e in log if e[0] in ("ch", "event")]
+    assert out["build_for"] is None
+
+
+def test_the_re_land_is_a_close_event_and_a_data_change_when_the_period_is_open():
+    """PR #381 review, finding 3: closed-period numbers changed with only a
+    Comment. Re-landing stays allowed in a closed period (it restores what
+    the document says), but it is audited, and in an open period a sign-off
+    over the changed numbers is voided."""
+    _wire_reland({}, [], {})
+    for is_open, expect_change in ((True, True), (False, False)):
+        log, changes = [], []
+        _m._period_is_open = lambda fy, fp, _o=is_open: _o
+        _m._record_data_change = lambda fy, fp, text, entity=None: changes.append((fy, fp, text, entity))
+        doc = _tb_doc()
+        _with_close_event(log, lambda: _RELAND_REAL["_record_relanded"](doc, "no claim in the warehouse"))
+        events = [e for e in log if e[0] == "event"]
+        assert [e[1] for e in events] == ["tb_relanded"], log
+        assert events[0][2] == (2099, 3, "Trial Balance Submission", "TBS-00042")
+        assert events[0][3]["entity"] == "ZZA"
+        assert events[0][3]["detail"] == {"batch_id": "b42", "row_count": 2,
+                                          "why": "no claim in the warehouse"}
+        assert bool(changes) is expect_change, (is_open, changes)
+        if changes:
+            assert changes[0][:2] == (2099, 3) and changes[0][3] == "ZZA"
+            assert "TBS-00042" in changes[0][2]
+    _m._record_data_change = lambda *a, **k: None
+
+
+def test_orphan_claims_stay_unless_asked_and_go_like_a_cancel_when_asked():
+    claims = [("b9", "TBS-9", 2099, 4)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={"b9": 5})
+    out = _m._reland(apply=True)
+    assert out["orphans_removed"] == 0 and not [e for e in log if e[0] == "ch"]
+
+    log, gates, changes = _wire_reland({}, claims=claims, landed={"b9": 5})
+    out = _m._reland(apply=True, remove_orphans=1)
+    assert out["orphans_removed"] == 1
+    # numbers change, so the period must be open (as a cancel) and the change
+    # is recorded before ClickHouse is touched
+    assert gates == [(2099, 4, "remove a warehouse claim with no submitted trial balance")]
+    assert changes and changes[0][:2] == (2099, 4)
+    deletes = [e[1] for e in log if e[0] == "ch"]
+    assert deletes == [f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id IN ('b9') "
+                       "SETTINGS mutations_sync = 1"]
+    assert out["build_for"] == "TBS-9"
+
+
+def test_an_orphan_claim_whose_document_is_a_draft_is_not_removed():
+    """PR #381 review, finding 4: on_submit claims before its transaction
+    commits, so its document still reads as a draft (or not yet visible)
+    from here. The claim's document is read with a lock, which waits for
+    that submit; a draft or submitted document's claim is never removed."""
+    claims = [("b9", "TBS-9", 2099, 4), ("b8", "TBS-8", 2099, 4)]
+    log, gates, changes = _wire_reland(
+        {}, claims=claims, landed={}, existing={"TBS-9": {"docstatus": 0, "batch_id": "b9"},
+                                               "TBS-8": {"docstatus": 2, "batch_id": "b8"}})
+    out = _m._reland(apply=True, remove_orphans=1)
+    assert ("locked", "TBS-9") in log and ("locked", "TBS-8") in log
+    assert [o["batch_id"] for o in out["orphans"]] == ["b8"]
+    assert [tuple(k) for k in out["kept"]] == [("TBS-9", "TBS-9 is a draft: a submit may be in flight")]
+    deletes = [e[1] for e in log if e[0] == "ch"]
+    assert deletes == [f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id IN ('b8') "
+                       "SETTINGS mutations_sync = 1"]
+
+
+def test_names_limit_the_re_land():
+    log, gates, changes = _wire_reland({"TBS-1": 2, "TBS-2": 2}, claims=[], landed={})
+    out = _m._reland(names=["TBS-2"], apply=True)
+    assert out["relanded"] == ["TBS-2"]
+
+
+class _StoredFile:
+    def __init__(self, content):
+        self._content = content
+
+    def get_content(self):
+        return self._content.encode("utf-8")
+
+
+def _file_doc(content):
+    doc = _m.TrialBalanceSubmission()
+    doc.__dict__.update(name="TBS-1", batch_id="b1", data_area_id="ZZA", fiscal_year=2099,
+                        fiscal_period=3, row_count=2, amount_basis="Period-end balance",
+                        tb_file="/private/files/tb.csv")
+    _m.frappe = sys.modules["frappe"]
+    _m.frappe.throw = _raise
+    _m.frappe.get_doc = lambda doctype, filters: _StoredFile(content)
+    _m.declared_dimensions = lambda: []
+    return doc
+
+
+def test_a_landed_file_from_before_the_currency_rule_reads_back_for_the_re_land():
+    """PR #381 review, finding 1 (live, every document on the test site): the
+    re-land parsed the stored file with today's intake rules and refused
+    every file that landed before konsol#252 for its missing currency column."""
+    doc = _file_doc(OLD_FILE)
+    try:
+        doc._parse_file()
+        assert False, "the intake read refuses the old file (that is the bug's cause)"
+    except _Thrown as e:
+        assert "Missing column(s) currency" in str(e)
+    rows = doc._read_landed_file()
+    assert [r["main_account"] for r in rows] == ["1010", "2010"]
+    assert rows[1][_m.PARTNER] == "ZZB"
+
+
+def test_a_missing_file_is_named_with_how_it_comes_back():
+    """Live, 8069: a restore without the files read "File {'file_url': ...}
+    not found" in the re-land's failed list."""
+    class _Missing(Exception):
+        pass
+
+    doc = _file_doc("")
+    _m.frappe.DoesNotExistError = _Missing
+
+    def gone(doctype, filters):
+        raise _Missing(f"File {filters} not found")
+
+    _m.frappe.get_doc = gone
+    try:
+        doc._read_landed_file()
+        assert False, "expected a refusal"
+    except _Thrown as e:
+        assert str(e).startswith("The attached file /private/files/tb.csv is not on this site."), e
+        assert "--with-files" in str(e)
+
+
+def test_a_re_landed_document_lands_exactly_the_rows_on_submit_landed():
+    """The rows, row for row: the landed columns carry nothing the old file
+    lacked (the currency is on the document, not on a row; the basis is on
+    the claim, from the document)."""
+    def landed(rows):
+        log = []
+        _m.execute = lambda sql, *a, **k: log.append(sql) or ""
+        doc = _file_doc("")
+        doc._ensure_tables = lambda: None
+        doc._land_batch(rows)
+        return log
+
+    with_currency = OLD_FILE.replace("source_upload\n", "source_upload,currency\n").replace(
+        ",u1\n", ",u1,EUR\n")
+    at_submit = landed(_m.parse_tb_csv(with_currency, ()))
+    assert landed(_file_doc(with_currency)._read_landed_file()) == at_submit
+    assert landed(_file_doc(OLD_FILE)._read_landed_file()) == at_submit
+    assert "'Period-end balance')" in at_submit[-1]
+
+
+def test_the_rebuild_dialog_escapes_every_name_reason_and_error():
+    """PR #381 review, finding 5: names, reasons and error text come from
+    documents and exceptions, and the dialog renders HTML."""
+    js_path = os.path.join(os.path.dirname(_SRC), "trial_balance_submission_list.js")
+    with open(js_path) as f:
+        js = f.read()
+    start = js.index("Rebuild Warehouse Rows")
+    body = js[start:]
+    assert "const esc = frappe.utils.escape_html" in js
+    for raw in ("x[0]", "x[1]", "o.submission_name", "o.batch_id", "o.data_area_id",
+                "f[0]", "f[1]", "k[0]", "k[1]"):
+        assert body.count(raw) == body.count(f"esc({raw}"), raw
+    assert "notification" in body.lower()

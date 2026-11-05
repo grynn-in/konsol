@@ -30,6 +30,9 @@ KINDS = (
     # konsol#305 Y51 (story 1.5, #305-1.5-1): a Remind sent; a period kind,
     # no reason. Y54 writes detail {topic, recipients, subject}.
     "reminder_sent",
+    # konsol#283 (PR #381 review): a submitted TB's warehouse rows re-landed
+    # from its file; a period kind, no reason. Detail {batch_id, row_count, why}.
+    "tb_relanded",
 )
 YEAR_KINDS = ("year_closed", "year_locked", "year_reopened")
 REASON_REQUIRED = (

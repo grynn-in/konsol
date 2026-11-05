@@ -344,3 +344,23 @@ def test_reminder_sent_fiscal_period_zero_is_named():
     )
     assert M.event_problems(event) == [
         "fiscal_period must not be 0 for a non-year kind."]
+
+
+# --- tb_relanded (konsol#283, PR #381 review finding 3) -----------------------
+
+def test_tb_relanded_is_a_declared_period_kind_and_a_select_option():
+    """A re-land restores a submitted TB's warehouse rows from its file. It
+    may run in a closed period, so it is audited like a submit."""
+    import json
+    import os
+
+    assert "tb_relanded" in M.KINDS
+    assert "tb_relanded" not in M.REASON_REQUIRED and "tb_relanded" not in M.YEAR_KINDS
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "consolidation",
+                        "doctype", "close_event", "close_event.json")
+    with open(path) as f:
+        kind = next(fd for fd in json.load(f)["fields"] if fd["fieldname"] == "kind")
+    assert kind["options"].split("\n") == list(M.KINDS)
+    event = _event(kind="tb_relanded", entity="ZZ01",
+                   detail={"batch_id": "b1", "row_count": 2, "why": "no claim in the warehouse"})
+    assert M.event_problems(event) == []
