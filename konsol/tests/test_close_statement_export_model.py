@@ -166,8 +166,8 @@ def test_amounts_are_numbers_with_a_bracket_format():
     for row in sheet.iter_rows():
         if row[0].value == "ASSETS":
             assert isinstance(row[2].value, float)
-            assert row[2].number_format == M.AMOUNT_FORMAT
-            assert "(" in M.AMOUNT_FORMAT
+            assert row[2].number_format == M.amount_format(2)
+            assert "(" in M.amount_format(2)
             return
     raise AssertionError("no ASSETS row")
 
