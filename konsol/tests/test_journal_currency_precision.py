@@ -90,3 +90,48 @@ def test_the_controller_runs_the_currency_rule_with_the_iso_minor_unit():
     assert "'ISO Currency'" in src and "'minor_unit'" in src, src
     # the currency is known before the lines are judged
     assert src.index("reporting_currency") < src.index("currency_problems"), src
+
+
+# --- PR #387 review ----------------------------------------------------------
+
+
+def test_a_stored_minor_unit_that_disagrees_with_iso_is_refused_naming_330():
+    """Finding 1: USD stored as 0 (the konsol#330 defect) gave "USD has 0",
+    which blames the amounts. The listed ISO unit is the judge; a stored
+    value that disagrees is refused as what it is."""
+    lines = [_line(1, debit=100.25), _line(2, credit=100.25)]
+    problems = M.currency_problems("USD", 0, lines, listed_unit=2)
+    assert len(problems) == 1, problems
+    assert "#330" in problems[0] and "0" in problems[0] and "2" in problems[0], problems
+    assert "USD has 0" not in problems[0], problems
+    assert M.currency_problems("USD", 2, lines, listed_unit=2) == []
+
+
+def test_a_code_iso_sets_no_unit_for_is_judged_by_its_stored_unit():
+    """Off the list or N.A. (declared under konsol#330): the stored value."""
+    lines = [_line(1, debit=100), _line(2, credit=100)]
+    assert M.currency_problems("ZZPTS", 0, lines, listed_unit=None) == []
+    problems = M.currency_problems("ZZPTS", 0, [_line(1, debit=1.5), _line(2, credit=1.5)], listed_unit=None)
+    assert len(problems) == 2 and "ZZPTS has 0" in problems[0], problems
+
+
+def test_places_are_counted_on_the_value_as_frappe_stores_it():
+    """Finding 2: str(0.1 + 0.2) is 0.30000000000000004, 17 places. Frappe
+    stores a Currency to 9 places, so it is 0.3."""
+    total = 0.1 + 0.2
+    assert M._decimal_places(total) == 1
+    assert M._decimal_places("0.30000000000000004") == 1
+    assert M._decimal_places(100.004) == 3
+    assert M._decimal_places(1e-10) == 0
+    assert M._decimal_places(None) == 0
+    lines = [_line(1, debit=total), _line(2, credit=0.3)]
+    assert M.currency_problems("USD", 2, lines, listed_unit=2) == []
+
+
+def test_the_controller_passes_the_listed_iso_unit():
+    with open(CONTROLLER) as f:
+        tree = ast.parse(f.read())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_validate_lines_and_totals")
+    src = ast.unparse(fn)
+    assert "listed_unit=" in src and "reference_rows" in src, src
