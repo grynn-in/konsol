@@ -124,3 +124,29 @@ def test_desktop_tile_opens_the_workspace():
                   and getattr(n.targets[0], "id", None) == "add_to_apps_screen")
     workspace = _load(WORKSPACE)["name"].lower()
     assert screen[0]["route"] == f"/desk/{workspace}"
+
+
+ICON_LIST = os.path.join(APP_DIR, "tests", "data", "frappe_v16_lucide_icons.txt")
+
+
+def test_every_sidebar_icon_exists_in_frappe_v16():
+    """A sidebar icon Frappe does not ship renders as a blank (Deepak Pai, 5 Nov
+    2026: "some menu items on the left doesnt have icons"). Lucide renamed
+    bar-chart-3 to chart-column and check-circle to circle-check.
+
+    The list is the v16 image's frappe/public/icons/lucide.svg symbol ids:
+    grep -o 'id="icon-[a-z0-9-]*"' lucide.svg | sed 's/id="icon-//;s/"//' | sort -u
+    Regenerate it when the Frappe image moves."""
+    with open(ICON_LIST) as f:
+        known = {line.strip() for line in f if line.strip()}
+    assert len(known) > 1000, "icon list looks truncated"
+    missing = [(i["label"], i["icon"]) for i in _load(SIDEBAR)["items"]
+               if i.get("icon") and i["icon"] not in known]
+    assert missing == [], missing
+
+
+def test_sidebar_positions_follow_the_file_order():
+    """Two rows with the same idx are ordered arbitrarily: Builds showed before
+    IC balances on demo.konsolidat.com (5 Nov 2026) because both were 11."""
+    idx = [i["idx"] for i in _load(SIDEBAR)["items"]]
+    assert idx == sorted(idx) and len(idx) == len(set(idx)), idx
