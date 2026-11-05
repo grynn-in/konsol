@@ -700,3 +700,11 @@ def test_a_save_that_applies_nothing_reports_no_earlier_approval():
     doc.publish()
     doc.save()
     assert doc.flags.build_approval is None, doc.flags.build_approval
+
+
+def test_upsert_reports_the_build_approval_its_save_queued():
+    """A bundle row that lands Published names the approval, publish=True or not."""
+    for publish in (True, False):
+        _reset()
+        result = config_service.upsert_dimension(_spec_for("Published"), publish=publish)
+        assert result.get("build_approval") == "ZZ-BAPR-1", (publish, result)
