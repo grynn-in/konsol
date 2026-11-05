@@ -12,14 +12,8 @@ def setup_epm_settings(
     ch_user="default",
     ch_password="open_epm_dev",
     dbt_project_path="/home/frappe/dbt_project",
-    ch_check_user=None,
-    ch_check_password=None,
 ):
-    """Configure EPM Settings with ClickHouse connection details.
-
-    ``ch_check_user`` / ``ch_check_password``: the least-privilege user the
-    Measure expression check runs as (konsol#229). Given only when the stack
-    defines that user; left as they are otherwise."""
+    """Configure EPM Settings with ClickHouse connection details."""
     if not frappe.db.exists("DocType", "EPM Settings"):
         frappe.logger().warning("EPM Settings doctype not found. Skipping setup.")
         return
@@ -31,9 +25,6 @@ def setup_epm_settings(
     settings.clickhouse_user = ch_user
     settings.clickhouse_password = ch_password
     settings.dbt_project_path = dbt_project_path
-    if ch_check_user and ch_check_password:
-        settings.clickhouse_check_user = ch_check_user
-        settings.clickhouse_check_password = ch_check_password
     settings.flags.ignore_permissions = True
     settings.save()
     # #142: the configurator sets the connection only after install-app, so a
@@ -45,6 +36,21 @@ def setup_epm_settings(
         enqueue_reconcile_after_commit()
     frappe.db.commit()
     frappe.logger().info(f"EPM Settings configured: ClickHouse at {ch_host}:{ch_port}")
+
+
+def setup_measure_check_user(user, password):
+    """Set the ClickHouse user the Measure expression check runs as (konsol#229).
+
+    konsolidat's configurator calls this when the stack defines
+    ``konsol_measure_check`` (SELECT on epm_silver.silver_gl_entries only).
+    A call of its own, apart from setup_epm_settings, so a stack newer than
+    this konsol skips only this step."""
+    settings = frappe.get_single("EPM Settings")
+    settings.clickhouse_check_user = user
+    settings.clickhouse_check_password = password
+    settings.flags.ignore_permissions = True
+    settings.save()
+    frappe.db.commit()
 
 
 def _warehouse_target():

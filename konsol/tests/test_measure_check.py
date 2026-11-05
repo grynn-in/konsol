@@ -289,7 +289,7 @@ def test_a_save_that_does_not_publish_the_expression_is_not_dry_run():
 def test_epm_settings_holds_the_check_user_beside_the_main_connection():
     """Configured the way the main ClickHouse credentials are: EPM Settings,
     password in a Password field (never in git), set by the configurator
-    through install.setup_epm_settings."""
+    through install.setup_measure_check_user."""
     import ast
     import json
 
@@ -301,6 +301,9 @@ def test_epm_settings_holds_the_check_user_beside_the_main_connection():
 
     with open(os.path.join(_HERE, "..", "install.py")) as f:
         tree = ast.parse(f.read())
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "setup_epm_settings")
-    args = [a.arg for a in fn.args.args]
-    assert "ch_check_user" in args and "ch_check_password" in args, args
+    fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    # a call of its own (konsolidat's configurator), so a konsol without it
+    # fails only that call, not the main connection's setup
+    fn = fns.get("setup_measure_check_user")
+    assert fn, sorted(fns)
+    assert [a.arg for a in fn.args.args] == ["user", "password"]
