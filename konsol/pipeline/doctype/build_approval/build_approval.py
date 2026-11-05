@@ -11,12 +11,17 @@ import frappe
 from frappe.model.document import Document
 
 
-# Scope → risk mapping
+# Scope → risk mapping. Every build_scope option is declared here; an
+# undeclared scope is refused in before_save, never defaulted (konsol#301,
+# option #301-1, Deepak Pai, 11 Oct 2026).
 SCOPE_RISK = {
     "staging": "low",
     "actuals": "high",
     "scenarios": "high",
     "consolidation": "high",
+    # konsol#301: rebuilds only the management-hierarchy rollups
+    # (+tag:domain:reporting); no consolidated figure changes.
+    "reporting": "low",
     # konsol#182: a chart publish reclassifies every statement
     "chart": "high",
     "full": "high",
@@ -109,7 +114,17 @@ class BuildApproval(Document):
             # A rerun is a person's request and follows the normal risk rules
             # (konsol#305-D2-10).
             self.auto_approve_reason = reason = None
-        self.risk_level = SCOPE_RISK.get(self.build_scope, "high")
+        if self.build_scope not in SCOPE_RISK:
+            # konsol#301: refused, not defaulted to high. A scope nobody
+            # declared a risk for has had no decision about who approves it.
+            frappe.throw(
+                f"Build scope {self.build_scope!r} has no declared risk level, so "
+                f"konsol cannot tell whether it needs approval. Declared scopes: "
+                f"{', '.join(SCOPE_RISK)}.",
+                frappe.ValidationError,
+                title="Unknown build scope",
+            )
+        self.risk_level = SCOPE_RISK[self.build_scope]
 
         if not self.requested_by:
             self.requested_by = frappe.session.user
