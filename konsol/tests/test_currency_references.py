@@ -56,12 +56,15 @@ def test_the_shipped_list():
     m, _ = _module()
     rows = m.reference_rows()
     by_code = {r["currency_code"]: r for r in rows}
-    assert len(rows) == len(by_code) == 88, \
-        "the seed's 66 ISO codes, three dollar pegs, and konsol#190's 19"
+    assert len(rows) == len(by_code) == 180, \
+        "ISO 4217 List One (178) plus ANG and BGN, withdrawn (PR #384 review)"
     assert all(set(m.FIELDS) <= set(r) for r in rows)
-    unset = sorted(c for c, r in by_code.items() if m.is_unset(c, r["usd_log10"]))
-    assert not unset, unset
-    assert all(-5 <= r["usd_log10"] <= 10 for r in rows)
+    referenced = sorted(c for c, r in by_code.items() if not m.is_unset(c, r["usd_log10"]))
+    # the seed's 66 ISO codes, three dollar pegs, and konsol#190's 19 keep their
+    # references; a code added from List One has none until a site sets one,
+    # and a rate in it is refused as "no_reference", naming the field to set.
+    assert len(referenced) == 88, len(referenced)
+    assert all(-5 <= by_code[c]["usd_log10"] <= 10 for c in referenced)
     for code, value in {"USD": 0, "EUR": -0.03, "JPY": 2.17, "KRW": 3.13, "IDR": 4.21, "VND": 4.40}.items():
         assert abs(by_code[code]["usd_log10"] - value) < 0.005, code
     # pegged 1:1 to the dollar: truly 0, which reads as unset, so a negligible 0.001
@@ -108,7 +111,8 @@ def test_a_value_that_is_set_is_never_overwritten():
     assert sorted(out["filled"]) == ["IDR", "JPY", "VND"]
     # every other shipped code is missing from this stub site, so it is inserted, whole
     inserted = {d["currency_code"]: d for d in record["inserted"]}
-    assert len(inserted) == 88 - 5 and "PAB" in inserted and "EUR" not in inserted
+    # 180 listed, 13 with no ISO minor unit (never seeded), 5 on the stub site
+    assert len(inserted) == 180 - 13 - 5 and "PAB" in inserted and "EUR" not in inserted
     assert inserted["PAB"]["usd_log10"] == 0.001 and inserted["PAB"]["doctype"] == "ISO Currency"
     # a second run changes nothing more than the first left to do
     m2, record2 = _module({"EUR": -0.04, "JPY": 2.17})

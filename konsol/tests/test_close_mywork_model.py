@@ -1553,3 +1553,20 @@ def test_r52a_overdue_is_the_grids_expression_for_each_signoff_state():
 
 def test_r52a_signed_states_copy_matches_signoff_model():
     assert M.SIGNED_STATES == SM.SIGNED_STATES
+
+
+# --- PR #384 review (konsol#330): the ISO Currency minor-unit gap -------------
+
+_CURRENCY_GAP = {"code": "iso_currency_minor_unit_disagrees", "currencies": ["USD", "XDR"],
+                 "message": "ISO Currency USD, XDR: <m> (konsol#330)."}
+
+
+def test_iso_currency_gap_is_one_item_that_opens_iso_currency():
+    items = M.setup_gap_items(_facts(policy_gaps=[_CURRENCY_GAP]))
+    assert [i["id"] for i in items] == ["gap:iso_currency"]
+    item = items[0]
+    assert item["kind"] == "blocking" and item["owner"] == "EPM Admin"
+    assert item["action"] == {"desk": "/desk/iso-currency"}, "not Close Settings"
+    assert item["detail"] == _CURRENCY_GAP["message"]
+    assert item["title"] == "ISO Currency minor unit disagrees with ISO 4217"
+    assert "iso_currency" in M.GAPS
