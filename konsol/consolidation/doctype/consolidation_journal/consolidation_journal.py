@@ -89,7 +89,15 @@ class ConsolidationJournal(Document):
         """Balance check before send (#305-D2-1): the lines and the total
         must be clean before the totals or the currency are trusted. Exact
         to the cent, in total, not per entity (#305-D2-12; J01's
-        balance_problem already sums every line)."""
+        balance_problem already sums every line).
+
+        The currency is the root group's reporting currency, set first: no
+        line may carry more decimal places than its ISO Currency minor unit,
+        so the balance is exact in that unit (konsol#353)."""
+        root = self._root()
+        self.currency = root.reporting_currency
+        minor_unit = (frappe.db.get_value("ISO Currency", self.currency, "minor_unit")
+                      if self.currency else None)
         lines = [
             {
                 "idx": line.idx,
@@ -100,6 +108,7 @@ class ConsolidationJournal(Document):
             for line in (self.get("lines") or [])
         ]
         found = journal_model.line_problems(lines)
+        found.extend(journal_model.currency_problems(self.currency, minor_unit, lines))
         total_debit, total_credit = journal_model.totals(lines)
         problem = journal_model.balance_problem(total_debit, total_credit)
         if problem:
@@ -107,9 +116,6 @@ class ConsolidationJournal(Document):
         if found:
             frappe.throw("<br>".join(found))
         self.total_debit, self.total_credit = total_debit, total_credit
-
-        root = self._root()
-        self.currency = root.reporting_currency
 
         for line in (self.get("lines") or []):
             self._validate_line_entity(line, root)

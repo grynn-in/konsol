@@ -64,6 +64,9 @@ def _get_value_stub(root, nodes, accounts):
         if doctype == "Main Account":
             account = accounts.get(filters)
             return types.SimpleNamespace(**account) if account is not None else None
+        if doctype == "ISO Currency" and fieldname == "minor_unit":
+            # konsol#353: the journal currency's ISO minor unit
+            return {"USD": 2, "EUR": 2, "JPY": 0, "BHD": 3}.get(filters)
         raise AssertionError(f"unexpected get_value({doctype!r}, {filters!r})")
     return get_value
 
