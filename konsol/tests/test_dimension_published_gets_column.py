@@ -690,6 +690,9 @@ def test_deleting_a_published_dimension_is_refused():
         trash()
     except _ValidationError as exc:
         assert "Unpublish" in str(exc) and NAME in str(exc), str(exc)
+        # dimension.js puts Unpublish on its own button, not in an Actions menu
+        assert "press Unpublish" in str(exc), str(exc)
+        assert "Actions" not in str(exc), str(exc)
     else:
         raise AssertionError("a Published Dimension was deleted")
     assert _REBUILDS == [], _REBUILDS
