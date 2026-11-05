@@ -168,6 +168,7 @@ def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sy
         "_apply_fact_tables": lambda: ([], []),
         "_sync_budget_custom_fields": sync,
         "_request_schema_build": request_build,
+        "_build_approval_state": lambda name: "Pending Review",
     }
     return _load({"apply_schema", "apply_schema_for_publish", "queue_budget_custom_field_sync",
                   "_check_schema_role", "_apply_schema_steps", "_switch_to_administrator"}, ns)
@@ -216,7 +217,11 @@ def test_the_standalone_apply_schema_syncs_inline_as_administrator_and_restores_
     _assert_caller_restored(fr, form_dict)
     assert DBT_JOB not in [e["method"] for e in enqueued], enqueued
     assert requested == ["zz@example.com"], requested
-    assert summary["dbt_triggered"] is True and summary["build_approval"] == "ZZ-BAPR-1"
+    # konsol#170 review: a build is REQUESTED (a high-risk full refresh waits
+    # for review), so the summary names the approval and its state.
+    assert "dbt_triggered" not in summary, summary
+    assert summary["build_requested"] is True and summary["build_approval"] == "ZZ-BAPR-1"
+    assert summary["build_approval_state"] == "Pending Review", summary
 
 
 def test_the_caller_is_restored_when_the_standalone_sync_fails():
@@ -235,11 +240,12 @@ def test_run_dbt_zero_queues_no_dbt_build():
         enqueued, logged, synced = [], [], []
         ns = _publish_ns(enqueued, logged, synced, form_dict={"run_dbt": "0"})
         summary = ns["apply_schema"](run_dbt=value)
-        assert enqueued == [] and summary["dbt_triggered"] is False, repr(value)
+        assert enqueued == [] and summary["build_requested"] is False, repr(value)
+        assert summary["build_approval"] is None and "dbt_triggered" not in summary
     for value in (1, "1", True):
         enqueued, logged, synced = [], [], []
         ns = _publish_ns(enqueued, logged, synced, form_dict={"run_dbt": "1"})
-        assert ns["apply_schema"](run_dbt=value)["dbt_triggered"] is True, repr(value)
+        assert ns["apply_schema"](run_dbt=value)["build_requested"] is True, repr(value)
 
 
 def test_the_standalone_apply_schema_is_post_only():

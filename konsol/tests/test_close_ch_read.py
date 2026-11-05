@@ -217,3 +217,16 @@ def test_konsol_clickhouse_import_is_inside_rows_only():
     rows_fn = next(n for n in ast.walk(tree)
                     if isinstance(n, ast.FunctionDef) and n.name == "rows")
     assert any(_imports_konsol_clickhouse(n) for n in ast.walk(rows_fn))
+
+
+def test_rows_passes_clickhouse_settings_as_plain_params():
+    """konsol#170 review: a caller under a lock bounds the read server-side."""
+    calls = []
+
+    def fake_execute(sql, params=None):
+        calls.append(params)
+        return '{"data":[]}'
+
+    _with_fake_clickhouse(fake_execute, lambda: M.rows(
+        "SELECT 1 WHERE y = {fy:UInt16}", {"fy": 2025}, settings={"max_execution_time": 5}))
+    assert calls == [{"param_fy": 2025, "max_execution_time": 5}], calls
