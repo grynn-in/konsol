@@ -43,7 +43,8 @@ REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW":
 
 
 def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="approver@example.com",
-            flags=None, refs=None, previous=None, move_threshold_pct=50, magnitude_factor=None):
+            flags=None, refs=None, previous=None, move_threshold_pct=50, magnitude_factor=None,
+            amended=None):
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -88,6 +89,14 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
         get_single_value=lambda dt, field: {"rate_move_threshold": move_threshold_pct,
                                             "magnitude_warning_factor": magnitude_factor}[field],
     )
+    if amended is not None:
+        # PR #385 review: the rate an amendment amends, {name: {field: value}}.
+        def get_value(dt, name, fields=None, as_dict=False, **k):
+            row = amended.get(name)
+            if row is None:
+                return None
+            return types.SimpleNamespace(**{f: row.get(f) for f in fields}) if as_dict else row
+        frappe.db.get_value = get_value
     return frappe
 
 
@@ -476,6 +485,49 @@ def test_system_writes_are_not_asked_for_a_reason():
     assert _validate(_ctx={"magnitude_factor": 3}, _before=dict(source="ERP pre-fill", erp_quote=0.6607,
                                                                  quoted_per="10", source_note=None),
                      **prefill)[0]
+
+
+# -- PR #385 review: a reason given earlier does not silence a later wrong unit ----
+
+#: The saved draft: quoted per 100 (in line), with a reason given for a rate move.
+_SAVED_PER_100 = dict(source="Manual", from_currency="JPY", to_currency="USD", quote=0.6607,
+                      quoted_per="100", change_reason="Rate moved: BoJ intervention", source_note=None,
+                      erp_quote=None)
+
+
+def test_a_reason_from_an_earlier_save_does_not_cover_a_changed_quoted_per():
+    refused, _, msg, _ = _validate_full(_ctx={"magnitude_factor": 3}, _before=_SAVED_PER_100,
+                                        change_reason="Rate moved: BoJ intervention", **JPY_PER_10)
+    assert refused, "the reason was given for the per-100 quote, not this one"
+    assert "0.6607 USD per 100 JPY" in msg and "Reason for Change" in msg, msg
+    assert "given before" in msg, msg
+
+
+def test_a_reason_updated_with_the_quote_covers_it():
+    refused, _, msg, _ = _validate_full(_ctx={"magnitude_factor": 3}, _before=_SAVED_PER_100,
+                                        change_reason="Checked: this source quotes per 10", **JPY_PER_10)
+    assert not refused, msg
+
+
+def test_a_reason_saved_with_the_same_quote_still_covers_it():
+    before = dict(_SAVED_PER_100, quoted_per="10")
+    refused, _, msg, _ = _validate_full(_ctx={"magnitude_factor": 3}, _before=before,
+                                        change_reason="Rate moved: BoJ intervention", **JPY_PER_10)
+    assert not refused, msg
+
+
+def test_an_amendment_with_the_amended_reason_does_not_cover_a_changed_unit():
+    amended = {"GER-2099-12-JPY-USD-Closing-01": dict(_SAVED_PER_100)}
+    ctx = {"magnitude_factor": 3, "amended": amended}
+    fields = dict(JPY_PER_10, amended_from="GER-2099-12-JPY-USD-Closing-01")
+    refused, _, msg, _ = _validate_full(_ctx=ctx, change_reason="Rate moved: BoJ intervention", **fields)
+    assert refused and "given before" in msg, msg
+    refused, _, msg, _ = _validate_full(_ctx=ctx, change_reason="Amended: the source quotes per 10", **fields)
+    assert not refused, msg
+    # the amendment keeps the amended unit: the copied reason still covers it
+    refused, _, msg, _ = _validate_full(_ctx=ctx, change_reason="Rate moved: BoJ intervention",
+                                        **dict(fields, quoted_per="100"))
+    assert not refused, msg
 
 
 def test_an_amendment_must_say_why():
