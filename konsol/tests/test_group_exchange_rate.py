@@ -43,7 +43,7 @@ REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW":
 
 
 def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="approver@example.com",
-            flags=None, refs=None, previous=None, move_threshold_pct=50):
+            flags=None, refs=None, previous=None, move_threshold_pct=50, magnitude_factor=None):
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -77,13 +77,16 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
     frappe.session = types.SimpleNamespace(user=user)
     frappe.get_all = get_all
     frappe.clear_last_message = lambda: record.setdefault("cleared", []).append(1)
+    frappe.msgprint = lambda msg, *a, **k: record.setdefault("msgprint", []).append(msg)
     frappe.db = types.SimpleNamespace(
         sql=sql,
         exists=lambda dt, f=None: False,
         add_index=lambda *a, **k: record.setdefault("index", []).append((a, k)),
         # Close Settings' rate_move_threshold (konsol#305-D2-9): a bare Percent
-        # (50 means 50%), or None to test the undeclared case.
-        get_single_value=lambda dt, field, _pct=move_threshold_pct: _pct,
+        # (50 means 50%), or None to test the undeclared case; and its
+        # magnitude_warning_factor (konsol#179), None (undeclared) by default.
+        get_single_value=lambda dt, field: {"rate_move_threshold": move_threshold_pct,
+                                            "magnitude_warning_factor": magnitude_factor}[field],
     )
     return frappe
 
@@ -289,18 +292,25 @@ def test_group_accountants_draft_and_the_close_lead_approves():
 
 def _validate(**fields):
     """(refused, doc, message) for one validate() of a draft with ``fields``."""
+    return _validate_full(**fields)[:3]
+
+
+def _validate_full(**fields):
+    """(refused, doc, message, record): ``record`` holds what the controller's
+    frappe saw (``thrown``, ``msgprint``)."""
     ctx = fields.pop("_ctx", {})
     module, record = _controller(**ctx)
     d = _doc(module, **fields)
     rules = _rules_module(_frappe(
-        {}, **{k: v for k, v in ctx.items() if k in ("refs", "previous", "move_threshold_pct")}))
+        {}, **{k: v for k, v in ctx.items()
+               if k in ("refs", "previous", "move_threshold_pct", "magnitude_factor", "flags")}))
     message = None
     with _konsol(rules):
         try:
             d.validate()
         except Refused as e:
             message = str(e)
-    return message is not None, d, message
+    return message is not None, d, message, record
 
 
 def test_a_plausible_rate_is_accepted_and_labelled():
@@ -391,6 +401,81 @@ def test_a_move_over_half_needs_a_reason():
     assert refused and "Close Settings" in msg
     assert not _validate(_ctx={"previous": previous, "move_threshold_pct": None},
                           change_reason="Devaluation, 13 Dec", **ars)[0]
+
+
+# -- the magnitude warning (konsol#179) --------------------------------------------
+
+#: JPY -> USD quoted per 10 where 100 was meant: 0.990 decades off the
+#: references, so the hard 10x guard lets it through (measured, #179).
+JPY_PER_10 = dict(from_currency="JPY", to_currency="USD", quote=0.6607, quoted_per="10")
+
+
+def test_a_wrong_quoted_per_under_10x_passes_the_hard_guard():
+    """The gap #179 reports: the hard guard alone (no factor declared) saves it."""
+    assert _rules().magnitude_problem("JPY", "USD", 0.06607, REFS) is None
+    assert not _validate(**JPY_PER_10)[0]
+
+
+def test_the_magnitude_warning_names_the_quoted_per_that_fits():
+    r = _rules()
+    msg = r.magnitude_warning("JPY", "USD", 0.6607, 10, 3.0, REFS)
+    assert msg and "about 9.8x above" in msg and "Magnitude Warning Factor (3x" in msg, msg
+    assert "0.6607 USD per 100 JPY" in msg and "Reason for Change" in msg, msg
+    # below: EUR -> USD quoted per 10 where 1 was meant (0.997 decades, passes the hard guard)
+    assert r.magnitude_problem("EUR", "USD", 0.108, REFS) is None
+    msg = r.magnitude_warning("EUR", "USD", 1.08, 10, 3.0, REFS)
+    assert msg and "below" in msg and "1.08 USD per EUR" in msg, msg
+    # 10x too low quoted per 1: no listed unit (per 0.1) fits, so the quote is named
+    msg = r.magnitude_warning("CHF", "USD", 0.1135, 1, 3.0, REFS)
+    assert msg and "Quoted Per" in msg and "10x too low" in msg, msg
+    # a gap no unit explains (4x) names no unit
+    msg = r.magnitude_warning("EUR", "CHF", 3.8, 1, 3.0, REFS)
+    assert msg and "No Quoted Per brings it in line" in msg, msg
+
+
+def test_the_magnitude_warning_is_quiet_in_line_undeclared_or_refused():
+    r = _rules()
+    assert r.magnitude_warning("JPY", "USD", 0.6607, 100, 3.0, REFS) is None, "in line"
+    assert r.magnitude_warning("JPY", "USD", 0.6607, 10, None, REFS) is None, "undeclared: the caller reports"
+    assert r.magnitude_warning("JPY", "USD", 0.6607, 10, 12.0, REFS) is None, "within the factor"
+    assert r.magnitude_warning("JPY", "USD", 0.6607, 1, 3.0, REFS) is None, "100x: the hard guard's"
+    assert r.magnitude_warning("XAU", "USD", 2100, 1, 3.0, dict(REFS, XAU=None)) is None, "no reference: hard"
+
+
+def test_a_declared_factor_needs_a_reason_for_a_wrong_unit():
+    refused, _, msg, record = _validate_full(_ctx={"magnitude_factor": 3}, **JPY_PER_10)
+    assert refused and record["thrown"][-1] == "MandatoryError"
+    assert "0.6607 USD per 100 JPY" in msg, msg
+    refused, _, _, record = _validate_full(_ctx={"magnitude_factor": 3}, change_reason="Checked: per 10 is right",
+                                           **JPY_PER_10)
+    assert not refused and not record.get("msgprint")
+    refused, _, _, record = _validate_full(_ctx={"magnitude_factor": 3}, **dict(JPY_PER_10, quoted_per="100"))
+    assert not refused and not record.get("msgprint"), "an in-line rate needs no reason and warns nothing"
+
+
+def test_an_undeclared_factor_is_reported_never_refused():
+    refused, _, _, record = _validate_full(**JPY_PER_10)
+    assert not refused
+    assert any("Magnitude Warning Factor" in m and "Close Settings" in m for m in record.get("msgprint", [])), record
+
+
+def test_system_writes_are_not_asked_for_a_reason():
+    """The pre-fill has no person to give one: its summary lists the warning,
+    and the reason is asked for when a person saves or approves the draft.
+    The adoption records what a period was already translated at."""
+    prefill = dict(JPY_PER_10, source="ERP pre-fill", erp_quote=0.6607)
+    refused, _, msg, record = _validate_full(
+        _ctx={"magnitude_factor": 3, "flags": {"konsol_prefilling_rates": True}}, **prefill)
+    assert not refused and not record.get("msgprint"), msg
+    adopted = dict(JPY_PER_10, source="Adoption", erp_quote=0.6607)
+    refused, _, msg, _ = _validate_full(
+        _ctx={"magnitude_factor": 3, "flags": {"konsol_adopting_rates": True}, "user": "Administrator"},
+        **adopted)
+    assert not refused, msg
+    # the same pre-filled draft, saved later by a person, is asked
+    assert _validate(_ctx={"magnitude_factor": 3}, _before=dict(source="ERP pre-fill", erp_quote=0.6607,
+                                                                 quoted_per="10", source_note=None),
+                     **prefill)[0]
 
 
 def test_an_amendment_must_say_why():
@@ -1268,6 +1353,38 @@ def test_the_pre_fill_proposes_drafts_and_never_submits():
     assert _rules().PREFILL_ROLES == ("EPM Analyst", "EPM Admin", "System Manager")
 
 
+def test_the_pre_fill_drafts_a_rate_past_the_warning_factor_and_lists_it():
+    """konsol#179: the pre-fill has no person to give a Reason for Change, so
+    a quote past the declared Magnitude Warning Factor is still drafted, and
+    the summary lists the warning. The reason is asked for when a person
+    saves or approves the draft (test_system_writes_are_not_asked_for_a_reason)."""
+    inserted = []
+    frappe = _frappe({}, magnitude_factor=3)
+    frappe.only_for = lambda roles: None
+    frappe.get_all = lambda *a, **k: []
+
+    class Doc(dict):
+        def __init__(self, d):
+            super().__init__(d)
+            self.name = f"GER-{d['from_currency']}-{d['rate_type']}"
+
+        def insert(self):
+            inserted.append(dict(self))
+    frappe.get_doc = Doc
+    r = _rules_module(frappe, {
+        "required_pairs": lambda fy, fp: {("ARS", "CHF"), ("EUR", "CHF")},
+        # ARS -> CHF at 0.0035: about 4.9x above the references (0.000708), under the hard 10x
+        "erp_quote_rows": lambda as_of: [("d365_fo", "Closing", "ARS", "CHF", 0.0035, "2024-03-01"),
+                                         ("d365_fo", "Closing", "EUR", "CHF", 0.95, "2024-03-01")],
+        "usd_references": lambda codes: {c: REFS.get(c) for c in codes},
+    })
+    out = r.prefill_from_erp("2024", "3")
+    assert {d["from_currency"] for d in inserted} == {"ARS", "EUR"}, "both are drafted"
+    warned = dict(x.split(": ", 1) for x in out["warned"])
+    assert list(warned) == ["ARS → CHF Closing"], out
+    assert "Magnitude Warning Factor (3x" in warned["ARS → CHF Closing"]
+
+
 def test_the_pre_fill_in_action():
     inserted, record = [], {}
     frappe = _frappe(record)
@@ -1344,7 +1461,8 @@ def test_the_pre_fill_falls_back_to_the_tree_for_the_period():
     r = _rules_module(frappe, {"required_pairs": lambda fy, fp: set(),
                                "tree_pairs": lambda fy, fp: asked.append((fy, fp)) or set(),
                                "erp_quote_rows": lambda as_of: []})
-    assert r.prefill_from_erp("2099", "13") == {"created": [], "existing": [], "no_quote": [], "refused": []}
+    assert r.prefill_from_erp("2099", "13") == {"created": [], "existing": [], "no_quote": [], "refused": [],
+                                                "warned": []}
     assert asked == [(2099, 13)]
     assert str(r.period_end(2099, 2)) == "2099-02-28" and str(r.period_end(2099, 13)) == "2099-12-31"
     assert str(r.period_end(2096, 2)) == "2096-02-29" and str(r.period_end(2099, 0)) == "2099-01-31"

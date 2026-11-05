@@ -682,3 +682,27 @@ def test_commentary_threshold_problems_declared_values_pass():
     assert M.commentary_threshold_problems(5000, 0, "") == []
     assert M.commentary_threshold_problems(0, 10, "") == []
     assert M.commentary_threshold_problems(5000, 10, "Either is exceeded") == []
+
+
+# --- magnitude warning factor (konsol#179) ---------------------------------
+
+def test_magnitude_factor_blank_or_zero_is_undeclared():
+    assert M.magnitude_factor(None) is None
+    assert M.magnitude_factor(0) is None
+    assert M.magnitude_factor("") is None
+    assert M.magnitude_factor(3) == 3.0
+
+
+def test_magnitude_factor_must_sit_between_1_and_10():
+    """At 1 or below every rate would warn; at 10 or above none could, since
+    the hard guard refuses anything more than 10x off."""
+    for bad in (-2, 0.5, 1, 10, 25):
+        problems = M.magnitude_factor_problems(bad)
+        assert problems and "Magnitude Warning Factor" in problems[0], bad
+    for good in (None, 0, 1.5, 3, 9.9):
+        assert M.magnitude_factor_problems(good) == [], good
+
+
+def test_magnitude_warning_message_names_the_close_settings_field():
+    assert "Close Settings" in M.MAGNITUDE_WARNING_MESSAGE
+    assert "Magnitude Warning Factor" in M.MAGNITUDE_WARNING_MESSAGE

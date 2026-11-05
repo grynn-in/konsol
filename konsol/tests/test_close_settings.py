@@ -228,7 +228,7 @@ class _Row:
         return dict(self._values)
 
 
-def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
+def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0, magnitude_warning_factor=0,
          intercompany_declaration="", published=0, sql_log=None,
          statement_cta_account="", statement_result_account="", get_all_log=None,
          commentary_threshold_amount=0, commentary_threshold_percent=0,
@@ -273,6 +273,7 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0,
         doc.first_close_fiscal_period = period
         doc.self_approval = self_approval
         doc.rate_move_threshold = rate_move_threshold
+        doc.magnitude_warning_factor = magnitude_warning_factor
         doc.intercompany_declaration = intercompany_declaration
         doc.statement_cta_account = statement_cta_account
         doc.statement_result_account = statement_result_account
@@ -375,6 +376,31 @@ def test_negative_rate_move_threshold_is_refused():
         assert False, "expected a throw"
     except _Refused as e:
         assert "negative" in str(e).lower()
+
+
+def test_magnitude_warning_factor_field_no_default_or_reqd():
+    """konsol#179: declared by the site, never defaulted; it sits under
+    Rates, after the Rate Move threshold."""
+    doc = _doc()
+    by_name = {f["fieldname"]: f for f in doc["fields"]}
+    field = by_name.get("magnitude_warning_factor")
+    assert field, "magnitude_warning_factor is missing"
+    assert field["fieldtype"] == "Float" and field["label"] == "Magnitude Warning Factor"
+    assert "default" not in field and not field.get("reqd") and not field.get("permlevel")
+    assert "No default" in field.get("description", "")
+    order = doc["field_order"]
+    assert order.index("magnitude_warning_factor") == order.index("rate_move_threshold") + 1
+
+
+def test_magnitude_warning_factor_out_of_range_is_refused():
+    for bad in (1, 10, -3):
+        try:
+            _run(None, None, _default_period_row, magnitude_warning_factor=bad)
+            assert False, f"expected a throw for {bad}"
+        except _Refused as e:
+            assert "Magnitude Warning Factor" in str(e)
+    _run(None, None, _default_period_row, magnitude_warning_factor=3)
+    _run(None, None, _default_period_row, magnitude_warning_factor=0)
 
 
 def test_blank_and_zero_policies_are_undeclared_not_refused():
