@@ -196,6 +196,24 @@
   },
   {
    "added": 0,
+   "child": 1,
+   "collapsible": 0,
+   "hidden": 0,
+   "icon": "play",
+   "idx": 11,
+   "indent": 0,
+   "is_default_module": 0,
+   "keep_closed": 0,
+   "label": "Builds",
+   "link_to": "Build Approval",
+   "link_type": "DocType",
+   "open_in_new_tab": 0,
+   "show_arrow": 0,
+   "type": "Link",
+   "filters": "[[\"Build Approval\", \"workflow_state\", \"=\", \"Pending Review\"]]"
+  },
+  {
+   "added": 0,
    "child": 0,
    "collapsible": 1,
    "hidden": 0,
@@ -659,7 +677,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-11-05 22:00:00.000000",
+ "modified": "2026-11-05 23:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Konsol",

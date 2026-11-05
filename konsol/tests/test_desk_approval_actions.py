@@ -59,7 +59,19 @@ def _hooks_value(name):
                 and getattr(n.targets[0], "id", None) == name)
 
 
+#: Not an approval document (close_policy_model.APPROVAL_DOCTYPES) but approved
+#: the same way, in its form's Actions menu: every upload or setup change asks
+#: for a build, and a high-risk one waits in "Pending Review" (5 Nov 2026).
+BUILD = "Build Approval"
+
+
+def _listed():
+    return set(_approval_doctypes()) | {BUILD}
+
+
 def _pending_filter(doctype):
+    if doctype == BUILD:
+        return [doctype, "workflow_state", "=", "Pending Review"]
     if doctype in _workflow_doctypes():
         return [doctype, "status", "=", PENDING_STATE]
     return [doctype, "docstatus", "=", 0]
@@ -107,7 +119,7 @@ def test_the_sidebar_approvals_section_lists_what_is_waiting():
             break
         section.append(item)
     by_doctype = {i["link_to"]: i for i in section}
-    assert set(by_doctype) == set(_approval_doctypes()), sorted(by_doctype)
+    assert set(by_doctype) == _listed(), sorted(by_doctype)
     for doctype, item in by_doctype.items():
         assert item["link_type"] == "DocType" and item["child"] == 1
         # The doctype's own unfiltered link (Monthly close, Deals) claims it.
@@ -120,10 +132,13 @@ def test_home_shows_a_waiting_count_per_approval_doctype():
     shortcuts = {s["label"]: s for s in ws["shortcuts"]}
     assert "Approvals" not in shortcuts
     waiting = {s["link_to"]: s for s in ws["shortcuts"] if s.get("stats_filter")}
-    assert set(waiting) == set(_approval_doctypes()), sorted(waiting)
+    assert set(waiting) == _listed(), sorted(waiting)
     for doctype, s in waiting.items():
         assert s["type"] == "DocType" and s["doc_view"] == "List"
-        assert json.loads(s["stats_filter"]) == [_pending_filter(doctype) + [False]], doctype
+        # Four elements, never five: frappe.utils.cleanup_filters (utils.js) pops
+        # the whole filter when the first one has five, so a trailing `false`
+        # made every shortcut count all records (seen on the v16 copy, 5 Nov).
+        assert json.loads(s["stats_filter"]) == [_pending_filter(doctype)], doctype
         assert s["format"] == "{} waiting"
     blocks = json.loads(ws["content"])
     on_page = {b["data"]["shortcut_name"] for b in blocks if b["type"] == "shortcut"}
