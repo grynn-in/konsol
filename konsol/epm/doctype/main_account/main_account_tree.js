@@ -7,6 +7,16 @@
 frappe.treeview_settings["Main Account"] = {
 	breadcrumb: "EPM",
 	title: __("Group Chart of Accounts"),
+	// Code first, as an accountant reads a chart: "1000 · Cash and cash
+	// equivalents" (Frappe's default puts the code muted after the name).
+	// node.label is the code (the document name), node.title the account name.
+	get_label(node) {
+		const esc = frappe.utils.escape_html;
+		if (node.title && node.title !== node.label) {
+			return `<b>${esc(node.label)}</b> · ${esc(node.title)}`;
+		}
+		return esc(__(node.title || node.label));
+	},
 	fields: [
 		{ fieldtype: "Data", fieldname: "main_account", label: __("Account Code"), reqd: 1 },
 		{ fieldtype: "Data", fieldname: "account_name", label: __("Account Name"), reqd: 1 },
