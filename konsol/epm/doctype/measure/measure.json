@@ -24,7 +24,7 @@
       "label": "Expression",
       "reqd": 1,
       "in_list_view": 1,
-      "description": "SQL expression, e.g. sum(accounting_currency_amount)"
+      "description": "One SQL aggregate expression on one line, e.g. sum(accounting_currency_amount). When the Published trial-balance Dataset declares this measure, dbt compiles it into gold_trial_balance over epm_silver.silver_gl_entries, and konsol runs it there when you publish: a refusal lists the columns you can use."
     },
     {
       "fieldname": "col_break_1",
