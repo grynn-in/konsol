@@ -35,6 +35,7 @@ from frappe.utils import add_months, getdate, nowdate
 
 from konsol.business_combination_model import derive_acquired_balances, problems, split_by_weights, totals
 from konsol.clickhouse import execute, sync_doctype_after_commit
+from konsol.close.reject_reason import refuse_reasonless_reject
 from konsol.consolidation.doctype.business_combination_acquired_balance.business_combination_acquired_balance import (  # noqa: E501
     BusinessCombinationAcquiredBalance,
 )
@@ -115,6 +116,9 @@ class BusinessCombination(Document):
     # -- lifecycle -----------------------------------------------------------
 
     def validate(self):
+        # konsol#310: a Reject without approval_api.reject's reason is
+        # refused before anything else is computed.
+        refuse_reasonless_reject(self)
         period = self._acquisition_period()
         root = self._root()
         # konsol#205 (IFRS 3.19): each deal may elect its NCI measurement; blank
