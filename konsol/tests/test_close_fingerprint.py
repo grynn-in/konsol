@@ -302,7 +302,8 @@ def test_a_failed_read_voids_nothing_and_says_so_on_the_build():
 
 
 def test_a_build_with_no_pipeline_run_is_named_and_its_failure_logged():
-    """tasks._run_dbt_build_background (schema_apply) has no Pipeline Run."""
+    """A build with no Pipeline Run is still named (konsol#170 removed the
+    legacy schema-apply job that had none)."""
     site = _Site()
     _warehouse(site)
     mod, model = _load(site)

@@ -13,6 +13,7 @@ assertion_run.py's source against the stub, so the "already in progress" guard
 and the role gate under test are the product's, not a copy.
 """
 import ast
+import contextlib
 import importlib.util
 import json
 import os
@@ -220,7 +221,17 @@ def _call(site, fn, *args):
     fingerprint = types.ModuleType("konsol.close.fingerprint")
     fingerprint.stamp_new_run = lambda doc: None
     mods["konsol.close"].fingerprint = fingerprint
+    # konsol#170: trigger_close_run takes the single-flight gate; the gate is
+    # tested in test_single_flight_gaps.py, so here it lets the start through.
+    orchestrator = types.ModuleType("konsol.orchestrator")
+    orchestrator_api = types.ModuleType("konsol.orchestrator.api")
+    orchestrator_api.single_flight_lock = contextlib.nullcontext
+    orchestrator_api._assert_no_active_run = lambda: None
+    orchestrator.api = orchestrator_api
+    mods["konsol"].orchestrator = orchestrator
     mods.update({
+        "konsol.orchestrator": orchestrator,
+        "konsol.orchestrator.api": orchestrator_api,
         "frappe": frappe,
         "konsol.close.fingerprint": fingerprint,
         "konsol.close.timefmt": timefmt,

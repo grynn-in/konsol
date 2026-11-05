@@ -327,38 +327,47 @@ def trigger_close_run(fiscal_year=None, fiscal_period=None):
     the warehouse and produce confusing interleaved state).
     """
     frappe.only_for(("EPM Admin", "EPM Analyst", "System Manager"))
-    if fiscal_year not in (None, "") and fiscal_period not in (None, "", 0):
-        period = period_row(fiscal_year, fiscal_period)
-        if period["status"] != OPEN:
-            frappe.throw(frappe._("FY{0} {1} is {2}; reopen it to run the checks. "
-                                  "Nothing was started.").format(
-                                      fiscal_year, period["code"], period["status"]),
-                         title=frappe._("Period not open"))
-    active = frappe.db.get_value("Assertion Run", {"status": ["in", ("Queued", "Running")]}, "name")
-    if active:
-        frappe.throw(
-            frappe._("A close run is already in progress: {0}. Wait for it to finish before starting another.").format(active),
-            title=frappe._("Run already in progress"),
-        )
+    # konsol#170: `dbt test` shares the dbt project with every build, so the
+    # start takes the same single-flight gate as start_run and a governed
+    # build: under the named lock, refuse while any dbt run is active, and
+    # insert this run (which then counts as active) before releasing it.
+    # The lock commits on entry, so it comes before the locking period read.
+    from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
 
-    doc = frappe.get_doc(
-        {
-            "doctype": "Assertion Run",
-            "status": "Queued",
-            "fiscal_year": fiscal_year,
-            "fiscal_period": fiscal_period,
-            "triggered_by": frappe.session.user,
-            "title": frappe.utils.now(),
-        }
-    )
-    # konsol#338: the fingerprint of the numbers these checks will read, so a
-    # later build voids the sign-off only if they changed. A failed read is
-    # written on the run (fingerprint_error); sign_off_close refuses it.
-    from konsol.close import fingerprint
-    fingerprint.stamp_new_run(doc)
-    doc.flags.started_by_trigger = True
-    doc.insert(ignore_permissions=True)
-    frappe.db.commit()
+    with single_flight_lock():
+        if fiscal_year not in (None, "") and fiscal_period not in (None, "", 0):
+            period = period_row(fiscal_year, fiscal_period)
+            if period["status"] != OPEN:
+                frappe.throw(frappe._("FY{0} {1} is {2}; reopen it to run the checks. "
+                                      "Nothing was started.").format(
+                                          fiscal_year, period["code"], period["status"]),
+                             title=frappe._("Period not open"))
+        active = frappe.db.get_value("Assertion Run", {"status": ["in", ("Queued", "Running")]}, "name")
+        if active:
+            frappe.throw(
+                frappe._("A close run is already in progress: {0}. Wait for it to finish before starting another.").format(active),
+                title=frappe._("Run already in progress"),
+            )
+        _assert_no_active_run()
+
+        doc = frappe.get_doc(
+            {
+                "doctype": "Assertion Run",
+                "status": "Queued",
+                "fiscal_year": fiscal_year,
+                "fiscal_period": fiscal_period,
+                "triggered_by": frappe.session.user,
+                "title": frappe.utils.now(),
+            }
+        )
+        # konsol#338: the fingerprint of the numbers these checks will read, so a
+        # later build voids the sign-off only if they changed. A failed read is
+        # written on the run (fingerprint_error); sign_off_close refuses it.
+        from konsol.close import fingerprint
+        fingerprint.stamp_new_run(doc)
+        doc.flags.started_by_trigger = True
+        doc.insert(ignore_permissions=True)
+        frappe.db.commit()
     frappe.enqueue(
         "konsol.consolidation.doctype.assertion_run.assertion_run.run_close_assertions",
         queue="long",

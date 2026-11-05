@@ -8,8 +8,9 @@ The paths, enumerated from every place a build is marked Completed:
 - ``tasks._finish_governed_build`` — a governed build (Build Approval).
 - ``orchestrator.run.run_pipeline`` — an orchestrator run.
 - ``tasks.run_pipeline`` — Pipeline Run's own trigger (Airbyte + dbt build).
-- ``tasks._run_dbt_build_background`` — the deprecated dbt build that
-  schema_apply still queues.
+
+``tasks._run_dbt_build_background``, the deprecated build schema_apply used to
+queue, was removed by konsol#170: Apply Schema now requests a governed build.
 
 Each check runs only on success, after the build's own status is committed
 (the check commits or rolls back on its own), and is a statement of the
@@ -27,7 +28,6 @@ PATHS = (
     (TASKS, "_finish_governed_build"),
     (ORCH_RUN, "run_pipeline"),
     (TASKS, "run_pipeline"),
-    (TASKS, "_run_dbt_build_background"),
 )
 
 

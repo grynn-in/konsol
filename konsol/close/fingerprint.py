@@ -99,7 +99,9 @@ def _build_label(pipeline_run, build_approval):
         return "Build Approval %s (Pipeline Run %s)" % (build_approval, pipeline_run)
     if pipeline_run:
         return "Pipeline Run %s" % pipeline_run
-    # tasks._run_dbt_build_background, queued by schema_apply with no run.
+    # A build with no Pipeline Run. The legacy schema-apply job that had
+    # none was removed (konsol#170); kept so a caller that passes none is
+    # still named.
     return "a dbt build with no Pipeline Run"
 
 

@@ -93,26 +93,51 @@ def single_flight_lock(timeout: int = _SINGLE_FLIGHT_TIMEOUT):
         frappe.db.sql("SELECT RELEASE_LOCK(%s)", (_SINGLE_FLIGHT_LOCK,))
 
 
+#: Assertion Run states in which its ``dbt test`` is queued or running
+#: (konsol#170). The close assertions shell dbt against the same project dir.
+ACTIVE_ASSERTION_STATES = ("Queued", "Running")
+
+
+def active_dbt_holder():
+    """The active run that holds the dbt project, as "<doctype> <name>", or None.
+
+    A Pipeline Run in ``ACTIVE_RUN_STATES``, or an Assertion Run in
+    ``ACTIVE_ASSERTION_STATES`` (konsol#170: before, a build did not see an
+    assertion run, and an assertion run did not see a build). The one answer
+    to "is dbt busy", read by ``_assert_no_active_run`` and by the reaper's
+    follow-up sweep.
+    """
+    import frappe
+
+    for doctype, states in (("Pipeline Run", ACTIVE_RUN_STATES),
+                            ("Assertion Run", ACTIVE_ASSERTION_STATES)):
+        existing = frappe.get_all(
+            doctype,
+            filters={"status": ["in", list(states)]},
+            fields=["name"],
+            limit=1,
+        )
+        if existing:
+            return f"{doctype} {existing[0]['name']}"
+    return None
+
+
 def _assert_no_active_run() -> None:
     """Single-flight guard (#64a): refuse a new run while one is already active.
 
     Two concurrent runs would shell out ``dbt`` against the one shared project dir
     at once (corrupting ``target/`` and racing incremental models). ``start_run``
-    (and, transitively, the scheduler tick that calls it) and the legacy
-    ``pipeline_run.trigger_pipeline`` are gated here. Retry / resume do NOT pass
-    through this guard — they re-enqueue an *existing* run.
+    (and, transitively, the scheduler tick that calls it), the legacy
+    ``pipeline_run.trigger_pipeline``, governed builds and the close assertions
+    (konsol#170) are gated here. Retry / resume do NOT pass through this guard —
+    they re-enqueue an *existing* run.
     """
     import frappe
 
-    existing = frappe.get_all(
-        "Pipeline Run",
-        filters={"status": ["in", list(ACTIVE_RUN_STATES)]},
-        fields=["name"],
-        limit=1,
-    )
-    if existing:
+    holder = active_dbt_holder()
+    if holder:
         frappe.throw(
-            f"A pipeline run is already active ({existing[0]['name']}). Wait for it "
+            f"A dbt run is already active ({holder}). Wait for it "
             "to finish or cancel it before starting another.",
             frappe.ValidationError,
         )
@@ -376,6 +401,24 @@ def cancel_run(run_name: str) -> str:
 
     check_epm_admin()
     run_doc = frappe.get_doc("Pipeline Run", run_name)
+    # konsol#170: a run whose dbt is running keeps the project until dbt ends.
+    # Cancelled here, it stopped counting as active (_assert_no_active_run),
+    # another build started beside it, and the first dbt's finish then wrote
+    # over the Cancelled status. Refused instead; the reaper still fails a
+    # run that is truly stuck. Chosen under Deepak Pai's standing rule of
+    # 5 Nov 2026 (product, configurable, not opinionated); HMD on konsol#170.
+    running_step = next(
+        (row.step_id for row in (run_doc.get("steps") or []) if row.status == "Running"),
+        None,
+    )
+    if run_doc.status == "Transforming" or (run_doc.status == "Running" and running_step):
+        what = f"its step {running_step} is running" if running_step else "its dbt build is running"
+        frappe.throw(
+            f"Pipeline Run {run_name} cannot be cancelled now: {what}, and dbt "
+            "would keep running after the cancel while another build started "
+            "beside it. Wait for it to finish.",
+            frappe.ValidationError,
+        )
     run_doc.status = "Cancelled"
     run_doc.save(ignore_permissions=True)
     frappe.db.commit()

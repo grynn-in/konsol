@@ -377,10 +377,12 @@ def _build_queue_busy():
     next to another approval collides with it. So the sweep waits for idle."""
     import frappe
 
-    from konsol.orchestrator.api import ACTIVE_RUN_STATES
+    from konsol.orchestrator.api import active_dbt_holder
 
+    # active_dbt_holder counts an active Assertion Run too (konsol#170): a
+    # follow-up started beside one would fail its start the same way.
     return bool(
-        frappe.get_all("Pipeline Run", filters={"status": ["in", list(ACTIVE_RUN_STATES)]}, limit=1)
+        active_dbt_holder()
         or frappe.get_all("Build Approval", filters={"workflow_state": ["in", ["Approved", "Running"]]}, limit=1)
     )
 
