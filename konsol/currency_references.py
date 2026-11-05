@@ -62,6 +62,9 @@ def _stored():
 #: count once submitted; a child row counts under a submitted parent of its
 #: own doctype (Frappe keeps a child's docstatus equal to its parent's).
 #: Business Combination Acquired Balance links no currency, so it is absent.
+#: Historical Equity Rate's from/to currency are virtual (#373): computed from
+#: the Entity's functional currency and the group root's reporting currency,
+#: both counted above, and get_all cannot read a virtual field.
 _SUBMITTED = {"docstatus": 1}
 _USES = (
     ("Entity", "functional_currency", None, "Entity"),
@@ -69,8 +72,6 @@ _USES = (
      "Consolidation Group"),
     ("Group Exchange Rate", "from_currency", _SUBMITTED, "Group Exchange Rate"),
     ("Group Exchange Rate", "to_currency", _SUBMITTED, "Group Exchange Rate"),
-    ("Historical Equity Rate", "from_currency", _SUBMITTED, "Historical Equity Rate"),
-    ("Historical Equity Rate", "to_currency", _SUBMITTED, "Historical Equity Rate"),
     ("Trial Balance Submission", "currency", _SUBMITTED, "Trial Balance Submission"),
     ("Consolidation Journal", "currency", _SUBMITTED, "Consolidation Journal"),
     ("Business Combination", "consideration_currency", _SUBMITTED, "Business Combination"),
@@ -88,7 +89,7 @@ def used_currencies():
     """{code: [where, ...]} for every currency a number is computed in: an
     Entity's functional currency, a Consolidation Group root's reporting
     currency, and the currencies of a submitted Group Exchange Rate,
-    Historical Equity Rate, Trial Balance Submission, Consolidation Journal,
+    Trial Balance Submission, Consolidation Journal,
     Business Combination or Business Disposal (PR #384 re-review)."""
     used = {}
     for doctype, field, filters, label in _USES:

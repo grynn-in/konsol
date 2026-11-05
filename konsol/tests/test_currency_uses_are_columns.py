@@ -32,9 +32,11 @@ def _field(doctype, fieldname):
     return None
 
 
-def test_every_currency_use_is_a_stored_link_to_iso_currency():
+def test_every_currency_use_is_a_stored_currency_link():
     for doctype, fieldname in _uses():
         df = _field(doctype, fieldname)
         assert df is not None, f"{doctype}.{fieldname} does not exist"
         assert not df.get("is_virtual"), f"{doctype}.{fieldname} is virtual: get_all cannot read it"
-        assert df.get("options") == "ISO Currency", f"{doctype}.{fieldname} does not link ISO Currency"
+        # Consolidation Journal links Frappe's Currency doctype; its codes are
+        # the same ISO codes, so it is a use all the same.
+        assert df.get("options") in ("ISO Currency", "Currency"), f"{doctype}.{fieldname} is not a currency link"
