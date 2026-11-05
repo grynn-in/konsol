@@ -294,6 +294,13 @@ _USED_SOURCES = {
     ("Group Exchange Rate", "to_currency"),
     ("Trial Balance Submission", "currency"),
     ("Consolidation Journal", "currency"),
+    ("Business Combination", "consideration_currency"),
+    ("Business Combination Consideration", "currency"),
+    ("Business Combination Cost", "currency"),
+    ("Business Disposal", "proceeds_currency"),
+    ("Business Disposal Proceeds", "currency"),
+    ("Historical Equity Rate", "from_currency"),
+    ("Historical Equity Rate", "to_currency"),
 }
 
 
@@ -382,9 +389,17 @@ def test_used_reads_roots_and_submitted_documents_only():
     refs, calls = _references({"USD": (2, 0)}, {})
     refs.used_currencies()
     seen = {d: f for d, _, f, _ in calls if d != "ISO Currency"}
-    assert seen["Consolidation Group"] == {"parent_consolidation_group": ["is", "not set"]}
-    for doctype in ("Group Exchange Rate", "Trial Balance Submission", "Consolidation Journal"):
+    # A group's reporting currency is read from its node with no entity
+    # (consolidation_journal._root), not from a node with no parent.
+    assert seen["Consolidation Group"] == {"data_area_id": ["is", "not set"]}
+    for doctype in ("Group Exchange Rate", "Trial Balance Submission", "Consolidation Journal",
+                    "Business Combination", "Business Disposal", "Historical Equity Rate"):
         assert seen[doctype] == {"docstatus": 1}, (doctype, seen[doctype])
+    # A child row counts only under a submitted parent of its own doctype.
+    for child, parent in (("Business Combination Consideration", "Business Combination"),
+                          ("Business Combination Cost", "Business Combination"),
+                          ("Business Disposal Proceeds", "Business Disposal")):
+        assert seen[child] == {"docstatus": 1, "parenttype": parent}, (child, seen[child])
     assert {(d) for d, _, _, _ in calls} >= {d for d, _ in _USED_SOURCES}
 
 
