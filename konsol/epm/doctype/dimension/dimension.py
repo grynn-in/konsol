@@ -252,6 +252,32 @@ class Dimension(Document):
         check_epm_admin()
         apply_and_rebuild(self, action)
 
+    def on_trash(self):
+        """Refuse to delete a Published Dimension (konsol#300, option A).
+
+        A delete applies no schema, so the dimension's ``var('dimensions')``
+        entry and its Budget Line, Budget Annual Input and Consolidation
+        Journal Line Custom Fields would outlive it, and dbt would keep
+        building a dimension konsol no longer has. Unpublish is the one path
+        that removes them and requests the rebuild, and it is a tracked
+        status change, so the retirement stays on the record. The config
+        bundle's prune already unpublishes instead of deleting
+        (``config_service._remove_config_entity``).
+
+        Rejected: applying the schema from ``after_delete`` (option B), a
+        second retire path whose Build Approval would point at a deleted row.
+        Chosen under Deepak Pai's standing rule of 5 Nov 2026 (product,
+        configurable, not opinionated).
+        """
+        if self.status == "Published":
+            frappe.throw(
+                f"Dimension {self.name} is Published, so konsol will not delete "
+                f"it: its dbt vars entry and its budget and journal fields would "
+                f"stay behind. Unpublish it first (Actions > Unpublish), then "
+                f"delete it.",
+                frappe.ValidationError,
+            )
+
     def _schema_action(self):
         """"Publish", "Unpublish" or None: what this save does to the schema.
 
