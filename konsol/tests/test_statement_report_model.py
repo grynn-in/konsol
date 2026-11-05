@@ -357,6 +357,35 @@ def test_a_non_ok_prior_year_with_no_message_names_its_state():
     assert "Prior year" in text and "error" in text
 
 
+def _tb(fiscal_year, fiscal_period):
+    return {"fiscal_year": fiscal_year, "fiscal_period": fiscal_period, "main_account": "4100",
+            "adjustment_type": "entity", "amount": 1.0, "null_rows": 0}
+
+
+def test_prior_with_rows_keeps_a_prior_year_that_has_rows_up_to_its_period():
+    prior = _prior()
+    assert R.prior_with_rows(prior, [_tb(2024, 3)]) is prior
+
+
+def test_prior_with_rows_refuses_an_ok_prior_year_with_no_rows():
+    """FY2022 P12 live: state ok, no warehouse rows, every line 0.00."""
+    prior = _prior()
+    refused = R.prior_with_rows(prior, [])
+    assert refused["state"] == "no_rows" and refused["statement"] is None
+    assert refused["message"] == "No rows in the warehouse for FY2024 up to P07."
+    assert all(row["prior_year"] is None for row in R.rows(_payload(), refused))
+
+
+def test_prior_with_rows_ignores_rows_of_an_earlier_year_or_a_later_period():
+    prior = _prior()
+    assert R.prior_with_rows(prior, [_tb(2023, 12), _tb(2024, 8)])["state"] == "no_rows"
+
+
+def test_prior_with_rows_passes_a_non_ok_prior_through():
+    prior = {"state": "not_built", "message": "x", "statement": None}
+    assert R.prior_with_rows(prior, None) is prior
+
+
 def test_an_ok_prior_year_is_named_in_the_message_with_its_basis():
     text = R.message(_payload(), _prior())
     assert "Prior year: FY2024 P07" in text

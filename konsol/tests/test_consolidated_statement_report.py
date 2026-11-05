@@ -6,6 +6,7 @@ field accepts) used to resolve to the root's code and silently return the
 whole root group's statement. A member row must be refused by name.
 """
 import ast
+import importlib.util
 import os
 import types
 
@@ -72,14 +73,39 @@ class _ValidationError(Exception):
     pass
 
 
-def _execute_with(get_statement):
-    """Exec the module's functions against stub frappe/statement_api and a
-    stub row model that records the prior payload it was handed."""
+_spec = importlib.util.spec_from_file_location(
+    "statement_report_model_for_report_test", os.path.join(APP_DIR, "close", "statement_report_model.py"))
+REAL_MODEL = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(REAL_MODEL)
+
+
+def _tb(fy, fp):
+    return {"fiscal_year": fy, "fiscal_period": fp, "main_account": "4100",
+            "adjustment_type": "entity", "amount": 1.0, "null_rows": 0}
+
+
+def _ok(fy, tb_rows):
+    payload = {"state": "ok", "message": None, "statement": {"sections": []},
+               "period": {"fiscal_year": fy, "fiscal_period": 12}}
+    return payload, {"tb_rows": tb_rows}
+
+
+def _execute_with(statement):
+    """Exec the module's functions against stub frappe/statement_api
+    (``statement(fy, fp, group)`` -> ``(payload, reads)``, as
+    ``statement_api._statement``) and a row model that records the prior
+    payload it was handed (``prior_with_rows`` is the real one)."""
     tree = ast.parse(open(PATH).read())
     fns = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
-    seen = {}
+    seen = {"calls": []}
+
+    def _statement(fy, fp, group):
+        seen["calls"].append((fy, fp, group))
+        return statement(fy, fp, group)
 
     class Model:
+        prior_with_rows = staticmethod(REAL_MODEL.prior_with_rows)
+
         @staticmethod
         def columns():
             return ["cols"]
@@ -104,36 +130,44 @@ def _execute_with(get_statement):
         _dict=_Dict, throw=throw, ValidationError=_ValidationError,
         clear_last_message=lambda: None,
         db=types.SimpleNamespace(get_value=lambda *a, **k: None))
-    env = {"frappe": frappe, "statement_api": types.SimpleNamespace(get_statement=get_statement),
-           "statement_report_model": Model}
+    api = types.SimpleNamespace(get_statement=lambda *a: _statement(*a)[0], _statement=_statement)
+    env = {"frappe": frappe, "statement_api": api, "statement_report_model": Model}
     exec(compile(ast.Module(body=fns, type_ignores=[]), PATH, "exec"), env)
     return env["execute"], seen
 
 
 def test_execute_reads_the_prior_year_for_the_same_period_and_group():
-    calls = []
-
-    def get_statement(fy, fp, group):
-        calls.append((fy, fp, group))
-        return {"state": "ok", "fy": fy}
-
-    execute, seen = _execute_with(get_statement)
+    execute, seen = _execute_with(lambda fy, fp, group: _ok(int(fy), [_tb(int(fy), 12)]))
     result = execute({"fiscal_year": "2024", "fiscal_period": 12, "consolidation_group": "ZZG"})
-    assert calls == [("2024", 12, "ZZG"), (2023, 12, "ZZG")]
-    assert seen["rows"] == seen["message"] == {"state": "ok", "fy": 2023}
+    assert seen["calls"] == [("2024", 12, "ZZG"), (2023, 12, "ZZG")]
+    assert seen["rows"] is seen["message"]
+    assert seen["rows"]["state"] == "ok" and seen["rows"]["period"]["fiscal_year"] == 2023
     assert result == (["cols"], ["rows"], "msg")
 
 
 def test_execute_still_renders_when_the_prior_year_read_is_refused():
-    """FY2022 not declared: get_statement throws for the prior year; the
-    report renders this year with the refusal as the prior payload's message."""
-    def get_statement(fy, fp, group):
+    """The prior year is not a declared period: the read throws; the report
+    renders this year with the refusal as the prior payload's message."""
+    def statement(fy, fp, group):
         if fy == 2023:
             raise _ValidationError("FY2023 P12 is not a declared period.")
-        return {"state": "ok"}
+        return _ok(int(fy), [_tb(int(fy), 12)])
 
-    execute, seen = _execute_with(get_statement)
+    execute, seen = _execute_with(statement)
     assert execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "ZZG"}) \
         == (["cols"], ["rows"], "msg")
     assert seen["rows"]["state"] == "error"
     assert seen["rows"]["message"] == "FY2023 P12 is not a declared period."
+
+
+def test_an_ok_prior_year_with_no_warehouse_rows_is_not_shown_as_zero():
+    """Measured live 5 Nov 2026: FY2022 P12 for ECL_GROUP is state ok with
+    no rows at all, every line 0.00. The prior year must be blank with the
+    reason, not a column of zeros."""
+    execute, seen = _execute_with(
+        lambda fy, fp, group: _ok(int(fy), [_tb(int(fy), 12)] if int(fy) == 2023 else []))
+    execute({"fiscal_year": 2023, "fiscal_period": 12, "consolidation_group": "ZZG"})
+    assert seen["rows"]["state"] != "ok"
+    assert "No rows in the warehouse for FY2022" in seen["rows"]["message"]
+
+
