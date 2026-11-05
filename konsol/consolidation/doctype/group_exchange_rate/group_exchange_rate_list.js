@@ -24,6 +24,9 @@ frappe.listview_settings["Group Exchange Rate"] = {
 							];
 							(out.no_quote || []).forEach((k) => lines.push(__("No ERP quote: {0}", [k])));
 							(out.refused || []).forEach((k) => lines.push(__("Refused: {0}", [k])));
+							(out.warned || []).forEach((k) =>
+								lines.push(__("Drafted, needs a Reason for Change before approval: {0}", [k]))
+							);
 							frappe.msgprint(lines.join("<br>"), __("Pre-fill from ERP"));
 							listview.refresh();
 						},

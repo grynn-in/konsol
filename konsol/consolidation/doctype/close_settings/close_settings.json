@@ -54,6 +54,12 @@
    "description": "A group rate that moves more than this from the previous approved rate or the ERP quote needs a Reason for Change. No default; 0 is undeclared (konsol#305-D2-9)."
   },
   {
+   "fieldname": "magnitude_warning_factor",
+   "fieldtype": "Float",
+   "label": "Magnitude Warning Factor",
+   "description": "A group rate more than this many times above or below what the ISO Currency references imply needs a Reason for Change, and the message names the Quoted Per that would bring it in line (a wrong unit is the usual cause). More than 1 and less than 10, e.g. 3; a rate more than 10x off is always refused. No default: while blank, every rate save shows a warning and nothing is refused (konsol#179)."
+  },
+  {
    "fieldname": "intercompany_section",
    "fieldtype": "Section Break",
    "label": "Intercompany"
@@ -147,6 +153,7 @@
   "self_approval",
   "rates_section",
   "rate_move_threshold",
+  "magnitude_warning_factor",
   "intercompany_section",
   "intercompany_declaration",
   "statements_section",
