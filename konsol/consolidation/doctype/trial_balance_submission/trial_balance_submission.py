@@ -43,6 +43,7 @@ optional and only ever confirms the form: a row that names a different basis
 refuses the file, since one file holds one basis. A blank cell is "not given".
 """
 
+import contextlib
 import csv
 import importlib.util
 import io
@@ -685,6 +686,14 @@ RELAND_JOB = (
     "konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission.run_reland")
 RELAND_JOB_ID = "konsol-reland-submitted-tb"
 RELAND_JOB_TIMEOUT = 3600
+#: The job's own MariaDB named lock (PR #381 re-review, finding 3): the
+#: request-time check and deduplicate run before the enqueue, which happens
+#: after commit, so two applies close together can both be queued.
+RELAND_LOCK = "konsol_tb_reland"
+RELAND_BUSY = "Another Rebuild Warehouse Rows is already running; this request did nothing."
+#: Listed against every document the job did not reach once a build became
+#: active (finding 1).
+RELAND_BUILD_STARTED = "a build started; run Rebuild Warehouse Rows again after it"
 
 
 @frappe.whitelist(methods=["POST"])
@@ -753,31 +762,63 @@ def _reland_job_queued():
 
 
 def run_reland(names=None, remove_orphans=0):
-    """The re-land job: ``_reland`` under the lock builds take.
+    """The re-land job: ``_reland``, one document at a time under the lock
+    builds take.
 
     A build reading epm_raw while a batch's rows are deleted and re-inserted
-    would consolidate half a trial balance, so the job holds the pipeline
-    single-flight lock and refuses while a run is active, as a governed
-    build's start does. The build it requests is asked for after the lock is
-    released. It runs as the user who asked (frappe.enqueue carries the
-    user), so every Close Event and Comment names them.
+    would consolidate half a trial balance. A governed build takes the
+    pipeline single-flight lock only around its active-run check and its
+    Pipeline Run insert, waiting 10 s for it. So the job holds that lock
+    per document, around the document's audit and ClickHouse work (seconds),
+    never for the whole job (minutes, which failed every build that started
+    meanwhile: PR #381 re-review, finding 1). Under it, a Pipeline Run that
+    became active stops the loop; the documents not reached are listed. At
+    the start the lock and the check are taken once, for a fast refusal.
+
+    The job also holds its own named lock for its whole run (finding 3): a
+    second job ends at once and says so. Whatever was re-landed before a
+    failure still gets its build (finding 2). The build is requested after
+    every lock is released. It runs as the user who asked (frappe.enqueue
+    carries the user), so every Close Event and Comment names them.
     """
     from konsol.orchestrator.api import _assert_no_active_run, single_flight_lock
 
-    try:
+    got = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (RELAND_LOCK, 0))
+    if not (got and got[0] and got[0][0] == 1):
+        out = {"busy": True}
+        _notify_reland(out)
+        frappe.db.commit()
+        return out
+
+    @contextlib.contextmanager
+    def build_guard():
         with single_flight_lock():
             _assert_no_active_run()
-            out = _reland(names, remove_orphans, apply=True, commit=True)
-    except Exception as e:
-        frappe.db.rollback()
-        _notify_reland({"error": _error_text(e)})
+            yield
+
+    progress = {}
+    try:
+        try:
+            with single_flight_lock():
+                _assert_no_active_run()
+            out = _reland(names=names, remove_orphans=remove_orphans, apply=True, commit=True,
+                          guard=build_guard, progress=progress)
+        except Exception as e:
+            frappe.db.rollback()
+            if progress.get("build_for"):
+                _request_reland_build(progress["build_for"])
+            _notify_reland({"error": _error_text(e), "relanded": progress.get("relanded") or [],
+                            "orphans_removed": progress.get("orphans_removed") or 0,
+                            "failed": progress.get("failed") or []})
+            frappe.db.commit()
+            raise
+        if out.get("build_for"):
+            _request_reland_build(out["build_for"])
+        _notify_reland(out)
         frappe.db.commit()
-        raise
-    if out.get("build_for"):
-        _request_reland_build(out["build_for"])
-    _notify_reland(out)
-    frappe.db.commit()
-    return out
+        return out
+    finally:
+        frappe.db.sql("SELECT RELEASE_LOCK(%s)", (RELAND_LOCK,))
 
 
 def _error_text(e):
@@ -846,10 +887,10 @@ def _read_for_reland(name):
     return doc, rows
 
 
-def _reland(names=None, remove_orphans=0, apply=False, commit=False):
+def _reland(names=None, remove_orphans=0, apply=False, commit=False, guard=None, progress=None):
     """The plan, and with ``apply`` the re-land itself (run_reland's work).
 
-    Order of work, and why (PR #381 review):
+    Order of work, and why (PR #381 review and re-review):
 
     1. Every candidate's file is read back first (``_read_for_reland``), in
        stored mode: a file that landed is not judged again by today's intake
@@ -857,35 +898,50 @@ def _reland(names=None, remove_orphans=0, apply=False, commit=False):
        the document recorded, is listed under ``failed`` and its claim and
        rows are left exactly as they are (finding 2).
     2. Orphan periods are gated open before any write.
-    3. Per document, under a locking read of its docstatus (a cancel since
-       the plan waits or is seen and skipped): a ``tb_relanded`` Close Event
-       and, when its period is open, a data change that voids a sign-off over
-       the changed numbers (finding 3), both in MariaDB before ClickHouse is
-       touched. Re-landing stays allowed in a closed period: it restores what
-       the document says. Then the claim is removed and the batch landed
-       from the rows in hand (``_land_batch``, on_submit's code), so a landing
-       that fails leaves the batch unclaimed (listed next run), never claimed
-       over half its rows. A failure is listed and commented; its event stays.
-       With ``commit`` (the job) each document commits on its own, so one
-       failure never loses the audit of those already re-landed.
+    3. Per document, inside ``guard()`` (run_reland's: the build lock, then
+       a refusal while a Pipeline Run is active; default: nothing):
+       a locking read of its docstatus (a cancel since the plan waits or is
+       seen and skipped); a ``tb_relanded`` Close Event and, when its period
+       is open, a data change that voids a sign-off over the changed numbers
+       (finding 3). With ``commit`` (the job) that audit commits before
+       ClickHouse is touched, so it survives a ClickHouse failure, and the
+       docstatus is read with a lock again. Then the claim is removed and
+       the batch landed from the rows in hand (``_land_batch``, on_submit's
+       code), so a landing that fails leaves the batch unclaimed (listed
+       next run), never claimed over half its rows. A failure is listed and
+       commented; its event stays. Each document then commits on its own.
+       Re-landing stays allowed in a closed period: it restores what the
+       document says.
     4. Orphan claims go only with ``remove_orphans``, the way a cancel
-       removes a claim, recorded as a data change first.
+       removes a claim: per period inside ``guard()``, each candidate's
+       document read with a lock and judged again (orphan_verdict) right
+       before the delete, since the plan's locks were released by the first
+       commit (re-review, finding 4). One that is no longer an orphan is
+       listed under ``kept``. The removal is recorded as a data change first.
 
+    When ``guard()`` refuses (a build became active), the loop stops: every
+    document and orphan not reached is listed under ``failed`` with
+    RELAND_BUILD_STARTED, and the call ends normally.
+
+    ``progress`` (a dict) is filled in place and returned, so a caller that
+    sees an exception still knows what was re-landed (re-review, finding 2).
     ``build_for`` names the document the caller requests one build for.
     """
+    guard = guard or contextlib.nullcontext
     found = _reland_plan(names)
-    out = {
+    out = progress if progress is not None else {}
+    out.update({
         "applied": bool(apply),
         "reland": found["reland"],
         "orphans": found["orphans"],
-        "kept": found["kept"],
+        "kept": list(found["kept"]),
         "matched": len(found["matched"]),
         "not_submitted": found["not_submitted"],
         "relanded": [],
         "failed": [],
         "orphans_removed": 0,
         "build_for": None,
-    }
+    })
 
     orphans = found["orphans"] if apply and _truthy(remove_orphans) else []
     # Gate every orphan's period before any write: a closed period on the
@@ -905,50 +961,106 @@ def _reland(names=None, remove_orphans=0, apply=False, commit=False):
     if not apply:
         return out
 
-    for doc, rows, why in ready:
-        if frappe.db.get_value("Trial Balance Submission", doc.name, "docstatus", for_update=True) != 1:
-            out["failed"].append((doc.name, "no longer submitted"))
-            continue
-        _record_relanded(doc, why)
-        try:
-            execute(
-                f"ALTER TABLE {CONTROL_TABLE} DELETE "
-                f"WHERE batch_id = '{_sql_str(doc.batch_id)}' "
-                "SETTINGS mutations_sync = 1"
-            )
-            doc._land_batch(rows)
-        except Exception as e:  # noqa: BLE001 — listed and commented, never hidden
-            message = _error_text(e)
-            out["failed"].append((doc.name, message))
-            doc.add_comment("Info", "Re-landing the warehouse rows failed: %s. The batch may have "
-                            "no claim now; run Rebuild Warehouse Rows again (konsol#283)." % message)
-        else:
-            doc.add_comment("Info", "Warehouse rows re-landed from the attached file (konsol#283).")
-            out["relanded"].append(doc.name)
-        if commit:
-            frappe.db.commit()
+    def changed(name):
+        if not out["build_for"]:
+            out["build_for"] = name
 
-    if orphans:
-        by_period = {}
-        for o in orphans:
-            by_period.setdefault(
-                (o["fiscal_year"], o["fiscal_period"], o["data_area_id"]), []).append(o)
-        for (fiscal_year, fiscal_period, entity), group in sorted(by_period.items()):
+    def stop(names_left):
+        out["failed"].extend((name, RELAND_BUILD_STARTED) for name in names_left)
+
+    for i, (doc, rows, why) in enumerate(ready):
+        with contextlib.ExitStack() as held:
+            try:
+                held.enter_context(guard())
+            except Exception:  # noqa: BLE001 — a build became active: listed, never hidden
+                stop([d.name for d, _r, _w in ready[i:]]
+                     + [o["submission_name"] or o["batch_id"] for o in orphans])
+                return out
+            if not _still_submitted(doc.name):
+                out["failed"].append((doc.name, "no longer submitted"))
+                continue
+            _record_relanded(doc, why)
+            if commit:
+                # The audit survives a ClickHouse failure; the commit releases
+                # the row lock, so the docstatus is locked and read again.
+                frappe.db.commit()
+                if not _still_submitted(doc.name):
+                    out["failed"].append((doc.name, "no longer submitted"))
+                    continue
+            try:
+                execute(
+                    f"ALTER TABLE {CONTROL_TABLE} DELETE "
+                    f"WHERE batch_id = '{_sql_str(doc.batch_id)}' "
+                    "SETTINGS mutations_sync = 1"
+                )
+                doc._land_batch(rows)
+            except Exception as e:  # noqa: BLE001 — listed and commented, never hidden
+                message = _error_text(e)
+                out["failed"].append((doc.name, message))
+                doc.add_comment("Info", "Re-landing the warehouse rows failed: %s. The batch may have "
+                                "no claim now; run Rebuild Warehouse Rows again (konsol#283)." % message)
+            else:
+                doc.add_comment("Info", "Warehouse rows re-landed from the attached file (konsol#283).")
+                out["relanded"].append(doc.name)
+                changed(doc.name)
+            if commit:
+                frappe.db.commit()
+
+    by_period = {}
+    for o in orphans:
+        by_period.setdefault(
+            (o["fiscal_year"], o["fiscal_period"], o["data_area_id"]), []).append(o)
+    periods = sorted(by_period.items())
+    for i, ((fiscal_year, fiscal_period, entity), group) in enumerate(periods):
+        with contextlib.ExitStack() as held:
+            try:
+                held.enter_context(guard())
+            except Exception:  # noqa: BLE001 — a build became active: listed, never hidden
+                stop([o["submission_name"] or o["batch_id"] for _p, g in periods[i:] for o in g])
+                return out
+            still = []
+            for o in group:
+                why = _orphan_verdict_now(o)
+                if why is None:
+                    still.append(o)
+                else:
+                    out["kept"].append((o["submission_name"], why))
+            if not still:
+                continue
             _record_data_change(
                 fiscal_year, fiscal_period,
                 "Warehouse claims with no submitted TB removed: %s"
-                % ", ".join(o["submission_name"] or o["batch_id"] for o in group),
+                % ", ".join(o["submission_name"] or o["batch_id"] for o in still),
                 entity=entity or None)
-        batches = ", ".join(f"'{_sql_str(o['batch_id'])}'" for o in orphans)
-        execute(
-            f"ALTER TABLE {CONTROL_TABLE} DELETE WHERE batch_id IN ({batches}) "
-            "SETTINGS mutations_sync = 1"
-        )
-        out["orphans_removed"] = len(orphans)
-
-    changed = out["relanded"] or [o["submission_name"] for o in orphans]
-    out["build_for"] = changed[0] if changed else None
+            batches = ", ".join(f"'{_sql_str(o['batch_id'])}'" for o in still)
+            execute(
+                f"ALTER TABLE {CONTROL_TABLE} DELETE WHERE batch_id IN ({batches}) "
+                "SETTINGS mutations_sync = 1"
+            )
+            out["orphans_removed"] += len(still)
+            changed(still[0]["submission_name"] or still[0]["batch_id"])
+            if commit:
+                frappe.db.commit()
     return out
+
+
+def _still_submitted(name):
+    """A locking read of ``name``'s docstatus: a submit or cancel in flight
+    is waited for, and one committed since is seen."""
+    return frappe.db.get_value("Trial Balance Submission", name, "docstatus", for_update=True) == 1
+
+
+def _orphan_verdict_now(claim):
+    """orphan_verdict on the claim's document read with a lock now, right
+    before its delete (re-review, finding 4)."""
+    from konsol.tb_reland_model import orphan_verdict
+
+    document = None
+    if claim["submission_name"]:
+        document = frappe.db.get_value(
+            "Trial Balance Submission", claim["submission_name"], ["docstatus", "batch_id"],
+            as_dict=True, for_update=True)
+    return orphan_verdict(claim, document)
 
 
 def _period_is_open(fiscal_year, fiscal_period):
@@ -979,7 +1091,12 @@ def _notify_reland(out):
     """Tell the user who asked how the job ended: a Notification Log (the
     bell), since they may have left the page. The per-document detail is on
     each document's Comments."""
-    if out.get("error"):
+    if out.get("busy"):
+        subject = RELAND_BUSY
+    elif out.get("error") and (out.get("relanded") or out.get("orphans_removed")):
+        subject = "Rebuild Warehouse Rows stopped after re-landing %d and removing %d claims: %s" % (
+            len(out.get("relanded") or []), out.get("orphans_removed") or 0, out["error"])
+    elif out.get("error"):
         subject = "Rebuild Warehouse Rows stopped: %s" % out["error"]
     else:
         subject = "Rebuild Warehouse Rows: %d re-landed, %d claims removed, %d failed" % (
