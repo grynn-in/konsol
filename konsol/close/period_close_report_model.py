@@ -82,11 +82,23 @@ def _checks_text(checks):
     return "%s (%s)" % (latest["status"], "; ".join(notes)) if notes else latest["status"]
 
 
+#: A table cell, not a document: the first few blockers, each cut short,
+#: and how many more there are (live, one row ran to ~2,800 characters).
+_BLOCKERS_SHOWN = 3
+_BLOCKER_CHARS = 200
+
+
+def _clip(text):
+    return text if len(text) <= _BLOCKER_CHARS else text[:_BLOCKER_CHARS - 1].rstrip() + "…"
+
+
 def _blockers(signoff):
     messages = list(signoff["gates"]["messages"])
     if signoff["action"] == BLOCKED and signoff["label"] not in messages:
         messages.insert(0, signoff["label"])
-    return "; ".join(messages)
+    shown = [_clip(m) for m in messages[:_BLOCKERS_SHOWN]]
+    more = len(messages) - len(shown)
+    return "; ".join(shown) + (" … and %d more" % more if more > 0 else "")
 
 
 def _commentary(signoff, group):
