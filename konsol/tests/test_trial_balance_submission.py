@@ -1698,30 +1698,50 @@ def test_land_batch_replaces_the_rows_then_claims():
     assert "'b1', 'TBS-1', 'ZZA', 2099, 3, 2, now(), 'Period movement'" in log[3]
 
 
-class _RelandDoc:
-    def __init__(self, name, log, fail=None):
-        self.name, self._log, self._fail = name, log, fail
-        self.batch_id = "b" + name[-1]
+#: A file as every trial balance on a site from before konsol#252 was landed:
+#: no currency column, which today's intake refuses (PR #381 review, finding 1).
+OLD_FILE = ("main_account,debit,credit,description,partner_data_area_id,source_upload\n"
+            "1010,100.50,0,Cash,,u1\n2010,0,100.50,AP,ZZB,u1\n")
 
-    def _land_batch(self):
+
+class _RelandDoc:
+    """A submitted TB as the re-land sees it: its file read back, then landed."""
+
+    def __init__(self, name, log, fail=None, read_fail=None, rows=2):
+        self.name, self._log, self._fail, self._read_fail = name, log, fail, read_fail
+        self.batch_id = "b" + name[-1]
+        self.data_area_id, self.fiscal_year, self.fiscal_period = "ZZA", 2099, int(name[-1])
+        self.row_count, self.total_debit, self.total_credit = rows, 100.5, 100.5
+
+    def _read_landed_file(self):
+        self._log.append(("read", self.name))
+        if self._read_fail:
+            raise _Thrown(self._read_fail)
+        return _m.parse_tb_csv(OLD_FILE, (), stored=True)
+
+    def _assert_dimension_columns(self, dims):
+        pass
+
+    def _land_batch(self, rows=None):
+        assert rows is not None, "the re-land lands the rows it read, never a second parse"
         if self._fail:
             raise _Thrown(self._fail)
-        self._log.append(("land", self.name))
+        self._log.append(("land", self.name, len(rows)))
 
     def add_comment(self, kind, text):
         self._log.append(("comment", self.name, kind, text))
 
 
-def _wire_reland(docs, claims, landed, docstatus=None, fail=None):
+def _wire_reland(docs, claims, landed, docstatus=None, fail=None, read_fail=None, existing=None):
     """docs: {name: row_count} submitted; claims: [(batch, name, fy, fp)];
-    landed: {batch: n}. Returns (log, gates, changes)."""
+    landed: {batch: n}; existing: {name: {docstatus, batch_id}} for the
+    documents a claim names (absent: no such document). Returns (log, gates, changes)."""
     log, gates, changes = [], [], []
     rows = [{"name": n, "batch_id": "b" + n[-1], "row_count": c} for n, c in docs.items()]
 
     def get_all(doctype, filters=None, fields=None, **kw):
         assert doctype == "Trial Balance Submission" and filters["docstatus"] == 1
-        names = filters.get("name")
-        return [r for r in rows if names is None or r["name"] in names[1]]
+        return list(rows)
 
     def execute(sql, *a, **k):
         if sql.startswith("SELECT") and _m.CONTROL_TABLE in sql:
@@ -1735,7 +1755,10 @@ def _wire_reland(docs, claims, landed, docstatus=None, fail=None):
         return ""
 
     def get_value(doctype, name, field, **kw):
-        assert kw.get("for_update") is True
+        assert kw.get("for_update") is True, "a locking read: it waits for a submit or cancel in flight"
+        if isinstance(field, list):
+            log.append(("locked", name))
+            return (existing or {}).get(name)
         return (docstatus or {}).get(name, 1 if name in docs else None)
 
     # The stub module itself, as _wire does: other tests set attributes on it.
@@ -1743,13 +1766,17 @@ def _wire_reland(docs, claims, landed, docstatus=None, fail=None):
     _m.frappe.get_all = get_all
     _m.frappe.throw = _raise
     _m.frappe.PermissionError = _PermissionError
-    _m.frappe.db = types.SimpleNamespace(get_value=get_value)
-    _m.frappe.get_doc = lambda doctype, name: _RelandDoc(name, log, (fail or {}).get(name))
+    _m.frappe.db = types.SimpleNamespace(get_value=get_value, commit=lambda: log.append(("commit",)))
+    _m.frappe.get_doc = lambda doctype, name: _RelandDoc(
+        name, log, (fail or {}).get(name), (read_fail or {}).get(name), rows=docs.get(name, 2))
+    _m.frappe.enqueue = lambda *a, **k: log.append(("enqueue", a, k))
     _m.execute = execute
     _m.ensure_raw_tables = lambda: None
     _m.assert_open = lambda fy, fp, action="run": gates.append((fy, fp, action))
     _m._record_data_change = lambda fy, fp, text, entity=None: changes.append((fy, fp, text))
+    _m._record_relanded = lambda doc, why: log.append(("event", doc.name))
     _m._request_reland_build = lambda name: log.append(("build", name))
+    _m._reland_job_queued = lambda: False
     del _ADMIN_CHECKS[:]
     return log, gates, changes
 
@@ -1774,52 +1801,185 @@ def test_reland_dry_run_reports_and_writes_nothing():
     assert [tuple(r) for r in out["reland"]] == [("TBS-1", "no claim in the warehouse")]
     assert [o["batch_id"] for o in out["orphans"]] == ["b9"]
     assert out["matched"] == 1
-    assert log == [] and gates == [] and changes == []
-
-
-def test_reland_apply_re_lands_comments_and_requests_one_build():
-    log, gates, changes = _wire_reland(
-        {"TBS-1": 2, "TBS-2": 2}, claims=[("b2", "TBS-2", 2099, 1)], landed={"b2": 7})
-    out = _m.reland_submitted(apply=1)
-    assert out["applied"] is True and sorted(out["relanded"]) == ["TBS-1", "TBS-2"]
-    # the existing claim goes first: a failed landing leaves the batch
-    # unclaimed (missing, and reported next run), never claimed over half its rows
-    first = log.index(("land", "TBS-2"))
-    drops = [i for i, e in enumerate(log) if e[0] == "ch" and e[1].startswith(
-        f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id = 'b2'")]
-    assert drops and drops[0] < first
-    assert [e[1] for e in log if e[0] == "comment"] == ["TBS-1", "TBS-2"]
-    assert [e for e in log if e[0] == "build"] == [("build", "TBS-1")]
-    # restoring what a submitted document already says is not a data change:
-    # no period gate, no sign-off voided
+    assert not [e for e in log if e[0] in ("ch", "land", "comment", "event", "enqueue", "build")], log
     assert gates == [] and changes == []
-    assert out["orphans_removed"] == 0
 
 
-def test_reland_lists_a_document_whose_file_cannot_be_read_and_carries_on():
-    log, gates, changes = _wire_reland({"TBS-1": 2, "TBS-2": 2}, claims=[], landed={},
-                                       fail={"TBS-1": "Attach a trial balance CSV first"})
-    out = _m.reland_submitted(apply=1)
-    assert [tuple(f) for f in out["failed"]] == [("TBS-1", "Attach a trial balance CSV first")]
+def test_reland_dry_run_lists_a_document_whose_file_cannot_be_read():
+    """The dry run reads each file it would re-land, so the dialog names an
+    unreadable one before anything is written."""
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={},
+                                       read_fail={"TBS-1": "File not found"})
+    out = _m.reland_submitted()
+    assert [tuple(f) for f in out["failed"]] == [("TBS-1", "File not found")]
+
+
+def test_reland_apply_queues_one_job_on_the_long_queue_and_writes_nothing_itself():
+    """PR #381 review, finding 5: a restore re-lands every TB on the site,
+    minutes of ClickHouse mutations, longer than a web request may run."""
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={})
+    out = _m.reland_submitted(names='["TBS-1"]', apply=1, remove_orphans="1")
+    assert out["queued"] is True and out["applied"] is False
+    queued = [e for e in log if e[0] == "enqueue"]
+    assert len(queued) == 1, log
+    args, kw = queued[0][1], queued[0][2]
+    assert (args[0] if args else kw["method"]) == _m.RELAND_JOB
+    assert kw["queue"] == "long" and kw["enqueue_after_commit"] is True
+    assert kw["job_id"] == _m.RELAND_JOB_ID and kw["deduplicate"] is True
+    assert kw["timeout"] == _m.RELAND_JOB_TIMEOUT
+    assert kw["names"] == ["TBS-1"] and kw["remove_orphans"] == 1
+    assert not [e for e in log if e[0] in ("ch", "land", "comment", "event", "build")], log
+
+
+def test_reland_apply_refuses_while_a_rebuild_is_already_queued_or_running():
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={})
+    _m._reland_job_queued = lambda: True
+    try:
+        _m.reland_submitted(apply=1)
+        assert False, "expected a refusal"
+    except _Thrown as e:
+        assert "already" in str(e)
+    assert not [e for e in log if e[0] == "enqueue"]
+
+
+def test_the_job_re_lands_under_the_build_lock_and_requests_the_build_after():
+    """The job takes the lock builds take and refuses while a build runs: a
+    build reading epm_raw while its rows are deleted and re-inserted would
+    consolidate half a trial balance."""
+    log = []
+
+    class _Lock:
+        def __enter__(self):
+            log.append("lock")
+
+        def __exit__(self, *exc):
+            log.append("unlock")
+
+    api = types.ModuleType("konsol.orchestrator.api")
+    api.single_flight_lock = lambda: _Lock()
+    api._assert_no_active_run = lambda: log.append("no active run")
+    orchestrator = types.ModuleType("konsol.orchestrator")
+    orchestrator.__path__ = []
+    saved = {n: sys.modules.get(n) for n in ("konsol.orchestrator", "konsol.orchestrator.api")}
+    sys.modules.update({"konsol.orchestrator": orchestrator, "konsol.orchestrator.api": api})
+    _wire_reland({}, [], {})
+    _m._reland = lambda names=None, remove_orphans=0, apply=False, commit=False: (
+        log.append(("reland", names, remove_orphans, apply, commit))
+        or {"relanded": ["TBS-1"], "orphans_removed": 0, "failed": [], "build_for": "TBS-1"})
+    _m._notify_reland = lambda out: log.append("notify")
+    _m._request_reland_build = lambda name: log.append(("build", name))
+    try:
+        _m.run_reland(names=["TBS-1"], remove_orphans=1)
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    assert log[:3] == ["lock", "no active run", ("reland", ["TBS-1"], 1, True, True)], log
+    assert log.index("unlock") < log.index(("build", "TBS-1")), log
+    assert "notify" in log
+
+
+def test_reland_reads_every_file_before_it_touches_a_claim_then_audits_then_lands():
+    log, gates, changes = _wire_reland(
+        {"TBS-1": 2, "TBS-2": 2}, claims=[("b2", "TBS-2", 2099, 2)], landed={"b2": 7})
+    out = _m._reland(apply=True)
+    assert out["applied"] is True and sorted(out["relanded"]) == ["TBS-1", "TBS-2"]
+    reads = [i for i, e in enumerate(log) if e[0] == "read"]
+    first_ch = next(i for i, e in enumerate(log) if e[0] == "ch")
+    assert len(reads) == 2 and max(reads) < first_ch, log
+    for name, batch in (("TBS-1", "b1"), ("TBS-2", "b2")):
+        event = log.index(("event", name))
+        drop = next(i for i, e in enumerate(log) if e[0] == "ch" and e[1].startswith(
+            f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id = '{batch}'"))
+        land = log.index(("land", name, 2))
+        # the Close Event is in MariaDB before ClickHouse is touched; the
+        # claim goes before the rows, so a failed landing is never claimed
+        assert event < drop < land, log
+    assert [e[1] for e in log if e[0] == "comment"] == ["TBS-1", "TBS-2"]
+    assert not [e for e in log if e[0] == "build"], "the job requests the build, once, after the lock"
+    assert out["build_for"] == "TBS-1"
+    assert gates == []
+
+
+def test_a_document_whose_file_cannot_be_read_keeps_its_claim_and_rows():
+    """PR #381 review, finding 2: the claim used to go first and the file was
+    read afterwards, so an unreadable file dropped a submitted TB out of
+    consolidation."""
+    log, gates, changes = _wire_reland(
+        {"TBS-1": 2, "TBS-2": 2}, claims=[("b1", "TBS-1", 2099, 1)], landed={"b1": 5},
+        read_fail={"TBS-1": "Could not read the trial balance file: Missing column(s) currency"})
+    out = _m._reland(apply=True)
+    assert [tuple(f) for f in out["failed"]] == [
+        ("TBS-1", "Could not read the trial balance file: Missing column(s) currency")]
     assert out["relanded"] == ["TBS-2"]
-    assert [e[1] for e in log if e[0] == "comment"] == ["TBS-2"]
+    assert not [e for e in log if e[0] == "ch" and "'b1'" in e[1]], log
+    assert ("event", "TBS-1") not in log
+
+
+def test_a_file_that_is_not_what_the_document_landed_keeps_its_claim():
+    log, gates, changes = _wire_reland({"TBS-1": 3}, claims=[("b1", "TBS-1", 2099, 1)], landed={"b1": 5})
+    out = _m._reland(apply=True)
+    assert out["relanded"] == []
+    assert out["failed"] and out["failed"][0][0] == "TBS-1"
+    assert "the file has 2 rows, the document recorded 3" in out["failed"][0][1]
+    assert not [e for e in log if e[0] == "ch"], log
+
+
+def test_a_landing_that_fails_is_listed_and_commented_and_stays_audited():
+    log, gates, changes = _wire_reland({"TBS-1": 2, "TBS-2": 2}, claims=[], landed={},
+                                       fail={"TBS-1": "ClickHouse said no"})
+    out = _m._reland(apply=True, commit=True)
+    assert [tuple(f) for f in out["failed"]] == [("TBS-1", "ClickHouse said no")]
+    assert out["relanded"] == ["TBS-2"]
+    assert ("event", "TBS-1") in log
+    comment = next(e for e in log if e[0] == "comment" and e[1] == "TBS-1")
+    assert "failed" in comment[3] and "ClickHouse said no" in comment[3]
+    # each document's audit commits with its ClickHouse work, not at the end
+    assert log.count(("commit",)) == 2
 
 
 def test_reland_skips_a_document_cancelled_since_the_plan():
     log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={}, docstatus={"TBS-1": 2})
-    out = _m.reland_submitted(apply=1)
+    out = _m._reland(apply=True)
     assert out["relanded"] == [] and [tuple(s) for s in out["failed"]] == [("TBS-1", "no longer submitted")]
-    assert [e for e in log if e[0] == "build"] == []
+    assert not [e for e in log if e[0] in ("ch", "event")]
+    assert out["build_for"] is None
+
+
+def test_the_re_land_is_a_close_event_and_a_data_change_when_the_period_is_open():
+    """PR #381 review, finding 3: closed-period numbers changed with only a
+    Comment. Re-landing stays allowed in a closed period (it restores what
+    the document says), but it is audited, and in an open period a sign-off
+    over the changed numbers is voided."""
+    for is_open, expect_change in ((True, True), (False, False)):
+        log, changes = [], []
+        _m._period_is_open = lambda fy, fp, _o=is_open: _o
+        _m._record_data_change = lambda fy, fp, text, entity=None: changes.append((fy, fp, text, entity))
+        doc = _tb_doc()
+        _with_close_event(log, lambda: _m._record_relanded(doc, "no claim in the warehouse"))
+        events = [e for e in log if e[0] == "event"]
+        assert [e[1] for e in events] == ["tb_relanded"], log
+        assert events[0][2] == (2099, 3, "Trial Balance Submission", "TBS-00042")
+        assert events[0][3]["entity"] == "ZZA"
+        assert events[0][3]["detail"] == {"batch_id": "b42", "row_count": 2,
+                                          "why": "no claim in the warehouse"}
+        assert bool(changes) is expect_change, (is_open, changes)
+        if changes:
+            assert changes[0][:2] == (2099, 3) and changes[0][3] == "ZZA"
+            assert "TBS-00042" in changes[0][2]
+    _m._record_data_change = lambda *a, **k: None
 
 
 def test_orphan_claims_stay_unless_asked_and_go_like_a_cancel_when_asked():
     claims = [("b9", "TBS-9", 2099, 4)]
     log, gates, changes = _wire_reland({}, claims=claims, landed={"b9": 5})
-    out = _m.reland_submitted(apply=1)
-    assert out["orphans_removed"] == 0 and log == []
+    out = _m._reland(apply=True)
+    assert out["orphans_removed"] == 0 and not [e for e in log if e[0] == "ch"]
 
     log, gates, changes = _wire_reland({}, claims=claims, landed={"b9": 5})
-    out = _m.reland_submitted(apply=1, remove_orphans=1)
+    out = _m._reland(apply=True, remove_orphans=1)
     assert out["orphans_removed"] == 1
     # numbers change, so the period must be open (as a cancel) and the change
     # is recorded before ClickHouse is touched
@@ -1828,10 +1988,98 @@ def test_orphan_claims_stay_unless_asked_and_go_like_a_cancel_when_asked():
     deletes = [e[1] for e in log if e[0] == "ch"]
     assert deletes == [f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id IN ('b9') "
                        "SETTINGS mutations_sync = 1"]
-    assert ("build", "TBS-9") in log
+    assert out["build_for"] == "TBS-9"
+
+
+def test_an_orphan_claim_whose_document_is_a_draft_is_not_removed():
+    """PR #381 review, finding 4: on_submit claims before its transaction
+    commits, so its document still reads as a draft (or not yet visible)
+    from here. The claim's document is read with a lock, which waits for
+    that submit; a draft or submitted document's claim is never removed."""
+    claims = [("b9", "TBS-9", 2099, 4), ("b8", "TBS-8", 2099, 4)]
+    log, gates, changes = _wire_reland(
+        {}, claims=claims, landed={}, existing={"TBS-9": {"docstatus": 0, "batch_id": "b9"},
+                                               "TBS-8": {"docstatus": 2, "batch_id": "b8"}})
+    out = _m._reland(apply=True, remove_orphans=1)
+    assert ("locked", "TBS-9") in log and ("locked", "TBS-8") in log
+    assert [o["batch_id"] for o in out["orphans"]] == ["b8"]
+    assert [tuple(k) for k in out["kept"]] == [("TBS-9", "TBS-9 is a draft: a submit may be in flight")]
+    deletes = [e[1] for e in log if e[0] == "ch"]
+    assert deletes == [f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id IN ('b8') "
+                       "SETTINGS mutations_sync = 1"]
 
 
 def test_names_limit_the_re_land():
     log, gates, changes = _wire_reland({"TBS-1": 2, "TBS-2": 2}, claims=[], landed={})
-    out = _m.reland_submitted(names='["TBS-2"]', apply="1")
+    out = _m._reland(names=["TBS-2"], apply=True)
     assert out["relanded"] == ["TBS-2"]
+
+
+class _StoredFile:
+    def __init__(self, content):
+        self._content = content
+
+    def get_content(self):
+        return self._content.encode("utf-8")
+
+
+def _file_doc(content):
+    doc = _m.TrialBalanceSubmission()
+    doc.__dict__.update(name="TBS-1", batch_id="b1", data_area_id="ZZA", fiscal_year=2099,
+                        fiscal_period=3, row_count=2, amount_basis="Period-end balance",
+                        tb_file="/private/files/tb.csv")
+    _m.frappe = sys.modules["frappe"]
+    _m.frappe.throw = _raise
+    _m.frappe.get_doc = lambda doctype, filters: _StoredFile(content)
+    _m.declared_dimensions = lambda: []
+    return doc
+
+
+def test_a_landed_file_from_before_the_currency_rule_reads_back_for_the_re_land():
+    """PR #381 review, finding 1 (live, every document on the test site): the
+    re-land parsed the stored file with today's intake rules and refused
+    every file that landed before konsol#252 for its missing currency column."""
+    doc = _file_doc(OLD_FILE)
+    try:
+        doc._parse_file()
+        assert False, "the intake read refuses the old file (that is the bug's cause)"
+    except _Thrown as e:
+        assert "Missing column(s) currency" in str(e)
+    rows = doc._read_landed_file()
+    assert [r["main_account"] for r in rows] == ["1010", "2010"]
+    assert rows[1][_m.PARTNER] == "ZZB"
+
+
+def test_a_re_landed_document_lands_exactly_the_rows_on_submit_landed():
+    """The rows, row for row: the landed columns carry nothing the old file
+    lacked (the currency is on the document, not on a row; the basis is on
+    the claim, from the document)."""
+    def landed(rows):
+        log = []
+        _m.execute = lambda sql, *a, **k: log.append(sql) or ""
+        doc = _file_doc("")
+        doc._ensure_tables = lambda: None
+        doc._land_batch(rows)
+        return log
+
+    with_currency = OLD_FILE.replace("source_upload\n", "source_upload,currency\n").replace(
+        ",u1\n", ",u1,EUR\n")
+    at_submit = landed(_m.parse_tb_csv(with_currency, ()))
+    assert landed(_file_doc(with_currency)._read_landed_file()) == at_submit
+    assert landed(_file_doc(OLD_FILE)._read_landed_file()) == at_submit
+    assert "'Period-end balance')" in at_submit[-1]
+
+
+def test_the_rebuild_dialog_escapes_every_name_reason_and_error():
+    """PR #381 review, finding 5: names, reasons and error text come from
+    documents and exceptions, and the dialog renders HTML."""
+    js_path = os.path.join(os.path.dirname(_SRC), "trial_balance_submission_list.js")
+    with open(js_path) as f:
+        js = f.read()
+    start = js.index("Rebuild Warehouse Rows")
+    body = js[start:]
+    assert "const esc = frappe.utils.escape_html" in js
+    for raw in ("x[0]", "x[1]", "o.submission_name", "o.batch_id", "o.data_area_id",
+                "f[0]", "f[1]", "k[0]", "k[1]"):
+        assert body.count(raw) == body.count(f"esc({raw}"), raw
+    assert "notification" in body.lower()

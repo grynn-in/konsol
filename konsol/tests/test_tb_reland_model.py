@@ -74,3 +74,50 @@ def test_the_output_is_sorted_so_two_runs_compare():
     out = m.plan(docs, claims=claims, landed={})
     assert [n for n, _ in out["reland"]] == ["TBS-1", "TBS-2"]
     assert [o["batch_id"] for o in out["orphans"]] == ["b7", "b8"]
+
+
+# -- PR #381 review: what the re-land may trust, and what is an orphan ----------------------------
+
+def _recorded(rows=2, debit=100.5, credit=100.5):
+    return {"row_count": rows, "total_debit": debit, "total_credit": credit}
+
+
+def test_a_file_that_reads_back_as_the_document_recorded_has_no_problem():
+    assert m.file_problem(_recorded(), 2, 100.5, 100.5) is None
+    # the document's totals are Floats shown to 2 places; the file is exact
+    assert m.file_problem(_recorded(debit=0.1 + 0.2, credit=0.3), 2, 0.3, 0.3) is None
+
+
+def test_a_file_that_is_not_what_the_document_landed_is_refused_by_name():
+    """Re-landing writes what the file says. When the file no longer says
+    what the document recorded at submit (a replaced attachment), landing it
+    would change the numbers under a submitted document: refuse instead."""
+    assert m.file_problem(_recorded(rows=3), 2, 100.5, 100.5) == (
+        "the file has 2 rows, the document recorded 3")
+    assert m.file_problem(_recorded(), 2, 99.5, 100.5) == (
+        "the file's debits total 99.50, the document recorded 100.50")
+    assert m.file_problem(_recorded(), 2, 100.5, 7) == (
+        "the file's credits total 7.00, the document recorded 100.50")
+
+
+def test_a_claim_whose_document_does_not_exist_or_is_cancelled_is_an_orphan():
+    assert m.orphan_verdict(_claim("b9", "TBS-9"), None) is None
+    assert m.orphan_verdict(_claim("b9", "TBS-9"), {"docstatus": 2, "batch_id": "b9"}) is None
+
+
+def test_a_claim_whose_document_is_a_draft_is_kept_it_may_be_a_submit_in_flight():
+    """on_submit writes the claim before its transaction commits, so a reader
+    outside that transaction sees the document as a draft (or, through a
+    locking read, waits for it). Removing that claim would drop a TB that is
+    being submitted right now (PR #381 review, finding 4)."""
+    why = m.orphan_verdict(_claim("b9", "TBS-9"), {"docstatus": 0, "batch_id": "b9"})
+    assert why == "TBS-9 is a draft: a submit may be in flight"
+
+
+def test_a_claim_of_a_submitted_document_under_another_batch_is_an_orphan():
+    """A submitted document claims its own batch_id, which never changes once
+    submitted; a second claim under its name for another batch double-counts
+    the entity-period and cannot belong to a submit in flight."""
+    assert m.orphan_verdict(_claim("b8", "TBS-9"), {"docstatus": 1, "batch_id": "b9"}) is None
+    assert m.orphan_verdict(_claim("b9", "TBS-9"), {"docstatus": 1, "batch_id": "b9"}) == (
+        "TBS-9 is submitted with this batch")
