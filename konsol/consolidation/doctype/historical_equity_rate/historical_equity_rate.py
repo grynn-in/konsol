@@ -21,6 +21,28 @@ class HistoricalEquityRate(Document):
         "historical_rate": "historical_rate",
     }
 
+    # The currency pair the rate converts, for the form (Deepak Pai, 5 Nov 2026:
+    # the form "doesnt show rate what to what"). Virtual fields: computed on
+    # read, never stored, so there is no second copy of the entity's or the
+    # group's currency to drift. The rate reads 1 From = rate To; the warehouse
+    # multiplies the local amount by it (gold_consolidated_trial_balance,
+    # translation_rate).
+    @property
+    def from_currency(self):
+        if not self.data_area_id:
+            return None
+        return frappe.db.get_value("Entity", self.data_area_id, "functional_currency")
+
+    @property
+    def to_currency(self):
+        if not self.consolidation_group:
+            return None
+        return frappe.db.get_value(
+            "Consolidation Group",
+            {"consolidation_group": self.consolidation_group, "data_area_id": ["is", "not set"]},
+            "reporting_currency",
+        )
+
     def autoname(self):
         """Collision-safe name for the (group, entity, account, date) grain.
 
