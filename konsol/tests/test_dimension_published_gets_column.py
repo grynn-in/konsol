@@ -676,6 +676,38 @@ def test_the_hook_applies_nothing_under_install_migrate_or_patch():
         assert _REBUILDS == [], (flag, _REBUILDS)
 
 
+# --- deleting a Published Dimension is refused (konsol#300, option A) ------
+
+
+def test_deleting_a_published_dimension_is_refused():
+    """Its vars entry and line-table fields would outlive it (konsol#300).
+    Unpublish is the one path that removes them; the refusal names it."""
+    _reset()
+    doc = _stored("Published")
+    trash = getattr(doc, "on_trash", None)
+    assert trash, "Dimension has no on_trash: a Published row can be deleted"
+    try:
+        trash()
+    except _ValidationError as exc:
+        assert "Unpublish" in str(exc) and NAME in str(exc), str(exc)
+        # dimension.js puts Unpublish on its own button, not in an Actions menu
+        assert "press Unpublish" in str(exc), str(exc)
+        assert "Actions" not in str(exc), str(exc)
+    else:
+        raise AssertionError("a Published Dimension was deleted")
+    assert _REBUILDS == [], _REBUILDS
+
+
+def test_deleting_a_draft_or_inactive_dimension_is_allowed():
+    for status in ("Draft", "Inactive"):
+        _reset()
+        doc = _stored(status)
+        trash = getattr(doc, "on_trash", None)
+        if trash:
+            trash()
+        assert _REBUILDS == [], (status, _REBUILDS)
+
+
 # --- the Build Approval name reaches the caller (konsol#301) -------------
 
 
