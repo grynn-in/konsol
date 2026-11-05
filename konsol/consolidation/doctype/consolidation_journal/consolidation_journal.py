@@ -96,12 +96,13 @@ class ConsolidationJournal(Document):
         so the balance is exact in that unit (konsol#353)."""
         root = self._root()
         self.currency = root.reporting_currency
-        minor_unit = (frappe.db.get_value("ISO Currency", self.currency, "minor_unit")
-                      if self.currency else None)
-        # PR #387 review: the shipped ISO 4217 list is the judge (konsol#330);
-        # a stored value that disagrees is refused as that, not used.
-        listed_unit = next((r["minor_unit"] for r in currency_references.reference_rows()
-                            if r["currency_code"] == self.currency), None)
+        # PR #387 re-review: the konsol#330 rule judges the stored row, its
+        # "Minor Unit Not Set by ISO 4217" tick included, against the shipped
+        # ISO 4217 list (journal_model.currency_problems).
+        iso = (frappe.db.get_value("ISO Currency", self.currency, ["minor_unit", "minor_unit_declared"],
+                                   as_dict=True) if self.currency else None)
+        minor_unit = iso.minor_unit if iso else None
+        declared = bool(iso.minor_unit_declared) if iso else False
         lines = [
             {
                 "idx": line.idx,
@@ -113,11 +114,18 @@ class ConsolidationJournal(Document):
         ]
         found = journal_model.line_problems(lines)
         found.extend(journal_model.currency_problems(self.currency, minor_unit, lines,
-                                                     listed_unit=listed_unit))
-        total_debit, total_credit = journal_model.totals(lines)
-        problem = journal_model.balance_problem(total_debit, total_credit)
-        if problem:
-            found.append(problem)
+                                                     currency_references.listed_minor_units(),
+                                                     declared=declared))
+        # An amount of 10^19 or more is refused by line_problems; the totals
+        # are not summed over it (PR #387 re-review).
+        oversized = any(journal_model.amount_too_large(line[column]) for line in lines
+                        for column in ("debit_amount", "credit_amount"))
+        total_debit = total_credit = None
+        if not oversized:
+            total_debit, total_credit = journal_model.totals(lines)
+            problem = journal_model.balance_problem(total_debit, total_credit)
+            if problem:
+                found.append(problem)
         if found:
             frappe.throw("<br>".join(found))
         self.total_debit, self.total_credit = total_debit, total_credit
