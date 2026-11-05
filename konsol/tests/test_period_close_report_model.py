@@ -254,3 +254,46 @@ def test_blockers_are_short_enough_for_a_table_cell():
     assert len(text) <= 3 * 205 + 40, len(text)
     assert "and 3 more" in text, text
     assert text.startswith("Blocked; No trial balance from ZZ000")
+
+
+# --- konsol#371-5: the sign-off dialog lists the warnings it acknowledges ----
+
+def _ack(names=(), total=None, unlisted=None, intercompany=None, commentary=None):
+    return {"names": list(names), "total": total, "unlisted": unlisted,
+            "intercompany": intercompany, "commentary": commentary}
+
+
+def test_the_row_lists_every_warning_the_acknowledgement_covers():
+    signoff = _signoff(action="acknowledge", label="Acknowledge the warnings",
+                       acknowledgements=_ack(
+                           names=["ZZ IC within tolerance", "ZZ cash ties"], total=2, unlisted=0,
+                           intercompany="Intercompany: 72 pairs over tolerance",
+                           commentary="Commentary: 2 headings above the threshold without commentary"))
+    r = M.row(_state(), signoff, _checks(status="Amber"), None, None)
+    assert r["warnings"] == [
+        "Check warned: ZZ IC within tolerance",
+        "Check warned: ZZ cash ties",
+        "Intercompany: 72 pairs over tolerance",
+        "Commentary: 2 headings above the threshold without commentary",
+    ]
+
+
+def test_warned_checks_the_payload_could_not_name_are_counted_not_dropped():
+    signoff = _signoff(action="acknowledge", acknowledgements=_ack(names=["ZZ one"], total=3, unlisted=2))
+    r = M.row(_state(), signoff, _checks(status="Amber"), None, None)
+    assert r["warnings"] == ["Check warned: ZZ one", "2 more warned checks, not named here"]
+
+
+def test_a_clean_run_has_no_warnings_and_a_refused_row_has_none_either():
+    r = M.row(_state(), _signoff(acknowledgements=_ack(total=0, unlisted=0)), _checks(), None, None)
+    assert r["warnings"] == []
+    r = M.row(_state(), None, None, None, None, error="ZZ refused")
+    assert r["warnings"] == []
+
+
+def test_the_sign_off_dialog_shows_the_warnings_before_the_acknowledgement():
+    with open(os.path.join(APP_DIR, "consolidation", "report", "period_close", "period_close.js")) as f:
+        js = f.read()
+    sign = js[js.index("function signOff(report)"):js.index("function reject(report)")]
+    assert "row.warnings" in sign, "the dialog must list what is being acknowledged"
+    assert "esc(" in sign[sign.index("row.warnings"):], "each warning is escaped"

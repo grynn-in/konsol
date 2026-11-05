@@ -99,6 +99,10 @@ def _writer(frappe, events, record_raises=None, period_raises=None):
 
     writer.record = record
     writer.period_of = period_of
+    # konsol#371-1: the newest rejected event per name, from frappe.rejections
+    # ({name: {"reason", "actor", "at"}}), as close_event.latest_rejections returns it.
+    writer.latest_rejections = lambda doctype, names: {
+        n: r for n, r in getattr(frappe, "rejections", {}).items() if n in names}
     return writer
 
 
@@ -829,3 +833,68 @@ def test_every_transition_into_a_submitted_state_allows_self_approval():
                 assert t.get("allow_self_approval") == 1, (p, t)
     assert checked >= 3, checked
 
+
+
+# --- konsol#371-1: a sent-back no-workflow draft is refused on every submit path ---
+
+import datetime as _dt
+
+_SAVED_AT = _dt.datetime(2025, 7, 10, 9, 0)
+_REJECTED = {"reason": "ZZ wrong rate", "actor": ADMIN, "at": _dt.datetime(2025, 7, 10, 10, 0)}
+
+
+def _sent_back_doc(modified=_SAVED_AT, **kw):
+    doc = _doc(owner=OTHER, before={"rate": 1}, **kw)
+    saved = doc.get_doc_before_save()
+    saved.modified = modified
+    # Frappe stamps the submitting save's own modified before before_submit
+    # runs, so the hook must judge the STORED modified, not this one.
+    doc.modified = _dt.datetime(2025, 7, 10, 11, 0)
+    return doc
+
+
+def test_a_sent_back_unchanged_draft_is_refused_by_the_hook():
+    """A native Desk Submit, a REST submit or a script runs doc.submit() and
+    never passes approval_api.approve's check; the before_submit hook does."""
+    mod, frappe, _ = _load(policy="Blocked")
+    frappe.rejections = {"ICB-1": _REJECTED}
+    doc = _sent_back_doc()
+    msg = _raises(lambda: mod.check(doc, "before_submit"), frappe.ValidationError)
+    assert "rejected by %s" % ADMIN in msg and "ZZ wrong rate" in msg, msg
+    assert "must save a change before it can be approved again" in msg, msg
+    assert doc.comments == [] and frappe.events == []
+
+
+def test_a_draft_saved_after_its_rejection_passes():
+    mod, frappe, _ = _load(policy="Blocked")
+    frappe.rejections = {"ICB-1": _REJECTED}
+    doc = _sent_back_doc(modified=_dt.datetime(2025, 7, 10, 10, 30))
+    mod.check(doc, "before_submit")
+    assert [e["kind"] for e in frappe.events] == ["approved"]
+
+
+def test_a_never_rejected_draft_and_an_insert_and_submit_pass():
+    mod, frappe, _ = _load(policy="Blocked")
+    mod.check(_sent_back_doc(), "before_submit")
+    mod, frappe, _ = _load(policy="Blocked")
+    frappe.rejections = {"ICB-1": _REJECTED}
+    mod.check(_doc(owner=OTHER), "before_submit")  # no saved draft: nothing sent back
+
+
+def test_with_a_workflow_the_reject_moved_the_state_and_the_hook_does_not_judge_it():
+    """With an active workflow a Reject saves the draft back to its first
+    state, and only Send for Approval (a save) leads to Approve."""
+    mod, frappe, _ = _load(policy="Blocked", state_fields={"IC Balance": "status"})
+    frappe.rejections = {"ICB-1": _REJECTED}
+    mod.check(_sent_back_doc(), "before_submit")
+
+
+def test_the_hook_and_approval_api_say_sent_back_in_one_sentence():
+    """One message, from approvals_model.sent_back_message, in both places."""
+    with open(HOOK_PY) as f:
+        hook = f.read()
+    with open(os.path.join(APP_DIR, "close", "approval_api.py")) as f:
+        api = f.read()
+    assert "approvals_model.sent_back_message(" in hook
+    assert "approvals_model.sent_back_message(" in api
+    assert "approvals_model.is_sent_back(" in hook
