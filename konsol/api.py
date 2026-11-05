@@ -424,30 +424,58 @@ def _batch_row_error(req):
         value = req.get(key)
         if value is not None and not isinstance(value, str):
             return f"'{key}' must be text, not {value!r}"
-    return _hierarchy_without_node_error(req)
+    return (_hierarchy_without_node_error(req)
+            or _fact_with_node_error(req.get("fact"), _hierarchy_node_from_req(req)))
 
 
-def _hierarchy_dimension_error(scenario, fact_name, dim_names):
+def _fact_with_node_error(fact, node):
+    """A ``fact`` named on a hierarchy read, or None (konsol#287 re-review).
+
+    A hierarchy read's table comes from its scenario, not from a Dataset, so a
+    ``fact`` there would decide only which dimensions are checked, not what
+    is read. Refused rather than half-honoured.
+    """
+    if fact and node:
+        return (
+            f"'fact' ('{fact}') cannot be given with a hierarchy node: a "
+            "hierarchy read's table comes from its scenario. Give the "
+            "scenario, or drop the node for a flat read."
+        )
+    return None
+
+
+def _hierarchy_dimension_error(scenario, dim_names, cache=None):
     """Why a hierarchy read cannot filter on ``dim_names``, or None (konsol#287
     review).
 
     The hierarchy query checks a name only against an identifier pattern, so
     any column of its table would be accepted as a filter. The names must be
-    the Dataset's declared dimensions, as on the flat path.
+    the declared dimensions of the scenario's Dataset, as on the flat path.
+    The scenario is normalised as the hierarchy read normalises it. ``cache``
+    (a dict, one per batch) holds each scenario's (fact_name, dimensions).
     """
     if not dim_names:
         return None
-    fact = _get_fact(fact=fact_name, scenario=scenario)
-    if not fact:
+    from konsol.hierarchy_query import _normalize_scenario
+
+    scenario = _normalize_scenario(scenario)
+    if cache is None:
+        cache = {}
+    if scenario not in cache:
+        fact = _get_fact(scenario=scenario)
+        cache[scenario] = (
+            (fact.fact_name, _get_fact_dimensions(fact)) if fact else None)
+    found = cache[scenario]
+    if found is None:
         return (
             f"No Dataset is registered for scenario '{scenario}', so a "
             f"hierarchy read cannot filter on {', '.join(sorted(dim_names))}"
         )
-    declared = _get_fact_dimensions(fact)
+    fact_name, declared = found
     for name in sorted(dim_names):
         if name not in declared:
             return (
-                f"Invalid dimension '{name}' for fact '{fact.fact_name}'. "
+                f"Invalid dimension '{name}' for fact '{fact_name}'. "
                 f"Allowed: {', '.join(sorted(declared)) or 'none'}"
             )
     return None
@@ -1107,6 +1135,9 @@ def epm_value(entity, year, period, account, measure="",
         frappe.throw(str(exc), frappe.ValidationError)
 
     if node_code:
+        fact_err = _fact_with_node_error(fact, node_code)
+        if fact_err:
+            frappe.throw(fact_err, frappe.ValidationError)
         info, err = validate_hierarchy_read(
             _hierarchy_name_from_req({"hierarchy": hierarchy}),
             node_code,
@@ -1131,7 +1162,7 @@ def epm_value(entity, year, period, account, measure="",
         measure, measure_err = _hierarchy_measure(scenario, measure)
         if measure_err:
             frappe.throw(measure_err, frappe.ValidationError)
-        dim_err = _hierarchy_dimension_error(scenario, fact, set(req_dims))
+        dim_err = _hierarchy_dimension_error(scenario, set(req_dims))
         if dim_err:
             frappe.throw(dim_err, frappe.ValidationError)
         result = batch_query_hierarchy([{
@@ -1379,6 +1410,8 @@ def epm_batch():
     errors_list = [None] * n
     # Resolve the caller's entity allow-list once for the whole batch.
     allowed_entities = _allowed_entities()
+    # Each hierarchy scenario's Dataset dimensions, looked up once per batch.
+    dataset_dims = {}
     for i, req in enumerate(requests_list):
         row_error = _batch_row_error(req)
         if row_error:
@@ -1439,7 +1472,7 @@ def epm_batch():
                 errors_list[i] = measure_err
                 continue
             dim_err = _hierarchy_dimension_error(
-                scenario, req.get("fact"), set(dimensions))
+                scenario, set(dimensions), dataset_dims)
             if dim_err:
                 errors_list[i] = dim_err
                 continue

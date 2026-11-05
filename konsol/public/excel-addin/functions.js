@@ -206,6 +206,12 @@ function makeReq(entity, year, period, account, measure, scenario, dimensions, s
 // there were two dimension slots): dropping its last argument would lose a
 // filter, so it is refused. `args` is the caller's `arguments`; `fn` is the
 // caller, whose .length is its declared parameter count.
+//
+// This holds only while no function in functions.json sets
+// requiresInvocation, stream, cancelable, requiresAddress or
+// requiresParameterAddresses: with any of those, Excel appends an invocation
+// argument and this guard would refuse every call
+// (test_no_function_makes_excel_append_an_invocation_argument pins it).
 function checkArity(args, fn, name) {
   if (args.length > fn.length) {
     throw new CustomFunctions.Error(
