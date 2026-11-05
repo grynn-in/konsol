@@ -137,7 +137,3 @@ def test_connector_has_airbyte_actions():
     assert "def provision_airbyte" in src
 
 
-def test_cli_api_exposes_airbyte_methods():
-    src = open(os.path.join(APP_DIR, "cli_api.py")).read()
-    assert "test_connector_extract_api" in src
-    assert "provision_connector_airbyte_api" in src

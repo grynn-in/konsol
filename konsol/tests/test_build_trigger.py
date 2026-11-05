@@ -243,11 +243,7 @@ def test_every_cli_write_endpoint_is_post_only():
     with open(os.path.join(APP_DIR, "cli_api.py")) as f:
         tree = ast.parse(f.read())
     # Explicit, not by prefix: a future write named get_... must not slip through.
-    reads = {"list_dimensions_api", "get_dimension_api", "list_measures_api", "get_measure_api",
-             "get_schema_status_api", "list_fact_tables_api", "get_fact_table_api",
-             "list_connectors_api", "get_connector_api", "test_connector_extract_api",
-             "test_connector_writeback_api", "list_erp_sources_api", "export_config_api",
-             "diff_config_api"}
+    reads = {"get_schema_status_api", "export_config_api", "diff_config_api"}
     offenders = []
     for fn in [n for n in tree.body if isinstance(n, ast.FunctionDef)]:
         deco = [ast.unparse(d) for d in fn.decorator_list if "whitelist" in ast.unparse(d)]

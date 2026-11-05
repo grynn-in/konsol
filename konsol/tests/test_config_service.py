@@ -1,4 +1,4 @@
-"""Tests for konsol.config_service and konsol.cli_api."""
+"""Tests for konsol.config_service (cli_api's five endpoints: test_cli_api_slim.py)."""
 import ast
 import importlib
 import json
@@ -59,36 +59,6 @@ def test_config_service_exposes_list_functions():
 
 def test_cli_api_module_exists():
     assert os.path.exists(os.path.join(APP_DIR, "cli_api.py"))
-
-
-def test_cli_api_whitelists_list_endpoints():
-    content = _read("cli_api.py")
-    assert "@frappe.whitelist()" in content
-    assert "list_dimensions_api" in content
-    assert "get_dimension_api" in content
-    assert "upsert_dimension_api" in content
-    assert "publish_dimension_api" in content
-    assert "unpublish_dimension_api" in content
-    assert "get_measure_api" in content
-    assert "upsert_measure_api" in content
-    assert "publish_measure_api" in content
-    assert "unpublish_measure_api" in content
-    assert "apply_schema_api" in content
-    assert "get_schema_status_api" in content
-    assert "list_measures_api" in content
-    assert "list_fact_tables_api" in content
-    assert "get_fact_table_api" in content
-    assert "upsert_fact_table_api" in content
-    assert "publish_fact_table_api" in content
-    assert "export_config_api" in content
-    assert "apply_config_api" in content
-    assert "diff_config_api" in content
-    assert "unpublish_fact_table_api" in content
-    assert "list_connectors_api" in content
-    assert "delete_connector_api" in content
-    assert "list_erp_sources_api" in content
-    assert "prune=frappe.utils.cint(prune)" in content
-    assert "from konsol.config_service import" in content
 
 
 def test_config_service_queries_dimension_doctype():
@@ -777,13 +747,6 @@ def test_export_connector_rows_excludes_secrets(config_service, monkeypatch):
     assert rows[0]["extract_credentials_configured"] is True
     assert "extract_client_secret" not in rows[0]
     assert "writeback_client_secret" not in rows[0]
-
-
-def test_cli_api_exposes_airbyte_connector_methods():
-    content = _read("cli_api.py")
-    assert "test_connector_extract_api" in content
-    assert "test_connector_writeback_api" in content
-    assert "provision_connector_airbyte_api" in content
 
 
 def test_list_connectors_returns_rows(config_service):
