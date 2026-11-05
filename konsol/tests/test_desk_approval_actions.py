@@ -95,6 +95,11 @@ def test_the_script_routes_every_action_through_the_approval_api():
     # A workflow doctype's own Approve/Reject is intercepted, so a reason can be
     # asked for; the native Reject is refused without one.
     assert "before_workflow_action" in js
+    # approve_mode is GET-only, and frappe.xcall defaults to POST: without the
+    # explicit "GET" every Approve answered "Not permitted" (403), found by the
+    # recorded browser walk-through on the v16 copy, 5 Nov 2026.
+    assert re.search(r'xcall\(\s*METHODS\.approve_mode\s*,[^)]*,\s*"GET"\s*\)', js), \
+        "approve_mode must be read with GET"
     # Writes are POSTs (a GET rolls back): approve and reject share one helper.
     assert 'type: "POST"' in js
     assert 'post(frm, "approve"' in js and 'post(frm, "reject"' in js

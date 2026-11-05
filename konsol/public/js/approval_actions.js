@@ -40,7 +40,8 @@
 	}
 
 	function mode_of(frm) {
-		return frappe.xcall(METHODS.approve_mode, { doctype: frm.doctype, name: frm.doc.name });
+		// GET: approve_mode is GET-only, and xcall defaults to POST (403).
+		return frappe.xcall(METHODS.approve_mode, { doctype: frm.doctype, name: frm.doc.name }, "GET");
 	}
 
 	function ask_reason(title, message, primary) {
