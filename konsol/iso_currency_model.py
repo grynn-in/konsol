@@ -31,8 +31,12 @@ import re
 #: The ISO Currency checkbox, named in every refusal that it would resolve.
 DECLARE_LABEL = "Minor Unit Not Set by ISO 4217"
 
-#: The setup-gap code (My work, sign-off readiness) for stored rows that fail.
+#: The setup-gap code (My work, sign-off readiness) for a USED stored row
+#: that fails: it blocks sign-off.
 GAP_CODE = "iso_currency_minor_unit_disagrees"
+
+#: The code for an UNUSED stored row that fails: reported, never blocking.
+UNUSED_CODE = "iso_currency_minor_unit_unused"
 
 #: A declared minor unit is a whole number in this range: Frappe keeps 9
 #: decimal places at most.
@@ -93,26 +97,48 @@ def minor_unit_problem(code, minor_unit, listed, declared=False):
             f"it is set to {shown}. Set Minor Unit to {expected}.")
 
 
-def minor_unit_gap(rows, listed):
-    """None, or the setup gap naming every stored ISO Currency the rule
-    refuses. ``rows``: ``(code, minor_unit, declared)`` per stored row.
+def minor_unit_gaps(rows, listed, used):
+    """``{"blocking": gap or None, "reported": gap or None}`` for the stored
+    ISO Currency rows the rule refuses (PR #384 re-review).
 
-    A row like this rounds every amount in its currency to the wrong number
-    of places, so the gap blocks sign-off (signoff_gate) and is a My work
-    item, until the row is fixed."""
-    problems = []
+    ``rows``: ``(code, minor_unit, declared)`` per stored row. ``used``:
+    ``{code: [where, ...]}`` for every currency a number is computed in (an
+    Entity's functional currency, a group root's reporting currency, a
+    submitted rate, trial balance or journal).
+
+    Principle (Deepak Pai): refuse what makes a number wrong; report what
+    makes it unexplained. A used row rounds amounts to the wrong number of
+    places, so it blocks sign-off. An unused row changes no number (every
+    site holds XDR=0 from the old shipped list): it is reported, and blocks
+    the moment something uses it."""
+    blocking, reported = [], []
     for code, minor_unit, declared in rows:
         problem = minor_unit_problem(code, minor_unit, listed, bool(declared))
         if problem:
-            problems.append((code, problem))
-    if not problems:
-        return None
-    problems.sort()
-    return {
-        "code": GAP_CODE,
-        "currencies": [c for c, _ in problems],
-        "message": ("ISO Currency minor unit disagrees with ISO 4217 for "
-                    f"{', '.join(c for c, _ in problems)}: amounts in these currencies would be "
-                    "rounded to the wrong number of places (konsol#330). "
-                    + " ".join(p for _, p in problems)),
-    }
+            (blocking if code in used else reported).append((code, problem))
+    blocking.sort()
+    reported.sort()
+    out = {"blocking": None, "reported": None}
+    if blocking:
+        out["blocking"] = {
+            "code": GAP_CODE,
+            "currencies": [c for c, _ in blocking],
+            "message": ("The Minor Unit of "
+                        + "; ".join(f"{c} (used by {', '.join(sorted(set(used[c])))})"
+                                    for c, _ in blocking)
+                        + " disagrees with ISO 4217, so amounts in "
+                        + ("it" if len(blocking) == 1 else "them")
+                        + " are rounded to the wrong number of places. This blocks sign-off "
+                        "until it is fixed (konsol#330). " + " ".join(p for _, p in blocking)),
+        }
+    if reported:
+        codes = ", ".join(c for c, _ in reported)
+        out["reported"] = {
+            "code": UNUSED_CODE,
+            "currencies": [c for c, _ in reported],
+            "message": (f"The Minor Unit of {codes} disagrees with ISO 4217. Nothing uses "
+                        f"{'it' if len(reported) == 1 else 'them'} (no entity, group, submitted "
+                        "rate, trial balance or journal), so this does not block sign-off; it "
+                        "will once something does (konsol#330). " + " ".join(p for _, p in reported)),
+        }
+    return out

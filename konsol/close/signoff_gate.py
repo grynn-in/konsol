@@ -281,12 +281,21 @@ def statement_gap():
 
 
 def currency_gap():
-    """The ISO Currency minor-unit setup gap (konsol#330, PR #384 review), or
-    None: a stored minor unit the ISO 4217 rule refuses rounds every amount
-    in that currency to the wrong places, so it blocks. Lazy: test loaders
-    stub konsol.currency_references."""
+    """The blocking ISO Currency minor-unit gap (konsol#330, PR #384 review),
+    or None: a USED currency whose stored minor unit the ISO 4217 rule
+    refuses rounds every amount in it to the wrong places, so it blocks. An
+    unused one does not (``currency_gaps``). Lazy: test loaders stub
+    konsol.currency_references."""
     from konsol import currency_references
     return currency_references.minor_unit_gap()
+
+
+def currency_gaps():
+    """``{"blocking", "reported"}``: the blocking gap above and the report of
+    unused disagreeing rows, which My work shows as a non-blocking item (PR
+    #384 re-review)."""
+    from konsol import currency_references
+    return currency_references.minor_unit_gaps()
 
 
 def commentary_threshold():

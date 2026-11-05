@@ -33,7 +33,9 @@ Rules:
 - One gap is ONE item that lists everyone affected (#291: never one item per
   entity per month). An empty list gives no item.
 - Ids are fixed (``gap:<name>``) and items come in ``GAPS`` order.
-- Every item is ``kind "blocking"``, names the owner role that can fix it,
+- Every item is ``kind "blocking"`` (except an unused ISO Currency that
+  disagrees with ISO 4217, ``iso_currency_unused``: ``todo``, PR #384
+  re-review), names the owner role that can fix it,
   and its ``action`` opens the Desk page (story 0.4: the Desk only for
   configuration gaps).
 - A missing fact raises ValueError: nothing is guessed.
@@ -44,7 +46,7 @@ Rules:
 import re
 
 GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "commentary_threshold",
-        "iso_currency", "chart", "ic_accounts", "ic_tolerance", "ic_rule", "ic_rule_ambiguous", "frequency",
+        "iso_currency", "iso_currency_unused", "chart", "ic_accounts", "ic_tolerance", "ic_rule", "ic_rule_ambiguous", "frequency",
         "ownership", "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
              "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap",
@@ -62,12 +64,19 @@ _POLICY_GAPS = {
     "commentary_threshold_undeclared": ("commentary_threshold", "Commentary threshold not declared"),
     #: konsol#330 (PR #384 review): appended by the API layer; it opens ISO
     #: Currency, not Close Settings (``_POLICY_GAP_DESKS``).
-    "iso_currency_minor_unit_disagrees": ("iso_currency",
-                                          "ISO Currency minor unit disagrees with ISO 4217"),
+    "iso_currency_minor_unit_disagrees": (
+        "iso_currency", "ISO Currency minor unit disagrees with ISO 4217 (used: blocks sign-off)"),
+    #: PR #384 re-review: the same for a currency nothing uses; reported, not blocking.
+    "iso_currency_minor_unit_unused": (
+        "iso_currency_unused",
+        "ISO Currency minor unit disagrees with ISO 4217 (unused: does not block)"),
 }
 
 #: A policy gap fixed somewhere other than Close Settings.
-_POLICY_GAP_DESKS = {"iso_currency": "/desk/iso-currency"}
+_POLICY_GAP_DESKS = {"iso_currency": "/desk/iso-currency", "iso_currency_unused": "/desk/iso-currency"}
+
+#: A policy gap that is reported, not blocking: it makes no number wrong.
+_POLICY_GAP_KINDS = {"iso_currency_unused": "todo"}
 
 
 #: ``ic_balance_model`` rule-gap code -> (gap id, title stem), in item order.
@@ -94,10 +103,10 @@ def _groups(n):
     return f"{n} group" if n == 1 else f"{n} groups"
 
 
-def _item(gap, title, detail, owner, desk, entities=(), users=()):
+def _item(gap, title, detail, owner, desk, entities=(), users=(), kind="blocking"):
     return {
         "id": f"gap:{gap}",
-        "kind": "blocking",
+        "kind": kind,
         "title": title,
         "detail": detail,
         "owner": owner,
@@ -124,7 +133,8 @@ def setup_gap_items(facts):
     for gap in facts["policy_gaps"] or ():
         gap_id, title = _POLICY_GAPS[gap["code"]]
         items.append(_item(gap_id, title, gap["message"], "EPM Admin",
-                           _POLICY_GAP_DESKS.get(gap_id, "/desk/close-settings")))
+                           _POLICY_GAP_DESKS.get(gap_id, "/desk/close-settings"),
+                           kind=_POLICY_GAP_KINDS.get(gap_id, "blocking")))
     if not facts["chart_published"]:
         items.append(_item("chart", "Group chart not published",
                            "Publish the Main Accounts of the group chart.", "EPM Admin",

@@ -55,12 +55,46 @@ def _stored():
                           limit_page_length=0)
 
 
+#: Where a currency is used: (doctype, field, filters, label). A number is
+#: computed in each, so a wrong minor unit there makes the number wrong.
+_USES = (
+    ("Entity", "functional_currency", None, "Entity"),
+    ("Consolidation Group", "reporting_currency", {"parent_consolidation_group": ["is", "not set"]},
+     "Consolidation Group"),
+    ("Group Exchange Rate", "from_currency", {"docstatus": 1}, "Group Exchange Rate"),
+    ("Group Exchange Rate", "to_currency", {"docstatus": 1}, "Group Exchange Rate"),
+    ("Trial Balance Submission", "currency", {"docstatus": 1}, "Trial Balance Submission"),
+    ("Consolidation Journal", "currency", {"docstatus": 1}, "Consolidation Journal"),
+)
+
+
+def used_currencies():
+    """{code: [where, ...]} for every currency a number is computed in: an
+    Entity's functional currency, a Consolidation Group root's reporting
+    currency, and the currencies of a submitted Group Exchange Rate, Trial
+    Balance Submission or Consolidation Journal (PR #384 re-review)."""
+    used = {}
+    for doctype, field, filters, label in _USES:
+        for code in frappe.get_all(doctype, filters=filters or {}, pluck=field, distinct=True,
+                                   limit_page_length=0):
+            if code:
+                used.setdefault(code, set()).add(label)
+    return {c: sorted(w) for c, w in used.items()}
+
+
+def minor_unit_gaps():
+    """{"blocking", "reported"} (iso_currency_model.minor_unit_gaps): a stored
+    ISO Currency the konsol#330 rule refuses blocks sign-off when it is used,
+    and is reported (My work, Error Log) when it is not."""
+    return iso_currency_model.minor_unit_gaps(
+        [(r.name, r.minor_unit, r.minor_unit_declared) for r in _stored()], listed_minor_units(),
+        used_currencies())
+
+
 def minor_unit_gap():
-    """The setup gap naming every stored ISO Currency whose minor unit the
-    konsol#330 rule refuses, or None. Read by the sign-off gate and My work,
-    so a wrong stored value blocks rather than being used (PR #384 review)."""
-    return iso_currency_model.minor_unit_gap(
-        [(r.name, r.minor_unit, r.minor_unit_declared) for r in _stored()], listed_minor_units())
+    """The blocking gap only: used rows the rule refuses, or None. Read by
+    the sign-off gate (PR #384 re-review)."""
+    return minor_unit_gaps()["blocking"]
 
 
 def usd_log10_defaults():
