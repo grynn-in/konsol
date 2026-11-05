@@ -245,7 +245,25 @@ def _install_stubs():
     lifecycle.check_epm_admin = _check_epm_admin
     lifecycle.apply_and_rebuild = _apply_and_rebuild
     sys.modules["konsol.schema_lifecycle"] = lifecycle
+    # konsol#229: the expression check is tested on its own
+    # (test_measure_check.py); here only what the controller asks of it.
+    check = types.ModuleType("konsol.measure_check")
+    check.check_measure = _check_measure
+    check.describe_compilation = lambda name: f"zz-compilation-of-{name}"
+    sys.modules["konsol.measure_check"] = check
     sys.modules.pop("konsol.config_service", None)
+
+
+#: Every konsol.measure_check.check_measure call, as (name, expression, publishing).
+_CHECKS = []
+#: Set to an expression the stub check refuses, as the real one would.
+_REFUSE = {"expression": None}
+
+
+def _check_measure(name, expression, publishing, **kwargs):
+    _CHECKS.append((name, expression, publishing))
+    if expression == _REFUSE["expression"]:
+        raise _ValidationError(f"Measure {name}: ClickHouse refused the expression")
 
 
 _install_stubs()
@@ -770,3 +788,96 @@ def test_a_bundle_carrying_the_shipped_ytd_net_amount_applies():
     spec = {k: v for k, v in ytd.items() if k not in ("doctype", "name")}
     config_service.apply_config({"measures": [spec]})
     assert _STORE["ytd_net_amount"]["cube_type"] == "last"
+
+
+# --- the expression is checked when it is published (konsol#229) ----------
+
+
+def _reset_checks():
+    del _CHECKS[:]
+    _REFUSE["expression"] = None
+
+
+def test_publish_checks_the_expression_as_published():
+    _reset()
+    _reset_checks()
+    doc = _stored("Draft")
+    doc.publish()
+    assert _CHECKS == [(NAME, doc.expression, True)], _CHECKS
+
+
+def test_editing_the_expression_while_published_checks_it_as_published():
+    _reset()
+    _reset_checks()
+    doc = _stored("Published")
+    doc.expression = "sum(debit_amount)"
+    doc.save()
+    assert _CHECKS == [(NAME, "sum(debit_amount)", True)], _CHECKS
+
+
+def test_a_save_that_does_not_publish_the_expression_checks_it_statically_only():
+    """A Draft edit, or a label edit while Published, publishes no expression:
+    the check is asked only for its static rule (publishing False)."""
+    _reset()
+    _reset_checks()
+    doc = _stored("Draft")
+    doc.expression = "sum(debit_amount)"
+    doc.save()
+    doc = _stored("Published")
+    doc.label = "ZZ Other Label"
+    doc.save()
+    assert [c[2] for c in _CHECKS] == [False, False], _CHECKS
+
+
+def test_a_refused_expression_is_not_saved_and_requests_no_build():
+    _reset()
+    _reset_checks()
+    doc = _stored("Draft")
+    _REFUSE["expression"] = "sum(no_such_column)"
+    doc.expression = "sum(no_such_column)"
+    try:
+        doc.publish()
+    except _ValidationError:
+        pass
+    else:
+        raise AssertionError("a refused expression was published")
+    assert _STORE[NAME]["status"] == "Draft", _STORE[NAME]
+    assert _STORE[NAME]["expression"] != "sum(no_such_column)"
+    assert _REBUILDS == [], _REBUILDS
+
+
+def test_no_check_inside_install_migrate_or_a_patch():
+    for flag in ("in_install", "in_migrate", "in_patch"):
+        _reset()
+        _reset_checks()
+        doc = _stored("Draft")
+        _FRAPPE_FLAGS[flag] = True
+        doc.status = "Published"
+        doc.save()
+        assert _CHECKS == [], (flag, _CHECKS)
+
+
+def test_a_bundle_measure_with_a_refused_expression_is_refused():
+    """The config bundle (apply_config_api -> upsert_measure) saves through
+    the controller, so the refusal reaches it: no "Upserted" for a bad row."""
+    _reset()
+    _reset_checks()
+    _REFUSE["expression"] = "sum(no_such_column)"
+    spec = {"measure_name": NAME, "expression": "sum(no_such_column)",
+            "label": "ZZ", "status": "Published"}
+    try:
+        config_service.upsert_measure(spec)
+    except _ValidationError:
+        pass
+    else:
+        raise AssertionError("the bundle saved a refused expression")
+    assert NAME not in _STORE and _REBUILDS == []
+
+
+def test_the_form_shows_how_dbt_compiles_the_measure():
+    _reset()
+    doc = _stored("Published")
+    onload = {}
+    doc.set_onload = lambda key, value: onload.__setitem__(key, value)
+    doc.onload()
+    assert onload.get("compilation") == f"zz-compilation-of-{NAME}", onload
