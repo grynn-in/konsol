@@ -344,6 +344,19 @@ def test_a_well_formed_batch_row_has_no_error():
     assert api._batch_row_error({"dimensions": None}) is None
 
 
+def test_a_batch_row_naming_a_hierarchy_without_a_node_is_refused():
+    # The silent case of the signature change: an old
+    # =K.EPM_BUDGET(e, y, p, a, "", "", "PLAN26") now puts PLAN26 in the
+    # hierarchy slot. A hierarchy with no node used to be ignored, so the
+    # cell would sum every budget scenario instead of reading PLAN26.
+    api = _load_api()
+    err = api._batch_row_error({"entity": "ZZE", "hierarchy": "ZZ_PLAN"})
+    assert err and "'ZZ_PLAN'" in err and "node" in err, err
+    assert api._batch_row_error(
+        {"entity": "ZZE", "hierarchy": "ZZ_H", "node": "ZZ_N"}) is None
+    assert api._batch_row_error({"entity": "ZZE", "hierarchy": ""}) is None
+
+
 def test_epm_batch_refuses_the_row_before_reading_it():
     block = _read_api().split("def epm_batch")[1].split("\n@frappe.whitelist")[0]
     check = block.index("_batch_row_error(req)")
