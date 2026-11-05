@@ -58,10 +58,12 @@ Arguments in `[brackets]` are optional. Leave one out with an empty slot
 in one of two forms:
 
 - **One text cell:** `"dim_region=EU;dim_product=X"`. Spaces around names and
-  values are ignored.
+  values are ignored. This form cannot carry a value that contains `;`. Use
+  the range form for such a value.
 - **A 2-column range:** names in the first column, values in the second, for
-  example `$H$1:$I$2` holding `dim_region | EU` and `dim_product | X`. A fully
-  blank row is skipped.
+  example `$H$1:$I$2` holding `dim_region | EU` and `dim_product | X`. The
+  range has no header row: every row is a name/value pair. A fully blank row
+  is skipped.
 
 A name is a dimension the site declared (a Published Dimension record). The
 server refuses a name the Dataset (reads) or the budget (EPMSAVE) does not
@@ -96,11 +98,26 @@ leave it empty. Then copy the remaining arguments unchanged. Each name is the
 one your site declared for the dimension the old argument filtered on; the
 examples use `dim_region` and `dim_product`.
 
-One old formula would otherwise read the wrong number without an error:
-`=K.EPM_BUDGET("E1",2026,3,"6100","","","PLAN26")` now puts `PLAN26` in the
-`hierarchy` slot. A hierarchy with no node used to be ignored, which would
-sum every budget scenario. The server now refuses a hierarchy without a node,
-so that cell shows the error until it is rewritten.
+A formula left unrewritten shows an error, not a wrong number. Each old value
+lands one slot to the left, and each landing is refused:
+
+- a bare value such as `"EU"` in `dimensions` is not `name=value`;
+- an old department value in `scenarioId` is refused when the Dataset has no
+  scenario column (actuals), and when it names no Scenario (budget);
+- an old scenario id in `hierarchy` is refused because it has no node;
+- an old last argument (`layer`, `node`) is one argument too many, and the
+  add-in refuses a formula with more arguments than the signature.
+
+Two consequences of these refusals:
+
+- **A hierarchy needs a node on every row.** A sheet that fixes the
+  hierarchy and leaves `node` blank on some rows now shows an error on those
+  rows. Before, the hierarchy was ignored there. This is the accepted
+  trade-off of the guard against a scenario id moved into the `hierarchy`
+  slot. Leave `hierarchy` blank on rows that read no node.
+- **A scenario id must exist and must have a column to filter.** A
+  `scenarioId` on actuals, or one that names no Scenario, is refused, not
+  ignored or read as 0.
 
 A workbook still on the old add-in sends the old keys. The server now refuses
 those rows ("Unknown request key"), so reload the add-in.

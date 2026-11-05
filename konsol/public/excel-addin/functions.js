@@ -202,9 +202,24 @@ function makeReq(entity, year, period, account, measure, scenario, dimensions, s
   return req;
 }
 
+// One argument more than the signature is an old formula (before konsol#287
+// there were two dimension slots): dropping its last argument would lose a
+// filter, so it is refused. `args` is the caller's `arguments`; `fn` is the
+// caller, whose .length is its declared parameter count.
+function checkArity(args, fn, name) {
+  if (args.length > fn.length) {
+    throw new CustomFunctions.Error(
+      CustomFunctions.ErrorCode.invalidValue,
+      "K." + name + " takes at most " + fn.length + " arguments, not " + args.length +
+        ". A formula from before konsol#287 must be rewritten: the two dimension arguments are now one."
+    );
+  }
+}
+
 // Build the request and queue it; a refused argument becomes the cell's error.
-function read(build) {
+function read(args, fn, name, build) {
   try {
+    checkArity(args, fn, name);
     return enqueue(build());
   } catch (err) {
     return Promise.reject(err);
@@ -217,31 +232,31 @@ function ping() {
 
 //   =K.EPM("E1", 2026, 3, "4000", , , "name1=value1;name2=value2")
 function epm(entity, year, period, account, measure, scenario, dimensions, scenarioId, hierarchy, node, layer) {
-  return read(function () {
+  return read(arguments, epm, "EPM", function () {
     return makeReq(entity, year, period, account, measure, scenario, dimensions, scenarioId, hierarchy, node, layer);
   });
 }
 
 function epmBudget(entity, year, period, account, dimensions, scenarioId, hierarchy, node, layer) {
-  return read(function () {
+  return read(arguments, epmBudget, "EPM_BUDGET", function () {
     return makeReq(entity, year, period, account, "period_amount", "budget", dimensions, scenarioId, hierarchy, node, layer);
   });
 }
 
 function epmVariance(entity, year, period, account, dimensions, scenarioId, hierarchy, node) {
-  return read(function () {
+  return read(arguments, epmVariance, "EPM_VARIANCE", function () {
     return makeReq(entity, year, period, account, "variance_abs", "variance", dimensions, scenarioId, hierarchy, node);
   });
 }
 
 function epmDebit(entity, year, period, account, dimensions, hierarchy, node) {
-  return read(function () {
+  return read(arguments, epmDebit, "EPM_DEBIT", function () {
     return makeReq(entity, year, period, account, "period_debit", "actuals", dimensions, "", hierarchy, node);
   });
 }
 
 function epmCredit(entity, year, period, account, dimensions, hierarchy, node) {
-  return read(function () {
+  return read(arguments, epmCredit, "EPM_CREDIT", function () {
     return makeReq(entity, year, period, account, "period_credit", "actuals", dimensions, "", hierarchy, node);
   });
 }
@@ -264,6 +279,7 @@ function cf(group, year, period, line) {
 var saveCache = {};
 
 function epmSave(amount, entity, year, period, account, scenarioId, layer, dimensions, hierarchy, node) {
+  checkArity(arguments, epmSave, "EPMSAVE");
   var amt = Number(amount);
 
   if (!isFinite(amt) || !isFinite(Number(year)) || !isFinite(Number(period))) {
