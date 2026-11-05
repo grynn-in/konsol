@@ -133,8 +133,15 @@ def _stub_frappe(enqueued, logged, enqueue_error=None, form_dict=None):
     return fr
 
 
-def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sync_error=None):
+def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sync_error=None,
+                requested=None):
     fr = _stub_frappe(enqueued, logged, enqueue_error, form_dict)
+    requested = [] if requested is None else requested
+
+    def request_build():
+        # konsol#170: the governed request, made as whoever is the user
+        requested.append(fr.session.user)
+        return "ZZ-BAPR-1"
 
     def sync():
         synced.append(fr.session.user)
@@ -160,6 +167,7 @@ def _publish_ns(enqueued, logged, synced, enqueue_error=None, form_dict=None, sy
         "_sync_budget_dimension_columns": lambda: [],
         "_apply_fact_tables": lambda: ([], []),
         "_sync_budget_custom_fields": sync,
+        "_request_schema_build": request_build,
     }
     return _load({"apply_schema", "apply_schema_for_publish", "queue_budget_custom_field_sync",
                   "_check_schema_role", "_apply_schema_steps", "_switch_to_administrator"}, ns)
@@ -195,16 +203,20 @@ def _assert_caller_restored(fr, form_dict):
 
 def test_the_standalone_apply_schema_syncs_inline_as_administrator_and_restores_the_caller():
     """An EPM Admin may not create Custom Fields, or delete Administrator's.
-    The dbt build is queued as the caller, whose session is restored whole."""
-    enqueued, logged, synced = [], [], []
-    ns = _publish_ns(enqueued, logged, synced, form_dict={"run_dbt": "1"})
+    The build is requested as the caller, whose session is restored whole.
+
+    konsol#170: the build is a governed Build Approval, not the legacy
+    ``run_dbt_build_async`` job, which ran dbt outside the single-flight gate."""
+    enqueued, logged, synced, requested = [], [], [], []
+    ns = _publish_ns(enqueued, logged, synced, form_dict={"run_dbt": "1"}, requested=requested)
     fr = ns["frappe"]
     form_dict = fr.local.form_dict
     summary = ns["apply_schema"](run_dbt="1")   # Frappe passes form_dict as the kwargs
     assert synced == ["Administrator"] and summary["budget_fields_synced"] == ["added dim_x"]
     _assert_caller_restored(fr, form_dict)
-    assert [(e["method"], e["user"]) for e in enqueued] == [(DBT_JOB, "zz@example.com")]
-    assert summary["dbt_triggered"] is True
+    assert DBT_JOB not in [e["method"] for e in enqueued], enqueued
+    assert requested == ["zz@example.com"], requested
+    assert summary["dbt_triggered"] is True and summary["build_approval"] == "ZZ-BAPR-1"
 
 
 def test_the_caller_is_restored_when_the_standalone_sync_fails():
