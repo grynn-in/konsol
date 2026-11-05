@@ -122,11 +122,19 @@
 		choosePeriod(report, "sign", __("signed off"), (row) =>
 			confirmAndPost(report, {
 				title: __("Sign off {0}", [esc(row.period)]),
-				text: __("You sign off {0} on checks run {1} ({2}).", [
-					esc(row.period),
-					esc(row.run),
-					esc(row.checks),
-				]),
+				// konsol#371-5: list what the acknowledgement covers, so the
+				// approver reads the warnings before acknowledging them.
+				text:
+					__("You sign off {0} on checks run {1} ({2}).", [
+						esc(row.period),
+						esc(row.run),
+						esc(row.checks),
+					]) +
+					((row.warnings || []).length
+						? `</p><p><b>${__("You acknowledge these warnings:")}</b></p><ul>` +
+						  row.warnings.map((w) => `<li>${esc(w)}</li>`).join("") +
+						  "</ul><p>"
+						: ""),
 				field: SIGN_FIELDS[row.action],
 				primary: SIGN_PRIMARY[row.action],
 				busy: __("Sending the sign-off to the server…"),

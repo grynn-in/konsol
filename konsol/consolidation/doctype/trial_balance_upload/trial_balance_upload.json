@@ -3,7 +3,7 @@
  "allow_rename": 0,
  "autoname": "format:TBU-{#####}",
  "creation": "2026-09-12 22:00:00.000000",
- "description": "One bulk trial balance file (many entities and periods) and what became of it. Checked and loaded by konsol/tb_bulk.py; each ready entity-period becomes an ordinary Trial Balance Submission.",
+ "description": "One bulk trial balance file (many entities and periods) and what became of it. Check the file, then load it: each ready entity-period becomes an ordinary Trial Balance Submission.",
  "doctype": "DocType",
  "editable_grid": 0,
  "engine": "InnoDB",
@@ -20,7 +20,8 @@
   "failed_count",
   "result_section",
   "error",
-  "report"
+  "report",
+  "report_html"
  ],
  "fields": [
   {
@@ -42,7 +43,7 @@
   },
   {
    "default": "Draft",
-   "description": "What the last check or load did. Whether its submissions still stand is the form's indicator (konsol#332-2).",
+   "description": "What the last check or load did. Whether its submissions still stand is the form's indicator.",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
@@ -79,7 +80,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Derived when read: the submissions this upload loaded that are still submitted (konsol#332-2). Never stored.",
+   "description": "Derived when read: the submissions this upload loaded that are still submitted. Never stored.",
    "fieldname": "loaded_count",
    "fieldtype": "Int",
    "is_virtual": 1,
@@ -106,14 +107,20 @@
   {
    "fieldname": "report",
    "fieldtype": "Code",
-   "label": "Report",
+   "hidden": 1,
+   "label": "Report (data)",
    "options": "JSON",
    "read_only": 1
+  },
+  {
+   "fieldname": "report_html",
+   "fieldtype": "HTML",
+   "label": "Report"
   }
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-12 12:00:00.000000",
+ "modified": "2026-11-05 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Trial Balance Upload",

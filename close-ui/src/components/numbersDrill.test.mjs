@@ -98,7 +98,7 @@ test("pure: drillView(goldenDrill()) is what the panel has to render — server 
 	const view = drillView(goldenDrill());
 	assert.equal(view.rows.length, 6);
 	assert.equal(view.headingName, "ASSETS");
-	assert.equal(view.dimensionsNote, "Not broken down by dimension yet (konsolidat#245).");
+	assert.equal(view.dimensionsNote, "Not broken down by dimension yet.");
 	assert.deepEqual(
 		view.rows.map((r) => r.entity),
 		["ZZA", "ZZB", "ZZC", null, null, null],

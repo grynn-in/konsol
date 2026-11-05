@@ -113,6 +113,27 @@ def _edits_in_this_submit(doc):
         get_diff(before, doc), _state_field(doc.doctype))
 
 
+def _refuse_sent_back(doc, close_event):
+    """konsol#371-1 (F01 on every submit path): a draft of a doctype with no
+    active workflow stays at docstatus 0 after a Reject (#305-D2-8), so a
+    native Desk Submit, a REST submit or a script could approve it unchanged.
+    ``approval_api.approve`` refused that; this hook runs on every path.
+
+    Judged on the STORED ``modified`` (the saved draft's): Frappe stamps the
+    submitting save's own ``modified`` before ``before_submit`` runs. An
+    insert-and-submit has no saved draft and was never rejected. With an
+    active workflow the Reject moved the state, and only a save (Send for
+    Approval) leads back to Approve, so there is nothing to judge."""
+    before = doc.get_doc_before_save()
+    if before is None or _state_field(doc.doctype):
+        return
+    from konsol.close import approvals_model
+
+    rejection = close_event.latest_rejections(doc.doctype, [doc.name]).get(doc.name)
+    if approvals_model.is_sent_back(rejection, getattr(before, "modified", None)):
+        frappe.throw(approvals_model.sent_back_message(doc.doctype, doc.name, rejection))
+
+
 def preparers_for(doctype, owners):
     """``{name: frozenset}`` of who prepared each document (#305-W2-14).
 
@@ -152,6 +173,8 @@ def check(doc, method=None):
     if exempt == "system":
         _record_system_submit(doc, close_event)
         return
+    if not exempt:
+        _refuse_sent_back(doc, close_event)
     user = frappe.session.user
     preparers = preparers_for(doc.doctype, {doc.name: doc.owner})[doc.name]
     if user not in preparers and _edits_in_this_submit(doc):

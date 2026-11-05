@@ -83,7 +83,8 @@ _TOPSIDE_LABEL = "Top-side journals"
 
 _RESULT_LAYER_LABEL = "Current-year result (profit or loss to date)"
 
-DIMENSIONS_NOTE = "Not broken down by dimension yet (konsolidat#245)."
+#: Shown to users, so no issue number in it (konsol#371-7); the breakdown is konsolidat#245.
+DIMENSIONS_NOTE = "Not broken down by dimension yet."
 
 
 def _dec(amount):
