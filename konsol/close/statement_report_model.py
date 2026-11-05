@@ -128,6 +128,23 @@ def _prior_values(prior):
     return values
 
 
+def prior_with_rows(prior, tb_rows):
+    """``prior`` unchanged, unless it is ok but the warehouse holds no row
+    for its year up to its period (``tb_rows``: ``statement_api``'s TB
+    read). Such a statement is all zeros; it is refused as ``no_rows`` with
+    the reason, so the Prior year column is blank, never a column of 0.00
+    (measured live 5 Nov 2026: FY2022 P12 is ok with no rows)."""
+    if not prior or prior.get("state") != "ok":
+        return prior
+    fiscal_year = int(prior["period"]["fiscal_year"])
+    fiscal_period = int(prior["period"]["fiscal_period"])
+    for row in tb_rows or []:
+        if int(row["fiscal_year"]) == fiscal_year and int(row["fiscal_period"]) <= fiscal_period:
+            return prior
+    return {"state": "no_rows", "statement": None,
+            "message": "No rows in the warehouse for FY%d up to P%02d." % (fiscal_year, fiscal_period)}
+
+
 def _with_prior(row, section, line, prior_values, include=None):
     """``row`` with the prior year's value for the same line, and the
     change on the same basis. Absent last year: left blank, never 0."""
