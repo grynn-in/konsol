@@ -1788,6 +1788,7 @@ def _wire_reland(docs, claims, landed, docstatus=None, fail=None, read_fail=None
     _m.assert_open = lambda fy, fp, action="run": gates.append((fy, fp, action))
     _m._record_data_change = lambda fy, fp, text, entity=None: changes.append((fy, fp, text))
     _m._record_relanded = lambda doc, why: log.append(("event", doc.name))
+    _m._period_is_open = lambda fy, fp: True
     _m._request_reland_build = lambda name: log.append(("build", name))
     _m._reland_job_queued = lambda: False
     del _ADMIN_CHECKS[:]
@@ -2113,6 +2114,89 @@ def test_an_orphan_whose_document_became_submitted_after_the_plan_is_kept():
                        "SETTINGS mutations_sync = 1"]
     assert "TBS-9" not in changes[0][2] and "TBS-8" in changes[0][2]
     assert out["build_for"] == "TBS-8"
+
+
+def test_an_orphan_period_commits_its_data_change_before_the_delete():
+    """PR #381 re-review 2, finding 1: the orphan data change was uncommitted
+    when the ClickHouse delete ran; a delete that applied but whose call
+    raised was rolled back by run_reland: claim gone, no data change, the
+    sign-off still standing and no build. In job mode the data change now
+    commits first, as the per-document path's audit does."""
+    claims = [("b9", "TBS-9", 2099, 4)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={})
+    _m._record_data_change = lambda fy, fp, text, entity=None: (
+        changes.append((fy, fp, text)), log.append(("change", fy, fp)))
+    _m._reland(apply=True, commit=True, remove_orphans=1, guard=_guard(log))
+    change = log.index(("change", 2099, 4))
+    delete = next(i for i, e in enumerate(log) if e[0] == "ch")
+    assert [i for i in range(change, delete) if log[i] == ("commit",)], log
+
+
+def test_an_orphan_delete_that_fails_is_listed_and_the_rest_still_run():
+    """A failed delete for one period is listed under failed with its error;
+    the next period still runs, and a build is still asked for (the delete
+    may have applied before the call raised)."""
+    claims = [("b8", "TBS-8", 2099, 4), ("b9", "TBS-9", 2099, 5)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={})
+    real_execute = _m.execute
+
+    def execute(sql, *a, **k):
+        if sql.startswith("ALTER") and "'b8'" in sql:
+            log.append(("ch", sql))
+            raise _Thrown("Timeout exceeded while reading from socket")
+        return real_execute(sql, *a, **k)
+
+    _m.execute = execute
+    out = _m._reland(apply=True, commit=True, remove_orphans=1, guard=_guard(log))
+    assert [tuple(f) for f in out["failed"]] == [
+        ("TBS-8", "Timeout exceeded while reading from socket")]
+    assert out["orphans_removed"] == 1
+    assert [c[:2] for c in changes] == [(2099, 4), (2099, 5)]
+    assert out["build_for"] == "TBS-8", "a delete that may have applied is built for"
+    assert log[-1] == ("guard", "exit") and ("commit",) in log[-3:], log
+
+
+def test_an_orphan_period_closed_since_the_plan_keeps_its_claims():
+    """PR #381 re-review 2, finding 2: the open-period gate ran once before
+    any write; a period closed while documents were re-landed lost its
+    claims anyway. Each period is checked again under the guard."""
+    claims = [("b8", "TBS-8", 2099, 4), ("b9", "TBS-9", 2099, 5)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={})
+    _m._period_is_open = lambda fy, fp: fp != 4
+    out = _m._reland(apply=True, commit=True, remove_orphans=1, guard=_guard(log))
+    assert ("TBS-8", "period closed since the plan") in [tuple(k) for k in out["kept"]]
+    deletes = [e[1] for e in log if e[0] == "ch"]
+    assert deletes == [f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id IN ('b9') "
+                       "SETTINGS mutations_sync = 1"]
+    assert [c[:2] for c in changes] == [(2099, 5)]
+    assert out["orphans_removed"] == 1 and out["build_for"] == "TBS-9"
+
+
+def test_a_document_cancelled_after_its_audit_commit_is_commented():
+    """PR #381 re-review 2, finding 4: the committed tb_relanded event stood
+    alone when the re-read after the commit found the document cancelled."""
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={})
+    reads = []
+    plan_get_value = _m.frappe.db.get_value
+
+    def get_value(doctype, name, field, **kw):
+        if field == "docstatus" and name == "TBS-1":
+            reads.append(1)
+            return 1 if len(reads) == 1 else 2
+        return plan_get_value(doctype, name, field, **kw)
+
+    _m.frappe.db.get_value = get_value
+    out = _m._reland(apply=True, commit=True)
+    assert [tuple(f) for f in out["failed"]] == [("TBS-1", "no longer submitted")]
+    assert ("event", "TBS-1") in log and not [e for e in log if e[0] == "ch"]
+    comments = [e for e in log if e[0] == "comment" and e[1] == "TBS-1"]
+    assert len(comments) == 1 and "skipped" in comments[0][3], log
+    assert log.index(comments[0]) < len(log) - 1 - log[::-1].index(("commit",)), log
+
+
+def test_the_re_land_docstring_says_a_build_waits_for_at_most_one_document():
+    doc = _RELAND_REAL["_reland"].__doc__ + (_m.run_reland.__doc__ or "")
+    assert "at most one document" in doc and "_SINGLE_FLIGHT_TIMEOUT" in doc
 
 
 def test_reland_reads_every_file_before_it_touches_a_claim_then_audits_then_lands():
