@@ -417,13 +417,14 @@ def test_budget_and_forecast_still_filter_scenario_id():
         # and a direct call carries its own measure (konsol#105).
         result, queries, lookups = _run_hierarchy(
             [{"scenario": sc, "scenario_id": "ZZ_PLAN", "measure": "period_amount"}],
-            active_budgets=["ZZ_B1"])
+            scenarios=[("ZZ_PLAN", "budget", 1)])
         assert not result.get("errors")
         (sql, params), = queries
         assert "AND scenario_id = {sid:String}" in sql
         assert "budget_scenario_id" not in sql
         assert params["param_sid"] == "ZZ_PLAN"
-        assert lookups == []
+        # asked only whether the named id exists (konsol#287 review)
+        assert lookups == [{}]
         # no scenario named: all of the table, as before
         result, queries, lookups = _run_hierarchy(
             [{"scenario": sc, "measure": "period_amount"}], active_budgets=[])
@@ -432,6 +433,28 @@ def test_budget_and_forecast_still_filter_scenario_id():
         assert "scenario_id" not in sql
         assert "param_sid" not in params
         assert lookups == []
+
+
+# ── a scenario_id that cannot filter the hierarchy table is refused
+#    (konsol#287 review). After the add-in's arguments moved one place left,
+#    an old formula's department value can land in the scenarioId slot.
+
+def test_hierarchy_actuals_with_a_scenario_id_is_refused():
+    result, queries, _ = _run_hierarchy(
+        [{"scenario": "actuals", "measure": "period_net_amount", "scenario_id": "D01"}])
+    assert queries == []
+    assert result["errors"] == [
+        "Hierarchy scenario 'actuals' has no scenario column, so scenario_id "
+        "'D01' cannot filter it. Leave scenario_id blank."]
+
+
+def test_hierarchy_budget_with_a_scenario_naming_no_scenario_is_refused():
+    result, queries, _ = _run_hierarchy(
+        [{"scenario": "budget", "measure": "period_amount", "scenario_id": "D01"}],
+        scenarios=_ZZ_SCENARIOS)
+    assert queries == []
+    assert result["errors"] == [
+        "Scenario 'D01' does not exist, so there is nothing to read for it."]
 
 
 # ── the hierarchy path reports ClickHouse failures like the flat path

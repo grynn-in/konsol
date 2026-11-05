@@ -357,6 +357,54 @@ def test_a_batch_row_naming_a_hierarchy_without_a_node_is_refused():
     assert api._batch_row_error({"entity": "ZZE", "hierarchy": ""}) is None
 
 
+def test_a_batch_row_with_a_non_text_hierarchy_or_node_is_refused():
+    # .strip() on a number raised AttributeError and failed the whole batch.
+    api = _load_api()
+    for key in ("hierarchy", "hierarchy_name", "hierarchy_node", "node"):
+        err = api._batch_row_error({"entity": "ZZE", key: 2026})
+        assert err and f"'{key}'" in err and "text" in err, (key, err)
+
+
+def _api_with_datasets(datasets):
+    """api with _get_fact answering from {scenario_key: dimensions list}."""
+    api = _load_api()
+
+    def get_fact(fact=None, scenario=None):
+        dims = datasets.get(fact or scenario)
+        if dims is None:
+            return None
+        return types.SimpleNamespace(
+            fact_name=f"zz_{fact or scenario}", dimensions=json.dumps(dims))
+
+    api._get_fact = get_fact
+    return api
+
+
+def test_hierarchy_dimensions_must_be_declared_on_the_dataset():
+    # Hierarchy mode checked names only against an identifier pattern, so
+    # data_area_id, layer or any column was accepted as a filter.
+    api = _api_with_datasets({"actuals": ["dim_region"]})
+    assert api._hierarchy_dimension_error("actuals", None, {"dim_region"}) is None
+    assert api._hierarchy_dimension_error("actuals", None, set()) is None
+    for bad in ("data_area_id", "layer", "dim_zz"):
+        err = api._hierarchy_dimension_error("actuals", None, {bad})
+        assert err and f"'{bad}'" in err and "dim_region" in err, (bad, err)
+
+
+def test_hierarchy_dimensions_without_a_dataset_are_refused():
+    api = _api_with_datasets({})
+    err = api._hierarchy_dimension_error("budget", None, {"dim_region"})
+    assert err and "dim_region" in err, err
+    # no dimensions asked for: nothing to check, no Dataset needed
+    assert api._hierarchy_dimension_error("budget", None, set()) is None
+
+
+def test_epm_batch_checks_hierarchy_dimensions_before_reading():
+    block = _read_api().split("def epm_batch")[1].split("\n@frappe.whitelist")[0]
+    hier = block.split("if _is_hierarchy_mode(req):")[1].split("normalized[i] = {")[0]
+    assert "_hierarchy_dimension_error(" in hier
+
+
 def test_budget_cell_save_refuses_a_hierarchy_without_a_node():
     block = _read_api().split("def budget_cell_save")[1].split("\n@frappe.whitelist")[0]
     check = block.index("_hierarchy_without_node_error(data)")
