@@ -3,6 +3,13 @@
 // Lead (EPM Admin) may do either, and each requests one `chart` rebuild.
 frappe.ui.form.on("Main Account", {
 	refresh(frm) {
+		// Frappe hides a saved document's naming field (form.js, autoname
+		// "field:main_account"). The code is the warehouse join key and cannot
+		// be renamed, so show it, read-only (Deepak Pai, 5 Nov 2026).
+		if (!frm.is_new()) {
+			frm.toggle_display("main_account", true);
+			frm.set_df_property("main_account", "read_only", 1);
+		}
 		if (frm.is_new() || !frappe.user.has_role(["EPM Admin", "System Manager"])) return;
 		if (frm.doc.status !== "Published") {
 			frm.add_custom_button(__("Publish"), () =>
