@@ -290,6 +290,26 @@ def check_file(file_url, amount_basis=None):
 
 
 @frappe.whitelist(methods=["POST"])
+def check_upload(name, amount_basis=None):
+    """Check a saved upload in place and report on it. Loads nothing.
+
+    The Desk form's "Check file" (5 Nov 2026): there the upload already exists,
+    with its file attached, so ``check_file`` (which creates one from a file
+    URL) cannot be used. A loading or loaded upload is refused: its report is
+    its outcome, and ``load`` re-checks a resumable one itself.
+    """
+    _require_loader()
+    doc = frappe.get_doc(DOCTYPE, name)
+    doc.check_permission("write")
+    if doc.status not in ("Draft", "Checked", "Failed"):
+        frappe.throw(f"This upload is {doc.status.lower()}; it cannot be checked again.")
+    if amount_basis:
+        doc.amount_basis = amount_basis
+    _record_check(doc)
+    return _payload(doc)
+
+
+@frappe.whitelist(methods=["POST"])
 def load(name, skip_invalid=0, amount_basis=None):
     """Re-check, then queue the load of every ready entity-period.
 
