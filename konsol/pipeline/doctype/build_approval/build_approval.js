@@ -1,27 +1,16 @@
+// Build Approval: a button opens the record that asked for this build.
+//
+// It used to append a "Trigger" group to the connections panel on every refresh
+// (re-initialising the panel each time); on Frappe v16 those groups piled up
+// ("Runs / Trigger / ..." repeated, demo.konsolidat.com BAPR-00044, 5 Nov
+// 2026). The panel now shows only the dashboard's own Runs; the trigger
+// fields stay Data (see test_doctype_connections.py for why not a link).
 frappe.ui.form.on("Build Approval", {
 	refresh(frm) {
-		// Run after the default dashboard refresh so we can add the trigger link.
-		setTimeout(() => refresh_build_approval_connections(frm), 0);
+		const { trigger_doctype, trigger_docname } = frm.doc;
+		if (frm.is_new() || !trigger_doctype || !trigger_docname) return;
+		frm.add_custom_button(__("Open trigger ({0})", [__(trigger_doctype)]), () =>
+			frappe.set_route("Form", trigger_doctype, trigger_docname)
+		);
 	},
 });
-
-function refresh_build_approval_connections(frm) {
-	if (frm.is_new() || !frm.dashboard) {
-		return;
-	}
-
-	const { trigger_doctype, trigger_docname } = frm.doc;
-
-	frm.dashboard.data = null;
-	frm.dashboard.data_rendered = false;
-	frm.dashboard.init_data();
-
-	if (trigger_doctype && trigger_docname) {
-		frm.dashboard.add_transactions({
-			label: __("Trigger"),
-			items: [trigger_doctype],
-		});
-	}
-
-	frm.dashboard.refresh();
-}
