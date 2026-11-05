@@ -368,6 +368,19 @@ def test_a_migrate_never_narrows_a_wider_journal_column():
     assert modifies == [f"ALTER TABLE {CA_TABLE} MODIFY COLUMN credit_amount Decimal(20,4) DEFAULT 0"], modifies
 
 
+def test_a_migrate_never_cuts_whole_digits_from_a_wide_two_place_column():
+    """PR #394 review: Decimal(38,2) has 36 whole digits, Decimal(20,4) 16.
+    Comparing (scale, precision) ALTERed it to Decimal(20,4), narrower. A
+    column with more than 16 whole digits is left alone and named."""
+    m, frappe = _load_clickhouse()
+    sql = _run_ensure(m, _columns_answer({"debit_amount": "Decimal(38, 2)",
+                                          "credit_amount": "Decimal(38, 3)"}))
+    assert not [s for s in sql if "MODIFY COLUMN" in s], sql
+    warned = [w for w in frappe._logger.messages if "consolidation_adjustments" in w]
+    assert any("debit_amount" in w and "Decimal(38, 2)" in w for w in warned), warned
+    assert any("credit_amount" in w and "Decimal(38, 3)" in w for w in warned), warned
+
+
 def test_an_unreachable_clickhouse_does_not_fail_the_migrate_over_the_widening():
     m, _ = _load_clickhouse()
 

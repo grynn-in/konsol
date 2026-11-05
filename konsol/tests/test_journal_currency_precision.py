@@ -223,7 +223,7 @@ def test_a_three_decimal_journal_is_accepted_and_balances_exactly():
         assert M.currency_problems(code, unit, lines, L) == [], code
     assert M.line_problems(lines) == []
     total_debit, total_credit = M.totals(lines)
-    assert (total_debit, total_credit) == (0.02, 0.02)
+    assert (float(total_debit), float(total_credit)) == (0.02, 0.02)
     assert M.balance_problem(total_debit, total_credit) is None
 
 
@@ -231,7 +231,7 @@ def test_a_three_decimal_imbalance_is_refused_not_rounded_away():
     """0.016 against 0.004 was 0.02 against 0.00 in cents; 0.0101 against
     0.0100 (CLF) balanced at the cent. Judged at the stored scale now."""
     total_debit, total_credit = M.totals([_line(1, debit=0.016), _line(2, credit=0.004)])
-    assert (total_debit, total_credit) == (0.016, 0.004)
+    assert (float(total_debit), float(total_credit)) == (0.016, 0.004)
     assert "0.016" in M.balance_problem(total_debit, total_credit)
     total_debit, total_credit = M.totals([_line(1, debit="0.0101"), _line(2, credit="0.0100")])
     assert M.balance_problem(total_debit, total_credit) is not None
@@ -241,3 +241,24 @@ def test_a_sub_cent_line_is_an_amount_not_a_blank_line():
     """A BHD line of 0.004 is a debit: line_problems used to read it as 0.00
     and say "enter a debit or a credit"."""
     assert M.line_problems([_line(1, debit=0.004), _line(2, credit=0.004)]) == []
+
+
+
+# --- PR #394 review: totals and the balance compared as Decimal -------------
+
+
+def test_a_tenth_of_a_basis_point_imbalance_on_a_large_journal_is_refused():
+    """Above ~5.5e11 a float cannot hold 0.0001: two totals that differ by it
+    compared equal as floats. The controller compares Decimals."""
+    from decimal import Decimal
+    lines = [_line(1, debit="999999999999.9999"), _line(2, credit="999999999999.9998")]
+    total_debit, total_credit = M.totals(lines)
+    assert isinstance(total_debit, Decimal) and isinstance(total_credit, Decimal)
+    assert total_debit - total_credit == Decimal("0.0001")
+    assert M.balance_problem(total_debit, total_credit) is not None
+
+
+def test_the_controller_stores_the_totals_as_floats_after_judging_decimals():
+    with open(CONTROLLER) as f:
+        src = f.read()
+    assert "float(total_debit)" in src and "float(total_credit)" in src, src
