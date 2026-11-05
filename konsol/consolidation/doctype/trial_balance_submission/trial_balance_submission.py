@@ -753,6 +753,10 @@ def reland_submitted(names=None, apply=0, remove_orphans=0):
     return {"queued": True, "applied": False}
 
 
+#: Why an orphan claim was kept: its period closed after the plan's gate.
+RELAND_PERIOD_CLOSED = "period closed since the plan"
+
+
 def _reland_job_queued():
     """Whether a re-land job is queued or running (deduplicate would drop a
     second one without a word, so the request says so instead)."""
@@ -917,7 +921,21 @@ def _reland(names=None, remove_orphans=0, apply=False, commit=False, guard=None,
        document read with a lock and judged again (orphan_verdict) right
        before the delete, since the plan's locks were released by the first
        commit (re-review, finding 4). One that is no longer an orphan is
-       listed under ``kept``. The removal is recorded as a data change first.
+       listed under ``kept``. Inside the guard the period is checked open
+       again, since the gate in step 2 ran before the documents were
+       re-landed: a period closed since keeps its claims, listed under
+       ``kept`` with RELAND_PERIOD_CLOSED. The removal is recorded as a data
+       change first, and with ``commit`` that record commits before the
+       delete, so a delete that applied before its call raised is still
+       audited and voids the sign-off. A failed delete lists the period's
+       claims under ``failed`` with the error, and the other periods still
+       run; a build is requested for it all the same.
+
+    The per-document guard holds the pipeline lock across one document's
+    ClickHouse delete and insert, so a governed build waits for
+    at most one document. If one document's landing ever takes longer than the build's
+    GET_LOCK wait (``_SINGLE_FLIGHT_TIMEOUT``, 10 s, in
+    konsol.orchestrator.api), that build fails and must be run again.
 
     When ``guard()`` refuses (a build became active), the loop stops: every
     document and orphan not reached is listed under ``failed`` with
@@ -985,7 +1003,12 @@ def _reland(names=None, remove_orphans=0, apply=False, commit=False, guard=None,
                 # the row lock, so the docstatus is locked and read again.
                 frappe.db.commit()
                 if not _still_submitted(doc.name):
+                    # The committed tb_relanded event must not stand alone.
                     out["failed"].append((doc.name, "no longer submitted"))
+                    doc.add_comment("Info", "Rebuild Warehouse Rows skipped this document: it was "
+                                    "cancelled after the re-land was recorded, so nothing was "
+                                    "re-landed (konsol#283).")
+                    frappe.db.commit()
                     continue
             try:
                 execute(
@@ -1018,6 +1041,10 @@ def _reland(names=None, remove_orphans=0, apply=False, commit=False, guard=None,
             except Exception:  # noqa: BLE001 — a build became active: listed, never hidden
                 stop([o["submission_name"] or o["batch_id"] for _p, g in periods[i:] for o in g])
                 return out
+            # The gate ran before any write; the period may have closed since.
+            if not _period_is_open(fiscal_year, fiscal_period):
+                out["kept"].extend((o["submission_name"], RELAND_PERIOD_CLOSED) for o in group)
+                continue
             still = []
             for o in group:
                 why = _orphan_verdict_now(o)
@@ -1032,12 +1059,23 @@ def _reland(names=None, remove_orphans=0, apply=False, commit=False, guard=None,
                 "Warehouse claims with no submitted TB removed: %s"
                 % ", ".join(o["submission_name"] or o["batch_id"] for o in still),
                 entity=entity or None)
+            if commit:
+                # The data change survives a ClickHouse failure, as a
+                # document's audit does: a delete that applied before its
+                # call raised still voids the sign-off over those numbers.
+                frappe.db.commit()
             batches = ", ".join(f"'{_sql_str(o['batch_id'])}'" for o in still)
-            execute(
-                f"ALTER TABLE {CONTROL_TABLE} DELETE WHERE batch_id IN ({batches}) "
-                "SETTINGS mutations_sync = 1"
-            )
-            out["orphans_removed"] += len(still)
+            try:
+                execute(
+                    f"ALTER TABLE {CONTROL_TABLE} DELETE WHERE batch_id IN ({batches}) "
+                    "SETTINGS mutations_sync = 1"
+                )
+            except Exception as e:  # noqa: BLE001 — listed per claim, never hidden
+                message = _error_text(e)
+                out["failed"].extend((o["submission_name"] or o["batch_id"], message) for o in still)
+            else:
+                out["orphans_removed"] += len(still)
+            # Built for either way: a failed call may still have deleted.
             changed(still[0]["submission_name"] or still[0]["batch_id"])
             if commit:
                 frappe.db.commit()
