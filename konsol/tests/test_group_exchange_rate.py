@@ -1175,13 +1175,17 @@ def test_every_iso_currency_has_a_reference():
     with open(os.path.join(APP_DIR, "reference_data", "iso_currencies.json")) as f:
         rows = json.load(f)
     by_code = {r["currency_code"]: r.get("usd_log10") for r in rows}
-    assert len(by_code) == 88, "ISO 4217's active codes, less VES (konsol#190)"
+    assert len(by_code) == 180, "ISO 4217 List One in full, and ANG, BGN withdrawn (PR #384 review)"
     assert len(rows) == len(by_code), "no code is listed twice"
     # konsol#176: a hyperinflationary currency cannot have one reference that
     # serves every period, so the bolívar waits for that issue's per-period work.
-    assert "VES" not in by_code, "VES waits for konsol#176; do not seed it with a single reference"
+    # PR #384 review: VES is an ISO code, so it is listed, with NO reference:
+    # a VES rate is refused as "no_reference" until a site sets one.
+    assert by_code["VES"] is None, "VES waits for konsol#176; do not seed it with a single reference"
     r = _rules()
-    assert not [c for c, v in by_code.items() if r.usd_reference(c, v) is None]
+    # konsol#190's 88 keep their references; a code added from List One has
+    # none until a site sets it (refused as "no_reference", naming the field).
+    assert len([c for c, v in by_code.items() if r.usd_reference(c, v) is not None]) == 88
     with open(os.path.join(APP_DIR, "epm", "doctype", "iso_currency", "iso_currency.json")) as f:
         field = next(x for x in json.load(f)["fields"] if x["fieldname"] == "usd_log10")
     assert field["fieldtype"] == "Float" and "0.001" in field["description"]

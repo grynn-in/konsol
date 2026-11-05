@@ -30,6 +30,7 @@ import os
 import frappe
 
 from konsol.fx_reference import REFERENCE_CURRENCY, is_unset  # noqa: F401 — the one rule
+from konsol import iso_currency_model
 from konsol.iso_currency_model import minor_unit_problem
 
 REFERENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_data", "iso_currencies.json")
@@ -44,8 +45,22 @@ def reference_rows():
 
 def listed_minor_units():
     """{code: minor_unit} from the shipped list: the authority for
-    ISO Currency.minor_unit (konsol#330)."""
+    ISO Currency.minor_unit (konsol#330). None: ISO 4217 sets no minor unit
+    for the code (N.A.), so a site declares one (iso_currency_model)."""
     return {r["currency_code"]: r["minor_unit"] for r in reference_rows()}
+
+
+def _stored():
+    return frappe.get_all("ISO Currency", fields=["name", "usd_log10", "minor_unit", "minor_unit_declared"],
+                          limit_page_length=0)
+
+
+def minor_unit_gap():
+    """The setup gap naming every stored ISO Currency whose minor unit the
+    konsol#330 rule refuses, or None. Read by the sign-off gate and My work,
+    so a wrong stored value blocks rather than being used (PR #384 review)."""
+    return iso_currency_model.minor_unit_gap(
+        [(r.name, r.minor_unit, r.minor_unit_declared) for r in _stored()], listed_minor_units())
 
 
 def usd_log10_defaults():
@@ -60,16 +75,21 @@ def seed_iso_currencies(rows=None):
     the doctype first; after_migrate and after_sync run after model sync.
     A stored row the ISO Currency rule refuses (a code not on the list, or a
     Minor Unit that differs from the list's, konsol#330) is not changed: it
-    is returned in "refused" so the migrate names it.
+    is returned in "refused" so the migrate names it. A listed code ISO
+    gives no minor unit (N.A.) is never inserted.
     Returns {"inserted": [...], "filled": [...], "refused": [...]}."""
     rows = reference_rows() if rows is None else rows
-    have = {r.name: r for r in frappe.get_all("ISO Currency", fields=["name", "usd_log10", "minor_unit"],
-                                              limit_page_length=0)}
+    have = {r.name: r for r in _stored()}
     listed = listed_minor_units()
     out = {"inserted": [], "filled": [],
-           "refused": sorted(c for c, r in have.items() if minor_unit_problem(c, r.minor_unit, listed))}
+           "refused": sorted(c for c, r in have.items()
+                             if minor_unit_problem(c, r.minor_unit, listed, bool(r.minor_unit_declared)))}
     for row in rows:
         code = row["currency_code"]
+        if code not in have and row["minor_unit"] is None:
+            # ISO 4217 sets no minor unit (N.A.): the column would store 0.
+            # A site that uses the code creates it and declares its own.
+            continue
         if code not in have:
             doc = frappe.get_doc(dict({"doctype": "ISO Currency"}, **{k: row[k] for k in FIELDS}))
             doc.insert(ignore_permissions=True)

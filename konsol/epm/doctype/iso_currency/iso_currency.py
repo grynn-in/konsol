@@ -39,12 +39,15 @@ class ISOCurrency(Document):
     def validate(self):
         """Minor Unit is the shipped ISO 4217 list's (konsol#330, Deepak Pai,
         11 Oct 2026): a code not on the list, or a Minor Unit that differs from
-        the list's, is refused. A blank is never read as 0.
+        the list's, is refused. A blank is never read as 0. A code ISO 4217
+        does not list, or lists with no minor unit, is accepted only with
+        ``minor_unit_declared`` ticked and a Minor Unit entered (PR #384).
 
         usd_log10 is roughly log10 of units per 1 USD (konsol#103): real
         currencies sit between about -1 (KWD) and 5 (IRR at market). Outside
         [-5, 10] is a typo that would refuse every rate in this currency."""
-        problem = minor_unit_problem(self.currency_code, self.minor_unit, listed_minor_units())
+        problem = minor_unit_problem(self.currency_code, self.minor_unit, listed_minor_units(),
+                                     declared=bool(self.minor_unit_declared))
         if problem:
             frappe.throw(problem, frappe.ValidationError)
         value = float(self.usd_log10 or 0)

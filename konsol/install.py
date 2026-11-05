@@ -95,6 +95,12 @@ def _seed_iso_currencies():
             print(f"konsol: ISO Currency rows that disagree with the shipped ISO 4217 list "
                   f"(not on it, or a different Minor Unit): {', '.join(out['refused'])}. "
                   "Fix each one's Minor Unit, or delete a code that is not on the list.")
+            # PR #384 review: also where people look, not only the migrate's
+            # console. My work and the sign-off gate carry it as a setup gap.
+            frappe.log_error(
+                title="konsol#330: ISO Currency minor unit disagrees with ISO 4217",
+                message=f"ISO Currency rows refused by the ISO 4217 rule: {', '.join(out['refused'])}. "
+                        "Each blocks sign-off until its Minor Unit is fixed (konsol#330).")
     except Exception:  # noqa: BLE001
         frappe.log_error(title="konsol: ISO Currency seed failed")
 

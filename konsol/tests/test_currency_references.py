@@ -28,7 +28,7 @@ def _module(rows=()):
     record = {"set": [], "inserted": []}
     frappe = types.ModuleType("frappe")
     frappe.get_all = lambda doctype, fields=None, **k: [
-        types.SimpleNamespace(name=c, usd_log10=v, minor_unit=_LISTED_UNITS.get(c))
+        types.SimpleNamespace(name=c, usd_log10=v, minor_unit=_LISTED_UNITS.get(c), minor_unit_declared=0)
         for c, v in dict(rows).items()]
     frappe.db = types.SimpleNamespace(
         set_value=lambda dt, name, field, value, update_modified=True:

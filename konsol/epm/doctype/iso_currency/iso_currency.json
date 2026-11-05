@@ -40,7 +40,14 @@
    "fieldtype": "Int",
    "label": "Minor Unit",
    "in_list_view": 1,
-   "description": "ISO 4217 exponent: decimal places. 0 for JPY, 3 for KWD. Must match the ISO 4217 list konsol ships; a different value, or a code not on the list, is refused (konsol#330)."
+   "description": "ISO 4217 exponent: decimal places. 0 for JPY, 3 for KWD. Must match the ISO 4217 list konsol ships (List One in full); a different value is refused (konsol#330). For a code ISO 4217 does not set, tick Minor Unit Not Set by ISO 4217 and enter it here."
+  },
+  {
+   "fieldname": "minor_unit_declared",
+   "fieldtype": "Check",
+   "default": "0",
+   "label": "Minor Unit Not Set by ISO 4217",
+   "description": "Tick only for a code ISO 4217 does not list (a crypto-asset or an internal unit) or lists with no minor unit (XAU, XDR and the other N.A. codes). Then enter the Minor Unit yourself, 0 to 9; a blank is refused, never read as 0. A code ISO 4217 gives a minor unit cannot be ticked."
   },
   {
    "fieldname": "usd_log10",

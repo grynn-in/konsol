@@ -280,6 +280,15 @@ def statement_gap():
     return statement_accounts()["gap"]
 
 
+def currency_gap():
+    """The ISO Currency minor-unit setup gap (konsol#330, PR #384 review), or
+    None: a stored minor unit the ISO 4217 rule refuses rounds every amount
+    in that currency to the wrong places, so it blocks. Lazy: test loaders
+    stub konsol.currency_references."""
+    from konsol import currency_references
+    return currency_references.minor_unit_gap()
+
+
 def commentary_threshold():
     """The declared commentary threshold, or its setup gap (#305-W5-2,
     story 8.4): Close Settings' three fields through
@@ -384,6 +393,11 @@ def sign_off_problems(fiscal_year, fiscal_period, shared=None):
     from konsol.close import ic_balance_api
     gaps.extend(ic_balance_api.rule_gaps(
         *key, reads=None if shared is None else shared["ic_balances"]))
+    # konsol#330 (PR #384 review): an ISO Currency whose stored minor unit
+    # disagrees with ISO 4217 is never used silently; it blocks.
+    currency_problem = currency_gap()
+    if currency_problem:
+        gaps.append(currency_problem)
     tbs = _submitted("Trial Balance Submission", key)
     # #289 (#305-W2-2): a submitted TB from an entity with no covering
     # ownership at the period start is consolidated nowhere; it blocks.

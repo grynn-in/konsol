@@ -44,7 +44,7 @@ Rules:
 import re
 
 GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "commentary_threshold",
-        "chart", "ic_accounts", "ic_tolerance", "ic_rule", "ic_rule_ambiguous", "frequency",
+        "iso_currency", "chart", "ic_accounts", "ic_tolerance", "ic_rule", "ic_rule_ambiguous", "frequency",
         "ownership", "accountants")
 FACT_KEYS = ("first_close", "chart_published", "frequency_missing", "ownership_missing",
              "accountants_without_entities", "policy_gaps", "ic_accounts_gap", "ic_tolerance_gap",
@@ -60,7 +60,14 @@ _POLICY_GAPS = {
     "statement_accounts_undeclared": ("statement_accounts", "Statement setup incomplete"),
     #: #305-W5-2 (story 8.4): appended by the API layer after the statement gap.
     "commentary_threshold_undeclared": ("commentary_threshold", "Commentary threshold not declared"),
+    #: konsol#330 (PR #384 review): appended by the API layer; it opens ISO
+    #: Currency, not Close Settings (``_POLICY_GAP_DESKS``).
+    "iso_currency_minor_unit_disagrees": ("iso_currency",
+                                          "ISO Currency minor unit disagrees with ISO 4217"),
 }
+
+#: A policy gap fixed somewhere other than Close Settings.
+_POLICY_GAP_DESKS = {"iso_currency": "/desk/iso-currency"}
 
 
 #: ``ic_balance_model`` rule-gap code -> (gap id, title stem), in item order.
@@ -116,7 +123,8 @@ def setup_gap_items(facts):
                            "/desk/close-settings"))
     for gap in facts["policy_gaps"] or ():
         gap_id, title = _POLICY_GAPS[gap["code"]]
-        items.append(_item(gap_id, title, gap["message"], "EPM Admin", "/desk/close-settings"))
+        items.append(_item(gap_id, title, gap["message"], "EPM Admin",
+                           _POLICY_GAP_DESKS.get(gap_id, "/desk/close-settings")))
     if not facts["chart_published"]:
         items.append(_item("chart", "Group chart not published",
                            "Publish the Main Accounts of the group chart.", "EPM Admin",

@@ -428,6 +428,11 @@ def _load(site):
     ic_balance_api.rule_gaps = (lambda fiscal_year, fiscal_period, reads=None:
                                 list(site.ic_rule_gaps))
     close.ic_balance_api = ic_balance_api
+    # PR #384 review (konsol#330): the gate imports konsol.currency_references
+    # lazily; its ISO Currency gap is `site.currency_gap` (None here).
+    currency_references = types.ModuleType("konsol.currency_references")
+    currency_references.minor_unit_gap = lambda: site.__dict__.get("currency_gap")
+    konsol.currency_references = currency_references
 
     # W5-2 (8.4): a stub `konsol.close.statement_api` (the real one reads
     # ClickHouse), for signoff_gate.commentary's lazy import.
@@ -448,6 +453,7 @@ def _load(site):
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
             "konsol.close.ic_api": ic_api,
             "konsol.close.ic_balance_api": ic_balance_api,
+            "konsol.currency_references": currency_references,
             "konsol.close.statement_api": statement_api,
             "konsol.fiscal_calendar": calendar, "konsol.entity_permissions": perms,
             "konsol.period_status": period_status,

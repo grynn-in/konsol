@@ -100,7 +100,8 @@ def test_the_seed_reports_a_stored_row_that_disagrees():
     frappe = types.ModuleType("frappe")
     stored = {"USD": (0.0, 2), "KWD": (-0.51, 0), "ZZX": (1.0, 2)}
     frappe.get_all = lambda doctype, fields=None, **k: [
-        types.SimpleNamespace(name=c, usd_log10=v, minor_unit=u) for c, (v, u) in stored.items()]
+        types.SimpleNamespace(name=c, usd_log10=v, minor_unit=u, minor_unit_declared=0)
+        for c, (v, u) in stored.items()]
     frappe.db = types.SimpleNamespace(set_value=lambda *a, **k: None)
 
     class Doc(dict):
