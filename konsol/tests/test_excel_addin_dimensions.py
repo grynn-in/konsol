@@ -219,6 +219,19 @@ def test_a_malformed_dimensions_argument_is_refused_not_dropped():
         assert out["requests"] == [], arg
 
 
+def test_an_argument_past_the_last_slot_is_refused():
+    # An old formula that passed the last argument (e.g. K.EPM's layer) now
+    # has one argument more than the signature. Dropped, its layer filter
+    # would be lost and the cell would sum every layer.
+    for fn, n in SIGNATURES.items():
+        args = ([100] if fn == "EPMSAVE" else []) + list(_READ)
+        args += [""] * (len(n) - len(args)) + ["base"]
+        out = _call(fn, *args)
+        assert out["error"] is not None, (fn, out)
+        assert "argument" in out["error"]["message"], (fn, out)
+        assert out["requests"] == [], fn
+
+
 def test_epmsave_sends_the_dimensions_dict():
     reply = {"message": {"status": "ok", "value": 100}}
     out = _call("EPMSAVE", 100, "ZZE", 2026, 1, "ZZ6100", "ZZ_PLAN", "base",
