@@ -100,10 +100,10 @@ def test_batch_query_groups_by_entity():
     assert "param_entity" not in batch
 
 
-def test_legacy_cost_center_mapped_in_api():
-    src = _read("api.py")
-    assert "_LEGACY_DIM_MAP" in src
-    assert "dim_cost_center" in src.split("_LEGACY_DIM_MAP")[1].split("def _resolve_and_validate")[0]
+def test_legacy_dimension_keys_not_mapped_in_api():
+    # konsol#287, decision 1 option A (5 Nov 2026): dimensions arrive only in
+    # the generic `dimensions` dict; the legacy-key shim is gone.
+    assert "_LEGACY_DIM_MAP" not in _read("api.py")
 
 # ── budget layer filter in hierarchy mode (grynn-in/konsol#63) ──────────
 
