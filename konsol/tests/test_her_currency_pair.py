@@ -126,10 +126,14 @@ def test_frappe_writing_the_value_does_not_break_the_property():
     assert doc.from_currency == "EUR"
 
 
-def test_the_form_heads_the_record_with_the_pair():
+def test_the_sentence_sits_under_the_rate_field():
+    """Deepak Pai, 5 Nov 2026: put "1 INR = 0.018800 USD at 01-12-2011, for
+    account 3000 of IN_NALCO" next to or below the rate. It is the rate field's
+    own help line, not a banner at the top of the form."""
     js = open(HER_JS).read()
     assert "from_currency" in js and "to_currency" in js
-    assert "set_intro" in js
+    assert 'set_df_property("historical_rate", "description"' in js
+    assert "set_intro" not in js
 
 
 def test_a_same_currency_rate_is_said_to_be_unused():
