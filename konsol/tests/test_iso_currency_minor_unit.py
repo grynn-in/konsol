@@ -299,8 +299,6 @@ _USED_SOURCES = {
     ("Business Combination Cost", "currency"),
     ("Business Disposal", "proceeds_currency"),
     ("Business Disposal Proceeds", "currency"),
-    ("Historical Equity Rate", "from_currency"),
-    ("Historical Equity Rate", "to_currency"),
 }
 
 
@@ -393,7 +391,7 @@ def test_used_reads_roots_and_submitted_documents_only():
     # (consolidation_journal._root), not from a node with no parent.
     assert seen["Consolidation Group"] == {"data_area_id": ["is", "not set"]}
     for doctype in ("Group Exchange Rate", "Trial Balance Submission", "Consolidation Journal",
-                    "Business Combination", "Business Disposal", "Historical Equity Rate"):
+                    "Business Combination", "Business Disposal"):
         assert seen[doctype] == {"docstatus": 1}, (doctype, seen[doctype])
     # A child row counts only under a submitted parent of its own doctype.
     for child, parent in (("Business Combination Consideration", "Business Combination"),
