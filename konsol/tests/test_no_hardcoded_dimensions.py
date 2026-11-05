@@ -238,22 +238,7 @@ _RETIRED_FIELD_PATCH = (
     "the source-column patch it records a moment in a site's history; it goes "
     "when the patch is retired."
 )
-_EXCEL_ADDIN = (
-    "konsol#287 — the Excel add-in's budget write takes cost centre and "
-    "department as fixed positional arguments and sends them as fixed data "
-    "keys, so a customer with different dimensions cannot use the spreadsheet "
-    "at all. Removed when the add-in reads the declared dimensions instead."
-)
-_LEGACY_REQUEST_KEYS = (
-    "konsol#287 — _LEGACY_DIM_MAP translates two pre-Dimension request keys "
-    "('cost_center', 'department') to column names. Removed when the last "
-    "caller of the legacy keys is gone; the map is the compatibility shim, "
-    "not the model."
-)
-
 ALLOWED_DIMENSION_LITERALS = {
-    ("konsol/api.py", "dim_cost_center"): (1, _LEGACY_REQUEST_KEYS),
-    ("konsol/api.py", "dim_department"): (1, _LEGACY_REQUEST_KEYS),
     ("konsol/patches/fix_dimension_source_column_drift.py", "dim_cost_center"): (
         2,
         _SOURCE_COLUMN_PATCH,
@@ -274,9 +259,34 @@ ALLOWED_DIMENSION_LITERALS = {
         "konsol/patches/retire_budget_annual_input_fixed_dimensions.py",
         "dim_department",
     ): (1, _RETIRED_FIELD_PATCH),
-    ("konsol/public/excel-addin/functions.js", "dim_cost_center"): (1, _EXCEL_ADDIN),
-    ("konsol/public/excel-addin/functions.js", "dim_department"): (1, _EXCEL_ADDIN),
 }
+
+#: The Excel add-in's retired fixed dimension arguments and the API shim that
+#: translated them (konsol#287, decision 1 option A, Deepak Pai, 5 Nov 2026:
+#: one generic ``dimensions`` argument instead). None of these is a ``dim_``
+#: column name, so the literal scan above cannot see them; this list can.
+#: Matched anywhere in the shipped tree, comments included: no shipped file
+#: has a reason to name them, and a returning ``costCenter`` parameter is the
+#: regression this guards. Zero is the only allowed count.
+RETIRED_LEGACY_DIMENSION_NAMES = {
+    "costCenter": re.compile(r"\bcostCenter\b"),
+    "_LEGACY_DIM_MAP": re.compile(r"\b_LEGACY_DIM_MAP\b"),
+    # As a quoted key, which is how the add-in sent them and the shim read
+    # them. The bare words stay free for prose ("a department budget").
+    '"cost_center"': re.compile(r"""["']cost_center["']"""),
+    '"department"': re.compile(r"""["']department["']"""),
+}
+
+
+def scan_retired_names(relpath, text):
+    """``[(relpath, name, line)]`` for every retired legacy name in ``text``."""
+    hits = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for name, pattern in RETIRED_LEGACY_DIMENSION_NAMES.items():
+            if pattern.search(line):
+                hits.append((relpath, name, lineno))
+    return hits
+
 
 # --------------------------------------------------------------------------
 # The prose escapes, enumerated. Each entry: (path, literal) -> (count, why).
@@ -653,6 +663,38 @@ def test_path_allow_list_is_not_stale():
         "konsol#287: these paths are allow-listed but no longer exist. Delete "
         "the entries:\n  " + "\n  ".join(rows)
     )
+
+
+def test_retired_excel_dimension_arguments_do_not_return():
+    hits = []
+    for relpath in shipped_files():
+        with open(os.path.join(REPO_ROOT, relpath), encoding="utf-8") as f:
+            hits.extend(scan_retired_names(relpath, f.read()))
+    assert hits == [], (
+        "konsol#287: the Excel add-in's fixed cost centre / department "
+        "arguments, or the _LEGACY_DIM_MAP shim, are back. Dimensions travel "
+        "as the one generic `dimensions` argument (decided 5 Nov 2026):\n  "
+        + "\n  ".join(f"{p}:{n}: {name}" for p, name, n in hits)
+    )
+
+
+def test_retired_names_are_caught_in_each_form():
+    cases = {
+        "konsol/public/excel-addin/functions.json":
+            '{ "name": "costCenter", "type": "string" }',
+        "konsol/public/excel-addin/functions.js":
+            'if (x) req.cost_center = String(x); req["department"] = y;',
+        "konsol/api.py": '_LEGACY_DIM_MAP = {"cost_center": "x"}',
+    }
+    found = {name for path, text in cases.items()
+             for _, name, _ in scan_retired_names(path, text)}
+    assert found == {"costCenter", '"department"', "_LEGACY_DIM_MAP",
+                     '"cost_center"'}, found
+
+
+def test_retired_names_leave_prose_alone():
+    assert scan_retired_names(
+        "konsol/x.py", "# a department budget, by cost centre\n") == []
 
 
 # --- the guard catches structural use (synthetic content) -----------------
