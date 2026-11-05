@@ -1042,7 +1042,8 @@ _ADDED_COLUMNS = {
 # nothing still rewrites the table's metadata_modification_time, so a table
 # that is already wide (or a fresh one, created wide above) gets no ALTER. A
 # Decimal column is only ever widened: one whose scale is already at or above
-# the target's is left alone. The type and default here must be the CREATE's.
+# the target's, or that holds more whole digits than the target, is left
+# alone (the second with a warning). The type and default here must be the CREATE's.
 # Changing a Decimal column's type is a mutation that rewrites the column's
 # parts; ClickHouse converts parts not yet rewritten when they are read.
 _WIDENED_COLUMNS = {
@@ -1059,10 +1060,10 @@ _DECIMAL_TYPE = re.compile(r"^Decimal\(\s*(\d+)\s*,\s*(\d+)\s*\)$")
 def _widened_column_ddl():
     """The MODIFY COLUMN statements an existing stack still needs, or [].
 
-    Reads system.columns once. A column whose current type is not a Decimal
-    of a smaller scale (or, at the same scale, a smaller precision) than its
-    target is left alone: a fresh table, an already widened one and a site's
-    own wider type all issue nothing. Unreachable ClickHouse: [] (the next
+    Reads system.columns once. Only a Decimal with a smaller scale than its
+    target and no more whole digits (precision - scale) is altered: a fresh
+    table, an already widened one and a site's own wider type issue nothing,
+    and one with more whole digits (Decimal(38,2)) is logged, not narrowed. Unreachable ClickHouse: [] (the next
     migrate asks again).
     """
     wanted = {}
@@ -1088,10 +1089,19 @@ def _widened_column_ddl():
         target = _DECIMAL_TYPE.match(typ)
         if not current or not target:
             continue
-        have = (int(current.group(2)), int(current.group(1)))
-        want = (int(target.group(2)), int(target.group(1)))
-        if have < want:
-            out.append(f"ALTER TABLE {table} MODIFY COLUMN {parts[2]} {typ} {default}")
+        have_precision, have_scale = int(current.group(1)), int(current.group(2))
+        want_precision, want_scale = int(target.group(1)), int(target.group(2))
+        if have_scale >= want_scale:
+            continue
+        # PR #394 review: widening the scale must not cut whole digits. A
+        # Decimal(38,2) holds 36 of them, Decimal(20,4) 16: left alone, named.
+        if have_precision - have_scale > want_precision - want_scale:
+            frappe.logger().warning(
+                f"{table}.{parts[2]} is {parts[3].strip()}: not changed to {typ}, which keeps "
+                f"{want_scale} decimal places but fewer whole digits (konsol#353). Widen it "
+                f"by hand to a type that keeps both.")
+            continue
+        out.append(f"ALTER TABLE {table} MODIFY COLUMN {parts[2]} {typ} {default}")
     return out
 
 

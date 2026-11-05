@@ -132,7 +132,9 @@ class ConsolidationJournal(Document):
                 found.append(problem)
         if found:
             frappe.throw("<br>".join(found))
-        self.total_debit, self.total_credit = total_debit, total_credit
+        # Judged as Decimals above; stored as floats (PR #394 review).
+        self.total_debit = float(total_debit) if total_debit is not None else None
+        self.total_credit = float(total_credit) if total_credit is not None else None
 
         for line in (self.get("lines") or []):
             self._validate_line_entity(line, root)

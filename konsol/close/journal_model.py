@@ -10,17 +10,17 @@ Rules (#292):
     credit_amount is greater than zero;
   - no negative amount;
   - at least two lines;
-  - the journal balances exact to the cent — round(sum debit, 2) ==
-    round(sum credit, 2) — and, since konsol#353, no line carries more
-    decimal places than the journal currency's minor unit
-    (``currency_problems``), so that check is exact in the currency's own
-    unit. There is no declared materiality floor here
+  - the journal balances exactly at the warehouse's ``STORED_PLACES`` (4,
+    konsol#353 option C): the debit and credit totals, summed as Decimals at
+    4 places, are equal. No line carries more decimal places than the
+    journal currency's minor unit (``currency_problems``), so that check is
+    exact in the currency's own unit. There is no declared materiality floor here
     (Problems P7b). The Trial Balance's rule is its own
     (konsol/tb_balance_model.py, konsol#180: exact in the declared
     currency's minor unit) and is not the journal's.
 
-Amounts are handled as Decimal, quantized to 2 dp, so 0.10 + 0.20 balances
-against 0.30 — a plain float sum would not.
+Amounts are handled as Decimal, quantized to ``STORED_PLACES``, so 0.10 +
+0.20 balances against 0.30 — a plain float sum would not.
 """
 import importlib.util as _importlib_util
 import os as _os
@@ -211,7 +211,11 @@ def line_problems(lines):
 
 
 def totals(lines):
-    """(total_debit, total_credit), each a float rounded to ``STORED_PLACES``."""
+    """(total_debit, total_credit), each a Decimal rounded to ``STORED_PLACES``.
+
+    Decimals, not floats (PR #394 review): above ~5.5e11 a float cannot hold
+    0.0001, so two totals that differ by it would compare equal. The caller
+    judges them as Decimals and converts to float only to store them."""
     total_debit = Decimal("0")
     total_credit = Decimal("0")
     for line in lines:
@@ -219,7 +223,7 @@ def totals(lines):
         total_credit += _stored(line.get("credit_amount"))
     total_debit = total_debit.quantize(_STORED_UNIT, rounding=ROUND_HALF_UP)
     total_credit = total_credit.quantize(_STORED_UNIT, rounding=ROUND_HALF_UP)
-    return float(total_debit), float(total_credit)
+    return total_debit, total_credit
 
 
 def total_problems(total_debit, total_credit):
