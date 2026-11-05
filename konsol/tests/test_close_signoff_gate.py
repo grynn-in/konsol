@@ -397,7 +397,17 @@ def _load(site):
                                          now_datetime=lambda: CHANGED_AT)
     konsol.close, konsol.fiscal_calendar, konsol.period_status = close, calendar, period_status
 
+    # PR #384 review (konsol#330): a stub `konsol.currency_references`
+    # (imported lazily by the gate); its gap is `site.currency_gap`.
+    currency_references = types.ModuleType("konsol.currency_references")
+    currency_references.minor_unit_gap = lambda: site.__dict__.get("currency_gap")
+    # PR #384 re-review: blocking (used rows) and reported (unused rows) apart.
+    currency_references.minor_unit_gaps = lambda: {"blocking": site.__dict__.get("currency_gap"),
+                                                   "reported": site.__dict__.get("currency_report")}
+    konsol.currency_references = currency_references
+
     mods = {"frappe": frappe, "konsol": konsol, "konsol.close": close,
+            "konsol.currency_references": currency_references,
             "konsol.close.period_model": period_model,
             "konsol.close.signoff_model": signoff_model,
             "konsol.close.close_policy_model": close_policy_model,
@@ -2020,3 +2030,36 @@ def test_f1_re_signing_on_a_fresh_run_names_that_run():
     for state in SIGNED:
         _run_rec(site, "RUN-8-C")["signoff_status"] = state
         assert _call(site, "latest_signed_runs")[(2025, 8)]["name"] == "RUN-8-C", state
+
+
+# --- PR #384 review (konsol#330): an ISO Currency that disagrees with ISO 4217 blocks ---
+
+
+def test_an_iso_currency_minor_unit_gap_blocks_sign_off():
+    """A stored minor unit that disagrees with ISO 4217 makes every amount in
+    that currency round to the wrong places: refused, never used silently."""
+    site = _Site()
+    site.currency_gap = {"code": "iso_currency_minor_unit_disagrees", "currencies": ["USD"],
+                         "message": "ISO Currency USD: <m> (konsol#330)."}
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == ["iso_currency_minor_unit_disagrees"], codes
+    assert "ISO Currency USD" in _blocked(site)
+
+
+def test_no_iso_currency_gap_is_no_gap():
+    site = _Site()
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == [], codes
+    assert _call(site, "currency_gap") is None
+
+
+def test_an_unused_iso_currency_report_never_blocks_sign_off():
+    """PR #384 re-review: every site holds XDR=0 from the old list; nothing
+    uses it, so it is reported in My work and never blocks."""
+    site = _Site()
+    site.currency_report = {"code": "iso_currency_minor_unit_unused", "currencies": ["XDR"],
+                            "message": "ISO Currency XDR: <m>; it does not block sign-off."}
+    codes = [g["code"] for g in _call(site, "sign_off_problems", 2025, 9)["config_gaps"]]
+    assert codes == [], codes
+    gaps = _call(site, "currency_gaps")
+    assert gaps["blocking"] is None and gaps["reported"]["currencies"] == ["XDR"]

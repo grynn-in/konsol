@@ -43,8 +43,8 @@ def test_writes_through_to_the_relation_the_warehouse_validates_against():
 
 def test_fixture_carries_the_whole_iso_list_the_seed_had():
     rows = _fixture()
-    assert len(rows) == 88, \
-        "the deleted seed's 66 codes, PAB, BSD and BMD (pegged to USD), and konsol#190's 19"
+    assert len(rows) == 180, \
+        "ISO 4217 List One in full (178) and ANG, BGN, withdrawn (PR #384 review)"
     codes = {r["currency_code"] for r in rows}
     # the six Frappe does not ship at all — the reason enriching Currency would
     # have lost data even if the naming worked

@@ -90,6 +90,27 @@ def _seed_iso_currencies():
         if out["inserted"] or out["filled"]:
             print(f"konsol: ISO Currency seeded: {len(out['inserted'])} inserted, "
                   f"{len(out['filled'])} magnitude references filled")
+        if out["refused"]:
+            # konsol#330: a disagreeing row is named, never silently kept or changed
+            print(f"konsol: ISO Currency rows that disagree with the shipped ISO 4217 list "
+                  f"(not on it, or a different Minor Unit): {', '.join(out['refused'])}. "
+                  "Fix each one's Minor Unit, or delete a code that is not on the list.")
+            # PR #384 review: also where people look, not only the migrate's
+            # console. A used row blocks sign-off; an unused one (every site's
+            # XDR=0 from the old list) is reported in My work, not blocking.
+            from konsol.currency_references import minor_unit_gaps
+
+            gaps = minor_unit_gaps()
+            if gaps["blocking"]:
+                frappe.log_error(
+                    title="konsol#330: ISO Currency minor unit disagrees with ISO 4217 (blocking)",
+                    message="ISO Currency rows refused by the ISO 4217 rule and used, so they "
+                            f"block sign-off: {gaps['blocking']['message']}")
+            if gaps["reported"]:
+                frappe.log_error(
+                    title="konsol#330: ISO Currency minor unit disagrees with ISO 4217 (reported, unused)",
+                    message="ISO Currency rows refused by the ISO 4217 rule and not used, so they "
+                            f"do not block sign-off: {gaps['reported']['message']}")
     except Exception:  # noqa: BLE001
         frappe.log_error(title="konsol: ISO Currency seed failed")
 
