@@ -239,10 +239,12 @@ def upsert_dimension(spec, publish=False):
     # One save either way, and the save applies the schema when the dimension
     # ends up Published or leaves it (konsol#295). publish() saves too (and
     # inserts a new doc), so saving first and then publishing applied twice.
+    # Either way the save reports the Build Approval it queued (konsol#301).
     if publish:
-        doc.publish()
+        build_approval = doc.publish()
     else:
         doc.save()
+        build_approval = doc.flags.build_approval
     frappe.db.commit()
 
     doc.reload()
@@ -250,6 +252,7 @@ def upsert_dimension(spec, publish=False):
     return {
         "created": created,
         "published": bool(publish),
+        "build_approval": build_approval,
         "dimension": _dimension_row(doc),
     }
 

@@ -244,13 +244,17 @@ class Dimension(Document):
         # and a full-refresh Build Approval. install.regenerate_dbt_vars
         # rewrites the vars once, file only, at the end of install and
         # migrate instead.
+        # The Build Approval this save queued or debounced onto, for publish()
+        # and unpublish() to return (konsol#301). Reset first, so a save that
+        # applies nothing never reports an earlier one.
+        self.flags.build_approval = None
         if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
             return
         action = self._schema_action()
         if not action:
             return
         check_epm_admin()
-        apply_and_rebuild(self, action)
+        self.flags.build_approval = apply_and_rebuild(self, action)
 
     def on_trash(self):
         """Refuse to delete a Published Dimension (konsol#300, option A).
@@ -310,7 +314,11 @@ class Dimension(Document):
 
     @frappe.whitelist()
     def publish(self):
-        """Publish this dimension. The save applies the schema, once (#295)."""
+        """Publish this dimension. The save applies the schema, once (#295).
+
+        Returns the Build Approval the save queued, or the pending one it was
+        debounced onto (konsol#301).
+        """
         check_epm_admin()
         self.status = "Published"
         self.flags.apply_schema = True
@@ -320,10 +328,15 @@ class Dimension(Document):
             # A save refused before on_update must not leave the flag to
             # force the next, unrelated save of this object.
             self.flags.pop("apply_schema", None)
+        return self.flags.build_approval
 
     @frappe.whitelist()
     def unpublish(self):
-        """Unpublish (deactivate) this dimension. The save applies the schema, once (#295)."""
+        """Unpublish (deactivate) this dimension. The save applies the schema, once (#295).
+
+        Returns the Build Approval the save queued, or the pending one it was
+        debounced onto (konsol#301).
+        """
         check_epm_admin()
         self.status = "Inactive"
         self.flags.apply_schema = True
@@ -333,3 +346,4 @@ class Dimension(Document):
             # A save refused before on_update must not leave the flag to
             # force the next, unrelated save of this object.
             self.flags.pop("apply_schema", None)
+        return self.flags.build_approval

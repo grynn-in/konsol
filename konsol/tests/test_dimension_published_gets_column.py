@@ -234,6 +234,8 @@ def _apply_and_rebuild(doc, action):
     _REBUILDS.append((doc.name, action))
     # What apply_schema_for_publish would read: the row as written.
     _APPLIED_ROWS.append(dict(_STORE[doc.name]))
+    # The Build Approval the request queued or was debounced onto (#301).
+    return f"ZZ-BAPR-{len(_REBUILDS)}"
 
 
 #: The stored row at each apply_and_rebuild call.
@@ -701,3 +703,37 @@ def test_deleting_a_draft_or_inactive_dimension_is_allowed():
         if trash:
             trash()
         assert _REBUILDS == [], (status, _REBUILDS)
+
+
+# --- the Build Approval name reaches the caller (konsol#301) -------------
+
+
+def test_publish_returns_the_build_approval_name():
+    """The Desk, a bundle or a script must be told which approval the publish
+    queued, or which pending one it was debounced onto (konsol#301)."""
+    _reset()
+    doc = _stored("Draft")
+    assert doc.publish() == "ZZ-BAPR-1"
+
+
+def test_unpublish_returns_the_build_approval_name():
+    _reset()
+    doc = _stored("Published")
+    assert doc.unpublish() == "ZZ-BAPR-1"
+
+
+def test_a_save_that_applies_nothing_reports_no_earlier_approval():
+    """A later metadata-only save must not carry the previous publish's name."""
+    _reset()
+    doc = _stored("Draft")
+    doc.publish()
+    doc.save()
+    assert doc.flags.build_approval is None, doc.flags.build_approval
+
+
+def test_upsert_reports_the_build_approval_its_save_queued():
+    """A bundle row that lands Published names the approval, publish=True or not."""
+    for publish in (True, False):
+        _reset()
+        result = config_service.upsert_dimension(_spec_for("Published"), publish=publish)
+        assert result.get("build_approval") == "ZZ-BAPR-1", (publish, result)
