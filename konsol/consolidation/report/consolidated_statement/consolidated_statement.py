@@ -25,11 +25,25 @@ def execute(filters=None):
     payload = statement_api.get_statement(filters.fiscal_year, filters.fiscal_period, group)
     prior = _prior_year(filters.fiscal_year, filters.fiscal_period, group)
     try:
-        data = statement_report_model.rows(payload, prior)
+        data = statement_report_model.rows(
+            payload, prior, drill_group=_drill_group(filters.get("consolidation_group"), payload))
         message = statement_report_model.message(payload, prior)
     except ValueError as e:
         frappe.throw(str(e))
     return statement_report_model.columns(), data, message
+
+
+def _drill_group(value, payload):
+    """The Consolidation Group document name a heading's Statement Drill
+    link carries: the filter's own value when one was chosen, else the root
+    row of the group ``get_statement`` chose (the only group)."""
+    if value:
+        return value
+    code = payload.get("consolidation_group")
+    if not code:
+        return None
+    return frappe.db.get_value(
+        "Consolidation Group", {"consolidation_group": code, "data_area_id": ["is", "not set"]}, "name")
 
 
 def _prior_year(fiscal_year, fiscal_period, group):
