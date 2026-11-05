@@ -23,9 +23,15 @@ def test_the_form_shows_the_code_read_only_once_saved():
     js = _js("main_account.js")
     assert 'toggle_display("main_account", true)' in js
     assert 'set_df_property("main_account", "read_only", 1)' in js
+    # Only a saved account: a new one must still take its code (#378 review).
+    guard = js[js.index("if (!frm.is_new())"):js.index('set_df_property("main_account", "read_only", 1)')]
+    assert 'toggle_display("main_account", true)' in guard
 
 
 def test_the_tree_labels_a_node_code_first():
     js = _js("main_account_tree.js")
     assert "get_label(node)" in js
     assert "node.label" in js and "node.title" in js
+    # The label is inserted as HTML: both parts are escaped (#378 review).
+    assert "esc(node.label)" in js and "esc(node.title)" in js
+    assert "escape_html" in js
