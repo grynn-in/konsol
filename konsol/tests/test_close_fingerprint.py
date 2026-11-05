@@ -39,6 +39,8 @@ class _Site:
     def __init__(self):
         self.ch_rows = []
         self.ch_calls = []
+        self.ch_settings = []
+        self.ch_timeouts = []
         self.ch_fail = None
         self.signed = {}           # (fy, fp) -> run dict
         self.marked = []           # (affected, affected_by, detail)
@@ -79,8 +81,10 @@ def _load(site):
 
     ch_read = types.ModuleType("konsol.close.ch_read")
 
-    def rows(sql, params=None):
+    def rows(sql, params=None, settings=None, timeout=None):
         site.ch_calls.append((sql, dict(params or {})))
+        site.ch_settings.append(dict(settings or {}))
+        site.ch_timeouts.append(timeout)
         if site.ch_fail:
             raise RuntimeError(site.ch_fail)
         return [dict(r) for r in site.ch_rows]
@@ -302,7 +306,8 @@ def test_a_failed_read_voids_nothing_and_says_so_on_the_build():
 
 
 def test_a_build_with_no_pipeline_run_is_named_and_its_failure_logged():
-    """tasks._run_dbt_build_background (schema_apply) has no Pipeline Run."""
+    """A build with no Pipeline Run is still named (konsol#170 removed the
+    legacy schema-apply job that had none)."""
     site = _Site()
     _warehouse(site)
     mod, model = _load(site)
@@ -314,3 +319,35 @@ def test_a_build_with_no_pipeline_run_is_named_and_its_failure_logged():
     assert mod.check_after_build(None) is None
     assert site.marked == [] and site.set_values == []
     assert "a dbt build with no Pipeline Run" in site.errors[0][0]
+
+
+def test_the_stamp_read_is_bounded_below_the_single_flight_lock_wait():
+    """trigger_close_run stamps under single_flight_lock, whose waiters give up
+    after 10 s; ClickHouse must stop the read before they do (konsol#170 review)."""
+    site = _Site()
+    _warehouse(site)
+    mod, _ = _load(site)
+    mod.stamp_new_run(_D(fiscal_year=2025, fiscal_period=4))
+    (settings,) = site.ch_settings
+    assert 0 < int(settings.get("max_execution_time") or 0) <= 5, settings
+    assert settings.get("timeout_overflow_mode", "throw") == "throw", settings
+
+
+def test_the_check_after_a_build_is_not_bounded():
+    """Only the read under the lock is cut short; the after-build check is not."""
+    site = _Site()
+    _warehouse(site)
+    mod, _ = _load(site)
+    mod.fingerprints([(2025, 4)])
+    assert site.ch_settings == [{}], site.ch_settings
+
+
+def test_the_stamp_read_has_a_short_http_timeout():
+    """max_execution_time does not bound a stalled connection; the HTTP
+    timeout must, below the lock waiters' 10 s (re-review)."""
+    site = _Site()
+    _warehouse(site)
+    mod, _ = _load(site)
+    mod.stamp_new_run(_D(fiscal_year=2025, fiscal_period=4))
+    (timeout,) = site.ch_timeouts
+    assert timeout and int(site.ch_settings[0]["max_execution_time"]) < timeout <= 8, timeout

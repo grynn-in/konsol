@@ -93,26 +93,51 @@ def single_flight_lock(timeout: int = _SINGLE_FLIGHT_TIMEOUT):
         frappe.db.sql("SELECT RELEASE_LOCK(%s)", (_SINGLE_FLIGHT_LOCK,))
 
 
+#: Assertion Run states in which its ``dbt test`` is queued or running
+#: (konsol#170). The close assertions shell dbt against the same project dir.
+ACTIVE_ASSERTION_STATES = ("Queued", "Running")
+
+
+def active_dbt_holder():
+    """The active run that holds the dbt project, as "<doctype> <name>", or None.
+
+    A Pipeline Run in ``ACTIVE_RUN_STATES``, or an Assertion Run in
+    ``ACTIVE_ASSERTION_STATES`` (konsol#170: before, a build did not see an
+    assertion run, and an assertion run did not see a build). The one answer
+    to "is dbt busy", read by ``_assert_no_active_run`` and by the reaper's
+    follow-up sweep.
+    """
+    import frappe
+
+    for doctype, states in (("Pipeline Run", ACTIVE_RUN_STATES),
+                            ("Assertion Run", ACTIVE_ASSERTION_STATES)):
+        existing = frappe.get_all(
+            doctype,
+            filters={"status": ["in", list(states)]},
+            fields=["name"],
+            limit=1,
+        )
+        if existing:
+            return f"{doctype} {existing[0]['name']}"
+    return None
+
+
 def _assert_no_active_run() -> None:
     """Single-flight guard (#64a): refuse a new run while one is already active.
 
     Two concurrent runs would shell out ``dbt`` against the one shared project dir
     at once (corrupting ``target/`` and racing incremental models). ``start_run``
-    (and, transitively, the scheduler tick that calls it) and the legacy
-    ``pipeline_run.trigger_pipeline`` are gated here. Retry / resume do NOT pass
-    through this guard — they re-enqueue an *existing* run.
+    (and, transitively, the scheduler tick that calls it), the legacy
+    ``pipeline_run.trigger_pipeline``, governed builds and the close assertions
+    (konsol#170) are gated here. Retry / resume do NOT pass through this guard —
+    they re-enqueue an *existing* run.
     """
     import frappe
 
-    existing = frappe.get_all(
-        "Pipeline Run",
-        filters={"status": ["in", list(ACTIVE_RUN_STATES)]},
-        fields=["name"],
-        limit=1,
-    )
-    if existing:
+    holder = active_dbt_holder()
+    if holder:
         frappe.throw(
-            f"A pipeline run is already active ({existing[0]['name']}). Wait for it "
+            f"A dbt run is already active ({holder}). Wait for it "
             "to finish or cancel it before starting another.",
             frappe.ValidationError,
         )
@@ -376,7 +401,73 @@ def cancel_run(run_name: str) -> str:
 
     check_epm_admin()
     run_doc = frappe.get_doc("Pipeline Run", run_name)
+    # konsol#170: a run whose dbt is running keeps the project until dbt ends.
+    # Cancelled here, it stopped counting as active (_assert_no_active_run),
+    # another build started beside it, and the first dbt's finish then wrote
+    # over the Cancelled status. Refused instead; the reaper still fails a
+    # run that is truly stuck. Chosen under Deepak Pai's standing rule of
+    # 5 Nov 2026 (product, configurable, not opinionated); HMD on konsol#170.
+    running_step = next(
+        (row.step_id for row in (run_doc.get("steps") or []) if row.status == "Running"),
+        None,
+    )
+    dead_job = None
+    if run_doc.status == "Transforming":
+        # konsol#170 review: a worker that died mid-build leaves the run
+        # Transforming with no job behind it. When RQ confirms the job no
+        # longer exists, the EPM Admin may cancel it, and the run says why.
+        dead_job = _dead_build_job(run_doc)
+    if (run_doc.status == "Transforming" and not dead_job) or (
+            run_doc.status == "Running" and running_step):
+        what = f"its step {running_step} is running" if running_step else "its dbt build is running"
+        frappe.throw(
+            f"Pipeline Run {run_name} cannot be cancelled now: {what}, and dbt "
+            "would keep running after the cancel while another build started "
+            "beside it. Wait for it to finish.",
+            frappe.ValidationError,
+        )
     run_doc.status = "Cancelled"
+    if dead_job:
+        reason = (f"Cancelled by {frappe.session.user} at {frappe.utils.now_datetime()} while "
+                  f"Transforming: its RQ job {dead_job} no longer exists (the worker died), so "
+                  f"no dbt build of this run is running.")
+        run_doc.error_log = "\n".join(p for p in (run_doc.get("error_log"), reason) if p)
     run_doc.save(ignore_permissions=True)
+    if dead_job and run_doc.get("build_approval"):
+        _fail_dead_build_approval(run_doc.build_approval, run_name, dead_job)
     frappe.db.commit()
     return run_name
+
+
+def _dead_build_job(run_doc):
+    """The RQ job id of a Transforming run's build when RQ confirms that job
+    no longer exists; None when it is queued or started, or when RQ cannot be
+    asked (never cancel what cannot be reasoned about)."""
+    try:
+        from frappe.utils.background_jobs import is_job_enqueued
+
+        if run_doc.get("build_approval"):
+            from konsol.pipeline.doctype.build_approval.build_approval import governed_build_job_id
+
+            job_id = governed_build_job_id(run_doc.build_approval)
+        else:
+            from konsol.pipeline.doctype.pipeline_run.pipeline_run import pipeline_run_job_id
+
+            job_id = pipeline_run_job_id(run_doc.name)
+        return None if is_job_enqueued(job_id) else job_id
+    except Exception:
+        return None
+
+
+def _fail_dead_build_approval(name, run_name, job_id):
+    """A Running Build Approval whose job is gone counts as in flight and
+    debounces every later build of its scope; fail it with the same reason."""
+    import frappe
+
+    if frappe.db.get_value("Build Approval", name, "workflow_state") != "Running":
+        return
+    frappe.db.set_value("Build Approval", name, {
+        "workflow_state": "Failed",
+        "error_message": (f"Its Pipeline Run {run_name} was cancelled: RQ job {job_id} no "
+                          f"longer exists (the worker died)."),
+    })

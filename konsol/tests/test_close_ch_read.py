@@ -217,3 +217,43 @@ def test_konsol_clickhouse_import_is_inside_rows_only():
     rows_fn = next(n for n in ast.walk(tree)
                     if isinstance(n, ast.FunctionDef) and n.name == "rows")
     assert any(_imports_konsol_clickhouse(n) for n in ast.walk(rows_fn))
+
+
+def test_rows_passes_clickhouse_settings_as_plain_params():
+    """konsol#170 review: a caller under a lock bounds the read server-side."""
+    calls = []
+
+    def fake_execute(sql, params=None):
+        calls.append(params)
+        return '{"data":[]}'
+
+    _with_fake_clickhouse(fake_execute, lambda: M.rows(
+        "SELECT 1 WHERE y = {fy:UInt16}", {"fy": 2025}, settings={"max_execution_time": 5}))
+    assert calls == [{"param_fy": 2025, "max_execution_time": 5}], calls
+
+
+def test_rows_passes_an_http_timeout_only_when_given():
+    """The fingerprint stamp holds the single-flight lock; a stalled
+    connection must not hold it for execute's default 30 s (re-review)."""
+    calls = []
+
+    def fake_execute(sql, params=None, **kw):
+        calls.append(kw)
+        return '{"data":[]}'
+
+    _with_fake_clickhouse(fake_execute, lambda: M.rows("SELECT 1", timeout=6))
+    _with_fake_clickhouse(fake_execute, lambda: M.rows("SELECT 1"))
+    assert calls == [{"timeout": 6}, {}], calls
+
+
+def test_execute_takes_a_timeout_and_gives_it_to_requests():
+    import ast
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clickhouse.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "execute")
+    assert "timeout" in [a.arg for a in fn.args.args], ast.unparse(fn.args)
+    post = next(n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                and ast.unparse(n.func) == "requests.post")
+    kw = {k.arg: ast.unparse(k.value) for k in post.keywords}
+    assert "timeout" in kw["timeout"] and kw["timeout"] != "30", kw

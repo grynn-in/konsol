@@ -48,6 +48,21 @@ def apply_and_rebuild(doc, action):
     return _request_governed_build(doc, action, full_refresh=True)
 
 
+class _ApplySchema:
+    """What a Build Approval records as its trigger for an Apply Schema."""
+    doctype = "EPM Settings"
+    name = "Apply Schema"
+
+
+def request_schema_rebuild():
+    """The governed full-refresh build a standalone Apply Schema requests (konsol#170).
+
+    Same request as a publish (debounced, approval, preflight, audit), with
+    full_refresh because the schema step may have changed columns.
+    """
+    return _request_governed_build(_ApplySchema, "Apply Schema", full_refresh=True)
+
+
 def request_governed_rebuild(doc, action, scope=_PUBLISH_BUILD_SCOPE):
     """Request a governed dbt rebuild for an input-only change (no DDL step).
 

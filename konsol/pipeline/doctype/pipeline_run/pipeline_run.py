@@ -37,7 +37,15 @@ def trigger_pipeline():
         "konsol.tasks.run_pipeline",
         queue="default",
         timeout=600,
+        # Named, so cancel_run can ask RQ whether the job still exists
+        # (konsol#170 review). The run name is unique, so it never collides.
+        job_id=pipeline_run_job_id(doc.name),
         pipeline_run=doc.name,
     )
 
     return doc.name
+
+
+def pipeline_run_job_id(name):
+    """The RQ job id of a legacy (trigger_pipeline) run's job."""
+    return f"konsol-pipeline-run::{name}"

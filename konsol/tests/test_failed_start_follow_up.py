@@ -599,7 +599,14 @@ class FakeSite:
             "frappe": frappe,
             "konsol.build_lock": types.SimpleNamespace(lock_build_requests=lambda: setattr(self, "locked", True)),
             "konsol.tasks": types.SimpleNamespace(request_build_for_scope=self.request_build_for_scope),
-            "konsol.orchestrator.api": types.SimpleNamespace(ACTIVE_RUN_STATES=("Queued", "Running")),
+            # konsol#170: the sweep asks active_dbt_holder (Pipeline Runs and
+            # Assertion Runs); here, the Pipeline Runs this site holds.
+            "konsol.orchestrator.api": types.SimpleNamespace(
+                ACTIVE_RUN_STATES=("Queued", "Running"),
+                active_dbt_holder=lambda: (
+                    "Pipeline Run" if self.get_all(
+                        "Pipeline Run", filters={"status": ["in", ["Queued", "Running"]]}, limit=1)
+                    else None)),
         }
         saved = {m: sys.modules.get(m) for m in mods}
         sys.modules.update(mods)

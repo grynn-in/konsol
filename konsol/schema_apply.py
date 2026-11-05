@@ -70,7 +70,8 @@ def apply_schema(run_dbt=False):
     A publish calls apply_schema_for_publish instead.
 
     Args:
-        run_dbt: If True, enqueue a background dbt build after schema changes.
+        run_dbt: If True, request a governed full-refresh build after the
+            schema changes (a Build Approval; konsol#170).
 
     Returns:
         Summary dict of what was applied.
@@ -98,19 +99,41 @@ def apply_schema(run_dbt=False):
     finally:
         restore_user()
 
-    # 5. Optional dbt build, queued as the caller
+    # 5. Optional build, requested as the caller. A governed Build Approval
+    # (konsol#170): the legacy dbt-only job it queued ran dbt with no
+    # single-flight lock, no active-run check and no approval, beside any
+    # other build. The site's Build Approval Workflow now decides, as for a
+    # publish. Not caught: a request that fails is the caller's error, and
+    # the summary must not claim a build that was never requested.
+    # The build is requested, not run: a full refresh is high risk and waits
+    # for review under the default workflow, so the summary names the
+    # approval and its state rather than claiming dbt ran (#170 review).
     if run_dbt:
-        try:
-            frappe.enqueue(
-                "konsol.tasks.run_dbt_build_async",
-                queue="long",
-                timeout=600,
-            )
-            summary["dbt_triggered"] = True
-        except Exception as e:
-            summary["errors"].append(f"dbt trigger: {str(e)}")
+        summary["build_approval"] = _request_schema_build()
+        summary["build_approval_state"] = _build_approval_state(summary["build_approval"])
+        summary["build_requested"] = True
 
     return summary
+
+
+def _build_approval_state(name):
+    """The workflow state of the Build Approval a request returned (it may be a
+    pending one the request was debounced onto), or None."""
+    if not name:
+        return None
+    return frappe.db.get_value("Build Approval", name, "workflow_state")
+
+
+def _request_schema_build():
+    """Request the governed full-refresh build an Apply Schema asks for (konsol#170).
+
+    Full refresh, as a publish's apply_and_rebuild: the schema step may have
+    added columns, and the gold incremental models break on a column-count
+    change (konsol#261). Returns the Build Approval name.
+    """
+    from konsol.schema_lifecycle import request_schema_rebuild
+
+    return request_schema_rebuild()
 
 
 def apply_schema_for_publish():
@@ -211,7 +234,9 @@ def _apply_schema_steps():
         "facts_created": [],
         "sources_written": [],
         "budget_fields_synced": [],
-        "dbt_triggered": False,
+        "build_requested": False,
+        "build_approval": None,
+        "build_approval_state": None,
         "errors": [],
     }
 
