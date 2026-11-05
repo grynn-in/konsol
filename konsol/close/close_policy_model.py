@@ -72,6 +72,40 @@ def move_fraction(pct):
     return pct / 100.0
 
 
+#: konsol#179: Close Settings ``magnitude_warning_factor``. Blank or 0 is
+#: undeclared: every rate save warns with this message, and nothing is
+#: refused or assumed. Not a policy gap: it does not block sign-off.
+MAGNITUDE_WARNING_MESSAGE = (
+    "Declare the Magnitude Warning Factor in Close Settings (the Close Lead or "
+    "System Manager): a group rate more than that many times from what the "
+    "ISO Currency references imply then needs a Reason for Change. Until it is "
+    "declared, a wrong Quoted Per that leaves a rate under 10x off is not caught."
+)
+#: The hard magnitude guard refuses a rate more than this many times off, so
+#: a warning factor must sit below it to warn about anything.
+MAGNITUDE_HARD_FACTOR = 10
+
+
+def magnitude_factor(value):
+    """``value`` (Close Settings magnitude_warning_factor) as a float, or None
+    when undeclared (blank or 0)."""
+    if not value:
+        return None
+    return float(value)
+
+
+def magnitude_factor_problems(value):
+    """Problems that refuse a Close Settings save of the Magnitude Warning
+    Factor. Blank or 0 is undeclared: ``[]``."""
+    if not value:
+        return []
+    if not 1 < float(value) < MAGNITUDE_HARD_FACTOR:
+        return ["The Magnitude Warning Factor must be more than 1 and less than %d: at 1 or less "
+                "every rate would warn, and a rate more than %dx off is refused anyway."
+                % (MAGNITUDE_HARD_FACTOR, MAGNITUDE_HARD_FACTOR)]
+    return []
+
+
 def settings_problems(self_approval, rate_move_threshold):
     """Problems that refuse a Close Settings save. Blank and 0 are allowed:
     that is undeclared, reported elsewhere as a gap and never defaulted."""

@@ -428,8 +428,8 @@ def test_the_magnitude_warning_names_the_quoted_per_that_fits():
     # 10x too low quoted per 1: no listed unit (per 0.1) fits, so the quote is named
     msg = r.magnitude_warning("CHF", "USD", 0.1135, 1, 3.0, REFS)
     assert msg and "Quoted Per" in msg and "10x too low" in msg, msg
-    # a gap no unit explains (4x) names no unit
-    msg = r.magnitude_warning("EUR", "CHF", 3.8, 1, 3.0, REFS)
+    # a gap no unit explains (4x: per 10 would leave it 2.5x below) names no unit
+    msg = r.magnitude_warning("EUR", "CHF", 3.8, 1, 2.0, REFS)
     assert msg and "No Quoted Per brings it in line" in msg, msg
 
 

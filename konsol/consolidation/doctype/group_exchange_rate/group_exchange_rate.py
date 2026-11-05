@@ -96,6 +96,33 @@ class GroupExchangeRate(Document):
         self._set_label()
         self._validate_supersedes()
         self._require_reasons()
+        self._check_magnitude_warning()
+
+    def _check_magnitude_warning(self):
+        """konsol#179: a rate more than the declared Magnitude Warning Factor
+        (Close Settings) from what the ISO Currency references imply, but
+        within the hard 10x, needs a Reason for Change; the message names the
+        Quoted Per that brings it in line. While the factor is undeclared,
+        every save shows a warning naming the field; nothing is refused or
+        assumed. The pre-fill and the adoption have no person to give a
+        reason: the pre-fill lists the warning in its summary (a person gives
+        the reason on the next save or the approval), and the adoption
+        records what a period was already translated at."""
+        from konsol import group_rates
+
+        if self._adopting() or frappe.flags.get("konsol_prefilling_rates"):
+            return
+        factor = group_rates.magnitude_warning_factor()
+        if factor is None:
+            frappe.msgprint(group_rates.MAGNITUDE_WARNING_UNDECLARED, title="Magnitude Warning Factor",
+                            indicator="orange")
+            return
+        if (self.change_reason or "").strip():
+            return
+        problem = group_rates.magnitude_warning(self.from_currency, self.to_currency, self.quote, self._per(),
+                                                factor)
+        if problem:
+            frappe.throw(problem, frappe.MandatoryError)
 
     def _saved_version(self):
         """The saved version of this document, or None for a new one."""

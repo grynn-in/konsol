@@ -801,6 +801,7 @@ _EXISTING_ORDER = [
     "self_approval",
     "rates_section",
     "rate_move_threshold",
+    "magnitude_warning_factor",
     "intercompany_section",
     "intercompany_declaration",
     "statements_section",

@@ -32,6 +32,13 @@ Two plausibility checks guard entry (the #138 review):
   Real moves that size happen (ARS fell 55% in Dec 2023), so a reason lets it
   through. The threshold is never guessed: while it is undeclared, any such
   move needs the declaration or a reason.
+* **Magnitude warning (konsol#179):** a rate more than the declared
+  Magnitude Warning Factor (Close Settings) from what the references imply,
+  but within the hard 10x, needs a Reason for Change, and the message names
+  the Quoted Per that brings it in line. It catches a first rate entered per
+  the wrong unit, which the hard guard misses for JPY, IDR and EUR (just
+  under 10x off). While the factor is undeclared, every save shows a warning
+  and nothing is refused.
 """
 import decimal
 import json
@@ -166,6 +173,53 @@ def magnitude_verdict(from_currency, to_currency, rate, refs=None):
 def magnitude_problem(from_currency, to_currency, rate, refs=None):
     """None, or why ``rate`` is refused (#138): ``magnitude_verdict``'s reason."""
     return magnitude_verdict(from_currency, to_currency, rate, refs)[1]
+
+
+def magnitude_warning(from_currency, to_currency, quote, quoted_per, factor, refs=None):
+    """None, or why a rate entered as ``quote`` per ``quoted_per`` units of
+    ``from_currency`` needs a Reason for Change (konsol#179): it is more than
+    ``factor`` times above or below what the references imply, but within the
+    hard 10x (``magnitude_verdict`` refuses beyond that, and owns "invalid"
+    and "no_reference" too). A wrong Quoted Per is the usual cause, and it is
+    just under 10x off for JPY, IDR and EUR, so the message names the listed
+    Quoted Per that brings the quote closest to the references.
+
+    ``factor`` None (undeclared) gives None: the caller reports the gap."""
+    per = int(quoted_per or 1)
+    rate = true_rate(quote, per)
+    if factor is None or magnitude_verdict(from_currency, to_currency, rate, refs)[0] != "ok":
+        return None
+    refs = usd_references((from_currency, to_currency)) if refs is None else refs
+    expected = refs[to_currency] - refs[from_currency]
+    off = math.log10(rate) - expected
+    if abs(off) <= math.log10(factor):
+        return None
+    # A unit explains the gap only if moving by it leaves the rate within the factor.
+    decades = round(off)
+    entered = quote_label(quote, per, from_currency, to_currency)
+    if decades == 0 or abs(off - decades) > math.log10(factor):
+        hint = "No Quoted Per brings it in line; check the quote itself."
+    elif per * 10 ** decades in QUOTED_PER:
+        hint = (f"A wrong Quoted Per is the likely cause: did you mean "
+                f"{quote_label(quote, per * 10 ** decades, from_currency, to_currency)}?")
+    else:
+        hint = (f"No listed Quoted Per fits; the quote may be {10 ** abs(decades):,}x too "
+                f"{'high' if decades > 0 else 'low'}.")
+    return (f"{entered} is about {10 ** abs(off):.1f}x {'above' if off > 0 else 'below'} the roughly "
+            f"{10 ** expected:.3g} {to_currency} per {from_currency} the ISO Currency references imply: "
+            f"more than the Magnitude Warning Factor ({factor:g}x, Close Settings). {hint} "
+            "If the rate is right, say why (Reason for Change).")
+
+
+#: Shown on every rate save while the Magnitude Warning Factor is undeclared.
+MAGNITUDE_WARNING_UNDECLARED = close_policy_model.MAGNITUDE_WARNING_MESSAGE
+
+
+def magnitude_warning_factor():
+    """The declared Magnitude Warning Factor (Close Settings, konsol#179), or
+    None while it is undeclared. Never guessed."""
+    return close_policy_model.magnitude_factor(
+        frappe.db.get_single_value("Close Settings", "magnitude_warning_factor"))
 
 
 def move_threshold():
@@ -722,7 +776,13 @@ def prefill_from_erp(fiscal_year, fiscal_period):
     A quote the magnitude guard refuses is reported, not inserted, so the
     refusal pops no dialog. A quote that moves more than the declared Rate
     Move threshold (Close Settings) needs a person's reason, so it is
-    reported too: enter it by hand with the reason."""
+    reported too: enter it by hand with the reason.
+
+    A quote past the declared Magnitude Warning Factor (konsol#179) is still
+    drafted, since nobody is here to give a reason, and listed under
+    "warned": the person who saves or approves the draft gives the reason.
+    The pre-fill picks the unit itself, so a gap that size points at a stale
+    reference or an ERP error."""
     frappe.only_for(PREFILL_ROLES)
     fy, fp = int(fiscal_year), int(fiscal_period)
     pairs = required_pairs(fy, fp) or tree_pairs(fy, fp)
@@ -734,7 +794,8 @@ def prefill_from_erp(fiscal_year, fiscal_period):
         DOCTYPE, filters={"fiscal_year": fy, "fiscal_period": fp, "docstatus": ["<", 2]},
         fields=["from_currency", "to_currency", "rate_type"], limit_page_length=0)}
     refs = usd_references({c for pair in pairs for c in pair})
-    out = {"created": [], "existing": [], "no_quote": [], "refused": []}
+    out = {"created": [], "existing": [], "no_quote": [], "refused": [], "warned": []}
+    factor = magnitude_warning_factor()
     frappe.flags.konsol_prefilling_rates = True
     try:
         for f, t in sorted(pairs):
@@ -770,6 +831,9 @@ def prefill_from_erp(fiscal_year, fiscal_period):
                     out["refused"].append(f"{label}: {e}")
                     continue
                 out["created"].append(doc.name)
+                warning = magnitude_warning(f, t, quote, per, factor, refs)
+                if warning:
+                    out["warned"].append(f"{label}: {warning}")
     finally:
         frappe.flags.konsol_prefilling_rates = False
     return out
