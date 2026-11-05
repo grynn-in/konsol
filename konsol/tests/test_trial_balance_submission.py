@@ -1704,6 +1704,11 @@ OLD_FILE = ("main_account,debit,credit,description,partner_data_area_id,source_u
             "1010,100.50,0,Cash,,u1\n2010,0,100.50,AP,ZZB,u1\n")
 
 
+#: The real functions the re-land tests below replace, put back by _wire_reland.
+_RELAND_REAL = {n: getattr(_m, n) for n in ("_reland", "_record_relanded", "_notify_reland",
+                                            "_period_is_open")}
+
+
 class _RelandDoc:
     """A submitted TB as the re-land sees it: its file read back, then landed."""
 
@@ -1761,6 +1766,8 @@ def _wire_reland(docs, claims, landed, docstatus=None, fail=None, read_fail=None
             return (existing or {}).get(name)
         return (docstatus or {}).get(name, 1 if name in docs else None)
 
+    for n, fn in _RELAND_REAL.items():
+        setattr(_m, n, fn)
     # The stub module itself, as _wire does: other tests set attributes on it.
     _m.frappe = sys.modules["frappe"]
     _m.frappe.get_all = get_all
@@ -1871,6 +1878,7 @@ def test_the_job_re_lands_under_the_build_lock_and_requests_the_build_after():
     try:
         _m.run_reland(names=["TBS-1"], remove_orphans=1)
     finally:
+        _wire_reland({}, [], {})  # puts the real _reland back
         for n, old in saved.items():
             if old is None:
                 sys.modules.pop(n, None)
@@ -1953,12 +1961,13 @@ def test_the_re_land_is_a_close_event_and_a_data_change_when_the_period_is_open(
     Comment. Re-landing stays allowed in a closed period (it restores what
     the document says), but it is audited, and in an open period a sign-off
     over the changed numbers is voided."""
+    _wire_reland({}, [], {})
     for is_open, expect_change in ((True, True), (False, False)):
         log, changes = [], []
         _m._period_is_open = lambda fy, fp, _o=is_open: _o
         _m._record_data_change = lambda fy, fp, text, entity=None: changes.append((fy, fp, text, entity))
         doc = _tb_doc()
-        _with_close_event(log, lambda: _m._record_relanded(doc, "no claim in the warehouse"))
+        _with_close_event(log, lambda: _RELAND_REAL["_record_relanded"](doc, "no claim in the warehouse"))
         events = [e for e in log if e[0] == "event"]
         assert [e[1] for e in events] == ["tb_relanded"], log
         assert events[0][2] == (2099, 3, "Trial Balance Submission", "TBS-00042")
@@ -2048,6 +2057,27 @@ def test_a_landed_file_from_before_the_currency_rule_reads_back_for_the_re_land(
     rows = doc._read_landed_file()
     assert [r["main_account"] for r in rows] == ["1010", "2010"]
     assert rows[1][_m.PARTNER] == "ZZB"
+
+
+def test_a_missing_file_is_named_with_how_it_comes_back():
+    """Live, 8069: a restore without the files read "File {'file_url': ...}
+    not found" in the re-land's failed list."""
+    class _Missing(Exception):
+        pass
+
+    doc = _file_doc("")
+    _m.frappe.DoesNotExistError = _Missing
+
+    def gone(doctype, filters):
+        raise _Missing(f"File {filters} not found")
+
+    _m.frappe.get_doc = gone
+    try:
+        doc._read_landed_file()
+        assert False, "expected a refusal"
+    except _Thrown as e:
+        assert str(e).startswith("The attached file /private/files/tb.csv is not on this site."), e
+        assert "--with-files" in str(e)
 
 
 def test_a_re_landed_document_lands_exactly_the_rows_on_submit_landed():

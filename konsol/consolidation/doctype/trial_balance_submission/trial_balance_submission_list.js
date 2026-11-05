@@ -61,13 +61,17 @@ frappe.listview_settings["Trial Balance Submission"] = {
 		);
 		// konsol#283: after a site restore or a lost ClickHouse volume, the
 		// submitted documents and the warehouse rows can disagree. This first
-		// shows what differs (nothing is written), then re-lands on confirm.
-		// Orphan claims are removed only when the box is ticked.
+		// shows what differs (nothing is written), then queues the re-land on
+		// confirm. Orphan claims are removed only when the box is ticked.
+		// Every name, reason and error is escaped: they come from documents
+		// and exceptions, and the dialog renders HTML (PR #381 review).
 		listview.page.add_actions_menu_item(
 			__("Rebuild Warehouse Rows…"),
 			() => {
+				const esc = frappe.utils.escape_html;
 				const method =
 					"konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission.reland_submitted";
+				const indent = (text) => "&nbsp;&nbsp;" + text;
 				frappe.call({
 					method: method,
 					type: "POST",
@@ -78,6 +82,8 @@ frappe.listview_settings["Trial Balance Submission"] = {
 						const out = r.message || {};
 						const reland = out.reland || [];
 						const orphans = out.orphans || [];
+						const failed = out.failed || [];
+						const kept = out.kept || [];
 						if (!reland.length && !orphans.length) {
 							frappe.msgprint(
 								__("All {0} submitted trial balances match the warehouse. Nothing to rebuild.", [out.matched || 0])
@@ -87,12 +93,33 @@ frappe.listview_settings["Trial Balance Submission"] = {
 						const lines = [
 							__("{0} submitted trial balances match the warehouse.", [out.matched || 0]),
 							__("{0} will be re-landed from their attached files:", [reland.length]),
-							...reland.map((x) => "&nbsp;&nbsp;" + __("{0}: {1}", [x[0], x[1]])),
-							__("{0} warehouse claims have no submitted trial balance:", [orphans.length]),
-							...orphans.map(
-								(o) => "&nbsp;&nbsp;" + __("{0} ({1}, {2} P{3})", [o.submission_name || o.batch_id, o.data_area_id || "", o.fiscal_year, o.fiscal_period])
-							),
+							...reland.map((x) => indent(__("{0}: {1}", [esc(x[0]), esc(x[1])]))),
 						];
+						if (failed.length) {
+							lines.push(
+								__("{0} of them cannot be re-landed, and keep what the warehouse has:", [failed.length]),
+								...failed.map((f) => indent(__("{0}: {1}", [esc(f[0]), esc(f[1])])))
+							);
+						}
+						lines.push(
+							__("{0} warehouse claims have no submitted trial balance:", [orphans.length]),
+							...orphans.map((o) =>
+								indent(
+									__("{0} ({1}, {2} P{3})", [
+										esc(o.submission_name) || esc(o.batch_id),
+										esc(o.data_area_id),
+										esc(String(o.fiscal_year)),
+										esc(String(o.fiscal_period)),
+									])
+								)
+							)
+						);
+						if (kept.length) {
+							lines.push(
+								__("{0} claims are left alone: their document exists.", [kept.length]),
+								...kept.map((k) => indent(__("{0}: {1}", [esc(k[0]), esc(k[1])])))
+							);
+						}
 						const d = new frappe.ui.Dialog({
 							title: __("Rebuild Warehouse Rows"),
 							fields: [
@@ -111,23 +138,13 @@ frappe.listview_settings["Trial Balance Submission"] = {
 									method: method,
 									type: "POST",
 									args: { apply: 1, remove_orphans: values.remove_orphans ? 1 : 0 },
-									freeze: true,
-									freeze_message: __("Rebuilding the warehouse rows…"),
-									callback: (r2) => {
-										const res = r2.message || {};
-										const failed = res.failed || [];
+									callback: () => {
 										frappe.msgprint(
-											[
-												__("{0} re-landed, {1} claims removed, {2} failed.", [
-													(res.relanded || []).length,
-													res.orphans_removed || 0,
-													failed.length,
-												]),
-												...failed.map((f) => __("{0}: {1}", [f[0], f[1]])),
-											].join("<br>"),
+											__(
+												"The rebuild is queued and runs in the background. Its result comes as a notification, and each document it re-lands gets a Comment."
+											),
 											__("Rebuild Warehouse Rows")
 										);
-										listview.refresh();
 									},
 								});
 							},
