@@ -80,6 +80,12 @@ def _add_months(date, months):
 TODAY = ["2026-09-15"]
 
 
+def _reject_reason_stub():
+    rr = types.ModuleType("konsol.close.reject_reason")
+    rr.refuse_reasonless_reject = lambda doc: None
+    return rr
+
+
 def _load():
     frappe = types.ModuleType("frappe")
 
@@ -110,7 +116,10 @@ def _load():
 
     stubs = {"frappe": frappe, "frappe.model": model, "frappe.model.document": document,
              "frappe.utils": utils, "konsol.clickhouse": ch, "konsol.period_status": ps,
-             "konsol.group_rates": gr}
+             "konsol.group_rates": gr,
+             # konsol#310: the reject-reason rule has its own tests
+             # (test_deal_reject_reason.py); here it lets every save through.
+             "konsol.close.reject_reason": _reject_reason_stub()}
     konsol_pkg = sys.modules.get("konsol")
     if konsol_pkg is None or not hasattr(konsol_pkg, "__path__"):
         stubs["konsol"] = types.ModuleType("konsol")

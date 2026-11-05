@@ -31,6 +31,7 @@ from frappe.utils import getdate
 
 from konsol.business_disposal_model import problems, totals
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.close.reject_reason import refuse_reasonless_reject
 from konsol.consolidation.doctype.business_disposal_proceeds.business_disposal_proceeds import (
     BusinessDisposalProceeds,
 )
@@ -94,6 +95,9 @@ class BusinessDisposal(Document):
     # -- lifecycle -----------------------------------------------------------
 
     def validate(self):
+        # konsol#310: a Reject without approval_api.reject's reason is
+        # refused before anything else is computed.
+        refuse_reasonless_reject(self)
         period = self._disposal_period()
         root = self._root()
 
