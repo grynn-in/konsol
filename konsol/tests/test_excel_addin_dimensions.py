@@ -378,11 +378,14 @@ def test_a_batch_row_with_a_non_text_hierarchy_or_node_is_refused():
         assert err and f"'{key}'" in err and "text" in err, (key, err)
 
 
-def _api_with_datasets(datasets):
-    """api with _get_fact answering from {scenario_key: dimensions list}."""
+def _api_with_datasets(datasets, calls=None):
+    """api with _get_fact answering from {scenario_key: dimensions list};
+    each lookup is appended to ``calls`` when given."""
     api = _load_api()
 
     def get_fact(fact=None, scenario=None):
+        if calls is not None:
+            calls.append((fact, scenario))
         dims = datasets.get(fact or scenario)
         if dims is None:
             return None
@@ -397,25 +400,75 @@ def test_hierarchy_dimensions_must_be_declared_on_the_dataset():
     # Hierarchy mode checked names only against an identifier pattern, so
     # data_area_id, layer or any column was accepted as a filter.
     api = _api_with_datasets({"actuals": ["dim_region"]})
-    assert api._hierarchy_dimension_error("actuals", None, {"dim_region"}) is None
-    assert api._hierarchy_dimension_error("actuals", None, set()) is None
+    assert api._hierarchy_dimension_error("actuals", {"dim_region"}) is None
+    assert api._hierarchy_dimension_error("actuals", set()) is None
     for bad in ("data_area_id", "layer", "dim_zz"):
-        err = api._hierarchy_dimension_error("actuals", None, {bad})
+        err = api._hierarchy_dimension_error("actuals", {bad})
         assert err and f"'{bad}'" in err and "dim_region" in err, (bad, err)
 
 
 def test_hierarchy_dimensions_without_a_dataset_are_refused():
     api = _api_with_datasets({})
-    err = api._hierarchy_dimension_error("budget", None, {"dim_region"})
+    err = api._hierarchy_dimension_error("budget", {"dim_region"})
     assert err and "dim_region" in err, err
     # no dimensions asked for: nothing to check, no Dataset needed
-    assert api._hierarchy_dimension_error("budget", None, set()) is None
+    assert api._hierarchy_dimension_error("budget", set()) is None
+
+
+def test_hierarchy_dimension_lookup_normalises_the_scenario():
+    # The hierarchy read itself normalises the scenario; the Dataset lookup
+    # must too, or " budget" passes the read and fails the dimension check.
+    calls = []
+    api = _api_with_datasets({"budget": ["dim_region"]}, calls)
+    assert api._hierarchy_dimension_error(" Budget", {"dim_region"}) is None
+    assert calls == [(None, "budget")]
+
+
+def test_hierarchy_dimension_lookup_is_cached_per_call():
+    calls = []
+    api = _api_with_datasets({"budget": ["dim_region"]}, calls)
+    cache = {}
+    for scenario in ("budget", " Budget", "budget"):
+        assert api._hierarchy_dimension_error(
+            scenario, {"dim_region"}, cache) is None
+    assert api._hierarchy_dimension_error("budget", {"dim_zz"}, cache)
+    assert calls == [(None, "budget")]
 
 
 def test_epm_batch_checks_hierarchy_dimensions_before_reading():
     block = _read_api().split("def epm_batch")[1].split("\n@frappe.whitelist")[0]
     hier = block.split("if _is_hierarchy_mode(req):")[1].split("normalized[i] = {")[0]
     assert "_hierarchy_dimension_error(" in hier
+    # one cache for the whole batch, made before the row loop
+    assert block.index("dataset_dims = {}") < block.index("for i, req in enumerate")
+    assert "dataset_dims)" in hier
+
+
+def test_a_batch_row_with_fact_and_a_hierarchy_node_is_refused():
+    # The hierarchy table comes from the scenario, not from a Dataset, so a
+    # `fact` on a hierarchy row would decide only which dimensions are checked.
+    api = _load_api()
+    err = api._batch_row_error(
+        {"entity": "ZZE", "fact": "zz_budget", "hierarchy": "ZZ_H", "node": "ZZ_N"})
+    assert err and "'fact'" in err and "node" in err, err
+    assert api._batch_row_error({"entity": "ZZE", "fact": "zz_budget"}) is None
+
+
+def test_epm_value_refuses_fact_with_a_hierarchy_node():
+    block = _read_api().split("def epm_value")[1].split("\n@frappe.whitelist")[0]
+    assert "_fact_with_node_error(" in block
+
+
+def test_no_function_makes_excel_append_an_invocation_argument():
+    # checkArity refuses more arguments than the signature. Excel appends an
+    # invocation argument to a function declared with any of these options,
+    # which the guard would then refuse on every call.
+    for fn in _metadata().values():
+        options = fn.get("options", {})
+        for key in ("requiresInvocation", "stream", "cancelable",
+                    "requiresAddress", "requiresParameterAddresses"):
+            assert not options.get(key), (fn["id"], key)
+    assert "requiresInvocation" in _js_source()  # the guard's comment says why
 
 
 def test_budget_cell_save_refuses_a_hierarchy_without_a_node():
