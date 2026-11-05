@@ -250,7 +250,7 @@ def upload_state(doc):
     return M.read_state(report, _submitted(M.claimed(report)), doc.status)
 
 
-def _payload(doc, refused=None):
+def _payload(doc, refused=None, refused_kind=None):
     state = upload_state(doc)
     report = state["report"]
     return {
@@ -269,6 +269,9 @@ def _payload(doc, refused=None):
         # Loading, but no job queued or running: the worker stopped.
         "stalled": doc.status == "Loading" and not _job_running(doc.name),
         "refused": refused,
+        # "problems": skipping the entity-periods with problems would load the
+        # rest; any other refusal cannot be helped by skipping (#370 re-review).
+        "refused_kind": refused_kind if refused else None,
     }
 
 
@@ -285,6 +288,26 @@ def check_file(file_url, amount_basis=None):
     _require_loader()
     doc = frappe.get_doc({"doctype": DOCTYPE, "upload_file": file_url, "status": "Draft",
                           "amount_basis": amount_basis or ""}).insert()
+    _record_check(doc)
+    return _payload(doc)
+
+
+@frappe.whitelist(methods=["POST"])
+def check_upload(name, amount_basis=None):
+    """Check a saved upload in place and report on it. Loads nothing.
+
+    The Desk form's "Check file" (5 Nov 2026): there the upload already exists,
+    with its file attached, so ``check_file`` (which creates one from a file
+    URL) cannot be used. A loading or loaded upload is refused: its report is
+    its outcome, and ``load`` re-checks a resumable one itself.
+    """
+    _require_loader()
+    doc = frappe.get_doc(DOCTYPE, name)
+    doc.check_permission("write")
+    if doc.status not in ("Draft", "Checked", "Failed"):
+        frappe.throw(f"This upload is {doc.status.lower()}; it cannot be checked again.")
+    if amount_basis:
+        doc.amount_basis = amount_basis
     _record_check(doc)
     return _payload(doc)
 
@@ -309,13 +332,17 @@ def load(name, skip_invalid=0, amount_basis=None):
     if doc.status != "Checked" and not resumable:
         frappe.throw("This upload is still loading." if doc.status == "Loading"
                      else f"This upload is {doc.status.lower()}; there is nothing left to load.")
-    was = (doc.status, doc.failed_count, doc.error)
+    # A refused resume puts the upload back as it was, report included: a
+    # failed re-check writes an empty report, and the rows already loaded
+    # must not be forgotten (#370 re-review).
+    was = (doc.status, doc.failed_count, doc.error, doc.report, doc.group_count, doc.valid_count, doc.total_rows)
 
-    def refuse(reason):
+    def refuse(reason, refused_kind="other"):
         if resumable:
-            doc.status, doc.failed_count, doc.error = was
+            (doc.status, doc.failed_count, doc.error, doc.report,
+             doc.group_count, doc.valid_count, doc.total_rows) = was
             doc.save()
-        return _payload(doc, refused=reason)
+        return _payload(doc, refused=reason, refused_kind=refused_kind)
 
     _record_check(doc)
     if doc.status == "Failed":
@@ -327,7 +354,8 @@ def load(name, skip_invalid=0, amount_basis=None):
         return refuse("Nothing in this file is left to load.")
     if problems and not cint(skip_invalid):
         return refuse(f"{problems} of {len(report)} entity-periods have problems now. "
-                      f"Load only the {ready} that {'is' if ready == 1 else 'are'} ready, or fix the file.")
+                      f"Load only the {ready} that {'is' if ready == 1 else 'are'} ready, or fix the file.",
+                      refused_kind="problems")
     doc.status = "Loading"
     doc.save()
     frappe.enqueue("konsol.tb_bulk.run_load", queue="long", timeout=JOB_TIMEOUT, job_id=_job_id(doc.name),

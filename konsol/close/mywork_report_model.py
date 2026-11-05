@@ -44,14 +44,16 @@ APPROVAL_DOCTYPES = (
 #: - checks and sign-off: the period's Assertion Runs (Run Suite and Sign Off
 #:   are buttons on the run's form);
 #: - numbers: the Consolidated Statement report;
-#: - approvals: the Approvals report;
+#: - approvals: the Konsol home, whose "Waiting for approval" shortcuts
+#:   open each list filtered to what is waiting (approvals are done in the
+#:   record's Actions menu since 5 Nov 2026; the Approvals report is gone);
 #: - adjustments, intercompany, audit-trail: the journals, IC balances and
 #:   Close Events lists;
 #: - period: the Period Status list;
 #: - my-work: this report itself, so no link.
 SCREEN_DESTINATIONS = {
     "my-work": None,
-    "approvals": ("/desk/query-report/Approvals", False),
+    "approvals": ("/desk/konsol", False),
     "period": ("/desk/period-status", True),
     "trial-balances": ("/desk/trial-balance-submission", True),
     "intercompany": ("/desk/ic-balance", True),

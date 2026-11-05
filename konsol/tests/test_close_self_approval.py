@@ -356,7 +356,7 @@ def test_allowed_with_no_reason_raises():
         mod, frappe, _ = _load(policy="Allowed with reason", flags=flags)
         doc = _doc()
         msg = _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
-        assert "konsol.close.approval_api.approve" in msg, msg
+        assert "only with a reason" in msg and "konsol." not in msg, msg
         assert doc.comments == []
 
 
@@ -504,7 +504,7 @@ def test_the_quote_changer_needs_a_reason_under_allowed_with_reason():
     doc = _doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER,
                before=GER_DRAFT, values=dict(GER_DRAFT, quote=1.5))
     msg = _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
-    assert "konsol.close.approval_api.approve" in msg, msg
+    assert "only with a reason" in msg and "konsol." not in msg, msg
     assert frappe.events == [] and doc.comments == []
 
 

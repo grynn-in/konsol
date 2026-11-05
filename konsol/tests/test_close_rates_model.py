@@ -261,7 +261,7 @@ def test_approve_mode_self_approval_under_allowed_with_reason_gives_reason_mode(
     mode = M.approve_mode("alice", ("EPM Admin",), {"alice"}, "IC Balance", "ICB-1",
                            "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM)
     assert mode["mode"] == "reason"
-    assert "approval_api.approve" in mode["message"]
+    assert "only with a reason" in mode["message"]
 
 
 def test_approve_mode_self_approval_with_undeclared_policy_is_refused():

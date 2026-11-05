@@ -62,6 +62,7 @@ class _Site:
         self.rejections = list(rejections)  # F01: canned Close Event rows latest_rejections reads
         self.close_event_reads = []  # F01: (filters,) recorded by get_all("Close Event", ...)
         self.only_for_calls = []
+        self.permission_checks = []  # (doctype, name, ptype): doc.check_permission calls
         self.get_doc_calls = []
         self.workflow_reads = []
         self.applied = []  # (doctype, name, action)
@@ -121,6 +122,9 @@ def _frappe(site):
 
         def add_comment(self, comment_type, text):
             site.comments.append((self.doctype, self.name, text))
+
+        def check_permission(self, ptype="read"):
+            site.permission_checks.append((self.doctype, self.name, ptype))
 
         def get_doc_before_save(self):
             # approve submits the draft as loaded: no edit rides on the submit (R01r).
@@ -711,3 +715,63 @@ def test_approve_of_a_workflow_doctype_ignores_rejection_timing():
     assert site.applied == [("Consolidation Journal", "ZZ-CJ-1", "Approve")]
     assert site.close_event_reads == []
     assert out["docstatus"] == 1
+
+
+# --- approve_mode: what the record's Actions menu offers (Desk approvals in the form, 5 Nov 2026) ---
+#
+# Deepak Pai, 5 Nov 2026: approvals move from the Approvals report into each
+# record's Actions menu, as in the compliance app. The form asks the server
+# what the signed-in user may do, so the self-approval rule is the product's
+# own (rates_model.approve_mode over self_approval.preparers_for), not a copy
+# in JavaScript.
+
+def test_approve_mode_is_direct_for_someone_elses_draft():
+    site = _Site(owner=ANALYST)
+    out, _ = _call(site, "approve_mode", "IC Balance", "ZZ-IC-1")
+    assert out == {"mode": "direct", "message": None}
+    assert site.permission_checks == [("IC Balance", "ZZ-IC-1", "read")]
+    assert site.submitted == [] and site.applied == [] and site.events == []
+
+
+def test_approve_mode_asks_for_a_reason_on_an_allowed_self_approval():
+    site = _Site()  # the lead prepared it; policy Allowed with reason
+    out, _ = _call(site, "approve_mode", "Group Exchange Rate", "ZZ-GER-1")
+    assert out["mode"] == "reason" and out["message"], out
+
+
+def test_approve_mode_refuses_a_blocked_self_approval():
+    site = _Site(policy="Blocked")
+    out, _ = _call(site, "approve_mode", "Consolidation Journal", "ZZ-CJ-1")
+    assert out["mode"] == "refused" and out["message"], out
+
+
+def test_approve_mode_for_an_analyst_is_not_approver():
+    site = _Site(roles=("EPM Analyst",), user=ANALYST, owner=LEAD)
+    out, _ = _call(site, "approve_mode", "IC Balance", "ZZ-IC-1")
+    assert out["mode"] == "not_approver", out
+
+
+def test_approve_mode_names_a_sent_back_draft_without_a_workflow():
+    """approve refuses a rejected, unchanged no-workflow draft (F01); the menu
+    says so before anyone clicks."""
+    site = _Site(owner=ANALYST, modified=datetime.datetime(2026, 10, 1, 9, 0),
+                 rejections=[{"reference_name": "ZZ-IC-1", "reason": "ZZ wrong",
+                              "actor": LEAD, "at": datetime.datetime(2026, 10, 2, 9, 0)}])
+    out, _ = _call(site, "approve_mode", "IC Balance", "ZZ-IC-1")
+    assert out["mode"] == "sent_back", out
+    assert "ZZ wrong" in out["message"], out
+
+
+def test_approve_mode_refuses_a_doctype_outside_the_list():
+    site = _Site()
+    msg = _raises(lambda: _call(site, "approve_mode", "User", "ZZ-1"), "ValidationError")
+    assert "User" in msg and site.get_doc_calls == []
+
+
+def test_approve_mode_for_an_entity_accountant_is_not_approver_not_a_refusal():
+    """Review of #370: Entity Accountant reads the approval doctypes (e.g. Group
+    Exchange Rate), so its form asks approve_mode; it must hear not_approver,
+    not a PermissionError shown as "Not permitted" on every draft."""
+    site = _Site(roles=("Entity Accountant",), user=ANALYST, owner=LEAD)
+    out, _ = _call(site, "approve_mode", "Group Exchange Rate", "ZZ-GER-1")
+    assert out["mode"] == "not_approver", out

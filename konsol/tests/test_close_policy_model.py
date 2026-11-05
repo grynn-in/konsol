@@ -151,9 +151,11 @@ def test_blocked_refuses_even_when_a_reason_is_supplied():
 def test_allowed_with_reason_and_a_blank_reason_refuses():
     msg = M.self_approval_problem("Allowed with reason", {"alice"}, "alice", "IC Balance", "ICB-1", "", None)
     assert msg == (
-        "Close Settings allows self-approval only with a reason: approve IC Balance ICB-1 "
-        "through konsol.close.approval_api.approve with a reason, or ask another Close Lead to approve it."
+        "You prepared IC Balance ICB-1. Close Settings allows self-approval only with "
+        "a reason: give one, or ask another Close Lead to approve it."
     )
+    # A user reads this in the approve dialog: it never names an API path (#369).
+    assert "konsol." not in msg
 
 
 def test_allowed_with_reason_and_a_whitespace_only_reason_refuses():

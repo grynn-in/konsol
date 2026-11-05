@@ -234,9 +234,8 @@ def self_approval_problem(policy, preparers, user, doctype, name, reason=None, e
     if policy == ALLOWED_WITH_REASON:
         if not (reason or "").strip():
             return (
-                "Close Settings allows self-approval only with a reason: "
-                "approve %s %s through konsol.close.approval_api.approve "
-                "with a reason, or ask another Close Lead to approve it." % (doctype, name)
+                "You prepared %s %s. Close Settings allows self-approval only with "
+                "a reason: give one, or ask another Close Lead to approve it." % (doctype, name)
             )
         return None
     return (
