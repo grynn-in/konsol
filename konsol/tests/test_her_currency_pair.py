@@ -130,3 +130,14 @@ def test_the_form_heads_the_record_with_the_pair():
     js = open(HER_JS).read()
     assert "from_currency" in js and "to_currency" in js
     assert "set_intro" in js
+
+
+def test_a_same_currency_rate_is_said_to_be_unused():
+    """#373 review: when From equals To the warehouse translates at 1.0 and never
+    reads this rate (gold_consolidated_trial_balance: the same-currency case
+    comes before the historical one), so the intro must not claim
+    "1 USD = 0.92 USD"."""
+    js = open(HER_JS).read()
+    assert "d.from_currency === d.to_currency" in js
+    branch = js[js.index("d.from_currency === d.to_currency"):]
+    assert "not used" in branch.split("return")[0]
