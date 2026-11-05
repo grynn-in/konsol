@@ -1664,3 +1664,173 @@ def test_the_basis_rebuild_goes_through_the_one_enqueue_path():
         else:
             sys.modules["konsol.tasks"] = saved
     assert calls == [("Trial Balance Submission", "TBS-1", "on_update_after_submit")], calls
+
+
+# -- konsol#283: re-land epm_raw from the submitted trial balances -------------------------------
+
+def test_on_submit_lands_through_the_one_batch_helper_the_re_land_uses():
+    """on_submit and the re-land run ONE code path: parse, delete the batch's
+    rows, land, claim. A second copy would drift."""
+    on_submit = _inspect.getsource(_m.TrialBalanceSubmission.on_submit)
+    assert "self._land_batch()" in on_submit
+    assert "_land_rows(" not in on_submit and "_claim_insert(" not in on_submit
+    body = _inspect.getsource(_m.TrialBalanceSubmission._land_batch)
+    order = [body.index(s) for s in ("self._parse_file()", "self._ensure_tables()",
+                                     "ALTER TABLE {RAW_TABLE} DELETE", "self._land_rows(rows)",
+                                     "_claim_insert([_claim_values(self, self.amount_basis)])")]
+    assert order == sorted(order), order
+
+
+def test_land_batch_replaces_the_rows_then_claims():
+    log = []
+    _m.execute = lambda sql, *a, **k: log.append(sql) or ""
+    doc = _m.TrialBalanceSubmission()
+    doc.__dict__.update(name="TBS-1", batch_id="b1", data_area_id="ZZA", fiscal_year=2099,
+                        fiscal_period=3, row_count=2, amount_basis="Period movement")
+    doc._parse_file = lambda: _m.parse_tb_csv(GOOD, ())
+    doc._ensure_tables = lambda: log.append("ensure")
+    doc._land_batch()
+    assert log[0] == "ensure"
+    assert log[1].startswith(f"ALTER TABLE {_m.RAW_TABLE} DELETE WHERE batch_id = 'b1'")
+    assert log[2].startswith(f"INSERT INTO {_m.RAW_TABLE} ")
+    assert log[3].startswith(f"INSERT INTO {_m.CONTROL_TABLE} ")
+    assert "'b1', 'TBS-1', 'ZZA', 2099, 3, 2, now(), 'Period movement'" in log[3]
+
+
+class _RelandDoc:
+    def __init__(self, name, log, fail=None):
+        self.name, self._log, self._fail = name, log, fail
+        self.batch_id = "b" + name[-1]
+
+    def _land_batch(self):
+        if self._fail:
+            raise _Thrown(self._fail)
+        self._log.append(("land", self.name))
+
+    def add_comment(self, kind, text):
+        self._log.append(("comment", self.name, kind, text))
+
+
+def _wire_reland(docs, claims, landed, docstatus=None, fail=None):
+    """docs: {name: row_count} submitted; claims: [(batch, name, fy, fp)];
+    landed: {batch: n}. Returns (log, gates, changes)."""
+    log, gates, changes = [], [], []
+    rows = [{"name": n, "batch_id": "b" + n[-1], "row_count": c} for n, c in docs.items()]
+
+    def get_all(doctype, filters=None, fields=None, **kw):
+        assert doctype == "Trial Balance Submission" and filters["docstatus"] == 1
+        names = filters.get("name")
+        return [r for r in rows if names is None or r["name"] in names[1]]
+
+    def execute(sql, *a, **k):
+        if sql.startswith("SELECT") and _m.CONTROL_TABLE in sql:
+            assert sql.endswith("FORMAT JSON")
+            return _json.dumps({"data": [
+                {"batch_id": b, "submission_name": n, "fiscal_year": fy, "fiscal_period": fp}
+                for b, n, fy, fp in claims]})
+        if sql.startswith("SELECT") and _m.RAW_TABLE in sql:
+            return _json.dumps({"data": [{"batch_id": b, "n": str(n)} for b, n in landed.items()]})
+        log.append(("ch", sql))
+        return ""
+
+    def get_value(doctype, name, field, **kw):
+        assert kw.get("for_update") is True
+        return (docstatus or {}).get(name, 1 if name in docs else None)
+
+    # The stub module itself, as _wire does: other tests set attributes on it.
+    _m.frappe = sys.modules["frappe"]
+    _m.frappe.get_all = get_all
+    _m.frappe.throw = _raise
+    _m.frappe.PermissionError = _PermissionError
+    _m.frappe.db = types.SimpleNamespace(get_value=get_value)
+    _m.frappe.get_doc = lambda doctype, name: _RelandDoc(name, log, (fail or {}).get(name))
+    _m.execute = execute
+    _m.ensure_raw_tables = lambda: None
+    _m.assert_open = lambda fy, fp, action="run": gates.append((fy, fp, action))
+    _m._record_data_change = lambda fy, fp, text, entity=None: changes.append((fy, fp, text))
+    _m._request_reland_build = lambda name: log.append(("build", name))
+    del _ADMIN_CHECKS[:]
+    return log, gates, changes
+
+
+def test_reland_is_an_admin_post_endpoint():
+    with open(_SRC) as f:
+        src = f.read()
+    assert "def reland_submitted(names=None, apply=0, remove_orphans=0)" in src
+    head = src[src.index("def reland_submitted(") - 60:src.index("def reland_submitted(")]
+    assert 'whitelist(methods=["POST"])' in head
+    _wire_reland({}, [], {})
+    _m.reland_submitted()
+    assert _ADMIN_CHECKS, "check_epm_admin() was not called"
+
+
+def test_reland_dry_run_reports_and_writes_nothing():
+    log, gates, changes = _wire_reland(
+        {"TBS-1": 2, "TBS-2": 2}, claims=[("b2", "TBS-2", 2099, 1), ("b9", "TBS-9", 2099, 4)],
+        landed={"b2": 2, "b9": 5})
+    out = _m.reland_submitted()
+    assert out["applied"] is False
+    assert [tuple(r) for r in out["reland"]] == [("TBS-1", "no claim in the warehouse")]
+    assert [o["batch_id"] for o in out["orphans"]] == ["b9"]
+    assert out["matched"] == 1
+    assert log == [] and gates == [] and changes == []
+
+
+def test_reland_apply_re_lands_comments_and_requests_one_build():
+    log, gates, changes = _wire_reland(
+        {"TBS-1": 2, "TBS-2": 2}, claims=[("b2", "TBS-2", 2099, 1)], landed={"b2": 7})
+    out = _m.reland_submitted(apply=1)
+    assert out["applied"] is True and sorted(out["relanded"]) == ["TBS-1", "TBS-2"]
+    # the existing claim goes first: a failed landing leaves the batch
+    # unclaimed (missing, and reported next run), never claimed over half its rows
+    first = log.index(("land", "TBS-2"))
+    drops = [i for i, e in enumerate(log) if e[0] == "ch" and e[1].startswith(
+        f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id = 'b2'")]
+    assert drops and drops[0] < first
+    assert [e[1] for e in log if e[0] == "comment"] == ["TBS-1", "TBS-2"]
+    assert [e for e in log if e[0] == "build"] == [("build", "TBS-1")]
+    # restoring what a submitted document already says is not a data change:
+    # no period gate, no sign-off voided
+    assert gates == [] and changes == []
+    assert out["orphans_removed"] == 0
+
+
+def test_reland_lists_a_document_whose_file_cannot_be_read_and_carries_on():
+    log, gates, changes = _wire_reland({"TBS-1": 2, "TBS-2": 2}, claims=[], landed={},
+                                       fail={"TBS-1": "Attach a trial balance CSV first"})
+    out = _m.reland_submitted(apply=1)
+    assert [tuple(f) for f in out["failed"]] == [("TBS-1", "Attach a trial balance CSV first")]
+    assert out["relanded"] == ["TBS-2"]
+    assert [e[1] for e in log if e[0] == "comment"] == ["TBS-2"]
+
+
+def test_reland_skips_a_document_cancelled_since_the_plan():
+    log, gates, changes = _wire_reland({"TBS-1": 2}, claims=[], landed={}, docstatus={"TBS-1": 2})
+    out = _m.reland_submitted(apply=1)
+    assert out["relanded"] == [] and [tuple(s) for s in out["failed"]] == [("TBS-1", "no longer submitted")]
+    assert [e for e in log if e[0] == "build"] == []
+
+
+def test_orphan_claims_stay_unless_asked_and_go_like_a_cancel_when_asked():
+    claims = [("b9", "TBS-9", 2099, 4)]
+    log, gates, changes = _wire_reland({}, claims=claims, landed={"b9": 5})
+    out = _m.reland_submitted(apply=1)
+    assert out["orphans_removed"] == 0 and log == []
+
+    log, gates, changes = _wire_reland({}, claims=claims, landed={"b9": 5})
+    out = _m.reland_submitted(apply=1, remove_orphans=1)
+    assert out["orphans_removed"] == 1
+    # numbers change, so the period must be open (as a cancel) and the change
+    # is recorded before ClickHouse is touched
+    assert gates == [(2099, 4, "remove a warehouse claim with no submitted trial balance")]
+    assert changes and changes[0][:2] == (2099, 4)
+    deletes = [e[1] for e in log if e[0] == "ch"]
+    assert deletes == [f"ALTER TABLE {_m.CONTROL_TABLE} DELETE WHERE batch_id IN ('b9') "
+                       "SETTINGS mutations_sync = 1"]
+    assert ("build", "TBS-9") in log
+
+
+def test_names_limit_the_re_land():
+    log, gates, changes = _wire_reland({"TBS-1": 2, "TBS-2": 2}, claims=[], landed={})
+    out = _m.reland_submitted(names='["TBS-2"]', apply="1")
+    assert out["relanded"] == ["TBS-2"]
