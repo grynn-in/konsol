@@ -96,6 +96,12 @@ leave it empty. Then copy the remaining arguments unchanged. Each name is the
 one your site declared for the dimension the old argument filtered on; the
 examples use `dim_region` and `dim_product`.
 
+One old formula would otherwise read the wrong number without an error:
+`=K.EPM_BUDGET("E1",2026,3,"6100","","","PLAN26")` now puts `PLAN26` in the
+`hierarchy` slot. A hierarchy with no node used to be ignored, which would
+sum every budget scenario. The server now refuses a hierarchy without a node,
+so that cell shows the error until it is rewritten.
+
 A workbook still on the old add-in sends the old keys. The server now refuses
 those rows ("Unknown request key"), so reload the add-in.
 

@@ -420,6 +420,22 @@ def _batch_row_error(req):
     dims = req.get("dimensions")
     if dims is not None and not isinstance(dims, dict):
         return "'dimensions' must be an object of dimension name to value"
+    return _hierarchy_without_node_error(req)
+
+
+def _hierarchy_without_node_error(req):
+    """A hierarchy named with no node, or None (konsol#287).
+
+    It used to be ignored. Since the add-in's arguments moved one place left,
+    an old formula's scenario id lands in the hierarchy slot, and ignoring it
+    would read every scenario (or write without the hierarchy).
+    """
+    hierarchy = _hierarchy_name_from_req(req)
+    if hierarchy and not _hierarchy_node_from_req(req):
+        return (
+            f"Hierarchy '{hierarchy}' is given without a node. Give a node, "
+            "or leave the hierarchy blank."
+        )
     return None
 
 
@@ -1571,6 +1587,9 @@ def budget_cell_save():
     # reads, before any of them runs.
     dims = _budget_dims()
     _apply_budget_dimensions(data, dims)
+    hierarchy_err = _hierarchy_without_node_error(data)
+    if hierarchy_err:
+        frappe.throw(hierarchy_err, frappe.ValidationError)
 
     node_code = _hierarchy_node_from_req(data)
     if node_code:

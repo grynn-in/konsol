@@ -357,6 +357,12 @@ def test_a_batch_row_naming_a_hierarchy_without_a_node_is_refused():
     assert api._batch_row_error({"entity": "ZZE", "hierarchy": ""}) is None
 
 
+def test_budget_cell_save_refuses_a_hierarchy_without_a_node():
+    block = _read_api().split("def budget_cell_save")[1].split("\n@frappe.whitelist")[0]
+    check = block.index("_hierarchy_without_node_error(data)")
+    assert check < block.index("_assert_budget_write_access(data)")
+
+
 def test_epm_batch_refuses_the_row_before_reading_it():
     block = _read_api().split("def epm_batch")[1].split("\n@frappe.whitelist")[0]
     check = block.index("_batch_row_error(req)")
