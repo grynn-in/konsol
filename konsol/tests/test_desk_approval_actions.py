@@ -83,8 +83,9 @@ def test_the_script_routes_every_action_through_the_approval_api():
     # A workflow doctype's own Approve/Reject is intercepted, so a reason can be
     # asked for; the native Reject is refused without one.
     assert "before_workflow_action" in js
-    # Writes are POSTs (a GET rolls back); the mode read is a GET.
-    assert js.count('type: "POST"') >= 2
+    # Writes are POSTs (a GET rolls back): approve and reject share one helper.
+    assert 'type: "POST"' in js
+    assert 'post(frm, "approve"' in js and 'post(frm, "reject"' in js
 
 
 def test_the_workflow_doctypes_named_in_the_script_are_the_installed_ones():

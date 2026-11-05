@@ -57,6 +57,18 @@ after_migrate = ["konsol.install.after_migrate"]
 # app_include_css = "/assets/konsol/css/konsol.css"
 # app_include_js = "/assets/konsol/js/konsol.js"
 
+# Approve and Reject in the record's Actions menu, on every approval doctype
+# (close_policy_model.APPROVAL_DOCTYPES; Deepak Pai, 5 Nov 2026).
+doctype_js = {
+    "Consolidation Journal": "public/js/approval_actions.js",
+    "Business Combination": "public/js/approval_actions.js",
+    "Business Disposal": "public/js/approval_actions.js",
+    "Group Exchange Rate": "public/js/approval_actions.js",
+    "Ownership Period": "public/js/approval_actions.js",
+    "Historical Equity Rate": "public/js/approval_actions.js",
+    "IC Balance": "public/js/approval_actions.js",
+}
+
 # include js, css files in header of web template
 # web_include_css = "/assets/konsol/css/konsol.css"
 # web_include_js = "/assets/konsol/js/konsol.js"

@@ -1,9 +1,11 @@
-"""Approvals and My Work Desk reports: structure (no frappe needed).
+"""The My Work Desk report: structure (no frappe needed).
+
+The Approvals report was removed on 5 Nov 2026: approvals are done in each
+record's Actions menu (test_desk_approval_actions.py).
 
 - Every ``frappe.call`` method the reports' JS names is a function that
   exists and is ``@frappe.whitelist(methods=["POST"])``: a GET would roll
   the approve back (CLAUDE.md), and a misspelt path fails only at a click.
-- The Approvals buttons call exactly approval_api.approve and .reject.
 - Each report's roles are the roles its API admits (``frappe.only_for``),
   and each of them holds report permission on the report's ref_doctype
   (Frappe refuses the report otherwise): a listed role that is always
@@ -18,7 +20,6 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORT_DIR = os.path.join(APP_DIR, "consolidation", "report")
 REPORTS = {
     # report folder: (module file of the API, the API function the report reads)
-    "approvals": (os.path.join("close", "approvals_api.py"), "get_queue"),
     "my_work": (os.path.join("close", "mywork_api.py"), "get_my_work"),
 }
 
@@ -101,11 +102,6 @@ def test_every_frappe_call_in_the_reports_says_post():
         calls = js.count("frappe.call(")
         assert calls == len(_methods(js))
         assert js.count('type: "POST"') == calls
-
-
-def test_approvals_buttons_call_approve_and_reject():
-    assert sorted(set(_methods(_js("approvals")))) == [
-        "konsol.close.approval_api.approve", "konsol.close.approval_api.reject"]
 
 
 def test_my_work_writes_nothing():

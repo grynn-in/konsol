@@ -70,12 +70,21 @@ def test_every_sidebar_link_resolves():
 
 def test_sidebar_claims_its_doctypes_and_starts_at_home():
     """``is_default_module`` is what routes a doctype's pages to this sidebar
-    (frappe/boot.py build_entity_module_map); Home comes first."""
+    (frappe/boot.py build_entity_module_map): each doctype's one unfiltered
+    link claims it. Home comes first."""
     items = _load(SIDEBAR)["items"]
     assert items[0]["link_type"] == "Workspace" and items[0]["label"] == "Home"
+    claims = {}
     for item in items:
-        if item.get("link_type") == "DocType":
+        if item.get("link_type") != "DocType":
+            continue
+        if item.get("filters"):
+            # A filtered list (the Approvals section) never claims its doctype.
+            assert item["is_default_module"] == 0, item["label"]
+        else:
             assert item["is_default_module"] == 1, item["link_to"]
+            claims[item["link_to"]] = claims.get(item["link_to"], 0) + 1
+    assert all(n == 1 for n in claims.values()), claims
 
 
 def test_no_dock_ships():

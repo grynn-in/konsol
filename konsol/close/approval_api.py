@@ -80,6 +80,40 @@ def approve(doctype, name, reason=None):
     }
 
 
+@frappe.whitelist(methods=["GET"])
+def approve_mode(doctype, name):
+    """What the signed-in user may do with ``doctype`` ``name`` from its Desk
+    form's Actions menu (public/js/approval_actions.js; Deepak Pai, 5 Nov
+    2026: approvals work in the record, as in the compliance app).
+
+    Returns ``rates_model.approve_mode``'s ``{"mode", "message"}`` — the same
+    rule the Close app's queue applies, over the same preparers — or
+    ``{"mode": "sent_back", "message"}`` for a rejected, unchanged draft of a
+    doctype with no workflow, which ``approve`` would refuse (F01). A read: it
+    decides nothing, and ``approve``'s hook judges again. Gated to the roles
+    that read the approvals queue (approvals_api.get_queue).
+    """
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    if doctype not in close_policy_model.APPROVAL_DOCTYPES:
+        frappe.throw(
+            "%s is not an approval document. Only these are: %s."
+            % (doctype, ", ".join(close_policy_model.APPROVAL_DOCTYPES)))
+    doc = frappe.get_doc(doctype, name)
+    doc.check_permission("read")
+    if not frappe.db.get_value("Workflow", {"document_type": doctype, "is_active": 1}):
+        rejection = close_event.latest_rejections(doctype, [name]).get(name)
+        if approvals_model.is_sent_back(rejection, doc.modified):
+            return {"mode": "sent_back",
+                    "message": "Rejected by %s on %s: \"%s\". The preparer must save a "
+                               "change before it can be approved again."
+                               % (rejection["actor"], rejection["at"], rejection["reason"])}
+    preparers = self_approval.preparers_for(doctype, {name: doc.owner})[name]
+    return approvals_model.rates_model.approve_mode(
+        frappe.session.user, frappe.get_roles(), preparers, doctype, name,
+        frappe.db.get_single_value("Close Settings", "self_approval"),
+        close_policy_model.APPROVER_ROLES, close_policy_model.self_approval_problem)
+
+
 @frappe.whitelist(methods=["POST"])
 def reject(doctype, name, reason=None):
     """Reject a document awaiting approval, with a reason (konsol#305 J06a,
