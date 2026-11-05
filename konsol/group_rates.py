@@ -205,8 +205,10 @@ def magnitude_warning(from_currency, to_currency, quote, quoted_per, factor, ref
     else:
         hint = (f"No listed Quoted Per fits; the quote may be {10 ** abs(decades):,}x too "
                 f"{'high' if decades > 0 else 'low'}.")
+    implied, implied_per = choose_quoted_per(10 ** expected)
+    implied = quote_label(float(f"{implied:.3g}"), implied_per, from_currency, to_currency)
     return (f"{entered} is about {10 ** abs(off):.1f}x {'above' if off > 0 else 'below'} the roughly "
-            f"{10 ** expected:.3g} {to_currency} per {from_currency} the ISO Currency references imply: "
+            f"{implied} the ISO Currency references imply: "
             f"more than the Magnitude Warning Factor ({factor:g}x, Close Settings). {hint} "
             "If the rate is right, say why (Reason for Change).")
 
