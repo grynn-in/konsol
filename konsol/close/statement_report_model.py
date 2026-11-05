@@ -15,6 +15,17 @@ exactly what the Close app's Numbers screen shows.
   explanation and its "Unexplained" remainder follow it at ``indent`` 1.
 - ``ytd`` is set on Profit and Loss lines only; the Balance Sheet has none.
 - Every row carries the reporting currency (the Currency columns' options).
+- Commentary (Desk, 6 Nov 2026): a heading row carries the payload's own
+  ``commentary`` for its heading (the Commentary column shows the text,
+  truncated to ``COMMENTARY_SHOWN``; ``commentary_text`` and
+  ``commentary_modified`` are the full text and the stale-edit token the
+  Add commentary dialog prefills and sends back) and the payload's own
+  ``can_comment`` (1/0): the rule is ``statement_api``'s, never re-decided
+  here. Only heading rows take commentary (W4-E15). An ok payload without
+  ``commentary`` or ``can_comment`` is refused, naming the key.
+- Drill: a heading row carries ``drill_group`` (the Consolidation Group
+  document name the Statement Drill filter takes) and
+  ``consolidation_group`` (the group code commentary is keyed on).
 - ``prior_year``: the prior year's value for the SAME line, from a second
   payload (``get_statement(fiscal_year - 1, fiscal_period, group)``): a
   P&L line takes the prior year's year to date, a Balance Sheet line the
@@ -70,7 +81,34 @@ def columns():
         amount("prior_year_change", "Change vs prior year"),
         {"fieldname": "currency", "label": "Currency", "fieldtype": "Link",
          "options": "Currency", "width": 80},
+        {"fieldname": "commentary", "label": "Commentary", "fieldtype": "Data", "width": 280},
     ]
+
+
+#: The Commentary column shows at most this many characters (the last an
+#: ellipsis); the full text is on the row as ``commentary_text``.
+COMMENTARY_SHOWN = 80
+
+
+def _shown(text):
+    if not text:
+        return None
+    if len(text) <= COMMENTARY_SHOWN:
+        return text
+    return text[:COMMENTARY_SHOWN - 1] + "…"
+
+
+def _with_commentary(row, payload, heading, drill_group):
+    """A heading row with its commentary, the payload's ``can_comment`` and
+    the keys that open its drill (module docstring)."""
+    entry = payload["commentary"].get(heading)
+    row["commentary"] = _shown(entry.get("text")) if entry else None
+    row["commentary_text"] = entry.get("text") if entry else None
+    row["commentary_modified"] = entry.get("modified") if entry else None
+    row["can_comment"] = 1 if payload["can_comment"] is True else 0
+    row["drill_group"] = drill_group
+    row["consolidation_group"] = payload.get("consolidation_group")
+    return row
 
 
 def _refuse_unless_ok(payload):
@@ -87,6 +125,7 @@ def _row(label, currency, line=None, fields=_AMOUNT_FIELDS, code=None, indent=0,
         value = line.get(field) if (line is not None and field in fields) else None
         row[field] = _zero(value)
     row["prior_year"] = row["prior_year_change"] = None
+    row["commentary"] = None
     row.update(flags)
     return row
 
@@ -159,11 +198,14 @@ def _with_prior(row, section, line, prior_values, include=None):
     return row
 
 
-def rows(payload, prior=None):
+def rows(payload, prior=None, drill_group=None):
     """The report rows for ``payload``, with the prior year's payload
-    ``prior`` (or ``None``) on the prior-year columns (see the module
-    docstring)."""
+    ``prior`` (or ``None``) on the prior-year columns and ``drill_group``
+    on the heading rows (see the module docstring)."""
     _refuse_unless_ok(payload)
+    for key in ("commentary", "can_comment"):
+        if key not in payload:
+            raise ValueError(f"The statement payload has no {key}.")
     currency = payload.get("reporting_currency")
     prior_values = _prior_values(prior)
     out = []
@@ -173,10 +215,10 @@ def rows(payload, prior=None):
         for line in section["lines"]:
             kind = line.get("kind")
             if kind == "heading":
-                out.append(_with_prior(
+                out.append(_with_commentary(_with_prior(
                     _row(line.get("heading_name") or line["heading"], currency, line,
                          code=line["heading"]),
-                    name, line, prior_values))
+                    name, line, prior_values), payload, line["heading"], drill_group))
                 for include in line.get("includes") or []:
                     out.append(_with_prior(
                         _row(include["label"], currency, include,
