@@ -116,6 +116,23 @@ def _commentary(signoff, group):
     return "; ".join("%s: %s" % (c["consolidation_group"], counts(c)) for c in lines)
 
 
+def _warnings(signoff):
+    """konsol#371-5: what a typed acknowledgement covers, one line each, so
+    the sign-off dialog lists it before the approver acknowledges. From the
+    payload's ``acknowledgements`` (signoff_model.summary): the warned checks
+    by name, a count of those it could not name, and the intercompany and
+    commentary warnings. Never dropped: a warned check with no name is
+    counted."""
+    ack = signoff.get("acknowledgements") or {}
+    lines = ["Check warned: %s" % n for n in ack.get("names") or ()]
+    unlisted = int(ack.get("unlisted") or 0)
+    if unlisted:
+        lines.append("%d more warned check%s, not named here"
+                     % (unlisted, "" if unlisted == 1 else "s"))
+    lines.extend(t for t in (ack.get("intercompany"), ack.get("commentary")) if t)
+    return lines
+
+
 def _allow(signoff, checks):
     action = signoff["action"]
     status = signoff["period_status"]
@@ -145,7 +162,7 @@ def row(state, signoff, checks, signed, group, error=None):
         out.update({
             "period_status": state.get("status"), "checks": None, "run": None, "signoff": None,
             "signed_by": None, "signed_at": None, "next_step": None, "blockers": error,
-            "commentary": None, "action": None, "action_label": None,
+            "commentary": None, "action": None, "action_label": None, "warnings": [],
             "allow": {k: False for k in ("run_checks", "sign", "reject", "close", "reopen")},
         })
         return out
@@ -163,6 +180,7 @@ def row(state, signoff, checks, signed, group, error=None):
         "commentary": _commentary(signoff, group),
         "action": signoff["action"],
         "action_label": signoff["label"],
+        "warnings": _warnings(signoff),
         "allow": _allow(signoff, checks),
     })
     return out

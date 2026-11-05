@@ -33,7 +33,34 @@ function konsol_tb_report_html(out) {
 		html += `<p><b>${__("Warnings (these still load)")}</b></p><ul>` +
 			warned.map((r) => `<li>${label(r)}: ${esc(r.warnings.join("; "))}</li>`).join("") + "</ul>";
 	}
+	// konsol#371-7: after a load the report also says what was loaded and
+	// what failed to load (tb_bulk's `loaded` and `load_error` per row).
+	const loaded = report.filter((r) => r.loaded);
+	const failed = report.filter((r) => r.load_error);
+	if (loaded.length) {
+		html += `<p><b>${__("Loaded")}</b></p><ul>` +
+			loaded.map((r) => `<li>${label(r)}: ${esc(r.loaded)}</li>`).join("") + "</ul>";
+	}
+	if (failed.length) {
+		html += `<p><b>${__("Failed to load")}</b></p><ul>` +
+			failed.map((r) => `<li>${label(r)}: ${esc(r.load_error)}</li>`).join("") + "</ul>";
+	}
 	return html;
+}
+
+// konsol#371-7: the stored report is JSON for the code; people read it
+// rendered. The raw field is hidden on the form.
+function konsol_tb_render_report(frm) {
+	const field = frm.get_field("report_html");
+	if (!field) return;
+	let report = [];
+	try {
+		report = JSON.parse(frm.doc.report || "[]");
+	} catch (e) {
+		field.$wrapper.html(`<p>${__("The stored report could not be read.")}</p>`);
+		return;
+	}
+	field.$wrapper.html(report.length ? konsol_tb_report_html({ report, total_rows: frm.doc.total_rows }) : "");
 }
 
 function konsol_tb_check(frm) {
@@ -82,6 +109,7 @@ function konsol_tb_load(frm, skip_invalid) {
 
 frappe.ui.form.on("Trial Balance Upload", {
 	refresh(frm) {
+		konsol_tb_render_report(frm);
 		const status = (frm.doc.__onload || {}).status_now;
 		if (status && !frm.is_dirty()) {
 			frm.page.set_indicator(__(status), frappe.utils.guess_colour(status));

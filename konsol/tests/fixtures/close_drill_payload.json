@@ -1,7 +1,7 @@
 {
   "consolidation_group": "G1",
   "drill": {
-    "dimensions_note": "Not broken down by dimension yet (konsolidat#245).",
+    "dimensions_note": "Not broken down by dimension yet.",
     "heading": "1",
     "heading_name": "ASSETS",
     "rows": [

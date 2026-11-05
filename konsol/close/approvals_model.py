@@ -304,6 +304,16 @@ def is_sent_back(rejection, modified):
     return at > modified
 
 
+def sent_back_message(doctype, name, rejection):
+    """The refusal for approving a sent-back draft (F01). One sentence for
+    ``approval_api.approve`` and the before_submit hook
+    (``self_approval.check``, konsol#371-1), which every other submit path
+    runs."""
+    return ("%s %s was rejected by %s on %s: \"%s\". The preparer must "
+            "save a change before it can be approved again."
+            % (doctype, name, rejection["actor"], rejection["at"], rejection["reason"]))
+
+
 def sent_back_items(docs, rejections):
     """The caller's own pending documents whose newest rejection is later
     than their own ``modified`` (A21; E6-P12, #305-D2-8): the preparer's

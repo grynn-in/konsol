@@ -711,7 +711,7 @@ test("drillView: dimensionsNote and heading/section are passed through", () => {
 	assert.equal(view.heading, "1");
 	assert.equal(view.headingName, "ASSETS");
 	assert.equal(view.section, "Balance Sheet");
-	assert.equal(view.dimensionsNote, "Not broken down by dimension yet (konsolidat#245).");
+	assert.equal(view.dimensionsNote, "Not broken down by dimension yet.");
 	assert.equal(view.state, null);
 });
 

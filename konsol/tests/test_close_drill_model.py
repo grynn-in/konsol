@@ -312,7 +312,7 @@ def test_dimensions_note_names_the_tracking_issue():
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
     result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
-    assert result["dimensions_note"] == "Not broken down by dimension yet (konsolidat#245)."
+    assert result["dimensions_note"] == "Not broken down by dimension yet."
 
 
 # --- heading "3": CTA and current-year result, placed on the declared ----

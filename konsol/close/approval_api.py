@@ -68,10 +68,7 @@ def approve(doctype, name, reason=None):
         # preparer has not yet saved a change.
         rejection = close_event.latest_rejections(doctype, [name]).get(name)
         if approvals_model.is_sent_back(rejection, doc.modified):
-            frappe.throw(
-                "%s %s was rejected by %s on %s: \"%s\". The preparer must "
-                "save a change before it can be approved again."
-                % (doctype, name, rejection["actor"], rejection["at"], rejection["reason"]))
+            frappe.throw(approvals_model.sent_back_message(doctype, name, rejection))
         doc.submit()
     return {
         "name": doc.name,
