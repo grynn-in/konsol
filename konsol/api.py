@@ -420,7 +420,37 @@ def _batch_row_error(req):
     dims = req.get("dimensions")
     if dims is not None and not isinstance(dims, dict):
         return "'dimensions' must be an object of dimension name to value"
+    for key in ("hierarchy", "hierarchy_name", "hierarchy_node", "node"):
+        value = req.get(key)
+        if value is not None and not isinstance(value, str):
+            return f"'{key}' must be text, not {value!r}"
     return _hierarchy_without_node_error(req)
+
+
+def _hierarchy_dimension_error(scenario, fact_name, dim_names):
+    """Why a hierarchy read cannot filter on ``dim_names``, or None (konsol#287
+    review).
+
+    The hierarchy query checks a name only against an identifier pattern, so
+    any column of its table would be accepted as a filter. The names must be
+    the Dataset's declared dimensions, as on the flat path.
+    """
+    if not dim_names:
+        return None
+    fact = _get_fact(fact=fact_name, scenario=scenario)
+    if not fact:
+        return (
+            f"No Dataset is registered for scenario '{scenario}', so a "
+            f"hierarchy read cannot filter on {', '.join(sorted(dim_names))}"
+        )
+    declared = _get_fact_dimensions(fact)
+    for name in sorted(dim_names):
+        if name not in declared:
+            return (
+                f"Invalid dimension '{name}' for fact '{fact.fact_name}'. "
+                f"Allowed: {', '.join(sorted(declared)) or 'none'}"
+            )
+    return None
 
 
 def _hierarchy_without_node_error(req):
@@ -747,7 +777,16 @@ def _batch_query_clickhouse(requests_list):
         _active_budget_scenarios_by_year,
         choose_budget_scenario,
         named_budget_scenario_error,
+        _scenario_ids,
+        scenario_id_error,
     )
+
+    known_cache = []  # every Scenario id, looked up once when first needed
+
+    def known_scenarios():
+        if not known_cache:
+            known_cache.append(_scenario_ids())
+        return known_cache[0]
 
     ch_settings = _get_ch_connection()
     n = len(requests_list)
@@ -772,6 +811,18 @@ def _batch_query_clickhouse(requests_list):
         dims = req.get("dimensions", {})
         fact_key = req.get("fact") or req.get("scenario")
         scenario_id = req.get("scenario_id", "")
+        if scenario_id:
+            # The id must have a column to filter, and (outside the variance
+            # dataset, checked below) name a Scenario that exists. Ignored, it
+            # read the total; filtering to nothing, it read 0 (konsol#287).
+            fact = resolve_fact(fact_key)
+            if fact and not _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+                err = scenario_id_error(
+                    scenario_id, has_column=fact.has_scenario_id,
+                    known=known_scenarios, label=f"Dataset '{fact.fact_name}'")
+                if err:
+                    errors[idx] = err
+                    continue
         if scenario_id and _SAFE_SCENARIO_ID.match(scenario_id):
             # A named scenario must be one the dataset keeps: an active
             # budget. Any other id (actuals, inactive, misspelled) would
@@ -1080,6 +1131,9 @@ def epm_value(entity, year, period, account, measure="",
         measure, measure_err = _hierarchy_measure(scenario, measure)
         if measure_err:
             frappe.throw(measure_err, frappe.ValidationError)
+        dim_err = _hierarchy_dimension_error(scenario, fact, set(req_dims))
+        if dim_err:
+            frappe.throw(dim_err, frappe.ValidationError)
         result = batch_query_hierarchy([{
             "entity": entity,
             "year": int(year),
@@ -1383,6 +1437,11 @@ def epm_batch():
             measure, measure_err = _hierarchy_measure(scenario, measure)
             if measure_err:
                 errors_list[i] = measure_err
+                continue
+            dim_err = _hierarchy_dimension_error(
+                scenario, req.get("fact"), set(dimensions))
+            if dim_err:
+                errors_list[i] = dim_err
                 continue
             normalized[i] = {
                 "entity": entity,
