@@ -72,9 +72,13 @@ def _get_value_stub(root, nodes, accounts):
         if doctype == "Main Account":
             account = accounts.get(filters)
             return types.SimpleNamespace(**account) if account is not None else None
-        if doctype == "ISO Currency" and fieldname == "minor_unit":
-            # konsol#353: the journal currency's ISO minor unit
-            return {"USD": 2, "EUR": 2, "JPY": 0, "BHD": 3}.get(filters)
+        if doctype == "ISO Currency" and fieldname == ["minor_unit", "minor_unit_declared"]:
+            # konsol#353: the journal currency's ISO Currency row; XDR=0
+            # unticked is every site's row from the old shipped list (#330).
+            row = {"USD": (2, 0), "EUR": (2, 0), "JPY": (0, 0), "BHD": (3, 0),
+                   "XDR": (0, 0), "XAU": (0, 1)}.get(filters)
+            return None if row is None else types.SimpleNamespace(
+                minor_unit=row[0], minor_unit_declared=row[1])
         raise AssertionError(f"unexpected get_value({doctype!r}, {filters!r})")
     return get_value
 
@@ -169,6 +173,10 @@ def _load(states=None, period_open=True, declared=True,
     # PR #387 review: the controller reads the shipped ISO 4217 list (konsol#330).
     mods["konsol.currency_references"] = types.ModuleType("konsol.currency_references")
     mods["konsol.currency_references"].reference_rows = _iso_reference_rows
+    # PR #387 re-review: the controller judges with iso_currency_model.minor_unit_problem
+    # (konsol#330), fed the shipped list as {code: minor_unit}.
+    mods["konsol.currency_references"].listed_minor_units = lambda: {
+        r["currency_code"]: r["minor_unit"] for r in _iso_reference_rows()}
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_declared = assert_declared
 
@@ -479,3 +487,40 @@ def test_the_reject_reason_flag_is_named_the_same_in_both_modules():
         api = f.read()
     assert 'REJECT_REASON_FLAG = "konsol_reject_reason"' in controller
     assert 'REJECT_REASON_FLAG = "konsol_reject_reason"' in api
+
+
+
+# --- PR #387 re-review: the #330 rule judges the currency; huge amounts ------
+
+
+def _refusal(d):
+    try:
+        d.validate()
+    except Refused as e:
+        return str(e)
+    except Exception as e:  # noqa: BLE001
+        raise AssertionError(f"raised {type(e).__name__} instead of refusing: {e}")
+    return None
+
+
+def test_an_unticked_xdr_zero_root_currency_is_refused_as_330():
+    """XDR has no ISO minor unit; a stored 0 not declared is the konsol#330
+    disagreement, so a journal in it is refused, not judged in whole units."""
+    module, _ = _load(root=("ZZROOT", "XDR"))
+    message = _refusal(_doc(module))
+    assert message and "XDR" in message and "Minor Unit Not Set by ISO 4217" in message, message
+
+
+def test_a_declared_currency_iso_sets_no_unit_for_posts():
+    module, _ = _load(root=("ZZROOT", "XAU"))
+    d = _doc(module)
+    d.validate()
+    assert d.currency == "XAU"
+
+
+def test_an_amount_of_1e19_is_refused_with_a_sentence():
+    module, _ = _load()
+    for amount in (1e19, 1e30, "1e19", 10**25):
+        lines = [_line(1, debit_amount=amount), _line(2, credit_amount=amount)]
+        message = _refusal(_doc(module, lines=lines))
+        assert message and "Line 1" in message and "too large" in message, (amount, message)

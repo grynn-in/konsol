@@ -29,44 +29,51 @@ CONTROLLER = os.path.join(APP_DIR, "consolidation", "doctype", "consolidation_jo
                           "consolidation_journal.py")
 
 
+import json
+
+with open(os.path.join(APP_DIR, "reference_data", "iso_currencies.json")) as _f:
+    #: The shipped ISO 4217 list as {code: minor_unit} (None: ISO sets none).
+    L = {r["currency_code"]: r["minor_unit"] for r in json.load(_f)}
+
+
 def _line(idx, debit=0, credit=0):
     return {"idx": idx, "main_account": "1000", "debit_amount": debit, "credit_amount": credit}
 
 
 def test_a_clean_usd_journal_has_no_currency_problem():
     lines = [_line(1, debit=100.25), _line(2, credit=100.25)]
-    assert M.currency_problems("USD", 2, lines) == []
+    assert M.currency_problems("USD", 2, lines, L) == []
 
 
 def test_more_places_than_the_minor_unit_is_refused_naming_the_line():
     """The defect: 100.004 vs 100.001 both rounded to 100.00 and balanced."""
     lines = [_line(1, debit=100.004), _line(2, credit=100.001)]
-    problems = M.currency_problems("USD", 2, lines)
+    problems = M.currency_problems("USD", 2, lines, L)
     assert len(problems) == 2, problems
     assert "Line 1" in problems[0] and "100.004" in problems[0] and "USD has 2" in problems[0]
 
 
 def test_a_zero_decimal_currency_refuses_fractions():
-    problems = M.currency_problems("JPY", 0, [_line(1, debit=1000.5), _line(2, credit=1000.5)])
+    problems = M.currency_problems("JPY", 0, [_line(1, debit=1000.5), _line(2, credit=1000.5)], L)
     assert len(problems) == 2 and "JPY has 0" in problems[0], problems
-    assert M.currency_problems("JPY", 0, [_line(1, debit=1000), _line(2, credit=1000.0)]) == []
+    assert M.currency_problems("JPY", 0, [_line(1, debit=1000), _line(2, credit=1000.0)], L) == []
 
 
 def test_an_undeclared_minor_unit_is_refused_never_read_as_two():
     for minor_unit in (None, "", "2", True, -1):
-        problems = M.currency_problems("ZZX", minor_unit, [_line(1, debit=1), _line(2, credit=1)])
+        problems = M.currency_problems("ZZX", minor_unit, [_line(1, debit=1), _line(2, credit=1)], L)
         assert len(problems) == 1 and "ZZX" in problems[0] and "ISO Currency" in problems[0], minor_unit
 
 
 def test_a_journal_with_no_currency_is_refused():
-    problems = M.currency_problems(None, None, [_line(1, debit=1), _line(2, credit=1)])
+    problems = M.currency_problems(None, None, [_line(1, debit=1), _line(2, credit=1)], L)
     assert len(problems) == 1 and "currency" in problems[0].lower()
 
 
 def test_a_currency_finer_than_the_warehouse_column_is_refused_naming_the_scale():
     """BHD (3) cannot be stored in Decimal(18,2) without losing its third
     decimal: refused until the column is widened (option C)."""
-    problems = M.currency_problems("BHD", 3, [_line(1, debit=1.5), _line(2, credit=1.5)])
+    problems = M.currency_problems("BHD", 3, [_line(1, debit=1.5), _line(2, credit=1.5)], L)
     assert len(problems) == 1, problems
     assert "BHD" in problems[0] and "3" in problems[0] and str(M.STORED_PLACES) in problems[0]
 
@@ -100,18 +107,19 @@ def test_a_stored_minor_unit_that_disagrees_with_iso_is_refused_naming_330():
     which blames the amounts. The listed ISO unit is the judge; a stored
     value that disagrees is refused as what it is."""
     lines = [_line(1, debit=100.25), _line(2, credit=100.25)]
-    problems = M.currency_problems("USD", 0, lines, listed_unit=2)
+    problems = M.currency_problems("USD", 0, lines, L)
     assert len(problems) == 1, problems
     assert "#330" in problems[0] and "0" in problems[0] and "2" in problems[0], problems
     assert "USD has 0" not in problems[0], problems
-    assert M.currency_problems("USD", 2, lines, listed_unit=2) == []
+    assert M.currency_problems("USD", 2, lines, L) == []
 
 
 def test_a_code_iso_sets_no_unit_for_is_judged_by_its_stored_unit():
     """Off the list or N.A. (declared under konsol#330): the stored value."""
     lines = [_line(1, debit=100), _line(2, credit=100)]
-    assert M.currency_problems("ZZPTS", 0, lines, listed_unit=None) == []
-    problems = M.currency_problems("ZZPTS", 0, [_line(1, debit=1.5), _line(2, credit=1.5)], listed_unit=None)
+    assert M.currency_problems("ZZPTS", 0, lines, L, declared=True) == []
+    problems = M.currency_problems("ZZPTS", 0, [_line(1, debit=1.5), _line(2, credit=1.5)], L,
+                                   declared=True)
     assert len(problems) == 2 and "ZZPTS has 0" in problems[0], problems
 
 
@@ -125,7 +133,7 @@ def test_places_are_counted_on_the_value_as_frappe_stores_it():
     assert M._decimal_places(1e-10) == 0
     assert M._decimal_places(None) == 0
     lines = [_line(1, debit=total), _line(2, credit=0.3)]
-    assert M.currency_problems("USD", 2, lines, listed_unit=2) == []
+    assert M.currency_problems("USD", 2, lines, L) == []
 
 
 def test_the_controller_passes_the_listed_iso_unit():
@@ -134,4 +142,40 @@ def test_the_controller_passes_the_listed_iso_unit():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_validate_lines_and_totals")
     src = ast.unparse(fn)
-    assert "listed_unit=" in src and "reference_rows" in src, src
+    assert "listed_minor_units" in src and "minor_unit_declared" in src, src
+
+
+
+# --- PR #387 re-review: #330's own rule, and amounts too large to judge ------
+
+
+def test_an_unticked_xdr_zero_is_refused_by_the_330_rule():
+    """The hand-written comparison read XDR's listed None as "no list unit"
+    and accepted the stored 0. The #330 rule refuses it: declare it."""
+    lines = [_line(1, debit=100), _line(2, credit=100)]
+    problems = M.currency_problems("XDR", 0, lines, L)
+    assert len(problems) == 1, problems
+    assert "XDR" in problems[0] and "Minor Unit Not Set by ISO 4217" in problems[0], problems
+    assert M.currency_problems("XDR", 0, lines, L, declared=True) == []
+
+
+def test_the_rule_is_iso_currency_model_not_a_copy():
+    with open(_PATH) as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "currency_problems")
+    src = ast.unparse(fn)
+    assert "minor_unit_problem(" in src, src
+    assert "listed_unit" not in src, src
+
+
+def test_an_amount_of_1e19_or_more_is_refused_with_a_sentence_not_an_exception():
+    for amount in (1e19, "1e19", 10**19, 1e30, "1e400", -1e19):
+        lines = [_line(1, debit=amount), _line(2, credit=1)]
+        problems = M.line_problems(lines)
+        assert any("Line 1" in p and "too large" in p for p in problems), (amount, problems)
+        # currency_problems leaves it to line_problems and does not raise
+        M.currency_problems("USD", 2, lines, L)
+    assert not any("too large" in p for p in M.line_problems([_line(1, debit=9.99e18), _line(2, credit=9.99e18)]))
+    # just below the limit, places are still counted
+    assert M.currency_problems("USD", 2, [_line(1, debit="9999999999999999999.004"),
+                                          _line(2, credit=1)], L)

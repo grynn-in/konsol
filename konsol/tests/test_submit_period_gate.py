@@ -193,6 +193,10 @@ def _load(path, period_open):
     # PR #387 review: the controller reads the shipped ISO 4217 list (konsol#330).
     mods["konsol.currency_references"] = types.ModuleType("konsol.currency_references")
     mods["konsol.currency_references"].reference_rows = _iso_reference_rows
+    # PR #387 re-review: the controller judges with iso_currency_model.minor_unit_problem
+    # (konsol#330), fed the shipped list as {code: minor_unit}.
+    mods["konsol.currency_references"].listed_minor_units = lambda: {
+        r["currency_code"]: r["minor_unit"] for r in _iso_reference_rows()}
     mods["konsol.clickhouse"].sync_doctype_after_commit = lambda *a: None
     mods["konsol.clickhouse"].execute = lambda *a, **k: None
     mods["konsol.clickhouse"].ensure_raw_tables = lambda *a, **k: None
