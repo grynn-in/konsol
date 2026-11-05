@@ -353,3 +353,44 @@ def test_the_legacy_pipeline_job_is_enqueued_under_that_job_id():
     path = os.path.join(APP_DIR, "pipeline", "doctype", "pipeline_run", "pipeline_run.py")
     body = ast.unparse(_function(path, "trigger_pipeline"))
     assert "job_id=pipeline_run_job_id(doc.name)" in body, body
+
+
+# --- re-review of #392 -----------------------------------------------------------
+
+
+def test_the_close_run_reaper_skips_a_run_the_job_started_meanwhile():
+    """The reaper's list is a plain read; a job's locking read can move a run
+    Queued -> Running and commit before the reaper writes. Each row is re-read
+    FOR UPDATE and skipped if it is no longer stale (re-review)."""
+    import datetime
+    now = datetime.datetime(2026, 11, 6, 12, 0, 0)
+    old = now - datetime.timedelta(hours=5)
+    rows = {"ZZ-AR-1": {"status": "Running", "modified": now, "log": ""},   # started meanwhile
+            "ZZ-AR-2": {"status": "Queued", "modified": old, "log": ""},    # truly stale
+            "ZZ-AR-3": {"status": "Green", "modified": old, "log": ""}}     # finished meanwhile
+    reads, writes = [], []
+
+    def get_value(doctype, name, fields, for_update=False, as_dict=False, **k):
+        reads.append((name, for_update))
+        row = rows[name]
+        if isinstance(fields, (list, tuple)):
+            return _Row({f: row[f] for f in fields}) if as_dict else [row[f] for f in fields]
+        return row[fields]
+
+    def set_value(doctype, name, values, *a, **k):
+        writes.append(name)
+        rows[name].update(values)
+
+    frappe = types.SimpleNamespace(
+        db=types.SimpleNamespace(get_value=get_value, set_value=set_value, commit=lambda: None),
+        get_all=lambda *a, **k: ["ZZ-AR-1", "ZZ-AR-2", "ZZ-AR-3"],
+        utils=types.SimpleNamespace(now_datetime=lambda: now,
+                                    add_to_date=lambda d, minutes=0: d + datetime.timedelta(minutes=minutes)),
+        logger=lambda *a, **k: types.SimpleNamespace(info=lambda *a: None))
+    ns = {"frappe": frappe, "STALE_MINUTES": 60}
+    fn = _function(ASSERTION_RUN, "reap_stale_close_runs")
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), ASSERTION_RUN, "exec"), ns)
+    assert ns["reap_stale_close_runs"]() == ["ZZ-AR-2"]
+    assert writes == ["ZZ-AR-2"], writes
+    assert rows["ZZ-AR-1"]["status"] == "Running" and rows["ZZ-AR-3"]["status"] == "Green"
+    assert all(fu for name, fu in reads), reads

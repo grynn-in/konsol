@@ -40,6 +40,7 @@ class _Site:
         self.ch_rows = []
         self.ch_calls = []
         self.ch_settings = []
+        self.ch_timeouts = []
         self.ch_fail = None
         self.signed = {}           # (fy, fp) -> run dict
         self.marked = []           # (affected, affected_by, detail)
@@ -80,9 +81,10 @@ def _load(site):
 
     ch_read = types.ModuleType("konsol.close.ch_read")
 
-    def rows(sql, params=None, settings=None):
+    def rows(sql, params=None, settings=None, timeout=None):
         site.ch_calls.append((sql, dict(params or {})))
         site.ch_settings.append(dict(settings or {}))
+        site.ch_timeouts.append(timeout)
         if site.ch_fail:
             raise RuntimeError(site.ch_fail)
         return [dict(r) for r in site.ch_rows]
@@ -338,3 +340,14 @@ def test_the_check_after_a_build_is_not_bounded():
     mod, _ = _load(site)
     mod.fingerprints([(2025, 4)])
     assert site.ch_settings == [{}], site.ch_settings
+
+
+def test_the_stamp_read_has_a_short_http_timeout():
+    """max_execution_time does not bound a stalled connection; the HTTP
+    timeout must, below the lock waiters' 10 s (re-review)."""
+    site = _Site()
+    _warehouse(site)
+    mod, _ = _load(site)
+    mod.stamp_new_run(_D(fiscal_year=2025, fiscal_period=4))
+    (timeout,) = site.ch_timeouts
+    assert timeout and int(site.ch_settings[0]["max_execution_time"]) < timeout <= 8, timeout
