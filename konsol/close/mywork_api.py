@@ -303,6 +303,12 @@ def _gap_facts(first_close, persona, allowed, shared):
         commentary_gap = shared["commentary_threshold"]["gap"]
         if commentary_gap is not None:
             policy_gaps = policy_gaps + [commentary_gap]
+        # konsol#330 (PR #384 review): an ISO Currency minor unit that
+        # disagrees with ISO 4217, the same way (EPM Admin fixes it). A used
+        # one blocks; an unused one is a non-blocking item (re-review).
+        currency_gaps = signoff_gate.currency_gaps()
+        policy_gaps = policy_gaps + [g for g in (currency_gaps["blocking"], currency_gaps["reported"])
+                                     if g is not None]
     return {
         "first_close": first_close,
         "chart_published": bool(group_chart.chart_accounts()),
