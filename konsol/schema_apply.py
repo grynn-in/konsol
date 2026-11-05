@@ -105,11 +105,23 @@ def apply_schema(run_dbt=False):
     # other build. The site's Build Approval Workflow now decides, as for a
     # publish. Not caught: a request that fails is the caller's error, and
     # the summary must not claim a build that was never requested.
+    # The build is requested, not run: a full refresh is high risk and waits
+    # for review under the default workflow, so the summary names the
+    # approval and its state rather than claiming dbt ran (#170 review).
     if run_dbt:
         summary["build_approval"] = _request_schema_build()
-        summary["dbt_triggered"] = True
+        summary["build_approval_state"] = _build_approval_state(summary["build_approval"])
+        summary["build_requested"] = True
 
     return summary
+
+
+def _build_approval_state(name):
+    """The workflow state of the Build Approval a request returned (it may be a
+    pending one the request was debounced onto), or None."""
+    if not name:
+        return None
+    return frappe.db.get_value("Build Approval", name, "workflow_state")
 
 
 def _request_schema_build():
@@ -222,7 +234,9 @@ def _apply_schema_steps():
         "facts_created": [],
         "sources_written": [],
         "budget_fields_synced": [],
-        "dbt_triggered": False,
+        "build_requested": False,
+        "build_approval": None,
+        "build_approval_state": None,
         "errors": [],
     }
 

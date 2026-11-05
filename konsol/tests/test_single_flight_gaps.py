@@ -72,7 +72,8 @@ class _Site:
         class _Doc(_Row):
             def save(self, **k):
                 site.saved.append((self["name"], self["status"]))
-                site.rows["Pipeline Run"][self["name"]]["status"] = self["status"]
+                site.rows["Pipeline Run"][self["name"]].update(
+                    {k: v for k, v in self.items() if k != "steps"})
 
         def get_doc(doctype, name, **k):
             row = site.rows[doctype][name]
@@ -84,7 +85,15 @@ class _Site:
         self.frappe = frappe
         lifecycle = types.ModuleType("konsol.schema_lifecycle")
         lifecycle.check_epm_admin = lambda: None
-        self.mods = {"frappe": frappe, "konsol.schema_lifecycle": lifecycle}
+        # RQ, as cancel_run asks it about a Transforming run: by default the
+        # run's job is alive (a worker is building).
+        bj = types.ModuleType("frappe.utils.background_jobs")
+        bj.is_job_enqueued = lambda job_id: True
+        utils = types.ModuleType("frappe.utils")
+        utils.background_jobs = bj
+        frappe.utils = utils
+        self.mods = {"frappe": frappe, "konsol.schema_lifecycle": lifecycle,
+                     "frappe.utils": utils, "frappe.utils.background_jobs": bj}
 
     def install(self):
         sys.modules.update(self.mods)
@@ -292,6 +301,7 @@ def _dead_job_site(alive, build_approval="ZZ-BAPR-7", rq_error=None):
         site.set_values.append((doctype, name, values))
         site.rows[doctype][name].update(values)
     site.frappe.db.set_value = set_value
+    site.frappe.db.get_value = lambda doctype, name, field, **k: site.rows[doctype][name].get(field)
 
     ba = types.ModuleType("konsol.pipeline.doctype.build_approval.build_approval")
     ba.governed_build_job_id = lambda name: f"konsol-governed-build::{name}"

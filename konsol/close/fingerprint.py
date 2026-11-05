@@ -43,11 +43,20 @@ NUMBERS_SQL = (
 SIGNATURE_CHECK_FAILED = "Signature check after this build failed"
 
 
-def read_rows(fiscal_year, fiscal_period):
+#: ClickHouse settings for the stamp's read. trigger_close_run stamps under
+#: single_flight_lock, whose waiters give up after 10 s
+#: (orchestrator.api._SINGLE_FLIGHT_TIMEOUT); ClickHouse stops the read at 5 s,
+#: and the run records the failure (fingerprint_error) instead of holding the
+#: lock past them (konsol#170 review).
+STAMP_SETTINGS = {"max_execution_time": 5, "timeout_overflow_mode": "throw"}
+
+
+def read_rows(fiscal_year, fiscal_period, settings=None):
     """The warehouse numbers up to (fiscal_year, fiscal_period), as
     ``fingerprint_model`` rows. A key holding any NULL amount reads as
     ``amount=None``, which the model refuses."""
-    rows = ch_read.rows(NUMBERS_SQL, {"fy": int(fiscal_year), "fp": int(fiscal_period)})
+    rows = ch_read.rows(NUMBERS_SQL, {"fy": int(fiscal_year), "fp": int(fiscal_period)},
+                        settings=settings)
     return [{
         "group": r["consolidation_group"],
         "fiscal_year": int(r["fiscal_year"]),
@@ -59,12 +68,12 @@ def read_rows(fiscal_year, fiscal_period):
     } for r in rows]
 
 
-def fingerprints(periods):
+def fingerprints(periods, settings=None):
     """{(fy, fp): fingerprint} for each period, from one read up to the latest."""
     keys = sorted({(int(fy), int(fp)) for fy, fp in periods})
     if not keys:
         return {}
-    return fingerprint_model.run_fingerprints(read_rows(*keys[-1]), keys)
+    return fingerprint_model.run_fingerprints(read_rows(*keys[-1], settings=settings), keys)
 
 
 def latest_build_at():
@@ -83,7 +92,7 @@ def stamp_new_run(doc):
         return
     key = (int(doc.fiscal_year), int(doc.fiscal_period))
     try:
-        doc.numbers_fingerprint = fingerprints([key])[key]
+        doc.numbers_fingerprint = fingerprints([key], settings=STAMP_SETTINGS)[key]
         doc.fingerprint_as_of = latest_build_at()
         doc.fingerprint_error = None
     except Exception as exc:  # noqa: BLE001 - recorded on the run, never passed over

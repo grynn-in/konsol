@@ -810,7 +810,20 @@ def assert_close_signed_off(fiscal_year, fiscal_period):
 
 def run_close_assertions(close_run):
     """Background job: run `dbt test` for the singular assertions, stream the
-    log, then parse run_results.json into Assertion Step rows."""
+    log, then parse run_results.json into Assertion Step rows.
+
+    Starts only a run that is still Queued, read with a locking read so a
+    cancel or the reaper cannot change it between the read and the save. A
+    run cancelled or failed while it waited, or already started by another
+    copy of this job, is left as it is: setting it Running would make it
+    count as an active dbt process again and run ``dbt test`` beside a build
+    (konsol#170 review)."""
+    status = frappe.db.get_value("Assertion Run", close_run, "status", for_update=True)
+    if status != "Queued":
+        frappe.logger().warning(
+            f"Assertion Run {close_run} is {status or 'gone'}, not Queued: its job "
+            f"did not start dbt test.")
+        return
     doc = frappe.get_doc("Assertion Run", close_run)
     doc.status = "Running"
     doc.started_at = frappe.utils.now_datetime()

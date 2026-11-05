@@ -426,6 +426,8 @@ def test_worker_saves_as_the_worker_writer():
               results=[])
     frappe.get_doc = lambda *a, **k: run
     frappe.get_single = lambda *a: types.SimpleNamespace(dbt_project_path="/nonexistent-a48")
+    # the job starts only a Queued run, read with a locking read (#170 review)
+    frappe.db.get_value = lambda doctype, name, field, for_update=False, **k: run.status
 
     def no_dbt(*a, **k):
         raise OSError("no dbt on the host")

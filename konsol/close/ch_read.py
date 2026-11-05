@@ -31,19 +31,22 @@ def _queried_model(sql):
     return match.group(1) if match else "the query"
 
 
-def rows(sql, params=None):
+def rows(sql, params=None, settings=None):
     """Rows of a ClickHouse SELECT, as dicts.
 
     Values are bound as HTTP query parameters (``{name:Type}`` in the SQL,
-    ``param_<name>`` on the wire), never interpolated. Nothing is caught.
+    ``param_<name>`` on the wire), never interpolated. ``settings`` are
+    ClickHouse settings for this query only (e.g. ``max_execution_time``),
+    sent as plain query parameters. Nothing is caught.
 
     An empty body, or a parsed reply with no ``"data"`` key, raises
     ``ValueError`` naming the queried model (S4): neither means "0 rows".
     """
     from konsol.clickhouse import execute
 
-    raw = execute(sql + " FORMAT JSON",
-                  {f"param_{k}": v for k, v in (params or {}).items()})
+    query = {f"param_{k}": v for k, v in (params or {}).items()}
+    query.update(settings or {})
+    raw = execute(sql + " FORMAT JSON", query)
     if not raw:
         raise ValueError(
             "ClickHouse returned an empty reply for %s." % _queried_model(sql))

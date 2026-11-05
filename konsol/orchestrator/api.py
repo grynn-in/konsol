@@ -411,7 +411,14 @@ def cancel_run(run_name: str) -> str:
         (row.step_id for row in (run_doc.get("steps") or []) if row.status == "Running"),
         None,
     )
-    if run_doc.status == "Transforming" or (run_doc.status == "Running" and running_step):
+    dead_job = None
+    if run_doc.status == "Transforming":
+        # konsol#170 review: a worker that died mid-build leaves the run
+        # Transforming with no job behind it. When RQ confirms the job no
+        # longer exists, the EPM Admin may cancel it, and the run says why.
+        dead_job = _dead_build_job(run_doc)
+    if (run_doc.status == "Transforming" and not dead_job) or (
+            run_doc.status == "Running" and running_step):
         what = f"its step {running_step} is running" if running_step else "its dbt build is running"
         frappe.throw(
             f"Pipeline Run {run_name} cannot be cancelled now: {what}, and dbt "
@@ -420,6 +427,47 @@ def cancel_run(run_name: str) -> str:
             frappe.ValidationError,
         )
     run_doc.status = "Cancelled"
+    if dead_job:
+        reason = (f"Cancelled by {frappe.session.user} at {frappe.utils.now_datetime()} while "
+                  f"Transforming: its RQ job {dead_job} no longer exists (the worker died), so "
+                  f"no dbt build of this run is running.")
+        run_doc.error_log = "\n".join(p for p in (run_doc.get("error_log"), reason) if p)
     run_doc.save(ignore_permissions=True)
+    if dead_job and run_doc.get("build_approval"):
+        _fail_dead_build_approval(run_doc.build_approval, run_name, dead_job)
     frappe.db.commit()
     return run_name
+
+
+def _dead_build_job(run_doc):
+    """The RQ job id of a Transforming run's build when RQ confirms that job
+    no longer exists; None when it is queued or started, or when RQ cannot be
+    asked (never cancel what cannot be reasoned about)."""
+    try:
+        from frappe.utils.background_jobs import is_job_enqueued
+
+        if run_doc.get("build_approval"):
+            from konsol.pipeline.doctype.build_approval.build_approval import governed_build_job_id
+
+            job_id = governed_build_job_id(run_doc.build_approval)
+        else:
+            from konsol.pipeline.doctype.pipeline_run.pipeline_run import pipeline_run_job_id
+
+            job_id = pipeline_run_job_id(run_doc.name)
+        return None if is_job_enqueued(job_id) else job_id
+    except Exception:
+        return None
+
+
+def _fail_dead_build_approval(name, run_name, job_id):
+    """A Running Build Approval whose job is gone counts as in flight and
+    debounces every later build of its scope; fail it with the same reason."""
+    import frappe
+
+    if frappe.db.get_value("Build Approval", name, "workflow_state") != "Running":
+        return
+    frappe.db.set_value("Build Approval", name, {
+        "workflow_state": "Failed",
+        "error_message": (f"Its Pipeline Run {run_name} was cancelled: RQ job {job_id} no "
+                          f"longer exists (the worker died)."),
+    })
