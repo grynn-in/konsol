@@ -38,6 +38,21 @@ def setup_epm_settings(
     frappe.logger().info(f"EPM Settings configured: ClickHouse at {ch_host}:{ch_port}")
 
 
+def setup_measure_check_user(user, password):
+    """Set the ClickHouse user the Measure expression check runs as (konsol#229).
+
+    konsolidat's configurator calls this when the stack defines
+    ``konsol_measure_check`` (SELECT on epm_silver.silver_gl_entries only).
+    A call of its own, apart from setup_epm_settings, so a stack newer than
+    this konsol skips only this step."""
+    settings = frappe.get_single("EPM Settings")
+    settings.clickhouse_check_user = user
+    settings.clickhouse_check_password = password
+    settings.flags.ignore_permissions = True
+    settings.save()
+    frappe.db.commit()
+
+
 def _warehouse_target():
     """The ClickHouse connection EPM Settings points at, password included, so
     a rotated password counts as a new target."""

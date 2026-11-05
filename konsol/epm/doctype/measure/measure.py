@@ -38,6 +38,64 @@ SCHEMA_FIELDS = ("expression", "label", "cube_type")
 
 class Measure(Document):
 
+    def onload(self):
+        """Tell the form which Dataset declares this measure and whether dbt
+        compiles its expression (konsol#229): that decides which columns the
+        expression may use, and it is invisible from the Measure side."""
+        from konsol.measure_check import describe_compilation
+
+        self.set_onload("compilation", describe_compilation(self.name))
+
+    def validate(self):
+        """Check the expression before it is written (konsol#229, option C).
+
+        Every save: the expression must be one SQL expression on one line.
+        A save that publishes the expression (see ``_publishes_expression``)
+        of a measure dbt compiles also runs it over the table dbt compiles it
+        over, and is refused if ClickHouse refuses it. ``konsol.measure_check``
+        holds the rule; the HMD table is on konsol#229.
+
+        Not inside install, migrate or a patch, as ``on_update``: those seed
+        the shipped measures before any warehouse exists.
+        """
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_patch:
+            return
+        from konsol.measure_check import check_measure
+
+        result = check_measure(self.measure_name or self.name, self.expression,
+                               publishing=self._publishes_expression())
+        self.flags.expression_check = result
+        if result:
+            # Recorded on the Measure, not only shown in a pop-up (#229 review).
+            self.expression_check = result["line"]
+        elif self._expression_changed():
+            # A Draft expression is not run: an earlier "Checked" no longer holds.
+            self.expression_check = ("Not checked: the expression is checked when the "
+                                     "measure is published.")
+        else:
+            # No check ran: keep what is recorded. read_only binds the Desk
+            # only, so a REST save could otherwise write "Checked" itself.
+            before = self.get_doc_before_save()
+            self.expression_check = before.get("expression_check") if before else None
+
+    def _expression_changed(self):
+        before = self.get_doc_before_save()
+        if not before:
+            return True
+        return (before.get("expression") or "") != (self.expression or "")
+
+    def _publishes_expression(self):
+        """Whether this save puts an expression into Published: the measure
+        becomes Published, is re-published, or its expression changes while
+        Published. Read without consuming ``flags.apply_schema``, which
+        ``on_update`` reads after this."""
+        if self.status != "Published":
+            return False
+        before = self.get_doc_before_save()
+        if not before or before.get("status") != "Published" or self.flags.get("apply_schema"):
+            return True
+        return (before.get("expression") or "") != (self.expression or "")
+
     def on_update(self):
         """Apply the schema when this save changed what dbt reads (#299).
 
