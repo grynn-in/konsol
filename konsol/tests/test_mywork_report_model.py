@@ -214,6 +214,11 @@ def test_an_unknown_kind_raises():
         R.rows(payload)
 
 
+def test_approval_doctypes_are_close_policys():
+    cpm = _load("test_mywork_report_model_cpm", os.path.join("close", "close_policy_model.py"))
+    assert tuple(R.APPROVAL_DOCTYPES) == tuple(cpm.APPROVAL_DOCTYPES)
+
+
 def test_columns_name_every_row_key_shown():
     fields = [c["fieldname"] for c in R.columns()]
     row = R.rows(_close_lead_payload())[0]
