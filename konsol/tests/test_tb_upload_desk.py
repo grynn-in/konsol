@@ -79,3 +79,22 @@ def test_the_form_resumes_a_partly_loaded_failed_or_stalled_upload():
     assert '"Partly Loaded"' in js and '"Failed"' in js
     assert "stalled" in js
     assert "Resume load" in js
+
+
+def test_a_refused_resume_keeps_the_report_of_what_was_loaded():
+    """#370 re-review: a resume re-checks first, and a failed re-check writes an
+    empty report; refuse() must put back the report and its counts, or the
+    rows already loaded are forgotten."""
+    _, text = _function("load")
+    was = text[text.index("was = ("):text.index("\n", text.index("was = ("))]
+    for field in ("doc.report", "doc.group_count", "doc.valid_count", "doc.total_rows"):
+        assert field in was, field
+
+
+def test_only_a_problems_refusal_offers_to_skip():
+    """#370 re-review: 'Load only the ready ones' helps only when some
+    entity-periods have problems; any other refusal is shown, not looped on."""
+    _, text = _function("load")
+    assert 'refused_kind="problems"' in text
+    js = _read(UPLOAD_JS)
+    assert 'out.refused_kind === "problems"' in js

@@ -64,7 +64,10 @@ function konsol_tb_load(frm, skip_invalid) {
 		freeze_message: __("Starting the load…"),
 		callback(r) {
 			const out = r.message || {};
-			if (out.refused) {
+			if (out.refused && out.refused_kind !== "problems") {
+				// Skipping cannot help: nothing is left to load, or the file is unreadable.
+				frappe.msgprint({ title: __("Nothing loaded"), message: frappe.utils.escape_html(out.refused), indicator: "orange" });
+			} else if (out.refused_kind === "problems") {
 				frappe.confirm(
 					`${frappe.utils.escape_html(out.refused)}<br><br>${__("Load only the entity-periods that are ready?")}`,
 					() => konsol_tb_load(frm, true)
