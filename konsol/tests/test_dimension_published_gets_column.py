@@ -234,6 +234,8 @@ def _apply_and_rebuild(doc, action):
     _REBUILDS.append((doc.name, action))
     # What apply_schema_for_publish would read: the row as written.
     _APPLIED_ROWS.append(dict(_STORE[doc.name]))
+    # The Build Approval the request queued or was debounced onto (#301).
+    return f"ZZ-BAPR-{len(_REBUILDS)}"
 
 
 #: The stored row at each apply_and_rebuild call.
@@ -672,3 +674,29 @@ def test_the_hook_applies_nothing_under_install_migrate_or_patch():
         doc.save()
         assert _STORE[NAME]["status"] == "Inactive"
         assert _REBUILDS == [], (flag, _REBUILDS)
+
+
+# --- the Build Approval name reaches the caller (konsol#301) -------------
+
+
+def test_publish_returns_the_build_approval_name():
+    """The Desk, a bundle or a script must be told which approval the publish
+    queued, or which pending one it was debounced onto (konsol#301)."""
+    _reset()
+    doc = _stored("Draft")
+    assert doc.publish() == "ZZ-BAPR-1"
+
+
+def test_unpublish_returns_the_build_approval_name():
+    _reset()
+    doc = _stored("Published")
+    assert doc.unpublish() == "ZZ-BAPR-1"
+
+
+def test_a_save_that_applies_nothing_reports_no_earlier_approval():
+    """A later metadata-only save must not carry the previous publish's name."""
+    _reset()
+    doc = _stored("Draft")
+    doc.publish()
+    doc.save()
+    assert doc.flags.build_approval is None, doc.flags.build_approval
