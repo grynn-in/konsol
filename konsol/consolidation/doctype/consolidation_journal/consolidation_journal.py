@@ -116,14 +116,17 @@ class ConsolidationJournal(Document):
         found.extend(journal_model.currency_problems(self.currency, minor_unit, lines,
                                                      currency_references.listed_minor_units(),
                                                      declared=declared))
-        # An amount of 10^19 or more is refused by line_problems; the totals
-        # are not summed over it (PR #387 re-review).
+        # An amount of 10^12 or more is refused by line_problems; the totals
+        # are not summed over it. Lines that fit may still total 10^12 or
+        # more, which the total columns cannot store (PR #387).
         oversized = any(journal_model.amount_too_large(line[column]) for line in lines
                         for column in ("debit_amount", "credit_amount"))
         total_debit = total_credit = None
         if not oversized:
             total_debit, total_credit = journal_model.totals(lines)
-            problem = journal_model.balance_problem(total_debit, total_credit)
+            too_large = journal_model.total_problems(total_debit, total_credit)
+            found.extend(too_large)
+            problem = None if too_large else journal_model.balance_problem(total_debit, total_credit)
             if problem:
                 found.append(problem)
         if found:

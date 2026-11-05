@@ -138,10 +138,13 @@ def clean_lines(lines, dim_keys=()):
     return rows, problems
 
 
-#: An amount this large or larger is refused (PR #387 re-review): rounding
-#: it to Frappe's 9 places needs more digits than Python's decimal context
-#: keeps (28), so it cannot be judged; it would raise InvalidOperation.
-MAX_AMOUNT = Decimal("1e19")
+#: An amount this large or larger is refused (PR #387). A journal line's
+#: amounts and the journal's total_debit / total_credit are Frappe Currency
+#: fields, stored as MariaDB decimal(21,9): 12 whole digits, so 10^12 does
+#: not fit. It also keeps rounding to Frappe's 9 places (21 digits) inside
+#: Python's decimal context (28), which raised InvalidOperation above it.
+MAX_AMOUNT = Decimal(10) ** 12
+_LIMIT_TEXT = "1,000,000,000,000 (10^12): a Currency field stores 12 whole digits"
 
 
 def amount_too_large(amount):
@@ -175,7 +178,7 @@ def line_problems(lines):
         if oversized:
             for label, amount in oversized:
                 problems.append(f"Line {idx}: the {label} {amount} is too large; an amount must be "
-                                "less than 10,000,000,000,000,000,000 (10^19).")
+                                f"less than {_LIMIT_TEXT}.")
             continue
         debit = _cents(line.get("debit_amount"))
         credit = _cents(line.get("credit_amount"))
@@ -205,6 +208,15 @@ def totals(lines):
     total_debit = total_debit.quantize(_CENTS, rounding=ROUND_HALF_UP)
     total_credit = total_credit.quantize(_CENTS, rounding=ROUND_HALF_UP)
     return float(total_debit), float(total_credit)
+
+
+def total_problems(total_debit, total_credit):
+    """Sentences for a total of ``MAX_AMOUNT`` or more: each line may fit
+    while several sum past what the total columns store. ``[]`` when both fit."""
+    return [f"The total {label} {amount} is too large; a journal's totals must be less than "
+            f"{_LIMIT_TEXT}."
+            for label, amount in (("debit", total_debit), ("credit", total_credit))
+            if amount_too_large(amount)]
 
 
 def balance_problem(total_debit, total_credit):
