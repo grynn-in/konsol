@@ -34,13 +34,98 @@ function postJson(path, body) {
       );
     }
     if (!res.ok) {
-      throw new CustomFunctions.Error(
-        CustomFunctions.ErrorCode.notAvailable,
-        "Request failed (HTTP " + res.status + ")"
-      );
+      return res.json().catch(function () { return {}; }).then(function (body) {
+        throw new CustomFunctions.Error(
+          CustomFunctions.ErrorCode.notAvailable,
+          serverMessage(body) || "Request failed (HTTP " + res.status + ")"
+        );
+      });
     }
     return res.json();
   });
+}
+
+// The message a Frappe refusal carries (frappe.throw → _server_messages, a
+// JSON list of JSON objects), so a refused write shows why in the cell.
+function serverMessage(body) {
+  try {
+    var msgs = JSON.parse(body._server_messages || "[]");
+    if (msgs.length) {
+      var first = JSON.parse(msgs[0]);
+      if (first && first.message) return String(first.message);
+    }
+  } catch (e) { /* not a Frappe message list */ }
+  return body && body.exception ? String(body.exception) : "";
+}
+
+// ------------------------------------------------------------
+// Dimensions (konsol#287): one argument, never fixed names.
+//
+// Excel passes the `dimensions` parameter (dimensionality "matrix") as rows:
+//   - one cell of text:  [["name1=value1;name2=value2"]]
+//   - a 2-column range:  [["name1","value1"],["name2","value2"]]
+// Returns {name: value}, or null when there are none. Anything malformed is
+// refused, never dropped: a dropped filter would answer with the total over
+// every value of that dimension. Whether a name is declared is the server's
+// to say; it refuses an undeclared one.
+// ------------------------------------------------------------
+function dimensionsError(message) {
+  return new CustomFunctions.Error(
+    CustomFunctions.ErrorCode.invalidValue,
+    "dimensions: " + message +
+      ' (use one text cell like "name1=value1;name2=value2", or a 2-column range of name/value pairs)'
+  );
+}
+
+function cellText(v) {
+  return v === null || v === undefined ? "" : String(v).trim();
+}
+
+function parseDimensions(arg) {
+  if (arg === null || arg === undefined) return null;
+  var rows = Array.isArray(arg) ? arg : [[arg]];
+  var out = {};
+  var count = 0;
+
+  function add(name, value) {
+    if (!name) throw dimensionsError('a value "' + value + '" has no dimension name');
+    if (!value) throw dimensionsError('"' + name + '" has no value');
+    if (Object.prototype.hasOwnProperty.call(out, name)) {
+      throw dimensionsError('"' + name + '" is given twice');
+    }
+    out[name] = value;
+    count += 1;
+  }
+
+  var width = rows.length ? (Array.isArray(rows[0]) ? rows[0].length : 1) : 0;
+  if (width === 1 && rows.length === 1) {
+    var text = cellText(Array.isArray(rows[0]) ? rows[0][0] : rows[0]);
+    if (!text) return null;
+    text.split(";").forEach(function (part) {
+      if (!part.trim()) return;
+      var eq = part.indexOf("=");
+      if (eq < 0) throw dimensionsError('"' + part.trim() + '" is not name=value');
+      add(part.slice(0, eq).trim(), part.slice(eq + 1).trim());
+    });
+  } else if (width === 2) {
+    rows.forEach(function (row) {
+      var name = cellText(row[0]);
+      var value = cellText(row[1]);
+      if (!name && !value) return;  // a blank row in the range
+      add(name, value);
+    });
+  } else {
+    throw dimensionsError("a range must have exactly 2 columns");
+  }
+  return count ? out : null;
+}
+
+// Stable text for a dimensions object, for EPMSAVE's unchanged-value cache.
+function dimensionsKey(dims) {
+  if (!dims) return "";
+  return Object.keys(dims).sort().map(function (k) {
+    return k + "=" + dims[k];
+  }).join(";");
 }
 
 var pending = [];
@@ -99,17 +184,17 @@ function sendChunk(chunk) {
   });
 }
 
-function makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node, layer) {
+function makeReq(entity, year, period, account, measure, scenario, dimensions, scenarioId, hierarchy, node, layer) {
   var req = {
     entity: String(entity),
     year: Number(year),
     period: period,
     account: String(account)
   };
+  var dims = parseDimensions(dimensions);
   if (measure) req.measure = String(measure);
   if (scenario) req.scenario = String(scenario);
-  if (costCenter) req.cost_center = String(costCenter);
-  if (department) req.department = String(department);
+  if (dims) req.dimensions = dims;
   if (scenarioId) req.scenario_id = String(scenarioId);
   if (hierarchy) req.hierarchy = String(hierarchy);
   if (node) req.hierarchy_node = String(node);
@@ -117,28 +202,48 @@ function makeReq(entity, year, period, account, measure, scenario, costCenter, d
   return req;
 }
 
+// Build the request and queue it; a refused argument becomes the cell's error.
+function read(build) {
+  try {
+    return enqueue(build());
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
 function ping() {
   return 1;
 }
 
-function epm(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node, layer) {
-  return enqueue(makeReq(entity, year, period, account, measure, scenario, costCenter, department, scenarioId, hierarchy, node, layer));
+//   =K.EPM("E1", 2026, 3, "4000", , , "name1=value1;name2=value2")
+function epm(entity, year, period, account, measure, scenario, dimensions, scenarioId, hierarchy, node, layer) {
+  return read(function () {
+    return makeReq(entity, year, period, account, measure, scenario, dimensions, scenarioId, hierarchy, node, layer);
+  });
 }
 
-function epmBudget(entity, year, period, account, costCenter, department, scenarioId, hierarchy, node, layer) {
-  return enqueue(makeReq(entity, year, period, account, "period_amount", "budget", costCenter, department, scenarioId, hierarchy, node, layer));
+function epmBudget(entity, year, period, account, dimensions, scenarioId, hierarchy, node, layer) {
+  return read(function () {
+    return makeReq(entity, year, period, account, "period_amount", "budget", dimensions, scenarioId, hierarchy, node, layer);
+  });
 }
 
-function epmVariance(entity, year, period, account, costCenter, department, scenarioId, hierarchy, node) {
-  return enqueue(makeReq(entity, year, period, account, "variance_abs", "variance", costCenter, department, scenarioId, hierarchy, node));
+function epmVariance(entity, year, period, account, dimensions, scenarioId, hierarchy, node) {
+  return read(function () {
+    return makeReq(entity, year, period, account, "variance_abs", "variance", dimensions, scenarioId, hierarchy, node);
+  });
 }
 
-function epmDebit(entity, year, period, account, costCenter, department, hierarchy, node) {
-  return enqueue(makeReq(entity, year, period, account, "period_debit", "actuals", costCenter, department, "", hierarchy, node));
+function epmDebit(entity, year, period, account, dimensions, hierarchy, node) {
+  return read(function () {
+    return makeReq(entity, year, period, account, "period_debit", "actuals", dimensions, "", hierarchy, node);
+  });
 }
 
-function epmCredit(entity, year, period, account, costCenter, department, hierarchy, node) {
-  return enqueue(makeReq(entity, year, period, account, "period_credit", "actuals", costCenter, department, "", hierarchy, node));
+function epmCredit(entity, year, period, account, dimensions, hierarchy, node) {
+  return read(function () {
+    return makeReq(entity, year, period, account, "period_credit", "actuals", dimensions, "", hierarchy, node);
+  });
 }
 
 // Consolidated cash-flow line read. Same epm_batch backend as K.EPM, pointed at
@@ -158,7 +263,7 @@ function cf(group, year, period, line) {
 
 var saveCache = {};
 
-function epmSave(amount, entity, year, period, account, scenarioId, layer, costCenter, department, hierarchy, node) {
+function epmSave(amount, entity, year, period, account, scenarioId, layer, dimensions, hierarchy, node) {
   var amt = Number(amount);
 
   if (!isFinite(amt) || !isFinite(Number(year)) || !isFinite(Number(period))) {
@@ -167,8 +272,9 @@ function epmSave(amount, entity, year, period, account, scenarioId, layer, costC
     );
   }
 
+  var dims = parseDimensions(dimensions);
   var key = [scenarioId, entity, year, period, account, layer,
-             costCenter || "", department || "", hierarchy || "", node || ""].join("|");
+             dimensionsKey(dims), hierarchy || "", node || ""].join("|");
   if (saveCache[key] === amt) {
     return amt;
   }
@@ -182,15 +288,14 @@ function epmSave(amount, entity, year, period, account, scenarioId, layer, costC
     amount: amt,
     layer: String(layer)
   };
-  if (costCenter) data.dim_cost_center = String(costCenter);
-  if (department) data.dim_department = String(department);
+  if (dims) data.dimensions = dims;
   if (hierarchy) data.hierarchy = String(hierarchy);
   if (node) data.hierarchy_node = String(node);
 
+  // A refused write shows the server's reason in the cell. It used to return
+  // the amount whatever happened, so a refusal looked like a save.
   return postJson("/api/method/konsol.api.budget_cell_save", data).then(function () {
     saveCache[key] = amt;
-    return amt;
-  }).catch(function () {
     return amt;
   });
 }
