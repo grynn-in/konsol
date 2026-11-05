@@ -22,6 +22,8 @@ import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.currency_references import listed_minor_units
+from konsol.iso_currency_model import minor_unit_problem
 
 
 class ISOCurrency(Document):
@@ -35,9 +37,16 @@ class ISOCurrency(Document):
     }
 
     def validate(self):
-        """usd_log10 is roughly log10 of units per 1 USD (konsol#103): real
+        """Minor Unit is the shipped ISO 4217 list's (konsol#330, Deepak Pai,
+        11 Oct 2026): a code not on the list, or a Minor Unit that differs from
+        the list's, is refused. A blank is never read as 0.
+
+        usd_log10 is roughly log10 of units per 1 USD (konsol#103): real
         currencies sit between about -1 (KWD) and 5 (IRR at market). Outside
         [-5, 10] is a typo that would refuse every rate in this currency."""
+        problem = minor_unit_problem(self.currency_code, self.minor_unit, listed_minor_units())
+        if problem:
+            frappe.throw(problem, frappe.ValidationError)
         value = float(self.usd_log10 or 0)
         if not -5 <= value <= 10:
             frappe.throw(f"USD Reference (log10) {value:g} is not a plausible log10 of units per 1 USD.",

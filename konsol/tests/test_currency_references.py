@@ -17,6 +17,9 @@ import types
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULE = os.path.join(APP_DIR, "currency_references.py")
 CASES = os.path.join(APP_DIR, "tests", "fx_magnitude_cases.json")
+with open(os.path.join(APP_DIR, "reference_data", "iso_currencies.json")) as _f:
+    #: each stub row carries the list's own minor unit (konsol#330)
+    _LISTED_UNITS = {r["currency_code"]: r["minor_unit"] for r in json.load(_f)}
 
 
 def _module(rows=()):
@@ -25,7 +28,8 @@ def _module(rows=()):
     record = {"set": [], "inserted": []}
     frappe = types.ModuleType("frappe")
     frappe.get_all = lambda doctype, fields=None, **k: [
-        types.SimpleNamespace(name=c, usd_log10=v) for c, v in dict(rows).items()]
+        types.SimpleNamespace(name=c, usd_log10=v, minor_unit=_LISTED_UNITS.get(c))
+        for c, v in dict(rows).items()]
     frappe.db = types.SimpleNamespace(
         set_value=lambda dt, name, field, value, update_modified=True:
             record["set"].append((name, field, value, update_modified)))

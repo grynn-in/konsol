@@ -30,6 +30,7 @@ import os
 import frappe
 
 from konsol.fx_reference import REFERENCE_CURRENCY, is_unset  # noqa: F401 — the one rule
+from konsol.iso_currency_model import minor_unit_problem
 
 REFERENCE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference_data", "iso_currencies.json")
 FIELDS = ("currency_code", "currency_name", "symbol", "minor_unit", "usd_log10")
@@ -39,6 +40,12 @@ def reference_rows():
     """The shipped ISO list, one dict per currency."""
     with open(REFERENCE_FILE) as f:
         return json.load(f)
+
+
+def listed_minor_units():
+    """{code: minor_unit} from the shipped list: the authority for
+    ISO Currency.minor_unit (konsol#330)."""
+    return {r["currency_code"]: r["minor_unit"] for r in reference_rows()}
 
 
 def usd_log10_defaults():
@@ -51,11 +58,16 @@ def seed_iso_currencies(rows=None):
     Never overwrites a value that is set, so a site's own edit survives.
     Idempotent. Needs the ``usd_log10`` column: the adoption patch reloads
     the doctype first; after_migrate and after_sync run after model sync.
-    Returns {"inserted": [...], "filled": [...]}."""
+    A stored row the ISO Currency rule refuses (a code not on the list, or a
+    Minor Unit that differs from the list's, konsol#330) is not changed: it
+    is returned in "refused" so the migrate names it.
+    Returns {"inserted": [...], "filled": [...], "refused": [...]}."""
     rows = reference_rows() if rows is None else rows
-    have = {r.name: r for r in frappe.get_all("ISO Currency", fields=["name", "usd_log10"],
+    have = {r.name: r for r in frappe.get_all("ISO Currency", fields=["name", "usd_log10", "minor_unit"],
                                               limit_page_length=0)}
-    out = {"inserted": [], "filled": []}
+    listed = listed_minor_units()
+    out = {"inserted": [], "filled": [],
+           "refused": sorted(c for c, r in have.items() if minor_unit_problem(c, r.minor_unit, listed))}
     for row in rows:
         code = row["currency_code"]
         if code not in have:

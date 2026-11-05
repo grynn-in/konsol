@@ -90,6 +90,11 @@ def _seed_iso_currencies():
         if out["inserted"] or out["filled"]:
             print(f"konsol: ISO Currency seeded: {len(out['inserted'])} inserted, "
                   f"{len(out['filled'])} magnitude references filled")
+        if out["refused"]:
+            # konsol#330: a disagreeing row is named, never silently kept or changed
+            print(f"konsol: ISO Currency rows that disagree with the shipped ISO 4217 list "
+                  f"(not on it, or a different Minor Unit): {', '.join(out['refused'])}. "
+                  "Fix each one's Minor Unit, or delete a code that is not on the list.")
     except Exception:  # noqa: BLE001
         frappe.log_error(title="konsol: ISO Currency seed failed")
 

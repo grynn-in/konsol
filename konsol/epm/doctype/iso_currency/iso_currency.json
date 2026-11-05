@@ -40,7 +40,7 @@
    "fieldtype": "Int",
    "label": "Minor Unit",
    "in_list_view": 1,
-   "description": "ISO 4217 exponent: decimal places. 0 for JPY, 3 for KWD."
+   "description": "ISO 4217 exponent: decimal places. 0 for JPY, 3 for KWD. Must match the ISO 4217 list konsol ships; a different value, or a code not on the list, is refused (konsol#330)."
   },
   {
    "fieldname": "usd_log10",
