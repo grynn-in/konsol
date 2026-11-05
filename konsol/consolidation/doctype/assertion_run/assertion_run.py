@@ -395,14 +395,24 @@ def reap_stale_close_runs():
         filters={"status": ["in", ("Queued", "Running")], "modified": ["<", cutoff]},
         pluck="name",
     )
+    reaped = []
     for name in stale:
-        prev = frappe.db.get_value("Assertion Run", name, "log") or ""
+        # The list above is a plain read: a job's locking read may have moved
+        # this run Queued -> Running (or a run finished) and committed since.
+        # Re-read it FOR UPDATE and reap it only if it is still stale, or a
+        # live dbt test would be marked Error (konsol#170 re-review).
+        row = frappe.db.get_value("Assertion Run", name, ["status", "modified", "log"],
+                                  for_update=True, as_dict=True)
+        if not row or row.status not in ("Queued", "Running") or row.modified >= cutoff:
+            continue
         frappe.db.set_value(
             "Assertion Run", name,
             {"status": "Error",
-             "log": f"{prev}\n[reaper] marked Error: no progress for >{STALE_MINUTES}m"},
+             "log": f"{row.log or ''}\n[reaper] marked Error: no progress for >{STALE_MINUTES}m"},
             update_modified=False,
         )
+        reaped.append(name)
+    stale = reaped
     if stale:
         frappe.db.commit()
         frappe.logger().info(f"Assertion Run reaper: marked {len(stale)} stale run(s) Error: {stale}")

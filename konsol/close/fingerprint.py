@@ -49,14 +49,17 @@ SIGNATURE_CHECK_FAILED = "Signature check after this build failed"
 #: and the run records the failure (fingerprint_error) instead of holding the
 #: lock past them (konsol#170 review).
 STAMP_SETTINGS = {"max_execution_time": 5, "timeout_overflow_mode": "throw"}
+#: The stamp's HTTP timeout: max_execution_time does not bound a stalled
+#: connection, and execute's default (30 s) would hold the lock (re-review).
+STAMP_HTTP_TIMEOUT = 6
 
 
-def read_rows(fiscal_year, fiscal_period, settings=None):
+def read_rows(fiscal_year, fiscal_period, settings=None, timeout=None):
     """The warehouse numbers up to (fiscal_year, fiscal_period), as
     ``fingerprint_model`` rows. A key holding any NULL amount reads as
     ``amount=None``, which the model refuses."""
     rows = ch_read.rows(NUMBERS_SQL, {"fy": int(fiscal_year), "fp": int(fiscal_period)},
-                        settings=settings)
+                        settings=settings, timeout=timeout)
     return [{
         "group": r["consolidation_group"],
         "fiscal_year": int(r["fiscal_year"]),
@@ -68,12 +71,12 @@ def read_rows(fiscal_year, fiscal_period, settings=None):
     } for r in rows]
 
 
-def fingerprints(periods, settings=None):
+def fingerprints(periods, settings=None, timeout=None):
     """{(fy, fp): fingerprint} for each period, from one read up to the latest."""
     keys = sorted({(int(fy), int(fp)) for fy, fp in periods})
     if not keys:
         return {}
-    return fingerprint_model.run_fingerprints(read_rows(*keys[-1], settings=settings), keys)
+    return fingerprint_model.run_fingerprints(read_rows(*keys[-1], settings=settings, timeout=timeout), keys)
 
 
 def latest_build_at():
@@ -92,7 +95,8 @@ def stamp_new_run(doc):
         return
     key = (int(doc.fiscal_year), int(doc.fiscal_period))
     try:
-        doc.numbers_fingerprint = fingerprints([key], settings=STAMP_SETTINGS)[key]
+        doc.numbers_fingerprint = fingerprints(
+            [key], settings=STAMP_SETTINGS, timeout=STAMP_HTTP_TIMEOUT)[key]
         doc.fingerprint_as_of = latest_build_at()
         doc.fingerprint_error = None
     except Exception as exc:  # noqa: BLE001 - recorded on the run, never passed over

@@ -31,13 +31,14 @@ def _queried_model(sql):
     return match.group(1) if match else "the query"
 
 
-def rows(sql, params=None, settings=None):
+def rows(sql, params=None, settings=None, timeout=None):
     """Rows of a ClickHouse SELECT, as dicts.
 
     Values are bound as HTTP query parameters (``{name:Type}`` in the SQL,
     ``param_<name>`` on the wire), never interpolated. ``settings`` are
     ClickHouse settings for this query only (e.g. ``max_execution_time``),
-    sent as plain query parameters. Nothing is caught.
+    sent as plain query parameters. ``timeout`` is the HTTP timeout, given to
+    ``execute`` only when set. Nothing is caught.
 
     An empty body, or a parsed reply with no ``"data"`` key, raises
     ``ValueError`` naming the queried model (S4): neither means "0 rows".
@@ -46,7 +47,7 @@ def rows(sql, params=None, settings=None):
 
     query = {f"param_{k}": v for k, v in (params or {}).items()}
     query.update(settings or {})
-    raw = execute(sql + " FORMAT JSON", query)
+    raw = execute(sql + " FORMAT JSON", query, **({"timeout": timeout} if timeout else {}))
     if not raw:
         raise ValueError(
             "ClickHouse returned an empty reply for %s." % _queried_model(sql))

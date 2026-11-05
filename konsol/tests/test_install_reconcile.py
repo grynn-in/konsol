@@ -300,12 +300,13 @@ def test_warehouse_target_includes_the_password():
 # -- the job: timeouts and lock ---------------------------------------------
 
 def _request_timeout():
-    """clickhouse.execute's per-request timeout, read from its source."""
+    """clickhouse.execute's default per-request timeout, read from its source
+    (``timeout=timeout or 30``: a caller may pass a shorter one)."""
     with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
         src = f.read()
     body = src[src.index("def execute("):]
     body = body[:body.index("\ndef ")]
-    (seconds,) = re.findall(r"timeout=(\d+)", body)
+    (seconds,) = re.findall(r"timeout=(?:timeout or )?(\d+)", body)
     return int(seconds)
 
 

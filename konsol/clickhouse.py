@@ -55,12 +55,14 @@ def connection_url(conn):
     return f"{scheme}://{conn['host']}:{conn['port']}/"
 
 
-def execute(sql, params=None):
+def execute(sql, params=None, timeout=None):
     """Execute a ClickHouse SQL statement via HTTP POST.
 
     Args:
         sql: SQL string to execute.
         params: Optional dict of query parameters.
+        timeout: HTTP timeout in seconds; 30 when not given. A caller holding
+            a lock passes a shorter one (konsol#170).
 
     Returns:
         Response text (stripped).
@@ -74,7 +76,7 @@ def execute(sql, params=None):
         params=query_params,
         data=sql.encode("utf-8"),
         auth=(conn["user"], conn["password"]),
-        timeout=30,
+        timeout=timeout or 30,
         verify=conn.get("verify", True),
     )
     if resp.status_code >= 400:
