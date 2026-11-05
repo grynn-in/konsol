@@ -80,8 +80,13 @@ SIGNOFF_LABEL = {
 #: declared not loaded.
 NOT_LOADED = "not loaded"
 
-#: Negatives in brackets, as numbers.js ``amountText`` shows them.
-AMOUNT_FORMAT = "#,##0.00;(#,##0.00);0.00"
+def amount_format(minor_unit):
+    """The Excel number format for amounts with ``minor_unit`` decimal
+    places, negatives in brackets as numbers.js ``amountText`` shows them:
+    ``#,##0.000;(#,##0.000);0.000`` for 3, ``#,##0;(#,##0);0`` for 0
+    (PR #386 review: the statement's own minor unit, never cents)."""
+    zero = "0" if minor_unit == 0 else "0." + "0" * minor_unit
+    return "#,##0%s;(#,##0%s);%s" % (zero[1:], zero[1:], zero)
 
 #: The Drill sheet line that closes a row's account lines to the row amount.
 ACCOUNT_ROUNDING = "Rounding (accounts to row)"
@@ -105,8 +110,18 @@ def _amount(value, what):
     return 0.0 if value == 0 else value
 
 
-def _cents(value):
-    return Decimal(str(value)).quantize(Decimal("0.01"))
+def _minor_unit(statement):
+    """The statement's ``minor_unit`` (statement_model.statement), checked:
+    a whole number >= 0. Missing or anything else raises; never read as 2."""
+    minor_unit = statement.get("minor_unit")
+    if isinstance(minor_unit, bool) or not isinstance(minor_unit, int) or minor_unit < 0:
+        raise ValueError(f"The statement carries no minor unit ({minor_unit!r}): the export "
+                         "rounds to the reporting currency's ISO minor unit, never to cents.")
+    return minor_unit
+
+
+def _quantize(value, minor_unit):
+    return Decimal(str(value)).quantize(Decimal(1).scaleb(-minor_unit))
 
 
 def _cell(line, field, comparison_note, what):
@@ -163,9 +178,10 @@ def _byline(entry):
 
 
 class _Sheet:
-    def __init__(self, ws):
+    def __init__(self, ws, minor_unit):
         self.ws = ws
         self.row = 1
+        self.amount_format = amount_format(minor_unit)
 
     def write(self, values, font=None, amount_cols=()):
         for col, value in enumerate(values, start=1):
@@ -180,7 +196,7 @@ class _Sheet:
             if font is not None:
                 cell.font = font
             if col in amount_cols and isinstance(value, float):
-                cell.number_format = AMOUNT_FORMAT
+                cell.number_format = self.amount_format
                 cell.alignment = Alignment(horizontal="right")
         self.row += 1
 
@@ -238,8 +254,8 @@ def _section_rows(section, commentary, comparison_note):
 
 
 def _statement_sheet(ws, payload):
-    sheet = _Sheet(ws)
     statement = payload["statement"]
+    sheet = _Sheet(ws, _minor_unit(statement))
     sheet.write([_header_text(payload)], _TITLE)
     sheet.write([_label(payload.get("signoff"))], _BOLD)
     sheet.write([statement["legend"]])
@@ -272,7 +288,8 @@ def _headings_in_order(statement):
 
 
 def _drill_sheets(drill_ws, journal_ws, statement, drills):
-    drill_sheet, journal_sheet = _Sheet(drill_ws), _Sheet(journal_ws)
+    minor_unit = _minor_unit(statement)
+    drill_sheet, journal_sheet = _Sheet(drill_ws, minor_unit), _Sheet(journal_ws, minor_unit)
     headings = _headings_in_order(statement)
     notes = {d.get("dimensions_note") for d in drills.values() if d.get("dimensions_note")}
     drill_sheet.write([" ".join(sorted(notes) + [_BASIS_NOTE])])
@@ -297,11 +314,12 @@ def _drill_sheets(drill_ws, journal_ws, statement, drills):
                         [section, code, name, layer, entity, account["main_account"],
                          account.get("account_name"), _amount(account["amount"], what)],
                         amount_cols=amount_col)
-                # Each account is rounded to cents on its own, so the lines
-                # can drift a few cents from their row (measured live 6 Oct:
-                # up to 0.14). Write the difference so the column foots.
-                drift = _cents(_amount(row["amount"], what)) - sum(
-                    (_cents(a["amount"]) for a in row["accounts"]), Decimal("0"))
+                # Each account is rounded to the minor unit on its own, so
+                # the lines can drift from their row (measured live 6 Oct:
+                # up to 0.14). Write the difference, in the statement's
+                # minor unit (PR #386 review), so the column foots.
+                drift = _quantize(_amount(row["amount"], what), minor_unit) - sum(
+                    (_quantize(a["amount"], minor_unit) for a in row["accounts"]), Decimal("0"))
                 if drift:
                     drill_sheet.write(
                         [section, code, name, layer, entity, None, ACCOUNT_ROUNDING,
@@ -333,6 +351,7 @@ def workbook(payload, drills):
     drill, a missing amount, or a kind/state this module does not know."""
     if payload.get("state") != "ok" or not payload.get("statement"):
         raise ValueError(payload.get("message") or "The statement is not ready to export.")
+    _minor_unit(payload["statement"])
     book = Workbook()
     statement_ws = book.active
     statement_ws.title = "Statement"

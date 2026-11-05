@@ -85,7 +85,7 @@ def _tb(fy, fp):
 
 
 def _ok(fy, tb_rows):
-    payload = {"state": "ok", "message": None, "statement": {"sections": []},
+    payload = {"state": "ok", "message": None, "statement": {"sections": [], "minor_unit": 2},
                "period": {"fiscal_year": fy, "fiscal_period": 12}}
     return payload, {"tb_rows": tb_rows}
 
@@ -107,7 +107,7 @@ def _execute_with(statement):
         prior_with_rows = staticmethod(REAL_MODEL.prior_with_rows)
 
         @staticmethod
-        def columns():
+        def columns(minor_unit=None):
             return ["cols"]
 
         @staticmethod

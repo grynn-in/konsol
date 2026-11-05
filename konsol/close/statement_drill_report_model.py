@@ -58,15 +58,21 @@ JOURNAL_DOCTYPE = "Consolidation Journal"
 _SOURCE_KINDS = ("tb", "journals")
 
 
-def columns():
+def columns(minor_unit=None):
+    """``minor_unit`` is the drill's own (the reporting currency's ISO minor
+    unit, konsol#354): the Amount column shows that many places. ``None``
+    (no drill) sets no precision, never a guessed 2."""
+    amount = {"fieldname": "amount", "label": "Amount", "fieldtype": "Currency",
+              "options": "currency", "width": 170}
+    if minor_unit is not None:
+        amount["precision"] = minor_unit
     return [
         {"fieldname": "label", "label": "Layer / account", "fieldtype": "Data", "width": 380},
         {"fieldname": "entity", "label": "Entity", "fieldtype": "Link", "options": "Entity",
          "width": 110},
         {"fieldname": "main_account", "label": "Account", "fieldtype": "Link",
          "options": "Main Account", "width": 110},
-        {"fieldname": "amount", "label": "Amount", "fieldtype": "Currency",
-         "options": "currency", "width": 170},
+        amount,
         {"fieldname": "source_doctype", "label": "Source type", "fieldtype": "Data",
          "hidden": 1},
         {"fieldname": "source", "label": "Source", "fieldtype": "Dynamic Link",

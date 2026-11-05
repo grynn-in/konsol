@@ -277,6 +277,8 @@ class _Site:
         self.reads = []
         #: W5-2 (8.4): Close Settings (amount, percent, combine) — undeclared.
         self.commentary_threshold = (0, 0, "")
+        #: konsol#354: ISO Currency.minor_unit by code (a missing code has no row)
+        self.minor_units = {"USD": 2}
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -330,6 +332,11 @@ def _frappe(site):
             raise AssertionError("unexpected get_all on %s" % doctype)
         return [{f: r.get(f) for f in fields} for r in rows]
 
+    def get_value(doctype, name, fieldname, **k):
+        assert (doctype, fieldname) == ("ISO Currency", "minor_unit"), (doctype, fieldname)
+        return site.minor_units.get(name)
+
+    frappe.db = types.SimpleNamespace(get_value=get_value)
     frappe.throw = throw
     frappe.only_for = only_for
     frappe.whitelist = whitelist
@@ -621,6 +628,47 @@ def test_bs_heading_with_no_normal_balance_is_a_visible_setup_gap_never_a_500():
     assert "statement_heading_side_undeclared" in result["message"]
     assert "2" in result["message"]
     assert result["statement"] is None
+
+
+# --- konsol#354: the reporting currency's ISO minor unit, never a fixed 2 ----
+
+def _bhd_site():
+    site = _Site()
+    site.groups = [{"consolidation_group": "G1", "reporting_currency": "BHD"}]
+    site.minor_units = {"BHD": 3}
+    site.tb_rows = [
+        _tb_row("1110", 1735.105),
+        _tb_row("2100", -803.701),
+        _tb_row("3200", -684.902),
+        _tb_row("CTA", -5.071, adjustment_type="cta"),
+        _tb_row("4100", -241.431),
+    ]
+    return site
+
+
+def test_a_three_decimal_group_keeps_its_third_decimal():
+    result = _call(_bhd_site())
+    assert result["state"] == "ok"
+    assert _bs_line(result, "1")["current"] == 1735.105
+    assert result["statement"]["minor_unit"] == 3
+
+
+def test_a_reporting_currency_with_no_iso_currency_row_is_a_setup_gap():
+    """Refused, never rounded to a guessed 2: the message names the currency."""
+    site = _bhd_site()
+    site.minor_units = {}
+    result = _call(site)
+    assert result["state"] == "setup_gap"
+    assert "BHD" in result["message"] and "ISO Currency" in result["message"]
+    assert result["statement"] is None
+
+
+def test_the_drill_of_a_three_decimal_group_keeps_its_third_decimal():
+    site = _bhd_site()
+    site.drill_tb_rows = [_drill_tb_row("1110", 1735.105, "entity", "ZZA")]
+    result = _call_drill(site)
+    assert result["state"] == "ok", result["message"]
+    assert result["drill"]["total"] == 1735.105
 
 
 # --- golden payload (S5, W4-E19): the real producer's setup_gap output ------

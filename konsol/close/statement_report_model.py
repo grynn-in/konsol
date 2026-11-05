@@ -63,12 +63,19 @@ _AMOUNT_FIELDS = ("current", "comparison", "variance", "ytd")
 _UNEXPLAINED_LABEL = "Unexplained"
 
 
-def columns():
+def columns(minor_unit=None):
     """The report columns: line, code, the Numbers screen's four amount
-    columns (``statement_export_model.COLUMNS``), and the currency."""
+    columns (``statement_export_model.COLUMNS``), and the currency.
+
+    ``minor_unit`` is the statement's own (the reporting currency's ISO
+    minor unit, konsol#354): the amount columns show that many places.
+    ``None`` (no statement) sets no precision at all, never a guessed 2."""
     def amount(fieldname, label):
-        return {"fieldname": fieldname, "label": label, "fieldtype": "Currency",
-                "options": "currency", "width": 170}
+        column = {"fieldname": fieldname, "label": label, "fieldtype": "Currency",
+                  "options": "currency", "width": 170}
+        if minor_unit is not None:
+            column["precision"] = minor_unit
+        return column
 
     return [
         {"fieldname": "label", "label": "Line", "fieldtype": "Data", "width": 320},
@@ -184,9 +191,10 @@ def prior_with_rows(prior, tb_rows):
             "message": "No rows in the warehouse for FY%d up to P%02d." % (fiscal_year, fiscal_period)}
 
 
-def _with_prior(row, section, line, prior_values, include=None):
+def _with_prior(row, section, line, prior_values, minor_unit, include=None):
     """``row`` with the prior year's value for the same line, and the
-    change on the same basis. Absent last year: left blank, never 0."""
+    change on the same basis, rounded to the statement's ``minor_unit``
+    (konsol#354). Absent last year: left blank, never 0."""
     if prior_values is not None:
         key, item = ((section, "include", line["heading"], include.get("kind")), include) \
             if include is not None else next(_line_keys(section, line))
@@ -194,7 +202,7 @@ def _with_prior(row, section, line, prior_values, include=None):
         if prior is not None:
             this = _basis(item)
             row["prior_year"] = _zero(prior)
-            row["prior_year_change"] = _zero(round(this - prior, 2)) if this is not None else None
+            row["prior_year_change"] = _zero(round(this - prior, minor_unit)) if this is not None else None
     return row
 
 
@@ -207,6 +215,9 @@ def rows(payload, prior=None, drill_group=None):
         if key not in payload:
             raise ValueError(f"The statement payload has no {key}.")
     currency = payload.get("reporting_currency")
+    minor_unit = payload["statement"].get("minor_unit")
+    if minor_unit is None:
+        raise ValueError("The statement payload has no minor_unit.")
     prior_values = _prior_values(prior)
     out = []
     for section in payload["statement"]["sections"]:
@@ -218,25 +229,25 @@ def rows(payload, prior=None, drill_group=None):
                 out.append(_with_commentary(_with_prior(
                     _row(line.get("heading_name") or line["heading"], currency, line,
                          code=line["heading"]),
-                    name, line, prior_values), payload, line["heading"], drill_group))
+                    name, line, prior_values, minor_unit), payload, line["heading"], drill_group))
                 for include in line.get("includes") or []:
                     out.append(_with_prior(
                         _row(include["label"], currency, include,
                              fields=("current", "comparison"), indent=1),
-                        name, line, prior_values, include=include))
+                        name, line, prior_values, minor_unit, include=include))
             elif kind in ("no_heading", "net_result"):
                 out.append(_with_prior(
                     _row(line["label"], currency, line, bold=int(kind == "net_result")),
-                    name, line, prior_values))
+                    name, line, prior_values, minor_unit))
             elif kind == "not_in_chart":
                 codes = ", ".join(line.get("codes") or [])
                 label = f"{line['label']} ({codes})" if codes else line["label"]
-                out.append(_with_prior(_row(label, currency, line), name, line, prior_values))
+                out.append(_with_prior(_row(label, currency, line), name, line, prior_values, minor_unit))
             elif kind == "residual":
                 out.append(_with_prior(
                     _row(line["label"], currency, line,
                          fields=("current", "comparison"), bold=1),
-                    name, line, prior_values))
+                    name, line, prior_values, minor_unit))
                 if line.get("current"):
                     for item in line.get("explained") or []:
                         out.append(_row(item["label"], currency, {"current": item["amount"]},

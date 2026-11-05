@@ -42,6 +42,7 @@
   "statement": {
     "gap": null,
     "legend": "Profit and loss: income positive, costs in brackets. Balance sheet: assets, liabilities and equity positive.",
+    "minor_unit": 2,
     "periods": {
       "comparison": [
         2025,

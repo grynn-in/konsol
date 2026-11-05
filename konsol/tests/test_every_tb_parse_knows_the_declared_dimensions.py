@@ -154,13 +154,22 @@ def test_the_scan_finds_the_calls_it_judges():
 def test_only_the_stored_read_path_skips_the_header_rules():
     """stored=True reads a landed file back without judging its header. At
     intake it would bring back the silent drop konsol#255 removed, so only
-    tb_read_api may pass it, and it must pass it somewhere (or this guards
-    nothing)."""
+    the two read-backs may pass it, each named by its function: tb_read_api's
+    close-screen read, and the re-land's read of a file that already landed
+    (konsol#283; _parse_file, the intake in the same module, may not). Both
+    must pass it (or this guards nothing)."""
     stored = set()
     for path in _production_files():
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), path)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and any(k.arg == "stored" for k in node.keywords):
-                stored.add(os.path.relpath(path, APP_DIR))
-    assert stored == {os.path.join("close", "tb_read_api.py")}, sorted(stored)
+        for func in ast.walk(tree):
+            if not isinstance(func, ast.FunctionDef):
+                continue
+            for node in ast.walk(func):
+                if isinstance(node, ast.Call) and any(k.arg == "stored" for k in node.keywords):
+                    stored.add((os.path.relpath(path, APP_DIR), func.name))
+    assert stored == {
+        (os.path.join("close", "tb_read_api.py"), "_tb_rows"),
+        (os.path.join("consolidation", "doctype", "trial_balance_submission",
+                      "trial_balance_submission.py"), "_read_landed_file"),
+    }, sorted(stored)
