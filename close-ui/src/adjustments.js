@@ -7,17 +7,22 @@
 // Takes no vue/frappe import; the period comes from the URL (route.js), not
 // from here or from browser storage.
 //
-// Amounts: two decimals with thousands separators (mirrors tbTable.js's and
-// intercompany.js's unexported `AMOUNT_FORMAT`, defined again here since
-// those files are outside this row's files).
+// Amounts: at least two decimals and at most four, with thousands
+// separators. konsol#353 option C (Deepak Pai, 5 Nov 2026): a journal is
+// stored and judged at 4 places (journal_model.STORED_PLACES), so a BHD,
+// KWD or OMR amount (3 places) shows in full.
 //
-// `draftTotals` works in integer cents throughout (`Math.round(Number(x) *
-// 100)`), never a float sum: 0.10 + 0.20 must equal 0.30 exactly.
+// `draftTotals` works in integer units of 0.0001 throughout
+// (`Math.round(Number(x) * 10000)`), never a float sum: 0.10 + 0.20 must
+// equal 0.30 exactly, and 0.004 is not 0 (it was, in cents).
 
 import { formatTime, parseZoned } from "./timefmt.js";
 import { periodName } from "./periodName.js";
 
-const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2 });
+const AMOUNT_FORMAT = new Intl.NumberFormat("en", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+
+//: Units per 1 at the warehouse's scale (journal_model.STORED_PLACES = 4).
+const STORED_UNITS = 10000;
 
 //: W3-3 rejected a "stays until reversed" duration; a journal either posts
 //: this period only, or reverses in a named declared, Regular, Open, later
@@ -185,16 +190,16 @@ export function durationIndex(options, duration) {
 }
 
 //: `Number("0x10")` parses as 16 and `Number("Infinity")` as Infinity;
-//: neither is a decimal amount, so parseCents must reject both itself
+//: neither is a decimal amount, so parseUnits must reject both itself
 //: rather than rely on `Number.isNaN` (U12).
 const HEX_LIKE = /^\s*[+-]?0x/i;
 
-//: A blank amount is 0 cents; anything that does not parse as a decimal
+//: A blank amount is 0 units (of 0.0001, STORED_UNITS); anything that does not parse as a decimal
 //: amount (including the "0x10"/"Infinity" cases above) is `null`, never a
-//: guessed number. Shared by `toCents` (draftTotals' invalid-line tracking)
-//: and `amountsEqual` (draftDirty's in-cents comparison, U3) — one parse
+//: guessed number. Shared by `toUnits` (draftTotals' invalid-line tracking)
+//: and `amountsEqual` (draftDirty's in-units comparison, U3) — one parse
 //: rule, not two.
-function parseCents(value) {
+function parseUnits(value) {
 	if (value === null || value === undefined || value === "") {
 		return 0;
 	}
@@ -203,29 +208,29 @@ function parseCents(value) {
 	if (invalidValue) {
 		return null;
 	}
-	return Math.round(num * 100);
+	return Math.round(num * STORED_UNITS);
 }
 
-function toCents(value, pos, invalid) {
-	const cents = parseCents(value);
-	if (cents === null) {
+function toUnits(value, pos, invalid) {
+	const units = parseUnits(value);
+	if (units === null) {
 		if (!invalid.includes(pos)) {
 			invalid.push(pos);
 		}
 		return 0;
 	}
-	return cents;
+	return units;
 }
 
-//: Two amounts are equal when they parse to the same cents (U3: "100"
+//: Two amounts are equal when they parse to the same units of 0.0001 (U3: "100"
 //: typed on screen and 100 last saved are the same amount, never a
 //: string/number mismatch). When either side does not parse as a decimal
 //: amount, fall back to a literal compare — two copies of the same invalid
 //: text ("abc") are still equal; a parsed amount against unparseable text
 //: never is.
 function amountsEqual(a, b) {
-	const ca = parseCents(a);
-	const cb = parseCents(b);
+	const ca = parseUnits(a);
+	const cb = parseUnits(b);
 	if (ca !== null && cb !== null) {
 		return ca === cb;
 	}
@@ -235,27 +240,27 @@ function amountsEqual(a, b) {
 /**
  * The draft editor's running totals (E6-P8, display only — the server's
  * `journal_model.balance_problem` is the rule that actually refuses an
- * unbalanced save). Works in integer cents throughout, never a float sum,
- * so 0.10 + 0.20 equals 0.30 exactly. A line whose amount does not parse as
- * a number counts as 0 and the line's 1-based position is recorded in
+ * unbalanced save). Works in integer units of 0.0001 throughout (konsol#353),
+ * never a float sum, so 0.10 + 0.20 equals 0.30 exactly. A line whose amount
+ * does not parse as a number counts as 0 and the line's 1-based position is recorded in
  * `invalid` (mirrors journal_model.clean_lines's 1-based line numbering).
  *
  * Returns `{debit, credit, difference, balanced, invalid}`.
  */
 export function draftTotals(lines) {
-	let debitCents = 0;
-	let creditCents = 0;
+	let debitUnits = 0;
+	let creditUnits = 0;
 	const invalid = [];
 	(lines || []).forEach((line, idx) => {
-		debitCents += toCents(line.debit_amount, idx + 1, invalid);
-		creditCents += toCents(line.credit_amount, idx + 1, invalid);
+		debitUnits += toUnits(line.debit_amount, idx + 1, invalid);
+		creditUnits += toUnits(line.credit_amount, idx + 1, invalid);
 	});
-	const differenceCents = Math.abs(debitCents - creditCents);
+	const differenceUnits = Math.abs(debitUnits - creditUnits);
 	return {
-		debit: debitCents / 100,
-		credit: creditCents / 100,
-		difference: differenceCents / 100,
-		balanced: differenceCents === 0,
+		debit: debitUnits / STORED_UNITS,
+		credit: creditUnits / STORED_UNITS,
+		difference: differenceUnits / STORED_UNITS,
+		balanced: differenceUnits === 0,
 		invalid,
 	};
 }
@@ -485,7 +490,7 @@ export function snapshotDraft(draft, dimKeys = []) {
  * (a fresh "New" draft never saved) — nothing to be dirty against, so this
  * returns `false`.
  *
- * Amounts compare in cents through `amountsEqual`, never as raw strings: a
+ * Amounts compare in units of 0.0001 through `amountsEqual`, never as raw strings: a
  * line typed as `"100"` against a saved `100` is not dirty.
  *
  * `dimKeys` (konsolidat#245 option D; default `[]`): a changed declared

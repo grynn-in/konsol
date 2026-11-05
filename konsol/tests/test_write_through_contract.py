@@ -276,8 +276,8 @@ CA_TABLE = "epm_staging.consolidation_adjustments"
 CA_BODY = (
     "(consolidation_group String, adjustment_type String, journal_id String, "
     "data_area_id String, fiscal_year UInt16, fiscal_period UInt8, "
-    "main_account String, debit_amount Decimal(18,2) DEFAULT 0, "
-    "credit_amount Decimal(18,2) DEFAULT 0, description String DEFAULT '', "
+    "main_account String, debit_amount Decimal(20,4) DEFAULT 0, "
+    "credit_amount Decimal(20,4) DEFAULT 0, description String DEFAULT '', "
     "posted_by String DEFAULT '', status String DEFAULT 'Approved', "
     "approved_by String DEFAULT '', approved_at DateTime DEFAULT '1970-01-01 00:00:00', "
     "reversal_journal_id String DEFAULT '', created_at DateTime DEFAULT now(), "
@@ -314,6 +314,82 @@ def test_consolidation_adjustments_names_its_reversal_period():
     assert create < add_year < drop
     assert create < add_period < drop
 
+
+
+# --- konsol#353 option C (Deepak Pai, 5 Nov 2026): journal amounts at 4 places
+
+
+def _columns_answer(types_by_column):
+    """What system.columns returns (TSV: database, table, name, type) for the
+    journal table, as clickhouse.execute gives it."""
+    return "".join(f"epm_staging\tconsolidation_adjustments\t{c}\t{t}\n"
+                   for c, t in types_by_column.items())
+
+
+def _run_ensure(m, answer):
+    sql = []
+
+    def execute(s, params=None):
+        sql.append(s)
+        return answer if "system.columns" in s else ""
+    m.execute = execute
+    m.ensure_reference_tables()
+    return sql
+
+
+def test_a_migrate_widens_existing_journal_amounts_to_four_places():
+    """CREATE TABLE IF NOT EXISTS never changes a column: an existing
+    Decimal(18,2) table is widened with MODIFY COLUMN, after the CREATE."""
+    m, _ = _load_clickhouse()
+    sql = _run_ensure(m, _columns_answer({"debit_amount": "Decimal(18, 2)",
+                                          "credit_amount": "Decimal(18, 2)"}))
+    create = sql.index(f"CREATE TABLE IF NOT EXISTS {CA_TABLE} {CA_BODY}")
+    for column in ("debit_amount", "credit_amount"):
+        alter = sql.index(f"ALTER TABLE {CA_TABLE} MODIFY COLUMN {column} Decimal(20,4) DEFAULT 0")
+        assert create < alter, column
+
+
+def test_a_migrate_asks_first_and_issues_nothing_when_already_wide():
+    """An ALTER that changes nothing still rewrites the table's metadata time
+    (_watermark_upgrade_ddl): a widened or fresh table gets no MODIFY."""
+    m, _ = _load_clickhouse()
+    for answer in (_columns_answer({"debit_amount": "Decimal(20, 4)",
+                                    "credit_amount": "Decimal(20, 4)"}), ""):
+        sql = _run_ensure(m, answer)
+        assert not [s for s in sql if "MODIFY COLUMN" in s], sql
+
+
+def test_a_migrate_never_narrows_a_wider_journal_column():
+    """A site that holds a wider Decimal keeps it: widening only."""
+    m, _ = _load_clickhouse()
+    sql = _run_ensure(m, _columns_answer({"debit_amount": "Decimal(38, 6)",
+                                          "credit_amount": "Decimal(18, 2)"}))
+    modifies = [s for s in sql if "MODIFY COLUMN" in s]
+    assert modifies == [f"ALTER TABLE {CA_TABLE} MODIFY COLUMN credit_amount Decimal(20,4) DEFAULT 0"], modifies
+
+
+def test_a_migrate_never_cuts_whole_digits_from_a_wide_two_place_column():
+    """PR #394 review: Decimal(38,2) has 36 whole digits, Decimal(20,4) 16.
+    Comparing (scale, precision) ALTERed it to Decimal(20,4), narrower. A
+    column with more than 16 whole digits is left alone and named."""
+    m, frappe = _load_clickhouse()
+    sql = _run_ensure(m, _columns_answer({"debit_amount": "Decimal(38, 2)",
+                                          "credit_amount": "Decimal(38, 3)"}))
+    assert not [s for s in sql if "MODIFY COLUMN" in s], sql
+    warned = [w for w in frappe._logger.messages if "consolidation_adjustments" in w]
+    assert any("debit_amount" in w and "Decimal(38, 2)" in w for w in warned), warned
+    assert any("credit_amount" in w and "Decimal(38, 3)" in w for w in warned), warned
+
+
+def test_an_unreachable_clickhouse_does_not_fail_the_migrate_over_the_widening():
+    m, _ = _load_clickhouse()
+
+    def execute(s, params=None):
+        if "system.columns" in s:
+            raise RuntimeError("ClickHouse unreachable")
+        return ""
+    m.execute = execute
+    m.ensure_reference_tables()  # no raise
 
 def test_the_group_root_carries_its_policy_and_declared_accounts():
     """konsolidat#198 (design 1, 1a). The group root's Consolidation Policy
