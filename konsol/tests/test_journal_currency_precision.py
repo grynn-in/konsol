@@ -175,7 +175,33 @@ def test_an_amount_of_1e19_or_more_is_refused_with_a_sentence_not_an_exception()
         assert any("Line 1" in p and "too large" in p for p in problems), (amount, problems)
         # currency_problems leaves it to line_problems and does not raise
         M.currency_problems("USD", 2, lines, L)
-    assert not any("too large" in p for p in M.line_problems([_line(1, debit=9.99e18), _line(2, credit=9.99e18)]))
+
+
+# --- PR #387 final: the limit is what decimal(21,9) stores (12 whole digits) --
+
+
+def test_the_limit_is_12_whole_digits_the_decimal_21_9_column_stores():
+    """Journal amounts and totals are Frappe Currency fields, stored as
+    MariaDB decimal(21,9): 12 whole digits, so 10^12 does not fit."""
+    from decimal import Decimal
+    assert M.MAX_AMOUNT == Decimal(10) ** 12 and isinstance(M.MAX_AMOUNT, Decimal)
+    for amount in (10**12, 1e12, "1000000000000", 5e15, -1e12):
+        problems = M.line_problems([_line(1, debit=amount), _line(2, credit=1)])
+        assert any("Line 1" in p and "too large" in p and "12" in p for p in problems), (amount, problems)
+        assert not any("10^19" in p for p in problems), problems
+    ok = [_line(1, debit="999999999999.99"), _line(2, credit="999999999999.99")]
+    assert M.line_problems(ok) == []
     # just below the limit, places are still counted
-    assert M.currency_problems("USD", 2, [_line(1, debit="9999999999999999999.004"),
-                                          _line(2, credit=1)], L)
+    assert M.currency_problems("USD", 2, [_line(1, debit="999999999999.004"), _line(2, credit=1)], L)
+
+
+def test_totals_that_sum_past_the_limit_are_refused():
+    """Each line fits, but the total_debit / total_credit columns are
+    decimal(21,9) too: two lines of 6e11 sum to 1.2e12."""
+    assert M.total_problems(6e11 * 2, 6e11 * 2) == [
+        "The total debit 1200000000000.0 is too large; a journal's totals must be less than "
+        "1,000,000,000,000 (10^12): a Currency field stores 12 whole digits.",
+        "The total credit 1200000000000.0 is too large; a journal's totals must be less than "
+        "1,000,000,000,000 (10^12): a Currency field stores 12 whole digits.",
+    ]
+    assert M.total_problems(999999999999.99, 999999999999.99) == []

@@ -524,3 +524,13 @@ def test_an_amount_of_1e19_is_refused_with_a_sentence():
         lines = [_line(1, debit_amount=amount), _line(2, credit_amount=amount)]
         message = _refusal(_doc(module, lines=lines))
         assert message and "Line 1" in message and "too large" in message, (amount, message)
+
+
+def test_lines_that_fit_but_total_past_12_digits_are_refused():
+    """PR #387 final: total_debit/total_credit are decimal(21,9) as well."""
+    module, _ = _load()
+    lines = [_line(1, debit_amount=6e11), _line(2, debit_amount=6e11),
+             _line(3, credit_amount=6e11), _line(4, credit_amount=6e11)]
+    message = _refusal(_doc(module, lines=lines))
+    assert message and "total debit" in message and "total credit" in message, message
+    assert "12 whole digits" in message, message
