@@ -55,9 +55,10 @@ GRAIN = ("data_area_id", "fiscal_year", "fiscal_period", "main_account")
 #: What one expression in a SELECT list cannot contain. dbt writes the
 #: expression on one line followed by ``as <name>``: a line comment or a line
 #: break would swallow or split the alias, a block comment could swallow the
-#: rest of the model, and a semicolon ends the statement.
-FORBIDDEN = {";": "a semicolon", "--": "a line comment (--)", "/*": "a block comment (/*)",
-             "\n": "a line break", "\r": "a line break"}
+#: rest of the model, and a semicolon ends the statement. ClickHouse also reads
+#: ``#`` as a line comment.
+FORBIDDEN = {";": "a semicolon", "--": "a line comment (--)", "#": "a line comment (#)",
+             "/*": "a block comment (/*)", "\n": "a line break", "\r": "a line break"}
 
 #: Defence in depth, matched case-insensitively before anything is sent: a
 #: subquery, a system table, or a table function. The control is the check

@@ -72,6 +72,11 @@ class Measure(Document):
             # A Draft expression is not run: an earlier "Checked" no longer holds.
             self.expression_check = ("Not checked: the expression is checked when the "
                                      "measure is published.")
+        else:
+            # No check ran: keep what is recorded. read_only binds the Desk
+            # only, so a REST save could otherwise write "Checked" itself.
+            before = self.get_doc_before_save()
+            self.expression_check = before.get("expression_check") if before else None
 
     def _expression_changed(self):
         before = self.get_doc_before_save()
