@@ -120,17 +120,29 @@ def test_consolidation_adjustment_absent_from_group_and_trigger_lists():
     assert "Consolidation Adjustment" not in PIPELINE_BUILD_TRIGGER_DOCTYPES
 
 
-def test_build_approval_dashboard_links_runs_and_trigger_js():
+def test_build_approval_dashboard_links_runs_and_a_button_opens_the_trigger():
+    """The trigger opens from a form button, not from a group the form script
+    added to the connections panel on every refresh: on Frappe v16 those groups
+    piled up ("Runs / Trigger / Historical Equity Rate 1" repeated, seen on
+    demo.konsolidat.com BAPR-00044, 5 Nov 2026).
+
+    trigger_doctype / trigger_docname stay Data, not Link / Dynamic Link: Frappe
+    validates links on every save, and the build job saves the approval again
+    (Start, Complete) after its trigger may have been deleted, which would
+    stall the build."""
     data = _load_dashboard(
         "pipeline/doctype/build_approval/build_approval_dashboard.py")
     assert "Pipeline Run" in _items(data)
     assert data["non_standard_fieldnames"]["Pipeline Run"] == "build_approval"
     assert data["method"] == "konsol.desk.connections.get_open_count"
-    js_path = os.path.join(
-        APP_DIR, "pipeline/doctype/build_approval/build_approval.js")
-    js = open(js_path).read()
-    assert "refresh_build_approval_connections" in js
-    assert "frm.dashboard.hide()" not in js
+    import json as _json
+    with open(os.path.join(APP_DIR, "pipeline/doctype/build_approval/build_approval.json")) as f:
+        fields = {d["fieldname"]: d for d in _json.load(f)["fields"]}
+    assert fields["trigger_doctype"]["fieldtype"] == "Data"
+    assert fields["trigger_docname"]["fieldtype"] == "Data"
+    js = open(os.path.join(APP_DIR, "pipeline/doctype/build_approval/build_approval.js")).read()
+    assert "add_transactions" not in js and "init_data" not in js
+    assert "add_custom_button" in js and 'set_route("Form", trigger_doctype, trigger_docname)' in js
 
 
 def test_pipeline_build_request_trigger_helper():
