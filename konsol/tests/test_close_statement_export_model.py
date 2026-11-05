@@ -461,3 +461,69 @@ def test_header_names_the_fiscal_year_even_when_the_period_code_does_not():
     assert _rows(_book(payload)["Statement"])[0][0] == "Numbers · FY2025 P07 · G1 · USD"
     payload["period"]["fiscal_year"] = 2024
     assert _rows(_book(payload)["Statement"])[0][0] == "Numbers · FY2024 P07 · G1 · USD"
+
+
+# --- PR #386 review: the export is in the reporting currency's minor unit -----
+#
+# The .xlsx quantized every drill line to cents and formatted every amount
+# "#,##0.00", whatever the statement's ``minor_unit`` (konsol#354): a BHD
+# drill (3 places) did not foot, and a JPY statement showed ".00".
+
+
+def _in_places(minor_unit):
+    payload, drills = _payload(), _drills()
+    payload["statement"]["minor_unit"] = minor_unit
+    for d in drills.values():
+        d["minor_unit"] = minor_unit
+    return payload, drills
+
+
+@pytest.mark.parametrize("minor_unit,fmt", [
+    (3, "#,##0.000;(#,##0.000);0.000"),
+    (0, "#,##0;(#,##0);0"),
+    (2, "#,##0.00;(#,##0.00);0.00"),
+])
+def test_amount_format_follows_the_minor_unit(minor_unit, fmt):
+    payload, drills = _in_places(minor_unit)
+    book = _book(payload, drills)
+    formats = {c.number_format for ws in book for row in ws.iter_rows() for c in row
+               if isinstance(c.value, float)}
+    assert formats == {fmt}, formats
+    assert M.amount_format(minor_unit) == fmt
+
+
+def test_a_three_place_drill_foots_to_its_total():
+    payload, drills = _in_places(3)
+    entity_row = drills["1"]["rows"][0]
+    entity_row["accounts"] = [
+        {"main_account": "1110", "account_name": "Cash", "amount": 150.001},
+        {"main_account": "1120", "account_name": "Receivables", "amount": 150.0},
+    ]  # row amount stays 300.0
+    rows = _rows(_book(payload, drills)["Drill"])
+    body = [r for r in rows[2:] if r[1] == "1" and r[3] != "Total"]
+    rounding = [r for r in body if r[6] == "Rounding (accounts to row)"]
+    assert len(rounding) == 1 and rounding[0][7] == -0.001, rounding
+    assert round(sum(r[7] for r in body), 3) == drills["1"]["total"]
+
+
+def test_a_zero_place_drill_foots_to_its_total():
+    payload, drills = _in_places(0)
+    entity_row = drills["1"]["rows"][0]
+    entity_row["accounts"] = [
+        {"main_account": "1110", "account_name": "Cash", "amount": 151.0},
+        {"main_account": "1120", "account_name": "Receivables", "amount": 150.0},
+    ]  # row amount stays 300.0
+    rows = _rows(_book(payload, drills)["Drill"])
+    body = [r for r in rows[2:] if r[1] == "1" and r[3] != "Total"]
+    rounding = [r for r in body if r[6] == "Rounding (accounts to row)"]
+    assert len(rounding) == 1 and rounding[0][7] == -1.0, rounding
+    assert sum(r[7] for r in body) == drills["1"]["total"]
+
+
+@pytest.mark.parametrize("minor_unit", [None, "2", -1, True])
+def test_a_statement_with_no_minor_unit_is_refused_never_read_as_cents(minor_unit):
+    payload, drills = _in_places(minor_unit)
+    if minor_unit is None:
+        del payload["statement"]["minor_unit"]
+    with pytest.raises(ValueError, match="minor unit"):
+        M.workbook(payload, drills)
