@@ -32,7 +32,8 @@ def test_group_code_is_imported_from_consolidated_statement_not_copied():
 
 
 def _execute_with(drill_payload, submissions=()):
-    fns = [n for n in _tree().body if isinstance(n, ast.FunctionDef)]
+    # The module's functions and constants, without its imports (stubbed below).
+    fns = [n for n in _tree().body if isinstance(n, (ast.FunctionDef, ast.Assign))]
     seen = {}
 
     def get_drill(fy, fp, group, heading):

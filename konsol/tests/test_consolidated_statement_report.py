@@ -111,8 +111,9 @@ def _execute_with(statement):
             return ["cols"]
 
         @staticmethod
-        def rows(payload, prior=None):
+        def rows(payload, prior=None, drill_group=None):
             seen["rows"] = prior
+            seen["drill_group"] = drill_group
             return ["rows"]
 
         @staticmethod
@@ -169,5 +170,11 @@ def test_an_ok_prior_year_with_no_warehouse_rows_is_not_shown_as_zero():
     execute({"fiscal_year": 2023, "fiscal_period": 12, "consolidation_group": "ZZG"})
     assert seen["rows"]["state"] != "ok"
     assert "No rows in the warehouse for FY2022" in seen["rows"]["message"]
+
+
+def test_execute_hands_the_chosen_group_filter_to_the_heading_drill_links():
+    execute, seen = _execute_with(lambda fy, fp, group: _ok(int(fy), [_tb(int(fy), 12)]))
+    execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "CG-ZZG-"})
+    assert seen["drill_group"] == "CG-ZZG-"
 
 
