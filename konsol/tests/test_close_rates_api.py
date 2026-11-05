@@ -802,7 +802,7 @@ def test_the_same_edit_under_allowed_with_reason_needs_a_reason():
     result = _call(site)
     cell = _row(result, "EUR")["average"]
     assert cell["approve"]["mode"] == "reason"
-    assert "approval_api.approve" in cell["approve"]["message"]
+    assert "only with a reason" in cell["approve"]["message"]
 
 
 def test_a_version_of_another_document_does_not_make_a_preparer():
@@ -1179,7 +1179,7 @@ def test_under_allowed_with_reason_the_leads_own_op_needs_a_reason():
     result = _call_pending(site)
     op_item = next(i for i in result["items"] if i["doctype"] == "Ownership Period")
     assert op_item["approve"]["mode"] == "reason"
-    assert "approval_api.approve" in op_item["approve"]["message"]
+    assert "only with a reason" in op_item["approve"]["message"]
 
 
 def test_no_drafts_gives_empty_items_and_zero_counts_never_missing_keys():
