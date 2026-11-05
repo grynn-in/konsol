@@ -264,6 +264,13 @@ def _check_measure(name, expression, publishing, **kwargs):
     _CHECKS.append((name, expression, publishing))
     if expression == _REFUSE["expression"]:
         raise _ValidationError(f"Measure {name}: ClickHouse refused the expression")
+    if not publishing:
+        return None
+    return {"status": _CHECK_STATUS["status"], "line": f"zz-{_CHECK_STATUS['status']}"}
+
+
+#: What the stub check reports for a publishing save.
+_CHECK_STATUS = {"status": "checked"}
 
 
 _install_stubs()
@@ -881,3 +888,52 @@ def test_the_form_shows_how_dbt_compiles_the_measure():
     doc.set_onload = lambda key, value: onload.__setitem__(key, value)
     doc.onload()
     assert onload.get("compilation") == f"zz-compilation-of-{NAME}", onload
+
+
+# --- the check's outcome is recorded, not only a pop-up (review of #391) ---
+
+
+def test_the_measure_records_its_expression_check():
+    meta = {f["fieldname"]: f for f in _META["fields"]}
+    field = meta.get("expression_check")
+    assert field, "Measure has no expression_check field: the outcome is only a pop-up"
+    assert field.get("read_only") == 1, field
+
+
+def test_publishing_records_the_check_on_the_measure():
+    for status in ("checked", "not checked", "not compiled"):
+        _reset()
+        _reset_checks()
+        _CHECK_STATUS["status"] = status
+        doc = _stored("Draft")
+        doc.publish()
+        assert _STORE[NAME]["expression_check"] == f"zz-{status}", _STORE[NAME]
+    _CHECK_STATUS["status"] = "checked"
+
+
+def test_a_draft_edit_of_the_expression_clears_an_earlier_check():
+    """A Draft expression is not run; an earlier "checked" must not stay on it."""
+    _reset()
+    _reset_checks()
+    doc = _stored("Draft", expression_check="zz-checked")
+    doc.expression = "sum(debit_amount)"
+    doc.save()
+    line = _STORE[NAME]["expression_check"] or ""
+    assert line.startswith("Not checked"), line
+    # a label edit leaves the record alone
+    doc = _stored("Published", expression_check="zz-checked")
+    doc.label = "ZZ Other Label"
+    doc.save()
+    assert _STORE[NAME]["expression_check"] == "zz-checked", _STORE[NAME]
+
+
+def test_upsert_measure_returns_the_expression_check():
+    for publish in (True, False):
+        _reset()
+        _reset_checks()
+        _CHECK_STATUS["status"] = "not checked"
+        result = config_service.upsert_measure(_spec_for("Published"), publish=publish)
+        assert result.get("expression_check") == {"status": "not checked",
+                                                  "line": "zz-not checked"}, (publish, result)
+        assert result["measure"].get("expression_check") == "zz-not checked", result
+    _CHECK_STATUS["status"] = "checked"
