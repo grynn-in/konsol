@@ -47,7 +47,7 @@ def test_what_was_dropped_is_still_reachable_as_document_methods():
     for rel, names in (
         ("epm/doctype/dimension/dimension.py", ("publish", "unpublish")),
         ("epm/doctype/measure/measure.py", ("publish", "unpublish")),
-        ("governed_reference.py", ("publish", "unpublish")),
+        ("epm/doctype/dataset/dataset.py", ("publish", "unpublish")),
         ("pipeline/doctype/connector/connector.py",
          ("test_extract_connection", "test_writeback_connection", "provision_airbyte")),
     ):
