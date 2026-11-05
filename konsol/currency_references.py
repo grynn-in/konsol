@@ -57,25 +57,42 @@ def _stored():
 
 #: Where a currency is used: (doctype, field, filters, label). A number is
 #: computed in each, so a wrong minor unit there makes the number wrong.
+#: A group's reporting currency is read from its node with no entity
+#: (consolidation_journal._root), so that node is the root here. Documents
+#: count once submitted; a child row counts under a submitted parent of its
+#: own doctype (Frappe keeps a child's docstatus equal to its parent's).
+#: Business Combination Acquired Balance links no currency, so it is absent.
+_SUBMITTED = {"docstatus": 1}
 _USES = (
     ("Entity", "functional_currency", None, "Entity"),
-    ("Consolidation Group", "reporting_currency", {"parent_consolidation_group": ["is", "not set"]},
+    ("Consolidation Group", "reporting_currency", {"data_area_id": ["is", "not set"]},
      "Consolidation Group"),
-    ("Group Exchange Rate", "from_currency", {"docstatus": 1}, "Group Exchange Rate"),
-    ("Group Exchange Rate", "to_currency", {"docstatus": 1}, "Group Exchange Rate"),
-    ("Trial Balance Submission", "currency", {"docstatus": 1}, "Trial Balance Submission"),
-    ("Consolidation Journal", "currency", {"docstatus": 1}, "Consolidation Journal"),
+    ("Group Exchange Rate", "from_currency", _SUBMITTED, "Group Exchange Rate"),
+    ("Group Exchange Rate", "to_currency", _SUBMITTED, "Group Exchange Rate"),
+    ("Historical Equity Rate", "from_currency", _SUBMITTED, "Historical Equity Rate"),
+    ("Historical Equity Rate", "to_currency", _SUBMITTED, "Historical Equity Rate"),
+    ("Trial Balance Submission", "currency", _SUBMITTED, "Trial Balance Submission"),
+    ("Consolidation Journal", "currency", _SUBMITTED, "Consolidation Journal"),
+    ("Business Combination", "consideration_currency", _SUBMITTED, "Business Combination"),
+    ("Business Combination Consideration", "currency",
+     {"docstatus": 1, "parenttype": "Business Combination"}, "Business Combination"),
+    ("Business Combination Cost", "currency",
+     {"docstatus": 1, "parenttype": "Business Combination"}, "Business Combination"),
+    ("Business Disposal", "proceeds_currency", _SUBMITTED, "Business Disposal"),
+    ("Business Disposal Proceeds", "currency",
+     {"docstatus": 1, "parenttype": "Business Disposal"}, "Business Disposal"),
 )
 
 
 def used_currencies():
     """{code: [where, ...]} for every currency a number is computed in: an
     Entity's functional currency, a Consolidation Group root's reporting
-    currency, and the currencies of a submitted Group Exchange Rate, Trial
-    Balance Submission or Consolidation Journal (PR #384 re-review)."""
+    currency, and the currencies of a submitted Group Exchange Rate,
+    Historical Equity Rate, Trial Balance Submission, Consolidation Journal,
+    Business Combination or Business Disposal (PR #384 re-review)."""
     used = {}
     for doctype, field, filters, label in _USES:
-        for code in frappe.get_all(doctype, filters=filters or {}, pluck=field, distinct=True,
+        for code in frappe.get_all(doctype, filters=dict(filters or {}), pluck=field, distinct=True,
                                    limit_page_length=0):
             if code:
                 used.setdefault(code, set()).add(label)
