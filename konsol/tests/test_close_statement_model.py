@@ -132,7 +132,7 @@ def test_every_row_lands_in_exactly_one_bucket_none_dropped():
         _row("CTA", 5.07, adjustment_type="cta"),  # CTA, literal "CTA" not a chart code
         _row("1", 20.0),                    # posted to a heading (is_group)
     ]
-    out = M.heading_amounts(rows, _ACCOUNTS, {_KEY})
+    out = M.heading_amounts(rows, _ACCOUNTS, {_KEY}, minor_unit=2)
 
     assert out["headings"] == {"1": 100.0, "3": 50.0, "4": 40.0}
     assert out["no_heading"] == {M.PL: 30.0}
@@ -153,7 +153,7 @@ def test_every_row_lands_in_exactly_one_bucket_none_dropped():
 
 def test_cta_row_is_never_in_not_in_chart():
     rows = [_row("CTA", 5.07, adjustment_type="cta")]
-    out = M.heading_amounts(rows, _ACCOUNTS, {_KEY})
+    out = M.heading_amounts(rows, _ACCOUNTS, {_KEY}, minor_unit=2)
     assert "CTA" not in out["not_in_chart"]
     assert out["cta"] == 5.07
     assert out["not_in_chart"] == {}
@@ -163,25 +163,25 @@ def test_amount_none_raises_naming_the_account():
     """Failure path: never read as 0."""
     rows = [_row("1110", None)]
     with pytest.raises(ValueError, match="1110"):
-        M.heading_amounts(rows, _ACCOUNTS, {_KEY})
+        M.heading_amounts(rows, _ACCOUNTS, {_KEY}, minor_unit=2)
 
 
 def test_null_rows_raises_naming_the_account():
     """Failure path: never read as 0."""
     rows = [_row("1110", 100.0, null_rows=1)]
     with pytest.raises(ValueError, match="1110"):
-        M.heading_amounts(rows, _ACCOUNTS, {_KEY})
+        M.heading_amounts(rows, _ACCOUNTS, {_KEY}, minor_unit=2)
 
 
 def test_decimal_sum_is_exact():
     rows = [_row("1110", 0.10), _row("1110", 0.20)]
-    out = M.heading_amounts(rows, _ACCOUNTS, {_KEY})
+    out = M.heading_amounts(rows, _ACCOUNTS, {_KEY}, minor_unit=2)
     assert out["headings"]["1"] == 0.30
 
 
 def test_a_row_outside_keys_is_not_summed():
     rows = [_row("1110", 100.0)]
-    out = M.heading_amounts(rows, _ACCOUNTS, {(2024, 1)})
+    out = M.heading_amounts(rows, _ACCOUNTS, {(2024, 1)}, minor_unit=2)
     assert out["headings"] == {}
 
 
@@ -308,7 +308,7 @@ def _residual_line(result):
 
 
 def test_legend_text_is_the_amended_4_oct_text():
-    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     assert result["legend"] == (
         "Profit and loss: income positive, costs in brackets. "
         "Balance sheet: assets, liabilities and equity positive."
@@ -321,7 +321,7 @@ def test_balanced_fixture_both_declared_residual_is_zero_and_bs_balances():
     result; residual 0.00; P&L net result 241.43 (profit positive); and the
     balance-sheet identity (assets = liabilities + equity incl. CTA/CYR)
     holds exactly in display terms, proving the flip did not break it."""
-    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
 
     assets = _bs_line(result, "1")
     liabilities = _bs_line(result, "2")
@@ -363,7 +363,7 @@ def test_residual_is_rounded_once_not_built_from_rounded_parts():
         _row("CTA", -5.074, adjustment_type="cta"),
         _row("4100", -241.422),
     ]
-    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     residual = _residual_line(result)
     assert residual["current"] == 0.0, residual
     assert "explained" not in residual
@@ -380,7 +380,7 @@ def test_unexplained_is_exact_when_the_residual_is_explained():
         _row("CTA", -5.074, adjustment_type="cta"),
         _row("4100", -241.422),
     ]
-    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(cta_account=None))
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(cta_account=None), minor_unit=2)
     residual = _residual_line(result)
     assert residual["current"] == 5.07, residual
     assert residual["unexplained"] == 0.0, residual
@@ -393,7 +393,7 @@ def test_residual_breakdown_foots_with_a_visible_rounding_line():
     0.00"). A cent of difference is shown as its own "Rounding" line, so
     the breakdown always foots and is never called unexplained."""
     def breakdown(rows):
-        result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(cta_account=None))
+        result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(cta_account=None), minor_unit=2)
         r = _residual_line(result)
         return r, round(sum(e["amount"] for e in r["explained"]) + r["unexplained"], 2)
 
@@ -423,14 +423,14 @@ def test_equity_line_is_rounded_once_like_its_drill():
         _row("CTA", -5.074, adjustment_type="cta"),
         _row("4100", -241.422),
     ]
-    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     assert _bs_line(result, "3")["current"] == 931.40
 
 
 def test_both_undeclared_residual_is_the_unplaced_total_never_balanced_silently():
     """Failure path: never silently balanced. Residual 246.50 =
     241.43 + 5.07, explained naming both parts, unexplained 0.00."""
-    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared("", ""))
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared("", ""), minor_unit=2)
     residual = _residual_line(result)
     assert residual["current"] == 246.50
     amounts = sorted(e["amount"] for e in residual["explained"])
@@ -442,7 +442,7 @@ def test_both_undeclared_residual_is_the_unplaced_total_never_balanced_silently(
 
 
 def test_cta_declared_only_residual_is_the_result_only():
-    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared("3300", ""))
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared("3300", ""), minor_unit=2)
     residual = _residual_line(result)
     assert residual["current"] == 241.43
     assert len(residual["explained"]) == 1
@@ -459,7 +459,7 @@ def test_not_in_chart_row_names_it_and_the_residual_explains_it():
     vanishes — it is its own line, and the residual's ``explained``
     names it."""
     rows = _s_rows() + [_row("ZZ_UNMAPPED", 10.0)]
-    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     lines = result["sections"][1]["lines"]
     not_in_chart = next(l for l in lines if l["kind"] == "not_in_chart")
     assert not_in_chart["codes"] == ["ZZ_UNMAPPED"]
@@ -480,7 +480,7 @@ def test_not_in_chart_comparison_is_zero_not_not_loaded_when_comparison_has_no_s
         _row("ZZ_UNMAPPED", 10.0),
         {**_row("1110", 500.0), "fiscal_year": 2025, "fiscal_period": 6},
     ]
-    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     lines = result["sections"][1]["lines"]
     not_in_chart = next(l for l in lines if l["kind"] == "not_in_chart")
     assert not_in_chart["current"] == 10.0
@@ -500,7 +500,7 @@ def test_residual_carries_its_comparison_when_the_comparison_period_is_loaded():
         {**_row("CTA", -20.0, adjustment_type="cta"), "fiscal_year": 2025, "fiscal_period": 6},
         {**_row("4100", -80.0), "fiscal_year": 2025, "fiscal_period": 6},
     ]
-    result = M.statement(_s_rows() + comp_rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(_s_rows() + comp_rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     residual = _residual_line(result)
     assert "comparison" in residual
     assert residual["comparison"] == 0.0
@@ -510,7 +510,7 @@ def test_residual_comparison_is_none_when_no_comparison_period_is_loaded():
     """The flip side: no FY2025 P06 rows at all -> the residual's own
     comparison stays ``None`` (never defaulted to 0), same as every other
     BS line's comparison."""
-    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     residual = _residual_line(result)
     assert residual["comparison"] is None
 
@@ -524,7 +524,7 @@ def test_sign_revenue_positive_cost_negative_asset_positive_liability_positive()
         _row("1110", 500.0),    # an asset, net debit +500
         _row("2100", -300.0),   # a liability, net debit -300
     ]
-    result = M.statement(rows, accounts, _S_CALENDAR, _S_KEY, _s_declared("", ""))
+    result = M.statement(rows, accounts, _S_CALENDAR, _S_KEY, _s_declared("", ""), minor_unit=2)
     pl_heading = next(l for l in result["sections"][0]["lines"] if l.get("heading") == "4")
     assert pl_heading["current"] == 100.0           # revenue shows positive
 
@@ -537,7 +537,7 @@ def test_a_cost_row_shows_negative_and_net_result_nets_correctly():
     rows = [
         _row("4100", 40.0),  # a cost, net debit +40
     ]
-    result = M.statement(rows, accounts, _S_CALENDAR, _S_KEY, _s_declared("", ""))
+    result = M.statement(rows, accounts, _S_CALENDAR, _S_KEY, _s_declared("", ""), minor_unit=2)
     pl_heading = next(l for l in result["sections"][0]["lines"] if l.get("heading") == "4")
     assert pl_heading["current"] == -40.0
     net_result = result["sections"][0]["lines"][-1]
@@ -546,7 +546,7 @@ def test_a_cost_row_shows_negative_and_net_result_nets_correctly():
 
 def test_no_subtotal_labels_are_present():
     """#305-W4-3 3a: headings + section totals only."""
-    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     labels = [l.get("label", "") for section in result["sections"] for l in section["lines"]]
     for label in labels:
         assert "Gross profit" not in label
@@ -555,7 +555,7 @@ def test_no_subtotal_labels_are_present():
 
 
 def test_headings_are_in_lft_order_in_both_sections():
-    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     pl_headings = [l["heading"] for l in result["sections"][0]["lines"] if l["kind"] == "heading"]
     bs_headings = [l["heading"] for l in result["sections"][1]["lines"] if l["kind"] == "heading"]
     assert pl_headings == ["4"]
@@ -565,7 +565,7 @@ def test_headings_are_in_lft_order_in_both_sections():
 def test_comparison_not_loaded_names_the_period_never_shows_zero():
     """Failure path: FY2025 P7 with no P6 rows -> P&L comparison None,
     variance None, the note names FY2025 P06 (never silently 0)."""
-    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     assert result["periods"]["comparison"] == (2025, 6)
     assert result["periods"]["comparison_note"] == "No rows in the warehouse for FY2025 P06"
     pl_heading = next(l for l in result["sections"][0]["lines"] if l.get("heading") == "4")
@@ -578,7 +578,7 @@ def test_p1_compares_to_previous_fys_p12_w4_7():
         {**_row("4100", -10.0), "fiscal_year": 2025, "fiscal_period": 1},
         {**_row("4100", -20.0), "fiscal_year": 2024, "fiscal_period": 12},
     ]
-    result = M.statement(rows, _s_accounts(), _S_CALENDAR, (2025, 1), _s_declared())
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, (2025, 1), _s_declared(), minor_unit=2)
     assert result["periods"]["comparison"] == (2024, 12)
     assert result["periods"]["comparison_note"] is None
     pl_heading = next(l for l in result["sections"][0]["lines"] if l.get("heading") == "4")
@@ -593,9 +593,9 @@ def test_bs_heading_with_blank_normal_balance_is_a_setup_gap_never_defaulted():
     accounts = _s_accounts()
     accounts["2"]["normal_balance"] = ""
     with pytest.raises(ValueError, match="statement_heading_side_undeclared"):
-        M.statement(_s_rows(), accounts, _S_CALENDAR, _S_KEY, _s_declared())
+        M.statement(_s_rows(), accounts, _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     with pytest.raises(ValueError, match=r"\b2\b"):
-        M.statement(_s_rows(), accounts, _S_CALENDAR, _S_KEY, _s_declared())
+        M.statement(_s_rows(), accounts, _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
 
 
 def test_sign_key_present_only_on_heading_lines_pl_and_bs():
@@ -617,7 +617,7 @@ def test_sign_key_present_only_on_heading_lines_pl_and_bs():
     accounts["98"] = {"account_name": "BS SUSPENSE", "parent_account": "", "is_group": False,
                        "statement_section": M.BS, "lft": 98}
     rows = _s_rows() + [_row("99", 15.0), _row("98", 25.0), _row("ZZ_UNMAPPED", 10.0)]
-    result = M.statement(rows, accounts, _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(rows, accounts, _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
 
     pl_lines = result["sections"][0]["lines"]
     pl_kinds_seen = {line["kind"] for line in pl_lines}
@@ -642,7 +642,7 @@ def test_bs_heading_sign_matches_debit_and_credit_declared_sides():
     """A Debit-normal BS heading's line carries ``sign: 1``; a
     Credit-normal one carries ``sign: -1`` — the exact
     ``_bs_heading_sides`` result for that heading, not re-derived."""
-    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
     assert _bs_line(result, "1")["sign"] == 1    # ASSETS, Debit
     assert _bs_line(result, "2")["sign"] == -1   # LIABILITIES, Credit
     assert _bs_line(result, "3")["sign"] == -1   # EQUITY, Credit

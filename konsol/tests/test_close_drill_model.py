@@ -104,7 +104,7 @@ def _statement_line(rows, heading, accounts=None, declared=None):
     producer, never a hand-built dict)."""
     accounts = accounts or _accounts()
     declared = declared if declared is not None else _declared()
-    result = SM.statement(rows, accounts, _CALENDAR, _KEY, declared)
+    result = SM.statement(rows, accounts, _CALENDAR, _KEY, declared, minor_unit=2)
     section_index = 1 if accounts[heading]["statement_section"] == SM.BS else 0
     for line in result["sections"][section_index]["lines"]:
         if line.get("heading") == heading:
@@ -149,7 +149,7 @@ def test_entity_rows_exclude_ic_nci_and_topside_amounts_with_the_same_entity_d2_
     data_area_id too."""
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
-    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
 
     zza = _by_layer(result, "entity")
     zza_row = next(r for r in zza if r["entity"] == "ZZA")
@@ -165,7 +165,7 @@ def test_entity_rows_exclude_ic_nci_and_topside_amounts_with_the_same_entity_d2_
 def test_cta_ic_eliminations_and_topside_are_each_one_row_with_entity_none():
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
-    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
 
     ic_rows = [r for r in result["rows"] if r["label"] == "Intercompany eliminations"]
     assert len(ic_rows) == 1
@@ -181,7 +181,7 @@ def test_cta_ic_eliminations_and_topside_are_each_one_row_with_entity_none():
 def test_unknown_adjustment_type_is_its_own_row_labelled_with_the_raw_code():
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
-    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
 
     unknown_rows = _by_layer(result, "zz_new_layer")
     assert len(unknown_rows) == 1
@@ -193,7 +193,7 @@ def test_unknown_adjustment_type_is_its_own_row_labelled_with_the_raw_code():
 def test_drill_total_equals_the_real_statement_lines_current():
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
-    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
     assert result["total"] == line["current"]
     assert result["total"] == 577.0  # 300+200+100-50-20+40+7
 
@@ -206,7 +206,7 @@ def test_tampering_a_row_after_the_statement_was_built_raises():
     tampered = [dict(r) for r in rows]
     tampered[0]["amount"] = 999.0
     with pytest.raises(ValueError, match="does not match"):
-        M.drill(tampered, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+        M.drill(tampered, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
 
 
 def _heading1_subcent_rows():
@@ -234,7 +234,7 @@ def test_drill_total_matches_statement_despite_per_entity_sub_cent_rounding():
     line = _statement_line(rows, "1")
     assert line["current"] == 500.02  # the real producer, rounded once
 
-    result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
 
     assert result["total"] == line["current"] == 500.02
 
@@ -253,7 +253,7 @@ def test_drill_total_matches_statement_despite_per_entity_sub_cent_rounding():
 def test_no_rounding_row_when_display_rows_already_sum_exactly():
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
-    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
     assert _by_layer(result, "rounding") == []
 
 
@@ -261,7 +261,7 @@ def test_scope_aggregates_entities_outside_allowed_with_no_codes_or_accounts():
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
     result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(),
-                      {"ZZA"}, line)
+                      {"ZZA"}, line, minor_unit=2)
 
     entity_rows = _by_layer(result, "entity")
     assert len(entity_rows) == 2  # ZZA itself, plus one aggregate
@@ -287,7 +287,7 @@ def test_scope_aggregates_entities_outside_allowed_with_no_codes_or_accounts():
 def test_entity_row_source_is_tb_topside_row_source_is_journals():
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
-    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
 
     zza_row = next(r for r in _by_layer(result, "entity") if r["entity"] == "ZZA")
     assert zza_row["source"]["kind"] == "tb"
@@ -302,7 +302,7 @@ def test_entity_row_source_is_tb_topside_row_source_is_journals():
 def test_accounts_list_is_in_lft_order():
     rows = _heading1_rows() + [_row("1120", 5.0, "entity", "ZZA")]
     line = _statement_line(rows, "1")
-    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
     zza_row = next(r for r in _by_layer(result, "entity") if r["entity"] == "ZZA")
     codes = [a["main_account"] for a in zza_row["accounts"]]
     assert codes == ["1110", "1120"]  # lft 2 then lft 3
@@ -311,7 +311,7 @@ def test_accounts_list_is_in_lft_order():
 def test_dimensions_note_names_the_tracking_issue():
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
-    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
     assert result["dimensions_note"] == "Not broken down by dimension yet."
 
 
@@ -330,7 +330,7 @@ def _heading3_rows():
 def test_cta_heading_drill_shows_the_cta_row_never_under_an_entity():
     rows = _heading3_rows()
     line = _statement_line(rows, "3")
-    result = M.drill(rows, [], _accounts(), "3", _KEYS, _declared(), None, line)
+    result = M.drill(rows, [], _accounts(), "3", _KEYS, _declared(), None, line, minor_unit=2)
 
     cta_rows = _by_layer(result, "cta")
     assert len(cta_rows) == 1
@@ -342,7 +342,7 @@ def test_cta_heading_drill_shows_the_cta_row_never_under_an_entity():
 def test_result_heading_drill_shows_the_current_year_result_row():
     rows = _heading3_rows()
     line = _statement_line(rows, "3")
-    result = M.drill(rows, [], _accounts(), "3", _KEYS, _declared(), None, line)
+    result = M.drill(rows, [], _accounts(), "3", _KEYS, _declared(), None, line, minor_unit=2)
 
     result_rows = _by_layer(result, "current_year_result")
     assert len(result_rows) == 1
@@ -360,7 +360,7 @@ def test_undeclared_cta_account_means_no_cta_row_on_that_heading():
     rows = [r for r in _heading3_rows() if r["adjustment_type"] != "cta"]
     declared = _declared(cta_account="")
     line = _statement_line(rows, "3", declared=declared)
-    result = M.drill(rows, [], _accounts(), "3", _KEYS, declared, None, line)
+    result = M.drill(rows, [], _accounts(), "3", _KEYS, declared, None, line, minor_unit=2)
     assert _by_layer(result, "cta") == []
 
 
@@ -370,14 +370,14 @@ def test_null_rows_raises_naming_the_account():
     rows = [_row("1110", 100.0, "entity", "ZZA", null_rows=1)]
     with pytest.raises(ValueError, match="1110"):
         M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None,
-                {"heading": "1", "current": 0.0})
+                {"heading": "1", "current": 0.0}, minor_unit=2)
 
 
 def test_amount_none_raises_naming_the_account():
     rows = [_row("1110", None, "entity", "ZZA")]
     with pytest.raises(ValueError, match="1110"):
         M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None,
-                {"heading": "1", "current": 0.0})
+                {"heading": "1", "current": 0.0}, minor_unit=2)
 
 
 # --- module contract --------------------------------------------------------
@@ -406,7 +406,7 @@ def test_a_journal_row_carries_an_auto_reversal_tag_true_only_for_auto_reversal(
          "main_account": "1110", "net_amount": -10.0, "description": "June bonus",
          "posted_by": "alice@example.com", "approved_by": "bob@example.com"},
     ]
-    result = M.drill(rows, journals, _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, journals, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
     topside_row = next(r for r in result["rows"] if r["label"] == "Top-side journals")
     tags = {j["journal_id"]: j["auto_reversal"] for j in topside_row["journals"]}
     assert tags == {"J-1": False, "J-P6": True}
@@ -421,6 +421,6 @@ def test_a_heading_with_no_rows_drills_to_zero_with_no_rows():
     rows = [_row("3200", -100.0, "entity", "ZZA")]
     line = _statement_line(rows, "1")
     assert line["current"] == 0.0
-    result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line)
+    result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
     assert result["rows"] == []
     assert result["total"] == 0.0

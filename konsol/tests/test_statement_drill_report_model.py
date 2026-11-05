@@ -47,7 +47,7 @@ def _payload(rows, heading, journals=()):
     """``get_drill``'s payload for ``heading`` over ``rows``."""
     line = F._statement_line(rows, heading)
     drill = DM.drill(rows, list(journals), F._accounts(), heading, _keys(heading),
-                     F._declared(), None, line)
+                     F._declared(), None, line, minor_unit=2)
     return {"period": dict(_PERIOD), "consolidation_group": "ZZ_GROUP", "heading": heading,
             "state": "ok", "message": None, "drill": drill}
 
@@ -55,7 +55,7 @@ def _payload(rows, heading, journals=()):
 def _statement_payload(rows):
     """``get_statement``'s payload over the same rows (for the
     Consolidated Statement report's own heading row)."""
-    stmt = SM.statement(rows, F._accounts(), F._CALENDAR, F._KEY, F._declared())
+    stmt = SM.statement(rows, F._accounts(), F._CALENDAR, F._KEY, F._declared(), minor_unit=2)
     return {"state": "ok", "message": None, "statement": stmt, "period": dict(_PERIOD),
             "consolidation_group": "ZZ_GROUP", "reporting_currency": "USD", "gap": None,
             "not_included": None, "commentary": {}, "can_comment": False}

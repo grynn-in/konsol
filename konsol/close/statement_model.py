@@ -7,9 +7,13 @@ Imports nothing from frappe or konsol. Loaded by path in
 konsol/tests/test_close_statement_model.py, mirroring
 konsol/tests/test_fiscal_status_model.py.
 
-Amounts are summed as Decimal (``Decimal(str(amount))``), quantized to 2 dp
-only once, at the end — so 0.10 + 0.20 sums to 0.30 exactly, the same
-convention as journal_model.py.
+Amounts are summed as Decimal (``Decimal(str(amount))``), quantized only
+once, at the end — so 0.10 + 0.20 sums to 0.30 exactly, the same convention
+as journal_model.py. They are quantized to the reporting currency's minor
+unit (``ISO Currency.minor_unit``: 0 for JPY, 2 for USD, 3 for BHD), which
+the caller passes in; there is no default (konsol#354, chosen under Deepak
+Pai's standing rule of 5 Nov 2026). An undeclared one raises
+``STATEMENT_CURRENCY_PRECISION_UNDECLARED``.
 
 ``heading_amounts`` (N48) carries no display sign: every amount there stays
 a net DEBIT movement or balance. ``statement`` (N49) applies the display
@@ -49,7 +53,9 @@ def _load_period_name():
 period_name = _load_period_name()
 
 
-_CENTS = Decimal("0.01")
+#: The reporting currency's minor unit is not a whole number of decimal
+#: places (konsol#354): refused, never rounded to a guessed 2.
+STATEMENT_CURRENCY_PRECISION_UNDECLARED = "statement_currency_precision_undeclared"
 
 #: Main Account ``statement_section`` options (main_account.json).
 PL = "Profit and Loss"
@@ -61,8 +67,19 @@ def _dec(amount):
     return Decimal(str(amount))
 
 
-def _round(amount):
-    return float(amount.quantize(_CENTS))
+def places(minor_unit):
+    """``minor_unit`` as a number of decimal places, or ``ValueError``
+    (prefixed ``STATEMENT_CURRENCY_PRECISION_UNDECLARED``) when it is not a
+    whole number >= 0. A bool or a string is not one."""
+    if isinstance(minor_unit, bool) or not isinstance(minor_unit, int) or minor_unit < 0:
+        raise ValueError(
+            "%s: the reporting currency has no Minor Unit (got %r); declare it on "
+            "its ISO Currency." % (STATEMENT_CURRENCY_PRECISION_UNDECLARED, minor_unit))
+    return minor_unit
+
+
+def _round(amount, minor_unit):
+    return float(amount.quantize(Decimal(1).scaleb(-minor_unit)))
 
 
 def period_keys(period_rows, key):
@@ -118,7 +135,7 @@ def period_keys(period_rows, key):
     }
 
 
-def heading_amounts(rows, accounts, keys):
+def heading_amounts(rows, accounts, keys, minor_unit):
     """Sum ``rows`` whose key is in ``keys`` into statement buckets.
 
     ``rows`` are ``{"fiscal_year", "fiscal_period", "main_account",
@@ -145,7 +162,9 @@ def heading_amounts(rows, accounts, keys):
     ``ValueError`` naming the account and period — it is never read as 0.
     No row whose key is in ``keys`` is ever dropped: it lands in exactly
     one bucket (``cta`` and the other buckets are mutually exclusive).
+    Amounts are rounded to ``minor_unit`` decimal places (``places``).
     """
+    minor_unit = places(minor_unit)
     keys = set(keys)
 
     headings = {}
@@ -194,11 +213,11 @@ def heading_amounts(rows, accounts, keys):
             pl_total += amount
 
     return {
-        "headings": {k: _round(v) for k, v in headings.items()},
-        "no_heading": {k: _round(v) for k, v in no_heading.items()},
-        "not_in_chart": {k: _round(v) for k, v in not_in_chart.items()},
-        "cta": _round(cta_total),
-        "pl_total": _round(pl_total),
+        "headings": {k: _round(v, minor_unit) for k, v in headings.items()},
+        "no_heading": {k: _round(v, minor_unit) for k, v in no_heading.items()},
+        "not_in_chart": {k: _round(v, minor_unit) for k, v in not_in_chart.items()},
+        "cta": _round(cta_total, minor_unit),
+        "pl_total": _round(pl_total, minor_unit),
         # The same totals unrounded, for sums that must be rounded once at
         # the end (the residual): summing the rounded parts above turned up
         # to five half-cents of noise into a red "Unmatched residual".
@@ -271,16 +290,16 @@ def _any_row_at(rows, keys):
     return any((row["fiscal_year"], row["fiscal_period"]) in keys for row in rows)
 
 
-def _current_year_result_raw(rows, accounts, period_rows, key, exact=False):
+def _current_year_result_raw(rows, accounts, period_rows, key, minor_unit, exact=False):
     """The P&L YTD total (net debit, unflipped) at ``key`` — the same FY's
     keys only, never the full BS cumulative history (#305-W4-7 7a).
     ``exact=True`` returns the unrounded Decimal, for the residual."""
     ytd_keys = period_keys(period_rows, key)["ytd"]
-    amounts = heading_amounts(rows, accounts, ytd_keys)
+    amounts = heading_amounts(rows, accounts, ytd_keys, minor_unit)
     return amounts["exact"]["pl_total"] if exact else amounts["pl_total"]
 
 
-def _heading_exact(ha_cum, code, mult, with_cta, result):
+def _heading_exact(ha_cum, code, mult, with_cta, result, minor_unit):
     """A BS heading's displayed amount: its unrounded total, plus the
     unrounded CTA when the CTA is placed under it, plus the current-year
     result (as displayed) when that is, signed and rounded once."""
@@ -290,7 +309,7 @@ def _heading_exact(ha_cum, code, mult, with_cta, result):
         total += exact["cta"]
     if result is not None:
         total += _dec(result)
-    return _round(mult * total)
+    return _round(mult * total, minor_unit)
 
 
 def _residual_exact(ha_cum, bs_order, result_exact, cta_placed, result_placed):
@@ -332,15 +351,15 @@ def _bs_heading_sides(bs_order, accounts):
     return sides
 
 
-def _pl_line(kind, label_or_heading_entry, cur_raw, comp_raw, ytd_raw, is_heading):
-    cur = round(-cur_raw, 2)
-    comp = round(-comp_raw, 2) if comp_raw is not None else None
-    ytd = round(-ytd_raw, 2)
+def _pl_line(kind, label_or_heading_entry, cur_raw, comp_raw, ytd_raw, is_heading, minor_unit):
+    cur = round(-cur_raw, minor_unit)
+    comp = round(-comp_raw, minor_unit) if comp_raw is not None else None
+    ytd = round(-ytd_raw, minor_unit)
     line = {
         "kind": kind,
         "current": cur,
         "comparison": comp,
-        "variance": round(cur - comp, 2) if comp is not None else None,
+        "variance": round(cur - comp, minor_unit) if comp is not None else None,
         "ytd": ytd,
         # Every P&L line (heading, no_heading, net_result) gets the same
         # section-wide -1 flip applied above — declare it on every one of
@@ -356,7 +375,7 @@ def _pl_line(kind, label_or_heading_entry, cur_raw, comp_raw, ytd_raw, is_headin
     return line
 
 
-def statement(rows, accounts, period_rows, key, declared):
+def statement(rows, accounts, period_rows, key, declared, minor_unit):
     """Both statement sections, ready to show (konsol#305 N49; #305-W4-1
     1c, W4-2 2a-ii AMENDED 4 Oct, W4-3 3a, W4-7 7a).
 
@@ -364,25 +383,29 @@ def statement(rows, accounts, period_rows, key, declared):
     and ``key`` are ``period_keys``' inputs; ``accounts`` additionally
     carries ``normal_balance`` on every BS heading (Debit/Credit — a blank
     one raises, see ``_bs_heading_sides``). ``declared`` is N41's
-    ``close_policy_model.statement_accounts(...)`` result.
+    ``close_policy_model.statement_accounts(...)`` result. ``minor_unit``
+    is the reporting currency's ``ISO Currency.minor_unit``: every amount is
+    rounded to it (konsol#354); an undeclared one raises (``places``).
 
     Returns ``{"legend", "periods": {"current", "comparison",
-    "comparison_note"}, "sections": [{"section", "lines"}, ...], "gap"}``.
+    "comparison_note"}, "sections": [{"section", "lines"}, ...], "gap",
+    "minor_unit"}``.
     Nothing here is ever balanced silently: an undeclared CTA/current-year
     result account is placed nowhere (named in the residual's
     ``explained``), a code outside the chart is its own line, and a missing
     comparison period is ``None`` with a note, never 0.
     """
+    minor_unit = places(minor_unit)
     periods = period_keys(period_rows, key)
     current, comparison = periods["current"], periods["comparison"]
     order = heading_order(accounts)
 
     # -- Profit and Loss: this period / comparison / variance / YTD --------
-    ha_current = heading_amounts(rows, accounts, {current})
+    ha_current = heading_amounts(rows, accounts, {current}, minor_unit)
     comparison_keys = {comparison} if comparison is not None else set()
     has_comparison_row = comparison is not None and _any_row_at(rows, comparison_keys)
-    ha_comparison = heading_amounts(rows, accounts, comparison_keys) if has_comparison_row else None
-    ha_ytd = heading_amounts(rows, accounts, periods["ytd"])
+    ha_comparison = heading_amounts(rows, accounts, comparison_keys, minor_unit) if has_comparison_row else None
+    ha_ytd = heading_amounts(rows, accounts, periods["ytd"], minor_unit)
 
     if comparison is None:
         comparison_note = "No earlier period declared"
@@ -398,7 +421,7 @@ def statement(rows, accounts, period_rows, key, declared):
         comp_raw = ha_comparison["headings"].get(code, 0.0) if ha_comparison else None
         ytd_raw = ha_ytd["headings"].get(code, 0.0)
         pl_lines.append(_pl_line("heading", (code, entry.get("account_name")),
-                                  cur_raw, comp_raw, ytd_raw, is_heading=True))
+                                  cur_raw, comp_raw, ytd_raw, is_heading=True, minor_unit=minor_unit))
 
     no_heading_cur = ha_current["no_heading"].get(PL, 0.0)
     no_heading_ytd = ha_ytd["no_heading"].get(PL, 0.0)
@@ -406,7 +429,7 @@ def statement(rows, accounts, period_rows, key, declared):
     if no_heading_cur or no_heading_ytd or no_heading_comp:
         pl_lines.append(_pl_line("no_heading", _NO_HEADING_LABEL,
                                   no_heading_cur, no_heading_comp, no_heading_ytd,
-                                  is_heading=False))
+                                  is_heading=False, minor_unit=minor_unit))
 
     pl_lines.append(_pl_line(
         "net_result", NET_RESULT_LABEL,
@@ -414,6 +437,7 @@ def statement(rows, accounts, period_rows, key, declared):
         ha_comparison["pl_total"] if ha_comparison else None,
         ha_ytd["pl_total"],
         is_heading=False,
+        minor_unit=minor_unit,
     ))
 
     # -- Balance Sheet: cumulative this period / comparison / variance -----
@@ -421,18 +445,18 @@ def statement(rows, accounts, period_rows, key, declared):
     sides = _bs_heading_sides(bs_order, accounts)
 
     cum_current_keys = _keys_up_to(period_rows, periods["cumulative_to"])
-    ha_cum_current = heading_amounts(rows, accounts, cum_current_keys)
+    ha_cum_current = heading_amounts(rows, accounts, cum_current_keys, minor_unit)
 
     cum_comparison_keys = _keys_up_to(period_rows, comparison) if comparison is not None else set()
     has_comparison_cum_rows = comparison is not None and _any_row_at(rows, cum_comparison_keys)
-    ha_cum_comparison = heading_amounts(rows, accounts, cum_comparison_keys) if has_comparison_cum_rows else None
+    ha_cum_comparison = heading_amounts(rows, accounts, cum_comparison_keys, minor_unit) if has_comparison_cum_rows else None
 
     cta_cur = ha_cum_current["cta"]
     cta_comp = ha_cum_comparison["cta"] if ha_cum_comparison else None
 
-    result_cur = _current_year_result_raw(rows, accounts, period_rows, current)
+    result_cur = _current_year_result_raw(rows, accounts, period_rows, current, minor_unit)
     result_comp = (
-        _current_year_result_raw(rows, accounts, period_rows, comparison)
+        _current_year_result_raw(rows, accounts, period_rows, comparison, minor_unit)
         if ha_cum_comparison else None
     )
 
@@ -464,8 +488,8 @@ def statement(rows, accounts, period_rows, key, declared):
                 raw_comp += (cta_comp or 0.0)
             includes.append({
                 "kind": "cta", "label": _CTA_INCLUDES_LABEL,
-                "current": round(mult * cta_cur, 2),
-                "comparison": round(mult * cta_comp, 2) if cta_comp is not None else None,
+                "current": round(mult * cta_cur, minor_unit),
+                "comparison": round(mult * cta_comp, minor_unit) if cta_comp is not None else None,
             })
         if code == result_heading:
             raw_cur += result_cur
@@ -473,22 +497,22 @@ def statement(rows, accounts, period_rows, key, declared):
                 raw_comp += (result_comp or 0.0)
             includes.append({
                 "kind": "current_year_result", "label": _RESULT_INCLUDES_LABEL,
-                "current": round(mult * result_cur, 2),
-                "comparison": round(mult * result_comp, 2) if result_comp is not None else None,
+                "current": round(mult * result_cur, minor_unit),
+                "comparison": round(mult * result_comp, minor_unit) if result_comp is not None else None,
             })
         # The line's own amount, rounded ONCE from the unrounded heading and
         # CTA plus the current-year result as displayed: the same sum
         # drill_model checks its drill against (summing the parts after each
         # was rounded left equity a cent off its drill, live 5 Nov).
         cur = _heading_exact(ha_cum_current, code, mult, code == cta_heading,
-                             result_cur if code == result_heading else None)
+                             result_cur if code == result_heading else None, minor_unit)
         comp = (_heading_exact(ha_cum_comparison, code, mult, code == cta_heading,
-                               (result_comp or 0.0) if code == result_heading else None)
+                               (result_comp or 0.0) if code == result_heading else None, minor_unit)
                 if raw_comp is not None else None)
         line = {
             "kind": "heading", "heading": code, "heading_name": entry.get("account_name"),
             "current": cur, "comparison": comp,
-            "variance": round(cur - comp, 2) if comp is not None else None,
+            "variance": round(cur - comp, minor_unit) if comp is not None else None,
             "sign": mult,
         }
         if includes:
@@ -500,9 +524,9 @@ def statement(rows, accounts, period_rows, key, declared):
     if no_heading_bs_cur:
         bs_lines.append({
             "kind": "no_heading", "label": _NO_HEADING_LABEL,
-            "current": round(no_heading_bs_cur, 2),
-            "comparison": round(no_heading_bs_comp, 2) if no_heading_bs_comp is not None else None,
-            "variance": (round(no_heading_bs_cur - no_heading_bs_comp, 2)
+            "current": round(no_heading_bs_cur, minor_unit),
+            "comparison": round(no_heading_bs_comp, minor_unit) if no_heading_bs_comp is not None else None,
+            "variance": (round(no_heading_bs_cur - no_heading_bs_comp, minor_unit)
                          if no_heading_bs_comp is not None else None),
             # Net-debit terms, unflipped (same convention as the residual,
             # S8) — declared, not merely absent.
@@ -515,33 +539,33 @@ def statement(rows, accounts, period_rows, key, declared):
     # real, loaded zero, never "not loaded" (S8).
     not_in_chart_comp = ha_cum_comparison["not_in_chart"] if ha_cum_comparison else None
     if not_in_chart_cur:
-        total_cur = round(sum(not_in_chart_cur.values()), 2)
-        total_comp = round(sum(not_in_chart_comp.values()), 2) if not_in_chart_comp is not None else None
+        total_cur = round(sum(not_in_chart_cur.values()), minor_unit)
+        total_comp = round(sum(not_in_chart_comp.values()), minor_unit) if not_in_chart_comp is not None else None
         bs_lines.append({
             "kind": "not_in_chart", "label": _NOT_IN_CHART_LABEL,
             "codes": sorted(not_in_chart_cur),
             "current": total_cur, "comparison": total_comp,
-            "variance": round(total_cur - total_comp, 2) if total_comp is not None else None,
+            "variance": round(total_cur - total_comp, minor_unit) if total_comp is not None else None,
         })
 
     # -- residual: the sum of the BS lines, net-debit terms, unflipped -----
     # Built from the UNROUNDED totals and rounded once; summing the rounded
     # parts turned rounding noise into a red "Unmatched residual (0.01)".
-    result_exact_cur = _current_year_result_raw(rows, accounts, period_rows, current, exact=True)
+    result_exact_cur = _current_year_result_raw(rows, accounts, period_rows, current, minor_unit, exact=True)
     residual_exact = _residual_exact(ha_cum_current, bs_order, result_exact_cur,
                                      bool(cta_account), bool(result_account))
-    residual_raw = _round(residual_exact)
+    residual_raw = _round(residual_exact, minor_unit)
 
     explained = []
     explained_exact = Decimal("0")
     if not cta_account:
-        explained.append({"label": _CTA_NOT_PLACED, "amount": round(-cta_cur, 2)})
+        explained.append({"label": _CTA_NOT_PLACED, "amount": round(-cta_cur, minor_unit)})
         explained_exact -= ha_cum_current["exact"]["cta"]
     if not result_account:
-        explained.append({"label": _RESULT_NOT_PLACED, "amount": round(-result_cur, 2)})
+        explained.append({"label": _RESULT_NOT_PLACED, "amount": round(-result_cur, minor_unit)})
         explained_exact -= result_exact_cur
     if not_in_chart_cur:
-        explained.append({"label": _NOT_IN_CHART_LABEL, "amount": round(sum(not_in_chart_cur.values()), 2)})
+        explained.append({"label": _NOT_IN_CHART_LABEL, "amount": round(sum(not_in_chart_cur.values()), minor_unit)})
         explained_exact += sum(ha_cum_current["exact"]["not_in_chart"].values(), Decimal("0"))
 
     # The comparison residual, same formula, net-debit terms — ``None``
@@ -551,8 +575,8 @@ def statement(rows, accounts, period_rows, key, declared):
     if bs_raw_comp is not None:
         residual_comp = _round(_residual_exact(
             ha_cum_comparison, bs_order,
-            _current_year_result_raw(rows, accounts, period_rows, comparison, exact=True),
-            bool(cta_account), bool(result_account)))
+            _current_year_result_raw(rows, accounts, period_rows, comparison, minor_unit, exact=True),
+            bool(cta_account), bool(result_account)), minor_unit)
 
     residual_line = {
         "kind": "residual", "label": _RESIDUAL_LABEL,
@@ -560,9 +584,9 @@ def statement(rows, accounts, period_rows, key, declared):
     }
     if residual_raw:
         residual_line["explained"] = explained
-        residual_line["unexplained"] = _round(residual_exact - explained_exact)
+        residual_line["unexplained"] = _round(residual_exact - explained_exact, minor_unit)
         rounding = round(residual_raw - sum(e["amount"] for e in explained)
-                         - residual_line["unexplained"], 2)
+                         - residual_line["unexplained"], minor_unit)
         if rounding:
             explained.append({"label": ROUNDING_LABEL, "amount": rounding})
     bs_lines.append(residual_line)
@@ -575,4 +599,5 @@ def statement(rows, accounts, period_rows, key, declared):
             {"section": BS, "lines": bs_lines},
         ],
         "gap": declared.get("gap"),
+        "minor_unit": minor_unit,
     }
