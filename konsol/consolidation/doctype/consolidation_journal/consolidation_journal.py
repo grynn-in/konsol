@@ -88,7 +88,8 @@ class ConsolidationJournal(Document):
     def _validate_lines_and_totals(self):
         """Balance check before send (#305-D2-1): the lines and the total
         must be clean before the totals or the currency are trusted. Exact
-        to the cent, in total, not per entity (#305-D2-12; J01's
+        at the warehouse's 4 places (journal_model.STORED_PLACES, konsol#353
+        option C), in total, not per entity (#305-D2-12; J01's
         balance_problem already sums every line).
 
         The currency is the root group's reporting currency, set first: no

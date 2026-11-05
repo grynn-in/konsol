@@ -57,7 +57,16 @@ def _load_iso_currency_model():
 minor_unit_problem = _load_iso_currency_model().minor_unit_problem
 
 
-_CENTS = Decimal("0.01")
+#: The scale of epm_staging.consolidation_adjustments.debit_amount and
+#: credit_amount (``Decimal(20,4)``, konsol/clickhouse.py), and the scale at
+#: which lines are summed and the balance is judged. konsol#353 option C
+#: (Deepak Pai, 5 Nov 2026) widened it from 2, so a journal in a 3-decimal
+#: currency (BHD, KWD, OMR) or a 4-decimal one (CLF, UYW) is stored exactly.
+#: A journal in a currency with more places would lose them there, so it is
+#: refused (option B's guard, kept). test_journal_currency_precision pins
+#: this to the DDL.
+STORED_PLACES = 4
+_STORED_UNIT = Decimal(1).scaleb(-STORED_PLACES)
 
 #: What a dimension column may be named, to be written at all. MUST stay
 #: identical to schema_apply._SAFE_TB_DIM_COLUMN and
@@ -79,12 +88,15 @@ LINE_KEYS = ("data_area_id", "main_account", "debit_amount", "credit_amount", "d
 _DIM_KEY_RE = re.compile(r"^dim_[a-z0-9_]+\Z")
 
 
-def _cents(amount):
-    """A line amount (int, float, str or None) as a Decimal rounded to 2 dp."""
+def _stored(amount):
+    """A line amount (int, float, str or None) as a Decimal rounded to the
+    warehouse's ``STORED_PLACES``. currency_problems refuses a line with more
+    places than its currency's minor unit (at most ``STORED_PLACES``), so on
+    a journal it accepts this rounding changes nothing (konsol#353)."""
     if amount is None:
         amount = 0
     try:
-        return Decimal(str(amount)).quantize(_CENTS, rounding=ROUND_HALF_UP)
+        return Decimal(str(amount)).quantize(_STORED_UNIT, rounding=ROUND_HALF_UP)
     except InvalidOperation:
         raise ValueError(f"'{amount}' is not a number")
 
@@ -149,7 +161,7 @@ _LIMIT_TEXT = "1,000,000,000,000 (10^12): a Currency field stores 12 whole digit
 
 def amount_too_large(amount):
     """True when ``amount`` is a number whose size is MAX_AMOUNT or more
-    (infinity included). A non-number is not too large: ``_cents`` names it."""
+    (infinity included). A non-number is not too large: ``_stored`` names it."""
     try:
         value = Decimal(str(amount if amount is not None else 0))
     except InvalidOperation:
@@ -180,8 +192,8 @@ def line_problems(lines):
                 problems.append(f"Line {idx}: the {label} {amount} is too large; an amount must be "
                                 f"less than {_LIMIT_TEXT}.")
             continue
-        debit = _cents(line.get("debit_amount"))
-        credit = _cents(line.get("credit_amount"))
+        debit = _stored(line.get("debit_amount"))
+        credit = _stored(line.get("credit_amount"))
         if debit < 0 or credit < 0:
             problems.append(
                 f"Line {idx}: an amount cannot be negative; enter a positive debit or credit."
@@ -199,14 +211,14 @@ def line_problems(lines):
 
 
 def totals(lines):
-    """(total_debit, total_credit), each a float rounded to 2 dp."""
+    """(total_debit, total_credit), each a float rounded to ``STORED_PLACES``."""
     total_debit = Decimal("0")
     total_credit = Decimal("0")
     for line in lines:
-        total_debit += _cents(line.get("debit_amount"))
-        total_credit += _cents(line.get("credit_amount"))
-    total_debit = total_debit.quantize(_CENTS, rounding=ROUND_HALF_UP)
-    total_credit = total_credit.quantize(_CENTS, rounding=ROUND_HALF_UP)
+        total_debit += _stored(line.get("debit_amount"))
+        total_credit += _stored(line.get("credit_amount"))
+    total_debit = total_debit.quantize(_STORED_UNIT, rounding=ROUND_HALF_UP)
+    total_credit = total_credit.quantize(_STORED_UNIT, rounding=ROUND_HALF_UP)
     return float(total_debit), float(total_credit)
 
 
@@ -220,20 +232,21 @@ def total_problems(total_debit, total_credit):
 
 
 def balance_problem(total_debit, total_credit):
-    """None when the totals balance to the cent, else a sentence naming both."""
-    debit = _cents(total_debit)
-    credit = _cents(total_credit)
+    """None when the totals balance exactly at ``STORED_PLACES`` (so exactly
+    in the journal currency's unit), else a sentence naming both."""
+    debit = _stored(total_debit)
+    credit = _stored(total_credit)
     if debit != credit:
-        return f"The journal does not balance: debit {debit} vs credit {credit}."
+        return (f"The journal does not balance: debit {_text(debit)} vs credit "
+                f"{_text(credit)}.")
     return None
 
 
-#: The scale of epm_staging.consolidation_adjustments.debit_amount and
-#: credit_amount (``Decimal(18,2)``, konsol/clickhouse.py). A journal in a
-#: currency with more decimal places would lose them there, so it is refused
-#: until the column is widened (konsol#353 option C, with konsolidat#256).
-#: test_journal_currency_precision pins this to the DDL.
-STORED_PLACES = 2
+def _text(amount):
+    """``amount`` (a Decimal) as plain text without padding zeros below the
+    cent: 0.0160 reads 0.016, 100.0000 reads 100.00."""
+    return format(max(amount.normalize(), amount.quantize(Decimal("0.01")),
+                      key=lambda d: -d.as_tuple().exponent), "f")
 
 
 #: Frappe keeps a Currency field to 9 decimal places (``decimal(21,9)``).
@@ -266,7 +279,8 @@ def currency_problems(currency, minor_unit, lines, listed, declared=False):
       (``iso_currency_model.minor_unit_problem``, never a copy of it: PR
       #387 re-review): a blank, one that disagrees with ISO 4217, or one ISO
       sets none for that is not declared (every site's XDR=0 row);
-    - a minor unit above ``STORED_PLACES``: the warehouse would drop places;
+    - a minor unit above ``STORED_PLACES`` (4 since konsol#353 option C): the
+      warehouse would drop places;
     - a line amount with more decimal places than the minor unit, so the
       totals ``balance_problem`` compares are exact in the currency's unit
       (two lines of 100.004 and 100.001 no longer balance as 100.00).
@@ -471,7 +485,7 @@ def statement_effect(lines, accounts):
         group = groups.setdefault(key, {"heading_name": heading_name, "net_debit": Decimal("0")})
         if heading_name and not group["heading_name"]:
             group["heading_name"] = heading_name
-        group["net_debit"] += _cents(line.get("debit_amount")) - _cents(line.get("credit_amount"))
+        group["net_debit"] += _stored(line.get("debit_amount")) - _stored(line.get("credit_amount"))
 
     def heading_sort_key(item):
         (section, heading), group = item
@@ -488,7 +502,7 @@ def statement_effect(lines, accounts):
             "section": section,
             "heading": heading,
             "heading_name": group["heading_name"],
-            "net_debit": float(group["net_debit"].quantize(_CENTS, rounding=ROUND_HALF_UP)),
+            "net_debit": float(group["net_debit"].quantize(_STORED_UNIT, rounding=ROUND_HALF_UP)),
         }
         for (section, heading), group in ordered
     ]
@@ -500,10 +514,10 @@ def statement_effect(lines, accounts):
         if s not in section_totals:
             section_totals[s] = Decimal("0")
             section_present.append(s)
-        section_totals[s] += _cents(h["net_debit"])
+        section_totals[s] += _stored(h["net_debit"])
     section_present.sort(key=lambda s: _SECTION_ORDER.get(s, 2))
     sections = [
-        {"section": s, "net_debit": float(section_totals[s].quantize(_CENTS, rounding=ROUND_HALF_UP))}
+        {"section": s, "net_debit": float(section_totals[s].quantize(_STORED_UNIT, rounding=ROUND_HALF_UP))}
         for s in section_present
     ]
 

@@ -10,6 +10,7 @@ from contextvars import ContextVar
 from datetime import date, datetime, timezone
 
 import functools
+import re
 import secrets
 
 import frappe
@@ -866,11 +867,15 @@ _REFERENCE_TABLE_DDL = {
     # the DDL from here on; keep it in sync with konsolidat's
     # clickhouse/init-db.sql, which follows it (V01). Deploy with V01 in one
     # window (Problems P24): the dbt model before V01 reads auto_reverse_period.
+    # konsol#353 option C (Deepak Pai, 5 Nov 2026): the amounts are
+    # Decimal(20,4) (were Decimal(18,2)), so a journal in a 3- or 4-decimal
+    # currency is stored exactly; journal_model.STORED_PLACES is this scale.
+    # An existing table is widened by _WIDENED_COLUMNS below.
     "epm_staging.consolidation_adjustments": (
         "(consolidation_group String, adjustment_type String, journal_id String, "
         "data_area_id String, fiscal_year UInt16, fiscal_period UInt8, "
-        "main_account String, debit_amount Decimal(18,2) DEFAULT 0, "
-        "credit_amount Decimal(18,2) DEFAULT 0, description String DEFAULT '', "
+        "main_account String, debit_amount Decimal(20,4) DEFAULT 0, "
+        "credit_amount Decimal(20,4) DEFAULT 0, description String DEFAULT '', "
         "posted_by String DEFAULT '', status String DEFAULT 'Approved', "
         "approved_by String DEFAULT '', approved_at DateTime DEFAULT '1970-01-01 00:00:00', "
         "reversal_journal_id String DEFAULT '', created_at DateTime DEFAULT now(), "
@@ -1031,6 +1036,65 @@ _ADDED_COLUMNS = {
 }
 
 
+# Columns whose type a release widened. CREATE TABLE IF NOT EXISTS never
+# changes an existing column, so an existing table gets ALTER TABLE ... MODIFY
+# COLUMN. Asked first, like _watermark_upgrade_ddl: an ALTER that changes
+# nothing still rewrites the table's metadata_modification_time, so a table
+# that is already wide (or a fresh one, created wide above) gets no ALTER. A
+# Decimal column is only ever widened: one whose scale is already at or above
+# the target's is left alone. The type and default here must be the CREATE's.
+# Changing a Decimal column's type is a mutation that rewrites the column's
+# parts; ClickHouse converts parts not yet rewritten when they are read.
+_WIDENED_COLUMNS = {
+    # konsol#353 option C (Deepak Pai, 5 Nov 2026): journal amounts at 4 places
+    "epm_staging.consolidation_adjustments": [
+        ("debit_amount", "Decimal(20,4)", "DEFAULT 0"),
+        ("credit_amount", "Decimal(20,4)", "DEFAULT 0"),
+    ],
+}
+
+_DECIMAL_TYPE = re.compile(r"^Decimal\(\s*(\d+)\s*,\s*(\d+)\s*\)$")
+
+
+def _widened_column_ddl():
+    """The MODIFY COLUMN statements an existing stack still needs, or [].
+
+    Reads system.columns once. A column whose current type is not a Decimal
+    of a smaller scale (or, at the same scale, a smaller precision) than its
+    target is left alone: a fresh table, an already widened one and a site's
+    own wider type all issue nothing. Unreachable ClickHouse: [] (the next
+    migrate asks again).
+    """
+    wanted = {}
+    for table, cols in _WIDENED_COLUMNS.items():
+        database, name = table.split(".", 1)
+        for column, typ, default in cols:
+            wanted[(database, name, column)] = (table, typ, default)
+    pairs = ", ".join(sorted({f"('{d}', '{n}')" for d, n, _c in wanted}))
+    try:
+        answer = execute(
+            "SELECT database, table, name, type FROM system.columns "
+            f"WHERE (database, table) IN ({pairs}) FORMAT TabSeparated"
+        )
+    except Exception:  # noqa: BLE001 — unreachable: the next migrate asks again
+        return []
+    out = []
+    for row in (answer or "").splitlines():
+        parts = row.split("\t")
+        if len(parts) != 4 or tuple(parts[:3]) not in wanted:
+            continue
+        table, typ, default = wanted[tuple(parts[:3])]
+        current = _DECIMAL_TYPE.match(parts[3].strip())
+        target = _DECIMAL_TYPE.match(typ)
+        if not current or not target:
+            continue
+        have = (int(current.group(2)), int(current.group(1)))
+        want = (int(target.group(2)), int(target.group(1)))
+        if have < want:
+            out.append(f"ALTER TABLE {table} MODIFY COLUMN {parts[2]} {typ} {default}")
+    return out
+
+
 def _added_column_ddl(tables):
     return [f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {c} {typ}"
             for t, cols in _ADDED_COLUMNS.items() if t in tables for c, typ in cols]
@@ -1082,6 +1146,10 @@ def ensure_reference_tables():
         *[f"CREATE TABLE IF NOT EXISTS {t} {body}"
           for t, body in _REFERENCE_TABLE_DDL.items()],
         *_added_column_ddl(_REFERENCE_TABLE_DDL),
+        # konsol#353: asked when this list is built, before the CREATEs run.
+        # A table that does not exist yet answers nothing, and its CREATE
+        # above makes it wide; an existing one is widened after its CREATE.
+        *_widened_column_ddl(),
         *[f"ALTER TABLE {t} DROP COLUMN IF EXISTS {c}"
           for t, cols in _RETIRED_COLUMNS.items() for c in cols],
         *[f"DROP TABLE IF EXISTS {t}" for t in _RETIRED_TABLES],
