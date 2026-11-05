@@ -88,7 +88,8 @@ class ConsolidationJournal(Document):
     def _validate_lines_and_totals(self):
         """Balance check before send (#305-D2-1): the lines and the total
         must be clean before the totals or the currency are trusted. Exact
-        to the cent, in total, not per entity (#305-D2-12; J01's
+        at the warehouse's 4 places (journal_model.STORED_PLACES, konsol#353
+        option C), in total, not per entity (#305-D2-12; J01's
         balance_problem already sums every line).
 
         The currency is the root group's reporting currency, set first: no
@@ -131,7 +132,9 @@ class ConsolidationJournal(Document):
                 found.append(problem)
         if found:
             frappe.throw("<br>".join(found))
-        self.total_debit, self.total_credit = total_debit, total_credit
+        # Judged as Decimals above; stored as floats (PR #394 review).
+        self.total_debit = float(total_debit) if total_debit is not None else None
+        self.total_credit = float(total_credit) if total_credit is not None else None
 
         for line in (self.get("lines") or []):
             self._validate_line_entity(line, root)

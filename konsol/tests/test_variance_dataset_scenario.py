@@ -314,7 +314,7 @@ def test_other_datasets_are_unchanged():
     result, queries, lookups = _run([
         {"fact": "zz_budget", "measure": "budget_amount", "scenario_id": "ZZ_PLAN"},
         {"fact": "zz_actuals", "measure": "period_net_amount"},
-    ])
+    ], scenarios=[("ZZ_PLAN", "budget", 1)])
     assert not result.get("errors")
     assert len(queries) == 2
     budget_sql, budget_params = next(q for q in queries if "zz_budget" in q[0])
@@ -324,8 +324,56 @@ def test_other_datasets_are_unchanged():
     actuals_sql, actuals_params = next(q for q in queries if "zz_actuals" in q[0])
     assert "scenario_id" not in actuals_sql
     assert "param_sid" not in actuals_params
-    # no variance read, so the Scenario doctype is never asked
-    assert lookups == []
+    # no variance read: the Scenario doctype is asked only whether the named
+    # id exists (konsol#287 review), with no filter on type or activity
+    assert lookups == [{}]
+
+
+# -- a scenario_id that cannot filter the Dataset is refused (konsol#287 review)
+#
+# After the add-in's arguments moved one place left, an old formula's
+# department value lands in the scenarioId slot. Ignored, it read the total.
+
+_NO_COLUMN = ("Dataset 'zz_actuals' has no scenario column, so scenario_id "
+              "'D01' cannot filter it. Leave scenario_id blank.")
+_NO_SCENARIO = "Scenario 'D01' does not exist, so there is nothing to read for it."
+
+
+def test_a_scenario_id_on_a_dataset_without_a_scenario_column_is_refused():
+    # =K.EPM(e, y, p, a, "", "actuals", "", "D01"): the old department slot
+    result, queries, _ = _run([
+        {"fact": "zz_actuals", "measure": "period_net_amount", "scenario_id": "D01"},
+    ])
+    assert queries == []
+    assert result["errors"] == [_NO_COLUMN]
+    assert result["values"] == [None]
+
+
+def test_an_unsafe_scenario_id_on_a_dataset_without_the_column_is_refused():
+    result, queries, _ = _run([
+        {"fact": "zz_actuals", "measure": "period_net_amount", "scenario_id": "D 01;"},
+    ])
+    assert queries == []
+    assert "has no scenario column" in result["errors"][0]
+
+
+def test_a_scenario_id_naming_no_scenario_is_refused_on_a_budget_dataset():
+    # =K.EPM_BUDGET(e, y, p, a, "", "D01"): would filter to nothing and read 0
+    result, queries, _ = _run([
+        {"fact": "zz_budget", "measure": "budget_amount", "scenario_id": "D01"},
+    ], scenarios=[("ZZ_PLAN", "budget", 1)])
+    assert queries == []
+    assert result["errors"] == [_NO_SCENARIO]
+
+
+def test_a_scenario_id_naming_an_inactive_scenario_is_still_read():
+    # Existing is the test, not active: an inactive budget keeps its rows.
+    result, queries, _ = _run([
+        {"fact": "zz_budget", "measure": "budget_amount", "scenario_id": "ZZ_OLD"},
+    ], scenarios=[("ZZ_OLD", "budget", 0)])
+    assert not result.get("errors")
+    (sql, params), = queries
+    assert params["param_sid"] == "ZZ_OLD"
 
 
 # -- the single-cell flat read (api.epm_value) shows a refusal (PR #217 review 2)

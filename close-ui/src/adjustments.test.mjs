@@ -724,3 +724,52 @@ test("durationOptions: a choice whose live code is 'P07' reads 'Reverses in FY20
 	);
 	assert.equal(durationOptions(view)[1].label, "Reverses in FY2025 P07");
 });
+
+// --- konsol#353 option C (Deepak Pai, 5 Nov 2026): 4 decimal places ------
+// The server judges a journal at the warehouse's 4 places (journal_model
+// STORED_PLACES), so a BHD, KWD or OMR journal (3) balances exactly. The
+// editor's totals, its dirty check and its amount text must not round it
+// to the cent.
+
+test("draftTotals: a BHD journal of five 0.004 debits against 0.020 is balanced", () => {
+	const lines = [1, 2, 3, 4, 5].map(() => ({ debit_amount: "0.004", credit_amount: 0 }));
+	lines.push({ debit_amount: 0, credit_amount: "0.020" });
+	const totals = draftTotals(lines);
+	assert.equal(totals.debit, 0.02);
+	assert.equal(totals.credit, 0.02);
+	assert.equal(totals.balanced, true);
+});
+
+test("draftTotals: 0.016 against 0.004 is out by 0.012, not 0.02 or 0.01", () => {
+	const totals = draftTotals([
+		{ debit_amount: "0.016", credit_amount: 0 },
+		{ debit_amount: 0, credit_amount: "0.004" },
+	]);
+	assert.equal(totals.difference, 0.012);
+	assert.equal(totals.balanced, false);
+});
+
+test("draftDirty: 0.004 changed to 0.003 is dirty (Send must not send the old line)", () => {
+	const draft = {
+		consolidation_group: "ZZG",
+		adjustment_type: "topside",
+		description: "",
+		duration: { kind: "none" },
+		lines: [{ data_area_id: "ZZE1", main_account: "ZZ1100", debit_amount: "0.004", credit_amount: 0, description: "" }],
+	};
+	const snapshot = snapshotDraft(draft);
+	const changed = { ...draft, lines: [{ ...draft.lines[0], debit_amount: "0.003" }] };
+	assert.equal(draftDirty(snapshot, changed), true);
+	assert.equal(draftDirty(snapshot, { ...draft, lines: [{ ...draft.lines[0], debit_amount: 0.004 }] }), false);
+});
+
+test("formatAmount: shows up to four places, at least two", () => {
+	assert.equal(formatAmount(0.004), "0.004");
+	assert.equal(formatAmount(1.2345), "1.2345");
+	assert.equal(formatAmount(1234.5), "1,234.50");
+});
+
+test("Adjustments.vue shows the editor's totals with formatAmount, not toFixed(2)", () => {
+	const vue = fs.readFileSync(fileURLToPath(new URL("./screens/Adjustments.vue", import.meta.url)), "utf8");
+	assert.equal(vue.includes("toFixed(2)"), false);
+});

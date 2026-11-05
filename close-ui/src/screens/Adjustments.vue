@@ -89,6 +89,7 @@ import {
 	canSendDraft,
 	dimKeysOf,
 	dimValueText,
+	formatAmount,
 	NO_REVERSAL_NOTE,
 } from "../adjustments.js";
 import { beforeAfter, statementView } from "../numbers.js";
@@ -625,9 +626,9 @@ function lines(text) {
 			</div>
 
 			<p class="mt-3 text-sm text-ink-gray-7">
-				Dr {{ totals.debit.toFixed(2) }} · Cr {{ totals.credit.toFixed(2) }} ·
+				Dr {{ formatAmount(totals.debit) }} · Cr {{ formatAmount(totals.credit) }} ·
 				<span v-if="totals.balanced" class="font-medium text-ink-green-4">Balanced</span>
-				<span v-else class="font-medium text-ink-amber-4">Out of balance by {{ totals.difference.toFixed(2) }}</span>
+				<span v-else class="font-medium text-ink-amber-4">Out of balance by {{ formatAmount(totals.difference) }}</span>
 			</p>
 			<p v-if="totals.invalid.length" role="alert" class="mt-1 text-sm text-ink-red-4">{{ invalidLinesMessage(totals.invalid) }}</p>
 
