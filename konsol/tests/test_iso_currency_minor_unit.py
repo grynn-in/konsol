@@ -200,8 +200,10 @@ def test_a_code_iso_sets_cannot_be_declared_away():
 def test_the_gap_names_every_disagreeing_row():
     m = _model()
     listed = _listed()
-    assert m.minor_unit_gap([("USD", 2, 0), ("USDT", 6, 1)], listed) is None
-    gap = m.minor_unit_gap([("USD", 0, 0), ("XDR", 0, 0), ("EUR", 2, 0), ("ZZX", 2, 0)], listed)
+    used = {"USD": ["Entity"], "USDT": ["Entity"], "XDR": ["Entity"], "EUR": ["Entity"], "ZZX": ["Entity"]}
+    assert m.minor_unit_gaps([("USD", 2, 0), ("USDT", 6, 1)], listed, used)["blocking"] is None
+    gap = m.minor_unit_gaps([("USD", 0, 0), ("XDR", 0, 0), ("EUR", 2, 0), ("ZZX", 2, 0)], listed,
+                            used)["blocking"]
     assert gap["code"] == "iso_currency_minor_unit_disagrees"
     assert gap["currencies"] == ["USD", "XDR", "ZZX"]
     for code in gap["currencies"]:
@@ -274,3 +276,125 @@ def test_the_migrate_records_a_disagreeing_row_in_the_error_log():
     calls = [ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Call)
              and ast.unparse(n.func) == "frappe.log_error"]
     assert any("#330" in c and "refused" in c for c in calls), calls
+
+
+# --- PR #384 re-review: only a USED disagreeing row blocks -------------------
+#
+# The old shipped list gave XDR minor unit 0, so every existing site holds an
+# unticked XDR=0 row, which the new list refuses. Blocking sign-off on every
+# disagreeing row would stop every site from signing off after migrate, over a
+# currency nothing uses. Principle (Deepak Pai): refuse what makes a number
+# wrong (a used row blocks); report what makes it unexplained (an unused row is
+# a non-blocking My work item and an Error Log entry); never silently default.
+
+_USED_SOURCES = {
+    ("Entity", "functional_currency"),
+    ("Consolidation Group", "reporting_currency"),
+    ("Group Exchange Rate", "from_currency"),
+    ("Group Exchange Rate", "to_currency"),
+    ("Trial Balance Submission", "currency"),
+    ("Consolidation Journal", "currency"),
+}
+
+
+def test_an_unused_disagreeing_row_is_reported_not_blocking():
+    m = _model()
+    listed = _listed()
+    rows = [("USD", 0, 0), ("XDR", 0, 0), ("EUR", 2, 0)]
+    gaps = m.minor_unit_gaps(rows, listed, {"USD": ["Entity"], "EUR": ["Entity"]})
+    blocking, reported = gaps["blocking"], gaps["reported"]
+    assert blocking["code"] == "iso_currency_minor_unit_disagrees"
+    assert blocking["currencies"] == ["USD"]
+    assert "blocks sign-off" in blocking["message"] and "USD" in blocking["message"]
+    assert "Entity" in blocking["message"], "names where it is used"
+    assert "XDR" not in blocking["message"]
+    assert reported["code"] == "iso_currency_minor_unit_unused"
+    assert reported["currencies"] == ["XDR"]
+    assert "does not block sign-off" in reported["message"] and "XDR" in reported["message"]
+    assert "USD" not in reported["message"]
+
+
+def test_no_disagreeing_row_is_no_gap_either_way():
+    m = _model()
+    gaps = m.minor_unit_gaps([("USD", 2, 0)], _listed(), {"USD": ["Entity"]})
+    assert gaps == {"blocking": None, "reported": None}
+
+
+def test_every_disagreeing_row_unused_blocks_nothing():
+    m = _model()
+    gaps = m.minor_unit_gaps([("XDR", 0, 0), ("ZZX", 2, 0)], _listed(), {})
+    assert gaps["blocking"] is None
+    assert gaps["reported"]["currencies"] == ["XDR", "ZZX"]
+
+
+def _references(stored, used):
+    """currency_references loaded against a stub frappe. ``used``:
+    {(doctype, field): [codes]}; records every get_all's filters."""
+    import sys
+    import types
+
+    calls = []
+    frappe = types.ModuleType("frappe")
+
+    def get_all(doctype, fields=None, filters=None, pluck=None, **k):
+        calls.append((doctype, fields, filters, pluck))
+        if doctype == "ISO Currency":
+            return [types.SimpleNamespace(name=c, usd_log10=0.0, minor_unit=u, minor_unit_declared=d)
+                    for c, (u, d) in stored.items()]
+        field = pluck or (fields[0] if fields else None)
+        return [types.SimpleNamespace(**{field: c}) if not pluck else c
+                for c in used.get((doctype, field), [])]
+    frappe.get_all = get_all
+    frappe.db = types.SimpleNamespace(set_value=lambda *a, **k: None)
+    saved = sys.modules.get("frappe")
+    sys.modules["frappe"] = frappe
+    try:
+        spec = importlib.util.spec_from_file_location("currency_references_330c",
+                                                      os.path.join(_APP, "currency_references.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe", None)
+        else:
+            sys.modules["frappe"] = saved
+    module.frappe = frappe
+    return module, calls
+
+
+def test_the_old_xdr_zero_row_does_not_block_a_site_that_does_not_use_it():
+    """The migrate case: every site holds XDR=0 unticked from the old list."""
+    refs, _ = _references({"USD": (2, 0), "XDR": (0, 0)}, {("Entity", "functional_currency"): ["USD"]})
+    assert refs.minor_unit_gap() is None
+    gaps = refs.minor_unit_gaps()
+    assert gaps["blocking"] is None and gaps["reported"]["currencies"] == ["XDR"]
+
+
+def test_each_use_of_a_disagreeing_currency_blocks():
+    for source in sorted(_USED_SOURCES):
+        refs, _ = _references({"XDR": (0, 0)}, {source: ["XDR"]})
+        gap = refs.minor_unit_gap()
+        assert gap is not None and gap["currencies"] == ["XDR"], source
+        assert refs.minor_unit_gaps()["reported"] is None, source
+
+
+def test_used_reads_roots_and_submitted_documents_only():
+    refs, calls = _references({"USD": (2, 0)}, {})
+    refs.used_currencies()
+    seen = {d: f for d, _, f, _ in calls if d != "ISO Currency"}
+    assert seen["Consolidation Group"] == {"parent_consolidation_group": ["is", "not set"]}
+    for doctype in ("Group Exchange Rate", "Trial Balance Submission", "Consolidation Journal"):
+        assert seen[doctype] == {"docstatus": 1}, (doctype, seen[doctype])
+    assert {(d) for d, _, _, _ in calls} >= {d for d, _ in _USED_SOURCES}
+
+
+def test_the_migrate_logs_blocking_and_reported_rows_apart():
+    """The Error Log says which rows block and which only are reported."""
+    with open(os.path.join(_APP, "install.py")) as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_seed_iso_currencies")
+    src = ast.unparse(fn)
+    assert "minor_unit_gaps" in src
+    calls = [ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and ast.unparse(n.func) == "frappe.log_error"]
+    assert any("blocking" in c for c in calls) and any("reported" in c for c in calls), calls

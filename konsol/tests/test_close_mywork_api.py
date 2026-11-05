@@ -334,7 +334,10 @@ def _call(site):
     # rather than the real frappe-bound function.
     signoff_gate.statement_gap = lambda: site.statement_gap
     # PR #384 review (konsol#330): the ISO Currency minor-unit gap.
-    signoff_gate.currency_gap = lambda: site.__dict__.get("currency_gap")
+    # PR #384 re-review: a used row blocks (``currency_gap``); an unused one
+    # is reported (``currency_report``).
+    signoff_gate.currency_gaps = lambda: {"blocking": site.__dict__.get("currency_gap"),
+                                          "reported": site.__dict__.get("currency_report")}
     def commentary_gap():
         site.commentary_gap_calls += 1
         return site.commentary_gap
@@ -1866,3 +1869,26 @@ def test_entity_accountant_never_sees_the_iso_currency_gap():
     site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
     site.currency_gap = _CURRENCY_GAP
     assert _gap(_call(site), "iso_currency") is None
+
+
+_CURRENCY_REPORT = {"code": "iso_currency_minor_unit_unused", "currencies": ["XDR"],
+                    "message": "ISO Currency XDR: <m>; it does not block sign-off (konsol#330)."}
+
+
+def test_an_unused_iso_currency_row_is_a_todo_not_a_blocker():
+    for roles in _GROUP_ROLES:
+        site = _Site(roles=roles)
+        site.currency_report = _CURRENCY_REPORT
+        result = _call(site)
+        item = _gap(result, "iso_currency_unused")
+        assert item is not None, roles
+        assert item["kind"] == "todo", item
+        assert item["detail"] == _CURRENCY_REPORT["message"]
+        assert item["action"] == {"desk": "/desk/iso-currency"}
+        assert _gap(result, "iso_currency") is None, "nothing used, nothing blocks"
+
+
+def test_entity_accountant_never_sees_the_unused_iso_currency_report():
+    site = _Site(roles=("Entity Accountant",), user="zz-ea@example.com", allowed={"ZZA"})
+    site.currency_report = _CURRENCY_REPORT
+    assert _gap(_call(site), "iso_currency_unused") is None
