@@ -41,7 +41,7 @@ def _payload(rows=None, declared=None, **overrides):
         "period": {"fiscal_year": 2025, "fiscal_period": 7, "code": "P07",
                    "status": "Open", "period_type": "Regular"},
         "consolidation_group": "ZZ_GROUP", "reporting_currency": "USD",
-        "gap": None, "not_included": None,
+        "gap": None, "not_included": None, "commentary": {}, "can_comment": False,
     }
     payload.update(overrides)
     return payload
@@ -70,7 +70,7 @@ def test_module_imports_nothing_from_frappe_or_konsol():
 def test_columns_are_label_code_four_amounts_and_currency():
     fieldnames = [c["fieldname"] for c in R.columns()]
     assert fieldnames == ["label", "code", "current", "comparison", "variance", "ytd",
-                          "prior_year", "prior_year_change", "currency"]
+                          "prior_year", "prior_year_change", "currency", "commentary"]
     for column in R.columns():
         if column["fieldname"] in ("current", "comparison", "variance", "ytd"):
             assert column["fieldtype"] == "Currency"
@@ -256,7 +256,8 @@ def _line(payload, section, match):
 
 def test_columns_add_prior_year_and_change_after_ytd():
     fieldnames = [c["fieldname"] for c in R.columns()]
-    assert fieldnames[fieldnames.index("ytd") + 1:] == ["prior_year", "prior_year_change", "currency"]
+    assert fieldnames[fieldnames.index("ytd") + 1:] == [
+        "prior_year", "prior_year_change", "currency", "commentary"]
     by_name = {c["fieldname"]: c for c in R.columns()}
     assert by_name["prior_year"]["label"] == "Prior year"
     assert by_name["prior_year_change"]["label"] == "Change vs prior year"
@@ -389,3 +390,85 @@ def test_prior_with_rows_passes_a_non_ok_prior_through():
 def test_an_ok_prior_year_is_named_in_the_message_with_its_basis():
     text = R.message(_payload(), _prior())
     assert "Prior year: FY2024 P07" in text
+
+
+# --- Commentary and drill (Desk, 6 Nov 2026) -------------------------------
+#
+# Each heading row carries the payload's own commentary for that heading
+# (``get_statement``'s ``commentary``: ``{heading: {text, modified, ...}}``)
+# and the payload's own ``can_comment`` (the rule is statement_api's; the
+# report never re-decides it). The Commentary column shows the text,
+# truncated; ``commentary_text`` and ``commentary_modified`` are what the
+# Add commentary dialog prefills and sends back as the stale-edit token.
+# ``drill_group`` (the Link filter value) and ``consolidation_group`` (the
+# group code commentary is keyed on) let a heading open Statement Drill.
+
+def _commented(**overrides):
+    commentary = {"1": {"name": "SC-ZZ_GROUP-2025-7-1", "text": "Cash up on the bond issue.",
+                        "by": "ZZ User", "at": "2025-08-01T10:00:00+00:00",
+                        "modified": "2025-08-01 10:00:00.000001"}}
+    return _payload(commentary=commentary, **overrides)
+
+
+def test_commentary_column_is_data():
+    by_name = {c["fieldname"]: c for c in R.columns()}
+    assert by_name["commentary"]["fieldtype"] == "Data"
+    assert by_name["commentary"]["label"] == "Commentary"
+
+
+def test_a_heading_row_shows_its_commentary_and_carries_text_and_token():
+    row = _by_label(R.rows(_commented()), "ASSETS")
+    assert row["commentary"] == "Cash up on the bond issue."
+    assert row["commentary_text"] == "Cash up on the bond issue."
+    assert row["commentary_modified"] == "2025-08-01 10:00:00.000001"
+
+
+def test_a_heading_without_commentary_is_blank_with_no_token():
+    row = _by_label(R.rows(_commented()), "LIABILITIES")
+    assert row["commentary"] is None
+    assert row["commentary_text"] is None
+    assert row["commentary_modified"] is None
+
+
+def test_non_heading_rows_carry_no_commentary_and_cannot_be_commented():
+    for row in R.rows(_commented(can_comment=True)):
+        if not row.get("code"):
+            assert row["commentary"] is None
+            assert not row.get("can_comment")
+
+
+def test_long_commentary_is_truncated_with_an_ellipsis_full_text_kept():
+    text = "x" * (R.COMMENTARY_SHOWN + 20)
+    row = _by_label(R.rows(_payload(commentary={"3": {"text": text, "modified": "m"}})), "EQUITY")
+    assert len(row["commentary"]) == R.COMMENTARY_SHOWN
+    assert row["commentary"].endswith("…")
+    assert row["commentary_text"] == text
+
+
+def test_a_blank_commentary_text_is_blank_but_keeps_its_token():
+    """A cleared commentary still exists: the next save must send its token."""
+    row = _by_label(R.rows(_payload(commentary={"3": {"text": "", "modified": "m1"}})), "EQUITY")
+    assert row["commentary"] is None
+    assert row["commentary_modified"] == "m1"
+
+
+@pytest.mark.parametrize("value, expected", [(True, 1), (False, 0)])
+def test_heading_rows_carry_the_payloads_own_can_comment(value, expected):
+    headings = [row for row in R.rows(_payload(can_comment=value)) if row.get("code")]
+    assert headings and all(row["can_comment"] == expected for row in headings)
+
+
+@pytest.mark.parametrize("key", ["can_comment", "commentary"])
+def test_an_ok_payload_without_the_commentary_keys_is_refused_naming_the_key(key):
+    payload = _payload()
+    del payload[key]
+    with pytest.raises(ValueError, match=key):
+        R.rows(payload)
+
+
+def test_heading_rows_carry_the_drill_group_and_the_group_code():
+    headings = [row for row in R.rows(_payload(), drill_group="CG-ZZ_GROUP-") if row.get("code")]
+    assert headings
+    for row in headings:
+        assert row["drill_group"] == "CG-ZZ_GROUP-"
+        assert row["consolidation_group"] == "ZZ_GROUP"
