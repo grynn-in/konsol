@@ -239,3 +239,18 @@ def test_message_carries_config_gaps():
     gaps = [{"code": "first_close_undeclared", "message": "Declare the first close period."}]
     assert M.message(2025, [{"period": "FY2025 P01"}], gaps) == "Declare the first close period."
     assert M.message(2025, [{"period": "FY2025 P01"}], []) is None
+
+
+# -- coordinator review of desk-period-close (5 Nov 2026) --------------------
+
+def test_blockers_are_short_enough_for_a_table_cell():
+    """Live, one row's blockers ran to ~2,800 characters (a list of every
+    entity missing a trial balance). The cell shows the first three messages,
+    each cut at 200 characters, and says how many more there are."""
+    long_msg = "No trial balance from " + ", ".join("ZZ%03d" % i for i in range(300))
+    msgs = [long_msg, "Declare the tolerance", "Declare the CTA account", "Fourth", "Fifth"]
+    r = M.row(_state(), _signoff(action="blocked", label="Blocked", messages=msgs), _checks(), None, None)
+    text = r["blocks"] if "blocks" in r else next(v for k, v in r.items() if "block" in k)
+    assert len(text) <= 3 * 205 + 40, len(text)
+    assert "and 3 more" in text, text
+    assert text.startswith("Blocked; No trial balance from ZZ000")
