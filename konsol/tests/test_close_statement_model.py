@@ -407,6 +407,26 @@ def test_residual_breakdown_foots_with_a_visible_rounding_line():
     assert any(e["label"] == M.ROUNDING_LABEL for e in r["explained"]), r
 
 
+def test_equity_line_is_rounded_once_like_its_drill():
+    """konsol#358 demo prep (5 Nov): the Equity drill refused to open live,
+    "drill total 10686009277.66 does not match the statement line's
+    10686009277.67". The statement built a BS heading from its own total,
+    the CTA and the current-year result each rounded to cents; the drill
+    (drill_model) sums the unrounded heading and CTA, adds the statement's
+    own current-year result, and rounds once. Here: share capital -684.904,
+    CTA -5.074, P&L -241.422 (result -241.42 as displayed). Once-rounded:
+    689.978 + 241.42 = 931.398 -> 931.40; from rounded parts it was 931.39."""
+    rows = [
+        _row("1110", 1735.104),
+        _row("2100", -803.704),
+        _row("3200", -684.904),
+        _row("CTA", -5.074, adjustment_type="cta"),
+        _row("4100", -241.422),
+    ]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared())
+    assert _bs_line(result, "3")["current"] == 931.40
+
+
 def test_both_undeclared_residual_is_the_unplaced_total_never_balanced_silently():
     """Failure path: never silently balanced. Residual 246.50 =
     241.43 + 5.07, explained naming both parts, unexplained 0.00."""
