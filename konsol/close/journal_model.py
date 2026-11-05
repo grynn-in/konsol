@@ -11,7 +11,10 @@ Rules (#292):
   - no negative amount;
   - at least two lines;
   - the journal balances exact to the cent — round(sum debit, 2) ==
-    round(sum credit, 2). There is no declared materiality floor here
+    round(sum credit, 2) — and, since konsol#353, no line carries more
+    decimal places than the journal currency's minor unit
+    (``currency_problems``), so that check is exact in the currency's own
+    unit. There is no declared materiality floor here
     (Problems P7b). The Trial Balance's rule is its own
     (konsol/tb_balance_model.py, konsol#180: exact in the declared
     currency's minor unit) and is not the journal's.
@@ -37,6 +40,21 @@ def _load_period_name():
 
 
 period_name = _load_period_name()
+
+
+def _load_iso_currency_model():
+    """konsol/iso_currency_model.py (pure) loaded by path: the konsol#330
+    minor-unit rule, the one judge of a currency's minor unit (PR #387
+    re-review), reachable under the host tests' stub packages."""
+    path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                         "iso_currency_model.py")
+    spec = _importlib_util.spec_from_file_location("konsol_iso_currency_model", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+minor_unit_problem = _load_iso_currency_model().minor_unit_problem
 
 
 _CENTS = Decimal("0.01")
@@ -120,6 +138,25 @@ def clean_lines(lines, dim_keys=()):
     return rows, problems
 
 
+#: An amount this large or larger is refused (PR #387). A journal line's
+#: amounts and the journal's total_debit / total_credit are Frappe Currency
+#: fields, stored as MariaDB decimal(21,9): 12 whole digits, so 10^12 does
+#: not fit. It also keeps rounding to Frappe's 9 places (21 digits) inside
+#: Python's decimal context (28), which raised InvalidOperation above it.
+MAX_AMOUNT = Decimal(10) ** 12
+_LIMIT_TEXT = "1,000,000,000,000 (10^12): a Currency field stores 12 whole digits"
+
+
+def amount_too_large(amount):
+    """True when ``amount`` is a number whose size is MAX_AMOUNT or more
+    (infinity included). A non-number is not too large: ``_cents`` names it."""
+    try:
+        value = Decimal(str(amount if amount is not None else 0))
+    except InvalidOperation:
+        return False
+    return not value.is_nan() and abs(value) >= MAX_AMOUNT
+
+
 def line_problems(lines):
     """Refuse a journal whose lines break the rules above.
 
@@ -135,6 +172,14 @@ def line_problems(lines):
         )
     for pos, line in enumerate(lines, start=1):
         idx = line.get("idx", pos)
+        oversized = [(label, line.get(column))
+                     for column, label in (("debit_amount", "debit"), ("credit_amount", "credit"))
+                     if amount_too_large(line.get(column))]
+        if oversized:
+            for label, amount in oversized:
+                problems.append(f"Line {idx}: the {label} {amount} is too large; an amount must be "
+                                f"less than {_LIMIT_TEXT}.")
+            continue
         debit = _cents(line.get("debit_amount"))
         credit = _cents(line.get("credit_amount"))
         if debit < 0 or credit < 0:
@@ -165,6 +210,15 @@ def totals(lines):
     return float(total_debit), float(total_credit)
 
 
+def total_problems(total_debit, total_credit):
+    """Sentences for a total of ``MAX_AMOUNT`` or more: each line may fit
+    while several sum past what the total columns store. ``[]`` when both fit."""
+    return [f"The total {label} {amount} is too large; a journal's totals must be less than "
+            f"{_LIMIT_TEXT}."
+            for label, amount in (("debit", total_debit), ("credit", total_credit))
+            if amount_too_large(amount)]
+
+
 def balance_problem(total_debit, total_credit):
     """None when the totals balance to the cent, else a sentence naming both."""
     debit = _cents(total_debit)
@@ -172,6 +226,76 @@ def balance_problem(total_debit, total_credit):
     if debit != credit:
         return f"The journal does not balance: debit {debit} vs credit {credit}."
     return None
+
+
+#: The scale of epm_staging.consolidation_adjustments.debit_amount and
+#: credit_amount (``Decimal(18,2)``, konsol/clickhouse.py). A journal in a
+#: currency with more decimal places would lose them there, so it is refused
+#: until the column is widened (konsol#353 option C, with konsolidat#256).
+#: test_journal_currency_precision pins this to the DDL.
+STORED_PLACES = 2
+
+
+#: Frappe keeps a Currency field to 9 decimal places (``decimal(21,9)``).
+#: Places are counted on the value as stored, so a computed float such as
+#: 0.1 + 0.2 (0.30000000000000004) counts as 0.3, one place (PR #387 review).
+STORED_BY_FRAPPE = Decimal("1e-9")
+
+
+def _decimal_places(amount):
+    """How many decimal places ``amount`` (int, float, str or None) carries,
+    once rounded to the 9 places Frappe stores; trailing zeros do not count."""
+    value = Decimal(str(amount if amount is not None else 0))
+    value = value.quantize(STORED_BY_FRAPPE, rounding=ROUND_HALF_UP).normalize()
+    exponent = value.as_tuple().exponent
+    return max(-exponent, 0) if isinstance(exponent, int) else 0
+
+
+def currency_problems(currency, minor_unit, lines, listed, declared=False):
+    """The journal's amounts judged in its currency (konsol#353 option B,
+    chosen under Deepak Pai's standing rule of 5 Nov 2026).
+
+    ``currency`` is the journal's currency (the root group's reporting
+    currency); ``minor_unit`` and ``declared`` its ``ISO Currency`` row's
+    Minor Unit and "Minor Unit Not Set by ISO 4217" tick (None, False when
+    there is no row); ``listed`` the shipped ISO 4217 list as
+    ``{code: minor_unit or None}``. Refused, each with a sentence:
+
+    - no currency;
+    - a minor unit the konsol#330 rule refuses
+      (``iso_currency_model.minor_unit_problem``, never a copy of it: PR
+      #387 re-review): a blank, one that disagrees with ISO 4217, or one ISO
+      sets none for that is not declared (every site's XDR=0 row);
+    - a minor unit above ``STORED_PLACES``: the warehouse would drop places;
+    - a line amount with more decimal places than the minor unit, so the
+      totals ``balance_problem`` compares are exact in the currency's unit
+      (two lines of 100.004 and 100.001 no longer balance as 100.00).
+
+    An amount of ``MAX_AMOUNT`` or more is left to ``line_problems``.
+    """
+    if not currency:
+        return ["The journal has no currency: set the reporting currency of its consolidation group."]
+    problem = minor_unit_problem(currency, minor_unit, listed, declared=bool(declared))
+    if problem:
+        return [f"ISO Currency {currency} cannot be used for a journal yet (konsol#330): {problem}"]
+    minor_unit = int(str(minor_unit))
+    if minor_unit > STORED_PLACES:
+        return [f"A journal in {currency} ({minor_unit} decimal places) cannot be stored yet: the "
+                f"warehouse keeps journal amounts to {STORED_PLACES} decimal places (konsol#353)."]
+    problems = []
+    for pos, line in enumerate(lines, start=1):
+        idx = line.get("idx", pos)
+        for column, label in (("debit_amount", "debit"), ("credit_amount", "credit")):
+            if amount_too_large(line.get(column)):
+                continue  # line_problems names it
+            try:
+                places = _decimal_places(line.get(column))
+            except InvalidOperation:
+                continue  # line_problems names a non-number
+            if places > minor_unit:
+                problems.append(f"Line {idx}: {label} {line.get(column)} has {places} decimal places; "
+                                f"{currency} has {minor_unit}.")
+    return problems
 
 
 def reversal_pair_problem(reverse_year, reverse_period):
