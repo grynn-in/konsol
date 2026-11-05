@@ -48,13 +48,31 @@
    "description": "Date at which equity was acquired/established"
   },
   {
+   "fieldname": "from_currency",
+   "fieldtype": "Link",
+   "label": "From Currency",
+   "options": "ISO Currency",
+   "read_only": 1,
+   "is_virtual": 1,
+   "description": "The entity's functional currency (Entity → Functional Currency). Shown, never stored."
+  },
+  {
+   "fieldname": "to_currency",
+   "fieldtype": "Link",
+   "label": "To Currency",
+   "options": "ISO Currency",
+   "read_only": 1,
+   "is_virtual": 1,
+   "description": "The group's reporting currency (the Consolidation Group root → Reporting Currency). Shown, never stored."
+  },
+  {
    "fieldname": "historical_rate",
    "fieldtype": "Float",
-   "label": "Historical Rate",
+   "label": "Rate (1 From = rate To)",
    "reqd": 1,
    "in_list_view": 1,
    "precision": "6",
-   "description": "FX rate at acquisition/establishment date"
+   "description": "Units of the To currency for one unit of the From currency at the rate date, the same direction as the group's closing and average rates: the warehouse multiplies the entity's amount on this account by it."
   }
  ],
  "permissions": [
@@ -103,5 +121,6 @@
    "export": 1,
    "email": 1
   }
- ]
+ ],
+ "modified": "2026-11-05 23:30:00.000000"
 }
