@@ -666,6 +666,159 @@ def _request_basis_build(name):
         frappe._dict(doctype="Trial Balance Submission", name=name), "on_update_after_submit")
 
 
+def _ch_rows(sql):
+    """The ``data`` rows of a ClickHouse SELECT, read as JSON."""
+    return json.loads(execute(sql + " FORMAT JSON") or "{}").get("data", [])
+
+
+def _truthy(value):
+    """A form or API flag: 1, "1", True, "true" are set; 0, "0", None are not."""
+    return str(value).strip().lower() in ("1", "true", "yes")
+
+
+@frappe.whitelist(methods=["POST"])
+def reland_submitted(names=None, apply=0, remove_orphans=0):
+    """Rebuild epm_raw from the submitted trial balances (konsol#283).
+
+    Chosen under Deepak Pai's standing rule of 5 Nov 2026 (product,
+    configurable, not opinionated); the options are on konsol#283. Rejected:
+    repairing inside reconcile_all (silent, no actor) and a runbook script.
+
+    The rows and the claim are written once, by on_submit. After a site
+    restore, a lost ClickHouse volume or a move between hosts, the documents
+    and the warehouse disagree, and nothing re-ran that code. This compares
+    every submitted document with the claims and landed row counts
+    (tb_reland_model.plan) and returns:
+
+    * ``reland``: documents with no claim, or the wrong number of rows;
+    * ``orphans``: claims with no submitted document, which bronze still counts;
+    * ``matched``: how many documents are already right.
+
+    Nothing is written unless ``apply`` is set. Then each document in
+    ``reland`` is re-landed through ``_land_batch``, the code on_submit runs:
+    its claim is removed first, so a landing that fails leaves the batch
+    missing (and listed by the next run), never claimed over half its rows.
+    A document whose file cannot be read is listed under ``failed``; the
+    others still re-land. Each re-landed document gets a comment naming the
+    user. Re-landing restores what a submitted document already says, so it
+    is allowed in a closed period and records no data change.
+
+    Orphan claims are removed only when ``remove_orphans`` is set too, the
+    way a cancel removes a claim. That does change the numbers, so each
+    period must be open, and the change is recorded before ClickHouse is
+    touched. The landed rows stay until the daily reaper.
+
+    EPM Admin only. ``names`` (a list or its JSON) limits which documents are
+    judged; orphans are always found from the whole control table. A second
+    run after a successful apply finds nothing to do.
+    """
+    from konsol.schema_lifecycle import check_epm_admin
+    from konsol.tb_reland_model import plan
+
+    try:
+        check_epm_admin()
+    except frappe.PermissionError:
+        frappe.throw("EPM Admin only: Rebuild warehouse rows", frappe.PermissionError)
+    if isinstance(names, str):
+        try:
+            names = json.loads(names)
+        except ValueError:
+            frappe.throw(_NAMES_HELP)
+    if names is not None and not isinstance(names, list):
+        frappe.throw(_NAMES_HELP)
+
+    documents = frappe.get_all(
+        "Trial Balance Submission", filters={"docstatus": 1},
+        fields=["name", "batch_id", "row_count"], order_by="name asc", limit_page_length=0)
+    ensure_raw_tables()
+    claims = [
+        {"batch_id": r["batch_id"], "submission_name": r["submission_name"],
+         "data_area_id": r.get("data_area_id", ""),
+         "fiscal_year": int(r["fiscal_year"]), "fiscal_period": int(r["fiscal_period"])}
+        for r in _ch_rows(
+            "SELECT batch_id, any(submission_name) AS submission_name, "
+            "any(data_area_id) AS data_area_id, "
+            "any(fiscal_year) AS fiscal_year, any(fiscal_period) AS fiscal_period "
+            f"FROM {CONTROL_TABLE} GROUP BY batch_id")
+    ]
+    landed = {r["batch_id"]: int(r["n"]) for r in _ch_rows(
+        f"SELECT batch_id, count() AS n FROM {RAW_TABLE} GROUP BY batch_id")}
+    found = plan(documents, claims, landed, names=names)
+
+    out = {
+        "applied": _truthy(apply),
+        "reland": found["reland"],
+        "orphans": found["orphans"],
+        "matched": len(found["matched"]),
+        "not_submitted": found["not_submitted"],
+        "relanded": [],
+        "failed": [],
+        "orphans_removed": 0,
+    }
+    if not out["applied"]:
+        return out
+
+    orphans = found["orphans"] if _truthy(remove_orphans) else []
+    # Gate every orphan's period before any write: a closed period on the
+    # last orphan must not leave the first ones removed.
+    for fiscal_year, fiscal_period in sorted({(o["fiscal_year"], o["fiscal_period"]) for o in orphans}):
+        assert_open(fiscal_year, fiscal_period,
+                    action="remove a warehouse claim with no submitted trial balance")
+
+    for name, _why in found["reland"]:
+        # A locking read, as set_amount_basis: a cancel since the plan was
+        # read either waits for this request or is seen here and skipped.
+        if frappe.db.get_value("Trial Balance Submission", name, "docstatus", for_update=True) != 1:
+            out["failed"].append((name, "no longer submitted"))
+            continue
+        doc = frappe.get_doc("Trial Balance Submission", name)
+        try:
+            execute(
+                f"ALTER TABLE {CONTROL_TABLE} DELETE "
+                f"WHERE batch_id = '{_sql_str(doc.batch_id)}' "
+                "SETTINGS mutations_sync = 1"
+            )
+            doc._land_batch()
+        except Exception as e:  # noqa: BLE001 — listed per document, never hidden
+            out["failed"].append((name, str(e)))
+            continue
+        doc.add_comment("Info", "Warehouse rows re-landed from the attached file (konsol#283).")
+        out["relanded"].append(name)
+
+    if orphans:
+        by_period = {}
+        for o in orphans:
+            by_period.setdefault(
+                (o["fiscal_year"], o["fiscal_period"], o["data_area_id"]), []).append(o)
+        for (fiscal_year, fiscal_period, entity), group in sorted(by_period.items()):
+            _record_data_change(
+                fiscal_year, fiscal_period,
+                "Warehouse claims with no submitted TB removed: %s"
+                % ", ".join(o["submission_name"] or o["batch_id"] for o in group),
+                entity=entity or None)
+        batches = ", ".join(f"'{_sql_str(o['batch_id'])}'" for o in orphans)
+        execute(
+            f"ALTER TABLE {CONTROL_TABLE} DELETE WHERE batch_id IN ({batches}) "
+            "SETTINGS mutations_sync = 1"
+        )
+        out["orphans_removed"] = len(orphans)
+
+    changed = out["relanded"] or [o["submission_name"] for o in orphans]
+    if changed:
+        _request_reland_build(changed[0])
+    return out
+
+
+def _request_reland_build(name):
+    """Request the rebuild after a re-land (konsol#283), through the same
+    after-commit enqueue as _request_basis_build. One request covers the
+    whole call. Imported here: tasks.py imports the Airbyte client."""
+    from konsol.tasks import queue_consolidation_build
+
+    queue_consolidation_build(
+        frappe._dict(doctype="Trial Balance Submission", name=name), "on_update_after_submit")
+
+
 class TrialBalanceSubmission(Document):
 
     def before_insert(self):
@@ -787,6 +940,12 @@ class TrialBalanceSubmission(Document):
             "Trial Balance Submission", self.name, entity=self.data_area_id,
             detail={"on_behalf": self.uploaded_on_behalf or "",
                     "replaces": self.amended_from or None})
+        self._land_batch()
+
+    def _land_batch(self):
+        """Land this document's rows and claim its batch: what on_submit
+        does, and what reland_submitted re-runs for a submitted document
+        whose warehouse rows are missing or wrong (konsol#283)."""
         rows = self._parse_file()
         self._ensure_tables()
         # Idempotent landing: a failed claim rolls the document back to draft

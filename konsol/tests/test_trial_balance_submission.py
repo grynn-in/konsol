@@ -768,7 +768,8 @@ def test_set_amount_basis_is_an_admin_post_endpoint_that_re_claims():
     assert "now()" in claim and "_sql_str(basis)" in claim
     insert = _inspect.getsource(_m._claim_insert)
     assert "INSERT INTO {CONTROL_TABLE}" in insert and "amount_basis) VALUES" in insert
-    assert "_claim_values(self, self.amount_basis)" in _inspect.getsource(_m.TrialBalanceSubmission.on_submit)
+    # konsol#283: on_submit lands through _land_batch, shared with the re-land
+    assert "_claim_values(self, self.amount_basis)" in _inspect.getsource(_m.TrialBalanceSubmission._land_batch)
     assert "docstatus" in body and "not submitted" in body
     # the gate runs over every document before any write: a closed period on
     # the third document must not leave the first two re-claimed
