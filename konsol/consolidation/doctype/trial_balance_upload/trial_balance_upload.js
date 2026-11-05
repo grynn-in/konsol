@@ -90,8 +90,14 @@ frappe.ui.form.on("Trial Balance Upload", {
 		if (frm.doc.status === "Checked" && frm.doc.valid_count) {
 			frm.page.set_primary_action(__("Load"), () => konsol_tb_load(frm, false));
 		}
+		// tb_bulk.load also resumes a Partly Loaded or Failed upload, and a
+		// Loading one whose job stalled (the server refuses while it runs).
+		if (["Partly Loaded", "Failed"].includes(frm.doc.status) && frm.doc.report && frm.doc.report !== "[]") {
+			frm.page.set_primary_action(__("Resume load"), () => konsol_tb_load(frm, false));
+		}
 		if (frm.doc.status === "Loading") {
 			frm.add_custom_button(__("Refresh"), () => frm.reload_doc());
+			frm.add_custom_button(__("Resume load"), () => konsol_tb_load(frm, false));
 		}
 	},
 	onload(frm) {

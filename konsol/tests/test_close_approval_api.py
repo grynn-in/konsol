@@ -766,3 +766,12 @@ def test_approve_mode_refuses_a_doctype_outside_the_list():
     site = _Site()
     msg = _raises(lambda: _call(site, "approve_mode", "User", "ZZ-1"), "ValidationError")
     assert "User" in msg and site.get_doc_calls == []
+
+
+def test_approve_mode_for_an_entity_accountant_is_not_approver_not_a_refusal():
+    """Review of #370: Entity Accountant reads the approval doctypes (e.g. Group
+    Exchange Rate), so its form asks approve_mode; it must hear not_approver,
+    not a PermissionError shown as "Not permitted" on every draft."""
+    site = _Site(roles=("Entity Accountant",), user=ANALYST, owner=LEAD)
+    out, _ = _call(site, "approve_mode", "Group Exchange Rate", "ZZ-GER-1")
+    assert out["mode"] == "not_approver", out

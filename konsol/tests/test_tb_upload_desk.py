@@ -71,3 +71,11 @@ def test_the_form_offers_load_only_after_a_check():
     js = _read(UPLOAD_JS)
     assert 'frm.doc.status === "Checked"' in js
     assert "skip_invalid" in js
+
+
+def test_the_form_resumes_a_partly_loaded_failed_or_stalled_upload():
+    """Review of #370 finding 5: tb_bulk.load resumes these; the form must offer it."""
+    js = _read(UPLOAD_JS)
+    assert '"Partly Loaded"' in js and '"Failed"' in js
+    assert "stalled" in js
+    assert "Resume load" in js

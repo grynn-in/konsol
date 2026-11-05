@@ -91,9 +91,11 @@ def approve_mode(doctype, name):
     ``{"mode": "sent_back", "message"}`` for a rejected, unchanged draft of a
     doctype with no workflow, which ``approve`` would refuse (F01). A read: it
     decides nothing, and ``approve``'s hook judges again. Gated to the roles
-    that read the approvals queue (approvals_api.get_queue).
+    that read the approvals queue (approvals_api.get_queue), plus Entity
+    Accountant, who reads these doctypes' forms and must hear ``not_approver``
+    rather than "Not permitted" (#370 review).
     """
-    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    frappe.only_for(("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager"))
     if doctype not in close_policy_model.APPROVAL_DOCTYPES:
         frappe.throw(
             "%s is not an approval document. Only these are: %s."

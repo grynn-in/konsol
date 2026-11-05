@@ -98,10 +98,16 @@
 	const handlers = {
 		refresh(frm) {
 			if (is_workflow(frm) || !is_waiting(frm)) return;
+			// Frappe reuses one frm per doctype: an answer for a record the
+			// user has already left must not paint the one now open.
+			const asked = frm.doc.name;
 			mode_of(frm).then((m) => {
+				if (frm.doc.name !== asked) return;
 				if (m.mode === "sent_back") {
 					frm.page.set_indicator(__("Sent back"), "red");
 					frm.set_intro(m.message, "red");
+					// Submit would approve the rejected draft unchanged (F01).
+					if (!frm.is_dirty()) frm.page.clear_primary_action();
 					return;
 				}
 				frm.page.set_indicator(__("Awaiting approval"), "orange");

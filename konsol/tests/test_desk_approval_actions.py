@@ -172,3 +172,18 @@ def test_no_konsol_file_still_links_the_approvals_report():
             if "query-report/Approvals" in f.read():
                 hits.append(os.path.relpath(path, APP_DIR))
     assert hits == [], hits
+
+
+def test_a_sent_back_draft_loses_submit_too():
+    """Review of #370 finding 1: the sent-back branch must clear the native
+    Submit, or an approver submits the rejected draft unchanged."""
+    js = _read(SCRIPT)
+    branch = js[js.index('m.mode === "sent_back"'):js.index('set_indicator(__("Awaiting approval")')]
+    assert "clear_primary_action()" in branch
+
+
+def test_a_stale_answer_never_paints_another_record():
+    """Review of #370 finding 4: Frappe reuses one frm per doctype."""
+    js = _read(SCRIPT)
+    assert "const asked = frm.doc.name" in js
+    assert "frm.doc.name !== asked" in js
