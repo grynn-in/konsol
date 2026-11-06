@@ -18,7 +18,8 @@ Three layers are tested here: the manifests (both ribbon groups carry both
 buttons, each wired to a function the runtime associates), the page (it loads
 ribbon.js and saves a snapshot's parameters), and ribbon.js itself, run under
 node by ``excel_addin_ribbon_harness.mjs`` with stub Office and Excel objects.
-Nothing here runs in Excel; see docs/excel-addin.md for what needs a live check.
+Nothing here runs in Excel; https://docs.konsolidat.com/user-guide/excel-taskpane-guide#verification-status
+lists what needs a live check.
 """
 import json
 import os
