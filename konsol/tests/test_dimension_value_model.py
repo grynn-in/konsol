@@ -192,32 +192,51 @@ def _up(name, user, value, applicable_for=None):
 def test_target_is_the_dimension_that_pointed_at_the_retired_doctype():
     dims = [_dim("dim_a", "Budget Cost Center"), _dim("dim_b")]
     plan = dvm.plan_retirement(dims, [_up("UP1", "u@x", "V1")], [])
-    assert plan["target"] == "dim_a"
+    assert plan["targets"] == ["dim_a"]
     assert plan["repoint"] == ["dim_a"]
     assert plan["rewrite"] == [("UP1", "dim_a:V1")]
+    assert plan["add"] == []
+    assert plan["remove"] == []
     assert plan["unmapped"] == []
 
 
-@pytest.mark.parametrize("dims", [
-    [],
-    [_dim("dim_a"), _dim("dim_b")],
-    [_dim("dim_a", "Budget Cost Center"), _dim("dim_b", "Budget Cost Center")],
-])
-def test_no_single_target_reports_every_row_and_guesses_nothing(dims):
+def test_every_pointing_dimension_gets_the_grant():
+    """The old gate compared a grant with every Dimension that pointed at
+    Budget Cost Center, so V was allowed on all of them. One row becomes one
+    row per pointing dimension: the old row is rewritten to the first, copies
+    are added for the rest."""
+    dims = [_dim("dim_b", "Budget Cost Center"), _dim("dim_a", "Budget Cost Center"), _dim("dim_c")]
     plan = dvm.plan_retirement(dims, [_up("UP1", "u@x", "V1"), _up("UP2", "v@x", "V2")], [])
-    assert plan["target"] is None
-    assert plan["rewrite"] == []
+    assert plan["targets"] == ["dim_a", "dim_b"]
+    assert plan["repoint"] == ["dim_a", "dim_b"]
+    assert plan["rewrite"] == [("UP1", "dim_a:V1"), ("UP2", "dim_a:V2")]
+    assert plan["add"] == [("UP1", "dim_b:V1"), ("UP2", "dim_b:V2")]
+    assert plan["unmapped"] == []
+    assert plan["remove"] == []
+
+
+@pytest.mark.parametrize("dims", [[], [_dim("dim_a"), _dim("dim_b")]])
+def test_no_pointing_dimension_reports_every_row_and_guesses_nothing(dims):
+    plan = dvm.plan_retirement(dims, [_up("UP1", "u@x", "V1"), _up("UP2", "v@x", "V2")], [])
+    assert plan["targets"] == []
+    assert plan["rewrite"] == [] and plan["add"] == []
     assert [u for u, _ in plan["unmapped"]] == ["UP1", "UP2"]
     assert all(reason for _, reason in plan["unmapped"])
-    # Every dimension that pointed at the retired doctype is still repointed.
-    assert plan["repoint"] == [d["name"] for d in dims
-                               if d["permission_doctype"] == "Budget Cost Center"]
+    assert plan["repoint"] == []
 
 
-def test_blank_value_is_reported():
+def test_unmapped_rows_are_removed():
+    """A row left on a deleted DocType is debris; the patch records it in full
+    and deletes it, so the plan lists it for removal."""
+    plan = dvm.plan_retirement([], [_up("UP1", "u@x", "V1")], [])
+    assert plan["remove"] == ["UP1"]
+
+
+def test_blank_value_is_reported_and_removed():
     plan = dvm.plan_retirement([_dim("dim_a", "Budget Cost Center")], [_up("UP1", "u@x", "")], [])
     assert plan["rewrite"] == []
     assert [u for u, _ in plan["unmapped"]] == ["UP1"]
+    assert plan["remove"] == ["UP1"]
 
 
 def test_a_grant_that_already_exists_on_dimension_value_is_a_duplicate():
@@ -226,6 +245,29 @@ def test_a_grant_that_already_exists_on_dimension_value_is_a_duplicate():
                                [_up("UP1", "u@x", "V1"), _up("UP2", "u@x", "V2")], existing)
     assert plan["duplicate"] == [("UP1", "dim_a:V1")]
     assert plan["rewrite"] == [("UP2", "dim_a:V2")]
+    # UP1 maps to nothing new, so the old row goes.
+    assert plan["remove"] == ["UP1"]
+
+
+def test_duplicate_on_one_of_several_dimensions_rewrites_to_the_next():
+    existing = [{"user": "u@x", "for_value": "dim_a:V1", "applicable_for": None}]
+    dims = [_dim("dim_a", "Budget Cost Center"), _dim("dim_b", "Budget Cost Center"),
+            _dim("dim_c", "Budget Cost Center")]
+    plan = dvm.plan_retirement(dims, [_up("UP1", "u@x", "V1")], existing)
+    assert plan["duplicate"] == [("UP1", "dim_a:V1")]
+    assert plan["rewrite"] == [("UP1", "dim_b:V1")]
+    assert plan["add"] == [("UP1", "dim_c:V1")]
+    assert plan["remove"] == []
+
+
+def test_patch_deletes_unmapped_rows_after_recording_them_in_full():
+    src = open(os.path.join(APP_DIR, "patches", "adopt_dimension_value.py")).read()
+    for field in ("user", "allow", "for_value", "applicable_for",
+                  "apply_to_all_doctypes", "is_default"):
+        assert f'"{field}"' in src, f"unmapped record must carry {field}"
+    assert "log_error" in src
+    assert 'plan["remove"]' in src
+    assert 'plan["add"]' in src
 
 
 # --- the doctype -----------------------------------------------------------------------------
@@ -248,6 +290,36 @@ def test_controller_refuses_a_name_it_cannot_resolve():
     assert "DoesNotExistError" in src
     assert "resolve_name" in src
     assert "readonly_guard" in src
+
+
+def _controller_method(name):
+    with open(os.path.join(DOCTYPE_DIR, "dimension_value", "dimension_value.py")) as fh:
+        tree = ast.parse(fh.read())
+    cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "DimensionValue")
+    return next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
+
+
+@pytest.mark.parametrize("method", ["get_list", "get_count"])
+def test_list_and_count_check_read_permission(method):
+    """reportview calls a virtual controller's get_list/get_count with no read
+    check of its own, so the controller must make it."""
+    with open(os.path.join(DOCTYPE_DIR, "dimension_value", "dimension_value.py")) as fh:
+        src = fh.read()
+    assert 'frappe.has_permission(dvm.DOCTYPE, "read", throw=True)' in src
+    called = {n.func.id for n in ast.walk(_controller_method(method))
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "_assert_read" in called or "_listed" in called
+    listed = open(os.path.join(DOCTYPE_DIR, "dimension_value", "dimension_value.py")).read()
+    body = listed[listed.index("def _listed"):listed.index("class DimensionValue")]
+    assert "_assert_read()" in body
+
+
+def test_pluck_returns_one_field():
+    assert dvm.pluck(ROWS[:2], "value") == ["V1", "V2"]
+    assert dvm.pluck(ROWS[:1], "`tabDimension Value`.`name`") == ["dim_a:V1"]
+    called = {n.func.attr for n in ast.walk(_controller_method("get_list"))
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+    assert "pluck" in called
 
 
 def test_not_found_is_raised_with_only_the_keywords_frappe_accepts():
