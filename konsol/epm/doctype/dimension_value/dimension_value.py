@@ -52,12 +52,26 @@ def _table_columns():
     return out
 
 
+_ROWS_CACHE = "dimension_value_rows"
+
+
 def _rows():
-    """Every Dimension Value, sorted. Empty, with an Error Log, when the warehouse fails.
+    """Every Dimension Value, sorted, once per request (a list view asks for
+    the list and then the count). Empty, with an Error Log, when the
+    warehouse fails.
 
     The picker must not 500 the desk (as vpt.distinct_ch_values); the failure
     is logged, so an empty list is never silent.
     """
+    cached = getattr(frappe.local, _ROWS_CACHE, None)
+    if cached is not None:
+        return cached
+    rows = _fetch_rows()
+    setattr(frappe.local, _ROWS_CACHE, rows)
+    return rows
+
+
+def _fetch_rows():
     declared = _declared()
     if not declared:
         return []
@@ -73,8 +87,25 @@ def _rows():
         return []
 
 
+def _assert_read():
+    """Refuse a user without read on Dimension Value.
+
+    frappe.desk.reportview's get, get_list and get_count call a virtual
+    controller's get_list / get_count directly, with no read check of their
+    own (frappe.get_list checks before it gets here; reportview does not).
+
+    Frappe v16 does not pass ``ignore_permissions`` through to the controller
+    (qb_query._handle_virtual_doctype), so a server-side ``frappe.get_all``
+    run as a user without read is refused too. Nothing in konsol lists
+    Dimension Values that way: the write gate reads User Permissions, and a
+    link is validated through ``load_from_db``.
+    """
+    frappe.has_permission(dvm.DOCTYPE, "read", throw=True)
+
+
 def _listed(args):
     args = frappe._dict(args or {})
+    _assert_read()
     try:
         rows = dvm.filter_rows(_rows(), filters=args.get("filters"),
                                or_filters=args.get("or_filters"), txt=args.get("txt"))
@@ -116,6 +147,11 @@ class DimensionValue(Document):
         start = args.get("limit_start") or args.get("start") or 0
         length = args.get("limit_page_length") or args.get("page_length") or 0
         rows = dvm.page(rows, start, length)
+        if args.get("pluck"):
+            try:
+                return dvm.pluck(rows, args.get("pluck"))
+            except ValueError as exc:
+                frappe.throw(str(exc), frappe.ValidationError)
         if args.get("as_list"):
             return dvm.as_list(rows, args.get("fields"))
         return [frappe._dict(r) for r in rows]

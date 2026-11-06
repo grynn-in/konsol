@@ -230,6 +230,14 @@ def _field_key(field):
     return field if field in FIELDS else None
 
 
+def pluck(rows, field):
+    """One field of each row, for a caller that asked ``pluck``."""
+    key = _field_key(field)
+    if key is None:
+        raise ValueError(f"{DOCTYPE} has no field {field!r} to pluck")
+    return [row[key] for row in rows]
+
+
 def as_list(rows, fields):
     """Rows as lists in ``fields`` order, for a caller that asked ``as_list``.
 
@@ -266,59 +274,65 @@ def allowed_values(dimension, permission_doctype, granted):
 def plan_retirement(dimensions, user_permissions, existing):
     """What the cut-over patch does, decided without touching anything.
 
-    ``dimensions``: ``{name, permission_doctype}`` for every
-    Dimension. ``user_permissions``: ``{name, user, for_value, applicable_for}``
-    for every User Permission whose ``allow`` is the retired doctype.
-    ``existing``: ``{user, for_value, applicable_for}`` already on Dimension
-    Value.
+    ``dimensions``: ``{name, permission_doctype}`` for every Dimension.
+    ``user_permissions``: ``{name, user, for_value, applicable_for}`` for every
+    User Permission whose ``allow`` is the retired doctype. ``existing``:
+    ``{user, for_value, applicable_for}`` already on Dimension Value.
 
-    The dimension the retired doctype held values of is the one Dimension
-    whose ``permission_doctype`` is the retired doctype. No such Dimension, or
-    more than one, is no target: every row is reported, none rewritten. Never
-    a guess. Without one, no dimension ever enforced those grants, so
-    reporting them withholds nothing a user had.
+    The old gate (``api._assert_dimension_access``) compared a grant on the
+    retired doctype with every Dimension whose ``permission_doctype`` named
+    it, so a grant of V allowed V on each of them. The cut-over keeps exactly
+    that: one old row becomes ``<d>:V`` for every such Dimension ``d``. The
+    old row is rewritten to the first new grant it does not already have;
+    copies are added for the rest.
 
-    Rejected: falling back to the Dimension whose ``allocation_role`` names
-    the cost-center role. It names one customer's dimension in shipped code,
-    which konsol#287 forbids (test_no_hardcoded_dimensions), and it would
-    switch on grants that were never enforced.
+    With no such Dimension, no dimension ever enforced the grant, so there is
+    nothing to keep: the row is unmapped, never guessed onto a dimension. A
+    blank value is unmapped too. Rejected: falling back to the Dimension whose
+    ``allocation_role`` names the cost-center role. It names one customer's
+    dimension in shipped code, which konsol#287 forbids
+    (test_no_hardcoded_dimensions), and it would switch on grants that were
+    never enforced.
 
-    Returns ``{target, reason, repoint, rewrite, duplicate, unmapped}``:
-    ``repoint`` the Dimensions to point at Dimension Value; ``rewrite``
-    ``[(user permission, new for_value)]``; ``duplicate`` the same, for a
-    grant that already exists on Dimension Value (the old row is redundant);
-    ``unmapped`` ``[(user permission, reason)]``.
+    Returns ``{targets, repoint, rewrite, add, duplicate, unmapped, remove}``:
+    ``targets`` the pointing Dimensions, sorted; ``repoint`` the Dimensions to
+    point at Dimension Value (the same set); ``rewrite`` ``[(old row, new
+    for_value)]``; ``add`` ``[(old row to copy, new for_value)]``;
+    ``duplicate`` ``[(old row, for_value already granted)]``; ``unmapped``
+    ``[(old row, reason)]``; ``remove`` the old rows to delete: every unmapped
+    row, and every row whose grants all exist already.
     """
-    pointing = sorted(d["name"] for d in dimensions
-                      if (d.get("permission_doctype") or "").strip() == RETIRED_DOCTYPE)
-    target, reason = None, None
-    if len(pointing) == 1:
-        target = pointing[0]
-    elif pointing:
-        reason = (f"{len(pointing)} Dimensions had permission_doctype "
-                  f"'{RETIRED_DOCTYPE}' ({', '.join(pointing)}); which one a "
-                  f"grant meant is not recorded")
-    else:
-        reason = (f"no Dimension had permission_doctype '{RETIRED_DOCTYPE}', "
-                  f"so no dimension enforced this grant")
-
+    targets = sorted(d["name"] for d in dimensions
+                     if (d.get("permission_doctype") or "").strip() == RETIRED_DOCTYPE)
     have = {(e.get("user"), e.get("for_value"), e.get("applicable_for") or None)
             for e in existing}
-    rewrite, duplicate, unmapped = [], [], []
+    rewrite, add, duplicate, unmapped, remove = [], [], [], [], []
     for up in user_permissions:
-        if target is None:
-            unmapped.append((up["name"], reason))
-            continue
         value = (up.get("for_value") or "").strip()
+        if not targets:
+            unmapped.append((up["name"], f"no Dimension had permission_doctype "
+                                         f"'{RETIRED_DOCTYPE}', so no dimension "
+                                         f"enforced this grant"))
+            remove.append(up["name"])
+            continue
         if not value:
             unmapped.append((up["name"], "blank for_value"))
+            remove.append(up["name"])
             continue
-        new = make_name(target, value)
-        key = (up.get("user"), new, up.get("applicable_for") or None)
-        if key in have:
-            duplicate.append((up["name"], new))
-        else:
+        rewritten = False
+        for dimension in targets:
+            new = make_name(dimension, value)
+            key = (up.get("user"), new, up.get("applicable_for") or None)
+            if key in have:
+                duplicate.append((up["name"], new))
+                continue
             have.add(key)
-            rewrite.append((up["name"], new))
-    return {"target": target, "reason": reason, "repoint": pointing,
-            "rewrite": rewrite, "duplicate": duplicate, "unmapped": unmapped}
+            if rewritten:
+                add.append((up["name"], new))
+            else:
+                rewrite.append((up["name"], new))
+                rewritten = True
+        if not rewritten:
+            remove.append(up["name"])
+    return {"targets": targets, "repoint": targets, "rewrite": rewrite, "add": add,
+            "duplicate": duplicate, "unmapped": unmapped, "remove": remove}

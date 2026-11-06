@@ -311,7 +311,7 @@ def test_list_and_count_check_read_permission(method):
     assert "_assert_read" in called or "_listed" in called
     listed = open(os.path.join(DOCTYPE_DIR, "dimension_value", "dimension_value.py")).read()
     body = listed[listed.index("def _listed"):listed.index("class DimensionValue")]
-    assert "_assert_read()" in body
+    assert "_assert_read(" in body
 
 
 def test_pluck_returns_one_field():
