@@ -546,8 +546,9 @@
       }
 
       // The label is the manifest Version (test_excel_addin_version_label.py);
-      // add when the loaded functions.js was deployed, so a stale copy shows.
+      // add when the server's functions.js was deployed.
       function showBuild() {
+        if (!window.fetch) return;
         fetch("functions.js", { method: "HEAD", cache: "no-store", credentials: "omit" })
           .then(function (res) {
             var stamp = res.headers.get("Last-Modified");
