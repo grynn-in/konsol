@@ -86,6 +86,7 @@
    "delete": 1
   },
   {
+   "export": 1,
    "role": "EPM Admin",
    "read": 1,
    "write": 1,
@@ -93,6 +94,7 @@
    "delete": 1
   },
   {
+   "export": 1,
    "role": "EPM Analyst",
    "read": 1,
    "create": 1

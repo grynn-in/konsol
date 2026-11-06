@@ -1,8 +1,9 @@
 """konsol#305 T01b — the `Close Event` doctype (#298 story 10.1, #305-W2-1).
 
 An append-only audit log:
-- no role can create, write, delete, submit, cancel, amend, import or export
-  it; the read roles are System Manager, EPM Admin, EPM Analyst and EPM User;
+- no role can create, write, delete, submit, cancel, amend or import it
+  (export is allowed to EPM Admin and EPM Analyst, so an auditor can take
+  the log away: Deepak Pai, 6 Nov 2026, test_export_permissions.py); the read roles are System Manager, EPM Admin, EPM Analyst and EPM User;
 - the controller refuses an insert made outside the writer context, any save
   of a saved row, and every delete, Administrator included (E10-P2,
   decision #305-W2-6, Deepak Pai 2 Oct 2026);
@@ -43,7 +44,7 @@ FIELDS = [
 ]
 REQD = {"fiscal_year", "kind", "actor", "at", "source"}
 READ_ROLES = {"System Manager", "EPM Admin", "EPM Analyst", "EPM User"}
-FORBIDDEN = ("create", "write", "delete", "submit", "cancel", "amend", "import", "export")
+FORBIDDEN = ("create", "write", "delete", "submit", "cancel", "amend", "import")
 
 
 def _meta():
