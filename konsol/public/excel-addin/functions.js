@@ -228,17 +228,25 @@ function makeReq(entity, year, period, account, measure, scenario, dimensions, s
 // cached functions.json declares, an omitted one as null: an Excel still
 // holding the 12-argument metadata from before konsol#287 sends 12 arguments
 // for K.EPM("DE_ECL", 2024, 12, "4000"). Empty extra slots lose nothing.
+//
+// An object that is not a range is Excel's invocation context, which Excel
+// Online appends after the declared parameters even without the options
+// above (seen on demo.konsolidat.com, 6 Nov 2026). It is not the formula's.
 function checkArity(args, fn, name) {
-  var extra = false;
+  var extra = null;
   for (var i = fn.length; i < args.length; i++) {
     var v = args[i];
     if (Array.isArray(v)) v = v.length === 1 && Array.isArray(v[0]) && v[0].length === 1 ? v[0][0] : v;
-    if (v !== null && v !== undefined && v !== "") { extra = true; break; }
+    if (v === null || v === undefined || v === "") continue;
+    if (typeof v === "object" && !Array.isArray(v)) continue;
+    extra = { index: i + 1, value: v };
+    break;
   }
   if (extra) {
     throw new CustomFunctions.Error(
       CustomFunctions.ErrorCode.invalidValue,
-      "K." + name + " takes at most " + fn.length + " arguments, not " + args.length +
+      "K." + name + " takes at most " + fn.length + " arguments, but argument " + extra.index +
+        " is " + JSON.stringify(extra.value) +
         ". A formula from before konsol#287 must be rewritten: the two dimension arguments are now one."
     );
   }

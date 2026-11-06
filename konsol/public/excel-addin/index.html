@@ -524,6 +524,7 @@
             }).join("; ").replace(/<[^>]+>/g, "");
           } catch (e) { text = ""; }
         }
+        if (!text && data && typeof data.message === "string") text = data.message;
         var kind = data && data.exc_type ? data.exc_type + ": " : "";
         return "HTTP " + res.status + (kind || text ? " — " + kind + text : "");
       }
