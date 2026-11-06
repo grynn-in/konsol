@@ -180,9 +180,8 @@ def test_api_dimension_gate_uses_the_model():
 
 # --- retiring Budget Cost Center ----------------------------------------------------------
 
-def _dim(name, permission_doctype=None, allocation_role=None):
-    return {"name": name, "permission_doctype": permission_doctype,
-            "allocation_role": allocation_role}
+def _dim(name, permission_doctype=None):
+    return {"name": name, "permission_doctype": permission_doctype}
 
 
 def _up(name, user, value, applicable_for=None):
@@ -191,7 +190,7 @@ def _up(name, user, value, applicable_for=None):
 
 
 def test_target_is_the_dimension_that_pointed_at_the_retired_doctype():
-    dims = [_dim("dim_a", "Budget Cost Center"), _dim("dim_b", None, "cost_center")]
+    dims = [_dim("dim_a", "Budget Cost Center"), _dim("dim_b")]
     plan = dvm.plan_retirement(dims, [_up("UP1", "u@x", "V1")], [])
     assert plan["target"] == "dim_a"
     assert plan["repoint"] == ["dim_a"]
@@ -199,18 +198,9 @@ def test_target_is_the_dimension_that_pointed_at_the_retired_doctype():
     assert plan["unmapped"] == []
 
 
-def test_target_falls_back_to_the_declared_cost_center_role():
-    dims = [_dim("dim_a"), _dim("dim_b", None, "cost_center")]
-    plan = dvm.plan_retirement(dims, [_up("UP1", "u@x", "V1")], [])
-    assert plan["target"] == "dim_b"
-    assert plan["repoint"] == []
-    assert plan["rewrite"] == [("UP1", "dim_b:V1")]
-
-
 @pytest.mark.parametrize("dims", [
     [],
     [_dim("dim_a"), _dim("dim_b")],
-    [_dim("dim_a", None, "cost_center"), _dim("dim_b", None, "cost_center")],
     [_dim("dim_a", "Budget Cost Center"), _dim("dim_b", "Budget Cost Center")],
 ])
 def test_no_single_target_reports_every_row_and_guesses_nothing(dims):
@@ -248,7 +238,8 @@ def test_dimension_value_doctype_is_virtual_and_read_only():
     fields = {f["fieldname"]: f for f in meta["fields"]}
     assert fields["dimension"]["fieldtype"] == "Link"
     assert fields["dimension"]["options"] == "Dimension"
-    assert all(f.get("read_only") == 1 for f in fields.values())
+    assert all(f.get("read_only") == 1 for f in fields.values()
+               if f["fieldtype"] not in ("Section Break", "Column Break"))
     assert all(not p.get(k) for p in meta["permissions"] for k in ("write", "create", "delete"))
 
 
@@ -257,6 +248,19 @@ def test_controller_refuses_a_name_it_cannot_resolve():
     assert "DoesNotExistError" in src
     assert "resolve_name" in src
     assert "readonly_guard" in src
+
+
+def test_not_found_is_raised_with_only_the_keywords_frappe_accepts():
+    """frappe.DoesNotExistError(*args, doctype=None): a ``name=`` keyword is a
+    TypeError, which the live A/B hit before this test existed."""
+    with open(os.path.join(DOCTYPE_DIR, "dimension_value", "dimension_value.py")) as fh:
+        tree = ast.parse(fh.read())
+    raises = [n.exc for n in ast.walk(tree) if isinstance(n, ast.Raise)
+              and isinstance(n.exc, ast.Call)
+              and getattr(n.exc.func, "attr", None) == "DoesNotExistError"]
+    assert raises
+    for call in raises:
+        assert {k.arg for k in call.keywords} <= {"doctype"}
 
 
 def test_budget_cost_center_is_gone():

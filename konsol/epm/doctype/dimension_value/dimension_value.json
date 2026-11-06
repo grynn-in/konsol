@@ -1,0 +1,67 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-11-06 00:00:00",
+ "description": "One value of one declared Dimension, read live from the warehouse. Named <dimension>:<value>. Point a Dimension's Permission DocType here and grant User Permissions on these values to gate budget writes by that dimension.",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "dimension_section",
+  "dimension",
+  "column_break_1",
+  "value"
+ ],
+ "fields": [
+  {
+   "fieldname": "dimension_section",
+   "fieldtype": "Section Break",
+   "label": "Dimension Value"
+  },
+  {
+   "description": "The declared Dimension this value belongs to: the part of the name before the first colon.",
+   "fieldname": "dimension",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Dimension",
+   "options": "Dimension",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "The value as the warehouse holds it: the part of the name after the first colon.",
+   "fieldname": "value",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Value",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "is_virtual": 1,
+ "links": [],
+ "modified": "2026-11-06 00:00:00",
+ "module": "EPM",
+ "name": "Dimension Value",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "EPM Admin"
+  }
+ ],
+ "read_only": 1,
+ "search_fields": "dimension,value",
+ "sort_field": "name",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "value"
+}

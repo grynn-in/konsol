@@ -48,7 +48,7 @@ _LABELS = {
     "EPM Fiscal Year": "Fiscal Year",
     "Budget Cycle": "Budget Cycles",
     "Budget Sheet": "Budget Sheets",
-    "Budget Cost Center": "Budget Cost Centers",
+    "Dimension Value": "Dimension Values",
     "Spread Profile": "Spread Profiles",
     "Consolidation Group": "Consolidation Groups",
     "Ownership Period": "Ownership Periods",
@@ -99,7 +99,7 @@ _CARDS = [
         "Period Status",
     ]),
     ("Budgeting & Planning", [
-        "Budget Cycle", "Budget Sheet", "Budget Cost Center", "Spread Profile",
+        "Budget Cycle", "Budget Sheet", "Dimension Value", "Spread Profile",
     ]),
     ("Consolidation", [
         "Consolidation Group", "Ownership Period", "Historical Equity Rate",
