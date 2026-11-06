@@ -490,7 +490,10 @@
 
       function api(path, options) {
         var opts = options || {};
-        opts.credentials = opts.credentials || "include";
+        // With the add-in's token, send no cookie: a Desk session opened in the
+        // same browser carries a CSRF token, and Frappe refuses a POST without it.
+        var token = getToken();
+        opts.credentials = opts.credentials || (token ? "omit" : "include");
         opts.cache = "no-store";
         opts.headers = authHeaders(opts.headers || {});
         return fetch(API + path, opts);
@@ -498,7 +501,16 @@
 
       function parseApiError(res, data) {
         if (data && data.exception) return String(data.exception).replace(/<[^>]+>/g, "");
-        return "HTTP " + res.status;
+        var text = "";
+        if (data && data._server_messages) {
+          try {
+            text = JSON.parse(data._server_messages).map(function (m) {
+              try { return JSON.parse(m).message || m; } catch (e) { return m; }
+            }).join("; ").replace(/<[^>]+>/g, "");
+          } catch (e) { text = ""; }
+        }
+        var kind = data && data.exc_type ? data.exc_type + ": " : "";
+        return "HTTP " + res.status + (kind || text ? " — " + kind + text : "");
       }
 
       function showLogin() {

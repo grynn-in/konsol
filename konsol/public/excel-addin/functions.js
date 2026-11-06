@@ -20,11 +20,17 @@ function authHeaders(extra) {
   return headers;
 }
 
+function hasToken() {
+  try { return !!localStorage.getItem("konsol_token"); } catch (e) { return false; }
+}
+
 function postJson(path, body) {
+  // With the add-in's own token, send no cookie: a Desk session in the same
+  // browser carries a CSRF token, and Frappe refuses a POST without it (400).
   return fetch(path, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    credentials: "include",
+    credentials: hasToken() ? "omit" : "include",
     body: JSON.stringify(body)
   }).then(function (res) {
     if (res.status === 401 || res.status === 403) {
