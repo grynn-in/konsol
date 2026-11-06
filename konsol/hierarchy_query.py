@@ -460,8 +460,12 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
                    if key[0] == tb_coverage.ACTUALS
                    and not (key[8] and wildcard_denied)]
     if actual_rows:
+        # Named entities only: scan just those. Any wildcard row: the scan is
+        # unfiltered and the wildcard check applies the reader's scope.
+        named = (None if any(key[8] for key, _, _ in actual_rows)
+                 else {req.get("entity", "") for _, _, req in actual_rows})
         loaded, failure = _loaded_tb_periods(
-            {req["year"] for _, _, req in actual_rows}, ch_settings)
+            {req["year"] for _, _, req in actual_rows}, ch_settings, named)
         for key, idx, req in actual_rows:
             if failure:
                 errors[idx] = failure
@@ -652,11 +656,17 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     return result
 
 
-def _loaded_tb_periods(years, ch_settings):
+def _loaded_tb_periods(years, ch_settings, entities):
     """({(entity, year, period)} holding a trial balance, None), or
     (empty set, message) when the lookup failed (konsol#401). A failure is
-    reported as the data query above reports one."""
-    sql, params = tb_coverage.coverage_query(years)
+    reported as the data query above reports one; the messages are repeated
+    here rather than imported from api, because this module must load on a
+    host without frappe (konsol#248).
+
+    The hierarchy actuals table (gold_tb_at_hierarchy_node) is fixed in
+    HIERARCHY_SCENARIO_CONFIG and built from gold_trial_balance, so the
+    coverage table is fixed too."""
+    sql, params = tb_coverage.coverage_query(years, tb_coverage.TB_TABLE, entities)
     try:
         return tb_coverage.parse_coverage(_clickhouse_query(sql, params, ch_settings)), None
     except requests.exceptions.Timeout:

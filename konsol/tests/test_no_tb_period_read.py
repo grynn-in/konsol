@@ -56,12 +56,18 @@ def _tb_module():
 
 
 def _is_coverage(sql):
-    return "epm_gold.gold_trial_balance" in sql and "DISTINCT" in sql
+    return read_path_stub.is_tb_coverage(sql)
 
 
 def _coverage_reply(loaded, params):
+    """Answer the coverage lookup from ``loaded``, honouring its year and
+    entity filters; an exception instance is raised instead."""
+    if isinstance(loaded, BaseException):
+        raise loaded
     years = {v for k, v in params.items() if k.startswith("param_cy")}
-    return "".join(f"{e}\t{y}\t{p}\n" for e, y, p in sorted(loaded) if str(y) in years)
+    entities = {v for k, v in params.items() if k.startswith("param_ce")}
+    return "".join(f"{e}\t{y}\t{p}\n" for e, y, p in sorted(loaded)
+                   if str(y) in years and (not entities or e in entities))
 
 
 # ── the rule, without a warehouse ───────────────────────────────────────────
@@ -72,6 +78,10 @@ def test_period_label_names_one_period_or_a_range():
     assert tb.period_label((1, 2, 3)) == "P1-P3"
     assert tb.period_label((3, 1, 2)) == "P1-P3"
     assert tb.period_label((1, 3)) == "P1, P3"
+    # a token the calendar resolved to nothing fails its row, not the batch
+    assert tb.period_label(()) == "(no periods)"
+    assert tb.no_tb_error("ZZ01", 2024, (), set()) == (
+        "No trial balance for ZZ01 2024 (no periods)")
 
 
 def test_named_entity_is_refused_only_when_no_period_is_loaded():
@@ -108,9 +118,17 @@ def test_coverage_query_is_one_parameterised_statement_over_the_years():
     sql, params = tb.coverage_query([2024, 2023, 2024])
     assert "SELECT DISTINCT data_area_id, fiscal_year, fiscal_period" in sql
     assert "FROM epm_gold.gold_trial_balance" in sql
+    assert "data_area_id IN" not in sql  # no entities named: every entity
     assert sorted(params.values()) == ["2023", "2024"]
     for value in params.values():
         assert value not in sql  # bound, not interpolated
+    # the table the read queries, and only the named entities
+    sql, params = tb.coverage_query([2024], "epm_gold.zz_alt", ["ZZ02", "ZZ01", "ZZ01"])
+    assert "FROM epm_gold.zz_alt" in sql
+    assert "AND data_area_id IN ({ce0:String}, {ce1:String})" in sql
+    assert (params["param_ce0"], params["param_ce1"]) == ("ZZ01", "ZZ02")
+    sql, _ = tb.coverage_query([2024], entities=[])
+    assert sql.endswith("AND data_area_id IN ('')")
     assert tb.parse_coverage("ZZ01\t2024\t12\nZZ02\t2023\t13\n") == {
         ("ZZ01", 2024, 12), ("ZZ02", 2023, 13)}
     assert tb.parse_coverage("") == set()
@@ -121,6 +139,10 @@ def test_coverage_query_is_one_parameterised_statement_over_the_years():
 _DATASETS = {
     "zz_actuals": dict(scenario_key="actuals", clickhouse_table="epm_gold.zz_actuals",
                        has_scenario_id=0, has_layer=0),
+    "zz_alt": dict(scenario_key="actuals", clickhouse_table="epm_gold.zz_alt",
+                   has_scenario_id=0, has_layer=0),
+    "zz_bad": dict(scenario_key="actuals", clickhouse_table="zz_actuals; DROP",
+                   has_scenario_id=0, has_layer=0),
     "zz_budget": dict(scenario_key="budget", clickhouse_table="epm_gold.zz_budget",
                       has_scenario_id=1, has_layer=1),
 }
@@ -230,7 +252,7 @@ def test_flat_coverage_is_one_query_per_call_however_many_rows_and_years():
     result, _, coverage = _run_flat(rows, loaded=loaded)
     assert not result.get("errors"), result
     (_, params), = coverage
-    assert sorted(params.values()) == ["2023", "2024"]
+    assert sorted(v for k, v in params.items() if k.startswith("param_cy")) == ["2023", "2024"]
 
 
 def test_flat_budget_read_is_not_checked_against_the_tb():
@@ -243,18 +265,37 @@ def test_flat_budget_read_is_not_checked_against_the_tb():
 
 
 def test_flat_coverage_failure_fails_the_actuals_rows_only():
-    def run():
-        return _run_flat([{"periods": (5,)}, {"fact": "zz_budget", "measure": "period_amount"}],
-                         loaded=None)
-    # loaded=None makes the fake raise inside the coverage query
-    try:
-        result, _, _ = run()
-    except TypeError:
-        raise AssertionError("a failed coverage query escaped the batch")
-    assert result["errors"][0] == "ClickHouse query failed"
-    assert result["values"][0] is None
-    assert result["errors"][1] is None
-    assert result["values"][1] == 0.0
+    import requests
+    cases = [
+        (RuntimeError("zz"), "ClickHouse query failed"),
+        (requests.exceptions.Timeout(), "ClickHouse query timeout"),
+        (requests.exceptions.ConnectionError(), "ClickHouse connection failed"),
+    ]
+    for exc, message in cases:
+        result, _, _ = _run_flat(
+            [{"periods": (5,)}, {"fact": "zz_budget", "measure": "period_amount"}],
+            loaded=exc)
+        assert result["errors"] == [message, None], (exc, result)
+        assert result["values"] == [None, 0.0]
+        # an outage is not "nothing loaded": no #N/A code, so it stays #VALUE!
+        assert "error_codes" not in result, result
+
+
+def test_flat_coverage_asks_the_table_the_dataset_reads_for_its_entities():
+    result, _, coverage = _run_flat(
+        [{"fact": "zz_alt", "periods": (12,)}, {"fact": "zz_alt", "entity": "ZZ02"}],
+        loaded={("ZZ01", 2024, 12)})
+    (sql, params), = coverage
+    assert "FROM epm_gold.zz_alt" in sql
+    assert sorted(v for k, v in params.items() if k.startswith("param_ce")) == ["ZZ01", "ZZ02"]
+    assert result["errors"] == [None, "No trial balance for ZZ02 2024 P5"]
+
+
+def test_flat_actuals_dataset_with_an_unsafe_table_is_refused_unqueried():
+    result, data, coverage = _run_flat([{"fact": "zz_bad"}], loaded=set())
+    assert coverage == [] and data == []
+    assert result["errors"] == ["Invalid table identifier"]
+    assert "error_codes" not in result
 
 
 # ── the hierarchy read: batch_query_hierarchy ──────────────────────────────
@@ -339,6 +380,28 @@ def test_hierarchy_wildcard_is_refused_when_no_entity_in_scope_is_loaded():
     assert data == []
 
 
+def test_hierarchy_coverage_names_only_the_entities_when_no_wildcard():
+    _, _, coverage = _run_hierarchy([{"periods": (12,)}], loaded={("ZZ01", 2024, 12)})
+    (sql, params), = coverage
+    assert [v for k, v in params.items() if k.startswith("param_ce")] == ["ZZ01"]
+    _, _, coverage = _run_hierarchy([{"periods": (12,)}, {"entity": "ALL"}],
+                                    loaded={("ZZ01", 2024, 12)})
+    (sql, _), = coverage
+    assert "data_area_id IN" not in sql
+
+
+def test_hierarchy_coverage_failure_fails_the_actuals_rows_only():
+    import requests
+    result, data, _ = _run_hierarchy(
+        [{"periods": (12,)}, {"entity": "ALL"},
+         {"scenario": "budget", "measure": "period_amount", "scenario_id": ""}],
+        loaded=requests.exceptions.Timeout())
+    assert result["errors"] == ["ClickHouse query timeout"] * 2 + [None]
+    assert result["values"] == [None, None, 0.0]
+    assert "error_codes" not in result
+    assert len(data) == 1  # the budget row still reads
+
+
 def test_hierarchy_budget_read_is_not_checked_against_the_tb():
     result, _, coverage = _run_hierarchy(
         [{"scenario": "budget", "measure": "period_amount", "scenario_id": ""}],
@@ -372,13 +435,16 @@ def test_epm_batch_returns_error_codes_at_the_rows_that_asked():
 
     e.api._batch_query_clickhouse = flat_query
     e.hq.batch_query_hierarchy = hier_query
-    out = e.batch([{"entity": "ZZ01", "year": 2024, "period": 5, "account": "1"},
+    out = e.batch([{"entity": "ZZ01", "year": None, "period": 5, "account": "1"},
+                   {"entity": "ZZ01", "year": 2024, "period": 5, "account": "1"},
                    {"entity": "ZZ01", "year": 2024, "period": 5, "account": "1",
                     "hierarchy_node": "N"},
                    {"entity": "ZZ01", "year": 2024, "period": 12, "account": "1"}])
-    assert out["values"] == [None, None, 1.0]
-    assert out["error_codes"] == ["no_data", "no_data", None]
-    assert out["errors"][0] == NO_TB_P5
+    assert out["values"] == [None, None, None, 1.0]
+    # the row refused before the split keeps no code; the rest do not shift
+    assert out["error_codes"] == [None, "no_data", "no_data", None]
+    assert out["errors"][0] == "Invalid year"
+    assert out["errors"][1] == NO_TB_P5
 
 
 # ── the add-in: no_data is #N/A, any other refusal stays #VALUE! ───────────

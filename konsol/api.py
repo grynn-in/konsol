@@ -899,12 +899,23 @@ def _batch_query_clickhouse(requests_list):
         keyed.append((key, idx, req))
 
     # An actuals cell none of whose periods has a trial balance for its
-    # entity is refused, not read as 0 (konsol#401). One lookup for the call.
-    actual_rows = [(idx, req) for key, idx, req in keyed
-                   if _is_actuals_fact(resolve_fact(key[0]))]
-    if actual_rows:
-        loaded, failure = _loaded_tb_periods(
-            {req["year"] for _, req in actual_rows}, ch_settings)
+    # entity is refused, not read as 0 (konsol#401). "Loaded" is asked of the
+    # table the actuals Dataset reads, once per such table (one, normally).
+    # The coverage check runs before the per-group checks below, so an
+    # unloaded cell that also has a bad table or measure declaration shows
+    # the missing trial balance first.
+    by_table = defaultdict(list)
+    for key, idx, req in keyed:
+        fact = resolve_fact(key[0])
+        if _is_actuals_fact(fact):
+            by_table[fact.clickhouse_table or ""].append((idx, req))
+    for table, actual_rows in by_table.items():
+        if not _SAFE_TABLE_NAME.match(table):
+            loaded, failure = set(), "Invalid table identifier"
+        else:
+            loaded, failure = _loaded_tb_periods(
+                {req["year"] for _, req in actual_rows}, ch_settings, table,
+                {req["entity"] for _, req in actual_rows})
         for idx, req in actual_rows:
             err = failure or tb_coverage.no_tb_error(
                 req["entity"], req["year"], req["periods"], loaded)
@@ -1117,10 +1128,11 @@ def _query_failure_message(exc, title="ClickHouse query failed"):
     return "ClickHouse query failed"
 
 
-def _loaded_tb_periods(years, ch_settings):
+def _loaded_tb_periods(years, ch_settings, table, entities):
     """({(entity, year, period)} holding a trial balance, None), or
-    (empty set, message) when the lookup failed (konsol#401)."""
-    sql, params = tb_coverage.coverage_query(years)
+    (empty set, message) when the lookup failed (konsol#401). ``table`` is
+    the actuals Dataset's table, already validated."""
+    sql, params = tb_coverage.coverage_query(years, table, entities)
     try:
         return tb_coverage.parse_coverage(_clickhouse_query(sql, params, ch_settings)), None
     except Exception as exc:

@@ -34,8 +34,14 @@ ACTUALS = "actuals"
 NO_DATA = "no_data"
 
 
-def coverage_query(years):
+def coverage_query(years, table=TB_TABLE, entities=None):
     """One statement listing every loaded (entity, year, period) in ``years``.
+
+    ``table`` is the table the read itself queries: the flat path passes its
+    actuals Dataset's ``clickhouse_table`` (validated by the caller), so a
+    site that points the Dataset elsewhere is judged against what it reads.
+    ``entities``, when given, narrows the scan to the named entities; None
+    (a wildcard read) means every entity.
 
     Returns (sql, params) in the ``{name:Type}`` / ``param_<name>`` form
     api._clickhouse_query takes. The rows are entities x periods per year,
@@ -48,9 +54,16 @@ def coverage_query(years):
         params[f"param_cy{i}"] = str(year)
     sql = (
         "SELECT DISTINCT data_area_id, fiscal_year, fiscal_period "
-        f"FROM {TB_TABLE} "
+        f"FROM {table} "
         f"WHERE fiscal_year IN ({', '.join(placeholders)})"
     )
+    if entities is not None:
+        ent = []
+        for i, entity in enumerate(sorted(set(entities))):
+            ent.append(f"{{ce{i}:String}}")
+            params[f"param_ce{i}"] = entity
+        # An empty list must still be valid SQL: '' matches no loaded entity.
+        sql += " AND data_area_id IN (" + (", ".join(ent) or "''") + ")"
     return sql, params
 
 
@@ -68,6 +81,11 @@ def parse_coverage(raw):
 def period_label(periods):
     """``P5``, ``P1-P3`` for a run, ``P1, P3`` otherwise."""
     ps = sorted({int(p) for p in periods})
+    if not ps:
+        # A token the calendar resolves to nothing (e.g. FY of a year that
+        # declares no Regular period): refused for its own row, never an
+        # IndexError that fails the whole batch.
+        return "(no periods)"
     if len(ps) == 1:
         return f"P{ps[0]}"
     if ps == list(range(ps[0], ps[-1] + 1)):

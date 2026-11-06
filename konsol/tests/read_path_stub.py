@@ -120,7 +120,7 @@ def install(fake_frappe, measures=None, calendar=None):
 
 def is_tb_coverage(sql):
     """Whether ``sql`` is the coverage lookup, not a data query."""
-    return "FROM epm_gold.gold_trial_balance" in sql and "SELECT DISTINCT" in sql
+    return "SELECT DISTINCT data_area_id, fiscal_year, fiscal_period " in sql
 
 
 def all_loaded(reqs, entities=None):
