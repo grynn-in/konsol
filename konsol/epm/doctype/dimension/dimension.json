@@ -85,7 +85,7 @@
       "fieldtype": "Link",
       "options": "DocType",
       "label": "Permission DocType",
-      "description": "If set, budget writes are gated by this dimension: a user may only write a value they hold a User Permission for on this DocType (typically a Virtual DocType proxying the dimension's values, e.g. Cost Center). Leave blank for descriptive (non-ownership) dimensions."
+      "description": "If set, budget writes are gated by this dimension: a user may only write a value they hold a User Permission for on this DocType (usually Dimension Value, where a grant is <dimension>:<value> and allows that value on this dimension only). Leave blank for descriptive (non-ownership) dimensions."
     },
     {
       "fieldname": "lifecycle_section",

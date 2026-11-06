@@ -304,13 +304,9 @@ def scan_retired_names(relpath, text):
 DECLARED_PROSE_MENTIONS = {}
 
 #: Shipped paths named after a customer's dimension. Same contract.
-ALLOWED_DIMENSION_PATHS = {
-    "konsol/epm/doctype/budget_cost_center": (
-        "konsol#287 — a whole doctype named after one customer's dimension. "
-        "Removed when budget dimension members are Dimension records rather "
-        "than a doctype per dimension."
-    ),
-}
+#: Empty since konsol#287 decision 2A retired Budget Cost Center for the
+#: generic Dimension Value.
+ALLOWED_DIMENSION_PATHS = {}
 
 
 # --------------------------------------------------------------------------

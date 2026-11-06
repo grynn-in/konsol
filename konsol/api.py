@@ -14,6 +14,7 @@ from frappe.utils import now_datetime
 
 from konsol.clickhouse import connection_url as _ch_url
 from konsol.clickhouse import get_connection as _get_ch_connection
+from konsol import dimension_value_model
 from konsol.measure_registry import aggregation_for
 from konsol.period_read_model import combine_periods, resolve_period, sql_aggregate
 
@@ -186,6 +187,11 @@ def _assert_dimension_access(data):
 
     Unlike accounts, the dimension *value* is itself the permission unit (e.g.
     a cost center), so no resolution/ClickHouse lookup is needed.
+
+    On ``Dimension Value`` (konsol#287 decision 2A) a grant is
+    ``<dimension>:<value>`` and allows that value on that dimension only; a
+    grant on another dimension never allows. Other permission doctypes compare
+    the grant to the value directly, as before.
     """
     controlled = _permission_controlled_dimensions()
     if not controlled:
@@ -193,7 +199,9 @@ def _assert_dimension_access(data):
     user, roles = frappe.session.user, frappe.get_roles()
     perms = frappe.permissions.get_user_permissions(user)
     for dim, perm_doctype in controlled.items():
-        allowed = _resolve_allowed_entities(user, roles, perm_doctype, perms)
+        allowed = dimension_value_model.allowed_values(
+            dim, perm_doctype,
+            _resolve_allowed_entities(user, roles, perm_doctype, perms))
         if allowed is None:
             continue
         value = data.get(dim) or ""
