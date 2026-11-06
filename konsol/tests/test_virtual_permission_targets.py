@@ -14,7 +14,7 @@ DOCTYPE_DIR = os.path.join(APP_DIR, "epm", "doctype")
 
 VIRTUAL_DOCTYPES = [
     ("main_account_category", "MainAccountCategory", "Main Account Category"),
-    ("budget_cost_center", "BudgetCostCenter", "Budget Cost Center"),
+    ("dimension_value", "DimensionValue", "Dimension Value"),
 ]
 
 _STATIC = {"get_list", "get_count", "get_stats"}
@@ -64,16 +64,15 @@ def test_virtual_doctype_json_is_virtual_and_named():
         assert meta.get("module") == "EPM"
 
 
-def test_cost_center_target_avoids_erpnext_collision():
-    """ERPNext owns 'Cost Center'; our target must be 'Budget Cost Center'."""
-    meta = json.load(open(os.path.join(DOCTYPE_DIR, "budget_cost_center", "budget_cost_center.json")))
-    assert meta["name"] == "Budget Cost Center"
-
-
 def test_targets_are_read_only_via_clickhouse():
-    """Value source is ClickHouse (silver layer), proxied — no synced table."""
+    """Value source is ClickHouse, proxied — no synced table.
+
+    Dimension Value reads the declared dim_* columns of the warehouse
+    (konsol#287 decision 2A), not the D365 silver financial-dimensions table
+    the retired Budget Cost Center hard-coded.
+    """
     mac = open(os.path.join(DOCTYPE_DIR, "main_account_category", "main_account_category.py")).read()
-    bcc = open(os.path.join(DOCTYPE_DIR, "budget_cost_center", "budget_cost_center.py")).read()
+    dv = open(os.path.join(DOCTYPE_DIR, "dimension_value", "dimension_value.py")).read()
     assert "epm_silver.silver_main_accounts" in mac
-    assert "epm_silver.silver_financial_dimensions" in bcc
-    assert "readonly_guard" in mac and "readonly_guard" in bcc
+    assert "epm_silver.silver_financial_dimensions" not in dv
+    assert "readonly_guard" in mac and "readonly_guard" in dv
