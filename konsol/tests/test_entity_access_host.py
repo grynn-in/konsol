@@ -157,14 +157,26 @@ def _load_hq():
     return hq
 
 
-def _hierarchy(allowed_entities, entity="ALL"):
+def _hierarchy(allowed_entities, entity="ALL", loaded=None, coverage=None):
     """Run hierarchy_query.batch_query_hierarchy for one row against a fake
-    ClickHouse. Returns (result, [(sql, params), ...])."""
+    ClickHouse. Returns (result, [(sql, params), ...]) of the data queries.
+
+    The trial-balance coverage lookup (konsol#401) is answered from
+    ``loaded`` (a coverage reply; default: every entity the reader may read
+    has the period) and recorded in ``coverage`` when a list is given."""
     ep = _load(allowed_entities)
     hq = _load_hq()
     queries = []
 
     def fake_query(sql, params, ch_settings):
+        if read_path_stub.is_tb_coverage(sql):
+            if coverage is not None:
+                coverage.append((sql, dict(params)))
+            if loaded is not None:
+                return loaded
+            return read_path_stub.all_loaded(
+                [{"entity": entity, "year": 2024, "periods": (1,)}],
+                entities=allowed_entities or ())
         queries.append((sql, dict(params)))
         return ""
 
@@ -208,10 +220,21 @@ def test_wildcard_hierarchy_read_is_limited_in_sql():
 
 
 def test_wildcard_hierarchy_read_with_no_entities_issues_no_query():
-    result, queries = _hierarchy(set())
+    coverage = []
+    result, queries = _hierarchy(set(), coverage=coverage)
     assert queries == []
+    assert coverage == []  # not even the konsol#401 trial-balance lookup
     assert result["errors"] == [_REFUSED_ANY]
     assert result["values"] == [None]
+
+
+def test_wildcard_with_no_entities_is_denied_not_told_what_is_loaded():
+    """konsol#401: a reader allowed no entity gets the denial, never "No
+    trial balance for any entity", which would describe entities they may
+    not read, even when nothing at all is loaded."""
+    result, _ = _hierarchy(set(), loaded="")
+    assert result["errors"] == [_REFUSED_ANY]
+    assert "error_codes" not in result
 
 
 def test_wildcard_hierarchy_read_unrestricted_has_no_entity_filter():

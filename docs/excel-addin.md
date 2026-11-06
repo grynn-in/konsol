@@ -71,6 +71,16 @@ have. The add-in refuses a malformed argument: a pair without `=`, a name
 without a value, a value without a name, a name given twice, or a range that
 is not 2 columns wide. A refusal shows as `#VALUE!` with the reason.
 
+An actuals read of a period with no trial balance shows `#N/A` with the
+message "No trial balance for <entity> <year> P5" (konsol#401). Before, it
+showed 0. A loaded period where the account has no balance still shows 0. A
+range such as `Q1` or `FY` reads if at least one of its periods is loaded. A
+read across all entities (hierarchy, entity blank or `*`) is refused only when
+no entity you may read has a trial balance for the period. Budget reads are
+not checked: no budget is budget zero. `epm_batch` marks these rows with
+`"no_data"` in an `error_codes` list beside `errors`; a failed query has no
+code and stays `#VALUE!`.
+
 EPMSAVE shows the server's refusal in the cell. Before, a failed write still
 returned the amount.
 

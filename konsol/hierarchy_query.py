@@ -6,6 +6,7 @@ from collections import defaultdict
 
 import requests
 
+from konsol import tb_coverage
 from konsol.period_read_model import sql_aggregate
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -366,8 +367,10 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     n = len(requests_list)
     values = [None] * n
     errors = [None] * n
+    error_codes = [None] * n  # tb_coverage.NO_DATA where nothing is loaded
 
     groups = defaultdict(list)
+    keyed = []  # (group key, idx, req), grouped once actuals coverage is known
     budgets_by_year = None  # looked up once per call, when first needed
     active_budgets = None  # likewise, for named variance scenarios
     known_cache = []  # every Scenario id, looked up once when first needed
@@ -443,7 +446,42 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             wildcard,
             "" if wildcard else req.get("entity", ""),
         )
-        groups[key].append((idx, req))
+        keyed.append((key, idx, req))
+
+    # An actuals cell with no trial balance in any of its periods is refused,
+    # not read as 0 (konsol#401). A wildcard cell is refused only when no
+    # entity in the reader's scope has one. One lookup for the call.
+    # A wildcard the reader may read no entity of is refused below with the
+    # denial, as before, and asks nothing of the warehouse.
+    wildcard_scope, wildcard_denied = (
+        entity_read_scope(None, allowed_entities, wildcard=True)
+        if any(key[8] for key, _, _ in keyed) else (None, None))
+    actual_rows = [(key, idx, req) for key, idx, req in keyed
+                   if key[0] == tb_coverage.ACTUALS
+                   and not (key[8] and wildcard_denied)]
+    if actual_rows:
+        # Named entities only: scan just those. Any wildcard row: the scan is
+        # unfiltered and the wildcard check applies the reader's scope.
+        named = (None if any(key[8] for key, _, _ in actual_rows)
+                 else {req.get("entity", "") for _, _, req in actual_rows})
+        loaded, failure = _loaded_tb_periods(
+            {req["year"] for _, _, req in actual_rows}, ch_settings, named)
+        for key, idx, req in actual_rows:
+            if failure:
+                errors[idx] = failure
+                continue
+            if key[8]:  # wildcard
+                err = tb_coverage.no_tb_error_in_scope(
+                    req["year"], req["periods"], loaded, wildcard_scope)
+            else:
+                err = tb_coverage.no_tb_error(
+                    req.get("entity", ""), req["year"], req["periods"], loaded)
+            if err:
+                errors[idx] = err
+                error_codes[idx] = tb_coverage.NO_DATA
+    for key, idx, req in keyed:
+        if errors[idx] is None:
+            groups[key].append((idx, req))
 
     for key, group_items in groups.items():
         sc, measure, hname, node, periods, dim_names, scenario_id, layer, wildcard, _entity_key = key
@@ -613,4 +651,33 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     result = {"values": values}
     if any(e is not None for e in errors):
         result["errors"] = errors
+    if any(c is not None for c in error_codes):
+        result["error_codes"] = error_codes
     return result
+
+
+def _loaded_tb_periods(years, ch_settings, entities):
+    """({(entity, year, period)} holding a trial balance, None), or
+    (empty set, message) when the lookup failed (konsol#401). A failure is
+    reported as the data query above reports one; the messages are repeated
+    here rather than imported from api, because this module must load on a
+    host without frappe (konsol#248).
+
+    The hierarchy actuals table (gold_tb_at_hierarchy_node) is fixed in
+    HIERARCHY_SCENARIO_CONFIG and built from gold_trial_balance, so the
+    coverage table is fixed too."""
+    sql, params = tb_coverage.coverage_query(years, tb_coverage.TB_TABLE, entities)
+    try:
+        return tb_coverage.parse_coverage(_clickhouse_query(sql, params, ch_settings)), None
+    except requests.exceptions.Timeout:
+        return set(), "ClickHouse query timeout"
+    except requests.exceptions.ConnectionError:
+        return set(), "ClickHouse connection failed"
+    except Exception as exc:
+        from konsol.api import ClickHouseQueryError
+
+        if isinstance(exc, ClickHouseQueryError):
+            return set(), str(exc)
+        import frappe
+        frappe.log_error("Hierarchy ClickHouse query failed", frappe.get_traceback())
+        return set(), "ClickHouse query failed"

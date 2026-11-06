@@ -15,6 +15,7 @@ from frappe.utils import now_datetime
 from konsol.clickhouse import connection_url as _ch_url
 from konsol.clickhouse import get_connection as _get_ch_connection
 from konsol import dimension_value_model
+from konsol import tb_coverage
 from konsol.measure_registry import aggregation_for
 from konsol.period_read_model import combine_periods, resolve_period, sql_aggregate
 
@@ -828,6 +829,7 @@ def _batch_query_clickhouse(requests_list):
     n = len(requests_list)
     values = [None] * n
     errors = [None] * n
+    error_codes = [None] * n  # tb_coverage.NO_DATA where nothing is loaded
     facts = {}  # fact_key -> Dataset (or None), resolved once per call
     budgets_by_year = None  # looked up once per call, when first needed
     active_budgets = None  # likewise, for named budget scenarios
@@ -843,6 +845,7 @@ def _batch_query_clickhouse(requests_list):
     # The period is deliberately absent (konsol#231): the SQL already filters
     # `fiscal_period IN (…)`, so cells differing only in period share a query.
     groups = defaultdict(list)
+    keyed = []  # (group key, idx, req), grouped once actuals coverage is known
     for idx, req in enumerate(requests_list):
         dims = req.get("dimensions", {})
         fact_key = req.get("fact") or req.get("scenario")
@@ -893,7 +896,36 @@ def _batch_query_clickhouse(requests_list):
             scenario_id,
             req.get("layer", ""),
         )
-        groups[key].append((idx, req))
+        keyed.append((key, idx, req))
+
+    # An actuals cell none of whose periods has a trial balance for its
+    # entity is refused, not read as 0 (konsol#401). "Loaded" is asked of the
+    # table the actuals Dataset reads, once per such table (one, normally).
+    # The coverage check runs before the per-group checks below, so an
+    # unloaded cell that also has a bad table or measure declaration shows
+    # the missing trial balance first.
+    by_table = defaultdict(list)
+    for key, idx, req in keyed:
+        fact = resolve_fact(key[0])
+        if _is_actuals_fact(fact):
+            by_table[fact.clickhouse_table or ""].append((idx, req))
+    for table, actual_rows in by_table.items():
+        if not _SAFE_TABLE_NAME.match(table):
+            loaded, failure = set(), "Invalid table identifier"
+        else:
+            loaded, failure = _loaded_tb_periods(
+                {req["year"] for _, req in actual_rows}, ch_settings, table,
+                {req["entity"] for _, req in actual_rows})
+        for idx, req in actual_rows:
+            err = failure or tb_coverage.no_tb_error(
+                req["entity"], req["year"], req["periods"], loaded)
+            if err:
+                errors[idx] = err
+                if not failure:
+                    error_codes[idx] = tb_coverage.NO_DATA
+    for key, idx, req in keyed:
+        if errors[idx] is None:
+            groups[key].append((idx, req))
 
     for (fact_key, measure, dim_names, scenario_id, layer), group_items in groups.items():
         fact = resolve_fact(fact_key)
@@ -1073,7 +1105,38 @@ def _batch_query_clickhouse(requests_list):
     result = {"values": values}
     if any(e is not None for e in errors):
         result["errors"] = errors
+    if any(c is not None for c in error_codes):
+        result["error_codes"] = error_codes
     return result
+
+
+def _is_actuals_fact(fact):
+    """The Dataset whose read konsol#401 checks against the loaded TBs."""
+    return bool(fact) and (fact.scenario_key or "") == tb_coverage.ACTUALS
+
+
+def _query_failure_message(exc, title="ClickHouse query failed"):
+    """The per-row message for a failed ClickHouse call, as the data query
+    reports it."""
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "ClickHouse query timeout"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "ClickHouse connection failed"
+    if isinstance(exc, ClickHouseQueryError):
+        return str(exc)  # already logged with ClickHouse's response text
+    frappe.log_error(title, frappe.get_traceback())
+    return "ClickHouse query failed"
+
+
+def _loaded_tb_periods(years, ch_settings, table, entities):
+    """({(entity, year, period)} holding a trial balance, None), or
+    (empty set, message) when the lookup failed (konsol#401). ``table`` is
+    the actuals Dataset's table, already validated."""
+    sql, params = tb_coverage.coverage_query(years, table, entities)
+    try:
+        return tb_coverage.parse_coverage(_clickhouse_query(sql, params, ch_settings)), None
+    except Exception as exc:
+        return set(), _query_failure_message(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1528,33 +1591,38 @@ def epm_batch():
         }
 
     values = [None] * n
+    # Parallel to errors: "no_data" where an actuals cell has no trial balance
+    # to read (konsol#401), which the add-in shows as #N/A, not #VALUE!.
+    codes_list = [None] * n
     valid = [(i, r) for i, r in enumerate(normalized) if r is not None]
     if valid:
         hierarchy_valid = [(i, r) for i, r in valid if r.get("_hierarchy_mode")]
         legacy_valid = [(i, r) for i, r in valid if not r.get("_hierarchy_mode")]
 
+        def take(indices, sub):
+            for j, orig_idx in enumerate(indices):
+                values[orig_idx] = sub["values"][j]
+                if sub.get("errors") and sub["errors"][j]:
+                    errors_list[orig_idx] = sub["errors"][j]
+                if sub.get("error_codes") and sub["error_codes"][j]:
+                    codes_list[orig_idx] = sub["error_codes"][j]
+
         if hierarchy_valid:
             h_indices, h_reqs = zip(*hierarchy_valid)
-            h_result = batch_query_hierarchy(
+            take(h_indices, batch_query_hierarchy(
                 [{k: v for k, v in r.items() if not k.startswith("_")} for r in h_reqs],
                 allowed_entities=allowed_entities,
-            )
-            for j, orig_idx in enumerate(h_indices):
-                values[orig_idx] = h_result["values"][j]
-                if h_result.get("errors") and h_result["errors"][j]:
-                    errors_list[orig_idx] = h_result["errors"][j]
+            ))
 
         if legacy_valid:
             l_indices, l_reqs = zip(*legacy_valid)
-            ch_result = _batch_query_clickhouse(list(l_reqs))
-            for j, orig_idx in enumerate(l_indices):
-                values[orig_idx] = ch_result["values"][j]
-                if ch_result.get("errors") and ch_result["errors"][j]:
-                    errors_list[orig_idx] = ch_result["errors"][j]
+            take(l_indices, _batch_query_clickhouse(list(l_reqs)))
 
     result = {"values": values}
     if any(e is not None for e in errors_list):
         result["errors"] = errors_list
+    if any(c is not None for c in codes_list):
+        result["error_codes"] = codes_list
     return result
 
 
