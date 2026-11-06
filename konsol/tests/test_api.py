@@ -243,6 +243,8 @@ def _run_batch(rows, reply=""):
         api._get_ch_connection = lambda: {}
 
         def fake_query(sql, params, ch_settings):
+            if read_path_stub.is_tb_coverage(sql):
+                return read_path_stub.all_loaded(reqs)  # konsol#401
             queries.append((sql, dict(params)))
             return reply
 

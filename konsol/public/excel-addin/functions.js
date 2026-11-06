@@ -170,12 +170,17 @@ function sendChunk(chunk) {
     var payload = (data && data.message) || {};
     var values = payload.values || [];
     var errors = payload.errors || [];
+    var codes = payload.error_codes || [];
 
     chunk.forEach(function (e, idx) {
       var err = errors[idx];
       if (err) {
+        // "no_data": nothing is loaded for that cell, e.g. no trial balance
+        // for the period (konsol#401). #N/A, not a #VALUE! the formula caused.
         e.reject(new CustomFunctions.Error(
-          CustomFunctions.ErrorCode.invalidValue, String(err)
+          codes[idx] === "no_data" ? CustomFunctions.ErrorCode.notAvailable
+            : CustomFunctions.ErrorCode.invalidValue,
+          String(err)
         ));
         return;
       }

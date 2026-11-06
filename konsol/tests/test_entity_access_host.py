@@ -165,6 +165,11 @@ def _hierarchy(allowed_entities, entity="ALL"):
     queries = []
 
     def fake_query(sql, params, ch_settings):
+        if read_path_stub.is_tb_coverage(sql):
+            # konsol#401: every entity the reader may read has the period
+            return read_path_stub.all_loaded(
+                [{"entity": entity, "year": 2024, "periods": (1,)}],
+                entities=allowed_entities or ())
         queries.append((sql, dict(params)))
         return ""
 

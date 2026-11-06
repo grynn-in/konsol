@@ -108,3 +108,28 @@ def install(fake_frappe, measures=None, calendar=None):
     fake_frappe.get_all = get_all
     fake_frappe.cache = MemoryCache
     return fake_frappe
+
+
+# ── the trial-balance coverage lookup (konsol#401) ──────────────────────────
+#
+# An actuals read now first asks epm_gold.gold_trial_balance which (entity,
+# year, period) hold a trial balance, and refuses a cell with none. A fake
+# ClickHouse that answers every statement with the same data reply would
+# answer that lookup with data rows too. A harness that is not testing
+# coverage answers it with ``all_loaded``: every period its requests ask for.
+
+def is_tb_coverage(sql):
+    """Whether ``sql`` is the coverage lookup, not a data query."""
+    return "FROM epm_gold.gold_trial_balance" in sql and "SELECT DISTINCT" in sql
+
+
+def all_loaded(reqs, entities=None):
+    """The coverage reply holding every (entity, year, period) ``reqs`` ask
+    for. ``entities`` adds those entities for every such year and period, for
+    a wildcard read whose rows name no entity."""
+    rows = set()
+    for r in reqs:
+        for p in r.get("periods", ()):
+            for e in [r.get("entity", "")] + list(entities or ()):
+                rows.add((e, int(r["year"]), int(p)))
+    return "".join(f"{e}\t{y}\t{p}\n" for e, y, p in sorted(rows))
