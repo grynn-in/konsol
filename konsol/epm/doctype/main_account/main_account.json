@@ -312,6 +312,7 @@
    "export": 1
   },
   {
+   "export": 1,
    "role": "EPM Analyst",
    "read": 1,
    "write": 1,
