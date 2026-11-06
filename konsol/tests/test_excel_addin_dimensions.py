@@ -258,6 +258,12 @@ def test_an_invocation_object_past_the_signature_is_accepted():
         assert out["error"] is None, (fn, out)
 
 
+def test_an_object_that_is_not_last_is_still_refused():
+    args = list(_READ) + [""] * 7 + [{"x": 1}, {"address": "Sheet1!B2"}]
+    out = _call("EPM", *args)
+    assert out["error"] is not None, out
+
+
 def test_the_refusal_names_what_the_extra_argument_was():
     args = list(_READ) + [""] * 7 + ["base"]
     out = _call("EPM", *args)

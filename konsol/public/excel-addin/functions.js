@@ -236,9 +236,10 @@ function checkArity(args, fn, name) {
   var extra = null;
   for (var i = fn.length; i < args.length; i++) {
     var v = args[i];
+    // Excel's invocation context: the last argument, an object, not a range.
+    if (i === args.length - 1 && v !== null && typeof v === "object" && !Array.isArray(v)) continue;
     if (Array.isArray(v)) v = v.length === 1 && Array.isArray(v[0]) && v[0].length === 1 ? v[0][0] : v;
     if (v === null || v === undefined || v === "") continue;
-    if (typeof v === "object" && !Array.isArray(v)) continue;
     extra = { index: i + 1, value: v };
     break;
   }
@@ -246,7 +247,7 @@ function checkArity(args, fn, name) {
     throw new CustomFunctions.Error(
       CustomFunctions.ErrorCode.invalidValue,
       "K." + name + " takes at most " + fn.length + " arguments, but argument " + extra.index +
-        " is " + JSON.stringify(extra.value) +
+        " is " + String(JSON.stringify(extra.value)).slice(0, 80) +
         ". A formula from before konsol#287 must be rewritten: the two dimension arguments are now one."
     );
   }
