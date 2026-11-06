@@ -33,8 +33,8 @@ def _body(src, head):
 
 def test_pane_api_omits_cookies_when_it_has_a_token():
     body = _body(_read("index.html"), "function api(")
-    assert '"include"' not in body or re.search(r'token\s*\?\s*"omit"\s*:\s*"include"', body), body
-    assert '"omit"' in body, "api() must omit the browser's cookies when the add-in has a token"
+    assert re.search(r'credentials\s*=\s*opts\.credentials\s*\|\|\s*\(token\s*\?\s*"omit"\s*:\s*"include"\)', body), \
+        "api() must omit the browser's cookies when the add-in has a token"
 
 
 def test_custom_functions_omit_cookies_when_they_have_a_token():
@@ -42,9 +42,15 @@ def test_custom_functions_omit_cookies_when_they_have_a_token():
     start = src.index("function postJson(")
     body = src[start:src.index("\nfunction ", start + 1)]
     assert 'credentials: "include"' not in body, "postJson sends the Desk cookie, so a Desk session's CSRF check refuses it"
-    assert '"omit"' in body
+    assert re.search(r'credentials:\s*hasToken\(\)\s*\?\s*"omit"\s*:\s*"include"', body), body
 
 
 def test_errors_name_frappes_message_not_a_bare_status():
     body = _body(_read("index.html"), "function parseApiError(")
     assert "_server_messages" in body and "exc_type" in body, body
+
+
+def test_an_expired_token_brings_back_the_sign_in_form():
+    body = _body(_read("index.html"), "function api(")
+    assert re.search(r"res\.status === 401 \|\| res\.status === 403", body), body
+    assert "whoami()" in body and 'setToken("")' in body and "showLogin()" in body, body

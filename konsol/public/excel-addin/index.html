@@ -496,7 +496,22 @@
         opts.credentials = opts.credentials || (token ? "omit" : "include");
         opts.cache = "no-store";
         opts.headers = authHeaders(opts.headers || {});
-        return fetch(API + path, opts);
+        return fetch(API + path, opts).then(function (res) {
+          // A refused call may mean the token expired (8 h), or only that this
+          // user may not see the data. Ask the server which; sign out only if
+          // the token no longer names a user.
+          if (token && (res.status === 401 || res.status === 403) &&
+              path.indexOf("excel_addin_whoami") < 0) {
+            whoami().then(function (user) {
+              if (!user && getToken() === token) {
+                setToken("");
+                showLogin();
+                appendLog("err", "Your add-in sign-in expired. Sign in again.");
+              }
+            });
+          }
+          return res;
+        });
       }
 
       function parseApiError(res, data) {
