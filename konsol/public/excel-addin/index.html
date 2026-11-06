@@ -243,7 +243,7 @@
 <body>
   <header>
     <h1>Konsolidat</h1>
-    <p class="version">v2.4.0.0</p>
+    <p class="version" id="addin-version">v2.0.1.0</p>
     <p id="boot-status">Connecting to Excel…</p>
   </header>
 
@@ -544,6 +544,21 @@
         document.getElementById("report-panel").hidden = false;
         document.getElementById("report-panel").open = true;
       }
+
+      // The label is the manifest Version (test_excel_addin_version_label.py);
+      // add when the loaded functions.js was deployed, so a stale copy shows.
+      function showBuild() {
+        fetch("functions.js", { method: "HEAD", cache: "no-store", credentials: "omit" })
+          .then(function (res) {
+            var stamp = res.headers.get("Last-Modified");
+            if (!stamp) return;
+            var d = new Date(stamp);
+            var el = document.getElementById("addin-version");
+            if (el && !isNaN(d)) el.textContent += " · deployed " + d.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+          })
+          .catch(function () { /* label stays the manifest version */ });
+      }
+      showBuild();
 
       function whoami() {
         return api("/api/method/konsol.api.excel_addin_whoami", { credentials: "omit" })
