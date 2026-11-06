@@ -232,6 +232,20 @@ def test_an_argument_past_the_last_slot_is_refused():
         assert out["requests"] == [], fn
 
 
+def test_empty_slots_past_the_signature_are_accepted():
+    # Excel passes every parameter its CACHED functions.json declares, an
+    # omitted one as null. An Excel that still holds the 12-argument metadata
+    # from before konsol#287 calls K.EPM("DE_ECL", 2024, 12, "4000") with 12
+    # arguments, 8 of them null (found on demo.konsolidat.com, 6 Nov 2026:
+    # every cell the pane's Apply painted said "takes at most 11 arguments").
+    # Nothing past the signature carries a value, so nothing is lost.
+    for fn, n in SIGNATURES.items():
+        args = ([100] if fn == "EPMSAVE" else []) + list(_READ)
+        args += [None] * (len(n) - len(args) + 1) + [""]
+        out = _call(fn, *args, reply={"message": {"values": [1.0], "errors": [None]}})
+        assert out["error"] is None, (fn, out)
+
+
 def test_epmsave_sends_the_dimensions_dict():
     reply = {"message": {"status": "ok", "value": 100}}
     out = _call("EPMSAVE", 100, "ZZE", 2026, 1, "ZZ6100", "ZZ_PLAN", "base",

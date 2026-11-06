@@ -218,8 +218,19 @@ function makeReq(entity, year, period, account, measure, scenario, dimensions, s
 // requiresParameterAddresses: with any of those, Excel appends an invocation
 // argument and this guard would refuse every call
 // (test_no_function_makes_excel_append_an_invocation_argument pins it).
+//
+// Only a slot that carries a value counts. Excel passes every parameter its
+// cached functions.json declares, an omitted one as null: an Excel still
+// holding the 12-argument metadata from before konsol#287 sends 12 arguments
+// for K.EPM("DE_ECL", 2024, 12, "4000"). Empty extra slots lose nothing.
 function checkArity(args, fn, name) {
-  if (args.length > fn.length) {
+  var extra = false;
+  for (var i = fn.length; i < args.length; i++) {
+    var v = args[i];
+    if (Array.isArray(v)) v = v.length === 1 && Array.isArray(v[0]) && v[0].length === 1 ? v[0][0] : v;
+    if (v !== null && v !== undefined && v !== "") { extra = true; break; }
+  }
+  if (extra) {
     throw new CustomFunctions.Error(
       CustomFunctions.ErrorCode.invalidValue,
       "K." + name + " takes at most " + fn.length + " arguments, not " + args.length +
