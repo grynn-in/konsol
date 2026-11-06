@@ -246,6 +246,30 @@ def test_empty_slots_past_the_signature_are_accepted():
         assert out["error"] is None, (fn, out)
 
 
+def test_an_invocation_object_past_the_signature_is_accepted():
+    # Excel Online appends an invocation object after the declared
+    # parameters (6 Nov 2026: K.EPM("DE_ECL", 2024, 12, "4000") still said
+    # "takes at most 11 arguments, not 12" with the 11-parameter metadata
+    # served). An object that is not a range is Excel's, not the formula's.
+    for fn, n in SIGNATURES.items():
+        args = ([100] if fn == "EPMSAVE" else []) + list(_READ)
+        args += [None] * (len(n) - len(args)) + [{"address": "Sheet1!B2", "functionName": "EPM"}]
+        out = _call(fn, *args, reply={"message": {"values": [1.0], "errors": [None]}})
+        assert out["error"] is None, (fn, out)
+
+
+def test_an_object_that_is_not_last_is_still_refused():
+    args = list(_READ) + [""] * 7 + [{"x": 1}, {"address": "Sheet1!B2"}]
+    out = _call("EPM", *args)
+    assert out["error"] is not None, out
+
+
+def test_the_refusal_names_what_the_extra_argument_was():
+    args = list(_READ) + [""] * 7 + ["base"]
+    out = _call("EPM", *args)
+    assert out["error"] is not None and "base" in out["error"]["message"], out
+
+
 def test_epmsave_sends_the_dimensions_dict():
     reply = {"message": {"status": "ok", "value": 100}}
     out = _call("EPMSAVE", 100, "ZZE", 2026, 1, "ZZ6100", "ZZ_PLAN", "base",
