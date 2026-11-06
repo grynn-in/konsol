@@ -7,7 +7,7 @@
   xsi:type="TaskPaneApp">
 
   <Id>c3d7e9f1-2a4b-5c6d-8e0f-1a2b3c4d5e6f</Id>
-  <Version>2.0.0.0</Version>
+  <Version>2.0.1.0</Version>
   <ProviderName>Konsolidat</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Konsolidat" />
