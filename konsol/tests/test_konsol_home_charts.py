@@ -210,15 +210,19 @@ def test_top_currencies_by_entity_count_excluding_the_reporting_currency():
     assert m.top_currencies(rows, "USD", 3) == ["CAD", "EUR", "GBP"]
 
 
-def test_rates_lines_per_currency_and_type_with_zero_for_a_missing_rate():
+def test_rates_lines_per_currency_and_type_and_a_gap_is_named_never_silent():
+    """Review of #411 (M1): a period with no approved rate at all is left
+    out (live: P01-P06 had none, and the lines fell to 0); a period missing
+    one rate names it in its label."""
     m = _model()
     rows = [{"from_currency": "EUR", "rate_type": "Closing", "fiscal_year": 2025,
-             "fiscal_period": 1, "rate": 1.1},
+             "fiscal_period": 2, "rate": 1.1},
             {"from_currency": "EUR", "rate_type": "Average", "fiscal_year": 2025,
-             "fiscal_period": 1, "rate": 1.05},
+             "fiscal_period": 2, "rate": 1.05},
             {"from_currency": "EUR", "rate_type": "Closing", "fiscal_year": 2025,
-             "fiscal_period": 2, "rate": 1.2}]
-    chart = m.rates([P1, P2], ["EUR"], rows)
+             "fiscal_period": 3, "rate": 1.2}]
+    chart = m.rates([P1, P2, P3], ["EUR"], rows)
+    assert chart["labels"] == ["FY2025 P02", "FY2025 P03 (no EUR average)"]
     assert _values(chart) == {"EUR closing": [1.1, 1.2], "EUR average": [1.05, 0]}
 
 
@@ -263,7 +267,8 @@ class _Site:
         self.periods = kw.get("periods", [
             {"key": [2024, 12], "end_date": "2024-12-31"},
             {"key": [2025, 1], "end_date": "2025-01-31"},
-            {"key": [2025, 2], "end_date": "2025-02-28"}])
+            {"key": [2025, 2], "end_date": "2025-02-28"},
+            {"key": [2025, 3], "end_date": "2025-03-31"}])  # after the landing
         self.progress = kw.get("progress", {})
         self.statement = kw.get("statement")
         self.ic = kw.get("ic")
@@ -293,8 +298,6 @@ def _stub(site):
         return ok
 
     def get_list(doctype, filters=None, fields=None, pluck=None, **k):
-        if site.readable is not None and doctype not in site.readable:
-            raise f.PermissionError("no read on %s" % doctype)
         site.calls.append((doctype, filters))
         rows = site.lists.get(doctype, [])
         return [r[pluck] for r in rows] if pluck else [dict(r) for r in rows]
@@ -402,6 +405,15 @@ def test_top_ic_differences_reads_get_ic_and_a_state_is_its_note():
         api.top_ic_differences()
 
 
+def test_top_ic_differences_with_no_intercompany_declared_is_an_empty_chart():
+    """Review of #411 (L5): "None in this group" is a declaration, not a
+    failure; the chart's empty state shows, not a permanent note."""
+    api, _ = _api(_Site(ic={"state": "not_applicable", "message": "None declared.",
+                            "groups": []}))
+    chart = api.top_ic_differences()
+    assert chart["labels"] == [] and chart["datasets"][0]["values"] == []
+
+
 def test_approvals_backlog_counts_the_queue_items():
     api, _ = _api(_Site(queue={"items": [{"doctype": "IC Balance"}], "sent_back": [{}]}))
     chart = api.approvals_backlog()
@@ -416,7 +428,8 @@ def test_closing_vs_average_rate_reads_submitted_rates_into_the_group_currency()
              "fiscal_period": 1, "quote": 110, "quoted_per": "100"}]})
     api, _ = _api(site)
     chart = api.closing_vs_average_rate()
-    assert _values(chart) == {"EUR closing": [1.1, 0], "EUR average": [0, 0]}
+    assert chart["labels"] == ["FY2025 P01 (no EUR average)"]
+    assert _values(chart) == {"EUR closing": [1.1], "EUR average": [0]}
     (filters,) = [f for dt, f in site.calls if dt == "Group Exchange Rate"]
     assert filters["docstatus"] == 1 and filters["to_currency"] == "USD"
     assert filters["fiscal_year"] == 2025
@@ -483,9 +496,11 @@ NEEDS_READ = {
 def test_a_caller_without_read_on_the_doctype_is_refused(method, doctype):
     everything = {"Trial Balance Submission", "TB Exception", "Group Exchange Rate", "Entity",
                   "Assertion Run"}
-    api, frappe = _api(_Site(readable=everything - {doctype}))
-    with pytest.raises(frappe.PermissionError):
+    site = _Site(readable=everything - {doctype})
+    api, frappe = _api(site)
+    with pytest.raises(frappe.PermissionError, match=doctype):
         getattr(api, method)()
+    assert site.calls == []  # refused before anything is read
 
 
 @pytest.mark.parametrize("method", sorted(m for _t, _s, m in CHARTS.values()))
