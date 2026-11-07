@@ -174,7 +174,7 @@ def test_a_blank_owner_is_the_owned_nodes_tree_parent_with_the_derived_columns()
     """ZZOP's parent is the sub-group ZZSUB (a group node): owner_group is its
     code, owner_data_area_id blank, owner_label its group code."""
     patch = _load()
-    updates, problems = patch.plan([_period("OP-1")], _nodes())
+    updates, problems, _ = patch.plan([_period("OP-1")], _nodes())
     assert problems == []
     assert updates == [("OP-1", {"owner_node": "CG-ZZSUB-", "owner_group": "ZZSUB",
                                  "owner_data_area_id": None, "owner_label": "ZZSUB"})]
@@ -182,40 +182,64 @@ def test_a_blank_owner_is_the_owned_nodes_tree_parent_with_the_derived_columns()
 
 def test_an_entity_parent_gives_its_entity_code_as_owner_label():
     patch = _load()
-    updates, _ = patch.plan([_period("OP-2", group="ZZSUB", entity=None)], _nodes())
+    updates, _, _ = patch.plan([_period("OP-2", group="ZZSUB", entity=None)], _nodes())
     assert updates == [("OP-2", {"owner_node": "CG-ZZG-ZZHOLD", "owner_group": "ZZG",
                                  "owner_data_area_id": "ZZHOLD", "owner_label": "ZZHOLD"})]
 
 
 def test_every_docstatus_is_planned():
+    """A cancelled row whose node exists is filled like any other: it is the
+    audit trail, and the controller reads its owner when it is shown."""
     patch = _load()
     rows = [_period("OP-d", docstatus=0), _period("OP-s", docstatus=1), _period("OP-c", docstatus=2)]
-    updates, problems = patch.plan(rows, _nodes())
-    assert problems == [] and [u[0] for u in updates] == ["OP-d", "OP-s", "OP-c"]
+    updates, problems, skipped = patch.plan(rows, _nodes())
+    assert problems == [] and skipped == [] and [u[0] for u in updates] == ["OP-d", "OP-s", "OP-c"]
+
+
+def test_a_cancelled_row_whose_node_is_gone_is_skipped_and_reported_not_fatal():
+    """PR #449 review, finding 6: a cancelled period is the audit trail of a
+    link that is gone; its node may have been deleted since. Nothing reads
+    its owner (the sync sends docstatus 1 only), so it must not stop the
+    migrate: it is skipped and reported by name. A draft or submitted row on
+    a missing node is still a problem, and a cancelled row whose node exists
+    is still filled."""
+    patch = _load()
+    rows = [_period("OP-c-gone", entity="ZZNOPE", docstatus=2),
+            _period("OP-c-root", group="ZZG", entity=None, docstatus=2),
+            _period("OP-c", docstatus=2),
+            _period("OP-d-gone", entity="ZZNOPE", docstatus=0),
+            _period("OP-s-gone", entity="ZZNOPE", docstatus=1)]
+    updates, problems, skipped = patch.plan(rows, _nodes())
+    assert [u[0] for u in updates] == ["OP-c"]
+    assert [p[0] for p in problems] == ["OP-d-gone", "OP-s-gone"]
+    assert skipped == [
+        ("OP-c-gone", "no Consolidation Group node 'ZZSUB' / entity 'ZZNOPE'"),
+        ("OP-c-root", "its node CG-ZZG- is a root: nobody owns the top of a hierarchy"),
+    ]
 
 
 def test_a_filled_owner_is_left_alone():
     patch = _load()
     filled = _period("OP-f", owner_node="CG-ZZG-ZZHOLD", owner_group="ZZG",
                      owner_data_area_id="ZZHOLD", owner_label="ZZHOLD")
-    updates, problems = patch.plan([filled, _period("OP-b")], _nodes())
+    updates, problems, _ = patch.plan([filled, _period("OP-b")], _nodes())
     assert problems == [] and [u[0] for u in updates] == ["OP-b"]
 
 
 def test_a_second_plan_over_the_updated_rows_plans_nothing():
     patch = _load()
     rows = [_period("OP-1"), _period("OP-2", group="ZZSUB", entity=None)]
-    updates, _ = patch.plan(rows, _nodes())
+    updates, _, _ = patch.plan(rows, _nodes())
     assert len(updates) == 2
     by_name = {r["name"]: r for r in rows}
     for name, values in updates:
         by_name[name].update(values)
-    assert patch.plan(rows, _nodes()) == ([], [])
+    assert patch.plan(rows, _nodes()) == ([], [], [])
 
 
 def test_a_period_on_a_root_node_is_refused_by_name_not_guessed():
     patch = _load()
-    updates, problems = patch.plan([_period("OP-root", group="ZZG", entity=None), _period("OP-ok")], _nodes())
+    updates, problems, _ = patch.plan([_period("OP-root", group="ZZG", entity=None), _period("OP-ok")], _nodes())
     assert [u[0] for u in updates] == ["OP-ok"]
     assert len(problems) == 1 and problems[0][0] == "OP-root"
     assert "CG-ZZG-" in problems[0][1] and "root" in problems[0][1].lower(), problems
@@ -223,7 +247,7 @@ def test_a_period_on_a_root_node_is_refused_by_name_not_guessed():
 
 def test_a_period_on_a_missing_node_is_refused_by_name():
     patch = _load()
-    updates, problems = patch.plan([_period("OP-gone", group="ZZSUB", entity="ZZNOPE")], _nodes())
+    updates, problems, _ = patch.plan([_period("OP-gone", group="ZZSUB", entity="ZZNOPE")], _nodes())
     assert updates == [] and len(problems) == 1 and problems[0][0] == "OP-gone"
     assert "ZZSUB" in problems[0][1] and "ZZNOPE" in problems[0][1], problems
 
@@ -233,7 +257,7 @@ def test_a_parent_that_is_not_a_node_is_refused_by_name():
     cannot be derived, so the period is reported, not written half-filled."""
     patch = _load()
     orphan = dict(LEAF, parent_consolidation_group="CG-ZZSUB-GONE")
-    updates, problems = patch.plan([_period("OP-orphan")], _nodes([ROOT, HOLD, orphan]))
+    updates, problems, _ = patch.plan([_period("OP-orphan")], _nodes([ROOT, HOLD, orphan]))
     assert updates == [] and len(problems) == 1 and problems[0][0] == "OP-orphan"
     assert "CG-ZZSUB-GONE" in problems[0][1], problems
 
@@ -285,6 +309,21 @@ def test_execute_reads_periods_of_every_docstatus():
     assert len(reads) == 1
     filters = reads[0][2] or {}
     assert "docstatus" not in str(filters), filters
+    assert "docstatus" in reads[0][3], "plan tells a cancelled row apart by its docstatus"
+
+
+def test_execute_fills_the_rest_and_prints_the_skipped_cancelled_row_by_name():
+    import contextlib
+    import io
+    site = _Site(periods=[_period("OP-1"), _period("OP-c-gone", entity="ZZNOPE", docstatus=2)], nodes=NODES)
+    patch = _load(site)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        patch.execute()
+    sets = [c for c in site.calls if c[0] == "set_value"]
+    assert [c[2] for c in sets] == ["OP-1"]
+    assert "OP-c-gone" in out.getvalue() and "ZZNOPE" in out.getvalue(), out.getvalue()
+    assert "cancelled" in out.getvalue(), out.getvalue()
 
 
 def test_execute_is_idempotent():
