@@ -15,9 +15,8 @@ Read `HANDOFF.md` first each session; project memory is in `.claude/memory/`
 | Live stack | `http://localhost:8069`, site `konsolidat.local`, creds `repo/.credentials` |
 
 Frappe never runs natively on the Mac. konsol targets **Frappe v16** (Python
-3.14, Node 24) from 4 Nov 2026. A stack still on the v15 image runs **Python
-3.11**: until it is rebuilt, scripts you copy in must not put backslashes inside
-f-string expressions. Check with `docker exec <backend> python --version`.
+3.14, Node 24) from 4 Nov 2026; both running stacks were on 16.55.2 / Python
+3.14.7 on 7 Nov 2026. Check with `docker exec <backend> python --version`.
 
 ## Testing: host tests, then live. Never deploy.
 
