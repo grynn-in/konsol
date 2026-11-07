@@ -77,6 +77,7 @@ class CloseSettings(Document):
         self.validate_policies()
         self.validate_intercompany_declaration()
         self.validate_statement_accounts()
+        self.validate_net_sales_heading()
         self.validate_commentary_threshold()
         self.validate_deadlines()
 
@@ -207,6 +208,22 @@ class CloseSettings(Document):
         problems = close_policy_model.statement_account_problems(cta, result, rows)
         if problems:
             frappe.throw("<br>".join(problems))
+
+    def validate_net_sales_heading(self):
+        """konsol#407 phase 2: the heading the Konsol home charts as net
+        sales. No default: blank stays undeclared and the chart says so. A
+        set code that is not a Published Profit and Loss heading is refused
+        (close_policy_model.net_sales_heading_problem). Presentation only,
+        so not locked after a signed period."""
+        code = self.statement_net_sales_heading
+        if not code:
+            return
+        row = frappe.db.get_value(
+            "Main Account", code, ["name", "is_group", "status", "statement_section"],
+            as_dict=True)
+        problem = close_policy_model.net_sales_heading_problem(code, row)
+        if problem:
+            frappe.throw(problem)
 
     def validate_commentary_threshold(self):
         """konsol#305-W5-2 (story 8.4): no default. Blank / 0 stays

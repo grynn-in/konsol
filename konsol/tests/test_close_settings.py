@@ -232,7 +232,8 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0, m
          intercompany_declaration="", published=0, sql_log=None,
          statement_cta_account="", statement_result_account="", get_all_log=None,
          commentary_threshold_amount=0, commentary_threshold_percent=0,
-         commentary_threshold_combine="", deadline_rules=(), close_holidays=()):
+         commentary_threshold_combine="", deadline_rules=(), close_holidays=(),
+         statement_net_sales_heading="", main_account_row=None):
     """``published`` is what the stubbed locking count of Published
     Intercompany Accounts answers; every ``frappe.db.sql`` call is appended
     to ``sql_log`` (when given) as ``(query, values)`` (C16, #305-W3-7).
@@ -267,6 +268,10 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0, m
     _m.frappe.get_all = get_all
     sys.modules["konsol.period_status"].period_row = period_row_fn
     db.sql = sql
+    had_get_value = "get_value" in vars(db)
+    saved_get_value = vars(db).get("get_value")
+    db.get_value = lambda dt, name, fields=None, as_dict=False: (
+        dict(main_account_row) if main_account_row else None)
     try:
         doc = _m.CloseSettings()
         doc.first_close_fiscal_year = year
@@ -277,6 +282,7 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0, m
         doc.intercompany_declaration = intercompany_declaration
         doc.statement_cta_account = statement_cta_account
         doc.statement_result_account = statement_result_account
+        doc.statement_net_sales_heading = statement_net_sales_heading
         doc.commentary_threshold_amount = commentary_threshold_amount
         doc.commentary_threshold_percent = commentary_threshold_percent
         doc.commentary_threshold_combine = commentary_threshold_combine
@@ -295,6 +301,25 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0, m
             db.sql = saved_sql
         else:
             del db.sql
+        if had_get_value:
+            db.get_value = saved_get_value
+        else:
+            del db.get_value
+
+
+def test_net_sales_heading_blank_saves_and_a_set_one_must_be_a_pl_heading():
+    """konsol#407 phase 2: no default; a set code is checked against its Main
+    Account row (close_policy_model.net_sales_heading_problem)."""
+    _run(None, None, _default_period_row)
+    ok = {"name": "4", "is_group": 1, "status": "Published", "statement_section": "Profit and Loss"}
+    _run(None, None, _default_period_row, statement_net_sales_heading="4", main_account_row=ok)
+    for row in (None, dict(ok, is_group=0), dict(ok, statement_section="Balance Sheet")):
+        try:
+            _run(None, None, _default_period_row, statement_net_sales_heading="4",
+                 main_account_row=row)
+            assert False, "expected a throw for %r" % (row,)
+        except _Refused as e:
+            assert "Net Sales Heading 4" in str(e)
 
 
 def test_both_blank_is_ok():
@@ -807,6 +832,7 @@ _EXISTING_ORDER = [
     "statements_section",
     "statement_cta_account",
     "statement_result_account",
+    "statement_net_sales_heading",  # konsol#407 phase 2
     "commentary_section",
     "commentary_threshold_amount",
     "commentary_threshold_percent",

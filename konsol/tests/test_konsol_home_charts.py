@@ -566,7 +566,10 @@ def test_charts_api_never_bypasses_permissions():
     assert "frappe.cache" not in source  # every call reads afresh
     for fn in ast.parse(source).body:
         if isinstance(fn, ast.FunctionDef) and fn.name in _whitelisted():
-            assert "_start(" in ast.unparse(fn), fn.name
+            gate = fn.body[1]  # after the docstring
+            assert ast.unparse(gate.value.func) == "frappe.only_for", fn.name
+            assert set(ast.literal_eval(gate.value.args[0])) == ROLES, fn.name
+            assert "_start(filters" in ast.unparse(fn), fn.name
 
 
 # --- the declared net sales heading -----------------------------------------------

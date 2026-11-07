@@ -1,0 +1,45 @@
+{
+ "cards": [],
+ "charts": [
+  {
+   "chart": "TB Submission Progress",
+   "width": "Full"
+  },
+  {
+   "chart": "Net Sales and Net Result",
+   "width": "Half"
+  },
+  {
+   "chart": "Top IC Differences",
+   "width": "Half"
+  },
+  {
+   "chart": "Approvals Backlog",
+   "width": "Half"
+  },
+  {
+   "chart": "Closing vs Average Rate",
+   "width": "Half"
+  },
+  {
+   "chart": "Entities by Status",
+   "width": "Half"
+  },
+  {
+   "chart": "Days to Close",
+   "width": "Half"
+  }
+ ],
+ "creation": "2026-11-07 12:00:00.000000",
+ "dashboard_name": "Konsol Overview",
+ "docstatus": 0,
+ "doctype": "Dashboard",
+ "idx": 0,
+ "is_default": 0,
+ "is_standard": 1,
+ "modified": "2026-11-07 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Consolidation",
+ "name": "Konsol Overview",
+ "owner": "Administrator"
+}

@@ -473,6 +473,23 @@ def statement_account_problems(cta_account, result_account, rows):
     return [p for p in gap["problems"] if p not in _STATEMENT_ACCOUNT_UNDECLARED_MESSAGES]
 
 
+def net_sales_heading_problem(code, row):
+    """The sentence that refuses a Close Settings save of the Net Sales
+    Heading (konsol#407 phase 2), or None. Blank is allowed: undeclared, the
+    home chart says so and charts net result only. A set heading must be a
+    Published Profit and Loss heading (``is_group``) of the group chart;
+    ``row`` is its Main Account row, or None when there is none."""
+    if not code:
+        return None
+    if row is None:
+        return "Net Sales Heading %s: Main Account not found." % code
+    if (not row.get("is_group") or row.get("status") != "Published"
+            or row.get("statement_section") != "Profit and Loss"):
+        return ("Net Sales Heading %s must be a Published Profit and Loss heading "
+                "(a group account) of the group chart." % code)
+    return None
+
+
 def approval_build_reason(doctype, name, method, user, roles):
     """The sentence recorded on an auto-approved Build Approval when the
     trigger that requested the build was itself an approval (konsol#305-D2-10),
