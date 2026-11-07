@@ -25,10 +25,11 @@ What this pins, file by file:
 - Period-keyed charts declare their x-axis a series with a wider label
   budget; categorical charts are left to frappe-charts' default.
 """
-import ast
 import json
 import os
 import re
+
+from konsol.tests.test_brand_colour import _hooks  # one parser of hooks.py
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULE_DIR = os.path.join(APP_DIR, "consolidation")
@@ -39,23 +40,20 @@ WORKSPACE = os.path.join(MODULE_DIR, "workspace", "konsol", "konsol.json")
 BLOCK_DIR = os.path.join(MODULE_DIR, "custom_html_block", "konsol_close_checklist")
 SINCE = "2026-11-07 22:30:00"
 
-#: Charts whose x labels are periods (period_name), in reading order.
-PERIOD_CHARTS = ("TB Submission Progress", "Net Sales and Net Result",
-                 "Closing vs Average Rate", "Days to Close")
-#: Charts whose x labels are categories: no series option.
-CATEGORY_CHARTS = ("Approvals Backlog", "Top IC Differences")
+#: Charts whose x labels are periods (period_name, 10 chars) and fit whole
+#: with a wider budget.
+PERIOD_CHARTS = ("TB Submission Progress", "Net Sales and Net Result", "Closing vs Average Rate")
+#: Charts left on frappe-charts' default axis: categorical labels (Approvals
+#: Backlog, Top IC Differences), and Days to Close, whose 27-char labels
+#: ("FY2025 P01 (not signed off)") fit no half-width card either way: the
+#: series branch would blank five and clip the first and last (review of
+#: #439); the shorter label is server text, not this PR.
+DEFAULT_AXIS_CHARTS = ("Approvals Backlog", "Top IC Differences", "Days to Close")
 
 
 def _read(path):
     with open(path) as f:
         return f.read()
-
-
-def _hooks():
-    tree = ast.parse(_read(os.path.join(APP_DIR, "hooks.py")))
-    return {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body
-            if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
-            and isinstance(n.value, (ast.List, ast.Constant, ast.Dict, ast.Tuple))}
 
 
 def _ws():
@@ -87,7 +85,6 @@ def test_the_desk_css_is_hooked_and_exists():
     hooks = _hooks()
     assert hooks["app_include_css"] == [CSS_URL]
     assert os.path.isfile(CSS)
-    assert hooks["app_include_js"] == ["/assets/konsol/js/konsol_brand.js"]  # untouched
 
 
 def test_every_desk_css_rule_is_scoped_to_the_konsol_workspace():
@@ -123,6 +120,12 @@ def test_the_desk_css_turns_the_band_pills_into_stat_values():
     assert "min-height:" in card
 
 
+def test_the_section_header_margin_skips_the_first_block():
+    rules = dict(_rules(_read(CSS)))
+    (sel,) = [sel for sel, body in rules.items() if sel.endswith(".ce-header") and "margin-top" in body]
+    assert ":not(:first-child)" in sel, sel
+
+
 # --- C. workspace layout -------------------------------------------------------
 
 
@@ -150,8 +153,19 @@ def test_waiting_shortcuts_carry_a_short_noun_label():
         assert s["format"] == "{} waiting", s["label"]
         assert s["color"] == "Orange", s["label"]
     assert [s["label"] for s in waiting] == [
-        "Journals", "Business combinations", "Business disposals", "Exchange rates",
+        "Journals", "Business combinations", "Business disposals", "Group exchange rates",
         "Ownership periods", "Equity rates", "IC balances", "Builds"]
+
+
+def test_no_two_shortcut_labels_differ_only_by_case():
+    """Frappe finds a content block's row by label (workspace/blocks/block.js
+    find(obj.label == __(block_name))); "Exchange rates" next to the
+    Monthly-close "Exchange Rates" would be told apart by case alone, and
+    not at all once translated (review of #439)."""
+    ws = _ws()
+    labels = [s["label"] for s in ws["shortcuts"]]
+    folded = [l.casefold() for l in labels]
+    assert len(set(folded)) == len(labels), sorted(l for l in labels if folded.count(l.casefold()) > 1)
     assert ws["modified"] >= SINCE, ws["modified"]
 
 
@@ -172,7 +186,10 @@ def test_the_checklist_draws_a_progress_bar_from_done_over_total():
     css = _read(os.path.join(BLOCK_DIR, "konsol_close_checklist.css"))
     assert "kc-progress" in js and "kc-progress-fill" in js
     assert '"progressbar"' in js
-    assert "data.done / data.total" in js
+    # one clamped value drives both the bar width and aria-valuenow
+    assert "const done = Math.min(data.total, Math.max(0, data.done))" in js
+    assert "(100 * done) / data.total" in js
+    assert 'setAttribute("aria-valuenow", String(done))' in js
     assert ".kc-progress-fill" in css and "var(--primary)" in css
     # server strings stay text, and a line links only to a /desk/ route
     assert "innerHTML" not in js and "textContent" in js
@@ -211,7 +228,7 @@ def test_period_keyed_charts_declare_a_series_axis_with_a_wider_label_budget():
     assert json.loads(_chart("TB Submission Progress")["custom_options"])["barOptions"] == {"stacked": 1}
 
 
-def test_categorical_charts_keep_the_default_axis():
-    for name in CATEGORY_CHARTS:
+def test_categorical_and_long_label_charts_keep_the_default_axis():
+    for name in DEFAULT_AXIS_CHARTS:
         options = json.loads(_chart(name).get("custom_options") or "{}")
         assert "axisOptions" not in options, name

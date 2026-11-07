@@ -59,7 +59,8 @@ body[data-route="Workspaces/Konsol"] .widget.number-widget-box .widget-content .
  * .codex-editor__redactor .ce-block .ce-block__content .ce-header .h4
  * (colour var(--text-light)); the same chain under body[data-route] outranks
  * it without !important. */
-body[data-route="Workspaces/Konsol"] .codex-editor .codex-editor__redactor .ce-block .ce-block__content .ce-header {
+/* Space between sections, not above the first block on the page. */
+body[data-route="Workspaces/Konsol"] .codex-editor .codex-editor__redactor .ce-block:not(:first-child) .ce-block__content .ce-header {
 	margin-top: var(--margin-lg);
 }
 

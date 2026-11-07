@@ -25,14 +25,14 @@ function render(data) {
 	if (data.total) {
 		head.append(el("span", "kc-count", `${data.done} of ${data.total} done`));
 		// done / total as a thin bar under the title (the fill is --primary).
-		const share = Math.min(1, Math.max(0, data.done / data.total));
+		const done = Math.min(data.total, Math.max(0, data.done));
 		const bar = el("div", "kc-progress");
 		bar.setAttribute("role", "progressbar");
 		bar.setAttribute("aria-valuemin", "0");
 		bar.setAttribute("aria-valuemax", String(data.total));
-		bar.setAttribute("aria-valuenow", String(data.done));
+		bar.setAttribute("aria-valuenow", String(done));
 		const fill = el("div", "kc-progress-fill");
-		fill.style.width = Math.round(100 * share) + "%";
+		fill.style.width = Math.round((100 * done) / data.total) + "%";
 		bar.append(fill);
 		head.append(bar);
 	}
