@@ -12,8 +12,8 @@ rest with " ...".
 
 What this pins, file by file:
 
-- ``hooks.py`` hooks ``konsol_desk.css`` and the file exists.
-- Every selector in ``konsol_desk.css`` is scoped under the Konsol workspace
+- ``hooks.py`` hooks ``konsol_desk.bundle.css`` and the file exists.
+- Every selector in ``konsol_desk.bundle.css`` is scoped under the Konsol workspace
   body, so no other Desk page changes; the file names no hex colour (dark
   theme and the per-site Brand Colour both come through Frappe variables).
 - The workspace reads band -> checklist -> actions -> trends: every chart
@@ -34,8 +34,8 @@ from konsol.tests.test_brand_colour import _hooks  # one parser of hooks.py
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULE_DIR = os.path.join(APP_DIR, "consolidation")
-CSS = os.path.join(APP_DIR, "public", "css", "konsol_desk.css")
-CSS_URL = "/assets/konsol/css/konsol_desk.css"
+CSS = os.path.join(APP_DIR, "public", "css", "konsol_desk.bundle.css")
+CSS_URL = "konsol_desk.bundle.css"
 SCOPE = 'body[data-route="Workspaces/Konsol"]'
 WORKSPACE = os.path.join(MODULE_DIR, "workspace", "konsol", "konsol.json")
 BLOCK_DIR = os.path.join(MODULE_DIR, "custom_html_block", "konsol_close_checklist")
@@ -77,7 +77,7 @@ def _rules(css):
             continue
         selector, _, body = chunk.partition("{")
         assert not selector.strip().startswith("@"), (
-            "konsol_desk.css is flat by design: an at-rule would need this parser to read "
+            "konsol_desk.bundle.css is flat by design: an at-rule would need this parser to read "
             "its inner selectors; got %r" % selector.strip())
         rules.append((selector.strip(), body))
     return rules
