@@ -102,6 +102,60 @@ def owner_fields(owner):
     }
 
 
+#: The four columns every node read below asks for.
+_NODE_FIELDS = ["name", "consolidation_group", "data_area_id", "parent_consolidation_group"]
+
+
+def node_by_name(name):
+    """The Consolidation Group node ``name`` names, as a row with
+    ``_NODE_FIELDS``, or None (a blank name is None too)."""
+    if not name:
+        return None
+    return frappe.db.get_value("Consolidation Group", name, _NODE_FIELDS, as_dict=True)
+
+
+def node_root(node):
+    """The name of the root of the hierarchy ``node`` sits in, by walking
+    tree parents (a NestedSet has no cycles; the live tree is six deep at
+    most)."""
+    seen = set()
+    while node.parent_consolidation_group and node.name not in seen:
+        seen.add(node.name)
+        parent = node_by_name(node.parent_consolidation_group)
+        if parent is None:
+            break
+        node = parent
+    return node.name
+
+
+def owner_refusal(owner_node, owned, owned_label, field="Owner Node"):
+    """§1 refusal 1 (#117) as one sentence, or None when ``owner_node`` may
+    own ``owned``: the owner is a node, is not the owned node, and sits under
+    the same root. One helper for every document that names an owner of a
+    node: this doctype's ``_validate_owner`` (``field`` "Owner Node"), the
+    Business Combination's Acquirer Node and the Business Disposal's Disposer
+    Node, which throw the sentence in their own name. ``owned`` is the owned
+    node's row (``_NODE_FIELDS``) or None when it does not exist yet (a deal
+    drafted before the tree has the node): then only the owner's existence
+    can be checked; ``owned_label`` names the owned node in the sentence
+    (its entity code, else its group code). A blank owner is the mandatory
+    check's to refuse, not this helper's."""
+    owner = node_by_name(owner_node)
+    if owner is None:
+        return f"{field} {owner_node} is not a Consolidation Group node."
+    if owned is None:
+        return None
+    if owner.name == owned.name:
+        return (f"`{owned_label}` cannot own itself: {field} {owner.name} is the owned node. "
+                f"Name the node that holds the share.")
+    owner_root, owned_root = node_root(owner), node_root(owned)
+    if owner_root != owned_root:
+        return (f"{field} {owner.name} is under root {owner_root}, not under {owned_root} "
+                f"like `{owned_label}`: an owner is a node of the same hierarchy as the node "
+                f"it owns.")
+    return None
+
+
 class OwnershipPeriod(Document):
     CH_TABLE = "epm_staging.ownership_periods"
     CH_FIELD_MAP = {
@@ -322,13 +376,7 @@ class OwnershipPeriod(Document):
 
     def _owner(self):
         """The Consolidation Group node ``owner_node`` names, or None."""
-        if not self.owner_node:
-            return None
-        return frappe.db.get_value(
-            "Consolidation Group", self.owner_node,
-            ["name", "consolidation_group", "data_area_id", "parent_consolidation_group"],
-            as_dict=True,
-        )
+        return node_by_name(self.owner_node)
 
     def _resolve_owner(self):
         """Pre-fill a blank owner with the owned node's tree parent (the one
@@ -353,43 +401,16 @@ class OwnershipPeriod(Document):
         its group code (as ``owner_label`` does for the owner)."""
         return self.data_area_id or self.consolidation_group
 
-    def _root_of(self, node):
-        """The root of the hierarchy ``node`` sits in, by walking tree parents
-        (a NestedSet has no cycles; the live tree is six deep at most)."""
-        seen = set()
-        while node.parent_consolidation_group and node.name not in seen:
-            seen.add(node.name)
-            parent = frappe.db.get_value(
-                "Consolidation Group", node.parent_consolidation_group,
-                ["name", "consolidation_group", "data_area_id", "parent_consolidation_group"],
-                as_dict=True)
-            if parent is None:
-                break
-            node = parent
-        return node.name
-
     def _validate_owner(self):
-        """§1 refusal 1: the owner is a node, is not the owned node, and sits
-        under the same root. A blank owner is the mandatory check's to refuse
+        """§1 refusal 1, by ``owner_refusal`` (one helper, shared with the
+        deals): the owner is a node, is not the owned node, and sits under
+        the same root. A blank owner is the mandatory check's to refuse
         (after ``_resolve_owner`` found no parent to pre-fill it with)."""
         if not self.owner_node:
             return
-        owner = self._owner()
-        if owner is None:
-            frappe.throw(f"Owner Node {self.owner_node} is not a Consolidation Group node.")
-        node = self._node()
-        if owner.name == node.name:
-            frappe.throw(
-                f"`{self._owned_label()}` cannot own itself: Owner Node {owner.name} is the "
-                f"owned node. Name the node that holds the share."
-            )
-        owner_root, owned_root = self._root_of(owner), self._root_of(node)
-        if owner_root != owned_root:
-            frappe.throw(
-                f"Owner Node {owner.name} is under root {owner_root}, not under {owned_root} "
-                f"like `{self._owned_label()}`: an owner is a node of the same hierarchy as "
-                f"the node it owns."
-            )
+        sentence = owner_refusal(self.owner_node, self._node(), self._owned_label())
+        if sentence:
+            frappe.throw(sentence)
 
     # -- no cycles (#117 pair 1, design §3) ------------------------------------
 
@@ -457,8 +478,7 @@ class OwnershipPeriod(Document):
                 row = frappe.db.get_value(
                     "Consolidation Group",
                     {"consolidation_group": group, "data_area_id": entity or _BLANK},
-                    ["name", "consolidation_group", "data_area_id", "parent_consolidation_group"],
-                    as_dict=True)
+                    _NODE_FIELDS, as_dict=True)
                 names[key] = row.name if row else None
             return names[key]
 

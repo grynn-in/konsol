@@ -330,7 +330,9 @@ def test_context_of_one_open_ended_period():
     assert ctx["entity"] == LEAF
     assert ctx["effective_date"] == "2025-10-01"
     assert ctx["current"] == {"name": "OP-1", "effective_date": "2025-01-01", "end_date": None,
-                              "ownership_pct": 100.0, "consolidation_method": "full"}
+                              "ownership_pct": 100.0, "consolidation_method": "full",
+                              # #117 pair 1: current names its owner (blank on this legacy row)
+                              "owner_node": None, "owner_label": None}
     assert not ctx["later_exists"]
     assert not ctx["pending_exists"]
     # O64: the signed runs, keyed and in calendar order, each with its date

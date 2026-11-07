@@ -2485,10 +2485,13 @@ def test_o63_reads_are_constant_in_the_number_of_nodes():
 # ``ownership_change._as_current``'s shape, read in the same nodes read. ----
 
 
-def _r52j_current(name, effective_date, end_date=None, pct=60.0, method="Equity"):
-    """Written out independently of the code under test."""
+def _r52j_current(name, effective_date, end_date=None, pct=60.0, method="Equity",
+                  group=O55_GROUP):
+    """Written out independently of the code under test. The owner (#117
+    pair 1) is the node's root group, the stub rows' default."""
     return {"name": name, "effective_date": effective_date, "end_date": end_date,
-            "ownership_pct": pct, "consolidation_method": method}
+            "ownership_pct": pct, "consolidation_method": method,
+            "owner_node": "CG-%s-" % group, "owner_label": group}
 
 
 def _r52j_item(result, entity, group):
@@ -2526,7 +2529,7 @@ def test_r52j_failure_path_a_later_draft_on_the_node_is_not_current():
 def test_r52j_a_node_with_one_period_gives_that_period():
     result = _o63_call(_o63_site())
     assert _r52j_item(result, O55_LEAF, O63_SUB)["current"] == _r52j_current(
-        "OP-ZZ5B1-SUB", "2025-01-01")
+        "OP-ZZ5B1-SUB", "2025-01-01", group=O63_SUB)
     assert _r52j_item(result, "ZZ5B3", O55_GROUP)["current"] == _r52j_current(
         "OP-ZZ5B3-1", "2025-12-01")
 

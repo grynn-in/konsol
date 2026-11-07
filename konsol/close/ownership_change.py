@@ -7,14 +7,25 @@ Decisions: #305-4.2-1 (the effect is structural, never an amount);
 restores it, a change between two periods is refused); wireframe-4.2.md as
 drawn.
 
-- ``context(consolidation_group, entity, fiscal_year, fiscal_period)`` reads
-  the node's submitted and draft Ownership Periods (one ``get_all``), the
-  fiscal calendar once, and ``signoff_gate.latest_signed_runs()`` keys once.
-  It returns ``ownership_change_model.problems`` and ``effect``'s inputs:
-  ``entity``, ``effective_date`` (the period's start, C-O2), ``period``,
-  ``current``, ``later_exists`` (None or the earliest later submitted
-  start), ``pending_exists`` (None or the draft names), ``period_rows`` and
-  ``signed_keys``. ``change(ctx, pct, method)`` builds the model's change.
+- ``context(consolidation_group, entity, fiscal_year, fiscal_period,
+  owner_node=None)`` reads the node's submitted and draft Ownership Periods
+  (one ``get_all``), the fiscal calendar once, and
+  ``signoff_gate.latest_signed_runs()`` keys once. It returns
+  ``ownership_change_model.problems`` and ``effect``'s inputs: ``entity``,
+  ``effective_date`` (the period's start, C-O2), ``period``, ``current``,
+  ``later_exists`` (None or the earliest later submitted start),
+  ``pending_exists`` (None or the draft names), ``period_rows`` and
+  ``signed_keys``, and the holding's ``owner_node`` / ``owner_label``.
+  ``change(ctx, pct, method)`` builds the model's change.
+- The holding (konsol#117 pair 1, option A: a node may have several owners):
+  the submitted periods covering the start are grouped by ``owner_node`` and
+  ``ownership_change_model.holding`` decides. One owner is implied and
+  ``current`` names it (``owner_node``, ``owner_label``); several need the
+  request's ``owner_node``, else the model's sentence is raised ("`US_EC`
+  has two owners (...): choose the holding to change."). Once the owner is
+  known, ``later_exists`` and ``pending_exists`` are that link's: another
+  owner's later period or draft is another holding. Two submitted periods of
+  ONE link covering the start are still corrupt data.
 - ``signed_keys`` (O64) maps each signed period's key, in key order, to its
   signature ``{"run", "signed_on", "signed_by_name"}``. R52f (review S5):
   only the signed periods an approval of the change will mark, i.e. those
@@ -32,9 +43,9 @@ drawn.
   its ``supersedes`` names. A draft without ``supersedes`` (a Desk draft)
   has no effect: None, never a guessed before/after.
 
-Nothing here guesses: two submitted periods covering the start, a period the
-calendar does not hold, or a ``supersedes`` that is not a submitted period
-raise ValueError. A group node (blank entity) is matched with
+Nothing here guesses: two submitted periods of one link covering the start,
+a period the calendar does not hold, or a ``supersedes`` that is not a
+submitted period raise ValueError. A group node (blank entity) is matched with
 ``["is", "not set"]`` (ownership_period.py ``_BLANK``) and named by its group.
 
 ``signoff_gate`` is imported inside the call (C-X1).
@@ -64,7 +75,7 @@ period_name = _load_sibling("period_name").period_name
 DOCTYPE = "Ownership Period"
 _BLANK = ["is", "not set"]
 _FIELDS = ["name", "effective_date", "end_date", "ownership_pct", "consolidation_method",
-           "docstatus"]
+           "docstatus", "owner_node", "owner_label"]
 
 
 def _iso(value):
@@ -77,19 +88,26 @@ def _iso(value):
 
 
 def _as_current(row):
-    """The model's ``current``: JSON-safe, dates as ISO strings."""
+    """The model's ``current``: JSON-safe, dates as ISO strings. It names its
+    owner (``owner_node``, ``owner_label``; #117 pair 1) so the form shows
+    whose holding is changed."""
     return {"name": row["name"], "effective_date": _iso(row["effective_date"]),
             "end_date": _iso(row["end_date"]), "ownership_pct": float(row["ownership_pct"]),
-            "consolidation_method": row["consolidation_method"]}
+            "consolidation_method": row["consolidation_method"],
+            "owner_node": row.get("owner_node") or None,
+            "owner_label": row.get("owner_label") or None}
 
 
-def _node_periods(consolidation_group, entity):
-    return frappe.get_all(
-        DOCTYPE,
-        filters={"consolidation_group": consolidation_group,
-                 "data_area_id": entity or _BLANK,
-                 "docstatus": ["in", [0, 1]]},
-        fields=_FIELDS, order_by="effective_date asc", limit_page_length=0)
+def _node_periods(consolidation_group, entity, owner_node=None):
+    """The node's submitted and draft periods; with ``owner_node``, only
+    that owner's link (#117 pair 1)."""
+    filters = {"consolidation_group": consolidation_group,
+               "data_area_id": entity or _BLANK,
+               "docstatus": ["in", [0, 1]]}
+    if owner_node:
+        filters["owner_node"] = owner_node
+    return frappe.get_all(DOCTYPE, filters=filters, fields=_FIELDS,
+                          order_by="effective_date asc", limit_page_length=0)
 
 
 def _period_of(effective_date, period_rows):
@@ -141,7 +159,7 @@ def _signed_keys(first_key):
     return out
 
 
-def context(consolidation_group, entity, fiscal_year, fiscal_period):
+def context(consolidation_group, entity, fiscal_year, fiscal_period, owner_node=None):
     key = (int(fiscal_year), int(fiscal_period))
     period_rows = fiscal_calendar.fiscal_period_rows()
     period = next((r for r in period_rows
@@ -152,24 +170,37 @@ def context(consolidation_group, entity, fiscal_year, fiscal_period):
     if start is None:
         raise ValueError("%s has no start date in the fiscal calendar." % period_name(*key))
 
+    label = entity or consolidation_group
     rows = _node_periods(consolidation_group, entity)
     submitted = [r for r in rows if int(r["docstatus"] or 0) == 1]
     covering = [r for r in submitted
                 if _iso(r["effective_date"]) <= start
                 and (_iso(r["end_date"]) is None or _iso(r["end_date"]) >= start)]
-    if len(covering) > 1:
-        raise ValueError(
-            "%s has %d approved Ownership Periods covering %s (%s): the data is corrupt; "
-            "cancel the wrong one in Desk." % (entity or consolidation_group, len(covering),
-                                                start, ", ".join(sorted(r["name"] for r in covering))))
-    later = sorted(_iso(r["effective_date"]) for r in submitted
-                   if _iso(r["effective_date"]) > start)
-    drafts = sorted(r["name"] for r in rows if int(r["docstatus"] or 0) == 0)
+    # One link (owner → this node) has at most one period covering a date;
+    # two is corrupt. Several links covering it are several owners (#117).
+    by_owner = {}
+    for r in covering:
+        by_owner.setdefault(r.get("owner_node") or None, []).append(r)
+    for owner, same in sorted(by_owner.items(), key=lambda kv: kv[0] or ""):
+        if len(same) > 1:
+            raise ValueError(
+                "%s has %d approved Ownership Periods of one holding (owner %s) covering %s "
+                "(%s): the data is corrupt; cancel the wrong one in Desk."
+                % (label, len(same), same[0].get("owner_label") or owner or "blank", start,
+                   ", ".join(sorted(r["name"] for r in same))))
+    current = model.holding(label, [same[0] for same in by_owner.values()], owner_node)
+    owner = current.get("owner_node") if current else None
+    link = [r for r in rows if not owner or r.get("owner_node") == owner]
+    later = sorted(_iso(r["effective_date"]) for r in link
+                   if int(r["docstatus"] or 0) == 1 and _iso(r["effective_date"]) > start)
+    drafts = sorted(r["name"] for r in link if int(r["docstatus"] or 0) == 0)
     return {
-        "entity": entity or consolidation_group,
+        "entity": label,
         "effective_date": start,
         "period": period,
-        "current": _as_current(covering[0]) if covering else None,
+        "current": _as_current(current) if current else None,
+        "owner_node": owner or None,
+        "owner_label": (current.get("owner_label") or None) if current else None,
         "later_exists": later[0] if later else None,
         "pending_exists": ", ".join(drafts) if drafts else None,
         "period_rows": period_rows,

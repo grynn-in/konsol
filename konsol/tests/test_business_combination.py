@@ -403,7 +403,13 @@ class _Site:
                     else:
                         doc.name = f"{amended_from}-1"
                 else:
-                    doc.name = f"OP-{doc.consolidation_group}-{doc.data_area_id}-{doc.effective_date}"
+                    # the real autoname names the owner (owner_label: its entity
+                    # code, else its group code; #117 pair 1 A), so two owners'
+                    # periods on one date do not collide; no owner known → the group
+                    owner = site.nodes.get(doc.get("owner_node") or "")
+                    label = ((owner["data_area_id"] or owner["consolidation_group"]) if owner
+                             else doc.consolidation_group)
+                    doc.name = f"OP-{label}-{doc.data_area_id}-{doc.effective_date}"
                 if any(r["name"] == doc.name for r in site.ownership):
                     raise Refused(f"Duplicate entry '{doc.name}' for key 'PRIMARY'")
                 # Created after every row already on the site (creation is
