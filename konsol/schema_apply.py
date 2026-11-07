@@ -768,6 +768,11 @@ def _sync_budget_custom_fields_locked():
     #324 review, finding 3) — a Custom Field delete is pure DML with no
     updatedb, so a failed add on the SECOND table rolled back the FIRST table's
     uncommitted deletes while still reporting them as removed.
+
+    The one delete inside the add phase is a repair's (konsol#169): it deletes
+    the row it is about to re-insert, and the insert's updatedb commits both or
+    the repair rolls back its own delete, so nothing of it is pending when a
+    later add fails. See _add_dimension_custom_fields.
     """
     tables = (("Budget Line", "in_budget", "main_account"),
               # konsol#287: the annual half of the budget carries the same
@@ -784,7 +789,8 @@ def _sync_budget_custom_fields_locked():
 
 
 def _plan_dimension_custom_fields(dt, flag):
-    """What ``dt`` should have: ``(wanted, label_map, existing)``. Reads only.
+    """What ``dt`` should have: ``(wanted, label_map, existing, refused,
+    broken)``. Reads only.
 
     Split from the add and remove phases so every add across every table runs
     before any delete — see _sync_budget_custom_fields_locked (PR #324 review,
@@ -816,22 +822,59 @@ def _plan_dimension_custom_fields(dt, flag):
             continue
         wanted.add(name)
         label_map[name] = d.label
-    existing = frappe.get_all(
+    rows = frappe.get_all(
         "Custom Field",
         filters={"dt": dt, "fieldname": ("like", "dim_%")},
         fields=["name", "fieldname"],
         limit_page_length=0,
     )
-    return wanted, label_map, existing, refused
+    # A Custom Field row is not a column (konsol#169, Deepak Pai's option A,
+    # 7 Nov 2026). Frappe's sql_ddl commits the row before it runs the ALTER
+    # (frappe/database/database.py), so a failed ALTER leaves a row with no
+    # column behind it; counted as existing, it was never repaired, and reads
+    # of the field failed. ``existing`` is now the rows whose column is there;
+    # ``broken`` the rows whose column is not, for the add phase to delete and
+    # re-insert (so the ALTER runs again) or the remove phase to delete.
+    # The columns come from ``DESC`` (frappe.db.describe), not
+    # frappe.db.has_column: that reads a client cache ("table_columns::")
+    # which another process's ALTER invalidates without a cross-process
+    # guarantee, and a stale miss here would delete and re-create a healthy
+    # field. One plain query per table, and DDL is not transactional, so what
+    # it returns is what the table has now.
+    columns = {row[0] for row in frappe.db.describe(dt)}
+    existing = [cf for cf in rows if cf.fieldname in columns]
+    broken = [cf for cf in rows if cf.fieldname not in columns]
+    return wanted, label_map, existing, refused, broken
 
 
 def _add_dimension_custom_fields(dt, insert_after, plan):
     """Insert the Custom Fields ``dt`` is missing. Each insert commits
-    (CustomField.on_update -> frappe.db.updatedb)."""
-    wanted, label_map, existing, _refused = plan
+    (CustomField.on_update -> frappe.db.updatedb).
+
+    A wanted field whose row is there but whose column is not (``broken``,
+    konsol#169) is repaired here, in the add phase: its row is deleted and the
+    field inserted again, so updatedb runs the ALTER again. The delete lives
+    here and not in the plan (which reads only) or the remove phase (which
+    runs after every add) because it is one write with the re-insert: the
+    insert's updatedb commits both, or the repair rolls back its own delete.
+    So the phase order's premise still holds for every other add — "only this
+    failed add's own work is pending" (_created_elsewhere).
+
+    A repair whose ALTER fails again is reported by name in the actions and in
+    an Error Log, and the sync goes on. Unlike an ordinary add, it does not
+    raise: the damage is older than this run, and raising would let one broken
+    field on one table block every later add and removal on every table. The
+    row is still there with no column, so the next run reports it again; it is
+    never counted as present.
+    """
+    wanted, label_map, existing, _refused, broken = plan
     existing_names = {cf.fieldname for cf in existing}
+    broken_by_name = {cf.fieldname: cf for cf in broken}
     actions = []
     for dim_name in sorted(wanted - existing_names):
+        stale = broken_by_name.get(dim_name)
+        if stale is not None:
+            frappe.delete_doc("Custom Field", stale.name)
         cf = frappe.new_doc("Custom Field")
         cf.dt = dt
         cf.fieldname = dim_name
@@ -840,11 +883,23 @@ def _add_dimension_custom_fields(dt, insert_after, plan):
         cf.insert_after = insert_after
         try:
             cf.insert()
-        except Exception:
+        except Exception as exc:
+            if stale is not None:
+                # Before the DDL: our delete is pending, and the rollback
+                # puts the broken row back. After it: sql_ddl committed the
+                # delete and the new row, and nothing is pending.
+                frappe.db.rollback()
+                frappe.log_error(
+                    f"schema_apply: repair of {dt}.{dim_name} failed",
+                    f"The Custom Field row exists with no column behind it and the "
+                    f"column could not be added again: {exc}\n{frappe.get_traceback()}",
+                )
+                actions.append(f"repair of {dim_name} failed: {exc}")
+                continue
             if _created_elsewhere(cf):
                 continue  # the goal is met
             raise
-        actions.append(f"added {dim_name}")
+        actions.append(f"repaired {dim_name}" if stale is not None else f"added {dim_name}")
     return actions
 
 
@@ -855,9 +910,12 @@ def _remove_orphan_dimension_custom_fields(dt, plan):
     already written stay readable and a dimension unticked by mistake loses no
     history (konsol#255, Deepak Pai's option A).
     """
-    wanted, _label_map, existing, _refused = plan
+    wanted, _label_map, existing, _refused, broken = plan
     actions = []
-    for cf in existing:
+    # ``broken`` too (konsol#169): a row with no column whose dimension is no
+    # longer declared is an orphan like any other, and the add phase repairs
+    # only the wanted ones. Left out, it would outlive its dimension for ever.
+    for cf in existing + broken:
         if cf.fieldname not in wanted:
             frappe.delete_doc("Custom Field", cf.name)
             actions.append(f"removed {cf.fieldname}")
