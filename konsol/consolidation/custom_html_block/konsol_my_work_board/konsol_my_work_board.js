@@ -50,8 +50,9 @@ function cardNode(card) {
 	if (card.detail) node.append(el("p", "kmw-detail", card.detail));
 	const fix = el("div", "kmw-fix");
 	fix.append(el("div", "kmw-fix-label", "How to fix"));
-	const steps = el(card.fix.length > 1 ? "ol" : "ul", "kmw-steps");
-	for (const step of card.fix || []) steps.append(el("li", null, step));
+	const fixes = card.fix || [];
+	const steps = el(fixes.length > 1 ? "ol" : "ul", "kmw-steps");
+	for (const step of fixes) steps.append(el("li", null, step));
 	fix.append(steps);
 	node.append(fix);
 	if (card.no_go) node.append(el("p", "kmw-no-go", card.no_go));

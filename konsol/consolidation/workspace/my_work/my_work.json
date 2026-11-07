@@ -17,7 +17,7 @@
  "is_hidden": 0,
  "label": "My Work",
  "links": [],
- "modified": "2026-11-07 22:00:00.000000",
+ "modified": "2026-11-07 23:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "My Work",
@@ -27,7 +27,23 @@
  "public": 1,
  "quick_lists": [],
  "restrict_to_domain": "",
- "roles": [],
+ "roles": [
+  {
+   "role": "EPM Admin"
+  },
+  {
+   "role": "EPM Analyst"
+  },
+  {
+   "role": "Entity Accountant"
+  },
+  {
+   "role": "EPM User"
+  },
+  {
+   "role": "System Manager"
+  }
+ ],
  "sequence_id": 3.0,
  "shortcuts": [],
  "standard": 1,

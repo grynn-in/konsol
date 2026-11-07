@@ -79,9 +79,16 @@ SCREEN_DESTINATIONS = {
 #: menu, and that report also shows what blocks a sign-off (Handbook: Approve,
 #: check and sign off the period). The report has no filters: its Actions
 #: ask for the period.
+#: PR #420 review: Run checks and Sign off are Actions there too (a period
+#: whose checks never ran has no Assertion Run to open), and a rates error is
+#: fixed by a build.
 KIND_DESTINATIONS = {
     "close": "/desk/query-report/" + _quote("Period Close"),
     "signoff-wait": "/desk/query-report/" + _quote("Period Close"),
+    "checks-run": "/desk/query-report/" + _quote("Period Close"),
+    "resign": "/desk/query-report/" + _quote("Period Close"),
+    "signoff": "/desk/query-report/" + _quote("Period Close"),
+    "rates-error": "/desk/build-approval",
 }
 
 LIST_VIEW = "/desk/query-report/" + _quote("My Work")
@@ -130,34 +137,35 @@ FIXES = {
     "gap:ownership": (("Add an Ownership Period for each entity named, covering the start of "
                        "the periods named.",
                        "Send it for approval; the Close Lead approves it.",), _GROUP),
-    "gap:accountants": (("Give each user listed a User Permission with Allow = Entity for the "
-                         "entities they upload.",), _ENTITY),
+    "gap:accountants": (("Add a User Permission for each user listed: Allow = Entity, and the "
+                         "entity they upload.",), _ENTITY),
     # period items (mywork_model.period_items)
     "tb": (("Add a Trial Balance Submission for the entity and period, and load the file.",
             "Check it and submit it."), _ENTITY),
     "rates": (("Add the missing Closing and Average Group Exchange Rates for the period.",
                "Send them for approval; the Close Lead approves them."), _GROUP),
-    "checks-run": (("Open the period's latest Assertion Run and click Run Suite.",), _LEAD),
+    "checks-run": (("In Period Close, use Actions, then Run checks, and choose the period.",),
+                   _LEAD),
     "checks-failing": (("Open the period's latest Assertion Run and read each failing check.",
                         "Fix what each one names, then click Run Suite again."), _LEAD),
     "tbs-waiting": (("Nothing to do yourself: each entity's accountant submits its trial "
                      "balance.",
                      "Open the list to see which are in and remind the others."), _LEAD),
-    "resign": (("Something changed after the sign-off: open the period's latest Assertion Run "
-                "and click Run Suite.",
-                "When the checks finish, sign off again."), _LEAD),
+    "resign": (("In Period Close, use Actions, then Run checks: something changed after the "
+                "sign-off.",
+                "When the checks finish, use Actions, then Sign off."), _LEAD),
     "unowned": (("Add an Ownership Period covering the period for each entity named.",
                  "Send it for approval, then approve it."), _GROUP),
     "close": (("In Period Close, use Actions, then Close period.",), _LEAD),
     "checks-waiting": (("Nothing to do yourself until the checks pass: a Group Accountant runs "
                         "and fixes them.",
                         "Open the period's runs to follow them."), _LEAD),
-    "signoff": (("Open the period's latest Assertion Run and click Sign Off (or Acknowledge "
-                 "& Sign Off when it has warnings).",), _LEAD),
+    "signoff": (("In Period Close, use Actions, then Sign off, and choose the period.",
+                 "Amber checks need an acknowledgement of the warnings."), _LEAD),
     "signoff-wait": (("Nothing to do yourself yet: an earlier period, or a sign-off gate, must "
                       "clear first.",
                       "Period Close shows what blocks the sign-off."), _LEAD),
-    "rates-error": (("Request a consolidation build (Build Approval) and wait for it to "
+    "rates-error": (("Add a Build Approval with Build Scope consolidation and wait for it to "
                      "complete.",
                      "Then open My Work again; the rates are checked once the warehouse "
                      "answers."), _GROUP),

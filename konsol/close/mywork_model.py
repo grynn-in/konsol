@@ -190,7 +190,7 @@ def setup_gap_items(facts):
     if users:
         n = len(users)
         items.append(_item("accountants", f"{n} Entity Accountant{'s' if n > 1 else ''} with no entity",
-                           ", ".join(users), "System Manager", "/desk/user", users=users))
+                           ", ".join(users), "System Manager", "/desk/user-permission", users=users))
     return items
 
 
