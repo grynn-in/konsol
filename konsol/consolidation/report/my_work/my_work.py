@@ -3,7 +3,8 @@
 One row per item ``mywork_api.get_my_work`` returns for the caller (same
 roles, same reads, same items), blocking first. This report only lays them
 out (``mywork_report_model``), with an "Open" link to the nearest Desk
-destination, never the Close app. Read-only.
+destination, never the Close app, and how to fix each one. It is the list
+view of the My Work board (konsol#419; workspace "My Work"). Read-only.
 """
 import frappe
 
@@ -16,11 +17,4 @@ def execute(filters=None):
         data = mywork_report_model.rows(payload)
     except ValueError as e:
         frappe.throw(str(e))
-    # The Close app's own sentences (MyWork.vue, A54): only the Entity
-    # Accountant persona carries entities_assigned (None for the others).
-    message = None
-    if payload.get("entities_assigned") is False:
-        message = "No entities are assigned to you. Ask the System Manager."
-    elif payload.get("entities_assigned") is True and not data:
-        message = "Your entities are assigned, but none are in scope this period."
-    return mywork_report_model.columns(), data, message
+    return mywork_report_model.columns(), data, mywork_report_model.empty_message(payload, data)

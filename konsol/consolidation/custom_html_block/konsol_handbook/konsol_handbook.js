@@ -194,4 +194,9 @@ function render() {
 	renderList();
 }
 
-load(null);
+// konsol#419: a link to /desk/konsol-handbook?page=<page id> (a My Work card's
+// Handbook link) opens that page.
+const wanted = new URLSearchParams(window.location.search).get("page");
+load(null).then(() => {
+	if (wanted && state.data && (state.data.pages || []).some((p) => p.id === wanted)) openPage(wanted);
+});
