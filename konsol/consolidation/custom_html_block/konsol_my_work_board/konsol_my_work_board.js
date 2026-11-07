@@ -6,6 +6,11 @@
 //
 // Every server string is set as textContent; the block writes no HTML. Every
 // link is checked to be a Desk path (desk()) before it is set.
+//
+// Each card shows only its heading until opened (Deepak Pai, 7 Nov 2026: "just
+// show the headings with a collapsible link and collapse all /expand all
+// toggle button on the top bar"): a <details> whose <summary> is the title
+// and period, closed on load; the top-bar button opens or closes them all.
 const METHOD = "konsol.close.mywork_board_api.get_board";
 const box = root_element.querySelector(".konsol-mywork");
 
@@ -42,8 +47,8 @@ function load() {
 }
 
 function cardNode(card) {
-	const node = el("article", "kmw-card kmw-" + card.kind);
-	const head = el("div", "kmw-card-head");
+	const node = el("details", "kmw-card kmw-" + card.kind);
+	const head = el("summary", "kmw-card-head");
 	head.append(el("span", "kmw-card-title", card.title));
 	if (card.period) head.append(el("span", "kmw-period", card.period));
 	node.append(head);
@@ -88,6 +93,26 @@ function columnNode(column) {
 	return node;
 }
 
+function cards() {
+	return [...box.querySelectorAll("details.kmw-card")];
+}
+
+function toggleButton() {
+	const button = el("button", "btn btn-default btn-xs kmw-toggle", "Expand all");
+	button.type = "button";
+	const label = () => {
+		button.textContent = cards().some((c) => !c.open) ? "Expand all" : "Collapse all";
+	};
+	button.addEventListener("click", () => {
+		const open = cards().some((c) => !c.open);
+		for (const c of cards()) c.open = open;
+		label();
+	});
+	// A card opened or closed by hand changes what the button will do.
+	box.addEventListener("toggle", label, true);
+	return button;
+}
+
 function render(board) {
 	const head = el("div", "kmw-head");
 	head.append(el("span", "kmw-title", "My Work"));
@@ -95,7 +120,7 @@ function render(board) {
 	const refresh = el("button", "btn btn-default btn-xs", "Refresh");
 	refresh.type = "button";
 	refresh.addEventListener("click", load);
-	tools.append(refresh);
+	tools.append(toggleButton(), refresh);
 	const list = link("btn btn-default btn-xs kmw-list", "List view", board.list_view);
 	if (list) tools.append(list);
 	head.append(tools);
