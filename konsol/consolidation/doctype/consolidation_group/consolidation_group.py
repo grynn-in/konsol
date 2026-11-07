@@ -22,7 +22,9 @@ This controller now publishes two things, both pure structure:
 konsol#117 pair 1 (Deepak Pai, 7 Nov 2026, option A): ownership is a GRAPH. The
 links are Ownership Period rows (owner node -> owned node); the tree stays the
 reporting structure (which group's chart, policy and currency present a node),
-and ``build_rows`` enumerates every path over the links from every node. An
+and ``build_rows`` enumerates every path over the links from every node that
+defines a group code (the root, or a node whose tree parent carries another
+code; a node sharing its parent's code is a stop on paths, not a start). An
 entity reached by two paths gets two sets of rows with distinct ``path_id``, so
 dbt multiplies within a path and sums across paths. A link row with no owner
 (every row until task G's patch fills ``owner_node``) is the tree link, so on a
@@ -482,15 +484,22 @@ class ConsolidationGroup(NestedSet):
         that does not exist is skipped (validate refuses it; a stale row must
         not stop every other node's closure).
 
-        The ancestry is a depth-first enumeration of every path from every
-        node along the links. At each entity on a path, one row per link on the
-        path from the starting node: the ancestor's group, the entity, the link
-        (the node it reaches), its depth on the path, the path's length, the
-        entity's TREE path (``path``, unchanged in meaning), ``path_id`` (the
-        node labels from the ancestor to the entity, unique per path) and the
-        node the link leaves. A node met twice on one path is a cycle, refused
-        by name (OwnershipCycle): task B refuses it at validate, this is the
-        backstop.
+        The ancestry is a depth-first enumeration of every path along the
+        links from every node that DEFINES a group code: the root, or a node
+        whose tree parent carries a different ``consolidation_group``. A row is
+        keyed by the ancestor's code, not its node, so a node sharing its
+        parent's code (a leaf, or an entity-carrying node with children, as 27
+        live nodes are) is a stop on paths, never a start: starting there too
+        put a second path_id under the same (code, entity) key for the one
+        holding, and dbt's path sum counted it twice (task H, 7 Nov 2026:
+        the live share came out as 2..5 and the in-range dbt test failed).
+        At each entity on a path, one row per link on the path from the
+        starting node: the ancestor's group, the entity, the link (the node it
+        reaches), its depth on the path, the path's length, the entity's TREE
+        path (``path``, unchanged in meaning), ``path_id`` (the node labels
+        from the ancestor to the entity, unique per path) and the node the
+        link leaves. A node met twice on one path is a cycle, refused by name
+        (OwnershipCycle): task B refuses it at validate, this is the backstop.
         """
         hierarchy = []
         tree_path = {}
@@ -528,6 +537,9 @@ class ConsolidationGroup(NestedSet):
 
         ancestry = []
         for start in docs:
+            parent = by_name.get(start.parent_consolidation_group)
+            if parent is not None and parent.consolidation_group == start.consolidation_group:
+                continue  # shares its parent's code: a stop on paths, not a start
             # Each stack entry is a path from ``start``: the nodes on it (start
             # first) and the labels that name it.
             stack = [[start.name]]
