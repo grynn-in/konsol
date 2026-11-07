@@ -15,13 +15,15 @@ A step is ``{"key", "label", "state", "detail", "count", "route",
   HTML: the page escapes it.
 - ``count`` is a whole number where one helps (entities, accounts), else None.
 - ``route`` is the Desk route where the step is done, as
-  ``frappe.set_route`` takes it (``["List", doctype]`` or ``["Form", single]``);
-  ``route_options`` filters that list, or None.
+  ``frappe.set_route`` takes it (``["List", doctype]`` or ``["Form", single]``),
+  or None when the caller cannot open it; ``route_options`` filters that
+  list, or None.
 
 Entity codes named in a detail are cut to ``allowed`` (``None``: every entity
 visible; a set: only those), with the hidden count stated, so the page never
 names an entity the caller may not see. Imports nothing from frappe or konsol.
 """
+import re as _re
 
 DONE = "done"
 PARTIAL = "partial"
@@ -35,6 +37,7 @@ MAX_NAMES = 10
 STEPS = (
     ("fiscal_calendar", "Fiscal calendar", ["List", "EPM Fiscal Year"]),
     ("consolidation_group", "Consolidation group", ["List", "Consolidation Group"]),
+    ("statement_accounts", "Statement accounts (CTA and current-year result)", ["Form", "Close Settings"]),
     ("entities", "Entities", ["List", "Entity"]),
     ("chart_of_accounts", "Chart of accounts", ["List", "Main Account"]),
     ("dimensions", "Dimensions", ["List", "Dimension"]),
@@ -48,8 +51,14 @@ STEPS = (
 _LABELS = {key: label for key, label, _ in STEPS}
 _ROUTES = {key: route for key, _, route in STEPS}
 
+#: rate_gate's wording for an entity blocker (group_rates.rate_gate; a test
+#: pins the two together), so the entity in it can be cut to ``allowed``.
+ENTITY_BLOCKER = _re.compile(r"^Entity (.+) has no functional currency$")
 
-def _step(key, state, detail, count=None, route_options=None, route=None):
+_DEFAULT_ROUTE = object()
+
+
+def _step(key, state, detail, count=None, route_options=None, route=_DEFAULT_ROUTE):
     if state not in STATES:
         raise ValueError("Unknown setup state %r; expected one of %s." % (state, ", ".join(STATES)))
     return {
@@ -58,8 +67,8 @@ def _step(key, state, detail, count=None, route_options=None, route=None):
         "state": state,
         "detail": detail,
         "count": count,
-        "route": list(route or _ROUTES[key]),
-        "route_options": route_options,
+        "route": list(_ROUTES[key] if route is _DEFAULT_ROUTE else route) if route is not None else None,
+        "route_options": route_options if route is not None else None,
     }
 
 
@@ -132,43 +141,60 @@ def fiscal_calendar_step(years, period_rows, entity_calendars):
         mapped]), years)
 
 
-def consolidation_group_step(groups, ic_configured, cta_problem):
-    """``groups``: one dict per group node with no entity (the node the
-    reporting currency and the intercompany difference account are read
-    from): ``consolidation_group``, ``reporting_currency``,
-    ``ic_difference_account``, ``nci_account``. ``ic_configured``: an
-    Intercompany Account is Published and Close Settings does not declare
-    none, so an intercompany difference account is needed. ``cta_problem``:
-    the sign-off gate's statement-account gap message, or None."""
+def consolidation_group_step(groups, ic_configured):
+    """``groups``: one dict per group, from its nodes with no entity (the
+    node consolidation reads the reporting currency and the intercompany
+    difference account from): ``consolidation_group``, ``reporting_currency``,
+    ``ic_difference_account``, ``nci_account`` and ``nodes``, how many such
+    nodes it has. ``ic_configured``: an Intercompany Account is Published and
+    Close Settings does not declare none, so a difference account is needed.
+
+    A missing Non-controlling Interest Account is reported, never judged:
+    ``consolidation_policy_model.required_accounts`` needs it only for an
+    acquisition below 100%, and the Business Combination refuses that deal
+    itself."""
     groups = list(groups or ())
     if not groups:
         return _step("consolidation_group", NOT_DONE,
                      "No Consolidation Group node without an entity: create the group's own node "
                      "and give it a Reporting Currency.", 0)
-    names = [g["consolidation_group"] for g in groups]
-    no_currency = sorted(n for n, g in zip(names, groups) if not g.get("reporting_currency"))
+    no_currency = sorted(g["consolidation_group"] for g in groups if not g.get("reporting_currency"))
     with_currency = len(groups) - len(no_currency)
-    parts = []
+    problems = []
     if no_currency:
-        parts.append("No Reporting Currency on %s" % _names(no_currency))
+        problems.append("No Reporting Currency on %s" % _names(no_currency))
+    several = sorted("%s (%d nodes without an entity)" % (g["consolidation_group"], g["nodes"])
+                     for g in groups if int(g.get("nodes") or 1) > 1)
+    if several:
+        problems.append("Consolidation reads one node without an entity per group; keep one on %s"
+                        % _names(several))
     if ic_configured:
         no_diff = sorted(g["consolidation_group"] for g in groups if not g.get("ic_difference_account"))
         if no_diff:
-            parts.append("No Intercompany Difference Account on %s" % _names(no_diff))
+            problems.append("No Intercompany Difference Account on %s" % _names(no_diff))
+    notes = []
     no_nci = sorted(g["consolidation_group"] for g in groups if not g.get("nci_account"))
     if no_nci:
-        parts.append("No Non-controlling Interest Account on %s (needed for a deal below 100%%)"
-                     % _names(no_nci))
-    if cta_problem:
-        parts.append(cta_problem)
+        notes.append("No Non-controlling Interest Account on %s; a Business Combination below 100%% "
+                     "needs one" % _names(no_nci))
     if not with_currency:
         state = NOT_DONE
-    elif parts:
+    elif problems:
         state = PARTIAL
     else:
         state = DONE
     head = "%s with a Reporting Currency" % _plural(with_currency, "group")
-    return _step("consolidation_group", state, _sentences([head] + parts), len(groups))
+    return _step("consolidation_group", state, _sentences([head] + problems + notes), len(groups))
+
+
+def statement_accounts_step(gap_message):
+    """``gap_message``: the sign-off gate's statement-account gap
+    (``signoff_gate.statement_gap``: the CTA and current-year result
+    accounts in Close Settings, and Balance Sheet heading sides), or None."""
+    if gap_message:
+        return _step("statement_accounts", NOT_DONE, gap_message)
+    return _step("statement_accounts", DONE,
+                 "The CTA and current-year result accounts are declared in Close Settings.")
 
 
 def entities_step(entities, grouped, allowed):
@@ -249,15 +275,21 @@ def currencies_step(stored, gaps):
                  + ".", stored)
 
 
-def intercompany_step(published, declared_none, tolerance_gap, setup_gap):
+def intercompany_step(published, ic_state, tolerance_gap, setup_gap):
     """``published``: Published Intercompany Accounts (``ic_api.published_count``).
-    ``declared_none``: Close Settings declares none in this group.
-    ``tolerance_gap`` / ``setup_gap``: ``ic_api.tolerance_gap()`` and
-    ``ic_api.setup_gap()``, as My work shows them."""
-    if declared_none:
+    ``ic_state``: ``ic_model.state(published, declared_none=...)``, the rule
+    every close surface shares: ``not_applicable`` (declared none, nothing
+    Published), ``error`` (declared none while pairings are Published),
+    ``not_configured``, or a configured state. ``tolerance_gap`` /
+    ``setup_gap``: ``ic_api.tolerance_gap()`` and ``ic_api.setup_gap()``, as
+    My work shows them."""
+    state = ic_state.get("state")
+    if state == "not_applicable":
         return _step("intercompany", DONE, "None in this group (declared in Close Settings).", 0)
+    if state == "error":
+        return _step("intercompany", NOT_DONE, ic_state.get("message") or "", published)
     if not published:
-        return _step("intercompany", NOT_DONE, setup_gap or "No Intercompany Account is Published.", 0)
+        return _step("intercompany", NOT_DONE, setup_gap or ic_state.get("message") or "", 0)
     head = "%s Published" % _plural(published, "pairing")
     if tolerance_gap:
         message = tolerance_gap.get("message") if isinstance(tolerance_gap, dict) else str(tolerance_gap)
@@ -265,22 +297,35 @@ def intercompany_step(published, declared_none, tolerance_gap, setup_gap):
     return _step("intercompany", DONE, _sentences([head]), published)
 
 
-def users_step(admins, accountants, unassigned):
+def users_step(admins, accountants, unassigned, can_assign):
     """``admins``: enabled users holding EPM Admin. ``accountants``: enabled
     users holding Entity Accountant. ``unassigned``: how many of them hold no
     User Permission on Entity (``mywork_api._accountants_without_entities``,
-    the My work setup gap). Counts only: the caller may not read User."""
+    the My work setup gap). ``can_assign``: the caller holds System Manager,
+    the only role Frappe lets open User and User Permission; for anyone else
+    the step has no link and says who assigns. Counts only."""
     parts = ["%s, %s" % (_plural(admins, "EPM Admin"), _plural(accountants, "Entity Accountant"))]
     if unassigned:
         parts.append("%s no Entity User Permission"
                      % _plural(unassigned, "Entity Accountant has", "Entity Accountants have"))
     if not admins:
         parts.insert(0, "No enabled user holds EPM Admin")
-        return _step("users", NOT_DONE, _sentences(parts), 0)
-    if unassigned:
-        return _step("users", PARTIAL, _sentences(parts), admins,
-                     route=["List", "User Permission"], route_options={"allow": "Entity"})
-    return _step("users", DONE, _sentences(parts), admins)
+    if not can_assign and (unassigned or not admins):
+        parts.append("Roles and User Permissions are assigned by a System Manager")
+    if not admins:
+        state = NOT_DONE
+    elif unassigned:
+        state = PARTIAL
+    else:
+        state = DONE
+    if not can_assign:
+        route = None
+    elif unassigned:
+        route = ["List", "User Permission"]
+    else:
+        route = ["List", "User"]
+    options = {"allow": "Entity"} if (can_assign and unassigned) else None
+    return _step("users", state, _sentences(parts), admins, route_options=options, route=route)
 
 
 def trial_balance_step(submitted, latest_period):
@@ -292,17 +337,25 @@ def trial_balance_step(submitted, latest_period):
         _plural(submitted, "trial balance"), latest_period), submitted)
 
 
-def rates_step(latest_period, gate):
+def rates_step(latest_period, gate, allowed=None):
     """``latest_period``: the latest period with a submitted trial balance, or
     None. ``gate``: ``group_rates.rate_gate`` for it, ``(missing, error,
-    blockers)``."""
+    blockers)``. An entity named in a blocker is cut to ``allowed``."""
     if latest_period is None:
         return _step("rates", NOT_DONE,
                      "No submitted trial balance yet: the rates are checked for the latest period that has one.")
     missing, error, blockers = gate
     if error:
         return _step("rates", NOT_DONE, "The rates for %s cannot be checked: %s." % (latest_period, error))
-    parts = list(blockers or ())
+    parts, no_currency = [], []
+    for blocker in blockers or ():
+        m = ENTITY_BLOCKER.match(blocker)
+        if m:
+            no_currency.append(m.group(1))
+        else:
+            parts.append(blocker)
+    if no_currency:
+        parts.append("No Functional Currency: %s" % _entity_list(no_currency, allowed))
     if missing:
         parts.insert(0, "No approved rate for %s: %s" % (
             latest_period, ", ".join("%s → %s %s" % (f, t, rt) for f, t, rt in missing)))
@@ -319,7 +372,7 @@ def warehouse_step(health, fresh, fresh_error=None):
         return _step("warehouse", NOT_DONE, "ClickHouse is not reachable: %s." % (
             (health or {}).get("message") or "no answer"))
     if fresh is None:
-        return _step("warehouse", PARTIAL, "Reachable; the last build could not be read: %s." % (
+        return _step("warehouse", NOT_DONE, "Reachable; the last build could not be read: %s." % (
             fresh_error or "no answer"))
     state, as_of = fresh.get("state"), fresh.get("as_of")
     built = "last build %s" % as_of if as_of else "never built"

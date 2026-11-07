@@ -12,20 +12,23 @@ It re-derives no rule. Each step asks the reader that already holds it:
 - consolidation group: the group nodes with no entity (where consolidation
   reads the reporting currency, ``currency_references._USES``); whether an
   intercompany difference account is needed from ``ic_api.published_count``
-  and ``ic_api.declared_none``; the CTA / result account from
-  ``signoff_gate.statement_gap`` (the sign-off gate's own gap);
+  and ``ic_api.declared_none``;
+- statement accounts: ``signoff_gate.statement_gap`` (Close Settings);
 - entities: Active leaf entities, cut to
   ``entity_permissions.allowed_entity_codes`` before any is named;
 - chart: ``group_chart.chart_accounts`` (the Published chart),
   ``group_chart_model.apply_defaults`` (the translation method a leaf
   resolves to) and ``intercompany_account.allow_ic_problem`` (the publish
   check of a pairing);
-- dimensions: ``dimension_value_model.declared_dimensions``;
+- dimensions: ``dimension_value_model.declared_dimensions`` and the budget
+  write gate's ``api._permission_controlled_dimensions``;
 - ISO currencies: ``signoff_gate.currency_gaps`` (konsol#330 / PR #384);
-- intercompany: ``ic_api.setup_gap`` and ``ic_api.tolerance_gap``, as My work;
+- intercompany: ``ic_model.state`` (declared none against Published
+  pairings), ``ic_api.setup_gap`` and ``ic_api.tolerance_gap``, as My work;
 - users: ``mywork_api._accountants_without_entities``, as My work;
 - rates: ``group_rates.rate_gate`` for the latest period with a submitted
-  trial balance, the gate a close applies;
+  trial balance, the gate a close applies; an entity its blockers name is
+  cut to ``allowed_entity_codes`` too;
 - warehouse: ``clickhouse.check_health`` and
   ``freshness_api.current_freshness``.
 
@@ -33,12 +36,15 @@ It never writes: every read is ``get_all`` / ``count`` / a SELECT, and a GET
 request rolls back. A reader that raises turns its own step "not done" with
 the error named (``setup_model.unchecked``), so one failing area never hides
 the others and never passes silently.
+
+Counts are site-wide (``get_all`` / ``count`` ignore permissions): this is
+the site's setup, read by its administrators. Only entity codes are cut.
 """
 import frappe
 
 from konsol import (clickhouse, dimension_value_model, entity_permissions, fiscal_calendar, group_chart,
                     group_chart_model, group_rates, setup_model)
-from konsol.close import freshness_api, ic_api, signoff_gate
+from konsol.close import freshness_api, ic_api, ic_model, signoff_gate
 from konsol.close.period_name import period_name
 
 #: Who may read the setup status. A test pins the Page's roles to these.
@@ -55,13 +61,16 @@ def _fiscal_calendar():
 
 def _group_nodes():
     """One dict per group: the values of its nodes with no entity, the first
-    one set winning (a group normally has one such node)."""
+    one set winning, and ``nodes``, how many there are. Consolidation reads
+    one such node; more than one is reported by the step."""
     merged = {}
     for row in frappe.get_all(
             "Consolidation Group", filters={"data_area_id": _NO_ENTITY},
             fields=["consolidation_group", "reporting_currency", "ic_difference_account", "nci_account"],
             order_by="consolidation_group asc, name asc", limit_page_length=0):
-        out = merged.setdefault(row["consolidation_group"], {"consolidation_group": row["consolidation_group"]})
+        out = merged.setdefault(row["consolidation_group"],
+                                {"consolidation_group": row["consolidation_group"], "nodes": 0})
+        out["nodes"] += 1
         for field in ("reporting_currency", "ic_difference_account", "nci_account"):
             out[field] = out.get(field) or row.get(field) or ""
     return list(merged.values())
@@ -69,8 +78,12 @@ def _group_nodes():
 
 def _consolidation_group():
     ic_configured = ic_api.published_count() > 0 and not ic_api.declared_none()
+    return setup_model.consolidation_group_step(_group_nodes(), ic_configured)
+
+
+def _statement_accounts():
     gap = signoff_gate.statement_gap()
-    return setup_model.consolidation_group_step(_group_nodes(), ic_configured, gap["message"] if gap else None)
+    return setup_model.statement_accounts_step(gap["message"] if gap else None)
 
 
 def _entities():
@@ -103,11 +116,14 @@ def _dimensions():
     rows = frappe.get_all("Dimension",
                           fields=["name", "status", "in_budget", "in_trial_balance", "permission_doctype"],
                           order_by="name asc", limit_page_length=0)
-    budget = [r for r in rows if r.get("status") == "Published" and r.get("in_budget")]
+    # The budget write gate's own reader: which Published budget dimensions
+    # gate writes through a Permission DocType. Imported here: api is large.
+    from konsol import api
+    gated = api._permission_controlled_dimensions()
+    budget = [r["name"] for r in rows if r.get("status") == "Published" and r.get("in_budget")]
     return setup_model.dimensions_step(
         dimension_value_model.declared_dimensions(rows),
-        [r["name"] for r in budget if r.get("permission_doctype")],
-        [r["name"] for r in budget if not r.get("permission_doctype")])
+        sorted(gated), [name for name in budget if name not in gated])
 
 
 def _currencies():
@@ -115,8 +131,9 @@ def _currencies():
 
 
 def _intercompany():
-    return setup_model.intercompany_step(ic_api.published_count(), ic_api.declared_none(),
-                                         ic_api.tolerance_gap(), ic_api.setup_gap())
+    published = ic_api.published_count()
+    ic_state = ic_model.state(published, declared_none=bool(ic_api.declared_none()))
+    return setup_model.intercompany_step(published, ic_state, ic_api.tolerance_gap(), ic_api.setup_gap())
 
 
 def _enabled_holders(role):
@@ -133,7 +150,8 @@ def _users():
     from konsol.close import mywork_api
     return setup_model.users_step(len(_enabled_holders("EPM Admin")),
                                   len(_enabled_holders("Entity Accountant")),
-                                  len(mywork_api._accountants_without_entities()))
+                                  len(mywork_api._accountants_without_entities()),
+                                  "System Manager" in frappe.get_roles(frappe.session.user))
 
 
 def _latest_tb_period():
@@ -154,7 +172,8 @@ def _rates():
     latest = _latest_tb_period()
     if latest is None:
         return setup_model.rates_step(None, None)
-    return setup_model.rates_step(period_name(*latest), group_rates.rate_gate(*latest))
+    return setup_model.rates_step(period_name(*latest), group_rates.rate_gate(*latest),
+                                  entity_permissions.allowed_entity_codes())
 
 
 def _warehouse():
@@ -170,6 +189,7 @@ def _warehouse():
 READERS = (
     ("fiscal_calendar", _fiscal_calendar),
     ("consolidation_group", _consolidation_group),
+    ("statement_accounts", _statement_accounts),
     ("entities", _entities),
     ("chart_of_accounts", _chart),
     ("dimensions", _dimensions),

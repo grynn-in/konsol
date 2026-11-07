@@ -27,7 +27,8 @@ class KonsolSetup {
 		this.$summary = $('<p class="text-muted konsol-setup-summary"></p>').appendTo(page.main);
 		this.$list = $('<ul class="list-unstyled konsol-setup-checklist"></ul>').appendTo(page.main);
 		this.page.set_secondary_action(__("Refresh"), () => this.refresh());
-		this.refresh();
+		// No refresh() here: Frappe calls frappe.pages["konsol-setup"].refresh when the page is shown,
+		// the first time included, so a call here would read status() twice.
 	}
 
 	refresh() {
@@ -49,14 +50,14 @@ class KonsolSetup {
 			.addClass(state.indicator)
 			.text(state.mark + " " + state.label)
 			.appendTo($head);
-		$('<a class="bold" style="margin-left: 8px;"></a>')
-			.attr("href", "#")
-			.text(step.label || "")
-			.on("click", (e) => {
+		// A step with no route (the caller cannot open its list) shows its label without a link.
+		const $label = Array.isArray(step.route) && step.route.length
+			? $('<a class="bold" style="margin-left: 8px;"></a>').attr("href", "#").on("click", (e) => {
 				e.preventDefault();
 				this.open(step);
 			})
-			.appendTo($head);
+			: $('<span class="bold" style="margin-left: 8px;"></span>');
+		$label.text(step.label || "").appendTo($head);
 		if (step.count !== null && step.count !== undefined) {
 			$('<span class="text-muted" style="margin-left: 6px;"></span>').text("(" + step.count + ")").appendTo($head);
 		}
