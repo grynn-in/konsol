@@ -91,6 +91,13 @@
    "description": "The balance-sheet account the consolidated balance sheet shows the profit or loss to date under. No default."
   },
   {
+   "fieldname": "statement_net_sales_heading",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Net Sales Heading",
+   "description": "The Published Profit and Loss heading the Konsol home charts as net sales. No default: while blank, the chart shows net result only and asks for this heading."
+  },
+  {
    "fieldname": "commentary_section",
    "fieldtype": "Section Break",
    "label": "Commentary"
@@ -159,6 +166,7 @@
   "statements_section",
   "statement_cta_account",
   "statement_result_account",
+  "statement_net_sales_heading",
   "commentary_section",
   "commentary_threshold_amount",
   "commentary_threshold_percent",

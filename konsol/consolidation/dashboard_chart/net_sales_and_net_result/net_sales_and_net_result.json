@@ -1,0 +1,34 @@
+{
+ "chart_name": "Net Sales and Net Result",
+ "chart_type": "Custom",
+ "creation": "2026-11-07 12:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Dashboard Chart",
+ "empty_state_message": "No consolidated profit and loss in this fiscal year yet.",
+ "filters_json": "[]",
+ "idx": 0,
+ "is_public": 1,
+ "is_standard": 1,
+ "modified": "2026-11-07 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Consolidation",
+ "name": "Net Sales and Net Result",
+ "owner": "Administrator",
+ "roles": [
+  {
+   "role": "EPM Admin"
+  },
+  {
+   "role": "EPM Analyst"
+  },
+  {
+   "role": "EPM User"
+  },
+  {
+   "role": "System Manager"
+  }
+ ],
+ "source": "Konsol Net Sales and Net Result",
+ "timeseries": 0,
+ "type": "Line"
+}

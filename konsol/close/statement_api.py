@@ -355,6 +355,33 @@ def get_statement(fiscal_year, fiscal_period, consolidation_group=None):
     return _statement(fiscal_year, fiscal_period, consolidation_group)[0]
 
 
+def root_groups():
+    """The root Consolidation Group rows (W4-E8), ``consolidation_group`` and
+    ``reporting_currency``."""
+    return frappe.get_all(
+        "Consolidation Group", filters=_ROOT_FILTER,
+        fields=["consolidation_group", "reporting_currency"], limit_page_length=0,
+    )
+
+
+def choose_group(groups, consolidation_group=None):
+    """``(chosen, group_note, state, message)``: the one rule for which root
+    group a statement shows (W4-E8). A named group must be one of
+    ``groups`` (else it throws); with none named, the only group is chosen,
+    and several or none is ``state "choose_group"`` with its sentence, never
+    a guessed group. The Konsol home charts (konsol#407) use the same rule."""
+    if consolidation_group:
+        if consolidation_group not in {g["consolidation_group"] for g in groups}:
+            frappe.throw(f"{consolidation_group} is not a consolidation group.")
+        return consolidation_group, None, "ok", None
+    if len(groups) == 1:
+        return groups[0]["consolidation_group"], "The only consolidation group.", "ok", None
+    if groups:
+        return None, None, "choose_group", "Choose a consolidation group."
+    return (None, None, "choose_group",
+            "No consolidation group is declared yet: create one in Consolidation Group.")
+
+
 def _statement(fiscal_year, fiscal_period, consolidation_group):
     """``(payload, reads)``: ``get_statement``'s payload, and — on ``ok``
     only, else ``None`` — the reads it was built from (``key``,
@@ -365,29 +392,9 @@ def _statement(fiscal_year, fiscal_period, consolidation_group):
     period_rows = fiscal_calendar.fiscal_period_rows()
     period_row = _find_period(key, period_rows)
 
-    groups = frappe.get_all(
-        "Consolidation Group", filters=_ROOT_FILTER,
-        fields=["consolidation_group", "reporting_currency"], limit_page_length=0,
-    )
+    groups = root_groups()
+    chosen, group_note, state, message = choose_group(groups, consolidation_group)
     group_by_name = {g["consolidation_group"]: g for g in groups}
-
-    chosen, group_note = None, None
-    state, message = "ok", None
-    if consolidation_group:
-        if consolidation_group not in group_by_name:
-            frappe.throw(f"{consolidation_group} is not a consolidation group.")
-        chosen = consolidation_group
-    elif len(groups) == 1:
-        chosen = groups[0]["consolidation_group"]
-        group_note = "The only consolidation group."
-    elif groups:
-        state, message = "choose_group", "Choose a consolidation group."
-    else:
-        state, message = (
-            "choose_group",
-            "No consolidation group is declared yet: create one in Consolidation Group.",
-        )
-
     reporting_currency = (
         group_by_name[chosen].get("reporting_currency") if chosen else None
     )
