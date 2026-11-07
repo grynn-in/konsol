@@ -2,25 +2,37 @@
  * Konsol sidebars: section headings ("Trial Balances", "Rates", ...).
  * Deepak Pai, 7 Nov 2026: "make sure things like Trial Balances (sections?)
  * get a slightly darker background and are spaced closer together", then
- * "Only vertical spacing needs to be tighter..the horizontal is fine".
+ * "Only vertical spacing needs to be tighter..the horizontal is fine", then
+ * "more tightly spaced and darker green background than what you did. also
+ * all collapsed" (the collapse is keep_closed on each Section Break).
  *
  * Scope: konsol's own sidebars only. Frappe v16 writes the shell's name onto
  * .body-sidebar as data-title (ui/sidebar/sidebar.js setup), so Frappe's
  * shells (Build, Data, System, ...) keep their look.
  * test_konsol_sidebar_look.py pins the scope to the shipped sidebar titles.
  *
- * Colours are Frappe variables only: --surface-gray-2 is the step above the
- * sidebar's own ground, and it follows the dark theme.
+ * Colours are variables only. The band is the site's Brand Colour
+ * (--konsol-brand from konsol_brand.js), or Frappe's --primary when none is
+ * set. brand_model.validate refuses a Brand Colour that white text cannot be
+ * read on (WCAG AA 4.5:1), so the white label is safe on every accepted one.
  */
 
-/* A heading reads as a band: one step darker, the row's own radius. */
+/* A heading is a green band with white text, 24px tall instead of 28px.
+ * Frappe sets the heading ink with !important (sidebar.scss .section-break). */
 :is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Budget"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break {
-	background-color: var(--surface-gray-2);
+	background-color: var(--konsol-brand, var(--primary));
+	color: var(--white) !important;
 	border-radius: var(--radius);
+	height: 24px;
 }
 
-/* Groups sit closer: 8px above a heading instead of Frappe's 16px
+/* The chevron is drawn with --ink-gray-5 as its stroke; white on the band. */
+:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Budget"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break .drop-icon svg {
+	stroke: var(--white);
+}
+
+/* Groups sit tight: 2px above a heading instead of Frappe's 16px
  * (sidebar.scss, ".sidebar-items > .section-item:has(.section-break)"). */
 :is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Budget"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .sidebar-items > .section-item:has(.section-break):not(:first-child) {
-	margin-top: 8px;
+	margin-top: 2px;
 }
