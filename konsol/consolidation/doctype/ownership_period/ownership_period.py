@@ -698,40 +698,53 @@ class OwnershipPeriod(Document):
         holders changes (its own start and each other link's start inside it):
         the holders covering that date are summed, and the largest total is the
         one named, with the window where those holders all hold. A cancelled
-        link holds nothing. The period this change supersedes is left out: the
-        approval ends it the day before this one starts, so its share is the
+        link holds nothing. A period that another non-cancelled period (this
+        one included) ``supersedes`` ends the day before that successor starts:
+        the approval writes exactly that end date, and until it does the draft
+        and its predecessor would otherwise both be counted (PR #449 review,
+        finding 4), so a change that supersedes the current period is the
         share being changed, not a second one. Runs after
-        ``_check_no_gaps_or_overlaps``, which has already vouched for that
-        predecessor.
+        ``_check_no_gaps_or_overlaps``, which has already vouched for this
+        document's own predecessor.
         """
         if not self.effective_date:
             return
         start = getdate(self.effective_date)
         end = getdate(self.end_date or _OPEN_ENDED)
-        others = [
-            op for op in frappe.get_all(
-                self.doctype,
-                filters={
-                    "consolidation_group": self.consolidation_group,
-                    "data_area_id": self.data_area_id or _BLANK,
-                    "name": ["!=", self.name],
-                    "docstatus": ["!=", 2],
-                },
-                fields=["name", "owner_label", "ownership_pct", "effective_date", "end_date"],
-                limit_page_length=0,
-                order_by="effective_date asc",
-            )
-            if op.name != self.get("supersedes")
-            and start <= getdate(op.end_date or _OPEN_ENDED) and end >= getdate(op.effective_date)
-        ]
+        rows = frappe.get_all(
+            self.doctype,
+            filters={
+                "consolidation_group": self.consolidation_group,
+                "data_area_id": self.data_area_id or _BLANK,
+                "name": ["!=", self.name],
+                "docstatus": ["!=", 2],
+            },
+            fields=["name", "owner_label", "ownership_pct", "effective_date", "end_date", "supersedes"],
+            limit_page_length=0,
+            order_by="effective_date asc",
+        )
+        # predecessor name -> the day before its successor starts
+        ended_by_successor = {}
+        for successor in list(rows) + [self]:
+            predecessor = getattr(successor, "supersedes", None)
+            if predecessor:
+                ended_by_successor[predecessor] = (
+                    getdate(successor.effective_date) - datetime.timedelta(days=1))
+
+        def ends(op):
+            own = getdate(op.end_date or _OPEN_ENDED)
+            cut = ended_by_successor.get(op.name)
+            return min(own, cut) if cut is not None else own
+
+        others = [op for op in rows
+                  if start <= ends(op) and end >= getdate(op.effective_date)]
         if not others:
             return
         points = sorted({start} | {getdate(op.effective_date) for op in others
                                    if start < getdate(op.effective_date) <= end})
         worst, holders = None, []
         for point in points:
-            covering = [op for op in others
-                        if getdate(op.effective_date) <= point <= getdate(op.end_date or _OPEN_ENDED)]
+            covering = [op for op in others if getdate(op.effective_date) <= point <= ends(op)]
             total = sum(float(op.ownership_pct or 0) for op in covering)
             if worst is None or total > worst[1]:
                 worst, holders = (point, total), covering
@@ -740,8 +753,8 @@ class OwnershipPeriod(Document):
             return
         # the window where every named holder holds: from the point to the
         # earliest end among them, open when none ends
-        ends = [getdate(op.end_date) for op in holders if op.end_date]
-        until = min(ends).isoformat() if ends else "open"
+        closed = [ends(op) for op in holders if ends(op) < getdate(_OPEN_ENDED)]
+        until = min(closed).isoformat() if closed else "open"
         listed = ", ".join(
             f"`{op.owner_label}` {_pct(op.ownership_pct)}%"
             for op in sorted(holders, key=lambda op: (-float(op.ownership_pct or 0), op.owner_label or "")))
