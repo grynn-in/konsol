@@ -80,6 +80,19 @@ class CloseSettings(Document):
         self.validate_net_sales_heading()
         self.validate_commentary_threshold()
         self.validate_deadlines()
+        self.validate_brand_colour()
+
+    def validate_brand_colour(self):
+        """konsol#415: a hex colour white button text can be read on, stored
+        normalised. Blank keeps Frappe's own colours."""
+        if not getattr(self, "brand_colour", None):
+            return
+        from konsol import brand_model
+
+        try:
+            self.brand_colour = brand_model.validate(self.brand_colour)
+        except ValueError as e:
+            frappe.throw(str(e), title="Brand Colour")
 
     def validate_first_close_period(self):
         """konsol#303: the first period konsol closes. No default — a blank

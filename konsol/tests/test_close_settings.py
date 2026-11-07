@@ -854,7 +854,8 @@ def test_deadlines_tab_follows_commentary_with_the_two_tables():
     fields = _doc()["fields"]
     order = [f["fieldname"] for f in fields]
     by_name = {f["fieldname"]: f for f in fields}
-    assert order[order.index("commentary_threshold_combine") + 1:] == [
+    # The Appearance tab (konsol#415) follows Deadlines.
+    assert order[order.index("commentary_threshold_combine") + 1:order.index("appearance_tab")] == [
         "deadlines_tab", "deadline_rules_section", "deadline_rules",
         "holidays_section", "close_holidays"], order
     assert by_name["deadlines_tab"]["fieldtype"] == "Tab Break"

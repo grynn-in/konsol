@@ -45,7 +45,7 @@ fixtures = [
 # in_install (#351 review), so the vars are written once, after the seeding.
 after_install = ["konsol.install.create_roles", "konsol.workflows.install_workflows",
                  "konsol.defaults.install_defaults", "konsol.desk_blocks.install_custom_blocks",
-                 "konsol.install.regenerate_dbt_vars"]
+                 "konsol.brand.set_default_if_blank", "konsol.install.regenerate_dbt_vars"]
 # Fills a fresh site's warehouse (#142): queues reconcile_all as a job after
 # the install commits. after_sync, because after_install runs before fixtures.
 after_sync = ["konsol.install.after_sync"]
@@ -56,7 +56,9 @@ after_migrate = ["konsol.install.after_migrate"]
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/konsol/css/konsol.css"
-# app_include_js = "/assets/konsol/js/konsol.js"
+# konsol#415: the site's Brand Colour on every Desk page (see konsol/brand.py).
+app_include_js = ["/assets/konsol/js/konsol_brand.js"]
+boot_session = ["konsol.brand.boot_session"]
 
 # Approve and Reject in the record's Actions menu, on every approval doctype
 # (close_policy_model.APPROVAL_DOCTYPES; Deepak Pai, 5 Nov 2026).
