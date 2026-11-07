@@ -53,7 +53,7 @@ from konsol.consolidation.doctype.business_combination_consideration.business_co
 from konsol.consolidation.doctype.business_combination_cost.business_combination_cost import (
     BusinessCombinationCost,
 )
-from konsol.consolidation.doctype.ownership_period.ownership_period import owner_refusal
+from konsol.consolidation.doctype.ownership_period.ownership_period import node_by_key, owner_refusal
 from konsol.consolidation_policy_model import (
     ACCOUNT_FIELDS,
     POLICY_FIELDS,
@@ -327,17 +327,11 @@ class BusinessCombination(Document):
 
     # -- the acquirer (#117 pair 1) -------------------------------------------
 
-    _NODE_FIELDS = ["name", "consolidation_group", "data_area_id", "parent_consolidation_group"]
-
     def _acquired_node(self):
         """The Consolidation Group node of the acquired entity in this group,
         or None while the tree does not have it yet (the Ownership Period the
         approval creates refuses that by name)."""
-        return frappe.db.get_value(
-            "Consolidation Group",
-            {"consolidation_group": self.consolidation_group, "data_area_id": self.acquired_entity},
-            self._NODE_FIELDS, as_dict=True,
-        )
+        return node_by_key(self.consolidation_group, self.acquired_entity)
 
     def _resolve_acquirer(self):
         """Pre-fill a blank acquirer with the acquired node's tree parent: the

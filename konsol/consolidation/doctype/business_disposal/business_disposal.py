@@ -44,7 +44,7 @@ from konsol.close.reject_reason import refuse_reasonless_reject
 from konsol.consolidation.doctype.business_disposal_proceeds.business_disposal_proceeds import (
     BusinessDisposalProceeds,
 )
-from konsol.consolidation.doctype.ownership_period.ownership_period import owner_refusal
+from konsol.consolidation.doctype.ownership_period.ownership_period import node_by_key, owner_refusal
 from konsol.consolidation_policy_model import (
     ACCOUNT_FIELDS,
     POLICY_FIELDS,
@@ -219,16 +219,10 @@ class BusinessDisposal(Document):
 
     # -- the disposer (#117 pair 1) -------------------------------------------
 
-    _NODE_FIELDS = ["name", "consolidation_group", "data_area_id", "parent_consolidation_group"]
-
     def _disposed_node(self):
         """The Consolidation Group node of the disposed entity in this group,
         or None when the tree does not have it."""
-        return frappe.db.get_value(
-            "Consolidation Group",
-            {"consolidation_group": self.consolidation_group, "data_area_id": self.disposed_entity},
-            self._NODE_FIELDS, as_dict=True,
-        )
+        return node_by_key(self.consolidation_group, self.disposed_entity)
 
     def _resolve_disposer(self):
         """Pre-fill a blank disposer with the disposed node's tree parent: the
