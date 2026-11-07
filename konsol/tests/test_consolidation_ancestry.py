@@ -10,9 +10,12 @@ ConsolidationGroup.build_rows is pure by design (no ClickHouse, no frappe calls)
 precisely so it can be exercised here without a site.
 """
 import importlib.util
+import inspect
 import os
 import sys
 import types
+
+import pytest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(APP_DIR, "consolidation", "doctype", "consolidation_group",
@@ -88,10 +91,10 @@ TREE = [
 ]
 
 
-def _rows(nodes=None):
+def _rows(nodes=None, links=()):
     cls = _load()
     nodes = nodes if nodes is not None else TREE
-    return cls.build_rows(nodes, {n.name: n for n in nodes})
+    return cls.build_rows(nodes, {n.name: n for n in nodes}, links)
 
 
 def _ancestry_as_set(ancestry):
@@ -151,15 +154,20 @@ def test_a_root_only_tree_produces_no_ancestry():
     assert ancestry == []
 
 
-def test_a_cycle_does_not_hang_the_walk():
-    """parent links are user-editable; a cycle must terminate, not spin."""
+def test_a_cycle_in_the_tree_is_refused_by_name_not_spun():
+    """parent links are user-editable; a cycle must terminate. konsol#117: it
+    terminates by raising, naming the cycle (the tree walk used to stop
+    quietly at the repeated node and write a closure that was wrong by
+    omission). Task B refuses the cycle at validate; this is the backstop."""
     cyclic = [
         _node("CG-A-", "A", "", "CG-B-"),
         _node("CG-B-", "B", "", "CG-A-"),
         _node("CG-B-E1", "B", "E1", "CG-B-"),
     ]
-    hierarchy, ancestry = _rows(cyclic)
-    assert hierarchy and ancestry
+    with pytest.raises(Exception) as e:
+        _rows(cyclic)
+    assert type(e.value).__name__ == "OwnershipCycle"
+    assert "A → B → A" in str(e.value) or "B → A → B" in str(e.value), str(e.value)
 
 
 # --- the path ---------------------------------------------------------------
@@ -204,3 +212,178 @@ def test_column_lists_match_the_rows_built():
     assert all(len(r) == len(cls.CH_STAGING_COLUMNS) for r in ancestry)
     assert cls.CH_STAGING_TABLE == "epm_staging.consolidation_ancestry"
     assert cls.CH_HIERARCHY_TABLE == "epm_staging.consolidation_hierarchy"
+
+
+# --- konsol#117 pair 1, task C: the closure is a path enumeration over links --
+#
+# Ownership Period becomes the link (owner_node -> owned node). build_rows walks
+# every path from every node along those links and writes one row per (ancestor,
+# entity, link on the path), with path_id naming the path. A link row without an
+# owner (every row before task G's patch) falls back to the tree parent, so on a
+# tree the rows are today's plus the three new columns.
+#
+# Row: [ancestor_group, entity, link_group, link_entity, link_depth, depth,
+#       path (the entity's TREE path, unchanged), path_id, link_owner_group,
+#       link_owner_entity]
+
+def _link(group, entity, owner):
+    """An Ownership Period row as _links() reads it: the owned node by
+    (consolidation_group, data_area_id), the owner by node name."""
+    return {"consolidation_group": group, "data_area_id": entity, "owner_node": owner}
+
+
+# Design comment section 2, shape 1: P->A 80, A->D 60, P->D 20. D sits under A
+# in the tree; P's direct 20% is a second link into D.
+SHAPE_1 = [
+    _node("CG-P-", "P", "", None),
+    _node("CG-P-A", "P", "A", "CG-P-"),
+    _node("CG-P-D", "P", "D", "CG-P-A"),
+]
+SHAPE_1_LINKS = [
+    _link("P", "A", "CG-P-"),   # P -> A
+    _link("P", "D", "CG-P-A"),  # A -> D
+    _link("P", "D", "CG-P-"),   # P -> D
+]
+
+
+def test_shape_1_emits_two_paths_to_d_with_distinct_path_ids():
+    _, ancestry = _rows(SHAPE_1, SHAPE_1_LINKS)
+    to_d = sorted(tuple(r) for r in ancestry if r[0] == "P" and r[1] == "D")
+    assert to_d == [
+        ("P", "D", "P", "A", 1, 2, "P/A/D", "P/A/D", "P", ""),
+        ("P", "D", "P", "D", 1, 1, "P/A/D", "P/D", "P", ""),
+        ("P", "D", "P", "D", 2, 2, "P/A/D", "P/A/D", "P", "A"),
+    ], to_d
+    assert {r[7] for r in to_d} == {"P/A/D", "P/D"}, "two paths, two path_ids"
+
+
+def test_shape_1_has_one_path_from_a_and_one_to_a():
+    _, ancestry = _rows(SHAPE_1, SHAPE_1_LINKS)
+    rows = sorted(tuple(r) for r in ancestry if (r[0], r[1]) != ("P", "D"))
+    # A is a node under P, so a row from ancestor A reads consolidation_group P:
+    # the live tree is shaped like this (every node's group code is ECL_GROUP)
+    assert rows == [
+        ("P", "A", "P", "A", 1, 1, "P/A", "P/A", "P", ""),
+        ("P", "D", "P", "D", 1, 1, "P/A/D", "A/D", "P", "A"),
+    ], rows
+    assert len(ancestry) == 5
+
+
+def test_path_keeps_its_meaning_and_path_id_names_the_path():
+    """`path` is the entity's tree path from the root, as before; `path_id` is
+    the link path from THIS ancestor, so dbt can sum per path."""
+    _, ancestry = _rows(SHAPE_1, SHAPE_1_LINKS)
+    assert {r[6] for r in ancestry if r[1] == "D"} == {"P/A/D"}
+    assert all(r[7].endswith("/" + r[1]) for r in ancestry)
+    assert all(r[7].startswith(r[0] + "/") or r[7].startswith("A/") for r in ancestry)
+
+
+def test_the_link_owner_is_the_node_the_link_leaves():
+    _, ancestry = _rows(SHAPE_1, SHAPE_1_LINKS)
+    owners = {(r[7], r[4]): (r[8], r[9]) for r in ancestry}
+    assert owners[("P/A/D", 1)] == ("P", "")    # P owns A
+    assert owners[("P/A/D", 2)] == ("P", "A")   # A owns D
+    assert owners[("P/D", 1)] == ("P", "")      # P owns D directly
+    assert owners[("A/D", 1)] == ("P", "A")
+
+
+# --- the tree fallback: today's rows plus the new columns ---------------------
+
+def test_without_links_a_tree_yields_exactly_todays_rows():
+    """Task A adds owner_node and task G fills it; until then every link row is
+    blank and the tree parent is the owner, so the closure is unchanged."""
+    _, ancestry = _rows()
+    assert len(ancestry) == 8  # USMF 1, JPMF 1, DEMF 1+2, GBMF 1+2
+    assert sorted(tuple(r) for r in ancestry if r[1] == "DEMF") == [
+        ("GROUP_CORP", "DEMF", "GROUP_EMEA", "", 1, 2,
+         "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_CORP", ""),
+        ("GROUP_CORP", "DEMF", "GROUP_EMEA", "DEMF", 2, 2,
+         "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_EMEA", ""),
+        ("GROUP_EMEA", "DEMF", "GROUP_EMEA", "DEMF", 1, 1,
+         "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_EMEA/DEMF", "GROUP_EMEA", ""),
+    ]
+
+
+def test_a_link_without_an_owner_falls_back_to_the_tree_parent():
+    """A row with owner_node blank or missing (before task A's field exists,
+    or before task G's patch fills it) is the tree link, not no link."""
+    blank = [_link("GROUP_EMEA", "DEMF", None),
+             {"consolidation_group": "GROUP_EMEA", "data_area_id": "GBMF"}]
+    _, with_blank = _rows(TREE, blank)
+    _, without = _rows()
+    assert sorted(map(tuple, with_blank)) == sorted(map(tuple, without))
+
+
+def test_a_declared_owner_replaces_the_tree_parent():
+    """DEMF owned by USMF (a sibling branch), not by GROUP_EMEA: the closure
+    follows the link. The tree still places DEMF under GROUP_EMEA for
+    presentation (`path`), but no path reaches DEMF from GROUP_EMEA; dbt's
+    assert_tree_node_reached_by_links reports that."""
+    _, ancestry = _rows(TREE, [_link("GROUP_EMEA", "DEMF", "CG-GROUP_CORP-USMF")])
+    demf = sorted(tuple(r) for r in ancestry if r[1] == "DEMF")
+    assert demf == [
+        ("GROUP_CORP", "DEMF", "GROUP_CORP", "USMF", 1, 2,
+         "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_CORP/USMF/DEMF", "GROUP_CORP", ""),
+        ("GROUP_CORP", "DEMF", "GROUP_EMEA", "DEMF", 2, 2,
+         "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_CORP/USMF/DEMF", "GROUP_CORP", "USMF"),
+        ("GROUP_CORP", "DEMF", "GROUP_EMEA", "DEMF", 1, 1,
+         "GROUP_CORP/GROUP_EMEA/DEMF", "USMF/DEMF", "GROUP_CORP", "USMF"),
+    ], demf
+
+
+def test_the_same_edge_declared_twice_is_one_link():
+    """Two periods on one (owner, owned) edge are two tranches of one link,
+    not two paths: the closure is undated (dbt resolves the dates)."""
+    twice = SHAPE_1_LINKS + [_link("P", "D", "CG-P-")]
+    _, once_rows = _rows(SHAPE_1, SHAPE_1_LINKS)
+    _, twice_rows = _rows(SHAPE_1, twice)
+    assert sorted(map(tuple, twice_rows)) == sorted(map(tuple, once_rows))
+
+
+def test_a_link_naming_an_unknown_node_is_ignored_not_fatal():
+    unknown = SHAPE_1_LINKS + [_link("P", "ZZNOPE", "CG-P-"), _link("P", "D", "CG-ZZ-")]
+    _, rows = _rows(SHAPE_1, unknown)
+    _, expected = _rows(SHAPE_1, SHAPE_1_LINKS)
+    assert sorted(map(tuple, rows)) == sorted(map(tuple, expected))
+
+
+# --- cycles ------------------------------------------------------------------
+
+def test_a_cycle_through_links_is_refused_naming_it():
+    """Design comment section 3: task B refuses the cycle at validate; this is
+    the build-time backstop for one that slipped in through a patch."""
+    nodes = [
+        _node("CG-R-", "R", "", None),
+        _node("CG-R-X", "R", "X", "CG-R-"),
+        _node("CG-R-Y", "R", "Y", "CG-R-X"),
+    ]
+    links = [_link("R", "X", "CG-R-"), _link("R", "Y", "CG-R-X"), _link("R", "X", "CG-R-Y")]
+    with pytest.raises(Exception) as e:
+        _rows(nodes, links)
+    assert type(e.value).__name__ == "OwnershipCycle"
+    assert "X → Y → X" in str(e.value), str(e.value)
+    assert "konsol#117" in str(e.value)
+
+
+def test_a_self_link_is_the_one_node_cycle():
+    nodes = [_node("CG-R-", "R", "", None), _node("CG-R-X", "R", "X", "CG-R-")]
+    links = [_link("R", "X", "CG-R-"), _link("R", "X", "CG-R-X")]
+    with pytest.raises(Exception) as e:
+        _rows(nodes, links)
+    assert "X → X" in str(e.value), str(e.value)
+
+
+# --- what resync_staging feeds the walk ------------------------------------
+
+def test_resync_reads_submitted_links_and_tolerates_a_stack_without_the_owner_field():
+    """_links(): submitted Ownership Periods only (a draft is not yet a link;
+    a cancelled one is gone), and nothing at all on a stack where task A's
+    owner_node column does not exist yet, so build_rows falls back to the tree."""
+    cls = _load()
+    src = inspect.getsource(cls._links)
+    assert 'has_column("Ownership Period", "owner_node")' in src
+    assert '"docstatus": 1' in src
+    assert '"owner_node"' in src
+    resync = inspect.getsource(cls.resync_staging)
+    assert "cls._links()" in resync
+    assert "cls.build_rows(docs, by_name, links)" in resync
