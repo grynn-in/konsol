@@ -411,6 +411,12 @@ def _site(rows, nodes=None):
 
     def get_all(doctype, filters=None, fields=None, **k):
         calls.append(("get_all", filters))
+        if doctype == "Consolidation Group":
+            # the cycle walk's tree children of one node (finding 2)
+            assert nodes is not None, "a tree is needed to read tree children"
+            assert list(filters) == ["parent_consolidation_group"], filters
+            return [types.SimpleNamespace(**vars(n)) for n in nodes.values()
+                    if n.parent_consolidation_group == filters["parent_consolidation_group"]]
         out = []
         for r in rows:
             ok = True
@@ -439,19 +445,24 @@ def _site(rows, nodes=None):
         raise AssertionError(f"no such period {name}")
 
     def sql(query, values=(), as_dict=False, **k):
-        """The two statements the cycle check sends (task B): the serialising
-        lock on Ownership Period's tabDocType row, and the links OUT of one
-        node (``owner_node = %s``, optionally ``name != %s``), both FOR
-        UPDATE. Anything else is a test's mistake."""
+        """The three statements the cycle check sends (task B; finding 2):
+        the serialising lock on Ownership Period's tabDocType row, the links
+        OUT of one node (``owner_node = %s``, optionally ``name != %s``), and
+        the nodes a SUBMITTED link names (``docstatus = 1``, optionally
+        ``name != %s``), all FOR UPDATE. Anything else is a test's mistake."""
         calls.append(("sql", query, tuple(values)))
         if "`tabDocType`" in query:
             return []
-        assert "`tabOwnership Period`" in query and "`owner_node` = %s" in query, query
+        assert "`tabOwnership Period`" in query, query
         assert as_dict, "the controller reads links as dicts"
-        owner = values[0]
-        exclude = values[1] if "`name` != %s" in query else None
+        exclude = values[-1] if "`name` != %s" in query else None
+        if "`owner_node` = %s" in query:
+            owner = values[0]
+            return [types.SimpleNamespace(**vars(r)) for r in rows
+                    if r.owner_node == owner and r.docstatus != 2 and r.name != exclude]
+        assert "`docstatus` = 1" in query, query
         return [types.SimpleNamespace(**vars(r)) for r in rows
-                if r.owner_node == owner and r.docstatus != 2 and r.name != exclude]
+                if r.docstatus == 1 and r.name != exclude]
 
     frappe.get_all = get_all
     frappe.get_doc = get_doc
@@ -1119,6 +1130,34 @@ def test_117b_a_cancelled_link_does_not_count_but_a_draft_does():
     module, _, _ = _site([draft], nodes=_TREE)
     doc = _closing_link(module, "CG-ZZG-ZZ02", "ZZG", "ZZ01")
     assert _refusal(doc) == _cycle_sentence("ZZ02", "ZZ01", "ZZ02")
+
+
+def test_117b_a_ring_through_a_tree_edge_no_link_names_is_refused():
+    """``build_rows`` owns a node no link names by its tree parent, so that
+    implicit edge closes a ring as surely as a link does (PR #449 review,
+    finding 2). Tree ZZG > ZZSUB > ZZ03 with no period on ZZSUB or ZZ03;
+    ZZ03 holds ZZ01: a share of ZZSUB for ZZ01 would ring ZZ01 → ZZSUB →
+    ZZ03 → ZZ01 (the first edge implicit) and raise OwnershipCycle at every
+    reconcile. It is refused here instead, by the same sentence."""
+    zz03_owns_zz01 = _edge("OP-ZZ03-ZZ01-2026-01-01", "CG-ZZSUB-ZZ03", "ZZ03", "ZZG", "ZZ01")
+    module, _, _ = _site([zz03_owns_zz01], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ03", "ZZ01")
+
+
+def test_117b_a_submitted_link_into_the_tree_child_replaces_the_implicit_edge_a_draft_does_not():
+    """The implicit edge exists only while no SUBMITTED link names the child:
+    that is what ``build_rows`` reads (``_links``: docstatus 1). A draft into
+    the child is not yet a link there, so the ring through the tree stands
+    until it is submitted; refusing it now is what keeps the reconcile green."""
+    zz03_owns_zz01 = _edge("OP-ZZ03-ZZ01-2026-01-01", "CG-ZZSUB-ZZ03", "ZZ03", "ZZG", "ZZ01")
+    zz02_owns_zz03 = _edge("OP-ZZ02-ZZ03-2026-01-01", "CG-ZZG-ZZ02", "ZZ02", "ZZSUB", "ZZ03")
+    module, _, _ = _site([zz03_owns_zz01, zz02_owns_zz03], nodes=_TREE)
+    _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None).validate()
+    draft = _edge("OP-ZZ02-ZZ03-2026-01-01", "CG-ZZG-ZZ02", "ZZ02", "ZZSUB", "ZZ03", docstatus=0)
+    module, _, _ = _site([zz03_owns_zz01, draft], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ03", "ZZ01")
 
 
 def test_117b_editing_a_link_does_not_see_its_own_stored_row():
