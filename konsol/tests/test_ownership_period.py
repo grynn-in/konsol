@@ -821,7 +821,6 @@ def test_429_full_equity_and_none_still_pass_validate():
 # Gaps/overlaps are per (owner, owned) edge. The cycle refusal is task B.
 
 OWNER_FIELDS = ("owner_node", "owner_label", "owner_group", "owner_data_area_id")
-AUTONAME = "format:OP-{owner_label}-{data_area_id}-{effective_date}"
 
 
 def test_117_owner_node_is_a_required_visible_editable_link_naming_its_prefill():
@@ -850,11 +849,37 @@ def test_117_the_derived_owner_fields_are_read_only_and_system_set():
 
 
 def test_117_new_rows_are_named_by_the_owner_and_old_names_are_kept():
-    assert _meta()["autoname"] == AUTONAME
     src = _src()
     assert "rename_doc" not in src, "the 329 existing names are not renamed"
     assert "_resolve_owner" in _method_body(src, "before_insert"), "owner_label is set before naming"
     assert "_resolve_owner" in _method_body(src, "before_validate")
+
+
+def _named(module, **over):
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, **over))
+    doc.autoname()
+    return doc.name
+
+
+def test_117_a_new_row_is_named_owner_owned_date_so_two_sub_groups_of_one_owner_differ():
+    """PR #449 review, finding 3: ``format:OP-{owner_label}-{data_area_id}-
+    {effective_date}`` dropped the owned node's code, so two sub-group
+    periods (blank entity) from one owner and date collided. The controller
+    names the row ``OP-{owner}-{owned}-{date}`` with the owned label the
+    entity code, else the group code; an entity-owned row's name is what the
+    format gave (``OP-ZZG-ZZ01-2024-01-01``), so nothing else changes."""
+    module = _load(_no_flags())
+    s = _named(module, owner_label="ZZG", consolidation_group="ZZSUB", data_area_id=None,
+               effective_date="2026-01-01")
+    t = _named(module, owner_label="ZZG", consolidation_group="ZZSUB2", data_area_id=None,
+               effective_date="2026-01-01")
+    assert (s, t) == ("OP-ZZG-ZZSUB-2026-01-01", "OP-ZZG-ZZSUB2-2026-01-01")
+    assert _named(module, owner_label="ZZG", consolidation_group="ZZG", data_area_id="ZZ01",
+                  effective_date=datetime.date(2024, 1, 1)) == "OP-ZZG-ZZ01-2024-01-01"
+    assert _named(module, owner_label="ZZ01", consolidation_group="ZZSUB", data_area_id="ZZ03",
+                  effective_date="2026-07-01") == "OP-ZZ01-ZZ03-2026-07-01"
+    # the method names the row; no `format:` autoname that could drop a field
+    assert "autoname" not in _meta(), _meta().get("autoname")
 
 
 def test_117_the_field_map_names_the_owner_columns_after_data_area_id():
