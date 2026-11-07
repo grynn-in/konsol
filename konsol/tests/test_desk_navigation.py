@@ -10,8 +10,10 @@ link inside Close only.
 This file pins the plan's "Labelling rule":
 
 1. One label map, ``konsol/desk_labels.py``. Every sidebar link and every
-   workspace shortcut to a DocType, Report or Page uses its label; a filtered
-   shortcut may add " waiting".
+   workspace shortcut to a DocType, Report or Page uses exactly its label. A
+   filtered "waiting" shortcut takes no suffix: its count badge says
+   "N waiting" (Deepak Pai, 7 Nov 2026; rejected: a " waiting" suffix, and
+   #439's short nouns as an exception).
 2. Each non-child doctype of the Consolidation, EPM and Pipeline modules is
    listed in exactly one shipped Sidebar (allowlist below). Filtered lists live
    on workspaces only, which is what makes "exactly one" enforceable.
@@ -178,7 +180,7 @@ def _labels():
         "_desk_labels_under_test", os.path.join(APP_DIR, "desk_labels.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.LABELS, mod.FILTERED_SUFFIX
+    return mod.LABELS
 
 
 def _docs(kind, pattern):
@@ -296,7 +298,7 @@ def test_every_navigated_module_ships_a_sidebar():
 
 
 def test_each_sidebar_has_the_planned_rows():
-    labels, _ = _labels()
+    labels = _labels()
     for name, (module, rows) in SIDEBARS.items():
         _, d = _sidebars()[name]
         got = []
@@ -320,7 +322,7 @@ def test_every_sidebar_link_resolves():
 
 
 def test_every_sidebar_link_uses_the_label_map():
-    labels, _ = _labels()
+    labels = _labels()
     for name, (_, d) in _sidebars().items():
         for item in _links(d):
             if item["link_type"] == "Workspace":
@@ -430,16 +432,13 @@ def test_each_rail_entry_has_its_landing_workspace():
 
 
 def test_every_workspace_shortcut_uses_the_label_map():
-    labels, suffix = _labels()
+    labels = _labels()
     for name, (path, ws) in _workspaces().items():
         for s in ws["shortcuts"]:
             if s["type"] not in ("DocType", "Report", "Page"):
                 continue
             assert s["link_to"] in labels, (path, s["link_to"], "not in desk_labels.LABELS")
-            allowed = {labels[s["link_to"]]}
-            if s.get("stats_filter") and json.loads(s["stats_filter"]):
-                allowed.add(labels[s["link_to"]] + suffix)
-            assert s["label"] in allowed, (path, s["label"], sorted(allowed))
+            assert s["label"] == labels[s["link_to"]], (path, s["label"], labels[s["link_to"]])
 
 
 def test_every_workspace_shortcut_and_card_resolves():

@@ -1,8 +1,9 @@
 """The one Desk label for each konsol navigation target (Desk IA, 7 Nov 2026).
 
 Every shipped Sidebar link and every Workspace shortcut to a DocType, Report
-or Page uses the label written here; a filtered workspace shortcut may add
-" waiting". ``konsol/tests/test_desk_navigation.py`` enforces it.
+or Page uses exactly the label written here, filtered "waiting" shortcuts
+included (their count badge says "N waiting"; Deepak Pai, 7 Nov 2026).
+``konsol/tests/test_desk_navigation.py`` enforces it.
 
 The labels are written out, not computed: ``title()`` and pluralisation get
 acronyms (TB, IC, ISO, EPM), singles and uncountables wrong.
@@ -85,6 +86,3 @@ LABELS = {
     # --- Handbook --------------------------------------------------------
     "Konsol Guide Page": "Konsol Guide Pages",
 }
-
-#: The one suffix a filtered workspace shortcut may add to its target's label.
-FILTERED_SUFFIX = " waiting"

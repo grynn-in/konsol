@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\": \"h0\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Warehouse and pipelines</b></span>\", \"col\": 12}}, {\"id\": \"c0\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Warehouse Freshness\", \"col\": 4}}, {\"id\": \"s0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Connector Health\", \"col\": 4}}, {\"id\": \"s1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Build Approvals waiting\", \"col\": 4}}, {\"id\": \"s2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Pipeline Runs\", \"col\": 4}}, {\"id\": \"s3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Build Approvals\", \"col\": 4}}, {\"id\": \"s4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Connectors\", \"col\": 4}}]",
+ "content": "[{\"id\": \"h0\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Warehouse and pipelines</b></span>\", \"col\": 12}}, {\"id\": \"c0\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Warehouse Freshness\", \"col\": 4}}, {\"id\": \"s0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Connector Health\", \"col\": 4}}, {\"id\": \"s1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Build Approvals\", \"col\": 4}}, {\"id\": \"s2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Pipeline Runs\", \"col\": 4}}, {\"id\": \"s4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Connectors\", \"col\": 4}}]",
  "creation": "2026-11-07 23:30:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -12,7 +12,7 @@
  "is_hidden": 0,
  "label": "Data",
  "links": [],
- "modified": "2026-11-07 23:30:00.000000",
+ "modified": "2026-11-07 23:55:00.000000",
  "modified_by": "Administrator",
  "module": "Pipeline",
  "name": "Data",
@@ -42,7 +42,7 @@
   {
    "color": "Orange",
    "doc_view": "List",
-   "label": "Build Approvals waiting",
+   "label": "Build Approvals",
    "link_to": "Build Approval",
    "type": "DocType",
    "stats_filter": "[[\"Build Approval\", \"workflow_state\", \"=\", \"Pending Review\"]]",
@@ -53,13 +53,6 @@
    "doc_view": "List",
    "label": "Pipeline Runs",
    "link_to": "Pipeline Run",
-   "type": "DocType"
-  },
-  {
-   "color": "Grey",
-   "doc_view": "List",
-   "label": "Build Approvals",
-   "link_to": "Build Approval",
    "type": "DocType"
   },
   {

@@ -153,17 +153,21 @@ def test_the_home_page_reads_band_checklist_actions_then_trends():
 
 
 def test_waiting_shortcuts_carry_a_short_noun_label():
+    """The waiting shortcuts use the doctype's one label (konsol/desk_labels.py);
+    the longest is 23 characters, which still fits a col-4 card. Deepak Pai,
+    7 Nov 2026 (Desk IA, #443): one label everywhere beats #439's short nouns."""
     ws = _ws()
     waiting = [s for s in ws["shortcuts"] if s.get("stats_filter")]
     assert len(waiting) == 8
     for s in waiting:
-        assert len(s["label"]) <= 22, s["label"]
+        assert len(s["label"]) <= 23, s["label"]
         assert "waiting" not in s["label"].lower(), s["label"]
         assert s["format"] == "{} waiting", s["label"]
         assert s["color"] == "Orange", s["label"]
     assert [s["label"] for s in waiting] == [
-        "Journals", "Business combinations", "Business disposals", "Group exchange rates",
-        "Ownership periods", "Equity rates", "IC balances", "Builds"]
+        "Consolidation Journals", "Business Combinations", "Business Disposals",
+        "Group Exchange Rates", "Ownership Periods", "Historical Equity Rates",
+        "IC Balances", "Build Approvals"]
 
 
 def test_no_two_shortcut_labels_differ_only_by_case():
