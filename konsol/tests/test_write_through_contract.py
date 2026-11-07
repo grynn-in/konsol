@@ -354,7 +354,7 @@ def test_a_migrate_widens_existing_journal_amounts_to_four_places():
 
 def test_a_migrate_asks_first_and_issues_nothing_when_already_wide():
     """An ALTER that changes nothing still rewrites the table's metadata time
-    (_watermark_upgrade_ddl): a widened or fresh table gets no MODIFY."""
+    (_sorting_key_upgrade_ddl): a widened or fresh table gets no MODIFY."""
     m, _ = _load_clickhouse()
     for answer in (_columns_answer({"debit_amount": "Decimal(20, 4)",
                                     "credit_amount": "Decimal(20, 4)"}), ""):

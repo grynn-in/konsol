@@ -135,4 +135,145 @@ def test_an_unreachable_server_defers_the_upgrade_to_the_next_migrate():
         return ""
 
     m.execute = execute
-    assert m._historical_rate_key_upgrade_ddl() == []
+    assert m._sorting_key_upgrade_ddl(TABLE, "to_currency", UPGRADE) == []
+
+
+def test_one_helper_serves_the_rates_table_and_the_watermark():
+    """PR #436 review: _historical_rate_key_upgrade_ddl was a copy of
+    _watermark_upgrade_ddl with the names swapped. One helper, two call sites."""
+    m, _ = _load()
+    assert not hasattr(m, "_historical_rate_key_upgrade_ddl")
+    assert not hasattr(m, "_watermark_upgrade_ddl")
+    src = open(CH_PATH).read()
+    assert src.count("_sorting_key_upgrade_ddl(") == 3, "the definition and two call sites"
+    assert '_sorting_key_upgrade_ddl(_WATERMARK_TABLE, "reconcile_run_id", _WATERMARK_UPGRADE)' in src
+    assert '_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "to_currency", _HISTORICAL_RATE_UPGRADE)' in src
+
+
+# --- a failed upgrade must not let a sync collapse the two currencies ----------
+
+OLD_KEY = "consolidation_group, data_area_id, main_account, rate_date"
+NEW_KEY = OLD_KEY + ", to_currency"
+COLUMNS = ["consolidation_group", "data_area_id", "main_account", "rate_date",
+           "historical_rate", "to_currency"]
+ROWS = [["ZZGRP", "ZZNL", "ZZ3000", "2024-01-01", 1.1, "EUR"],
+        ["ZZGRP", "ZZNL", "ZZ3000", "2024-01-01", 1.2, "USD"]]
+
+
+def _stuck_stack(alter_error=RuntimeError("Cannot modify sorting key")):
+    """A ClickHouse whose rates table keeps the OLD key: the upgrade ALTER
+    fails (ensure_reference_tables logs it and goes on), and system.tables
+    keeps answering the old key. Returns (module, frappe, statements)."""
+    m, frappe = _load()
+    sql = []
+
+    def execute(statement, params=None):
+        sql.append(statement)
+        if statement == UPGRADE:
+            raise alter_error
+        if "sorting_key" in statement and "system.tables" in statement and "historical_equity_rates" in statement:
+            return OLD_KEY
+        return ""
+
+    m.execute = execute
+    return m, frappe, sql
+
+
+def test_a_sync_into_the_old_key_is_refused_by_name_not_merged_silently():
+    """PR #436 review: ensure_reference_tables swallows a failed ALTER (warning
+    only), and reconcile_all then inserted to_currency rows into a table whose
+    key lacks the column, so ReplacingMergeTree collapsed the EUR and the USD
+    rate of one tranche. The sync now asks system.tables first and refuses."""
+    m, frappe, sql = _stuck_stack()
+    m.ensure_reference_tables()
+    assert any("reference table bootstrap skipped" in msg for msg in frappe._logger.messages)
+    before = len(sql)
+    try:
+        m.sync_table(TABLE, COLUMNS, ROWS, force=True)
+    except m.SortingKeyStale as e:
+        assert e.table == TABLE and e.column == "to_currency" and e.key == OLD_KEY
+        assert TABLE in str(e) and "to_currency" in str(e)
+    else:
+        raise AssertionError("a sync into the old sorting key must be refused")
+    written = [s for s in sql[before:] if s.startswith(("INSERT", "EXCHANGE", "CREATE TABLE", "DROP"))]
+    assert written == [], written
+    assert m._sync_failures[TABLE]["error_type"] == "sorting_key_stale"
+    assert any("SYNC REFUSED" in msg and TABLE in msg for msg in frappe._logger.messages)
+
+
+def test_an_unforced_sync_is_refused_too():
+    """A hook's after-commit sync would collapse the rows just the same: it is
+    not downtime, so it does not degrade to None like a connection error."""
+    m, _, _ = _stuck_stack()
+    try:
+        m.sync_table(TABLE, COLUMNS, ROWS)
+    except m.SortingKeyStale:
+        pass
+    else:
+        raise AssertionError("an unforced sync into the old key must be refused")
+
+
+def test_an_upgraded_table_syncs_and_a_missing_one_is_left_to_the_insert():
+    for key in (NEW_KEY, ""):
+        m, _ = _load()
+        sql = []
+
+        def execute(statement, params=None, key=key):
+            sql.append(statement)
+            if "sorting_key" in statement and "system.tables" in statement:
+                return key
+            return ""
+
+        m.execute = execute
+        assert m.sync_table(TABLE, COLUMNS, ROWS, force=True) == 2
+        assert any(s.startswith(f"INSERT INTO {TABLE}_sync_tmp") for s in sql), (key, sql)
+
+
+def test_an_unreachable_server_fails_the_sync_on_its_own_terms():
+    """system.tables cannot be asked: the refusal does not fire (there is
+    nothing to judge), and the sync fails through its existing branches."""
+    import requests
+    m, _ = _load()
+
+    def execute(statement, params=None):
+        raise requests.exceptions.ConnectionError("down")
+
+    m.execute = execute
+    try:
+        m.sync_table(TABLE, COLUMNS, ROWS, force=True)
+    except requests.exceptions.ConnectionError:
+        pass
+    else:
+        raise AssertionError("expected the connection error")
+
+
+def test_reconcile_all_names_the_refused_table_in_its_result():
+    """reconcile_all's dict is what the reconcile job and the migrate log read:
+    table -> None is 'NOT synced', by name, like a table ClickHouse refused."""
+
+    class _Rates:
+        CH_TABLE = TABLE
+        CH_FIELD_MAP = dict(zip(COLUMNS, COLUMNS))
+
+    class _Other:
+        CH_TABLE = "epm_staging.zz_other"
+        CH_FIELD_MAP = {"code": "code"}
+
+    m, frappe, sql = _stuck_stack()
+    controllers = {"Historical Equity Rate": _Rates, "ZZ Other": _Other}
+    sys.modules["frappe.model.base_document"].get_controller = lambda dt: controllers[dt]
+
+    def get_all(doctype, filters=None, fields=None, pluck=None, limit_page_length=None, **k):
+        if doctype == "Module Def":
+            return ["ZZ"]
+        if doctype == "DocType":
+            return list(controllers)
+        if doctype == "Historical Equity Rate":
+            return [dict(zip(COLUMNS, r), modified=None) for r in ROWS]
+        return [{"code": "ZZ1", "modified": None}]
+
+    frappe.get_all = get_all
+    synced = m.reconcile_all()
+    assert synced == {TABLE: None, "epm_staging.zz_other": 1}, synced
+    assert any("NOT synced" in msg and TABLE in msg for msg in frappe._logger.messages)
+    assert not any(s.startswith(f"INSERT INTO {TABLE}") for s in sql)

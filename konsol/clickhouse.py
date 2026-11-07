@@ -140,27 +140,39 @@ def _new_reconcile_run_id():
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
 
 
-def _watermark_upgrade_ddl():
-    """The ALTER that gives an existing watermark the run id, or nothing.
+def _sorting_key(table):
+    """``system.tables.sorting_key`` for ``table`` ('' when the table does not
+    exist), or None when ClickHouse cannot be asked."""
+    database, name = table.split(".", 1)
+    try:
+        key = execute(
+            "SELECT sorting_key FROM system.tables "
+            f"WHERE database = '{database}' AND name = '{name}'"
+        )
+    except Exception:  # noqa: BLE001 — unreachable: the caller decides what that means
+        return None
+    return (key or "").strip()
+
+
+def _sorting_key_upgrade_ddl(table, column, alter):
+    """``[alter]`` when ``table`` exists and ``column`` is not yet in its sorting
+    key, else nothing. One helper for the watermark (konsolidat#246) and the
+    rates table (konsol#374); PR #436 review folded the two copies.
 
     Asked first, like _retired_watermark_cleanup: an ALTER that changes nothing
     still rewrites the table's metadata_modification_time (measured on 24.8),
     and assert_staging_not_stale measures its no-run-yet grace from that time,
     so re-issuing the ALTER on every reconcile would restart the grace for
-    ever. A missing table is left to the first stamp, which creates it with
-    the new body.
+    ever; and a MODIFY ORDER BY naming a column the statement did not add is
+    refused outright. A missing table ('') is left to its CREATE: the
+    watermark's first stamp, or the CREATE TABLE IF NOT EXISTS that precedes
+    this in ensure_reference_tables, gives it the new shape. Unreachable
+    server (None): [] — the next reconcile asks again.
     """
-    try:
-        key = execute(
-            "SELECT sorting_key FROM system.tables "
-            "WHERE database = 'epm_staging' AND name = 'sync_watermark'"
-        )
-    except Exception:  # noqa: BLE001 — unreachable: the next reconcile asks again
+    key = _sorting_key(table)
+    if not key or column in key:
         return []
-    key = (key or "").strip()
-    if not key or "reconcile_run_id" in key:
-        return []
-    return [_WATERMARK_UPGRADE]
+    return [alter]
 
 
 def _stamp_watermark(table, row_count, source_max_modified=None):
@@ -209,6 +221,10 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
     None instead of raising, so ClickHouse downtime does not break the Frappe
     document save that triggered it.
 
+    A sync into a table whose sorting key lacks a column the rows carry
+    (_REQUIRED_SORTING_KEY_COLUMNS) is refused with SortingKeyStale, forced or
+    not: that is not downtime but a wrong number on merge (konsol#374).
+
     A forced sync (``force=True``) re-raises after recording, on every failure
     branch — connection, timeout and HTTP alike. Those callers are deliberate
     repairs, not document events: reconcile_all catches it per doctype and logs
@@ -236,11 +252,23 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
         return
 
     try:
+        _assert_sorting_key(table)
         _sync_table_inner(table, columns, rows)
         # Clear any previous failure for this table
         _sync_failures.pop(table, None)
         _stamp_watermark(table, len(rows), source_max_modified)
         return len(rows)
+    except SortingKeyStale as e:
+        # Forced or not: a sync into a stale key is wrong data, not downtime,
+        # so it never degrades to None. reconcile_all records the table by
+        # name; a hook's after-commit job logs it to Error Log.
+        _record_sync_failure(table, "sorting_key_stale", str(e))
+        frappe.logger().error(f"ClickHouse SYNC REFUSED: {e}")
+        frappe.publish_realtime(
+            "clickhouse_sync_error",
+            {"table": table, "error": "sorting_key_stale", "message": str(e)},
+        )
+        raise
     except requests.exceptions.ConnectionError as e:
         _record_sync_failure(table, "connection_refused", str(e))
         frappe.logger().error(
@@ -1056,7 +1084,7 @@ _ADDED_COLUMNS = {
 
 # Columns whose type a release widened. CREATE TABLE IF NOT EXISTS never
 # changes an existing column, so an existing table gets ALTER TABLE ... MODIFY
-# COLUMN. Asked first, like _watermark_upgrade_ddl: an ALTER that changes
+# COLUMN. Asked first, like _sorting_key_upgrade_ddl: an ALTER that changes
 # nothing still rewrites the table's metadata_modification_time, so a table
 # that is already wide (or a fresh one, created wide above) gets no ALTER. A
 # Decimal column is only ever widened: one whose scale is already at or above
@@ -1136,28 +1164,42 @@ _HISTORICAL_RATE_UPGRADE = (
 )
 
 
-def _historical_rate_key_upgrade_ddl():
-    """The ALTER that puts to_currency into an existing rates table's sort key,
-    or nothing (konsol#374).
+#: Columns that MUST be in a table's sorting key before konsol writes it
+#: (konsol#374; PR #436 review). ensure_reference_tables issues the upgrade
+#: ALTER best-effort, so if it failed, a sync into the old key would let
+#: ReplacingMergeTree collapse the EUR and the USD rate of one tranche into
+#: one row: a wrong number, silently. sync_table asks system.tables first and
+#: refuses with SortingKeyStale instead.
+_REQUIRED_SORTING_KEY_COLUMNS = {_HISTORICAL_RATE_TABLE: "to_currency"}
 
-    Asked first, like _watermark_upgrade_ddl: an ALTER that changes nothing
-    still rewrites the table's metadata_modification_time, and a MODIFY ORDER
-    BY naming a column the statement did not add is refused outright. A
-    missing table is left to the CREATE that precedes this in
-    ensure_reference_tables, which gives it the new shape. Unreachable server:
-    [] (the next migrate asks again).
-    """
-    try:
-        key = execute(
-            "SELECT sorting_key FROM system.tables "
-            "WHERE database = 'epm_staging' AND name = 'historical_equity_rates'"
+
+class SortingKeyStale(RuntimeError):
+    """A write-through table's sorting key lacks a column the rows carry, so a
+    sync would let ReplacingMergeTree merge rows that differ on it. Named, so
+    reconcile_all reports the table by name and check_health shows it."""
+
+    def __init__(self, table, column, key):
+        self.table, self.column, self.key = table, column, key
+        super().__init__(
+            f"{table} NOT synced: its sorting key ({key}) lacks {column}, so "
+            f"ReplacingMergeTree would collapse rows that differ only on {column}. "
+            f"The upgrade ALTER in ensure_reference_tables did not land; see the "
+            f"'reference table bootstrap skipped' warning, fix the table by hand "
+            f"(konsol#374), then migrate again."
         )
-    except Exception:  # noqa: BLE001 — unreachable: the next migrate asks again
-        return []
-    key = (key or "").strip()
-    if not key or "to_currency" in key:
-        return []
-    return [_HISTORICAL_RATE_UPGRADE]
+
+
+def _assert_sorting_key(table):
+    """Raise SortingKeyStale when ``table`` exists with a sorting key that lacks
+    its required column (_REQUIRED_SORTING_KEY_COLUMNS). A missing table ('')
+    or an unreachable server (None) passes: the INSERT that follows fails on
+    its own, loudly, through sync_table's existing branches."""
+    column = _REQUIRED_SORTING_KEY_COLUMNS.get(table)
+    if not column:
+        return
+    key = _sorting_key(table)
+    if key and column not in key:
+        raise SortingKeyStale(table, column, key)
 
 
 def _added_column_ddl(tables):
@@ -1214,7 +1256,7 @@ def ensure_reference_tables():
         # konsol#374: an existing rates table gets to_currency in its key by
         # one ALTER, after the CREATE above has given a missing one the new
         # shape, and before reconcile_all re-sends the rows with the column.
-        *_historical_rate_key_upgrade_ddl(),
+        *_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "to_currency", _HISTORICAL_RATE_UPGRADE),
         # konsol#353: asked when this list is built, before the CREATEs run.
         # A table that does not exist yet answers nothing, and its CREATE
         # above makes it wide; an existing one is widened after its CREATE.
@@ -1224,7 +1266,7 @@ def ensure_reference_tables():
         *[f"DROP TABLE IF EXISTS {t}" for t in _RETIRED_TABLES],
         *_retired_watermark_cleanup(),
         # konsolidat#246: before reconcile_all stamps its run id
-        *_watermark_upgrade_ddl(),
+        *_sorting_key_upgrade_ddl(_WATERMARK_TABLE, "reconcile_run_id", _WATERMARK_UPGRADE),
     ]:
         _run(sql)
     # konsolidat#226: the retired databases, built AFTER the loop above has
@@ -1392,6 +1434,10 @@ def _reconcile_tables():
                 _record(synced, cls.CH_STAGING_TABLE,
                         sync_doctype(doctype, cls.CH_STAGING_TABLE,
                                      cls.CH_STAGING_FIELD_MAP, force=True))
+        except SortingKeyStale as e:
+            # Named in the result (table -> None), like a table whose sync
+            # failed, so the reconcile job and the migrate log list it.
+            _record(synced, e.table, None)
         except Exception:
             frappe.logger().warning(
                 f"reconcile: {doctype} skipped", exc_info=True
