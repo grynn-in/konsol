@@ -271,11 +271,11 @@
     <details class="panel" id="report-panel" open hidden>
       <summary>Reports</summary>
       <div class="panel-body">
-        <p class="hint" id="report-hint">Apply live =K.EPM() formulas, or snapshot trial balance values to build on.</p>
+        <p class="hint" id="report-hint">Apply live =K.EPM() formulas, or snapshot entity TB values to build on.</p>
         <label for="template-id">Template</label>
         <select id="template-id">
           <option value="pnl_monthly">Monthly P&L (live formulas)</option>
-          <option value="trial_balance_long">Trial balance — long (snapshot)</option>
+          <option value="trial_balance_long">Entity TB — local currency, account level (pre-consolidation)</option>
         </select>
         <label for="report-entity">Entity</label>
         <input id="report-entity" type="text" placeholder="entity code" />
@@ -309,7 +309,7 @@
         <li>Open a blank workbook (or clear a sheet).</li>
         <li>Sign in above.</li>
         <li><strong>Monthly P&L</strong> → Apply report (live <code>=K.EPM()</code>).</li>
-        <li><strong>Trial balance</strong> → Snapshot values (frozen numbers on sheet <code>TB</code>).</li>
+        <li><strong>Entity TB</strong> → Snapshot values (frozen numbers on sheet <code>TB</code>): the entity's own trial balance in local currency at account level, before FX translation, ownership and eliminations.</li>
         <li>Build mgmt reports on other sheets with normal Excel formulas referencing <code>TB</code>.</li>
       </ol>
       <p id="diag">diag: …</p>
@@ -691,7 +691,7 @@
         document.getElementById("apply-report-btn").hidden = isTb;
         document.getElementById("snapshot-btn").hidden = !isTb;
         document.getElementById("report-hint").textContent = isTb
-          ? "Snapshot loads trial balance values once — build other sheets with normal Excel formulas."
+          ? "Snapshot loads the entity TB once (local currency, account level, before consolidation) — build other sheets with normal Excel formulas."
           : "Apply paints live =K.EPM() formulas that recalc when data changes.";
       }
 
@@ -738,7 +738,7 @@
           return;
         }
         if (templateId !== "pnl_monthly") {
-          appendLog("err", "Apply report supports Monthly P&L only — use Snapshot for trial balance.");
+          appendLog("err", "Apply report supports Monthly P&L only — use Snapshot for the entity TB.");
           return;
         }
 
@@ -777,7 +777,7 @@
           return;
         }
         if (templateId !== "trial_balance_long") {
-          appendLog("err", "Snapshot supports Trial balance — long only.");
+          appendLog("err", "Snapshot supports the entity TB template only.");
           return;
         }
         if (!periodFrom || !periodTo || periodFrom > periodTo) {

@@ -164,6 +164,16 @@ def test_build_trial_balance_long_snapshot_shape():
     header = next(c for c in spec["cells"] if c.get("range") == "A3:J3")
     assert header["values"][0] == TB_LONG_HEADERS
 
+    # konsol#107 decision 1: the sheet says what it is, in its title and in a
+    # note row, so nobody reads it as the TB the group was consolidated from.
+    title = next(c for c in spec["cells"] if c.get("range") == "A1")["values"][0][0]
+    assert title == "Entity TB — local currency, account level (pre-consolidation)"
+    note = next(c for c in spec["cells"] if c.get("range") == "A2")["values"][0][0]
+    for phrase in ("local currency", "before fx translation", "eliminations",
+                   "account level"):
+        assert phrase in note.lower(), note
+    assert "Trial Balance (snapshot)" not in str(spec["cells"])
+
     data = next(c for c in spec["cells"] if c.get("range") == "A4:J5")
     assert data["values"][0][3] == "ZZ4000"
     assert data["values"][0][9] == 861245.0

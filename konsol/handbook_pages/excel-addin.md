@@ -37,6 +37,13 @@ The other functions have their own argument order. `dimensions` is the fifth arg
 
 `K.EPMSAVE` writes a budget figure.
 
+## Reports
+
+The pane's **Reports** panel paints two templates:
+
+- **Monthly P&L** applies live `=K.EPM()` formulas, one per Published Profit and Loss account and month.
+- **Entity TB — local currency, account level (pre-consolidation)** snapshots frozen numbers onto a sheet named `TB`: one row per account and period, with debit, credit and net. It is the entity's own trial balance in its local currency, with dimensions summed. It is read before FX translation, ownership and eliminations, so it reconciles to a group figure at account level in local currency only. Row 2 of the sheet carries this note. It is not the trial balance the group was consolidated from; that is konsol#428's `K.CTB`.
+
 ## Refresh
 
 The add-in's group on the Home ribbon has **Refresh sheet** and **Refresh workbook**:

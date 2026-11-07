@@ -24,6 +24,20 @@ TB_LONG_HEADERS = [
 TB_LONG_LAST_COL = "J"
 TB_LONG_MAX_ROWS = 10000
 
+# konsol#107 decision 1 (Deepak Pai, 7 Nov 2026): the snapshot is the entity's
+# own trial balance at account level in its local currency, read from the same
+# table consolidation starts from, before FX translation, ownership and
+# eliminations, with dimensions summed away. It reconciles to a group figure
+# at account level in local currency only. The title and the note row say so,
+# so nobody reads it as the TB the group was consolidated from.
+TB_LONG_TITLE = "Entity TB — local currency, account level (pre-consolidation)"
+TB_LONG_NOTE = (
+    "Note: the entity's own trial balance in its local currency, one row per "
+    "account and period, dimensions summed. Before FX translation, ownership "
+    "and eliminations: it reconciles to group figures at account level in "
+    "local currency only."
+)
+
 
 def _month_row_range(row):
     return f"B{row}:{_MONTH_END_COL}{row}"
@@ -42,8 +56,12 @@ def list_templates():
         },
         {
             "id": "trial_balance_long",
-            "title": "Trial balance (long)",
-            "description": "One row per account × period — snapshot values for Excel models",
+            "title": TB_LONG_TITLE,
+            "description": (
+                "One row per account × period, local currency, before FX "
+                "translation, ownership and eliminations — snapshot values "
+                "for Excel models"
+            ),
             "mode": "snapshot",
         },
     ]
@@ -63,7 +81,8 @@ def build_trial_balance_long_map(entity, year, rows, period_from=1, period_to=12
     period_to = int(period_to)
 
     cells = [
-        {"range": "A1", "values": [["Trial Balance (snapshot)"]]},
+        {"range": "A1", "values": [[TB_LONG_TITLE]]},
+        {"range": "A2", "values": [[TB_LONG_NOTE]]},
         {"range": "B1", "values": [["Entity:"]]},
         {"range": "C1", "values": [[entity]]},
         {"range": "E1", "values": [["Year:"]]},
