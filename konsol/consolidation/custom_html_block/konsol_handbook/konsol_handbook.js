@@ -178,6 +178,7 @@ function render() {
 		});
 		tools.append(button);
 	}
+	tools.append(el("span", "kh-sep"));
 	tools.append(search);
 	head.append(tools);
 	const nodes = [head, chips()];
