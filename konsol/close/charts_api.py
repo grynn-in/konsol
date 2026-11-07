@@ -51,7 +51,12 @@ message names the chart and the reason. The chart widget calls these with a
 ``silent`` xcall and shows that message inside the chart's card, so the
 reason is shown where the chart would be, never as a dialog and never as a
 chart of guessed zeros. A refused role is a PermissionError; Frappe hides
-every chart from a role outside its ``roles``, which list the same set.
+every chart from a role outside its ``roles``, which list the same set. A
+refused doctype read (``has_permission`` throw) carries its message and shows
+in the card too; the bare ``only_for`` refusal would open Frappe's "Not
+permitted" dialog, but only a role the chart's ``roles`` already hide can
+reach it (review of #411, L1, accepted). Every chart covers the current
+fiscal year up to and including the current period, never a later one.
 
 ``methods=["POST"]``: the widget's ``frappe.xcall`` POSTs. Nothing writes.
 """
@@ -90,12 +95,15 @@ def _shown(title, build):
 
 
 def _year(title):
-    """``(current key, the current fiscal year's period states)``, oldest first."""
+    """``(current key, the current fiscal year's period states up to and
+    including the current period)``, oldest first. A later period is not
+    charted: it is not due yet (review of #411, M2)."""
     context = period_api.get_context()
     key, reason = overview_model.current_period(context["landing"])
     if key is None:
         _unavailable(title, reason or "there is no current period")
-    states = [s for s in context["periods"] if int(s["key"][0]) == key[0]]
+    states = [s for s in context["periods"]
+              if int(s["key"][0]) == key[0] and int(s["key"][1]) <= key[1]]
     states.sort(key=lambda s: (int(s["key"][0]), int(s["key"][1])))
     return key, states
 
@@ -172,6 +180,10 @@ def top_ic_differences(chart_name=None, filters=None, refresh=None, time_interva
     def build():
         key, _states = _year(title)
         ic = ic_api.get_ic(*key)
+        if ic["state"] == "not_applicable":
+            # Close Settings declares no intercompany: a declaration, not a
+            # failure, so the chart's empty state shows (review of #411, L5).
+            return model.ic_top([], TOP_IC_PAIRS)
         if ic["state"] != "checked":
             _unavailable(title, ic["message"])
         return model.ic_top(ic["groups"], TOP_IC_PAIRS)

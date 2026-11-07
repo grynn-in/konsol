@@ -199,8 +199,11 @@ def top_currencies(functional_currencies, reporting_currency, limit=3):
 def rates(keys, currencies, rows):
     """Chart 5: per currency, its Closing and Average rate into the group
     currency per period. ``rows`` carry ``from_currency``, ``rate_type``,
-    ``fiscal_year``, ``fiscal_period`` and the true ``rate``. A period with no
-    approved rate is 0; two approved rates for one key raise."""
+    ``fiscal_year``, ``fiscal_period`` and the true ``rate``. Two approved
+    rates for one key raise. A period with no approved rate for any of
+    ``currencies`` is left out (nothing to compare); a period missing only
+    some of them plots those as 0 and names each in its label ("FY2025 P03
+    (no EUR average)"), so a gap is never read as a rate (review of #411)."""
     keys = [_key(k) for k in keys]
     found = {}
     for row in rows:
@@ -210,12 +213,21 @@ def rates(keys, currencies, rows):
             raise ValueError("two approved %s rates for %s in %s"
                              % (k[1], k[0], period_name(k[2], k[3])))
         found[k] = float(row["rate"])
-    datasets = []
-    for code in currencies:
-        for rate_type in RATE_TYPES:
-            datasets.append(("%s %s" % (code, rate_type.lower()),
-                             [found.get((code, rate_type) + key, 0) for key in keys]))
-    return chart(_labels(keys), datasets)
+    series = [(code, rate_type) for code in currencies for rate_type in RATE_TYPES]
+    shown, labels = [], []
+    for key in keys:
+        gaps = [s for s in series if s + key not in found]
+        if len(gaps) == len(series):
+            continue
+        shown.append(key)
+        label = period_name(*key)
+        if gaps:
+            label += " (no %s)" % ", ".join("%s %s" % (c, t.lower()) for c, t in gaps)
+        labels.append(label)
+    datasets = [("%s %s" % (code, rate_type.lower()),
+                 [found.get((code, rate_type) + key, 0) for key in shown])
+                for code, rate_type in series]
+    return chart(labels, datasets)
 
 
 def days_to_close(states, signed):
