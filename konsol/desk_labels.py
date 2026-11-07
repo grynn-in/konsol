@@ -86,3 +86,19 @@ LABELS = {
     # --- Handbook --------------------------------------------------------
     "Konsol Guide Page": "Konsol Guide Pages",
 }
+
+#: The only filtered sidebar links, keyed by (doctype, scenario_type), and the
+#: label each uses (Deepak Pai, 7 Nov 2026, option B on #443; rejected A,
+#: separate Budget and Forecast rail entries; C, Forecast doctypes; D,
+#: unfiltered duplicates). Budget and forecast share these three doctypes; a
+#: forecast is one whose Scenario has ``scenario_type = forecast``, copied onto
+#: each row as a read-only field. A workspace shortcut counting one scenario
+#: type uses the same label.
+FILTERED_LABELS = {
+    ("Budget Cycle", "budget"): "Budget Cycles",
+    ("Budget Sheet", "budget"): "Budget Sheets",
+    ("Budget Annual Input", "budget"): "Budget Annual Inputs",
+    ("Budget Cycle", "forecast"): "Forecast Cycles",
+    ("Budget Sheet", "forecast"): "Forecast Sheets",
+    ("Budget Annual Input", "forecast"): "Forecast Annual Inputs",
+}

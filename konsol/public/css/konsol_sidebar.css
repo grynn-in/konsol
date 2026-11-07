@@ -20,7 +20,7 @@
 /* A heading is a green band with white text, 24px tall instead of 28px, with
  * nearly square corners (2px; "less rounded", Deepak Pai, 7 Nov 2026).
  * Frappe sets the heading ink with !important (sidebar.scss .section-break). */
-:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Budget"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break {
+:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Planning"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break {
 	background-color: var(--konsol-brand, var(--primary));
 	color: var(--white) !important;
 	border-radius: 2px;
@@ -28,12 +28,12 @@
 }
 
 /* The chevron is drawn with --ink-gray-5 as its stroke; white on the band. */
-:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Budget"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break .drop-icon svg {
+:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Planning"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break .drop-icon svg {
 	stroke: var(--white);
 }
 
 /* Groups sit tight: 2px above a heading instead of Frappe's 16px
  * (sidebar.scss, ".sidebar-items > .section-item:has(.section-break)"). */
-:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Budget"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .sidebar-items > .section-item:has(.section-break):not(:first-child) {
+:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Planning"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .sidebar-items > .section-item:has(.section-break):not(:first-child) {
 	margin-top: 2px;
 }
