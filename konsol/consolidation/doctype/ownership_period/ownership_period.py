@@ -82,6 +82,26 @@ def _date_or_none(value):
     return getdate(value) if value not in (None, "") else None
 
 
+def owner_fields(owner):
+    """The three columns derived from an owner node (``consolidation_group``,
+    ``data_area_id``): its group, its entity code (None for a group node) and
+    the label the autoname and the refusal sentences use, the entity code else
+    the group code. One place, pure: ``_resolve_owner`` derives them on every
+    save and the ``add_owner_to_ownership_periods`` patch derives them for
+    every period written before the owner existed (#117 pair 1, design §9).
+    ``owner`` is a row as ``frappe.db.get_value(as_dict=True)`` or
+    ``frappe.get_all`` hands it back (attribute read), or None when
+    ``owner_node`` names no node: then all three are blank."""
+    if not owner:
+        return {"owner_group": None, "owner_data_area_id": None, "owner_label": None}
+    entity = owner.data_area_id or None
+    return {
+        "owner_group": owner.consolidation_group,
+        "owner_data_area_id": entity,
+        "owner_label": entity or owner.consolidation_group,
+    }
+
+
 class OwnershipPeriod(Document):
     CH_TABLE = "epm_staging.ownership_periods"
     CH_FIELD_MAP = {
@@ -325,10 +345,8 @@ class OwnershipPeriod(Document):
             node = self._node()
             if node and node.parent_consolidation_group:
                 self.owner_node = node.parent_consolidation_group
-        owner = self._owner()
-        self.owner_group = owner.consolidation_group if owner else None
-        self.owner_data_area_id = (owner.data_area_id or None) if owner else None
-        self.owner_label = (owner.data_area_id or owner.consolidation_group) if owner else None
+        for field, value in owner_fields(self._owner()).items():
+            setattr(self, field, value)
 
     def _owned_label(self):
         """How the owned node is named in a sentence: its entity code, else

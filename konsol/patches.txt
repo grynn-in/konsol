@@ -51,3 +51,4 @@ konsol.patches.adopt_dimension_value
 konsol.patches.retire_approval_number_cards
 konsol.patches.set_default_brand_colour
 konsol.patches.fill_historical_rate_to_currency
+konsol.patches.add_owner_to_ownership_periods
