@@ -17,11 +17,14 @@ Why off is two steps in that order: Frappe v16 caches site_config per
 worker for 60 s (`frappe.config.site_cache(ttl=60)`), so a worker may keep
 logging visitors in for up to a minute after the key is unset. `decide()`
 reads the User's `enabled` from the database on every request, and
-`Session.validate_user` refuses a disabled user whatever the key says, so
-`switch_off` shuts the door at once; unsetting the key then makes `/try`
-answer 404 once the cache turns over. Disabling the user also closes the
-in-flight case where a request that was running when its session row was
-deleted writes the row back (`Session.update`): its next request is refused.
+`Session.validate_user` refuses a disabled user at login, so `switch_off`
+stops NEW logins at once; unsetting the key then makes `/try` answer 404
+once the cache turns over. Disabling does not end existing sessions
+(`Session.resume` never re-reads `enabled`): those end through
+`end_sessions`, which `switch_off` runs twice, the second pass for a request
+that was in flight during the first and wrote its session row back
+(`Session.update`). The ext stack's demo.sh also reloads the gunicorn workers
+after the switch, which ends in-flight requests.
 
 When the key is unset, `/try` and `try_demo` answer 404, so a site that does
 not run a demo shows nothing of the feature. The hourly reset itself lives
@@ -119,14 +122,19 @@ def end_sessions(user: str | None = None) -> int:
 
     removed = 0
     before = _session_count(user)
+    stalls = 0
     while before:
         clear_sessions(user)
         after = _session_count(user)
         if after >= before:
-            raise RuntimeError(
-                "demo mode: clear_sessions removed nothing for {0}; {1} session(s) remain".format(user, after)
-            )
-        removed += before - after
+            # a login racing this pass can keep the whole-table count level once; twice is a real stall
+            stalls += 1
+            if stalls > 1:
+                raise RuntimeError(
+                    "demo mode: clear_sessions removed nothing for {0}; {1} session(s) remain".format(user, after)
+                )
+        else:
+            removed += before - after
         before = after
     return removed
 
@@ -154,7 +162,11 @@ def switch_off(user: str | None = None) -> dict:
     # set_value clears this too; said here because Session.validate_user
     # reads get_cached_value("User", ..., "enabled") and must see the change.
     frappe.clear_document_cache("User", name)
+    # an operator helper run by bench execute, not a hook: commit now, so no login succeeds between the
+    # disable and the first session delete (which would otherwise be the first commit)
+    frappe.db.commit()
     ended = end_sessions(name)
+    ended += end_sessions(name)   # a request in flight during the first pass may have written its row back
     return {"user": name, "enabled": 0, "sessions_ended": ended}
 
 
@@ -167,4 +179,5 @@ def switch_on(user: str | None = None) -> dict:
     name = _user_row(user)["name"]
     frappe.db.set_value("User", name, "enabled", 1)
     frappe.clear_document_cache("User", name)
+    frappe.db.commit()
     return {"user": name, "enabled": 1, "key": enabled()}

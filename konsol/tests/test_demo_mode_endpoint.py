@@ -160,6 +160,10 @@ def test_try_demo_is_rate_limited_per_ip():
     decl = [c for c in frappe.calls if c[0] == "rate_limit" and c[1] == ("try_demo",)]
     assert len(decl) == 1, frappe.calls
     assert decl[0][2] == {"limit": 10, "seconds": 60}
+    # order: rate_limit inner, whitelist outer. The inner decorator runs first, so it is recorded first.
+    # Swapped, `whitelisted` would hold the inner function while get_attr returns the wrapper: every press 403.
+    order = [c[0] for c in frappe.calls if c[0] in ("rate_limit", "whitelist") and c[1] == ("try_demo",)]
+    assert order == ["rate_limit", "whitelist"], order
 
 
 def test_operator_helpers_are_not_whitelisted():

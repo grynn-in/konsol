@@ -48,15 +48,19 @@ bench --site <site> set-config demo_user ""
 Why `switch_off` comes first: Frappe v16 caches site_config per worker for
 60 seconds, so after the key is unset a worker can keep logging visitors in
 for up to a minute. The decision reads the User's `enabled` flag from the
-database on every request, and Frappe refuses a disabled user's session
-whatever the key says, so `switch_off` shuts the door at once; the key then
-turns `/try` into a 404 once the cache turns over. (The ext stack's
-`demo.sh` also sends gunicorn a HUP so the window closes sooner.)
+database on every request, and Frappe refuses a disabled user at login, so
+`switch_off` stops new logins at once; the key then turns `/try` into a 404
+once the cache turns over. Disabling does not end sessions that already
+exist (a resumed session never re-reads `enabled`): `switch_off` ends them
+with two `end_sessions` passes, the second for a request that was in flight
+during the first. (The ext stack's `demo.sh` also sends gunicorn a HUP, which
+ends in-flight requests and closes the cache window sooner.)
 `switch_off` prints `{"user", "enabled": 0, "sessions_ended"}`;
 `switch_on` prints `{"user", "enabled": 1, "key"}`. Both take an explicit
 user as `--args "['demo@example.com']"` when the key is already unset.
 `konsol.demo_mode.end_sessions` ends the sessions alone; it loops past
-Frappe's 100-sessions-per-call limit and returns the number removed.
+Frappe's 100-sessions-per-call limit and returns the number removed (bench
+execute prints nothing when that number is 0).
 
 While it is off, `/try` and `/api/method/konsol.demo_mode.try_demo` answer
 404 and log nothing. The button is also refused with 404 when the named
