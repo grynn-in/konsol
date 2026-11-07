@@ -682,3 +682,43 @@ def test_f8_a_root_node_takes_no_period():
     assert _node_refusal(module, consolidation_group="ZZG", data_area_id="") == (
         "'ZZG' is a root group: nobody owns the top of a hierarchy, so it is 100% by "
         "construction and an Ownership Period on it would never be applied.")
+
+
+# --- #429: proportional is offered, and the warehouse computes it as full ------
+#
+# gold_consolidated_trial_balance excludes only ``equity`` and ``none`` and
+# computes group_amount = translated × pct and nci_amount = translated × (1 − pct)
+# with no method branch, so a period declared ``proportional`` consolidates as a
+# full subsidiary with NCI — the venturer's share of each line, with no NCI, is
+# what proportional means. Per the 17 Sep principle (refuse what makes a number
+# wrong) validate() refuses it by name until a model computes it; the Select
+# keeps the option because #117 decides whether to implement or drop it.
+
+def _whole_site():
+    """``_site`` with one real, non-root node, so ``validate()`` runs end to end."""
+    module, _, _ = _site([])
+    module.frappe.db.get_value = lambda doctype, filters, fields, as_dict=False: types.SimpleNamespace(
+        name="CG-ZZG-ZZ01", parent_consolidation_group="CG-ZZG-")
+    return module
+
+
+def _declared(**over):
+    """A period declared by hand: ``_SAVED`` without the deal figures."""
+    return dict({k: v for k, v in _SAVED.items() if k not in DEAL_FIELDS},
+                doctype="Ownership Period", **over)
+
+
+def test_429_proportional_is_refused_by_validate_naming_the_method_and_the_issue():
+    module = _whole_site()
+    with pytest.raises(_Refused) as e:
+        module.OwnershipPeriod(before=None, **_declared(consolidation_method="proportional")).validate()
+    message = str(e.value)
+    assert "proportional" in message.lower(), message
+    assert "konsol#429" in message, message
+    assert "full" in message and "equity" in message, message
+
+
+def test_429_full_equity_and_none_still_pass_validate():
+    module = _whole_site()
+    for method in ("full", "equity", "none"):
+        module.OwnershipPeriod(before=None, **_declared(consolidation_method=method)).validate()
