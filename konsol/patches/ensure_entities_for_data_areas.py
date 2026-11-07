@@ -39,6 +39,9 @@ REFERRING_DOCTYPES = (
     # does not). A child table has the same data_area_id column, and the
     # table_exists() guard makes the entry free before the doctype exists.
     "Consolidation Journal Line",
+    # konsol#117 pair 1 (task D): the entity a group declares a method for, a
+    # child row of Consolidation Group. Same column, same free guard.
+    "Consolidation Method Declaration",
 )
 
 

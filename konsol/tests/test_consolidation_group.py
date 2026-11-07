@@ -82,7 +82,7 @@ def test_goodwill_method_keeps_its_name_and_is_the_nci_measurement():
     assert "to Full" not in f["description"]
 
 
-def test_the_policy_lives_in_its_own_tab_in_three_labelled_sections():
+def test_the_policy_lives_in_its_own_tab_in_four_labelled_sections():
     fields = _meta()["fields"]
     order = [f["fieldname"] for f in fields]
     by_name = {f["fieldname"]: f for f in fields}
@@ -91,15 +91,18 @@ def test_the_policy_lives_in_its_own_tab_in_three_labelled_sections():
     tab_at = order.index("tab_policy")
     sections = [(order.index(f["fieldname"]), f["label"]) for f in fields
                 if f["fieldtype"] == "Section Break" and order.index(f["fieldname"]) > tab_at]
-    assert [label for _i, label in sections] == ["Framework", "Goodwill and Costs", "Acquisition Accounts"]
-    framework_at, costs_at, accounts_at = [i for i, _l in sections]
+    # konsol#117 pair 1 (task D): the Method Declarations child table is the
+    # fourth section, after the accounts (test_consolidation_method_declaration.py).
+    assert [label for _i, label in sections] == [
+        "Framework", "Goodwill and Costs", "Acquisition Accounts", "Method Declarations"]
+    framework_at, costs_at, accounts_at, declarations_at = [i for i, _l in sections]
     # each field sits in its section, after the tab
     assert framework_at < order.index("accounting_framework") < order.index("framework_note") < costs_at
     for fn in ("goodwill_treatment", "goodwill_amortisation_years", "acquisition_costs_treatment",
                "measurement_period", "bargain_purchase"):
         assert costs_at < order.index(fn) < accounts_at, fn
     for fn in P.ACCOUNT_FIELDS:
-        assert order.index(fn) > accounts_at, fn
+        assert accounts_at < order.index(fn) < declarations_at, fn
     # the settings that stay in the Settings section are not in the tab
     for fn in ("goodwill_method", "ic_difference_account", "ic_difference_tolerance"):
         assert order.index(fn) < tab_at, fn
