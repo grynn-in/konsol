@@ -117,3 +117,12 @@ def test_only_vertical_spacing_and_no_hex_colours():
     css = re.sub(r"/\*.*?\*/", "", _read(CSS), flags=re.S)
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", css)
     assert not HORIZONTAL.search(css), HORIZONTAL.search(css).group(0)
+
+
+def test_heading_corners_are_nearly_square():
+    """Deepak Pai, 7 Nov 2026: "reduce rounded edges...looks too appy...like it
+    less rounded". The band was Frappe's --radius (8px); now 2px."""
+    rules = _rules(_read(CSS))
+    heading = [b for s, b in rules if s.rstrip().endswith(".section-break")]
+    radius = re.search(r"border-radius:\s*([^;]+);", heading[0]).group(1).strip()
+    assert radius == "2px", radius
