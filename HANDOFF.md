@@ -4,6 +4,8 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (7 Nov 2026, late): #424 build wave 1 is merged.** #431 (#107 item 1, entity TB relabel), #432 (#429, `OwnershipPeriod.validate` refuses `proportional` by name), #433 (#106, seeded `forecast_input` Dataset; flat and hierarchy forecast reads agree), #434 (#169, a dimension Custom Field whose column is missing is repaired in the sync, or reported by name). Each PR body holds its red/green run and live A/B. Upgrade: `bench migrate` (seeds the Dataset); nothing else. Next: #374 (b) stored `to_currency` (task file `.claude/memory/active/tasks-374-to-currency.md`), konsolidat#283 Cube removal, then the #117 design comment.
+
 **Update (7 Nov 2026): decision round #424 — nine decisions recorded; build starts.** Deepak Pai decided konsol#106, #107, #113, #117, #374, #348, #232, #111 and #169 on 7 Nov; each record is an issue comment, listed in the decisions register below. konsol#424 indexes the round and holds the build order: #169 column guard, #106 forecast Dataset, #107 relabel and #429 refuse `proportional` first (small, independent); then #374 (b) before #117; konsolidat#283 Cube removal; the #117 design comment; #428; #111 with #255; #348 S1 onward. Both running stacks report Frappe 16.55.2 / Python 3.14.7 (measured 7 Nov): the "live is still v15" notes were stale.
 
 **Update (7 Nov 2026): demo mode, branch `demo-mode` (PR pending, live verification pending).** Deepak Pai decided (7 Nov): a public trial of a shared, hourly-reset site, built on main behind a site_config key, with demo user roles **EPM Analyst + Entity Accountant**. Rejected: a demo-only branch (a fork to maintain; the ext stack runs the main image) and a read-only demo user.
