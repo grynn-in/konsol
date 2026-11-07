@@ -146,3 +146,15 @@ def test_the_boot_survives_code_that_is_ahead_of_its_migrate():
     source = _read("brand.py")
     fn = source[source.index("def boot_session"):source.index("def set_default_if_blank")]
     assert fn.index('has_field("brand_colour")') < fn.index("get_single_value")
+
+
+def test_a_changed_colour_drops_every_cached_boot_after_the_commit():
+    """Review of #416, shown red on 8069: a save left hget("bootinfo", user)
+    holding the old palette, so users kept it until they logged in again."""
+    tree = ast.parse(_read("consolidation/doctype/close_settings/close_settings.py"))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    on_update = ast.unparse(next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "on_update"))
+    assert "has_value_changed('brand_colour')" in on_update
+    assert "frappe.db.after_commit.add(_drop_boot_cache)" in on_update
+    drop = ast.unparse(next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_drop_boot_cache"))
+    assert "frappe.cache.delete_key('bootinfo')" in drop

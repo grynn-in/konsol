@@ -48,6 +48,10 @@ def _as_date(value):
     return value
 
 
+def _drop_boot_cache():
+    frappe.cache.delete_key("bootinfo")
+
+
 REGULAR = "Regular"
 # Effective period statuses that fix the first close (fiscal_status_model).
 _CLOSED_STATUSES = ("Closed", "Locked")
@@ -81,6 +85,14 @@ class CloseSettings(Document):
         self.validate_commentary_threshold()
         self.validate_deadlines()
         self.validate_brand_colour()
+
+    def on_update(self):
+        # konsol#415 review: the Desk's palette rides in the per-user boot
+        # cache (frappe.sessions reads hget("bootinfo", user) first), so a new
+        # Brand Colour reaches nobody until that cache goes. Dropped after the
+        # commit, and only when the colour changed.
+        if self.has_value_changed("brand_colour"):
+            frappe.db.after_commit.add(_drop_boot_cache)
 
     def validate_brand_colour(self):
         """konsol#415: a hex colour white button text can be read on, stored
