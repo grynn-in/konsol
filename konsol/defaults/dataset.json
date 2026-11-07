@@ -67,6 +67,35 @@
  },
  {
   "doctype": "Dataset",
+  "name": "forecast_input",
+  "fact_name": "forecast_input",
+  "label": "Forecast",
+  "source_type": "Budget",
+  "clickhouse_table": "epm_gold.gold_spread_budget",
+  "dbt_model": "gold_spread_budget",
+  "scenario_key": "forecast",
+  "has_scenario_id": 1,
+  "has_layer": 1,
+  "status": "Published",
+  "generates_source": 0,
+  "grain": "One row per main_account x fiscal_period x entity x scenario cell x layer (forecast Scenario ids; konsol#106)",
+  "default_measure": "period_amount",
+  "fact_measures": [
+   {
+    "measure": "period_amount",
+    "required": 1
+   },
+   {
+    "measure": "annual_amount"
+   }
+  ],
+  "fact_dimensions": [],
+  "reroute_measure": "",
+  "reroute_table": "",
+  "reroute_column": ""
+ },
+ {
+  "doctype": "Dataset",
   "name": "variance_analysis",
   "fact_name": "variance_analysis",
   "label": "Variance Analysis",
