@@ -33,15 +33,18 @@ from frappe.model.document import Document
 from frappe.utils import getdate
 
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
 from konsol.period_status import assert_open_between, first_period_affected
 
 # ClickHouse's Date type holds 1970-01-01 .. 2149-06-06 and CLAMPS anything
 # outside it without complaining, so a period dated 1900 or 9999 would say one
 # thing in Frappe and another in the warehouse. A blank end_date is the normal
 # "still open" case and is written as the column's own default; an explicit date
-# has to be representable.
-_CH_DATE_MIN = "1970-01-01"
-_CH_DATE_MAX = "2149-06-06"
+# has to be representable. The range is fiscal_structure_model's, the one
+# definition the Consolidation Method Declaration rules read too (PR #449
+# review, finding 7).
+_CH_DATE_MIN = MIN_DATE.isoformat()
+_CH_DATE_MAX = MAX_DATE.isoformat()
 _OPEN_ENDED = _CH_DATE_MAX
 
 # data_area_id is a Link, and a blank Link is stored as NULL — so {"data_area_id":

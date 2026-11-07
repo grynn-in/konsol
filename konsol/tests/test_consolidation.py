@@ -252,8 +252,12 @@ def test_ownership_period_rejects_dates_clickhouse_would_clamp():
     document and the warehouse would disagree about when a period starts."""
     src = _ownership_period_src()
     assert "_validate_dates_representable" in src
-    assert '_CH_DATE_MIN = "1970-01-01"' in src
-    assert '_CH_DATE_MAX = "2149-06-06"' in src
+    # PR #449 review, finding 7: one definition of the range
+    # (fiscal_structure_model.MIN_DATE / MAX_DATE), imported, never a copy.
+    assert "from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE" in src
+    assert "_CH_DATE_MIN = MIN_DATE.isoformat()" in src
+    assert "_CH_DATE_MAX = MAX_DATE.isoformat()" in src
+    assert '"1970-01-01"' not in src and '"2149-06-06"' not in src
 
 
 def test_ownership_period_zero_is_a_real_percentage():

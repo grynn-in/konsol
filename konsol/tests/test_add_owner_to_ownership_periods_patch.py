@@ -62,10 +62,12 @@ def _controller():
     period_status = types.ModuleType("konsol.period_status")
     period_status.assert_open_between = lambda *a, **k: None
     period_status.first_period_affected = lambda *a, **k: None
+    konsol = types.ModuleType("konsol")
+    konsol.__path__ = [APP_DIR]   # the real pure konsol.fiscal_structure_model imports through the stub
     stubs = {
         "frappe": frappe, "frappe.utils": utils,
         "frappe.model": types.ModuleType("frappe.model"), "frappe.model.document": document_mod,
-        "konsol": types.ModuleType("konsol"), "konsol.clickhouse": clickhouse,
+        "konsol": konsol, "konsol.clickhouse": clickhouse,
         "konsol.period_status": period_status,
     }
 
