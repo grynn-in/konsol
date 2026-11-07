@@ -118,10 +118,14 @@ class _Site:
         def throw(msg, exc=None, **k):
             raise _Stopped(msg)
 
+        def log_error(title=None, message=None, **k):
+            site.calls.append(("log_error", title, message))
+
         frappe.db = types.SimpleNamespace(table_exists=table_exists, set_value=set_value)
         frappe.get_all = get_all
         frappe.reload_doc = reload_doc
         frappe.throw = throw
+        frappe.log_error = log_error
         frappe.ValidationError = _Stopped
         return frappe
 
@@ -324,6 +328,34 @@ def test_execute_fills_the_rest_and_prints_the_skipped_cancelled_row_by_name():
     assert [c[2] for c in sets] == ["OP-1"]
     assert "OP-c-gone" in out.getvalue() and "ZZNOPE" in out.getvalue(), out.getvalue()
     assert "cancelled" in out.getvalue(), out.getvalue()
+
+
+def test_execute_writes_an_error_log_naming_the_skipped_cancelled_rows():
+    """PR #459 re-review finding I: a skipped cancelled row was reported on
+    stdout only, which nobody reads after ``bench migrate``. It is also
+    written as an Error Log whose title names the patch and whose body lists
+    the skipped periods and why, so the skip is visible in Desk afterwards.
+    Nothing is logged when nothing is skipped."""
+    site = _Site(periods=[_period("OP-1"), _period("OP-c-gone", entity="ZZNOPE", docstatus=2),
+                          _period("OP-c-root", group="ZZG", entity=None, docstatus=2)], nodes=NODES)
+    patch = _load(site)
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        patch.execute()
+    logs = [c for c in site.calls if c[0] == "log_error"]
+    assert len(logs) == 1, logs
+    _, title, message = logs[0]
+    assert "add_owner_to_ownership_periods" in title, title
+    assert "OP-c-gone" in message and "ZZNOPE" in message, message
+    assert "OP-c-root" in message and "root" in message, message
+    assert message.index("OP-c-gone") < message.index("OP-c-root"), "listed by name, in order"
+    assert "OP-1" not in message, "a filled row is not a skip"
+    # nothing skipped: nothing logged
+    site = _Site(periods=[_period("OP-1")], nodes=NODES)
+    patch = _load(site)
+    patch.execute()
+    assert not [c for c in site.calls if c[0] == "log_error"]
 
 
 def test_execute_is_idempotent():
