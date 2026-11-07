@@ -151,7 +151,8 @@ def test_validate_runs_the_check():
     import ast
     with open(os.path.join(CG_DIR, "consolidation_group.py")) as f:
         tree = ast.parse(f.read())
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # by name: OwnershipCycle (konsol#117) is defined before the controller
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ConsolidationGroup")
     validate = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "validate")
     assert "self._validate_reporting_currency()" in ast.unparse(validate)
 

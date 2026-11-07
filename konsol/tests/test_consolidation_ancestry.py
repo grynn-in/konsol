@@ -247,25 +247,28 @@ SHAPE_1_LINKS = [
 
 
 def test_shape_1_emits_two_paths_to_d_with_distinct_path_ids():
+    """From P, two paths reach D: P/A/D (two links) and P/D (one). A's own
+    path to D (A/D) keys under (P, D) as well, because A is an entity node
+    under P and the row's group is the ancestor's group code, which is how the
+    live tree reads (every node's group code is ECL_GROUP). path_id is what
+    tells the paths apart; today's rows could not."""
     _, ancestry = _rows(SHAPE_1, SHAPE_1_LINKS)
     to_d = sorted(tuple(r) for r in ancestry if r[0] == "P" and r[1] == "D")
     assert to_d == [
         ("P", "D", "P", "A", 1, 2, "P/A/D", "P/A/D", "P", ""),
+        ("P", "D", "P", "D", 1, 1, "P/A/D", "A/D", "P", "A"),
         ("P", "D", "P", "D", 1, 1, "P/A/D", "P/D", "P", ""),
         ("P", "D", "P", "D", 2, 2, "P/A/D", "P/A/D", "P", "A"),
     ], to_d
-    assert {r[7] for r in to_d} == {"P/A/D", "P/D"}, "two paths, two path_ids"
+    from_p = {r[7] for r in to_d if r[7].startswith("P/")}
+    assert from_p == {"P/A/D", "P/D"}, "two paths from P, two path_ids"
+    assert {r[7] for r in to_d} == {"P/A/D", "P/D", "A/D"}
 
 
-def test_shape_1_has_one_path_from_a_and_one_to_a():
+def test_shape_1_has_one_path_to_a_and_five_rows_in_all():
     _, ancestry = _rows(SHAPE_1, SHAPE_1_LINKS)
     rows = sorted(tuple(r) for r in ancestry if (r[0], r[1]) != ("P", "D"))
-    # A is a node under P, so a row from ancestor A reads consolidation_group P:
-    # the live tree is shaped like this (every node's group code is ECL_GROUP)
-    assert rows == [
-        ("P", "A", "P", "A", 1, 1, "P/A", "P/A", "P", ""),
-        ("P", "D", "P", "D", 1, 1, "P/A/D", "A/D", "P", "A"),
-    ], rows
+    assert rows == [("P", "A", "P", "A", 1, 1, "P/A", "P/A", "P", "")], rows
     assert len(ancestry) == 5
 
 
@@ -324,11 +327,12 @@ def test_a_declared_owner_replaces_the_tree_parent():
     assert demf == [
         ("GROUP_CORP", "DEMF", "GROUP_CORP", "USMF", 1, 2,
          "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_CORP/USMF/DEMF", "GROUP_CORP", ""),
-        ("GROUP_CORP", "DEMF", "GROUP_EMEA", "DEMF", 2, 2,
-         "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_CORP/USMF/DEMF", "GROUP_CORP", "USMF"),
         ("GROUP_CORP", "DEMF", "GROUP_EMEA", "DEMF", 1, 1,
          "GROUP_CORP/GROUP_EMEA/DEMF", "USMF/DEMF", "GROUP_CORP", "USMF"),
+        ("GROUP_CORP", "DEMF", "GROUP_EMEA", "DEMF", 2, 2,
+         "GROUP_CORP/GROUP_EMEA/DEMF", "GROUP_CORP/USMF/DEMF", "GROUP_CORP", "USMF"),
     ], demf
+    assert not [r for r in demf if r[7].startswith("GROUP_EMEA/")], "no path from the tree parent"
 
 
 def test_the_same_edge_declared_twice_is_one_link():
