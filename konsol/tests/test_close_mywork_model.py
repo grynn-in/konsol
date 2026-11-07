@@ -146,7 +146,7 @@ def test_desk_actions_point_at_configuration():
     assert json.loads(parse_qs(urlsplit(freq["action"]["desk"]).query)["name"][0]) == [
         "in", freq["entities"]]
     assert items["gap:ownership"]["action"] == {"desk": "/desk/ownership-period"}
-    assert items["gap:accountants"]["action"] == {"desk": "/desk/user"}
+    assert items["gap:accountants"]["action"] == {"desk": "/desk/user-permission"}
     assert items["gap:accountants"]["users"] == ["zz-a@example.com"]
     assert items["gap:accountants"]["entities"] == []
 

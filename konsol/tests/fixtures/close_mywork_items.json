@@ -105,7 +105,7 @@
     },
     {
       "action": {
-        "desk": "/desk/user"
+        "desk": "/desk/user-permission"
       },
       "detail": "zz-idle@example.com",
       "entities": [],

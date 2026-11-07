@@ -129,6 +129,11 @@ def _emitted_kinds():
     kind added to mywork_model or mywork_api without a fix fails here."""
     model = _read(os.path.join(APP_DIR, "close", "mywork_model.py"))
     api = _read(MYWORK_API)
+    # The gap ids are read from the builders too, so a gap missing from GAPS fails.
+    built = set(re.findall(r'_item\(\s*"(\w+)"', model))
+    built |= set(re.findall(r'\(\s*"(\w+)",\s*(?:"|\n)', model[model.index("_POLICY_GAPS = {"):
+                                                           model.index("def _declared")]))
+    assert built - {"gap"} <= set(MW.GAPS), built - set(MW.GAPS)
     kinds = {"gap:" + g for g in MW.GAPS}
     kinds |= set(re.findall(r'_period_item\([^,]+, key, facts, "([\w-]+)"', model))
     literal = set(re.findall(r'"id":\s*"([a-z][\w-]*)', model + api))
@@ -241,6 +246,21 @@ def test_go_is_the_report_open_path_so_the_board_and_list_agree():
             assert card["go"] == rows[card["id"]]["open"], card["id"]
 
 
+def test_each_go_opens_the_page_where_its_fix_is_done():
+    """PR #420 review: run checks, re-sign and sign off are Actions in Period
+    Close (no run may exist yet to open); a rates error is fixed by a build;
+    an accountant with no entity needs a User Permission."""
+    cards = {c["id"]: c for col in R.board(_payload())["columns"] for c in col["cards"]}
+    period_close = "/desk/query-report/Period%20Close"
+    for card_id in ("checks-run:2025-07", "resign:2025-07", "signoff:2025-09"):
+        assert cards[card_id]["go"] == period_close, card_id
+        assert cards[card_id]["fix"][0].startswith("In Period Close, use Actions"), card_id
+    assert cards["rates-error:2025-07"]["go"] == "/desk/build-approval"
+    assert "Build Approval" in cards["rates-error:2025-07"]["fix"][0]
+    assert cards["gap:accountants"]["go"] == "/desk/user-permission"
+    assert "User Permission" in cards["gap:accountants"]["fix"][0]
+
+
 def test_close_and_waiting_on_gates_open_the_period_close_report():
     """Close period is in the Period Close report's Actions menu, and that
     report shows what blocks a sign-off (Handbook: Approve, check and sign off)."""
@@ -334,6 +354,7 @@ def test_the_block_writes_server_strings_as_text_only():
         assert sink not in js, sink
     assert '"konsol.close.mywork_board_api.get_board"' in js and '"GET"' in js
     assert "root_element" in js
+    assert "card.fix.length" not in js, "guard a missing fix before reading it"
     # Every href the block sets is checked to be a Desk path first.
     assert js.count(".href =") == 1 and "const href = desk(path);" in js
     assert 'startsWith("/desk/") ? path : null' in js
@@ -376,7 +397,11 @@ def test_the_my_work_workspace_holds_only_the_board():
     assert (ws["doctype"], ws["name"], ws["label"], ws["title"]) == (
         "Workspace", "My Work", "My Work", "My Work")
     assert ws["public"] == 1 and ws["standard"] == 1 and ws["module"] == "Consolidation"
-    assert ws["roles"] == [] and not ws["for_user"]
+    # PR #420 review: shown only to the roles the board admits.
+    assert {r["role"] for r in ws["roles"]} == set(dict((b[0], b[2]) for b in ast.literal_eval(
+        next(n.value for n in ast.parse(_read(os.path.join(APP_DIR, "desk_blocks.py"))).body
+             if isinstance(n, ast.Assign) and n.targets[0].id == "BLOCKS")))["Konsol My Work Board"])
+    assert not ws["for_user"]
     assert [b["custom_block_name"] for b in ws["custom_blocks"]] == ["Konsol My Work Board"]
     content = json.loads(ws["content"])
     assert [(b["type"], b["data"].get("custom_block_name"), b["data"]["col"]) for b in content] == [
