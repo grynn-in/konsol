@@ -1108,7 +1108,7 @@ def test_117_when_several_successors_name_one_predecessor_the_earliest_cut_wins(
     _new_link(module, "CG-ZZG-ZZ02", 30, "2026-08-01", "2026-12-31").validate()
     doc = _new_link(module, "CG-ZZG-ZZ02", 36, "2026-08-01", "2026-12-31")
     assert _refusal(doc) == (
-        "`ZZ03` is already 65% owned in 2026-08-01..2026-12-31 (`ZZ01` 65%); this 36% would exceed 100%.")
+        "`ZZ03` is already 65% owned in 2026-08-01..open (`ZZ01` 65%); this 36% would exceed 100%.")
 
 
 def test_117_gaps_and_overlaps_are_checked_per_owner_owned_edge():

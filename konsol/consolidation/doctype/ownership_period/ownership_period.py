@@ -661,13 +661,20 @@ class OwnershipPeriod(Document):
         Checked at every date this period covers where the set of other
         holders changes (its own start and each other link's start inside it):
         the holders covering that date are summed, and the largest total is the
-        one named, with the window where those holders all hold. A cancelled
-        link holds nothing. A period that another non-cancelled period (this
-        one included) ``supersedes`` ends the day before that successor starts:
-        the approval writes exactly that end date, and until it does the draft
-        and its predecessor would otherwise both be counted (PR #449 review,
-        finding 4), so a change that supersedes the current period is the
-        share being changed, not a second one. Runs after
+        one named, with the window where those holders all hold.
+
+        The holders are the SUBMITTED links into the node, plus this document:
+        the graph the warehouse reads, as it would stand once this document is
+        submitted. A draft is not a link yet, so another party's draft is
+        neither counted nor allowed to end the period it ``supersedes`` — it
+        may still be deleted, and a share accepted on its strength would
+        stand past 100% (PR #459 re-review, finding D; #449 finding 4 let any
+        draft's ``supersedes`` cut). That draft's own approval runs this check
+        against whatever is submitted by then. A predecessor ends the day
+        before the earliest successor that names it, among this document and
+        the submitted successors (a submitted successor's approval has already
+        written exactly that end date; the earliest wins when rows written
+        before that rule carry several, finding E). Runs after
         ``_check_no_gaps_or_overlaps``, which has already vouched for this
         document's own predecessor.
         """
@@ -681,19 +688,20 @@ class OwnershipPeriod(Document):
                 "consolidation_group": self.consolidation_group,
                 "data_area_id": self.data_area_id or _BLANK,
                 "name": ["!=", self.name],
-                "docstatus": ["!=", 2],
+                "docstatus": 1,
             },
             fields=["name", "owner_label", "ownership_pct", "effective_date", "end_date", "supersedes"],
             limit_page_length=0,
             order_by="effective_date asc",
         )
-        # predecessor name -> the day before its successor starts
+        # predecessor name -> the day before its EARLIEST successor starts
         ended_by_successor = {}
         for successor in list(rows) + [self]:
             predecessor = getattr(successor, "supersedes", None)
             if predecessor:
-                ended_by_successor[predecessor] = (
-                    getdate(successor.effective_date) - datetime.timedelta(days=1))
+                cut = getdate(successor.effective_date) - datetime.timedelta(days=1)
+                earlier = ended_by_successor.get(predecessor)
+                ended_by_successor[predecessor] = cut if earlier is None else min(earlier, cut)
 
         def ends(op):
             own = getdate(op.end_date or _OPEN_ENDED)
