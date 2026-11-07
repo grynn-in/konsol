@@ -1,0 +1,29 @@
+# Guard for the decision recorded in konsolidat-docs#2 (2026-11-05): this repo's
+# docs/ holds engineering records only; reader-facing prose lives in
+# grynn-in/konsolidat-docs.
+name: docs-guard
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**']
+  pull_request:
+    paths: ['docs/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  records-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docs/ contains only record folders
+        run: |
+          set -euo pipefail
+          bad=$(find docs -type f -not -path 'docs/design/*' -not -path 'docs/README.md' || true)
+          if [[ -n "$bad" ]]; then
+            echo "Reader-facing docs belong in grynn-in/konsolidat-docs (konsolidat-docs#2). Offending files:"; echo "$bad"; exit 1
+          fi
+          echo "OK: docs/ holds records only"
