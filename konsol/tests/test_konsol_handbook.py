@@ -318,11 +318,16 @@ def test_the_home_page_does_not_show_the_handbook():
     assert ws["modified"] >= "2026-11-07 20:00:00", ws["modified"]
 
 
+STRUCTURE_WORKSPACE = os.path.join(APP_DIR, "consolidation", "workspace", "structure",
+                                   "structure.json")
+
+
 def test_the_setup_shortcut_is_a_page_link_shown_only_to_its_roles():
     """A Page shortcut is shown only to a user the Page admits
     (frappe.desk.utils.is_item_allowed); konsol-setup admits EPM Admin and
     System Manager."""
-    ws = json.loads(_read(WORKSPACE))
+    # Desk IA (7 Nov 2026): the shortcut moved from the Close home to Structure.
+    ws = json.loads(_read(STRUCTURE_WORKSPACE))
     (sc,) = [s for s in ws["shortcuts"] if s["label"] == "Konsol Setup"]
     assert (sc["type"], sc["link_to"]) == ("Page", "konsol-setup")
     assert any(b["type"] == "shortcut" and b["data"]["shortcut_name"] == "Konsol Setup"
@@ -346,7 +351,7 @@ HANDBOOK_WORKSPACE = os.path.join(APP_DIR, "consolidation", "workspace", "konsol
                                   "konsol_handbook.json")
 
 
-def test_the_handbook_has_its_own_workspace_holding_only_the_block():
+def test_the_handbook_has_its_own_workspace_holding_the_block_and_guide_pages():
     """The left-menu Handbook row opens this page; a user may make it their
     Default Workspace (User > Workspace), which is then where /desk lands."""
     ws = json.loads(_read(HANDBOOK_WORKSPACE))
@@ -356,8 +361,11 @@ def test_the_handbook_has_its_own_workspace_holding_only_the_block():
     assert ws["roles"] == [] and not ws["for_user"]
     assert [b["custom_block_name"] for b in ws["custom_blocks"]] == ["Konsol Handbook"]
     content = json.loads(ws["content"])
-    assert [(b["type"], b["data"].get("custom_block_name"), b["data"]["col"]) for b in content] == [
-        ("custom_block", "Konsol Handbook", 12)]
+    # Desk IA (7 Nov 2026): below the block, one link to the site's own pages.
+    assert [(b["type"], b["data"].get("custom_block_name") or b["data"].get("shortcut_name"),
+             b["data"]["col"]) for b in content] == [
+        ("custom_block", "Konsol Handbook", 12), ("shortcut", "Konsol Guide Pages", 4)]
+    assert [(s["type"], s["link_to"]) for s in ws["shortcuts"]] == [("DocType", "Konsol Guide Page")]
 
 
 def test_every_page_row_shows_an_explicit_open_close_control():
