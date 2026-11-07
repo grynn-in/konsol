@@ -1,0 +1,27 @@
+{
+ "content": null,
+ "creation": "2026-11-07 12:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "icon": "setting-gear",
+ "idx": 0,
+ "modified": "2026-11-07 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Consolidation",
+ "name": "konsol-setup",
+ "owner": "Administrator",
+ "page_name": "konsol-setup",
+ "roles": [
+  {
+   "role": "EPM Admin"
+  },
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Konsol Setup"
+}
