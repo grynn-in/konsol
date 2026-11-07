@@ -13,16 +13,40 @@ This controller now publishes two things, both pure structure:
 
 * ``epm_gold.consolidation_groups`` — one row per node (who and where).
 * ``epm_staging.consolidation_ancestry`` — the LINK CLOSURE. One row per
-  (ancestor group, entity, link on the chain between them), so dbt can resolve a
+  (ancestor group, entity, link on one PATH between them), so dbt can resolve a
   multi-level ownership chain at a given date without a recursive CTE. This is
   what makes consolidation multi-level: before F2 the tree was stored and never
   traversed, so GROUP_CORP's consolidated result contained only its own direct
   entities and none of GROUP_EMEA's, at any percentage.
+
+konsol#117 pair 1 (Deepak Pai, 7 Nov 2026, option A): ownership is a GRAPH. The
+links are Ownership Period rows (owner node -> owned node); the tree stays the
+reporting structure (which group's chart, policy and currency present a node),
+and ``build_rows`` enumerates every path over the links from every node. An
+entity reached by two paths gets two sets of rows with distinct ``path_id``, so
+dbt multiplies within a path and sums across paths. A link row with no owner
+(every row until task G's patch fills ``owner_node``) is the tree link, so on a
+tree the closure is exactly what it was.
 """
 import frappe
 from frappe.utils.nestedset import NestedSet
 
 from konsol.clickhouse import after_commit_once, sync_doctype_after_commit, sync_table
+
+
+class OwnershipCycle(ValueError):
+    """The ownership links form a cycle, so the closure has no finite path set.
+    OwnershipPeriod.validate refuses the link that would close one (konsol#117
+    design, section 3; task B); this is the build-time backstop for a cycle
+    that reached the data another way, named so the reconcile log says which."""
+
+    def __init__(self, labels):
+        self.labels = list(labels)
+        super().__init__(
+            "Ownership links form a cycle: " + " → ".join(self.labels) + ". "
+            "Cross-holdings are refused until a treasury-share rule is decided "
+            "(konsol#117); the closure was not rebuilt."
+        )
 
 
 class ConsolidationGroup(NestedSet):
@@ -64,11 +88,14 @@ class ConsolidationGroup(NestedSet):
         "acquisition_costs_account": "acquisition_costs_account",
     }
 
-    # PRD-8 / F2: the link closure, computed by a tree walk.
+    # PRD-8 / F2: the link closure, computed by a path walk over the links.
+    # konsol#117 (task C): path_id names the path, link_owner_* the node each
+    # link leaves. The column order is init-db.sql's (test_ownership_graph_ddl.py).
     CH_STAGING_TABLE = "epm_staging.consolidation_ancestry"
     CH_STAGING_COLUMNS = [
         "consolidation_group", "data_area_id",
         "link_group", "link_data_area_id", "link_depth", "depth", "path",
+        "path_id", "link_owner_group", "link_owner_data_area_id",
     ]
 
     # The flat hierarchy view, kept for structure reporting. It no longer
@@ -365,6 +392,31 @@ class ConsolidationGroup(NestedSet):
         )
         return docs, {d.name: d for d in docs}
 
+    @classmethod
+    def _links(cls):
+        """Every submitted ownership link, as ``build_rows`` reads it: rows with
+        the owned node (``consolidation_group``, ``data_area_id``) and the
+        owner's node name (``owner_node``).
+
+        Submitted only: a draft is not yet a link and a cancelled one is gone,
+        which is also what the ``ownership_periods`` sync sends, so the closure
+        and the percentages dbt joins to it describe the same graph.
+
+        konsol#117 task A adds ``owner_node`` in parallel with this (task C):
+        on a stack where the column does not exist yet nothing is read, every
+        node falls back to its tree parent in ``build_rows``, and the closure
+        is today's. The same fallback covers a row whose owner is blank until
+        task G's patch fills it.
+        """
+        if not frappe.db.has_column("Ownership Period", "owner_node"):
+            return []
+        return frappe.get_all(
+            "Ownership Period",
+            filters={"docstatus": 1},
+            fields=["consolidation_group", "data_area_id", "owner_node"],
+            limit_page_length=0,
+        )
+
     @staticmethod
     def _label(node):
         """How a node reads in a path: its entity code, else its group code.
@@ -376,19 +428,42 @@ class ConsolidationGroup(NestedSet):
         return node.data_area_id or node.consolidation_group
 
     @classmethod
-    def build_rows(cls, docs, by_name):
+    def build_rows(cls, docs, by_name, links=()):
         """Return (hierarchy_rows, ancestry_rows). Pure — no ClickHouse, no I/O.
 
-        Split out from resync_staging so the tree arithmetic is testable
+        Split out from resync_staging so the graph arithmetic is testable
         without a site: the ancestry is the part consolidation correctness now
         rests on.
+
+        ``links`` are Ownership Period rows (``consolidation_group``,
+        ``data_area_id`` = the owned node; ``owner_node`` = the owner's node
+        name), as ``_links`` reads them. A node named by at least one link with
+        an owner is owned by exactly those owners; a node named by none (every
+        node before task A's field exists and task G's patch fills it, konsol#117
+        task C) is owned by its tree parent, so a tree without links yields
+        today's rows. Two periods on one (owner, owned) edge are one link: the
+        closure is undated, dbt resolves each link's dates. A link naming a node
+        that does not exist is skipped (validate refuses it; a stale row must
+        not stop every other node's closure).
+
+        The ancestry is a depth-first enumeration of every path from every
+        node along the links. At each entity on a path, one row per link on the
+        path from the starting node: the ancestor's group, the entity, the link
+        (the node it reaches), its depth on the path, the path's length, the
+        entity's TREE path (``path``, unchanged in meaning), ``path_id`` (the
+        node labels from the ancestor to the entity, unique per path) and the
+        node the link leaves. A node met twice on one path is a cycle, refused
+        by name (OwnershipCycle): task B refuses it at validate, this is the
+        backstop.
         """
-        hierarchy, ancestry = [], []
+        hierarchy = []
+        tree_path = {}
         for d in docs:
             ancestors = cls._get_ancestors(d, by_name)  # nearest-first
             chain = [by_name[a] for a in ancestors]
             path = "/".join([cls._label(n) for n in reversed(chain)]
                             + [cls._label(d)])
+            tree_path[d.name] = path
             hierarchy.append([
                 d.consolidation_group,
                 d.data_area_id or "",
@@ -399,23 +474,57 @@ class ConsolidationGroup(NestedSet):
                 path,
             ])
 
-            # Ancestry is about where an ENTITY's numbers roll to. A group node
-            # is a destination, never a contributor.
-            if not d.data_area_id:
-                continue
-            for i, ancestor in enumerate(chain):
-                # Nodes strictly below this ancestor, top-down, ending at self.
-                links = list(reversed(chain[:i])) + [d]
-                for link_depth, link in enumerate(links, start=1):
-                    ancestry.append([
-                        ancestor.consolidation_group,
-                        d.data_area_id,
-                        link.consolidation_group,
-                        link.data_area_id or "",
-                        link_depth,
-                        len(links),
-                        path,
-                    ])
+        # owner node name -> owned node names, from the links; the tree parent
+        # for a node no link names.
+        by_node = {(d.consolidation_group, d.data_area_id or ""): d.name for d in docs}
+        owners = {}
+        for link in links:
+            owner = link.get("owner_node")
+            owned = by_node.get((link.get("consolidation_group"), link.get("data_area_id") or ""))
+            if owner and owned and owner in by_name:
+                owners.setdefault(owned, set()).add(owner)
+        children = {d.name: [] for d in docs}
+        for d in docs:
+            for owner in sorted(owners.get(d.name) or (
+                    [d.parent_consolidation_group]
+                    if d.parent_consolidation_group in by_name else [])):
+                children[owner].append(d.name)
+
+        ancestry = []
+        for start in docs:
+            # Each stack entry is a path from ``start``: the nodes on it (start
+            # first) and the labels that name it.
+            stack = [[start.name]]
+            while stack:
+                path_nodes = stack.pop()
+                for child in children[path_nodes[-1]]:
+                    if child in path_nodes:
+                        cycle = path_nodes[path_nodes.index(child):] + [child]
+                        raise OwnershipCycle(cls._label(by_name[n]) for n in cycle)
+                    nodes = path_nodes + [child]
+                    d = by_name[child]
+                    # Ancestry is about where an ENTITY's numbers roll to. A
+                    # group node is a destination, never a contributor; the walk
+                    # continues below it.
+                    if d.data_area_id:
+                        path_id = "/".join(cls._label(by_name[n]) for n in nodes)
+                        hops = nodes[1:]
+                        for link_depth, name in enumerate(hops, start=1):
+                            link = by_name[name]
+                            owner = by_name[nodes[link_depth - 1]]
+                            ancestry.append([
+                                start.consolidation_group,
+                                d.data_area_id,
+                                link.consolidation_group,
+                                link.data_area_id or "",
+                                link_depth,
+                                len(hops),
+                                tree_path[child],
+                                path_id,
+                                owner.consolidation_group,
+                                owner.data_area_id or "",
+                            ])
+                    stack.append(nodes)
         return hierarchy, ancestry
 
     @classmethod
@@ -429,7 +538,8 @@ class ConsolidationGroup(NestedSet):
         `_record` exists to prevent.
         """
         docs, by_name = cls._nodes()
-        hierarchy, ancestry = cls.build_rows(docs, by_name)
+        links = cls._links()
+        hierarchy, ancestry = cls.build_rows(docs, by_name, links)
         wrote_hierarchy = sync_table(
             cls.CH_HIERARCHY_TABLE, cls.CH_HIERARCHY_COLUMNS, hierarchy, force=force)
         wrote_ancestry = sync_table(

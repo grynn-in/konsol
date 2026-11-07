@@ -145,9 +145,12 @@ def test_one_helper_serves_the_rates_table_and_the_watermark():
     assert not hasattr(m, "_historical_rate_key_upgrade_ddl")
     assert not hasattr(m, "_watermark_upgrade_ddl")
     src = open(CH_PATH).read()
-    assert src.count("_sorting_key_upgrade_ddl(") == 3, "the definition and two call sites"
+    # konsol#117 pair 1 (task C): the ownership periods' owner joined the key
+    # through the same helper (test_ownership_graph_ddl.py)
+    assert src.count("_sorting_key_upgrade_ddl(") == 4, "the definition and three call sites"
     assert '_sorting_key_upgrade_ddl(_WATERMARK_TABLE, "reconcile_run_id", _WATERMARK_UPGRADE)' in src
     assert '_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "to_currency", _HISTORICAL_RATE_UPGRADE)' in src
+    assert '_sorting_key_upgrade_ddl(_OWNERSHIP_PERIODS_TABLE, "owner_group", _OWNERSHIP_PERIODS_UPGRADE)' in src
 
 
 # --- a failed upgrade must not let a sync collapse the two currencies ----------
