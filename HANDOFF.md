@@ -4,6 +4,8 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (7 Nov 2026): decision round #424 — nine decisions recorded; build starts.** Deepak Pai decided konsol#106, #107, #113, #117, #374, #348, #232, #111 and #169 on 7 Nov; each record is an issue comment, listed in the decisions register below. konsol#424 indexes the round and holds the build order: #169 column guard, #106 forecast Dataset, #107 relabel and #429 refuse `proportional` first (small, independent); then #374 (b) before #117; konsolidat#283 Cube removal; the #117 design comment; #428; #111 with #255; #348 S1 onward. Both running stacks report Frappe 16.55.2 / Python 3.14.7 (measured 7 Nov): the "live is still v15" notes were stale.
+
 **Update (7 Nov 2026): demo mode, branch `demo-mode` (PR pending, live verification pending).** Deepak Pai decided (7 Nov): a public trial of a shared, hourly-reset site, built on main behind a site_config key, with demo user roles **EPM Analyst + Entity Accountant**. Rejected: a demo-only branch (a fork to maintain; the ext stack runs the main image) and a read-only demo user.
 - **Built in konsol:** `konsol/demo_mode_model.py` (the pure rule `decide`: refused when the key is unset, the user is missing, disabled or not a System User, or holds Administrator / System Manager / EPM Admin); `konsol/demo_mode.py` (`try_demo`, a Guest GET that logs in as the demo user through Frappe's login manager and redirects to `/desk`, a bare 404 on refusal with the reason in the konsol log; `end_sessions` for the off switch); `/try` (`konsol/www/try.py` + `try.html`: one button while on, Frappe's 404 while off). Nothing else in konsol reads the key; `test_demo_mode_endpoint.py` pins that.
 - **Switch:** `bench --site <site> set-config demo_user <email>` turns it on; `bench execute konsol.demo_mode.switch_off` (user disabled, every session ended) and then `set-config demo_user ""` turns it off. INSTALL.md, "Demo mode".
@@ -328,6 +330,16 @@ comment and listed here.
 
 | date | decision | record |
 |---|---|---|
+| 7 Nov | **Decision round of 7 Nov 2026** (nine decisions below) is indexed by konsol#424, which also holds the build order. | konsol#424 |
+| 7 Nov | **Forecast is its own scenario word**, answered by a seeded create-if-missing `forecast` Dataset on `gold_spread_budget` (`has_layer`, `has_scenario_id`, default measure `period_amount`). Dropping the word in favour of budget + forecast Scenario id (the proposal) was rejected. | konsol#106 (issuecomment-6711033817) |
+| 7 Nov | **Snapshot decisions: option B.** Relabel the entity TB template now; decision 2 is a subset of konsolidat#221; the Consolidated TB and entity TB become spilling `K.CTB` / `K.TB` (currency mandatory), retiring the snapshot, `build_snapshot`, the 10,000-row cap and #108 → konsol#428. A, C, D rejected. | konsol#107 (issuecomment-6711034000) |
+| 7 Nov | **The management TB is superseded**: one TB, dimensions are columns (#255), division is a declared Dimension; "division required on P&L only" moves to #111. Closed. | konsol#113 (issuecomment-6711041406) |
+| 7 Nov | **Ownership is a graph**: ownership links with a path-sum, built directly. "Child table now, graph later" and a child table alone were rejected. Design comment precedes the first PR. | konsol#117 (issuecomment-6710853612) |
+| 7 Nov | **A historical rate carries a stored, required `to_currency`**; the join is keyed by it; a patch fills the live rows from the virtual value. Lands before #117. (a) and (c) rejected. | konsol#374 (issuecomment-6711042052) |
+| 7 Nov | **Budget BUD-1 to BUD-7, all as proposed**: CSV canonical with Excel writes; entity grain; translation policy per Cycle with a Budget rate type; a declared Approved Budget; target scenario with interim; any account; signed like actuals, favourability in three states. Later halves: #425, #426, #427. | konsol#348 (issuecomment-6710950019) |
+| 7 Nov | **Do not wire Cube** is ratified, and Cube is removed from the stack (konsolidat#283). The `cube_type` field stays. | konsol#232 (issuecomment-6710994066) |
+| 7 Nov | **Dimension `[None]`: option B.** An explicit Unassigned member in the hierarchy roll-up (built with the #255 reporting leg); `scope` is superseded by the `in_*` flags; **enforcement is report, not reject**, superseding the 11 Sep "reject at load". A, C, D rejected. | konsol#111 (issuecomment-6711042303) |
+| 7 Nov | **A Custom Field whose column ALTER failed is guarded now** (`has_column` in the dimension Custom Field sync, all three doctypes), independent of #348. Closing it and folding it into the budget epic were rejected. | konsol#169 (issuecomment-6711053355) |
 | 6 Oct | **An .xlsx number is read at Excel's 15 significant digits**; CSV stays exact (option #180-9). | konsol#180 |
 | 6 Oct | **A TB line with more decimals than its currency allows is refused**, naming the line; amounts are never rounded at intake (option #180-5). | konsol#180 (issuecomment-6010973398) |
 | 5 Oct | **A trial balance balances exactly** in its declared currency's minor unit; no tolerance. | konsol#180 |
