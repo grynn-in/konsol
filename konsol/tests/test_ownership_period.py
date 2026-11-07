@@ -1209,6 +1209,26 @@ def test_117b_validate_checks_the_cycle_after_the_owner_and_before_the_windows()
 
 # --- #117 pair 1 F: the owner sentences are one helper the deals share -----------
 
+def test_117_node_by_key_is_the_one_node_by_key_read_the_deals_share():
+    """PR #449 review, finding 9: Business Combination and Business Disposal
+    each copied ``_NODE_FIELDS`` and their own node lookup. One definition:
+    they import ``node_by_key`` from here, and the name list lives here only."""
+    module, _, _ = _site([], nodes=_TREE)
+    node = module.node_by_key("ZZG", "ZZ01")
+    assert (node.name, node.consolidation_group, node.data_area_id, node.parent_consolidation_group) == (
+        "CG-ZZG-ZZ01", "ZZG", "ZZ01", "CG-ZZG-")
+    assert module.node_by_key("ZZSUB", None).name == "CG-ZZSUB-", "a blank entity is the group's own node"
+    assert module.node_by_key("ZZSUB", "").name == "CG-ZZSUB-"
+    assert module.node_by_key("ZZ_TYPO", "ZZ01") is None
+    assert "node_by_key(" in _method_body(_src(), "_node")
+    for deal in ("business_combination", "business_disposal"):
+        with open(os.path.join(APP_DIR, "consolidation", "doctype", deal, deal + ".py")) as f:
+            src = f.read()
+        assert "_NODE_FIELDS" not in src, f"{deal} copies the node field list"
+        assert "import node_by_key" in src or "node_by_key," in src, f"{deal} does not import node_by_key"
+        assert "node_by_key(self.consolidation_group" in src, deal
+
+
 def test_117f_owner_refusal_is_a_module_function_the_validate_uses():
     src = _src()
     assert "\ndef owner_refusal(" in src
