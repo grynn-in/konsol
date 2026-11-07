@@ -9,7 +9,7 @@
 // inert DOMParser document, which runs no script and loads nothing.
 const METHOD = "konsol.handbook.get_handbook";
 const box = root_element.querySelector(".konsol-handbook");
-const state = { data: null, audience: null, query: "", open: null };
+const state = { data: null, audience: null, query: "", open: new Set() };
 const textOf = new Map();
 
 function el(tag, cls, text) {
@@ -50,7 +50,7 @@ function load(audience) {
 }
 
 function openPage(id) {
-	state.open = id;
+	state.open.add(id);
 	const shown = (state.data.pages || []).some((p) => p.id === id);
 	if (!shown || state.query) {
 		state.query = "";
@@ -103,13 +103,21 @@ function tiles() {
 function pageNode(page) {
 	const item = el("details", "kh-page");
 	item.dataset.page = page.id;
-	if (state.open === page.id) item.open = true;
+	if (state.open.has(page.id)) item.open = true;
 	const summary = el("summary", "kh-summary");
+	const toggle = el("span", "kh-toggle");
 	summary.append(
+		el("span", "kh-chevron"),
 		el("span", "kh-page-title", page.title),
 		el("span", "kh-badge " + (page.origin === "Konsol" ? "konsol" : "site"), page.origin),
-		el("span", "kh-audience", page.audience)
+		el("span", "kh-audience", page.audience),
+		toggle
 	);
+	const mark = () => {
+		toggle.textContent = item.open ? "Close" : "Open";
+		summary.setAttribute("aria-expanded", item.open ? "true" : "false");
+	};
+	mark();
 	item.append(summary);
 	const body = el("div", "kh-body");
 	body.innerHTML = page.html;
@@ -120,7 +128,9 @@ function pageNode(page) {
 		item.append(edit);
 	}
 	item.addEventListener("toggle", () => {
-		if (item.open) state.open = page.id;
+		if (item.open) state.open.add(page.id);
+		else state.open.delete(page.id);
+		mark();
 	});
 	return item;
 }
@@ -159,7 +169,17 @@ function render() {
 		state.query = search.value;
 		renderList();
 	});
-	head.append(search);
+	const tools = el("div", "kh-tools");
+	for (const [label, open] of [["Expand all", true], ["Collapse all", false]]) {
+		const button = el("button", "btn btn-default btn-xs kh-all", label);
+		button.type = "button";
+		button.addEventListener("click", () => {
+			for (const item of root_element.querySelectorAll(".kh-page")) item.open = open;
+		});
+		tools.append(button);
+	}
+	tools.append(search);
+	head.append(tools);
 	const nodes = [head, chips()];
 	const start = tiles();
 	if (start) nodes.push(start);
