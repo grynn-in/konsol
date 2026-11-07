@@ -122,5 +122,6 @@ def test_apps_screen_hook_points_at_a_shipped_logo_and_the_close_app():
     entry = value[0]
     assert entry["name"] == "konsol" and entry["route"] == "/desk/konsol"
     assert entry["logo"].startswith("/assets/konsol/")
-    shipped = os.path.join(APP_DIR, "public", entry["logo"][len("/assets/konsol/"):])
+    # The ?v= cache-buster is not part of the file name (test_konsol_logo.py).
+    shipped = os.path.join(APP_DIR, "public", entry["logo"].split("?")[0][len("/assets/konsol/"):])
     assert os.path.isfile(shipped), f"logo {entry['logo']} is not in konsol/public"

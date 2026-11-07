@@ -104,7 +104,9 @@ website_route_rules = [
 add_to_apps_screen = [
 	{
 		"name": "konsol",
-		"logo": "/assets/konsol/images/konsol-logo.svg",
+		# ?v= is bumped with every logo change: an image is not a bundle, so a
+		# browser would keep the old one (dark green K, Deepak Pai, 7 Nov 2026).
+		"logo": "/assets/konsol/images/konsol-logo.svg?v=20261108",
 		"title": "Konsol",
 		"route": "/desk/konsol",
 	}
