@@ -52,3 +52,4 @@ konsol.patches.retire_approval_number_cards
 konsol.patches.set_default_brand_colour
 konsol.patches.fill_historical_rate_to_currency
 konsol.patches.delete_konsolidat_workspace
+konsol.patches.backfill_planning_scenario_type
