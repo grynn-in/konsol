@@ -210,8 +210,23 @@ class OwnershipPeriod(Document):
         a NEW row only; the 329 names written before the owner existed stay
         (design §1). A ``format:`` autoname on ``data_area_id`` dropped a
         sub-group's code, so two sub-group periods from one owner and date
-        collided (PR #449 review, finding 3)."""
-        self.name = f"OP-{self.owner_label}-{self._owned_label()}-{self.effective_date}"
+        collided (PR #449 review, finding 3).
+
+        The date is written as ISO whatever shape it was posted in (a
+        ``dd-mm-yyyy`` or a datetime gave a differently shaped name for the
+        same link and date, so the collision guard did not hold), and a
+        period whose owner has no label is refused by sentence, never named
+        ``OP-None-…`` (PR #459 re-review, finding F)."""
+        if not self.owner_label:
+            self._resolve_owner()
+        if not self.owner_label:
+            why = (f"Owner Node {self.owner_node} is not a Consolidation Group node" if self.owner_node
+                   else f"it has no Owner Node and `{self._owned_label()}` has no tree parent to pre-fill one from")
+            frappe.throw(f"Cannot name this Ownership Period: {why}, so there is no owner label to "
+                         f"name it by. Choose the node that holds the share.")
+        if not self.effective_date:
+            frappe.throw("Cannot name this Ownership Period without its Effective Date.")
+        self.name = f"OP-{self.owner_label}-{self._owned_label()}-{getdate(self.effective_date).isoformat()}"
 
     def before_validate(self):
         """On every save: a cleared owner is pre-filled again, and the derived
