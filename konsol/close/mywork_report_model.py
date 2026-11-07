@@ -165,10 +165,10 @@ FIXES = {
     "signoff-wait": (("Nothing to do yourself yet: an earlier period, or a sign-off gate, must "
                       "clear first.",
                       "Period Close shows what blocks the sign-off."), _LEAD),
-    "rates-error": (("Add a Build Approval with Build Scope consolidation and wait for it to "
-                     "complete.",
-                     "Then open My Work again; the rates are checked once the warehouse "
-                     "answers."), _GROUP),
+    "rates-error": (("Add a Build Approval with Build Scope consolidation; the Close Lead "
+                     "approves it before it runs.",
+                     "When it completes, open My Work again: the rates are checked once the "
+                     "warehouse answers."), _GROUP),
     # mywork_model.approvals_item, ic_fix_items, sent-back items
     "approvals": (("Open each waiting record and use Actions, then Approve or Reject.",), _LEAD),
     "ic": (("Correct the intercompany rows on your trial balance for the period, or agree the "
