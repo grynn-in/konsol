@@ -19,9 +19,11 @@ given epm_staging.historical_equity_rates the column and the key.
 
 A group whose root has no reporting currency stops the migrate, naming the
 group and its rates: guessing a currency would invent a rate. A new name that
-already belongs to another document stops it too: overwriting one tranche
-with another would lose a rate. Idempotent: a second run finds every row
-filled and writes nothing.
+already belongs to another document, or that two rows would both take, stops
+it too, naming the rows: overwriting one tranche with another would lose a
+rate. A row that is filled but still carries the old 4-tuple name is renamed
+(PR #436 review). Idempotent: a second run finds every row filled and named
+by the 5-tuple, and writes nothing.
 
 Runs before the model sync (konsol's patches.txt has no sections), so it
 reloads the doctype first to have the column.
@@ -34,30 +36,49 @@ _BLANK = ["is", "not set"]
 
 
 def plan(rows, root_currency):
-    """Split ``rows`` (each with name, consolidation_group, data_area_id,
-    main_account, rate_date, to_currency) into the writes to make and the
-    groups that cannot be filled. Pure, so the mapping is testable without a
-    site.
+    """Split ``rows`` (dicts as frappe.get_all returns them, with name,
+    consolidation_group, data_area_id, main_account, rate_date, to_currency)
+    into the writes to make and the groups that cannot be filled. Pure, so the
+    mapping is testable without a site.
 
-    Returns ([(name, to_currency, new_name)], {group: [names]}).
+    A row needs a write when its To Currency is blank (fill it with the root's
+    currency) OR when its name is not the digest of the 5-tuple (rename it):
+    PR #436 review, a row filled by hand or by an interrupted run still
+    carries the old 4-tuple name, and a blank marker alone never renamed it.
+    A row that is filled and correctly named is left alone, which is what
+    makes a second run write nothing.
+
+    Returns ([(name, fill, new_name)], {group: [names]}): ``fill`` is the
+    currency to write, or None when the row already carries one.
     """
     updates, problems = [], {}
     for row in rows:
-        get = row.get if isinstance(row, dict) else lambda k, r=row: getattr(r, k)
-        if get("to_currency"):
-            continue
-        group = get("consolidation_group")
-        currency = root_currency.get(group)
+        stored = row.get("to_currency")
+        group = row.get("consolidation_group")
+        currency = stored or root_currency.get(group)
         if not currency:
-            problems.setdefault(group, []).append(get("name"))
+            problems.setdefault(group, []).append(row.get("name"))
             continue
         # autoname digests str(rate_date); get_all hands back a date object.
-        rate_date = get("rate_date")
+        rate_date = row.get("rate_date")
         rate_date = rate_date.isoformat() if hasattr(rate_date, "isoformat") else rate_date
         new_name = digest_name(
-            "HER", [group, get("data_area_id"), get("main_account"), rate_date, currency])
-        updates.append((get("name"), currency, new_name))
+            "HER", [group, row.get("data_area_id"), row.get("main_account"), rate_date, currency])
+        if stored and new_name == row.get("name"):
+            continue
+        updates.append((row.get("name"), None if stored else currency, new_name))
     return updates, problems
+
+
+def duplicate_targets(updates):
+    """{new_name: [old names]} for every new name two or more planned updates
+    share (PR #436 review): two rows of one tranche that both digest to the
+    same name would pass a check against pre-existing documents and make the
+    second rename_doc fail mid-loop with Frappe's generic message. Pure."""
+    by_target = {}
+    for name, _fill, new_name in updates:
+        by_target.setdefault(new_name, []).append(name)
+    return {t: names for t, names in by_target.items() if len(names) > 1}
 
 
 def root_currencies():
@@ -94,7 +115,18 @@ def execute():
             "Currency, or delete the rates, then migrate again.",
             frappe.ValidationError,
         )
-    for name, currency, new_name in updates:
+    duplicates = duplicate_targets(updates)
+    if duplicates:
+        detail = "; ".join(
+            f"{', '.join(names)} would all be renamed to {new_name}"
+            for new_name, names in sorted(duplicates.items()))
+        frappe.throw(
+            f"Historical Equity Rates collide on their new name: {detail}. They are "
+            "the same tranche and currency recorded more than once; cancel or delete "
+            "all but one of each, then migrate again.",
+            frappe.ValidationError,
+        )
+    for name, _fill, new_name in updates:
         if new_name != name and frappe.db.exists("Historical Equity Rate", new_name):
             frappe.throw(
                 f"Historical Equity Rate {name} would be renamed to {new_name}, which "
@@ -102,9 +134,10 @@ def execute():
                 "delete one of them, then migrate again.",
                 frappe.ValidationError,
             )
-    for name, currency, new_name in updates:
-        frappe.db.set_value(
-            "Historical Equity Rate", name, "to_currency", currency, update_modified=False)
+    for name, fill, new_name in updates:
+        if fill:
+            frappe.db.set_value(
+                "Historical Equity Rate", name, "to_currency", fill, update_modified=False)
         if new_name != name:
             frappe.rename_doc(
                 "Historical Equity Rate", name, new_name, force=True, show_alert=False)
