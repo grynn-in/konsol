@@ -22,6 +22,9 @@ The owner is pre-filled with the owned node's tree parent when left blank. That
 is the one default in the design: it is visible on the form, named in the
 field's description, and refused when the parent is not a node. A node may
 have several owners; the links into it over any one date sum to at most 100%.
+The graph has no cycles: a link whose owned node already holds, directly or
+through other links, its owner is refused naming the ring (design §3), until
+a treasury-share rule is decided on konsol#117.
 """
 import datetime
 
@@ -118,6 +121,7 @@ class OwnershipPeriod(Document):
         self._validate_deal_fields_untouched()
         self._validate_node_exists()
         self._validate_owner()
+        self._validate_no_cycle()
         self._validate_pct_range()
         self._validate_consolidation_method()
         self._validate_dates_representable()
@@ -368,6 +372,94 @@ class OwnershipPeriod(Document):
                 f"like `{self._owned_label()}`: an owner is a node of the same hierarchy as "
                 f"the node it owns."
             )
+
+    # -- no cycles (#117 pair 1, design §3) ------------------------------------
+
+    #: The second sentence of the cycle refusal, one place.
+    CYCLE_TAIL = "Cross-holdings are refused until a treasury-share rule is decided (konsol#117)."
+
+    def _validate_no_cycle(self):
+        """§1 refusal 3: this link may not close a ring.
+
+        From the OWNED node, follow the outgoing non-cancelled links (owner →
+        owned, ``docstatus != 2``, undated: a link that ended years ago still
+        closes the ring) and refuse when the OWNER node is reached, naming
+        every node on the path owner → owned → … → owner. The self-link is
+        the one-node case and ``_validate_owner`` has already refused it.
+
+        Two links saved concurrently could each pass the walk under REPEATABLE
+        READ (each transaction reads its own snapshot). The check first takes
+        the serialising lock the group uses for its difference account
+        (Ownership Period's ``tabDocType`` row FOR UPDATE, the pattern at
+        consolidation_group.py:183), so the second save waits for the first
+        to commit, and reads the links FOR UPDATE, which reads the latest
+        committed rows rather than the snapshot. The build-time backstop is
+        ``ConsolidationGroup.build_rows`` (a repeated node on a path raises)
+        and dbt's ``assert_ownership_paths_acyclic``.
+        """
+        if not self.owner_node:
+            return
+        owner, owned = self._owner(), self._node()
+        if owner is None or owned is None or owner.name == owned.name:
+            return   # refused by name already (``_validate_node_exists``, ``_validate_owner``)
+        frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE",
+                      ("Ownership Period",))
+        trail = self._path_between(owned.name, owner.name)
+        if trail is None:
+            return
+        owner_label = owner.data_area_id or owner.consolidation_group
+        ring = [owner_label, self._owned_label()] + trail
+        frappe.throw(
+            "This link would close a cycle: " + " → ".join(f"`{label}`" for label in ring)
+            + ". " + self.CYCLE_TAIL
+        )
+
+    def _links_out_of(self, node_name):
+        """The non-cancelled links whose owner is ``node_name``, read FOR
+        UPDATE; this document's own stored row is not a second link."""
+        query = ("SELECT `name`, `consolidation_group`, `data_area_id` FROM `tabOwnership Period` "
+                 "WHERE `owner_node` = %s AND `docstatus` != 2")
+        values = [node_name]
+        if self.name:
+            query += " AND `name` != %s"
+            values.append(self.name)
+        return frappe.db.sql(query + " FOR UPDATE", tuple(values), as_dict=True)
+
+    def _path_between(self, start, target):
+        """Depth-first over outgoing links from node ``start``: the labels
+        (entity code, else group code) of the nodes after ``start`` on a path
+        that reaches ``target``, or None when none does. A ``visited`` set
+        keeps a graph that already holds a ring (through a patch or an import)
+        from looping; the live tree is six links deep at most."""
+        names = {}   # (group, entity) -> node name, one lookup per node
+
+        def node_name(group, entity):
+            key = (group, entity or None)
+            if key not in names:
+                row = frappe.db.get_value(
+                    "Consolidation Group",
+                    {"consolidation_group": group, "data_area_id": entity or _BLANK},
+                    ["name", "consolidation_group", "data_area_id", "parent_consolidation_group"],
+                    as_dict=True)
+                names[key] = row.name if row else None
+            return names[key]
+
+        visited, stack = set(), [(start, [])]
+        while stack:
+            node, trail = stack.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            for link in self._links_out_of(node):
+                label = link.data_area_id or link.consolidation_group
+                nxt = node_name(link.consolidation_group, link.data_area_id)
+                if nxt is None:
+                    continue   # a link into a node that no longer exists is read by nothing
+                if nxt == target:
+                    return trail + [label]
+                if nxt not in visited:
+                    stack.append((nxt, trail + [label]))
+        return None
 
     def _validate_pct_range(self):
         if self.ownership_pct is None or not (0 <= float(self.ownership_pct) <= 100):
