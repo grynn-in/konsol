@@ -4,6 +4,25 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (8 Nov 2026, small hours): rail, Planning and Desk look, #454–#463.** Every item below was decided by Deepak Pai on 7 Nov 2026 (record: #443 comments; memory `decision-desk-ia-rail`) and checked live on konsolidat.local.
+- **Rail:** Close · Planning · Structure · Data · Info. "Handbook" is titled Info (#454).
+- **Planning (#460, option B; rejected A two rail entries, C Forecast doctypes, D unfiltered duplicates):**
+  - Budget is replaced by one Planning entry: Budget and Forecast sections filtered by a fetched read-only `scenario_type` on Budget Cycle, Sheet and Annual Input, plus a Shared section (Scenarios, Spread Profiles, All Cycles / Sheets / Annual Inputs).
+  - `Scenario.validate` refuses a type change while it is referenced, using locking reads; the copy is taken under `LOCK IN SHARE MODE`.
+  - `Budget Cycle.scenario_id` is `set_only_once`.
+  - Accepted risk, documented in `scenario.py`: a cycle save and a concurrent type change can deadlock (1213, nothing stale).
+  - Patches: `backfill_planning_scenario_type`, `delete_budget_rail`.
+- **Sidebar look (#455, #456, #458, #461, #463):**
+  - Section headings are a band in `--konsol-brand-strong` with white text and a white chevron (the `<use>` stroke too), 24px tall with 2px gaps.
+  - `keep_closed` on every section; a user's own open/close state in localStorage wins.
+  - Scoped by `.body-sidebar[data-title]` to the shipped titles (`test_konsol_sidebar_look.py`).
+- **Whole Desk (#461):** `konsol_theme.bundle.css` sets Frappe's radius variables to 2px. `--radius-full` stays, so avatars and pills stay round. Rejected: konsol pages only.
+- **My Work (#457):** each card is a `<details>` showing only its heading; Expand all / Collapse all in the top bar; 2px corners. This applies to all three columns.
+- **CSS bundles (#462):** the three stylesheets are `konsol_*.bundle.css`, named bare in `app_include_css`, so each build gets a hashed URL and no hard refresh is needed. The image builds them in `bench get-app`.
+  - Live hot-patch: `docker cp` the `.bundle.css`, then `bench build --app konsol` in `konsolidat_backend` (it also rebuilds close-ui), then `frappe.clear_cache()`. Frappe's manifest entries were checked unchanged.
+- **Upgrade:** `bench migrate` (both patches, the sidebars, workspaces and Dock). Deploy rebuilds the image for the bundles.
+- **Live stack note:** konsolidat.local's code is behind main. These changes were installed by targeted import, not a full migrate.
+
 **Update (7 Nov 2026, late night): Desk IA (konsol#443) merged as #451 (5ec72b7d).** The rail no longer shows module names (Konsol / EPM / Pipeline, two of them computed sidebars), plus a stray Konsolidat workspace.
 - **Decisions (Deepak Pai, 7 Nov, on #443):**
   - Rail Close / Budget / Structure / Data / Handbook. Rejected: Setup, Integration.
