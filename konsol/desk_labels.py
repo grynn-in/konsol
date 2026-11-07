@@ -10,6 +10,13 @@ acronyms (TB, IC, ISO, EPM), singles and uncountables wrong.
 
 Keys are target names: a DocType's name, a Report's name, or a Page's route
 name (``konsol-setup``). No DocType shares a name with a Report or Page.
+
+Planning (Deepak Pai, 7 Nov 2026, option B on #443; rejected A, separate Budget
+and Forecast rail entries; C, Forecast doctypes; D, unfiltered duplicates):
+Budget Cycle, Budget Sheet and Budget Annual Input are listed three times on
+the Planning sidebar. Filtered to one scenario type, a link takes its label
+from ``FILTERED_LABELS``; unfiltered, it is "All ...", so strategic and
+operational cycles stay reachable.
 """
 
 LABELS = {
@@ -37,10 +44,12 @@ LABELS = {
     "Close Event": "Close Events",
     # --- Close home and My Work ------------------------------------------
     "My Work": "My Work",
-    # --- Budget ----------------------------------------------------------
-    "Budget Cycle": "Budget Cycles",
-    "Budget Sheet": "Budget Sheets",
-    "Budget Annual Input": "Budget Annual Inputs",
+    # --- Planning (#443) ---------------------------------------------------
+    # Unfiltered, these lists hold every scenario type: budget, forecast,
+    # strategic and operational. Filtered links use FILTERED_LABELS below.
+    "Budget Cycle": "All Cycles",
+    "Budget Sheet": "All Sheets",
+    "Budget Annual Input": "All Annual Inputs",
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
     # --- Structure: group ------------------------------------------------

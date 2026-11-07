@@ -424,6 +424,59 @@ def test_only_declared_pairs_are_filtered_and_each_link_claims_its_doctype():
     assert sorted(seen) == sorted(declared), (seen, sorted(declared))
 
 
+#: Budget and forecast share these doctypes (#443).
+PLANNING_DOCTYPES = ("Budget Cycle", "Budget Sheet", "Budget Annual Input")
+
+
+def test_the_planning_doctypes_are_all_on_planning():
+    on = {i["link_to"] for i in _links(_sidebars()["Planning"][1]) if i["link_type"] == "DocType"}
+    assert set(PLANNING_DOCTYPES) <= on, on
+
+
+def test_the_unfiltered_planning_links_say_all():
+    """Unfiltered, a planning list holds every scenario type, so its label says
+    so: "All Cycles", not "Budget Cycles" (Deepak Pai, 7 Nov 2026, option B on
+    #443; rejected A, C, D)."""
+    labels = _labels()
+    assert [labels[dt] for dt in PLANNING_DOCTYPES] == [
+        "All Cycles", "All Sheets", "All Annual Inputs"]
+
+
+def test_no_sidebar_shows_one_label_twice():
+    """Two rows labelled alike on one sidebar cannot be told apart."""
+    for name, (_, d) in _sidebars().items():
+        labels = [i["label"] for i in _links(d)]
+        assert len(labels) == len(set(labels)), (name, sorted(l for l in labels if labels.count(l) > 1))
+
+
+def test_every_scenario_type_but_actual_is_reachable():
+    """Each non-actual Scenario type reaches each planning doctype from some
+    link: its own filtered link, or the unfiltered "All ..." link. Strategic and
+    operational cycles have no section of their own, so without the "All" link
+    they would be listed nowhere (the HMD on #443). ``actual`` is refused by
+    BudgetCycle.validate, so no link filters on it."""
+    scenario = _doctypes()["Scenario"][1]
+    field = next(f for f in scenario["fields"] if f["fieldname"] == "scenario_type")
+    types = [t for t in field["options"].split("\n") if t]
+    assert "actual" in types and len(types) > 3, types
+    filtered, unfiltered = set(), {}
+    for _, (_, d) in _sidebars().items():
+        for i in _links(d):
+            if i["link_type"] != "DocType" or i["link_to"] not in PLANNING_DOCTYPES:
+                continue
+            if i.get("filters"):
+                filtered.add((i["link_to"], _scenario_filter(i["link_to"], i["filters"])))
+            else:
+                unfiltered[i["link_to"]] = i["label"]
+    assert not {k for k in filtered if k[1] == "actual"}, filtered
+    for dt in PLANNING_DOCTYPES:
+        for t in types:
+            if t == "actual":
+                continue
+            reach = (dt, t) in filtered or unfiltered.get(dt, "").startswith("All ")
+            assert reach, (dt, t, "reachable from no link")
+
+
 def test_every_sidebar_starts_at_its_home():
     for name, (_, d) in _sidebars().items():
         first = d["items"][0]
