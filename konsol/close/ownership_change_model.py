@@ -30,6 +30,11 @@ Inputs:
   count as first days, so an Adjustment period's start is never a first day;
   ``effect``'s ``resign`` list looks up each signed key it is given here.
 
+``holding(entity, holders, owner_node)`` (konsol#117 pair 1, option A: a node
+may have several owners) decides which of the node's current holdings a change
+is for, before ``current`` is known: one holder is implied, several need the
+request to name ``owner_node``, else the design's sentence is raised.
+
 Dates may be ``datetime.date`` objects or ISO strings. The output always uses
 ISO strings.
 """
@@ -291,3 +296,54 @@ def effect(change, current, period_rows, signed_keys):
         "resign_detail": resign_detail,
         "not_shown": NOT_SHOWN,
     }
+
+
+# -- #117 pair 1: which holding a change is for ---------------------------------
+
+_COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight",
+                9: "nine"}
+
+
+def _holders_text(holders):
+    """```US_USA` 60%, `ECL_GROUP` 20%``: largest share first, then by
+    label. A holder is named by ``owner_label`` (its entity code, else its
+    group code), falling back to its ``owner_node`` name."""
+    def label(h):
+        return h.get("owner_label") or h.get("owner_node") or ""
+
+    ordered = sorted(holders, key=lambda h: (-float(h.get("ownership_pct") or 0), label(h)))
+    return ", ".join("`%s` %s%%" % (label(h), _pct_text(h.get("ownership_pct") or 0))
+                     for h in ordered)
+
+
+def holding(entity, holders, owner_node=None):
+    """The one of ``holders`` a change of ``entity`` is for, or None when
+    there is none (``problems`` rule 1 then says so).
+
+    ``holders`` are the node's submitted Ownership Periods covering the
+    change's start, one per owner (``owner_node``, ``owner_label``,
+    ``ownership_pct``, and whatever else the caller reads; the row is handed
+    back as given). ``owner_node`` is the owner the request named, or None.
+
+    - One holder: implied, named or not.
+    - Several and no ``owner_node``: refused by the design's sentence (§1,
+      "Desk ownership change"): "`US_EC` has two owners (`US_USA` 60%,
+      `ECL_GROUP` 20%): choose the holding to change."
+    - ``owner_node`` named: its holder; one that holds nothing is refused
+      naming who does. Nothing is guessed from a near-miss.
+
+    Raises ValueError with the sentence.
+    """
+    if not holders:
+        return None
+    if owner_node:
+        for h in holders:
+            if h.get("owner_node") == owner_node:
+                return h
+        raise ValueError("`%s` is not held by %s: its owners are %s."
+                         % (entity, owner_node, _holders_text(holders)))
+    if len(holders) == 1:
+        return holders[0]
+    count = _COUNT_WORDS.get(len(holders), str(len(holders)))
+    raise ValueError("`%s` has %s owners (%s): choose the holding to change."
+                     % (entity, count, _holders_text(holders)))

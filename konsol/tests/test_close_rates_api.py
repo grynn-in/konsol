@@ -243,12 +243,16 @@ def _her(name, data_area_id="ZZA", group="CG1", account="4000", rate_date=None,
 
 def _op(name, data_area_id="ZZA", group="CG1", effective_date=None, end_date=None,
         ownership_pct=60.0, consolidation_method="Equity", owner=ANALYST, creation=None,
-        docstatus=0):
+        docstatus=0, owner_node=None, owner_label=None):
+    """An Ownership Period row. ``owner_node`` / ``owner_label`` (#117 pair 1)
+    default to the node's own root group, ``CG-{group}-`` / ``{group}``: the
+    tree parent, the one default the design names."""
     return {"name": name, "consolidation_group": group, "data_area_id": data_area_id,
             "effective_date": effective_date or date(2025, 1, 1), "end_date": end_date,
             "ownership_pct": ownership_pct, "consolidation_method": consolidation_method,
             "owner": owner, "creation": creation or datetime(2025, 7, 2, 9, 0, 0),
-            "docstatus": docstatus}
+            "docstatus": docstatus,
+            "owner_node": owner_node or "CG-%s-" % group, "owner_label": owner_label or group}
 
 
 def _entity(name, status="Active", is_group=0):
@@ -1632,11 +1636,13 @@ def test_o55_preview_names_only_its_parameters_and_takes_no_kwargs():
     sig = _invoke(site, lambda api: {"sig": [
         (p.name, p.kind, p.default is None)
         for p in inspect.signature(api.preview_ownership_change).parameters.values()]})
-    assert [n for n, _, _ in sig["sig"]] == PREVIEW_PARAMS + ["name"]
+    assert [n for n, _, _ in sig["sig"]] == PREVIEW_PARAMS + ["owner_node", "name"]
     kinds = {k for _, k, _ in sig["sig"]}
     assert inspect.Parameter.VAR_KEYWORD not in kinds
     assert inspect.Parameter.VAR_POSITIONAL not in kinds
-    assert [n for n, _, none in sig["sig"] if none] == ["name"]
+    # #117 pair 1 F: ``owner_node`` (the holding, when the node has several
+    # owners) joins ``name`` as an optional parameter.
+    assert [n for n, _, none in sig["sig"] if none] == ["owner_node", "name"]
 
 
 def test_o55_preview_is_a_get_with_a_literal_role_tuple():
@@ -1663,7 +1669,7 @@ def test_o55_preview_is_a_get_with_a_literal_role_tuple():
 # thrown before any write; the controller (O53) decides the rest, so the
 # insert and the save carry no ignore flag.
 
-O56_SAVE_PARAMS = PREVIEW_PARAMS + ["name"]
+O56_SAVE_PARAMS = PREVIEW_PARAMS + ["owner_node", "name"]
 O56_SAVE_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
 
 
@@ -1710,6 +1716,7 @@ def test_o56_happy_path_inserts_one_draft_superseding_the_current_period():
         "data_area_id": O55_LEAF, "effective_date": "2025-10-01", "end_date": None,
         "ownership_pct": 80.0, "consolidation_method": "full",
         "supersedes": "OP-ZZ5B1-1", "superseded_end_date": None,
+        "owner_node": "CG-ECL_GROUP-",
         "name": "OP-NEW", "docstatus": 0, "source": "Manual",
         "quote_label": doc._data["quote_label"]}
 
@@ -1740,8 +1747,8 @@ def test_o56_forged_keys_never_reach_the_doc_the_signature_is_pinned():
                    "effective_date", "owner", "amended_from", "acquisition_price",
                    "is_disposal"):
         assert forged not in O56_SAVE_PARAMS, forged
-    # The only optional parameter is ``name`` (default None).
-    assert [n for n, _, none in sig["sig"] if none] == ["name"]
+    # The optional parameters are ``owner_node`` (#117 pair 1 F) and ``name``.
+    assert [n for n, _, none in sig["sig"] if none] == ["owner_node", "name"]
 
 
 def test_o56_is_a_post_with_a_literal_role_tuple_and_never_commits():
@@ -2478,10 +2485,13 @@ def test_o63_reads_are_constant_in_the_number_of_nodes():
 # ``ownership_change._as_current``'s shape, read in the same nodes read. ----
 
 
-def _r52j_current(name, effective_date, end_date=None, pct=60.0, method="Equity"):
-    """Written out independently of the code under test."""
+def _r52j_current(name, effective_date, end_date=None, pct=60.0, method="Equity",
+                  group=O55_GROUP):
+    """Written out independently of the code under test. The owner (#117
+    pair 1) is the node's root group, the stub rows' default."""
     return {"name": name, "effective_date": effective_date, "end_date": end_date,
-            "ownership_pct": pct, "consolidation_method": method}
+            "ownership_pct": pct, "consolidation_method": method,
+            "owner_node": "CG-%s-" % group, "owner_label": group}
 
 
 def _r52j_item(result, entity, group):
@@ -2519,7 +2529,7 @@ def test_r52j_failure_path_a_later_draft_on_the_node_is_not_current():
 def test_r52j_a_node_with_one_period_gives_that_period():
     result = _o63_call(_o63_site())
     assert _r52j_item(result, O55_LEAF, O63_SUB)["current"] == _r52j_current(
-        "OP-ZZ5B1-SUB", "2025-01-01")
+        "OP-ZZ5B1-SUB", "2025-01-01", group=O63_SUB)
     assert _r52j_item(result, "ZZ5B3", O55_GROUP)["current"] == _r52j_current(
         "OP-ZZ5B3-1", "2025-12-01")
 
@@ -3527,3 +3537,136 @@ def test_fr3_an_edit_by_name_makes_no_locking_read_of_the_key():
     _save(site, name="GER-2", from_currency="EUR", rate_type="Average", quote=0.9)
     assert site.locking_values == [], site.locking_values
     assert site.reads == [("sql", "fiscal_period_rows"), ("get_doc", "Group Exchange Rate")]
+
+
+# --- #117 pair 1 F: the Desk ownership change names the holding's owner --------
+# A node may have several owners (option A, Deepak Pai 7 Nov 2026). The
+# preview and the save take ``owner_node``: with one owner it is implied and
+# ``current`` names it; with several the request must say which, else the
+# model's sentence (design §1, "Desk ownership change") is thrown before any
+# write. The draft the save creates carries that owner, so the Ownership
+# Period's per-link supersede check finds its predecessor. The form's
+# choices list one item per holding.
+
+F117_USA = ("CG-ECL_GROUP-US_USA", "US_USA")
+F117_ROOT = ("CG-ECL_GROUP-", "ECL_GROUP")
+F117_SENTENCE = ("`ZZ5B1` has two owners (`ECL_GROUP` 100%, `US_USA` 60%): "
+                 "choose the holding to change.")
+
+
+def _f117_site(**k):
+    """The O55 site with a second owner of ZZ5B1: US_USA holds 60% beside the
+    root's 100%-row (the percentages are the stub's; validate's total check
+    is the controller's business, not this endpoint's)."""
+    site = _o55_site(**k)
+    site.ops.append(_op("OP-US_USA-ZZ5B1-2025-01-01", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 1, 1), end_date=None, ownership_pct=60.0,
+                        consolidation_method="full", owner=LEAD, docstatus=1,
+                        owner_node=F117_USA[0], owner_label=F117_USA[1]))
+    return site
+
+
+def _f117_preview(site, owner_node=None, name=None):
+    return _invoke(site, lambda api: api.preview_ownership_change(
+        2025, 10, O55_GROUP, O55_LEAF, "80", "full", owner_node=owner_node, name=name))
+
+
+def _f117_save(site, owner_node=None, name=None):
+    return _invoke(site, lambda api: api.save_ownership_change(
+        2025, 10, O55_GROUP, O55_LEAF, "80", "full", owner_node=owner_node, name=name))
+
+
+def test_117f_one_owner_is_implied_and_the_preview_shows_it():
+    result = _preview(_o55_site())
+    assert result["current"]["owner_node"] == F117_ROOT[0]
+    assert result["current"]["owner_label"] == F117_ROOT[1]
+
+
+def test_117f_failure_path_two_owners_without_owner_node_throw_the_sentence_and_write_nothing():
+    site = _f117_site()
+    with pytest.raises(Exception) as info:
+        _f117_preview(site)
+    assert type(info.value).__name__ == "ValidationError", info.value
+    assert str(info.value) == F117_SENTENCE
+    _no_write(site)
+    site = _f117_site()
+    with pytest.raises(Exception) as info:
+        _f117_save(site)
+    assert str(info.value) == F117_SENTENCE
+    _no_save(site)
+
+
+def test_117f_owner_node_picks_the_holding_and_the_draft_carries_it():
+    site = _f117_site()
+    result = _f117_preview(site, owner_node=F117_USA[0])
+    assert result["problems"] == []
+    assert result["current"]["name"] == "OP-US_USA-ZZ5B1-2025-01-01"
+    assert result["current"]["owner_node"] == F117_USA[0]
+    assert result["effect"]["before"]["pct"] == 60.0
+    assert result["effect"]["current_name"] == "OP-US_USA-ZZ5B1-2025-01-01"
+    _no_write(site)
+
+    site = _f117_site()
+    saved = _f117_save(site, owner_node=F117_USA[0])
+    assert saved == {"name": "OP-NEW", "docstatus": 0}
+    [doc] = site.new_docs
+    assert doc._data["owner_node"] == F117_USA[0]
+    assert doc._data["supersedes"] == "OP-US_USA-ZZ5B1-2025-01-01"
+    assert doc._data["ownership_pct"] == 80.0
+
+    # the other holding, by its owner
+    site = _f117_site()
+    _f117_save(site, owner_node=F117_ROOT[0])
+    assert site.new_docs[0]._data["owner_node"] == F117_ROOT[0]
+    assert site.new_docs[0]._data["supersedes"] == "OP-ZZ5B1-1"
+
+
+def test_117f_failure_path_an_owner_that_holds_nothing_is_refused_naming_who_does():
+    site = _f117_site()
+    with pytest.raises(Exception) as info:
+        _f117_save(site, owner_node="CG-ECL_GROUP-US_X")
+    assert str(info.value) == ("`ZZ5B1` is not held by CG-ECL_GROUP-US_X: its owners are "
+                               "`ECL_GROUP` 100%, `US_USA` 60%.")
+    _no_save(site)
+
+
+def test_117f_failure_path_editing_a_draft_of_another_holding_is_refused():
+    site = _f117_site()
+    row, doc = _o56_draft()           # the root's draft (owner CG-ECL_GROUP-)
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    with pytest.raises(Exception) as info:
+        _f117_save(site, owner_node=F117_USA[0], name=row["name"])
+    assert str(info.value) == ("OP-ZZ5B1-D is the change for ZZ5B1's holding by `ECL_GROUP`, "
+                               "not by `US_USA`: edit a draft under its own holding.")
+    _no_save(site)
+    # the preview gives the same sentence as data
+    site = _f117_site()
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    result = _f117_preview(site, owner_node=F117_USA[0], name=row["name"])
+    assert result["problems"][0] == str(info.value)
+    assert result["effect"] is None
+    # under its own holding the edit goes through
+    site = _f117_site()
+    site.ops.append(row)
+    site.named[row["name"]] = doc
+    saved = _f117_save(site, owner_node=F117_ROOT[0], name=row["name"])
+    assert saved == {"name": row["name"], "docstatus": 0}
+    assert [c[0] for c in doc.calls] == ["save"]
+
+
+def test_117f_change_choices_list_one_item_per_holding():
+    site = _o63_site()
+    site.ops.append(_op("OP-US_USA-ZZ5B1-2025-01-01", data_area_id=O55_LEAF, group=O55_GROUP,
+                        effective_date=date(2025, 1, 1), ownership_pct=40.0, docstatus=1,
+                        owner_node=F117_USA[0], owner_label=F117_USA[1]))
+    result = _o63_call(site)
+    items = [(e["entity"], e["consolidation_group"], e["current"]["owner_node"],
+              e["current"]["name"]) for e in result["change"]["entities"]]
+    assert items == [
+        ("ZZ5B1", O55_GROUP, "CG-ECL_GROUP-", "OP-ZZ5B1-1"),
+        ("ZZ5B1", O55_GROUP, F117_USA[0], "OP-US_USA-ZZ5B1-2025-01-01"),
+        ("ZZ5B1", O63_SUB, "CG-ZZ_SUBGROUP-", "OP-ZZ5B1-SUB"),
+        ("ZZ5B3", O55_GROUP, "CG-ECL_GROUP-", "OP-ZZ5B3-1"),
+    ]

@@ -25,7 +25,9 @@
           "effective_date": "2025-01-01",
           "end_date": null,
           "ownership_pct": 60.0,
-          "consolidation_method": "Equity"
+          "consolidation_method": "Equity",
+          "owner_node": "CG-ECL_GROUP-",
+          "owner_label": "ECL_GROUP"
         }
       },
       {
@@ -37,7 +39,9 @@
           "effective_date": "2025-01-01",
           "end_date": null,
           "ownership_pct": 60.0,
-          "consolidation_method": "Equity"
+          "consolidation_method": "Equity",
+          "owner_node": "CG-ZZ_SUBGROUP-",
+          "owner_label": "ZZ_SUBGROUP"
         }
       },
       {
@@ -49,7 +53,9 @@
           "effective_date": "2025-12-01",
           "end_date": null,
           "ownership_pct": 60.0,
-          "consolidation_method": "Equity"
+          "consolidation_method": "Equity",
+          "owner_node": "CG-ECL_GROUP-",
+          "owner_label": "ECL_GROUP"
         }
       }
     ],

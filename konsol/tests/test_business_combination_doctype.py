@@ -331,3 +331,38 @@ def test_the_measurement_period_refusal_points_at_the_journal():
         src = f.read()
     assert "record later changes as a Consolidation Journal." in src
     assert "record later changes as a Consolidation Adjustment" not in src
+
+
+# -- #117 pair 1 F: the deal names the acquirer -----------------------------------
+
+def test_117f_acquirer_node_is_a_required_visible_link_beside_the_acquired_entity():
+    doc = _parent()
+    fields = _fields(doc)
+    order = [f["fieldname"] for f in doc["fields"]]
+    f = fields["acquirer_node"]
+    assert f["fieldtype"] == "Link" and f["options"] == "Consolidation Group"
+    assert f["label"] == "Acquirer Node"
+    assert f.get("reqd") == 1, "every deal says who bought"
+    assert not f.get("read_only") and not f.get("hidden") and not f.get("allow_on_submit"), \
+        "visible, editable until submit"
+    assert order.index("acquired_entity") < order.index("acquirer_node") < order.index("acquisition_date")
+    desc = f.get("description", "")
+    assert "pre-filled" in desc.lower() and "parent" in desc.lower(), desc
+    assert "acquirer_node" not in _controller_field_map(), "not a warehouse column (no DDL change)"
+
+
+def _controller_field_map():
+    with open(os.path.join(DOCTYPE_DIR, "business_combination", "business_combination.py")) as f:
+        src = f.read()
+    start = src.index("CH_FIELD_MAP = {")
+    return src[start:src.index("}", start)]
+
+
+def test_117f_the_form_prefills_the_acquirer_from_the_tree_parent():
+    """A required Link left blank never reaches the server, so the form fills
+    it where the user can see and change it (ownership_period.js does the
+    same for Owner Node)."""
+    with open(os.path.join(DOCTYPE_DIR, "business_combination", "business_combination.js")) as f:
+        js = f.read()
+    assert "acquirer_node" in js and "parent_consolidation_group" in js
+    assert "acquired_entity" in js and "consolidation_group" in js

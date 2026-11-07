@@ -14,8 +14,17 @@ Three layers, kept apart on purpose (design 2a):
   The gain or loss itself is measured downstream by the consolidation journal
   (design 5) from the entity's balances at the disposal date.
 
-Lifecycle: ``validate`` computes the Result and throws the model's sentences,
-and holds to one holding, one disposal: a period an approved disposal already
+The disposal names the **disposer** (#117 option A, Deepak Pai 7 Nov 2026):
+a node may have several owners, so ``disposer_node``, the Consolidation
+Group node whose holding is sold, says which link the disposal measures
+against and closes. It is pre-filled from the disposed node's tree parent
+when blank (the one default, visible on the form and in the field's
+description) and refused by the Ownership Period's own owner sentences
+(``owner_refusal``), in this document's name.
+
+Lifecycle: ``before_validate`` pre-fills the disposer; ``validate`` computes
+the Result and throws the model's sentences, and holds to one holding, one
+disposal: a period an approved disposal already
 closed is not sold again until that disposal is cancelled or amended;
 ``before_submit`` re-checks the period is open and the accounts are declared;
 ``on_submit`` closes the entity's Ownership Period on the disposal date and
@@ -35,6 +44,7 @@ from konsol.close.reject_reason import refuse_reasonless_reject
 from konsol.consolidation.doctype.business_disposal_proceeds.business_disposal_proceeds import (
     BusinessDisposalProceeds,
 )
+from konsol.consolidation.doctype.ownership_period.ownership_period import owner_refusal
 from konsol.consolidation_policy_model import (
     ACCOUNT_FIELDS,
     POLICY_FIELDS,
@@ -94,12 +104,16 @@ class BusinessDisposal(Document):
 
     # -- lifecycle -----------------------------------------------------------
 
+    def before_validate(self):
+        self._resolve_disposer()
+
     def validate(self):
         # konsol#310: a Reject without approval_api.reject's reason is
         # refused before anything else is computed.
         refuse_reasonless_reject(self)
         period = self._disposal_period()
         root = self._root()
+        self._validate_disposer()
 
         rate_to_group = self._rate_to_group(root.get("reporting_currency"), period)
         try:
@@ -203,6 +217,51 @@ class BusinessDisposal(Document):
             )
         return root
 
+    # -- the disposer (#117 pair 1) -------------------------------------------
+
+    _NODE_FIELDS = ["name", "consolidation_group", "data_area_id", "parent_consolidation_group"]
+
+    def _disposed_node(self):
+        """The Consolidation Group node of the disposed entity in this group,
+        or None when the tree does not have it."""
+        return frappe.db.get_value(
+            "Consolidation Group",
+            {"consolidation_group": self.consolidation_group, "data_area_id": self.disposed_entity},
+            self._NODE_FIELDS, as_dict=True,
+        )
+
+    def _resolve_disposer(self):
+        """Pre-fill a blank disposer with the disposed node's tree parent: the
+        one default, named on the field. No node, or a root without a parent:
+        left blank for the mandatory check (the form offers the same
+        pre-fill, business_disposal.js)."""
+        if self.get("disposer_node"):
+            return
+        node = self._disposed_node()
+        if node and node.parent_consolidation_group:
+            self.disposer_node = node.parent_consolidation_group
+
+    def _validate_disposer(self):
+        """The Ownership Period's owner rule (§1 refusal 1), in this
+        document's name and naming its field: the disposer is a node, not the
+        disposed node, under the same root. Blank is the mandatory check's."""
+        if not self.get("disposer_node"):
+            return
+        sentence = owner_refusal(self.disposer_node, self._disposed_node(), self.disposed_entity,
+                                 field="Disposer Node")
+        if sentence:
+            frappe.throw(_PREFIX + sentence)
+
+    def _link_filters(self):
+        """The disposer's link into the disposed node: the filters the period
+        lookups below share. A blank disposer (a disposal saved before the
+        field existed, or in a host test) matches any owner, as before."""
+        filters = {"consolidation_group": self.consolidation_group,
+                   "data_area_id": self.disposed_entity}
+        if self.get("disposer_node"):
+            filters["owner_node"] = self.disposer_node
+        return filters
+
     @staticmethod
     def _rate_to_group(group_currency, period):
         """Closing rate to the group currency at the disposal period, as the
@@ -236,13 +295,14 @@ class BusinessDisposal(Document):
         return self._linked_period() or self._current_holding()
 
     def _current_holding(self):
-        """The entity's submitted Ownership Period covering the disposal date
-        (the latest effective_date at or before it, still open or ending on or
-        after it), as a dict, or None: that is the holding being disposed of."""
+        """The disposer's submitted Ownership Period of the entity covering
+        the disposal date (the latest effective_date at or before it, still
+        open or ending on or after it), as a dict, or None: that is the
+        holding being disposed of. Another owner's link is another holding
+        (#117 pair 1)."""
         rows = frappe.get_all(
             "Ownership Period",
-            filters={"consolidation_group": self.consolidation_group,
-                     "data_area_id": self.disposed_entity, "docstatus": 1,
+            filters={**self._link_filters(), "docstatus": 1,
                      "effective_date": ["<=", self.disposal_date]},
             fields=["name", "ownership_pct", "effective_date", "end_date", "is_disposal", "disposal_date"],
             order_by="effective_date desc",
@@ -383,8 +443,7 @@ class BusinessDisposal(Document):
         is cancelled first — by whoever decides the disposal never happened."""
         later = frappe.get_all(
             "Ownership Period",
-            filters={"consolidation_group": self.consolidation_group,
-                     "data_area_id": self.disposed_entity, "docstatus": 1,
+            filters={**self._link_filters(), "docstatus": 1,
                      "effective_date": [">", self.disposal_date]},
             fields=["name"],
             order_by="effective_date asc",
