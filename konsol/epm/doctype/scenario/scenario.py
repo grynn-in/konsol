@@ -49,6 +49,15 @@ class Scenario(Document):
         # one). The row lock makes a concurrent copy (locked_scenario_type)
         # wait; each locking COUNT sees rows committed after this
         # transaction's first read, which a plain count would miss.
+        #
+        # Accepted risk (re-review of #460): a save of an existing cycle holds
+        # its own row (Frappe's check_if_latest, for_update) and then share-locks
+        # this Scenario, while this save holds the Scenario row (also taken by
+        # Frappe before validate) and then counts the cycles. The two can
+        # deadlock; MariaDB aborts one with 1213, and nothing stale is written.
+        # It needs an existing cycle, which is exactly when this change is
+        # refused anyway. The lock order cannot be swapped: Frappe takes the
+        # Scenario row before validate runs.
         frappe.db.sql(
             "SELECT scenario_type FROM `tabScenario` WHERE name = %s FOR UPDATE", (self.name,))
         counts = [
