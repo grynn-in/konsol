@@ -350,6 +350,32 @@ def test_a_link_naming_an_unknown_node_is_ignored_not_fatal():
     assert sorted(map(tuple, rows)) == sorted(map(tuple, expected))
 
 
+def test_build_rows_walks_exactly_the_edges_ownership_graph_model_builds():
+    """PR #459 re-review finding A: one edge rule. Every (owner -> owned) hop
+    the ancestry emits is an edge of ``ownership_edges(nodes, links)``, and
+    every edge that leads to an entity from a code-defining start is a hop
+    emitted, so the validator (which reads the same function) refuses exactly
+    the rings the reconcile would raise on. Pinned on shape 1 and on a link
+    whose owner is blank or dangling (the tree edge stands in both)."""
+    spec = importlib.util.spec_from_file_location(
+        "ownership_graph_model_for_ancestry", os.path.join(APP_DIR, "ownership_graph_model.py"))
+    model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model)
+    for nodes, links in ((SHAPE_1, SHAPE_1_LINKS),
+                         (TREE, [_link("GROUP_EMEA", "DEMF", "CG-GROUP_CORP-USMF")]),
+                         (TREE, [_link("GROUP_EMEA", "DEMF", None), _link("GROUP_EMEA", "GBMF", "CG-GONE-")])):
+        by_key = {(n.consolidation_group, n.data_area_id or ""): n.name for n in nodes}
+        _, ancestry = _rows(nodes, links)
+        hops = {(by_key[(r[8], r[9])], by_key[(r[2], r[3])]) for r in ancestry}
+        edges = {(owner, owned) for owner, owneds in model.ownership_edges(nodes, links).items()
+                 for owned in owneds}
+        assert hops <= edges, hops - edges
+        # an edge into an entity node is always a hop (an edge into a pure group
+        # node is walked through and appears only as the path to what is below it)
+        by_name = {n.name: n for n in nodes}
+        assert {e for e in edges if by_name[e[1]].data_area_id} <= hops
+
+
 # --- cycles ------------------------------------------------------------------
 
 def test_a_cycle_through_links_is_refused_naming_it():

@@ -413,13 +413,15 @@ def _site(rows, nodes=None):
         frappe.db.get_value = _node_lookup(nodes, calls)
 
     def get_all(doctype, filters=None, fields=None, **k):
-        calls.append(("get_all", filters))
+        calls.append(("get_all", filters, doctype))
         if doctype == "Consolidation Group":
-            # the cycle walk's tree children of one node (finding 2)
-            assert nodes is not None, "a tree is needed to read tree children"
-            assert list(filters) == ["parent_consolidation_group"], filters
-            return [types.SimpleNamespace(**vars(n)) for n in nodes.values()
-                    if n.parent_consolidation_group == filters["parent_consolidation_group"]]
+            # the cycle walk's one read of every node (PR #459 finding C)
+            assert nodes is not None, "a tree is needed to read the nodes"
+            if filters:   # the per-node tree-children read the walk used to send
+                assert list(filters) == ["parent_consolidation_group"], filters
+                return [types.SimpleNamespace(**vars(n)) for n in nodes.values()
+                        if n.parent_consolidation_group == filters["parent_consolidation_group"]]
+            return [types.SimpleNamespace(**vars(n)) for n in nodes.values()]
         out = []
         for r in rows:
             ok = True
@@ -448,11 +450,13 @@ def _site(rows, nodes=None):
         raise AssertionError(f"no such period {name}")
 
     def sql(query, values=(), as_dict=False, **k):
-        """The three statements the cycle check sends (task B; finding 2):
-        the serialising lock on Ownership Period's tabDocType row, the links
-        OUT of one node (``owner_node = %s``, optionally ``name != %s``), and
-        the nodes a SUBMITTED link names (``docstatus = 1``, optionally
-        ``name != %s``), all FOR UPDATE. Anything else is a test's mistake."""
+        """The statements the cycle check sends: the serialising lock on
+        Ownership Period's tabDocType row, then (PR #459 finding C) ONE
+        locking read of every non-cancelled link (``docstatus != 2``,
+        optionally ``name != %s``). The per-node reads the walk used to send
+        (links OUT of one node, the nodes a SUBMITTED link names) are still
+        answered so the red run of the finding's test fails on the count, not
+        on the stub. Anything else is a test's mistake."""
         calls.append(("sql", query, tuple(values)))
         if "`tabDocType`" in query:
             return []
@@ -463,9 +467,12 @@ def _site(rows, nodes=None):
             owner = values[0]
             return [types.SimpleNamespace(**vars(r)) for r in rows
                     if r.owner_node == owner and r.docstatus != 2 and r.name != exclude]
-        assert "`docstatus` = 1" in query, query
+        if "`docstatus` = 1" in query:
+            return [types.SimpleNamespace(**vars(r)) for r in rows
+                    if r.docstatus == 1 and r.name != exclude]
+        assert "`docstatus` != 2" in query, query
         return [types.SimpleNamespace(**vars(r)) for r in rows
-                if r.docstatus == 1 and r.name != exclude]
+                if r.docstatus != 2 and r.name != exclude]
 
     frappe.get_all = get_all
     frappe.get_doc = get_doc
@@ -1212,6 +1219,27 @@ def test_117b_a_submitted_link_into_the_tree_child_replaces_the_implicit_edge_a_
     assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ03", "ZZ01")
 
 
+def test_117b_a_submitted_link_with_no_owner_into_the_tree_child_leaves_the_tree_edge_standing():
+    """PR #459 re-review finding B. ``build_rows`` drops a node's tree edge
+    only when a submitted link names the node AND that link's owner is set
+    and exists; the validator dropped it for any submitted row naming the
+    node, so a ring through such a tree edge passed validate and raised
+    OwnershipCycle at every reconcile. Tree ZZG > ZZSUB > ZZ03, ZZG > ZZ01; a
+    submitted period into ZZ03 with a NULL owner (a row the owner patch has
+    not reached); link ZZ03 → ZZ01; then ZZ01 → ZZSUB is refused: ZZ01 →
+    ZZSUB → ZZ03 (the tree edge) → ZZ01."""
+    ownerless = _edge("OP-ZZSUB-ZZ03-2024-01-01", None, None, "ZZSUB", "ZZ03", start=_D(2024, 1, 1))
+    zz03_owns_zz01 = _edge("OP-ZZ03-ZZ01-2026-01-01", "CG-ZZSUB-ZZ03", "ZZ03", "ZZG", "ZZ01", docstatus=0)
+    module, _, _ = _site([ownerless, zz03_owns_zz01], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ03", "ZZ01")
+    # a submitted link into ZZ03 whose owner node is GONE keeps the tree edge too
+    dangling = _edge("OP-ZZGONE-ZZ03-2024-01-01", "CG-ZZG-ZZGONE", "ZZGONE", "ZZSUB", "ZZ03", start=_D(2024, 1, 1))
+    module, _, _ = _site([dangling, zz03_owns_zz01], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ03", "ZZ01")
+
+
 def test_117b_editing_a_link_does_not_see_its_own_stored_row():
     """Reversing a link in place (ZZ02 → ZZ01 becomes ZZ01 → ZZ02): the stored
     row is this document, not a second link, so there is no ring."""
@@ -1219,33 +1247,46 @@ def test_117b_editing_a_link_does_not_see_its_own_stored_row():
     module, _, calls = _site([stored], nodes=_TREE)
     _closing_link(module, "CG-ZZG-ZZ01", "ZZG", "ZZ02", name=stored.name).validate()
     reads = [c for c in calls if c[0] == "sql" and "`tabOwnership Period`" in c[1]]
-    assert reads and all("`name` != %s" in c[1] and c[2][1] == stored.name for c in reads), reads
+    assert reads and all("`name` != %s" in c[1] and c[2][-1] == stored.name for c in reads), reads
     # a NEW document (no name yet) sends no name clause: `name != NULL` matches nothing
     module, _, calls = _site([stored], nodes=_TREE)
     _closing_link(module, "CG-ZZG-", "ZZG", "ZZ01").validate()
     reads = [c for c in calls if c[0] == "sql" and "`tabOwnership Period`" in c[1]]
-    assert reads and all("`name` != %s" not in c[1] and len(c[2]) == 1 for c in reads), reads
+    assert reads and all("`name` != %s" not in c[1] and "%s" not in c[1] for c in reads), reads
 
 
-def test_117b_the_check_takes_the_serialising_lock_then_reads_the_links_for_update():
-    """Under REPEATABLE READ a plain read in a transaction can miss rows
-    committed after its first read: two links saved at once could each pass
-    the walk. The lock (consolidation_group.py:183 pattern) is taken first, and
-    every link read is a locking read, which sees the latest committed rows."""
-    module, _, calls = _site([_ZZ01_OWNS_ZZ02], nodes=_TREE)
-    _closing_link(module, "CG-ZZG-", "ZZSUB", "ZZ03").validate()
-    sqls = [c for c in calls if c[0] == "sql"]
-    assert sqls, "the cycle check reads through frappe.db.sql"
-    lock = sqls[0]
-    assert lock[1] == "SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", lock
-    assert lock[2] == ("Ownership Period",)
-    reads = sqls[1:]
-    assert reads, "the links out of the owned node are read after the lock"
-    for c in reads:
-        assert c[1].rstrip().endswith("FOR UPDATE"), c
-        assert "`docstatus` != 2" in c[1], c
-    # the walk starts at the owned node
-    assert reads[0][2][0] == "CG-ZZSUB-ZZ03"
+def _cycle_check_reads(rows, owner, group, entity):
+    module, _, calls = _site(rows, nodes=_TREE)
+    _closing_link(module, owner, group, entity).validate()
+    return calls
+
+
+def test_117b_the_check_locks_then_reads_the_links_once_for_update_and_the_tree_once_whatever_the_walk():
+    """PR #459 re-review finding C. Under REPEATABLE READ a plain read in a
+    transaction can miss rows committed after its first read (CLAUDE.md), so
+    the links are read with ONE locking read after the serialising lock
+    (consolidation_group.py:183 pattern) — never per visited node, and never a
+    second FOR UPDATE over the submitted rows. The tree is read once, plainly
+    (a concurrent tree edit is the group controller's to guard; the walk's
+    race is over the links). The counts do not grow with the walk: a one-edge
+    graph and a chain the walk follows through three nodes send the same
+    statements."""
+    short = _cycle_check_reads([_ZZ01_OWNS_ZZ02], "CG-ZZG-", "ZZSUB", "ZZ03")
+    long = _cycle_check_reads([_ZZ01_OWNS_ZZ02, _ZZ02_OWNS_ZZ03,
+                               _edge("OP-ZZ03-ZZSUB-2026-01-01", "CG-ZZSUB-ZZ03", "ZZ03", "ZZSUB", None)],
+                              "CG-ZZG-", "ZZG", "ZZ01")
+    for calls in (short, long):
+        sqls = [c for c in calls if c[0] == "sql"]
+        assert len(sqls) == 2, sqls
+        lock, links = sqls
+        assert lock[1] == "SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", lock
+        assert lock[2] == ("Ownership Period",)
+        assert links[1].rstrip().endswith("FOR UPDATE"), links
+        assert "`docstatus` != 2" in links[1] and "`owner_node`" in links[1] and "`docstatus`" in links[1], links
+        assert "`owner_node` = %s" not in links[1], "no per-node read"
+        tree_reads = [c for c in calls if c[0] == "get_all" and c[2] == "Consolidation Group"]
+        assert len(tree_reads) == 1 and not tree_reads[0][1], tree_reads
+    assert [c[1] for c in short if c[0] == "sql"] == [c[1] for c in long if c[0] == "sql"]
 
 
 def test_117b_validate_checks_the_cycle_after_the_owner_and_before_the_windows():
