@@ -391,3 +391,53 @@ def test_resync_reads_submitted_links_and_tolerates_a_stack_without_the_owner_fi
     resync = inspect.getsource(cls.resync_staging)
     assert "cls._links()" in resync
     assert "cls.build_rows(docs, by_name, links)" in resync
+
+
+# --- one group code, many nodes: a path starts where its code does ------------
+# The live tree (konsol#117 task H, 7 Nov 2026): 330 nodes all carrying the ONE
+# group code; 27 entity-carrying nodes have children. A row's group is the
+# ancestor's CODE, so a path from US_ECL and a path from the root both key under
+# (ECL_GROUP, entity). The macro sums per path_id within a key: two starts with
+# one code made eff(ECL_GROUP, E) = 2..5 and failed the build
+# (assert_effective_ownership_in_range FAIL 119). Only the node that defines a
+# code — the root, or a node whose tree parent carries a different code — starts
+# paths; a node sharing its parent's code is a stop on them, never a start.
+
+LIVE_SHAPE = [
+    _node("CG-G-", "G", "", None),
+    _node("CG-G-S1", "G", "S1", "CG-G-"),
+    _node("CG-G-S2", "G", "S2", "CG-G-S1"),
+    _node("CG-G-E", "G", "E", "CG-G-S2"),
+]
+
+
+def test_a_node_sharing_its_parents_code_starts_no_path_of_its_own():
+    _, ancestry = _rows(LIVE_SHAPE)
+    to_e = sorted(tuple(r) for r in ancestry if r[1] == "E")
+    assert {r[0] for r in to_e} == {"G"}
+    assert {r[7] for r in to_e} == {"G/S1/S2/E"}, "one path to E under the one code"
+    assert [r[4:6] for r in to_e] == [(1, 3), (2, 3), (3, 3)], to_e
+    # S1 1 + S2 2 + E 3: today's walk added S1's and S2's own chains (10 rows).
+    assert len(ancestry) == 6, len(ancestry)
+    assert {r[0] for r in ancestry} == {"G"}
+
+
+def test_a_second_link_within_one_code_is_a_second_path_from_the_code_node():
+    """S1 also holds E directly: two paths from G to E (G/S1/S2/E and G/S1/E),
+    none starting at S1 or S2."""
+    links = [_link("G", "S1", "CG-G-"), _link("G", "S2", "CG-G-S1"),
+             _link("G", "E", "CG-G-S2"), _link("G", "E", "CG-G-S1")]
+    _, ancestry = _rows(LIVE_SHAPE, links)
+    ids = {r[7] for r in ancestry if r[1] == "E"}
+    assert ids == {"G/S1/S2/E", "G/S1/E"}, ids
+    assert all(r[7].startswith("G/") for r in ancestry), sorted({r[7] for r in ancestry})
+
+
+def test_a_node_with_its_own_code_still_starts_paths():
+    """GROUP_EMEA's code differs from GROUP_CORP's, so (GROUP_EMEA, DEMF) rows stay."""
+    _, ancestry = _rows()
+    assert {(r[0], r[1]) for r in ancestry} == {
+        ("GROUP_CORP", "USMF"), ("GROUP_CORP", "JPMF"),
+        ("GROUP_CORP", "DEMF"), ("GROUP_CORP", "GBMF"),
+        ("GROUP_EMEA", "DEMF"), ("GROUP_EMEA", "GBMF"),
+    }
