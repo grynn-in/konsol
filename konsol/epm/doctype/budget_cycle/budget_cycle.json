@@ -12,6 +12,7 @@
   "fields": [
     {
       "fieldname": "scenario_id",
+      "set_only_once": 1,
       "fieldtype": "Link",
       "label": "Scenario",
       "options": "Scenario",

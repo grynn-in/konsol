@@ -30,9 +30,12 @@ class BudgetCycle(Document):
         """
         if not self.scenario_id:
             return  # mandatory check surfaces the empty value elsewhere
-        scenario_type = frappe.db.get_value(
-            "Scenario", self.scenario_id, "scenario_type"
-        )
+        # The copy the Planning sidebar filters on, taken under a share lock
+        # so it cannot race a type change (review of #460).
+        from konsol.epm.doctype.scenario.scenario import locked_scenario_type
+
+        self.scenario_type = locked_scenario_type(self.scenario_id)
+        scenario_type = self.scenario_type
         if scenario_type == "actual":
             frappe.throw(
                 _(

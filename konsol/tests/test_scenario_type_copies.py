@@ -39,6 +39,7 @@ class _Site:
         self.rows = {dt: {n: dict(r) for n, r in by.items()} for dt, by in rows.items()}
         self.set_values = []
         self.reloaded = []
+        self.sql_log = []
 
     def frappe(self):
         site = self
@@ -78,7 +79,19 @@ class _Site:
         def reload_doc(module, kind, name):
             site.reloaded.append(name)
 
-        frappe.db = types.SimpleNamespace(count=count, get_value=get_value,
+        def sql(query, values=None, *a, **k):
+            """Locking reads only: the Scenario row, or a COUNT of one copy doctype."""
+            site.sql_log.append(" ".join(query.split()))
+            import re as _re
+            m = _re.search(r"COUNT\(\*\) FROM `tab([^`]+)` WHERE scenario_id = %s", query)
+            if m:
+                return [[count(m.group(1), {"scenario_id": values[0]})]]
+            if "FROM `tabScenario`" in query:
+                row = site.rows.get("Scenario", {}).get(values[0])
+                return [[row.get("scenario_type")]] if row else []
+            raise AssertionError("unexpected SQL: " + query)
+
+        frappe.db = types.SimpleNamespace(count=count, get_value=get_value, sql=sql,
                                           set_value=set_value, table_exists=table_exists)
         frappe.get_all = get_all
         frappe.throw = throw
@@ -157,6 +170,46 @@ def test_a_referenced_scenario_cannot_change_type_and_the_count_is_named():
         assert "2 Budget Cycle" in msg and "1 Budget Annual Input" in msg, msg
     else:
         raise AssertionError("a referenced scenario changed its type")
+
+
+def test_the_check_reads_under_locks():
+    """Review of #460: a plain count under REPEATABLE READ can miss a cycle
+    committed meanwhile (CLAUDE.md: a check-then-write needs a locking read).
+    The scenario row is locked first, so a cycle copying its type waits; each
+    count is a locking read, which sees the latest committed rows."""
+    site = _referenced_site()
+    site.rows["Budget Cycle"] = {}
+    site.rows["Budget Annual Input"] = {}
+    _validate(site, "forecast", "budget")
+    assert site.sql_log[0].startswith("SELECT scenario_type FROM `tabScenario` WHERE name = %s FOR UPDATE"), site.sql_log
+    counts = [q for q in site.sql_log if q.startswith("SELECT COUNT(*)")]
+    assert len(counts) == 2 and all(q.endswith("FOR UPDATE") for q in counts), counts
+
+
+def test_a_copy_is_taken_under_a_share_lock_on_the_scenario():
+    """The other side of the same race: a cycle or annual input copies the type
+    from a share-locked read of the Scenario, so it waits for a type change in
+    flight and then copies the committed type."""
+    def run(Document):
+        mod = _load(SCENARIO_PY, "_scenario_lock_under_test")
+        return mod.locked_scenario_type("FC")
+    site = _referenced_site()
+    assert _with_stubs(site, run) == "forecast"
+    assert site.sql_log == ["SELECT scenario_type FROM `tabScenario` WHERE name = %s LOCK IN SHARE MODE"]
+    for rel in (("budget_cycle", "budget_cycle.py"), ("budget_annual_input", "budget_annual_input.py")):
+        with open(os.path.join(APP_DIR, "epm", "doctype", *rel)) as f:
+            src = f.read()
+        assert "self.scenario_type = locked_scenario_type(self.scenario_id)" in src, rel
+
+
+def test_a_cycle_keeps_the_scenario_it_was_made_for():
+    """Review of #460: a draft cycle moved to another Scenario left its sheets
+    with the old copy. The cycle's name is a digest of its scenario
+    (BudgetCycle.autoname), so the scenario is set once."""
+    import json
+    with open(os.path.join(APP_DIR, "epm", "doctype", "budget_cycle", "budget_cycle.json")) as f:
+        field = next(x for x in json.load(f)["fields"] if x["fieldname"] == "scenario_id")
+    assert field.get("set_only_once") == 1, field
 
 
 def test_an_unreferenced_scenario_may_change_type():

@@ -6,6 +6,20 @@ from frappe.model.document import Document
 from konsol.clickhouse import sync_doctype_after_commit
 
 
+def locked_scenario_type(scenario):
+    """The Scenario's type, read under a share lock (review of #460).
+
+    A Budget Cycle or Budget Annual Input copies the type from this read, so a
+    copy taken while ``Scenario.validate`` is changing the type waits for that
+    change to commit or roll back, then copies the committed value. MariaDB
+    here is REPEATABLE READ; a locking read sees the latest committed row."""
+    rows = frappe.db.sql(
+        "SELECT scenario_type FROM `tabScenario` WHERE name = %s LOCK IN SHARE MODE",
+        (scenario,),
+    )
+    return rows[0][0] if rows else None
+
+
 class Scenario(Document):
     CH_TABLE = "epm_gold.scenario_definitions"
     CH_FIELD_MAP = {
@@ -31,12 +45,23 @@ class Scenario(Document):
         """
         if self.is_new() or not self.has_value_changed("scenario_type"):
             return
-        counts = [(frappe.db.count(dt, {"scenario_id": self.name}), dt) for dt in self.TYPE_COPIES]
-        used = [f"{n} {dt}" for n, dt in counts if n]
+        # Locking reads (review of #460; CLAUDE.md: a check-then-write needs
+        # one). The row lock makes a concurrent copy (locked_scenario_type)
+        # wait; each locking COUNT sees rows committed after this
+        # transaction's first read, which a plain count would miss.
+        frappe.db.sql(
+            "SELECT scenario_type FROM `tabScenario` WHERE name = %s FOR UPDATE", (self.name,))
+        counts = [
+            (frappe.db.sql(
+                f"SELECT COUNT(*) FROM `tab{dt}` WHERE scenario_id = %s FOR UPDATE",
+                (self.name,))[0][0], dt)
+            for dt in self.TYPE_COPIES
+        ]
+        used = [f"{n} {dt}{'' if n == 1 else 's'}" for n, dt in counts if n]
         if used:
             frappe.throw(
-                _("Scenario {0} cannot change its type while {1} reference it: they "
-                  "carry a copy of the type. Create a new scenario instead.").format(
+                _("Scenario {0} cannot change its type while it is used by {1}: each "
+                  "keeps a copy of the type. Create a new scenario instead.").format(
                     self.name, " and ".join(used)),
                 frappe.ValidationError,
                 title=_("Scenario In Use"),
