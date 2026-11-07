@@ -420,6 +420,25 @@ def sign_off_problems(fiscal_year, fiscal_period, shared=None):
     return {"config_gaps": gaps, "order": order, "completeness": completeness}
 
 
+def trial_balance_progress(fiscal_year, fiscal_period):
+    """``{"expected": [...], "missing": [...]}`` for a Regular period, both
+    sorted (konsol#407, the home band's "TBs in / expected"): the entities
+    that owe a trial balance (``signoff_model.expected_entities``) and those
+    with neither a submitted TB nor a submitted TB Exception
+    (``signoff_model.completeness_problem``) — the reads and rules
+    ``sign_off_problems`` uses, so the band and the gate cannot disagree.
+    Unscoped: the caller cuts it to the entities it may show."""
+    key = _key(fiscal_year, fiscal_period)
+    rows = fiscal_calendar.fiscal_period_rows()
+    row = _regular_row(rows, key)
+    frequencies, _covered = _scope(_date(row["start_date"]))
+    expected = signoff_model.expected_entities(frequencies, key, rows)["expected"]
+    completeness = signoff_model.completeness_problem(
+        expected, _submitted("Trial Balance Submission", key), _submitted("TB Exception", key))
+    return {"expected": list(expected),
+            "missing": list(completeness["missing"]) if completeness else []}
+
+
 def problem_messages(problems):
     """Every message in a ``sign_off_problems`` result, in gate order."""
     messages = [g["message"] for g in problems["config_gaps"]]

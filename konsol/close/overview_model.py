@@ -278,7 +278,14 @@ def _ic_line(ic, key):
     return _line("intercompany", _LABELS["intercompany"], OK, detail, key)
 
 
+_UNREADABLE = {"equity_rates": "Historical Equity Rates", "journals": "Consolidation Journals"}
+
+
 def _count_line(code, count, some, none, key):
+    """``count`` None: the caller may not read the doctype, so nothing was
+    counted and the line is unknown, never a tick."""
+    if count is None:
+        return _line(code, _LABELS[code], UNKNOWN, "You cannot read %s" % _UNREADABLE[code], key)
     if count:
         return _line(code, _LABELS[code], WARN, some(count), key)
     return _line(code, _LABELS[code], OK, none, key)
