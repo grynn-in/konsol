@@ -318,7 +318,7 @@ def test_the_home_page_does_not_show_the_handbook():
     assert ws["modified"] >= "2026-11-07 20:00:00", ws["modified"]
 
 
-STRUCTURE_WORKSPACE = os.path.join(APP_DIR, "consolidation", "workspace", "structure",
+STRUCTURE_WORKSPACE = os.path.join(APP_DIR, "structure", "workspace", "structure",
                                    "structure.json")
 
 

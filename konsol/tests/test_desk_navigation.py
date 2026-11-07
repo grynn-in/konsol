@@ -44,7 +44,8 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: carries at least this ``modified``, or migrate does not re-import it.
 BUMPED = "2026-11-07 23:30:00"
 
-MODULE_FOLDERS = {"Consolidation": "consolidation", "EPM": "epm", "Pipeline": "pipeline"}
+MODULE_FOLDERS = {"Consolidation": "consolidation", "EPM": "epm", "Pipeline": "pipeline",
+                  "Structure": "structure"}
 
 #: Non-child doctypes deliberately on no sidebar, with the reason.
 NOT_ON_A_SIDEBAR = {
@@ -104,7 +105,7 @@ SIDEBARS = {
         ("DocType", "Scenario"),
         ("DocType", "Spread Profile"),
     ]),
-    "Structure": ("Consolidation", [
+    "Structure": ("Structure", [
         ("Workspace", "Structure", "Home"),
         ("Section", "Group"),
         ("DocType", "Entity"),
@@ -159,7 +160,7 @@ WORKSPACES = {
     "Konsol": ("consolidation", "Konsol", "Consolidation"),
     "Konsol Handbook": ("consolidation", "Konsol Handbook", "Consolidation"),
     "Budget": ("epm", "Budget", "EPM"),
-    "Structure": ("consolidation", "Structure", "Consolidation"),
+    "Structure": ("structure", "Structure", "Structure"),
     "Data": ("pipeline", "Data", "Pipeline"),
 }
 
@@ -429,6 +430,21 @@ def test_each_rail_entry_has_its_landing_workspace():
             "Workspace", ws_name, ws_name, ws_name, module), name
         assert ws["public"] == 1 and ws["standard"] == 1 and not ws["for_user"], name
         assert ws["modified"] >= BUMPED, (name, ws["modified"])
+
+
+def test_each_workspace_module_has_exactly_one_sidebar():
+    """A sidebar lists every workspace of its module (sidebar.py
+    get_sidebar_bases: ``workspaces = context.workspaces.get(base.module)``), and
+    the desk opens a workspace in the first sidebar that lists it
+    (sidebar.js module_for_workspace, sidebars ordered by name). With Close and
+    Structure both in Consolidation, the Structure page opened under the Close
+    sidebar (review of #451). So Structure is a module of its own, holding only
+    its sidebar and page, and no module may hold two konsol sidebars."""
+    per_module = {}
+    for _, d in _sidebars().values():
+        per_module.setdefault(d["module"], []).append(d["name"])
+    for name, (path, ws) in _workspaces().items():
+        assert len(per_module.get(ws["module"], [])) == 1, (path, ws["module"], per_module.get(ws["module"]))
 
 
 def test_every_workspace_shortcut_uses_the_label_map():
