@@ -74,15 +74,43 @@ def test_every_rule_is_scoped_to_exactly_the_konsol_sidebars():
             assert part.strip().startswith(":is(.body-sidebar[data-title="), part
 
 
-def test_headings_get_a_darker_background_and_tighter_vertical_gaps():
+def test_headings_are_a_brand_green_band_with_white_text():
+    """Second round (Deepak Pai, 7 Nov 2026): "more tightly spaced and darker
+    green background than what you did". The band is the site's Brand Colour
+    (konsol_brand.js --konsol-brand; Frappe's --primary when no Brand Colour is
+    set). brand_model.validate refuses a Brand Colour white text cannot be read
+    on (WCAG AA 4.5:1), so white label and chevron are safe on any accepted one."""
     rules = _rules(_read(CSS))
-    bodies = {sel: body for sel, body in rules}
-    heading = [b for s, b in bodies.items() if s.rstrip().endswith(".section-break")]
-    assert heading and "background-color: var(--surface-gray-2)" in heading[0], heading
-    gaps = [b for s, b in bodies.items() if ".section-item" in s and "margin-top" in b]
-    assert gaps, "no tighter gap above a heading"
-    px = int(re.search(r"margin-top:\s*(\d+)px", gaps[0]).group(1))
-    assert px < 16, px  # Frappe's own gap above a heading is 16px (sidebar.scss)
+    heading = [b for s, b in rules if s.rstrip().endswith(".section-break")]
+    assert heading, "no heading rule"
+    body = heading[0]
+    assert "background-color: var(--konsol-brand, var(--primary))" in body, body
+    assert "color: var(--white) !important" in body, body
+    icon = [b for s, b in rules if ".section-break" in s and "stroke" in b]
+    assert icon and "var(--white)" in icon[0], "chevron must be white on the band"
+
+
+def test_headings_sit_tightly():
+    """Frappe: 16px above a heading and a 28px row (sidebar.scss). Round one
+    took the gap to 8px; round two asked for tighter: 2px and a 24px row."""
+    rules = _rules(_read(CSS))
+    gaps = [b for s, b in rules if ".section-item" in s and "margin-top" in b]
+    assert gaps, "no gap rule above a heading"
+    assert int(re.search(r"margin-top:\s*(\d+)px", gaps[0]).group(1)) <= 2, gaps[0]
+    heights = [b for s, b in rules if s.rstrip().endswith(".section-break") and "height" in b]
+    assert heights and int(re.search(r"height:\s*(\d+)px", heights[0]).group(1)) <= 24, heights
+
+
+def test_every_section_starts_collapsed():
+    """Deepak Pai, 7 Nov 2026: "also all collapsed". keep_closed closes a
+    section on render (ui/sidebar/sidebar_item.js enable_collapsible); a user's
+    own open/close, kept in localStorage, wins after that."""
+    for path in glob.glob(os.path.join(APP_DIR, "*", "sidebar", "*", "*.json")):
+        d = json.loads(_read(path))
+        for item in d.get("items", []):
+            if item["type"] == "Section Break":
+                assert item.get("collapsible") == 1 and item.get("keep_closed") == 1, (
+                    os.path.relpath(path, APP_DIR), item["label"])
 
 
 def test_only_vertical_spacing_and_no_hex_colours():
