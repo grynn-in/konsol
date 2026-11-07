@@ -219,10 +219,38 @@ test("k117 finding 5: two holdings of one entity in one group are two choices, t
   const period = periodGroups(OWNERSHIP.change.periods)[1].options[0];
   assert.equal(previewParams(opts[0], period, "70", "full", null).owner_node, "CG-ECL_GROUP-US_USA");
   assert.equal(previewParams(opts[1], period, "25", "full", null).owner_node, "CG-ECL_GROUP-");
-  // the holder is the server's; a choice whose current period cannot name it throws, never a guess
+});
+
+test("k117 finding H: a holding whose current period cannot name its owner is one choice labelled 'owner unknown', never the whole list thrown away", () => {
+  // PR #459 re-review: need(e.current, ["owner_node", "owner_label"]) threw for
+  // the whole section when any holding lacked the keys (an older backend during
+  // a rolling update). The choice degrades on its own: labelled "owner
+  // unknown", no owner_node sent; the other choices are unchanged.
+  const { entityOptions, previewParams, periodGroups } = helpers();
+  const held = (owner_node, owner_label, pct) => ({
+    entity: "ZZ5EC", entity_name: "ZZ Five EC", consolidation_group: "ECL_GROUP",
+    current: { name: `OP-${owner_label}-ZZ5EC-2025-01-01`, effective_date: "2025-01-01", end_date: null,
+      ownership_pct: pct, consolidation_method: "full", owner_node, owner_label },
+  });
   const nameless = held("CG-ECL_GROUP-US_USA", "US_USA", 60);
   delete nameless.current.owner_label;
-  assert.throws(() => entityOptions([nameless, held("CG-ECL_GROUP-", "ECL_GROUP", 20)]), /owner_label/);
+  delete nameless.current.owner_node;
+  const opts = entityOptions([nameless, held("CG-ECL_GROUP-", "ECL_GROUP", 20)]);
+  assert.deepEqual(
+    opts.map((o) => [o.key, o.label, o.owner_node]),
+    [
+      ["ZZ5EC|ECL_GROUP|", "ZZ5EC — ZZ Five EC — owner unknown", null],
+      ["ZZ5EC|ECL_GROUP|CG-ECL_GROUP-", "ZZ5EC — ZZ Five EC — held by ECL_GROUP", "CG-ECL_GROUP-"],
+    ],
+  );
+  const period = periodGroups(OWNERSHIP.change.periods)[1].options[0];
+  assert.equal("owner_node" in previewParams(opts[0], period, "70", "full", null), false, "nothing guessed is sent");
+  // a lone holding without an owner (the whole list from an old backend) is still offered, and says so
+  const alone = entityOptions([nameless]);
+  assert.equal(alone[0].label, "ZZ5EC — ZZ Five EC — owner unknown");
+  assert.equal(alone[0].owner_node, null);
+  // a current period that is not an object at all is still the list's refusal
+  assert.throws(() => entityOptions([{ ...nameless, current: null }]), /current/);
 });
 
 test("Failure path: an entity choice without its group, or no entities list, throws", () => {
@@ -525,6 +553,31 @@ test("O67 editForm: the golden pending draft's server edit loads its node, first
     consolidation_method: "full",
     name,
   });
+});
+
+test("k117 finding G: an edit that names its owner_node loads THAT holding, not the first of the entity's choices in the group", () => {
+  // PR #459 re-review: choices are keyed per holding (entity|group|owner) since
+  // finding 5, but editForm matched by entity + group alone, so with two
+  // holders in one group an Edit loaded the first holding and the server
+  // refused the edit. The server's op_edit now carries owner_node; the form
+  // matches the choice whose current.owner_node equals it, and falls back to
+  // entity + group only when the server sends no owner.
+  const { entityOptions, periodGroups, editForm } = editHelpers();
+  const held = (owner_node, owner_label, pct) => ({
+    entity: "ZZ5EC", entity_name: "ZZ Five EC", consolidation_group: "ECL_GROUP",
+    current: { name: `OP-${owner_label}-ZZ5EC-2025-01-01`, effective_date: "2025-01-01", end_date: null,
+      ownership_pct: pct, consolidation_method: "full", owner_node, owner_label },
+  });
+  const entities = entityOptions([held("CG-ECL_GROUP-US_USA", "US_USA", 60), held("CG-ECL_GROUP-", "ECL_GROUP", 20)]);
+  const groups = periodGroups(OWNERSHIP.change.periods);
+  const base = { consolidation_group: "ECL_GROUP", entity: "ZZ5EC", fiscal_year: 2025, fiscal_period: 10, ownership_pct: 25, consolidation_method: "full" };
+  assert.equal(editForm("OP-ECL_GROUP-ZZ5EC-2025-10-01", { ...base, owner_node: "CG-ECL_GROUP-" }, entities, groups).entityKey, "ZZ5EC|ECL_GROUP|CG-ECL_GROUP-");
+  assert.equal(editForm("OP-US_USA-ZZ5EC-2025-10-01", { ...base, owner_node: "CG-ECL_GROUP-US_USA" }, entities, groups).entityKey, "ZZ5EC|ECL_GROUP|CG-ECL_GROUP-US_USA");
+  // an owner this form does not offer: refused naming the draft, never the first holding
+  assert.throws(() => editForm("OP-X-ZZ5EC-2025-10-01", { ...base, owner_node: "CG-ECL_GROUP-NOPE" }, entities, groups), /OP-X-ZZ5EC-2025-10-01[\s\S]*CG-ECL_GROUP-NOPE/);
+  // no owner from the server (an older backend, or a row without one): entity + group, as before
+  assert.equal(editForm("OP-ZZ5EC-2025-10-01", { ...base, owner_node: null }, entities, groups).entityKey, "ZZ5EC|ECL_GROUP|CG-ECL_GROUP-US_USA");
+  assert.equal(editForm("OP-ZZ5EC-2025-10-01", base, entities, groups).entityKey, "ZZ5EC|ECL_GROUP|CG-ECL_GROUP-US_USA");
 });
 
 test("O67 failure path: an edit whose node or period is not a choice here, or that lacks a key, throws naming the draft", () => {
