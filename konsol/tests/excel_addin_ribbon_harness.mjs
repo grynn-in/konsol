@@ -131,6 +131,8 @@ const context = {
   Object,
   Array,
   Date,
+  Math,
+  console,
   Error,
   isFinite,
   Excel: {

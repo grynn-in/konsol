@@ -12,7 +12,9 @@ import re
 ADDIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public", "excel-addin")
 
 #: functions.json's sha256 prefix, and the manifest Version that ships it.
-SHIPPED = ("5c3367c9e9325489", "2.0.1.0")
+#: 2.0.2.0 (ribbon Refresh buttons, 7 Nov 2026) left functions.json unchanged;
+#: the pair moves because the test pins the Version too.
+SHIPPED = ("5c3367c9e9325489", "2.0.2.0")
 
 
 def _version(name):

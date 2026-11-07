@@ -29,6 +29,7 @@ konsol/public/excel-addin/
   index.html          Shared runtime page
   functions.js        =K.* custom function implementations
   functions.json      Custom function metadata
+  ribbon.js           Ribbon commands: Refresh sheet, Refresh workbook
   manifest.demo.xml   Source manifest (copy to manifest.xml on deploy)
   manifest.xml        Hosted manifest for M365 Admin Center
   assets/             Ribbon icons
@@ -131,6 +132,77 @@ Two consequences of these refusals:
 
 A workbook still on the old add-in sends the old keys. The server now refuses
 those rows ("Unknown request key"), so reload the add-in.
+
+## Ribbon: Refresh sheet and Refresh workbook
+
+Decided by Deepak Pai, 7 Nov 2026. The add-in's group on the Home ribbon has
+three buttons: Konsolidat (opens the pane), **Refresh sheet** and **Refresh
+workbook**. The two refresh buttons run `ribbon.js` in the shared runtime
+(manifest `ExecuteFunction`, `Office.actions.associate`). Since manifest
+2.0.2.0.
+
+**Refresh sheet** acts on the active sheet:
+
+1. If the sheet is a snapshot sheet, the add-in takes the snapshot again with
+   its saved parameters (template, entity, year, period from/to).
+2. The sheet recalculates with `worksheet.calculate(true)`, so every `=K.*`
+   formula on it runs again. An Excel without ExcelApi 1.6 has no sheet
+   recalculation: the add-in then recalculates the whole workbook and says so
+   in Messages.
+3. The sheet gets the stamp (below).
+
+**Refresh workbook** takes every saved snapshot again, one at a time, then
+recalculates the whole workbook with `application.calculate(full)`, and stamps
+every sheet that has a `=K.*` formula or a snapshot. The sheet that was active
+before is active again at the end.
+
+### The stamp
+
+Each refreshed sheet shows `Values as of <YYYY-MM-DD HH:MM> UTC` in row 1:
+
+- in the row-1 cell that already holds a stamp, if there is one;
+- else in the first empty cell right of row 1's last used cell.
+
+On the shipped templates that is **G1** on the Monthly P&L (row 1 ends at F1)
+and **J1** on the trial balance snapshot (row 1 ends at I1). The stamp never
+overwrites a cell that holds something else. A sheet with no `=K.*` formula
+and no snapshot is recalculated but not stamped.
+
+The stamp records when the refresh asked for the values. `=K.*` formulas are
+asynchronous: a cell can still show `#BUSY!` for a moment after the stamp is
+written.
+
+### Snapshot parameters
+
+When the pane's Snapshot button paints a sheet, the add-in saves the snapshot's
+parameters in the workbook (`Office.context.document.settings`, key
+`konsolSnapshots`, keyed by sheet name). They are saved with the workbook, so
+they survive save and reopen. A renamed snapshot sheet is no longer a
+snapshot sheet: take the snapshot again from the pane. If the sheet was
+deleted, Refresh workbook forgets its snapshot and does not recreate the sheet.
+
+### Feedback
+
+A ribbon command has no window of its own. The result goes to the pane's
+Messages log, for example `Refreshed sheet P&L: 756 formulas. Values as of
+2026-11-07 09:30 UTC (in G1).` Excel has no non-blocking notification for
+add-ins, so on a failure the add-in opens the pane, where Messages shows why.
+It never shows a blocking dialog.
+
+If you are not signed in (or the sign-in expired), nothing is recalculated,
+snapshotted or stamped, the pane opens, and Messages says to sign in.
+
+### Not yet verified in Excel
+
+The tests run `ribbon.js` under node with stub `Office` and `Excel` objects.
+Check these in Excel on the web after deploy:
+
+- the two buttons appear in the Home-tab group and run without opening the
+  pane first;
+- the button is enabled again after each run (`event.completed()`);
+- the snapshot parameters survive closing and reopening the workbook;
+- `range.formulas` reports a custom function as `=K.EPM(...)`, so the formula
+  count and stamp find it.
 
 ## Deploy to demo
 
