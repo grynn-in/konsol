@@ -84,7 +84,9 @@ def test_headings_are_a_brand_green_band_with_white_text():
     heading = [b for s, b in rules if s.rstrip().endswith(".section-break")]
     assert heading, "no heading rule"
     body = heading[0]
-    assert "background-color: var(--konsol-brand, var(--primary))" in body, body
+    # Third round (Deepak Pai, 7 Nov 2026): "a slightly darker colored
+    # sections" -> the darker brand shade konsol/brand.py derives (strong).
+    assert "background-color: var(--konsol-brand-strong, var(--primary))" in body, body
     assert "color: var(--white) !important" in body, body
     icon = [b for s, b in rules if ".section-break" in s and "stroke" in b]
     assert icon and "var(--white)" in icon[0], "chevron must be white on the band"
