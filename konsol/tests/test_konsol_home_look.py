@@ -23,7 +23,8 @@ What this pins, file by file:
 - The checklist block draws a progress bar and lays out two columns on a
   wide block, from a container query on the block's own width.
 - Period-keyed charts declare their x-axis a series with a wider label
-  budget; categorical charts are left to frappe-charts' default.
+  budget: whole labels where they fit, alternate whole labels where they do
+  not, never stubs; categorical charts are left to frappe-charts' default.
 """
 import json
 import os
@@ -40,8 +41,10 @@ WORKSPACE = os.path.join(MODULE_DIR, "workspace", "konsol", "konsol.json")
 BLOCK_DIR = os.path.join(MODULE_DIR, "custom_html_block", "konsol_close_checklist")
 SINCE = "2026-11-07 22:30:00"
 
-#: Charts whose x labels are periods (period_name, 10 chars) and fit whole
-#: with a wider budget.
+#: Charts whose x labels are periods (period_name, 10 chars). The wider
+#: budget shows them whole where the slot allows (7 labels at col 12); where
+#: it does not (col 6, or 12 periods late in the year) xIsSeries drops
+#: alternate labels and shows the rest whole, instead of "FY2025 ..." stubs.
 PERIOD_CHARTS = ("TB Submission Progress", "Net Sales and Net Result", "Closing vs Average Rate")
 #: Charts left on frappe-charts' default axis: categorical labels (Approvals
 #: Backlog, Top IC Differences), and Days to Close, whose 27-char labels
@@ -73,7 +76,9 @@ def _rules(css):
         if not chunk.strip():
             continue
         selector, _, body = chunk.partition("{")
-        assert not selector.strip().startswith("@"), selector.strip()
+        assert not selector.strip().startswith("@"), (
+            "konsol_desk.css is flat by design: an at-rule would need this parser to read "
+            "its inner selectors; got %r" % selector.strip())
         rules.append((selector.strip(), body))
     return rules
 
@@ -83,7 +88,7 @@ def _rules(css):
 
 def test_the_desk_css_is_hooked_and_exists():
     hooks = _hooks()
-    assert hooks["app_include_css"] == [CSS_URL]
+    assert CSS_URL in hooks["app_include_css"]
     assert os.path.isfile(CSS)
 
 
@@ -103,8 +108,12 @@ def test_the_desk_css_names_no_colour_of_its_own():
     css = _no_comments(_read(CSS))  # a comment may cite konsol#407
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", css)
     assert not re.search(r"\b(rgb|hsl)a?\(", css)
-    for var in ("--heading-color", "--primary"):
-        assert "var(%s)" % var in css, var
+    assert "var(--heading-color)" in css
+    # the accent is the Brand Colour when the site has one; --primary always
+    # exists (Bootstrap #171717, invisible on the dark theme), --konsol-brand
+    # only when konsol_brand.js found a palette, so the fallback is declared
+    assert "var(--konsol-brand, var(--heading-color))" in css
+    assert "var(--primary)" not in css
 
 
 def test_the_desk_css_turns_the_band_pills_into_stat_values():
@@ -188,9 +197,12 @@ def test_the_checklist_draws_a_progress_bar_from_done_over_total():
     assert '"progressbar"' in js
     # one clamped value drives both the bar width and aria-valuenow
     assert "const done = Math.min(data.total, Math.max(0, data.done))" in js
+    assert "${done} of ${data.total} done" in js  # the text and the bar agree
     assert "(100 * done) / data.total" in js
     assert 'setAttribute("aria-valuenow", String(done))' in js
-    assert ".kc-progress-fill" in css and "var(--primary)" in css
+    assert 'setAttribute("aria-labelledby", count.id)' in js
+    assert ".kc-progress-fill" in css and "var(--konsol-brand, var(--heading-color))" in css
+    assert "var(--primary)" not in css
     # server strings stay text, and a line links only to a /desk/ route
     assert "innerHTML" not in js and "textContent" in js
     assert 'startsWith("/desk/")' in js

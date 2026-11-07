@@ -6,7 +6,7 @@
  * carries data-route="Workspaces/Konsol", so nothing else in the Desk
  * changes (test_konsol_home_look.py pins the scope). Colours are Frappe
  * variables only, so the dark theme and the per-site Brand Colour
- * (konsol_brand.js sets --primary) come through; no colour is named here.
+ * (konsol_brand.js sets --konsol-brand) come through; no colour is named here.
  *
  * Measured before (1456 px window, light theme, Frappe 16.55.2): each close
  * band card was 79 px tall and showed a 20 px indicator pill as its whole
@@ -69,7 +69,10 @@ body[data-route="Workspaces/Konsol"] .codex-editor .codex-editor__redactor .ce-b
 	color: var(--heading-color);
 }
 
-/* A short rule in the Brand Colour under the header text. */
+/* A short rule in the Brand Colour under the header text. --konsol-brand is set
+ * by konsol_brand.js only when the site has a Brand Colour; the fallback is the
+ * heading colour, visible on both themes (--primary alone is Bootstrap's
+ * #171717 on an unbranded site: invisible on dark). */
 body[data-route="Workspaces/Konsol"] .codex-editor .codex-editor__redactor .ce-block .ce-block__content .ce-header .h4::after {
 	content: "";
 	display: block;
@@ -77,5 +80,5 @@ body[data-route="Workspaces/Konsol"] .codex-editor .codex-editor__redactor .ce-b
 	height: 2px;
 	margin-top: 0.25rem;
 	border-radius: 1px;
-	background: var(--primary);
+	background: var(--konsol-brand, var(--heading-color));
 }
