@@ -4,6 +4,26 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (7 Nov 2026, late night): Desk IA (konsol#443) merged as #451 (5ec72b7d).** The rail no longer shows module names (Konsol / EPM / Pipeline, two of them computed sidebars), plus a stray Konsolidat workspace.
+- **Decisions (Deepak Pai, 7 Nov, on #443):**
+  - Rail Close / Budget / Structure / Data / Handbook. Rejected: Setup, Integration.
+  - Ownership Periods under Structure. Handbook is its own rail entry.
+  - The Dock returns, superseding the 5 Nov no-dock test.
+  - Waiting shortcuts take the one doctype label, with no "waiting" suffix, up to 23 characters. This replaces #439's short nouns.
+  - Mechanism from the Fable 5.1 review: a shipped Dock plus sidebars per module, not navigation-only modules with `code_only_modules`.
+- **What ships:**
+  - `konsol/dock/konsol/konsol.json`.
+  - Sidebars Close (Consolidation), Budget (EPM), Structure (new module **Structure**, `konsol/structure/`, sidebar and page only) and Pipeline (rail row titled "Data", because Frappe owns the module name Data).
+  - Landing workspaces Budget, Structure and Data.
+  - `konsol/desk_labels.py`, one label per doctype, pinned by `test_desk_navigation.py` (each non-child doctype on exactly one sidebar; one sidebar per workspace module; `modules.txt` matches).
+  - Patch `delete_konsolidat_workspace`. `after_migrate` no longer rebuilds Konsolidat; `dashboard.py` stays only for `retire_allocation`.
+- **Why Structure is its own module:** the review found that a sidebar lists every workspace of its module, so with Close and Structure both in Consolidation the Structure page opened under Close.
+- **Live (konsolidat.local):** I imported the navigation records only, because that stack's code is behind main. `get_bootinfo` shows the five-row dock, each doctype in its shell, and each sidebar claiming only its own pages.
+  - I deleted a site Custom Sidebar on that site only, at Deepak's choice. It reordered the old computed Pipeline list.
+  - The site's Module Def "Structure" was created by hand for the check; migrate creates it elsewhere.
+- **Upgrade:** `bench migrate`. It creates the Module Def, imports the Dock, sidebars and workspaces, and runs the patch. A site's own Custom Sidebar on the old Pipeline or EPM sidebar still applies on top of the shipped one; delete it if the order looks wrong.
+- **Not verified:** `/desk/data` in a browser (the review traced `router.js` and found no misroute), and the install.py change under a real migrate.
+
 **Update (7 Nov 2026, night): Konsol home look and feel, #438, merged as #439 (6dc91190).** Deepak Pai asked to "improve the look and feel of the home page". Presentation only, no data contract or policy change: `konsol/public/css/konsol_desk.css` (hooked by `app_include_css`, every rule scoped to `body[data-route="Workspaces/Konsol"]`, Frappe variables only) turns the six band pills into stat values and gives section headers a Brand Colour rule; the checklist block gets a progress bar and two columns above 720 px with its order unchanged; the workspace reads band → checklist → Waiting for approval → Monthly close → Close trends, the eight waiting shortcuts carry noun labels at three per row; three charts set `axisOptions` so x labels read "FY2025 P01" in full. `test_konsol_home_look.py` pins the scope, the order and the labels. Measured live after (1456 px): cards 104 px with a 17 px value, checklist 441 px (was ~600), no truncated shortcut title. Left as filed on #438: the page repeats the sidebar's Approvals and Monthly close lists (a content decision for Deepak Pai), and frappe-charts clips a legend of six or more series (no option). Upgrade: `bench migrate` re-imports the workspace, the charts and the block; nothing else.
 
 **Update (7 Nov 2026, night): #424 wave 2 merged: #374 (b) and the Cube removal; #117 design posted.**
