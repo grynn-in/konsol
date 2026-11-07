@@ -63,7 +63,8 @@ DOCK = [
     # "Data" is a Frappe module and sidebar, so konsol's sidebar is titled
     # Pipeline; the dock row's title is what the rail shows.
     ("Data", "Sidebar", "Pipeline"),
-    ("Handbook", "Workspace", "Konsol Handbook"),
+    # Rail title "Info", not "Handbook" (Deepak Pai, 7 Nov 2026); the page stays Konsol Handbook.
+    ("Info", "Workspace", "Konsol Handbook"),
 ]
 
 #: Each sidebar's module and rows, exactly as the plan's sidebar tree.
