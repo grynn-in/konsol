@@ -577,7 +577,7 @@ function saveHarness(editingName) {
     saving: { value: false },
     selectedPeriod: { value: { fiscal_year: 2025, fiscal_period: 10 } },
     selectedEntity: { value: { group: "ECL_GROUP", entity: "ZZ5B1" } },
-    form: { entityKey: "ZZ5B1|ECL_GROUP", periodKey: "2025/10", pct: "75", method: "full" },
+    form: { entityKey: "ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", periodKey: "2025/10", pct: "75", method: "full" },
     editing: { value: editingName },
     saveError: { value: null },
     saved: { value: null },
@@ -648,7 +648,7 @@ function openHarness(editable) {
 test("O67 openDraft: loads the server's edit into the form and marks the draft being edited", () => {
   const h = openHarness(EDITABLE());
   h.openDraft("OP-ZZ5B1-2025-10-01");
-  assert.deepEqual({ ...h.refs.form }, { entityKey: "ZZ5B1|ECL_GROUP", periodKey: "2025/10", pct: "80", method: "full" });
+  assert.deepEqual({ ...h.refs.form }, { entityKey: "ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", periodKey: "2025/10", pct: "80", method: "full" });
   assert.equal(h.refs.editing.value, "OP-ZZ5B1-2025-10-01");
   assert.equal(h.refs.editError.value, null);
   assert.equal(h.refs.saved.value, null, "an older saved line is cleared");
@@ -700,9 +700,9 @@ test("R52r: picking an entity carries its node's current period from the golden 
   assert.deepEqual(
     opts.map((o) => [o.key, o.current.name]),
     [
-      ["ZZ5B1|ECL_GROUP", "OP-ZZ5B1-1"],
-      ["ZZ5B1|ZZ_SUBGROUP", "OP-ZZ5B1-SUB"],
-      ["ZZ5B3|ECL_GROUP", "OP-ZZ5B3-1"],
+      ["ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", "OP-ZZ5B1-1"],
+      ["ZZ5B1|ZZ_SUBGROUP|CG-ZZ_SUBGROUP-", "OP-ZZ5B1-SUB"],
+      ["ZZ5B3|ECL_GROUP|CG-ECL_GROUP-", "OP-ZZ5B3-1"],
     ],
   );
 });

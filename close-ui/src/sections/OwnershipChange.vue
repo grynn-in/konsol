@@ -83,26 +83,42 @@ function need(obj, keys, where) {
 	}
 }
 
-/** `change.entities` -> one option per node, `{key, entity, group, label,
- * current}`. `current` is the node's latest submitted period (R52j); an
- * entity choice without it throws. */
+/** `change.entities` -> one option per HOLDING (konsol#117 pair 1: the
+ * server lists one item per (entity, group, owner_node) link), `{key, entity,
+ * group, owner_node, label, current}`. `current` is the holding's latest
+ * submitted period (R52j) and names its owner; a choice without it, or
+ * without the owner, throws. The key carries the owner, so two holdings of
+ * one entity in one group are two <option>s (PR #449 review, finding 5); the
+ * label then adds the holder. `owner_node` is set only on a choice that
+ * must name its holding (several owners in the group): previewParams sends
+ * it; a sole owner is implied by the server (design §1) and nothing is sent. */
 function entityOptions(entities) {
 	if (!Array.isArray(entities)) {
 		throw new Error("OwnershipChange: get_ownership's change has no entities list");
 	}
-	const nodes = {};
+	const groupsOf = {};
+	const holdings = {};
 	for (const e of entities) {
 		need(e, ["entity", "entity_name", "consolidation_group", "current"], "an entity choice");
-		nodes[e.entity] = (nodes[e.entity] || 0) + 1;
+		need(e.current, ["owner_node", "owner_label"], "an entity choice's current period");
+		(groupsOf[e.entity] = groupsOf[e.entity] || new Set()).add(e.consolidation_group);
+		const node = `${e.entity}|${e.consolidation_group}`;
+		holdings[node] = (holdings[node] || 0) + 1;
 	}
-	return entities.map((e) => ({
-		key: `${e.entity}|${e.consolidation_group}`,
-		entity: e.entity,
-		group: e.consolidation_group,
-		owner_node: e.owner_node || null,
-		label: `${e.entity} — ${e.entity_name}${nodes[e.entity] > 1 ? ` (in ${e.consolidation_group})` : ""}`,
-		current: e.current,
-	}));
+	return entities.map((e) => {
+		const node = `${e.entity}|${e.consolidation_group}`;
+		const several = holdings[node] > 1;
+		const inGroup = groupsOf[e.entity].size > 1 ? ` (in ${e.consolidation_group})` : "";
+		const heldBy = several ? ` — held by ${e.current.owner_label}` : "";
+		return {
+			key: `${node}|${e.current.owner_node || ""}`,
+			entity: e.entity,
+			group: e.consolidation_group,
+			owner_node: several ? e.current.owner_node : null,
+			label: `${e.entity} — ${e.entity_name}${inGroup}${heldBy}`,
+			current: e.current,
+		};
+	});
 }
 
 /** `change.periods` (calendar order) -> `[{year, label, options}]`, newest
