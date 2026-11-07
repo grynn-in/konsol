@@ -929,8 +929,9 @@ def _link(name, owner, label, pct, start, end=None, **over):
 
 
 def _new_link(module, owner, pct, start, end=None, **over):
-    return module.OwnershipPeriod(before=None, **_declared(
-        **_EC, name=None, owner_node=owner, ownership_pct=pct, effective_date=start, end_date=end, **over))
+    fields = dict(_declared(**_EC, name=None, owner_node=owner, ownership_pct=pct,
+                            effective_date=start, end_date=end), **over)
+    return module.OwnershipPeriod(before=None, **fields)
 
 
 def test_117_total_issued_into_one_node_may_not_exceed_100_by_the_sentence():
