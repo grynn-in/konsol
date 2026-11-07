@@ -17,9 +17,9 @@
    "added": 0,
    "hidden": 0,
    "icon": "wallet",
-   "link_to": "Budget",
+   "link_to": "Planning",
    "link_type": "Sidebar",
-   "title": "Budget"
+   "title": "Planning"
   },
   {
    "added": 0,
@@ -46,7 +46,7 @@
    "title": "Info"
   }
  ],
- "modified": "2026-11-08 00:20:00.000000",
+ "modified": "2026-11-08 02:00:00.000000",
  "modified_by": "Administrator",
  "name": "konsol",
  "owner": "Administrator",

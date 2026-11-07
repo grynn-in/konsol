@@ -1,11 +1,18 @@
 """The Konsol Desk navigation: rail, sidebars and pages (Desk IA, 7 Nov 2026).
 
 Decided by Deepak Pai, 7 Nov 2026 (plan "Konsol Desk information
-architecture"): the rail is a shipped Dock with Close, Budget, Structure, Data
-and Handbook; each rail entry opens one Sidebar and one landing Workspace; each
+architecture"): the rail is a shipped Dock with Close, Planning, Structure,
+Data and Handbook; each rail entry opens one Sidebar and one landing Workspace; each
 doctype has one label everywhere. Rejected: Setup instead of Structure,
 Integration instead of Data, Ownership Periods under Close, the Handbook as a
 link inside Close only.
+
+The rail entry Budget became Planning (Deepak Pai, 7 Nov 2026, option B on
+#443; rejected A, separate Budget and Forecast rail entries; C, Forecast
+doctypes; D, unfiltered duplicates). Budget and forecast share Budget Cycle,
+Budget Sheet and Budget Annual Input; a forecast is one whose Scenario has
+``scenario_type = forecast``. Planning's sidebar lists each of them filtered
+to budget, filtered to forecast, and unfiltered under Shared.
 
 This file pins the plan's "Labelling rule":
 
@@ -15,8 +22,10 @@ This file pins the plan's "Labelling rule":
    "N waiting" (Deepak Pai, 7 Nov 2026; rejected: a " waiting" suffix, and
    #439's short nouns as an exception).
 2. Each non-child doctype of the Consolidation, EPM and Pipeline modules is
-   listed in exactly one shipped Sidebar (allowlist below). Filtered lists live
-   on workspaces only, which is what makes "exactly one" enforceable.
+   listed in exactly one shipped Sidebar (allowlist below). A sidebar link is
+   filtered only by a pair declared in ``desk_labels.FILTERED_LABELS``, and
+   uses that pair's label (#443); every other filtered list lives on a
+   workspace.
 
 Frappe v16 mechanics it relies on (frappe/desk/doctype/sidebar/sidebar.py,
 frappe/desk/doctype/dock/dock.py, frappe/model/sync.py):
@@ -44,6 +53,9 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: carries at least this ``modified``, or migrate does not re-import it.
 BUMPED = "2026-11-07 23:30:00"
 
+#: The Planning edit (#443): the dock, the Planning sidebar and workspace.
+PLANNING_BUMPED = "2026-11-08 02:00:00"
+
 MODULE_FOLDERS = {"Consolidation": "consolidation", "EPM": "epm", "Pipeline": "pipeline",
                   "Structure": "structure"}
 
@@ -58,7 +70,7 @@ NOT_ON_A_SIDEBAR = {
 #: The rail, top to bottom: (title, link_type, link_to).
 DOCK = [
     ("Close", "Sidebar", "Close"),
-    ("Budget", "Sidebar", "Budget"),
+    ("Planning", "Sidebar", "Planning"),
     ("Structure", "Sidebar", "Structure"),
     # "Data" is a Frappe module and sidebar, so konsol's sidebar is titled
     # Pipeline; the dock row's title is what the rail shows.
@@ -69,7 +81,8 @@ DOCK = [
 
 #: Each sidebar's module and rows, exactly as the plan's sidebar tree.
 #: ("Section", label) is a Section Break; the rest are (link_type, link_to),
-#: labelled from the map (a Workspace row carries its own label).
+#: labelled from the map (a Workspace row carries its own label). A link
+#: filtered on scenario_type is (link_type, link_to, scenario_type).
 SIDEBARS = {
     "Close": ("Consolidation", [
         ("Workspace", "Konsol", "Home"),
@@ -98,13 +111,22 @@ SIDEBARS = {
         ("DocType", "Period Status"),
         ("DocType", "Close Event"),
     ]),
-    "Budget": ("EPM", [
-        ("Workspace", "Budget", "Home"),
+    "Planning": ("EPM", [
+        ("Workspace", "Planning", "Home"),
+        ("Section", "Budget"),
+        ("DocType", "Budget Cycle", "budget"),
+        ("DocType", "Budget Sheet", "budget"),
+        ("DocType", "Budget Annual Input", "budget"),
+        ("Section", "Forecast"),
+        ("DocType", "Budget Cycle", "forecast"),
+        ("DocType", "Budget Sheet", "forecast"),
+        ("DocType", "Budget Annual Input", "forecast"),
+        ("Section", "Shared"),
+        ("DocType", "Scenario"),
+        ("DocType", "Spread Profile"),
         ("DocType", "Budget Cycle"),
         ("DocType", "Budget Sheet"),
         ("DocType", "Budget Annual Input"),
-        ("DocType", "Scenario"),
-        ("DocType", "Spread Profile"),
     ]),
     "Structure": ("Structure", [
         ("Workspace", "Structure", "Home"),
@@ -160,7 +182,7 @@ SIDEBARS = {
 WORKSPACES = {
     "Konsol": ("consolidation", "Konsol", "Consolidation"),
     "Konsol Handbook": ("consolidation", "Konsol Handbook", "Consolidation"),
-    "Budget": ("epm", "Budget", "EPM"),
+    "Planning": ("epm", "Planning", "EPM"),
     "Structure": ("structure", "Structure", "Structure"),
     "Data": ("pipeline", "Data", "Pipeline"),
 }
@@ -177,12 +199,34 @@ def _load(rel):
         return json.load(f)
 
 
-def _labels():
+def _label_module():
     spec = importlib.util.spec_from_file_location(
         "_desk_labels_under_test", os.path.join(APP_DIR, "desk_labels.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.LABELS
+    return mod
+
+
+def _labels():
+    return _label_module().LABELS
+
+
+def _filtered_labels():
+    """(doctype, scenario_type) -> label, for the declared filtered links (#443)."""
+    return _label_module().FILTERED_LABELS
+
+
+def _scenario_filter(link_to, raw):
+    """The scenario_type a link's ``filters`` (or a shortcut's ``stats_filter``)
+    selects, or None. Sidebar Item ``filters`` is a JSON list of
+    ``[doctype, field, operator, value]`` (frappe sidebar.py
+    ``options_as_filters``; sidebar_item.js ``filters_as_options`` turns it into
+    the list's route options)."""
+    for flt in json.loads(raw or "[]"):
+        if flt[1] == "scenario_type":
+            assert flt[0] == link_to and flt[2] == "=" and len(flt) == 4, flt
+            return flt[3]
+    return None
 
 
 def _docs(kind, pattern):
@@ -309,6 +353,8 @@ def test_each_sidebar_has_the_planned_rows():
                 got.append(("Section", i["label"]))
             elif i["link_type"] == "Workspace":
                 got.append((i["link_type"], i["link_to"], i["label"]))
+            elif i.get("filters"):
+                got.append((i["link_type"], i["link_to"], _scenario_filter(i["link_to"], i["filters"])))
             else:
                 got.append((i["link_type"], i["link_to"]))
         assert got == rows, name
@@ -324,10 +370,16 @@ def test_every_sidebar_link_resolves():
 
 
 def test_every_sidebar_link_uses_the_label_map():
-    labels = _labels()
+    """An unfiltered link takes LABELS; a filtered one its declared pair's label."""
+    labels, filtered = _labels(), _filtered_labels()
     for name, (_, d) in _sidebars().items():
         for item in _links(d):
             if item["link_type"] == "Workspace":
+                continue
+            if item.get("filters"):
+                key = (item["link_to"], _scenario_filter(item["link_to"], item["filters"]))
+                assert key in filtered, (name, key, "not in desk_labels.FILTERED_LABELS")
+                assert item["label"] == filtered[key], (name, item["label"], filtered[key])
                 continue
             assert item["link_to"] in labels, (name, item["link_to"], "not in desk_labels.LABELS")
             assert item["label"] == labels[item["link_to"]], (name, item["label"])
@@ -337,7 +389,8 @@ def test_each_navigated_doctype_is_on_exactly_one_sidebar():
     seen = {}
     for name, (_, d) in _sidebars().items():
         for item in _links(d):
-            if item["link_type"] == "DocType":
+            if item["link_type"] == "DocType" and name not in seen.get(item["link_to"], []):
+                # Planning lists a doctype up to three times: still one sidebar.
                 seen.setdefault(item["link_to"], []).append(name)
     navigated = _navigated_doctypes()
     missing = sorted(set(navigated) - set(seen) - NOT_ON_A_SIDEBAR)
@@ -349,14 +402,79 @@ def test_each_navigated_doctype_is_on_exactly_one_sidebar():
     assert NOT_ON_A_SIDEBAR <= set(navigated), "the allowlist names a doctype that is gone"
 
 
-def test_no_sidebar_link_is_filtered_and_each_claims_its_doctype():
-    """A filtered list belongs on a workspace. ``is_default_module`` is what routes
-    a doctype's pages to its sidebar (frappe/boot.py build_entity_module_map)."""
+def test_only_declared_pairs_are_filtered_and_each_link_claims_its_doctype():
+    """A sidebar link is filtered only by a pair declared in
+    ``desk_labels.FILTERED_LABELS`` (Deepak Pai, 7 Nov 2026, option B on #443;
+    rejected A, C, D), on scenario_type alone, and each declared pair is one
+    link; any other filtered list belongs on a workspace. ``is_default_module``
+    is what routes a doctype's pages to its sidebar (frappe/boot.py
+    build_entity_module_map); Planning's links all claim theirs for Planning."""
+    declared = _filtered_labels()
+    seen = []
     for name, (_, d) in _sidebars().items():
         for item in _links(d):
-            assert not item.get("filters"), (name, item["label"])
+            if item.get("filters"):
+                flts = json.loads(item["filters"])
+                assert len(flts) == 1, (name, item["label"], flts)
+                key = (item["link_to"], _scenario_filter(item["link_to"], item["filters"]))
+                assert key in declared, (name, item["label"], key)
+                seen.append(key)
             if item["link_type"] == "DocType":
                 assert item["is_default_module"] == 1, (name, item["link_to"])
+    assert sorted(seen) == sorted(declared), (seen, sorted(declared))
+
+
+#: Budget and forecast share these doctypes (#443).
+PLANNING_DOCTYPES = ("Budget Cycle", "Budget Sheet", "Budget Annual Input")
+
+
+def test_the_planning_doctypes_are_all_on_planning():
+    on = {i["link_to"] for i in _links(_sidebars()["Planning"][1]) if i["link_type"] == "DocType"}
+    assert set(PLANNING_DOCTYPES) <= on, on
+
+
+def test_the_unfiltered_planning_links_say_all():
+    """Unfiltered, a planning list holds every scenario type, so its label says
+    so: "All Cycles", not "Budget Cycles" (Deepak Pai, 7 Nov 2026, option B on
+    #443; rejected A, C, D)."""
+    labels = _labels()
+    assert [labels[dt] for dt in PLANNING_DOCTYPES] == [
+        "All Cycles", "All Sheets", "All Annual Inputs"]
+
+
+def test_no_sidebar_shows_one_label_twice():
+    """Two rows labelled alike on one sidebar cannot be told apart."""
+    for name, (_, d) in _sidebars().items():
+        labels = [i["label"] for i in _links(d)]
+        assert len(labels) == len(set(labels)), (name, sorted(l for l in labels if labels.count(l) > 1))
+
+
+def test_every_scenario_type_but_actual_is_reachable():
+    """Each non-actual Scenario type reaches each planning doctype from some
+    link: its own filtered link, or the unfiltered "All ..." link. Strategic and
+    operational cycles have no section of their own, so without the "All" link
+    they would be listed nowhere (the HMD on #443). ``actual`` is refused by
+    BudgetCycle.validate, so no link filters on it."""
+    scenario = _doctypes()["Scenario"][1]
+    field = next(f for f in scenario["fields"] if f["fieldname"] == "scenario_type")
+    types = [t for t in field["options"].split("\n") if t]
+    assert "actual" in types and len(types) > 3, types
+    filtered, unfiltered = set(), {}
+    for _, (_, d) in _sidebars().items():
+        for i in _links(d):
+            if i["link_type"] != "DocType" or i["link_to"] not in PLANNING_DOCTYPES:
+                continue
+            if i.get("filters"):
+                filtered.add((i["link_to"], _scenario_filter(i["link_to"], i["filters"])))
+            else:
+                unfiltered[i["link_to"]] = i["label"]
+    assert not {k for k in filtered if k[1] == "actual"}, filtered
+    for dt in PLANNING_DOCTYPES:
+        for t in types:
+            if t == "actual":
+                continue
+            reach = (dt, t) in filtered or unfiltered.get(dt, "").startswith("All ")
+            assert reach, (dt, t, "reachable from no link")
 
 
 def test_every_sidebar_starts_at_its_home():
@@ -376,6 +494,25 @@ def test_close_lists_my_work_then_the_handbook_under_home():
 
 def test_the_old_konsol_sidebar_is_gone():
     assert not os.path.exists(os.path.join(APP_DIR, "consolidation", "sidebar", "konsol"))
+
+
+def test_the_old_budget_sidebar_and_page_are_gone():
+    """Planning replaced them (#443); the patch delete_budget_rail removes a site's copies."""
+    assert not os.path.exists(os.path.join(APP_DIR, "epm", "sidebar", "budget"))
+    assert not os.path.exists(os.path.join(APP_DIR, "epm", "workspace", "budget"))
+
+
+def test_the_planning_sections_start_closed():
+    """Every section collapsed by default (Deepak Pai, 7 Nov 2026)."""
+    for i in _sidebars()["Planning"][1]["items"]:
+        if i["type"] == "Section Break":
+            assert (i["collapsible"], i["keep_closed"]) == (1, 1), i["label"]
+
+
+def test_the_planning_edit_was_bumped():
+    assert _load(DOCK_FILE)["modified"] >= PLANNING_BUMPED
+    assert _sidebars()["Planning"][1]["modified"] >= PLANNING_BUMPED
+    assert _workspaces()["Planning"][1]["modified"] >= PLANNING_BUMPED
 
 
 ICON_LIST = os.path.join(APP_DIR, "tests", "data", "frappe_v16_lucide_icons.txt")
@@ -460,10 +597,16 @@ def test_each_workspace_module_has_exactly_one_sidebar():
 
 
 def test_every_workspace_shortcut_uses_the_label_map():
-    labels = _labels()
+    """A shortcut counting one scenario type takes that pair's label (#443)."""
+    labels, filtered = _labels(), _filtered_labels()
     for name, (path, ws) in _workspaces().items():
         for s in ws["shortcuts"]:
             if s["type"] not in ("DocType", "Report", "Page"):
+                continue
+            stype = _scenario_filter(s["link_to"], s.get("stats_filter"))
+            if stype:
+                assert (s["link_to"], stype) in filtered, (path, s["link_to"], stype)
+                assert s["label"] == filtered[(s["link_to"], stype)], (path, s["label"])
                 continue
             assert s["link_to"] in labels, (path, s["link_to"], "not in desk_labels.LABELS")
             assert s["label"] == labels[s["link_to"]], (path, s["label"], labels[s["link_to"]])
@@ -518,9 +661,18 @@ def test_the_handbook_lists_the_site_guide_pages():
     assert ("DocType", "Konsol Guide Page") in {(s["type"], s["link_to"]) for s in ws["shortcuts"]}
 
 
-def test_budget_and_data_pages_show_their_counts():
-    budget = {s["link_to"] for s in _ws("Budget")["shortcuts"]}
-    assert {"Budget Cycle", "Budget Sheet"} <= budget
+def test_planning_and_data_pages_show_their_counts():
+    """Planning counts open budget cycles and open forecast cycles apart, and
+    links Scenarios (#443)."""
+    planning = _ws("Planning")["shortcuts"]
+    counted = sorted(
+        (s["link_to"], tuple(tuple(f[1:]) for f in json.loads(s["stats_filter"])), s.get("format"))
+        for s in planning if s.get("stats_filter"))
+    assert counted == [
+        ("Budget Cycle", (("scenario_type", "=", "budget"), ("status", "=", "Open")), "{} open"),
+        ("Budget Cycle", (("scenario_type", "=", "forecast"), ("status", "=", "Open")), "{} open"),
+    ], counted
+    assert "Scenario" in {s["link_to"] for s in planning}
     data = _ws("Data")
     assert {"Pipeline Run", "Build Approval", "Connector", "Connector Health"} <= {
         s["link_to"] for s in data["shortcuts"]}

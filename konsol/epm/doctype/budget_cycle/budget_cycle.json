@@ -12,11 +12,22 @@
   "fields": [
     {
       "fieldname": "scenario_id",
+      "set_only_once": 1,
       "fieldtype": "Link",
       "label": "Scenario",
       "options": "Scenario",
       "reqd": 1,
       "in_list_view": 1
+    },
+    {
+      "fieldname": "scenario_type",
+      "fieldtype": "Data",
+      "label": "Scenario Type",
+      "fetch_from": "scenario_id.scenario_type",
+      "read_only": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "description": "Copied from the Scenario: budget, forecast, strategic or operational. Read-only; the Planning sidebar lists budgets and forecasts by it (#443)."
     },
     {
       "fieldname": "fiscal_year",
