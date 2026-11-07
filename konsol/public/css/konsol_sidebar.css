@@ -1,0 +1,26 @@
+/*
+ * Konsol sidebars: section headings ("Trial Balances", "Rates", ...).
+ * Deepak Pai, 7 Nov 2026: "make sure things like Trial Balances (sections?)
+ * get a slightly darker background and are spaced closer together", then
+ * "Only vertical spacing needs to be tighter..the horizontal is fine".
+ *
+ * Scope: konsol's own sidebars only. Frappe v16 writes the shell's name onto
+ * .body-sidebar as data-title (ui/sidebar/sidebar.js setup), so Frappe's
+ * shells (Build, Data, System, ...) keep their look.
+ * test_konsol_sidebar_look.py pins the scope to the shipped sidebar titles.
+ *
+ * Colours are Frappe variables only: --surface-gray-2 is the step above the
+ * sidebar's own ground, and it follows the dark theme.
+ */
+
+/* A heading reads as a band: one step darker, the row's own radius. */
+:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Budget"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break {
+	background-color: var(--surface-gray-2);
+	border-radius: var(--radius);
+}
+
+/* Groups sit closer: 8px above a heading instead of Frappe's 16px
+ * (sidebar.scss, ".sidebar-items > .section-item:has(.section-break)"). */
+:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Budget"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .sidebar-items > .section-item:has(.section-break):not(:first-child) {
+	margin-top: 8px;
+}
