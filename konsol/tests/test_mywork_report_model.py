@@ -148,7 +148,8 @@ def test_period_screens_map_to_the_nearest_desk_destination():
     assert rows["rates:2025-07"]["open"] == "/desk/group-exchange-rate?fiscal_year=2025&fiscal_period=7"
     assert rows["tbs-waiting:2025-07"]["open"] == "/desk/trial-balance-submission?fiscal_year=2025&fiscal_period=7"
     assert rows["checks-waiting:2025-07"]["open"] == "/desk/assertion-run?fiscal_year=2025&fiscal_period=7"
-    assert rows["close:2025-08"]["open"] == "/desk/assertion-run?fiscal_year=2025&fiscal_period=8"
+    # #419: Close period is in the Period Close report's Actions menu.
+    assert rows["close:2025-08"]["open"] == "/desk/query-report/Period%20Close"
     assert rows["approvals"]["open"] == "/desk/konsol"
 
 

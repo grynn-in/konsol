@@ -27,6 +27,9 @@ BLOCKS = (
      ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")),
     ("Konsol Handbook", "konsol_handbook",
      ("EPM Admin", "EPM Analyst", "EPM User", "Entity Accountant", "System Manager")),
+    # konsol#419: the roles mywork_api.get_my_work admits (frappe.only_for).
+    ("Konsol My Work Board", "konsol_my_work_board",
+     ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")),
 )
 
 

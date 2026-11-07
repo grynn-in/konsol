@@ -21,6 +21,15 @@ Close-app (``/close``) one:
   declared ``None`` has no Desk counterpart and shows no link. An
   undeclared screen raises ValueError: never a guessed link.
 
+konsol#419 (option C, Deepak Pai, 7 Nov 2026): the same payload is also laid
+out as a board (``board``): three columns, Blocking, To do and Waiting, of
+cards. Each card carries what is wrong (the item's detail), how to fix it
+(``FIXES``: one or two plain steps per item kind), Go (``open_path``, so the
+board and the list never disagree), the due date, the owner role and a
+Handbook page. An item kind with no fix raises ValueError: a card never shows
+a blank "How to fix". A card with no Desk page says so and links the Handbook.
+Nothing is stored and nothing is dragged: a card moves when the work is done.
+
 Pure: no frappe and no konsol imports.
 """
 from urllib.parse import quote as _quote
@@ -65,6 +74,119 @@ SCREEN_DESTINATIONS = {
     "audit-trail": ("/desk/close-event", True),
 }
 
+#: konsol#419: an item kind whose work is done somewhere other than its
+#: screen's destination. Close period is in the Period Close report's Actions
+#: menu, and that report also shows what blocks a sign-off (Handbook: Approve,
+#: check and sign off the period). The report has no filters: its Actions
+#: ask for the period.
+#: PR #420 review: Run checks and Sign off are Actions there too (a period
+#: whose checks never ran has no Assertion Run to open), and a rates error is
+#: fixed by a build.
+KIND_DESTINATIONS = {
+    "close": "/desk/query-report/" + _quote("Period Close"),
+    "signoff-wait": "/desk/query-report/" + _quote("Period Close"),
+    "checks-run": "/desk/query-report/" + _quote("Period Close"),
+    "resign": "/desk/query-report/" + _quote("Period Close"),
+    "signoff": "/desk/query-report/" + _quote("Period Close"),
+    "rates-error": "/desk/build-approval",
+}
+
+LIST_VIEW = "/desk/query-report/" + _quote("My Work")
+HANDBOOK = "/desk/konsol-handbook"
+
+#: konsol#419: how to fix each item kind (``item_type``), in one or two plain
+#: steps, and the Handbook page (konsol/handbook_pages/<slug>.md) that explains
+#: it, or None. Every kind mywork_model and mywork_api can emit is here; the
+#: test reads the kinds from their code, so a new kind without a fix fails.
+#: The steps name the Desk page Go opens.
+_LEAD, _GROUP, _ENTITY, _IC, _FX = ("start-close-lead", "start-group-accountant",
+                                    "start-entity-accountant", "intercompany", "fx-translation")
+_SENT_BACK_FIX = ("Open the draft and read the reason it was sent back.",
+                  "Correct it and send it for approval again.")
+FIXES = {
+    # setup gaps (mywork_model.GAPS)
+    "gap:first_close": (("In Close Settings, set First Close Fiscal Year and First Close Fiscal "
+                         "Period, and save.",), _LEAD),
+    "gap:self_approval": (("In Close Settings, choose Self-Approval: Blocked, or Allowed with "
+                           "reason, and save.",), _LEAD),
+    "gap:rate_move": (("In Close Settings, enter Rate Move Needing a Reason, and save.",), _FX),
+    "gap:statement_accounts": (("In Close Settings, set the statement accounts the message "
+                                "names, and save.",), _LEAD),
+    "gap:commentary_threshold": (("In Close Settings, enter Commentary Threshold (Amount), "
+                                  "(Percent), or both, and save.",), _LEAD),
+    "gap:iso_currency": (("Open each currency listed and set Minor Unit to the ISO 4217 value "
+                          "the message gives.",
+                          "Save it. Sign-off is blocked until then.",), None),
+    "gap:iso_currency_unused": (("Open each currency listed and set Minor Unit to the ISO 4217 "
+                                 "value the message gives, then save.",
+                                 "This does not block sign-off until something uses the "
+                                 "currency.",), None),
+    "gap:chart": (("Open Main Account and publish the group chart's accounts.",), _LEAD),
+    "gap:ic_accounts": (("Open Intercompany Account and publish each pair of intercompany "
+                         "accounts.",
+                         "Each account must first have Allow Intercompany ticked on its Main "
+                         "Account.",), _IC),
+    "gap:ic_tolerance": (("Open each consolidation group named and enter its Intercompany "
+                          "Difference Tolerance, then save.",), _IC),
+    "gap:ic_rule": (("Open IC Elimination Rule and add an unrealised-profit rule that matches "
+                     "each IC Balance pair named.",), _IC),
+    "gap:ic_rule_ambiguous": (("Open IC Elimination Rule and narrow the rules so that each IC "
+                               "Balance pair named matches only one.",), _IC),
+    "gap:frequency": (("Open each entity listed and set its Reporting Frequency, then save.",),
+                      _LEAD),
+    "gap:ownership": (("Add an Ownership Period for each entity named, covering the start of "
+                       "the periods named.",
+                       "Send it for approval; the Close Lead approves it.",), _GROUP),
+    "gap:accountants": (("Add a User Permission for each user listed: Allow = Entity, and the "
+                         "entity they upload.",), _ENTITY),
+    # period items (mywork_model.period_items)
+    "tb": (("Add a Trial Balance Submission for the entity and period, and load the file.",
+            "Check it and submit it."), _ENTITY),
+    "rates": (("Add the missing Closing and Average Group Exchange Rates for the period.",
+               "Send them for approval; the Close Lead approves them."), _GROUP),
+    "checks-run": (("In Period Close, use Actions, then Run checks, and choose the period.",),
+                   _LEAD),
+    "checks-failing": (("Open the period's latest Assertion Run and read each failing check.",
+                        "Fix what each one names, then click Run Suite again."), _LEAD),
+    "tbs-waiting": (("Nothing to do yourself: each entity's accountant submits its trial "
+                     "balance.",
+                     "Open the list to see which are in and remind the others."), _LEAD),
+    "resign": (("In Period Close, use Actions, then Run checks: something changed after the "
+                "sign-off.",
+                "When the checks finish, use Actions, then Sign off."), _LEAD),
+    "unowned": (("Add an Ownership Period covering the period for each entity named.",
+                 "Send it for approval, then approve it."), _GROUP),
+    "close": (("In Period Close, use Actions, then Close period.",), _LEAD),
+    "checks-waiting": (("Nothing to do yourself until the checks pass: a Group Accountant runs "
+                        "and fixes them.",
+                        "Open the period's runs to follow them."), _LEAD),
+    "signoff": (("In Period Close, use Actions, then Sign off, and choose the period.",
+                 "Amber checks need an acknowledgement of the warnings."), _LEAD),
+    "signoff-wait": (("Nothing to do yourself yet: an earlier period, or a sign-off gate, must "
+                      "clear first.",
+                      "Period Close shows what blocks the sign-off."), _LEAD),
+    "rates-error": (("Add a Build Approval with Build Scope consolidation; the Close Lead "
+                     "approves it before it runs.",
+                     "When it completes, open My Work again: the rates are checked once the "
+                     "warehouse answers."), _GROUP),
+    # mywork_model.approvals_item, ic_fix_items, sent-back items
+    "approvals": (("Open each waiting record and use Actions, then Approve or Reject.",), _LEAD),
+    "ic": (("Correct the intercompany rows on your trial balance for the period, or agree the "
+            "figure with the partner.",
+            "Submit the corrected trial balance."), _IC),
+    "sent-back:signoff": (("Fix what the reason names and run the checks again.",
+                           "The Close Lead then signs the period off."), _LEAD),
+    "sent-back:Consolidation Journal": (_SENT_BACK_FIX, _GROUP),
+    "sent-back:Business Combination": (_SENT_BACK_FIX, _GROUP),
+    "sent-back:Business Disposal": (_SENT_BACK_FIX, _GROUP),
+    "sent-back:Group Exchange Rate": (_SENT_BACK_FIX, _GROUP),
+    "sent-back:Ownership Period": (_SENT_BACK_FIX, _GROUP),
+    "sent-back:Historical Equity Rate": (_SENT_BACK_FIX, _FX),
+    "sent-back:IC Balance": (_SENT_BACK_FIX, _IC),
+}
+
+NO_DESK_PAGE = "There is no Desk page for this. The Handbook page explains what to do."
+
 _SENT_BACK_PREFIX = "sent-back:"
 
 
@@ -83,6 +205,28 @@ def _sent_back_form(item_id):
     return _form(doctype, name)
 
 
+def item_type(item):
+    """The kind of work an item is, read from its id: ``gap:<name>``,
+    ``sent-back:<doctype>`` (``sent-back:signoff`` for a sign-off), or the
+    id's first part (``tb``, ``checks-run``, ``approvals``, ``ic`` ...)."""
+    item_id = str(item["id"])
+    if item_id.startswith("gap:"):
+        return item_id
+    if item_id.startswith(_SENT_BACK_PREFIX):
+        return _SENT_BACK_PREFIX + item_id[len(_SENT_BACK_PREFIX):].partition(":")[0]
+    return item_id.partition(":")[0]
+
+
+def fix_for(item):
+    """``(steps, handbook slug or None)`` for an item; ValueError for a kind
+    with no fix (never a blank "How to fix")."""
+    kind = item_type(item)
+    if kind not in FIXES:
+        raise ValueError("My work item %s is of kind %r, which has no fix text "
+                         "(mywork_report_model.FIXES)." % (item["id"], kind))
+    return FIXES[kind]
+
+
 def open_path(item):
     """The Desk path an item opens, or None when the Desk has no counterpart."""
     action = item.get("action") or {}
@@ -94,6 +238,8 @@ def open_path(item):
     form = _sent_back_form(item["id"])
     if form:
         return form
+    if item_type(item) in KIND_DESTINATIONS:
+        return KIND_DESTINATIONS[item_type(item)]
     screen = action.get("screen")
     if screen not in SCREEN_DESTINATIONS:
         raise ValueError("My work item %s opens screen %r, which has no declared Desk destination."
@@ -120,16 +266,22 @@ def _due(item):
     return "%s (overdue)" % text if due.get("overdue") and text else text
 
 
-def _row(item):
+def _kind_label(item):
     kind = item.get("kind")
     if kind not in KIND_LABELS:
         raise ValueError("My work item %s has unknown kind %r." % (item.get("id"), kind))
+    return KIND_LABELS[kind]
+
+
+def _row(item):
+    label = _kind_label(item)
     period = item.get("period")
     return {
         "id": item["id"],
-        "kind": KIND_LABELS[kind],
+        "kind": label,
         "title": item["title"],
         "message": item.get("detail"),
+        "fix": " ".join(fix_for(item)[0]),
         "owner": item.get("owner"),
         "period": period["code"] if period else None,
         "since": (period or {}).get("since") if period else item.get("since"),
@@ -148,11 +300,64 @@ def rows(payload):
 def columns():
     return [
         {"fieldname": "kind", "label": "Kind", "fieldtype": "Data", "width": 90},
+        {"fieldname": "open", "label": "Open", "fieldtype": "Data", "width": 70},
         {"fieldname": "title", "label": "Title", "fieldtype": "Data", "width": 260},
-        {"fieldname": "message", "label": "Message", "fieldtype": "Data", "width": 360},
+        {"fieldname": "message", "label": "Message", "fieldtype": "Data", "width": 320},
+        {"fieldname": "fix", "label": "How to fix", "fieldtype": "Data", "width": 360},
         {"fieldname": "owner", "label": "Owner Role", "fieldtype": "Data", "width": 130},
         {"fieldname": "period", "label": "Period", "fieldtype": "Data", "width": 100},
         {"fieldname": "since", "label": "Since", "fieldtype": "Date", "width": 100},
         {"fieldname": "due", "label": "Due", "fieldtype": "Data", "width": 160},
-        {"fieldname": "open", "label": "Open", "fieldtype": "Data", "width": 90},
     ]
+
+
+def empty_message(payload, shown):
+    """The Close app's own sentences (MyWork.vue, A54): only the Entity
+    Accountant persona carries ``entities_assigned`` (None for the others)."""
+    if payload.get("entities_assigned") is False:
+        return "No entities are assigned to you. Ask the System Manager."
+    if payload.get("entities_assigned") is True and not shown:
+        return "Your entities are assigned, but none are in scope this period."
+    return None
+
+
+# --- konsol#419: the board -------------------------------------------------------
+
+def _handbook_url(slug):
+    return "%s?%s" % (HANDBOOK, _urlencode({"page": "konsol:%s" % slug})) if slug else None
+
+
+def card(item):
+    """One board card. ValueError for an item kind with no fix, and for one
+    with neither a Desk page nor a Handbook page."""
+    _kind_label(item)
+    steps, slug = fix_for(item)
+    go = open_path(item)
+    if go is None and slug is None:
+        raise ValueError("My work item %s has no Desk page and no Handbook page: "
+                         "give its kind one in mywork_report_model.FIXES." % item["id"])
+    due = item.get("due")
+    period = item.get("period")
+    return {
+        "id": item["id"],
+        "kind": item["kind"],
+        "type": item_type(item),
+        "title": item["title"],
+        "detail": item.get("detail"),
+        "fix": list(steps),
+        "go": go,
+        "no_go": None if go else NO_DESK_PAGE,
+        "owner": item.get("owner"),
+        "period": period["code"] if period else None,
+        "due": {"text": due.get("text"), "overdue": bool(due.get("overdue"))} if due else None,
+        "handbook": _handbook_url(slug),
+    }
+
+
+def board(payload):
+    """``{columns: [{kind, label, cards}], message, list_view}``: Blocking, To
+    do, Waiting, each in the API's own order."""
+    cards = [card(item) for item in payload.get("items") or ()]
+    columns = [{"kind": k, "label": KIND_LABELS[k], "cards": [c for c in cards if c["kind"] == k]}
+               for k in KINDS]
+    return {"columns": columns, "message": empty_message(payload, cards), "list_view": LIST_VIEW}

@@ -66,7 +66,7 @@
    "keep_closed": 0,
    "label": "My Work",
    "link_to": "My Work",
-   "link_type": "Report",
+   "link_type": "Workspace",
    "open_in_new_tab": 0,
    "show_arrow": 0,
    "type": "Link"
@@ -694,7 +694,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-11-07 18:00:00.000000",
+ "modified": "2026-11-07 22:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Konsol",

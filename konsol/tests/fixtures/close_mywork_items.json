@@ -2,7 +2,7 @@
   "entity_accountant": [
     {
       "action": {
-        "desk": "/desk/entity"
+        "desk": "/desk/entity?name=%5B%22in%22%2C+%5B%22ZZA%22%5D%5D"
       },
       "detail": "ZZA",
       "entities": [
@@ -72,7 +72,7 @@
   "group_accountant": [
     {
       "action": {
-        "desk": "/desk/entity"
+        "desk": "/desk/entity?name=%5B%22in%22%2C+%5B%22ZZA%22%2C+%22ZZB%22%5D%5D"
       },
       "detail": "ZZA, ZZB",
       "entities": [
@@ -105,7 +105,7 @@
     },
     {
       "action": {
-        "desk": "/desk/user"
+        "desk": "/desk/user-permission"
       },
       "detail": "zz-idle@example.com",
       "entities": [],
