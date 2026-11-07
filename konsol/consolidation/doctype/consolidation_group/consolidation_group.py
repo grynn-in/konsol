@@ -34,6 +34,7 @@ import frappe
 from frappe.utils.nestedset import NestedSet
 
 from konsol.clickhouse import after_commit_once, sync_doctype_after_commit, sync_table
+from konsol.ownership_graph_model import ownership_edges
 
 
 class OwnershipCycle(ValueError):
@@ -519,21 +520,10 @@ class ConsolidationGroup(NestedSet):
                 path,
             ])
 
-        # owner node name -> owned node names, from the links; the tree parent
-        # for a node no link names.
-        by_node = {(d.consolidation_group, d.data_area_id or ""): d.name for d in docs}
-        owners = {}
-        for link in links:
-            owner = link.get("owner_node")
-            owned = by_node.get((link.get("consolidation_group"), link.get("data_area_id") or ""))
-            if owner and owned and owner in by_name:
-                owners.setdefault(owned, set()).add(owner)
-        children = {d.name: [] for d in docs}
-        for d in docs:
-            for owner in sorted(owners.get(d.name) or (
-                    [d.parent_consolidation_group]
-                    if d.parent_consolidation_group in by_name else [])):
-                children[owner].append(d.name)
+        # owner node name -> owned node names: the links, and the tree parent
+        # for a node no link names. ONE rule, shared with the Ownership
+        # Period's cycle check (PR #459 re-review, finding A).
+        children = ownership_edges(docs, links)
 
         ancestry = []
         for start in docs:

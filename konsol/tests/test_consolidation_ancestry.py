@@ -46,11 +46,13 @@ def _load():
     ch = types.ModuleType("konsol.clickhouse")
     ch.sync_doctype = ch.sync_table = lambda *a, **k: None
     ch.after_commit_once = ch.sync_doctype_after_commit = lambda *a, **k: None
+    konsol = types.ModuleType("konsol")
+    konsol.__path__ = [APP_DIR]   # the real pure konsol.ownership_graph_model imports through the stub
     sys.modules.update({
         "frappe": frappe,
         "frappe.utils": utils,
         "frappe.utils.nestedset": nested,
-        "konsol": types.ModuleType("konsol"),
+        "konsol": konsol,
         "konsol.clickhouse": ch,
     })
     try:

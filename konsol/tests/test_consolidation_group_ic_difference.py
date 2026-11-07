@@ -32,8 +32,10 @@ def _load():
     nested.NestedSet = type("NestedSet", (), {})
     ch = types.ModuleType("konsol.clickhouse")
     ch.after_commit_once = ch.sync_doctype_after_commit = ch.sync_table = lambda *a, **k: None
+    konsol = types.ModuleType("konsol")
+    konsol.__path__ = [APP_DIR]   # the real pure konsol.ownership_graph_model imports through the stub
     stubs = {"frappe": frappe, "frappe.utils": types.ModuleType("frappe.utils"),
-             "frappe.utils.nestedset": nested, "konsol": types.ModuleType("konsol"), "konsol.clickhouse": ch}
+             "frappe.utils.nestedset": nested, "konsol": konsol, "konsol.clickhouse": ch}
     saved = {k: sys.modules.get(k) for k in stubs}
     sys.modules.update(stubs)
     try:

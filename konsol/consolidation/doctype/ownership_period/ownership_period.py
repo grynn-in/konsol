@@ -34,6 +34,7 @@ from frappe.utils import getdate
 
 from konsol.clickhouse import sync_doctype_after_commit
 from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
+from konsol.ownership_graph_model import ownership_edges, path_between
 from konsol.period_status import assert_open_between, first_period_affected
 
 # ClickHouse's Date type holds 1970-01-01 .. 2149-06-06 and CLAMPS anything
@@ -444,26 +445,39 @@ class OwnershipPeriod(Document):
         From the OWNED node, follow the outgoing edges and refuse when the
         OWNER node is reached, naming every node on the path owner → owned →
         … → owner. The self-link is the one-node case and ``_validate_owner``
-        has already refused it. A node's outgoing edges are its non-cancelled
-        links (owner → owned, ``docstatus != 2``, undated: a link that ended
-        years ago still closes the ring) PLUS its tree children that no
-        submitted link names: ``ConsolidationGroup.build_rows`` owns such a
-        child by its tree parent, so that implicit edge closes a ring as
-        surely as a link does, and a ring that passed here raised
-        OwnershipCycle at every reconcile (PR #449 review, finding 2).
-        Submitted, because that is what ``build_rows`` reads (``_links``): a
-        draft into the child is not yet a link there, so until it is
-        submitted the tree edge stands and so does any ring through it.
+        has already refused it.
+
+        The edges are ``ownership_graph_model.ownership_edges`` — the ONE
+        rule ``ConsolidationGroup.build_rows`` reads too (PR #459 re-review,
+        finding A), fed the submitted links plus this document's own edge, so
+        a ring the reconcile would raise OwnershipCycle on is exactly the
+        ring refused here: a node a submitted link names (owner set and a
+        node) is owned by that owner, any other node by its tree parent
+        (finding B: a submitted row with a blank or dangling owner is not a
+        link, and the tree edge stands). The other non-cancelled DRAFTS are
+        tentative edges: walked, so a ring through a draft is refused before
+        it is submitted (undated: a link that ended years ago still closes
+        the ring), but never standing in for a tree edge, since a draft may
+        still be deleted. The build-time backstop is ``build_rows`` (a
+        repeated node on a path raises) and dbt's
+        ``assert_ownership_paths_acyclic``.
 
         Two links saved concurrently could each pass the walk under REPEATABLE
-        READ (each transaction reads its own snapshot). The check first takes
-        the serialising lock the group uses for its difference account
-        (Ownership Period's ``tabDocType`` row FOR UPDATE, the pattern at
-        consolidation_group.py:183), so the second save waits for the first
-        to commit, and reads the links FOR UPDATE, which reads the latest
-        committed rows rather than the snapshot. The build-time backstop is
-        ``ConsolidationGroup.build_rows`` (a repeated node on a path raises)
-        and dbt's ``assert_ownership_paths_acyclic``.
+        READ: a plain read in a transaction reads the snapshot its first read
+        established, so it can miss a link committed since (CLAUDE.md). The
+        check first takes the serialising lock the group uses for its
+        difference account (Ownership Period's ``tabDocType`` row FOR UPDATE,
+        the pattern at consolidation_group.py:183), so the second save waits
+        for the first to commit, then reads every non-cancelled link ONCE with
+        a locking read, which sees the latest committed rows — never per
+        visited node, never a second lock over the submitted rows (finding
+        C). The nodes are read once, plainly: the walk's race is over the
+        links; a concurrent tree edit is the group controller's to guard, and
+        a locking read of every node would contend with its NestedSet writes.
+        Lock order is the same everywhere a period is written (the deals
+        insert or submit a period, whose validate takes this lock, before
+        they touch another period's row), so the whole-table read cannot
+        deadlock with them.
         """
         if not self.owner_node:
             return
@@ -472,91 +486,38 @@ class OwnershipPeriod(Document):
             return   # refused by name already (``_validate_node_exists``, ``_validate_owner``)
         frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE",
                       ("Ownership Period",))
-        trail = self._path_between(owned.name, owner.name)
+        links = self._other_links_for_update()
+        nodes = frappe.get_all("Consolidation Group", fields=_NODE_FIELDS,
+                               limit_page_length=0, order_by="name asc")
+        own = {"owner_node": owner.name, "consolidation_group": self.consolidation_group,
+               "data_area_id": self.data_area_id}
+        edges = ownership_edges(
+            nodes,
+            [link for link in links if int(link.docstatus or 0) == 1] + [own],
+            tentative=[link for link in links if int(link.docstatus or 0) != 1],
+        )
+        trail = path_between(edges, owned.name, owner.name)
         if trail is None:
             return
-        owner_label = owner.data_area_id or owner.consolidation_group
-        ring = [owner_label, self._owned_label()] + trail
+        by_name = {node.name: node for node in nodes}
+        ring = [owner.data_area_id or owner.consolidation_group, self._owned_label()] + [
+            by_name[name].data_area_id or by_name[name].consolidation_group for name in trail]
         frappe.throw(
             "This link would close a cycle: " + " → ".join(f"`{label}`" for label in ring)
             + ". " + self.CYCLE_TAIL
         )
 
-    def _links_out_of(self, node_name):
-        """The non-cancelled links whose owner is ``node_name``, read FOR
-        UPDATE; this document's own stored row is not a second link."""
-        query = ("SELECT `name`, `consolidation_group`, `data_area_id` FROM `tabOwnership Period` "
-                 "WHERE `owner_node` = %s AND `docstatus` != 2")
-        values = [node_name]
-        if self.name:
-            query += " AND `name` != %s"
-            values.append(self.name)
-        return frappe.db.sql(query + " FOR UPDATE", tuple(values), as_dict=True)
-
-    def _nodes_a_submitted_link_names(self):
-        """The ``(group, entity)`` keys of every node a submitted link names,
-        read FOR UPDATE once per walk; this document's own stored row is not
-        one. A tree child outside this set is owned by its tree parent in
-        ``build_rows``, so the walk follows that edge too."""
-        query = ("SELECT `consolidation_group`, `data_area_id` FROM `tabOwnership Period` "
-                 "WHERE `docstatus` = 1")
+    def _other_links_for_update(self):
+        """Every non-cancelled Ownership Period but this document's own
+        stored row, as link rows (owned node, owner, docstatus), read FOR
+        UPDATE: one statement per validate."""
+        query = ("SELECT `name`, `consolidation_group`, `data_area_id`, `owner_node`, `docstatus` "
+                 "FROM `tabOwnership Period` WHERE `docstatus` != 2")
         values = []
         if self.name:
             query += " AND `name` != %s"
             values.append(self.name)
-        return {(r.consolidation_group, r.data_area_id or None)
-                for r in frappe.db.sql(query + " FOR UPDATE", tuple(values), as_dict=True)}
-
-    @staticmethod
-    def _tree_children_of(node_name):
-        """The Consolidation Group nodes whose tree parent is ``node_name``."""
-        return frappe.get_all(
-            "Consolidation Group", filters={"parent_consolidation_group": node_name},
-            fields=_NODE_FIELDS, limit_page_length=0, order_by="name asc")
-
-    def _path_between(self, start, target):
-        """Depth-first over the outgoing edges of node ``start`` (its links,
-        and its tree children no submitted link names): the labels (entity
-        code, else group code) of the nodes after ``start`` on a path that
-        reaches ``target``, or None when none does. A ``visited`` set keeps a
-        graph that already holds a ring (through a patch or an import) from
-        looping; the live tree is six links deep at most."""
-        names = {}   # (group, entity) -> node name, one lookup per node
-        linked = None   # the nodes a submitted link names, read when first needed
-
-        def node_name(group, entity):
-            key = (group, entity or None)
-            if key not in names:
-                row = node_by_key(group, entity)
-                names[key] = row.name if row else None
-            return names[key]
-
-        def edges_out_of(node):
-            """(label, next node name) for every outgoing edge of ``node``."""
-            nonlocal linked
-            for link in self._links_out_of(node):
-                nxt = node_name(link.consolidation_group, link.data_area_id)
-                if nxt is not None:   # a link into a node that no longer exists is read by nothing
-                    yield link.data_area_id or link.consolidation_group, nxt
-            for child in self._tree_children_of(node):
-                if linked is None:
-                    linked = self._nodes_a_submitted_link_names()
-                if (child.consolidation_group, child.data_area_id or None) not in linked:
-                    names[(child.consolidation_group, child.data_area_id or None)] = child.name
-                    yield child.data_area_id or child.consolidation_group, child.name
-
-        visited, stack = set(), [(start, [])]
-        while stack:
-            node, trail = stack.pop()
-            if node in visited:
-                continue
-            visited.add(node)
-            for label, nxt in edges_out_of(node):
-                if nxt == target:
-                    return trail + [label]
-                if nxt not in visited:
-                    stack.append((nxt, trail + [label]))
-        return None
+        return frappe.db.sql(query + " FOR UPDATE", tuple(values), as_dict=True)
 
     def _validate_pct_range(self):
         if self.ownership_pct is None or not (0 <= float(self.ownership_pct) <= 100):

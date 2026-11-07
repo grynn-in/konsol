@@ -417,10 +417,7 @@ def _site(rows, nodes=None):
         if doctype == "Consolidation Group":
             # the cycle walk's one read of every node (PR #459 finding C)
             assert nodes is not None, "a tree is needed to read the nodes"
-            if filters:   # the per-node tree-children read the walk used to send
-                assert list(filters) == ["parent_consolidation_group"], filters
-                return [types.SimpleNamespace(**vars(n)) for n in nodes.values()
-                        if n.parent_consolidation_group == filters["parent_consolidation_group"]]
+            assert not filters, filters
             return [types.SimpleNamespace(**vars(n)) for n in nodes.values()]
         out = []
         for r in rows:
@@ -450,27 +447,17 @@ def _site(rows, nodes=None):
         raise AssertionError(f"no such period {name}")
 
     def sql(query, values=(), as_dict=False, **k):
-        """The statements the cycle check sends: the serialising lock on
+        """The two statements the cycle check sends: the serialising lock on
         Ownership Period's tabDocType row, then (PR #459 finding C) ONE
         locking read of every non-cancelled link (``docstatus != 2``,
-        optionally ``name != %s``). The per-node reads the walk used to send
-        (links OUT of one node, the nodes a SUBMITTED link names) are still
-        answered so the red run of the finding's test fails on the count, not
-        on the stub. Anything else is a test's mistake."""
+        optionally ``name != %s``). Anything else is a test's mistake."""
         calls.append(("sql", query, tuple(values)))
         if "`tabDocType`" in query:
             return []
         assert "`tabOwnership Period`" in query, query
         assert as_dict, "the controller reads links as dicts"
+        assert "`docstatus` != 2" in query and "`owner_node`" in query and "`docstatus`" in query, query
         exclude = values[-1] if "`name` != %s" in query else None
-        if "`owner_node` = %s" in query:
-            owner = values[0]
-            return [types.SimpleNamespace(**vars(r)) for r in rows
-                    if r.owner_node == owner and r.docstatus != 2 and r.name != exclude]
-        if "`docstatus` = 1" in query:
-            return [types.SimpleNamespace(**vars(r)) for r in rows
-                    if r.docstatus == 1 and r.name != exclude]
-        assert "`docstatus` != 2" in query, query
         return [types.SimpleNamespace(**vars(r)) for r in rows
                 if r.docstatus != 2 and r.name != exclude]
 

@@ -219,11 +219,12 @@ def _load(path, period_open):
     # it, konsol#252 konsol.tb_currency_model and konsol#180
     # konsol.tb_balance_model (which imports the currency rule); PR #449
     # finding 7 made Ownership Period import konsol.fiscal_structure_model's
-    # Date range. The stub package has no __path__, so load each from the
-    # repo and register it beside the stubs.
+    # Date range, and PR #459 finding A made Consolidation Group and Ownership
+    # Period import konsol.ownership_graph_model. The stub package has no
+    # __path__, so load each from the repo and register it beside the stubs.
     app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for pure in ("tb_basis_model", "tb_dimension_model", "tb_currency_model", "tb_balance_model",
-                 "fiscal_structure_model"):
+                 "fiscal_structure_model", "ownership_graph_model"):
         pure_spec = importlib.util.spec_from_file_location(
             f"konsol.{pure}", os.path.join(app_dir, f"{pure}.py"))
         pure_mod = importlib.util.module_from_spec(pure_spec)

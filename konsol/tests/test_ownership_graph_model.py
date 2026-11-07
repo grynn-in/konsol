@@ -51,8 +51,11 @@ TREE = [
 
 
 def test_the_module_is_pure():
-    src = open(MODEL).read()
-    assert "import frappe" not in src and "clickhouse" not in src.lower()
+    import ast
+    tree = ast.parse(open(MODEL).read())
+    imported = [n.names[0].name if isinstance(n, ast.Import) else n.module
+                for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    assert imported == [], imported
 
 
 def test_without_links_every_node_is_owned_by_its_tree_parent():
