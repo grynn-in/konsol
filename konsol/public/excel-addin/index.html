@@ -366,6 +366,7 @@
         if (sessionUser !== undefined) currentSession = sessionUser || "none";
         if (namesResult !== undefined) currentNames = namesResult;
         diag.textContent = "diag: associate=" + associateLabel() +
+          " · ribbon=" + (window.konsolRibbonAssociated ? "yes" : "no") +
           " · names=" + currentNames + " · token=" + tokenLabel() +
           " · session=" + currentSession;
       }
@@ -665,7 +666,10 @@
           params.period_to || 12
         ).then(function (spec) {
           return applyCellMap(spec).then(function () {
-            if (!window.konsolRibbon) return spec;
+            if (!window.konsolRibbon) {
+              appendLog("err", "Snapshot painted, but ribbon.js is not loaded, so Refresh cannot find it again. Reload the add-in.");
+              return spec;
+            }
             return window.konsolRibbon.rememberSnapshot({
               template_id: params.template_id,
               entity: params.entity,
@@ -781,7 +785,14 @@
           return;
         }
 
+        // A ribbon refresh may be repainting the same sheet.
+        if (window.konsolRibbon && window.konsolRibbon.isBusy()) {
+          appendLog("err", "Snapshot: a ribbon refresh is running; try again when it finishes.");
+          return;
+        }
+
         btn.disabled = true;
+        window.konsolSnapshotBusy = true;
         appendLog("info", "Snapshot: loading TB for " + entity + " " + year +
           " P" + periodFrom + "–" + periodTo + "…");
 
@@ -802,6 +813,7 @@
           })
           .finally(function () {
             btn.disabled = false;
+            window.konsolSnapshotBusy = false;
           });
       }
 
@@ -816,7 +828,23 @@
 
       // For ribbon.js (Refresh sheet / Refresh workbook): the same sign-in
       // check and Messages log the pane uses.
-      window.konsolWhoami = whoami;
+      // Unlike whoami(), this rejects when the server could not be asked, so
+      // the ribbon says "could not reach the server", not "sign in".
+      window.konsolWhoami = function () {
+        return api("/api/method/konsol.api.excel_addin_whoami", { credentials: "omit" })
+          .then(function (res) {
+            if (res.status === 401 || res.status === 403) {
+              setDiag(undefined, "none");
+              return null;
+            }
+            return res.json().catch(function () { return {}; }).then(function (data) {
+              if (!res.ok) throw new Error(parseApiError(res, data));
+              var user = (data.message && data.message.user) || null;
+              setDiag(undefined, user || "none");
+              return user;
+            });
+          });
+      };
       window.konsolLog = appendLog;
 
       function logout() {

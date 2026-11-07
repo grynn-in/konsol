@@ -146,21 +146,28 @@ workbook**. The two refresh buttons run `ribbon.js` in the shared runtime
 1. If the sheet is a snapshot sheet, the add-in takes the snapshot again with
    its saved parameters (template, entity, year, period from/to).
 2. The sheet recalculates with `worksheet.calculate(true)`, so every `=K.*`
-   formula on it runs again. An Excel without ExcelApi 1.6 has no sheet
-   recalculation: the add-in then recalculates the whole workbook and says so
-   in Messages.
+   formula on it runs again (ExcelApi 1.6; every Excel with the shared
+   runtime the manifest requires has it).
 3. The sheet gets the stamp (below).
 
 **Refresh workbook** takes every saved snapshot again, one at a time, then
 recalculates the whole workbook with `application.calculate(full)`, and stamps
-every sheet that has a `=K.*` formula or a snapshot. The sheet that was active
-before is active again at the end.
+every sheet that has a `=K.*` formula or a snapshot. Each sheet is read and
+stamped on its own, so one large or protected sheet does not stop the rest;
+Messages lists any sheet that was not stamped and why. The sheet that was
+active before is active again at the end.
+
+One refresh runs at a time. A second click while one runs, or while the
+pane's Snapshot runs, is refused with a message. A snapshot that does not
+finish in 2 minutes fails, and a whole refresh is given up after 10 minutes,
+so the button never stays greyed.
 
 ### The stamp
 
 Each refreshed sheet shows `Values as of <YYYY-MM-DD HH:MM> UTC` in row 1:
 
-- in the row-1 cell that already holds a stamp, if there is one;
+- in the row-1 cell that already holds a stamp (exactly that text, so a
+  note such as "Values as of last Friday" is left alone), if there is one;
 - else in the first empty cell right of row 1's last used cell.
 
 On the shipped templates that is **G1** on the Monthly P&L (row 1 ends at F1)
@@ -190,7 +197,9 @@ add-ins, so on a failure the add-in opens the pane, where Messages shows why.
 It never shows a blocking dialog.
 
 If you are not signed in (or the sign-in expired), nothing is recalculated,
-snapshotted or stamped, the pane opens, and Messages says to sign in.
+snapshotted or stamped, the pane opens, and Messages says to sign in. If the
+server cannot be reached to check, Messages says so instead, and nothing is
+refreshed. The pane's diag line shows `ribbon=yes` when the buttons are bound.
 
 ### Not yet verified in Excel
 

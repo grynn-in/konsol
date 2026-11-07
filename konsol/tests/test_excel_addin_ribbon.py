@@ -3,9 +3,8 @@
 Two buttons on the add-in's Home-ribbon group, not in the task pane:
 
 - **Refresh sheet** re-runs the active sheet: its =K.* formulas recalculate
-  (``worksheet.calculate(true)``, or the whole workbook where ExcelApi 1.6 is
-  missing), and a snapshot sheet is snapshotted again with its saved
-  parameters.
+  (``worksheet.calculate(true)``), and a snapshot sheet is snapshotted again
+  with its saved parameters.
 - **Refresh workbook** re-runs every saved snapshot and recalculates the whole
   workbook (``application.calculate(full)``).
 
@@ -27,6 +26,8 @@ import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
+
+from konsol import report_compiler
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDIN = os.path.join(APP_DIR, "public", "excel-addin")
@@ -119,7 +120,7 @@ def test_the_pane_snapshot_saves_its_parameters():
 
 def test_the_pane_exposes_whoami_and_its_log_to_the_ribbon():
     src = _read("index.html")
-    assert re.search(r"window\.konsolWhoami\s*=\s*whoami", src)
+    assert re.search(r"window\.konsolWhoami\s*=\s*function", src)
     assert re.search(r"window\.konsolLog\s*=\s*appendLog", src)
 
 
@@ -130,7 +131,25 @@ def test_no_blocking_dialogs():
 
 # -- ribbon.js under node ----------------------------------------------------
 
-PNL_ROW1 = ["Monthly P&L", "Entity:", "ZZE", "", "Year:", 2024]
+def _row1(cells):
+    """Row 1 of a shipped template's cell map, as a list of cell values."""
+    row = []
+    for cell in cells:
+        m = re.fullmatch(r"([A-Z])1", cell["range"])
+        if not m:
+            continue
+        col = ord(m.group(1)) - ord("A")
+        while len(row) <= col:
+            row.append("")
+        row[col] = (cell.get("values") or cell.get("formulas"))[0][0]
+    return row
+
+
+# Row 1 as the shipped templates paint it, so the G1 / J1 the docs promise
+# follows report_compiler, not a copy of it.
+PNL_ROW1 = _row1(report_compiler.build_cell_map("pnl_monthly", "ZZE", 2024,
+                                                accounts=[("ZZ4000", "ZZ Sales")])["cells"])
+TB_ROW1 = _row1(report_compiler.build_trial_balance_long_map("ZZE", 2024, [], 1, 12)["cells"])
 PNL_FORMULAS = [["Monthly P&L"], ["Account", "Jan"],
                 ["ZZ Sales", '=K.EPM("ZZE", 2024, 1, "ZZ4000")', '=K.EPM("ZZE", 2024, 2, "ZZ4000")'],
                 ["Total", "=SUM(B3:B3)"]]
@@ -177,13 +196,28 @@ def test_a_second_refresh_reuses_the_stamp_cell():
     assert stamp["value"] != "Values as of 2026-01-01 00:00 UTC"
 
 
-def test_without_sheet_calculate_the_workbook_is_recalculated_and_said_so():
-    out = _run(action="refreshSheet", active="P&L", sheetCalcSupported=False,
+def test_text_that_only_starts_like_a_stamp_is_not_overwritten():
+    row1 = PNL_ROW1 + ["Values as of last Friday, per finance"]
+    out = _run(action="refreshSheet", active="P&L",
+               sheets=[{"name": "P&L", "row1": row1, "formulas": PNL_FORMULAS}])
+    (stamp,) = out["stamps"]
+    assert stamp["col"] == 7, stamp  # H1, right of the user's G1
+
+
+def test_used_ranges_are_read_values_only():
+    # Formatting far below the data must not inflate what Excel sends back.
+    out = _run(action="refreshWorkbook", active="P&L",
                sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS}])
+    assert out["usedRangeValuesOnly"] and all(v is True for v in out["usedRangeValuesOnly"]), out
+
+
+def test_a_protected_sheet_is_reported_not_stamped_and_others_still_are():
+    out = _run(action="refreshWorkbook", active="P&L",
+               sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS},
+                       {"name": "Locked", "row1": ["x"], "formulas": PNL_FORMULAS, "protected": True}])
     assert out["completed"] == 1
-    assert out["calcs"] == [{"workbook": "Full"}], out["calcs"]
-    assert "ExcelApi 1.6" in _messages(out), out["logs"]
-    assert len(out["stamps"]) == 1
+    assert [s["sheet"] for s in out["stamps"]] == ["P&L"], out["stamps"]
+    assert "Locked (the sheet is protected)" in _messages(out), out["logs"]
 
 
 def test_not_signed_in_recalculates_nothing_and_stamps_nothing():
@@ -203,6 +237,38 @@ def test_not_signed_in_workbook_refresh_also_refuses():
     assert out["completed"] == 1
     assert out["calcs"] == [] and out["stamps"] == [] and out["snapshots"] == [], out
     assert "sign in" in _messages(out).lower()
+
+
+def test_a_server_error_is_not_reported_as_signed_out():
+    for mode in ("reject", "throw"):
+        out = _run(action="refreshSheet", whoami=mode, active="P&L",
+                   sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS}])
+        assert out["completed"] == 1, (mode, out)
+        assert out["calcs"] == [] and out["stamps"] == [], (mode, out)
+        msg = _messages(out)
+        assert "could not reach" in msg and "not signed in" not in msg, (mode, out["logs"])
+
+
+def test_a_second_click_while_running_is_refused_and_both_complete():
+    out = _run(action="refreshSheet", clicks=2, active="P&L",
+               sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS}])
+    assert out["completed"] == 2, out
+    assert len(out["calcs"]) == 1, out["calcs"]
+    assert "already running" in _messages(out), out["logs"]
+
+
+def test_a_click_after_a_failed_one_runs():
+    out = _run(action="refreshSheet", clicks=2, settleBetweenClicks=True, excelRunFailCount=1,
+               active="P&L", sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS}])
+    assert out["completed"] == 2, out
+    assert len(out["stamps"]) == 1, out
+    assert "already running" not in _messages(out)
+
+
+def test_the_pane_can_see_whether_the_ribbon_is_bound():
+    out = _run(action="rememberSnapshot", params=TB_PARAMS)
+    assert out["associatedFlag"] is True
+    assert "ribbon=" in _read("index.html")
 
 
 def test_a_failure_inside_excel_still_completes_the_event():
@@ -231,7 +297,7 @@ def test_a_sheet_without_konsolidat_data_is_recalculated_but_not_stamped():
 
 
 def test_refresh_sheet_on_a_snapshot_sheet_snapshots_it_again():
-    out = _run(action="refreshSheet", active="TB", snapshots={"TB": TB_PARAMS},
+    out = _run(action="refreshSheet", active="TB", snapshots={"TB": TB_PARAMS}, snapshotRow1=TB_ROW1,
                sheets=[{"name": "TB", "row1": ["old"], "formulas": [["old"]]}])
     assert out["completed"] == 1
     assert out["snapshots"] == ["TB"], out
@@ -251,7 +317,7 @@ def test_a_failed_snapshot_is_reported_and_not_stamped():
 
 
 def test_refresh_workbook_resnapshots_recalculates_and_stamps_every_sheet():
-    out = _run(action="refreshWorkbook", active="P&L", snapshots={"TB": TB_PARAMS},
+    out = _run(action="refreshWorkbook", active="P&L", snapshots={"TB": TB_PARAMS}, snapshotRow1=TB_ROW1,
                sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS},
                        {"name": "TB", "row1": ["old"], "formulas": [["old"]]},
                        {"name": "Notes", "row1": ["hello"], "formulas": [["hello"]]}])

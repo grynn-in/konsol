@@ -39,13 +39,15 @@ const out = {
   saves: 0,           // settings.saveAsync calls
   active: null,       // active sheet after the command
   registered: [],     // Office.actions.associate names
+  usedRangeValuesOnly: [],  // the valuesOnly argument of each getUsedRangeOrNullObject
+  associatedFlag: null,     // window.konsolRibbonAssociated
   result: null,
   error: null,
 };
 
 const sheets = {};
 for (const s of input.sheets || []) {
-  sheets[s.name] = { name: s.name, row1: (s.row1 || []).slice(), formulas: s.formulas || [] };
+  sheets[s.name] = { name: s.name, row1: (s.row1 || []).slice(), formulas: s.formulas || [], protected: !!s.protected };
 }
 let active = input.active || (input.sheets && input.sheets[0] && input.sheets[0].name);
 const store = {};
@@ -77,7 +79,9 @@ function sheetProxy(name) {
     load() { return this; },
     activate() { active = name; },
     calculate(markAllDirty) { out.calcs.push({ sheet: name, markAllDirty }); },
-    getUsedRangeOrNullObject() {
+    protection: { protected: !!(sheet && sheet.protected) },
+    getUsedRangeOrNullObject(valuesOnly) {
+      out.usedRangeValuesOnly.push(valuesOnly);
       const f = sheet.formulas;
       return { isNullObject: !f.length, formulas: f, load() { return this; } };
     },
@@ -123,6 +127,7 @@ function makeContext() {
 }
 
 const registered = {};
+let excelRunFailures = input.excelRunFailCount || 0;
 const context = {
   Promise,
   JSON,
@@ -135,10 +140,16 @@ const context = {
   console,
   Error,
   isFinite,
+  setTimeout,
+  clearTimeout,
   Excel: {
     CalculationType: { full: "Full", recalculate: "Recalculate" },
     run(cb) {
       if (input.excelRunThrows) return Promise.reject(new Error("Excel.run failed (stub)"));
+      if (excelRunFailures > 0) {
+        excelRunFailures -= 1;
+        return Promise.reject(new Error("Excel.run failed (stub)"));
+      }
       return Promise.resolve().then(() => cb(makeContext()));
     },
   },
@@ -163,7 +174,11 @@ const context = {
       },
     },
   },
-  konsolWhoami: () => Promise.resolve(input.user === undefined ? "zz@example.com" : input.user),
+  konsolWhoami: () => {
+    if (input.whoami === "throw") throw new Error("whoami threw (stub)");
+    if (input.whoami === "reject") return Promise.reject(new Error("HTTP 502 (stub)"));
+    return Promise.resolve(input.user === undefined ? "zz@example.com" : input.user);
+  },
   konsolLog: (level, message) => { out.logs.push([level, message]); },
   konsolidatSnapshotReport(params) {
     const name = params.sheet_name;
@@ -174,7 +189,7 @@ const context = {
     // the template's row 1 and data, and activate it.
     sheets[name] = {
       name,
-      row1: ["Trial Balance (snapshot)", "Entity:", params.entity, "", "Year:", params.year, "", "Periods:", "1–12"],
+      row1: (input.snapshotRow1 || ["Trial Balance (snapshot)"]).slice(),
       formulas: [["Trial Balance (snapshot)"], ["x"]],
     };
     active = name;
@@ -195,7 +210,10 @@ try {
   } else {
     const fn = registered[input.action];
     if (!fn) throw new Error("not associated: " + input.action);
-    fn({ completed() { out.completed += 1; } });
+    for (let i = 0; i < (input.clicks || 1); i += 1) {
+      fn({ completed() { out.completed += 1; } });
+      if (input.settleBetweenClicks) await settle();
+    }
     await settle();
   }
 } catch (err) {
@@ -203,4 +221,5 @@ try {
 }
 out.settings = store.konsolSnapshots === undefined ? null : store.konsolSnapshots;
 out.active = active;
+out.associatedFlag = context.konsolRibbonAssociated === undefined ? null : context.konsolRibbonAssociated;
 process.stdout.write(JSON.stringify(out));
