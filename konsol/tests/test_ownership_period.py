@@ -726,6 +726,33 @@ def test_f8_a_root_node_takes_no_period():
         "construction and an Ownership Period on it would never be applied.")
 
 
+# --- the warehouse's Date range, by behaviour (was a source grep in
+# test_consolidation.py; PR #459 finding J) ------------------------------------
+
+def test_a_date_outside_the_warehouse_range_is_refused_by_sentence_at_both_bounds():
+    """ClickHouse Date holds 1970-01-01..2149-06-06 and clamps silently, so a
+    period dated outside it would say one thing in Frappe and another in the
+    warehouse. The range is fiscal_structure_model's, imported, never a
+    copy (PR #449 finding 7)."""
+    from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
+    module = _whole_site()
+    assert (module._CH_DATE_MIN, module._CH_DATE_MAX) == (MIN_DATE.isoformat(), MAX_DATE.isoformat())
+    for field, value in (("effective_date", "1900-01-01"), ("end_date", "2200-01-01"),
+                         ("effective_date", "1969-12-31"), ("end_date", "2149-06-07")):
+        doc = module.OwnershipPeriod(before=None, **_declared(**{"effective_date": "2024-01-01", field: value}))
+        sentence = _refusal(doc, "_validate_dates_representable")
+        assert sentence.startswith(f"{field} {value} is outside the range the warehouse can store "
+                                   f"({MIN_DATE.isoformat()} to {MAX_DATE.isoformat()})"), sentence
+        assert "silently clamped" in sentence
+    # both bounds themselves are representable
+    module.OwnershipPeriod(before=None, **_declared(effective_date=MIN_DATE.isoformat(),
+                                                    end_date=MAX_DATE.isoformat()))._validate_dates_representable()
+    # the old "open" sentinel is translated to blank, not refused
+    doc = module.OwnershipPeriod(before=None, **_declared(end_date="9999-12-31"))
+    doc._validate_dates_representable()
+    assert doc.end_date is None
+
+
 # --- #429: proportional is offered, and the warehouse computes it as full ------
 #
 # gold_consolidated_trial_balance excludes only ``equity`` and ``none`` and
@@ -772,7 +799,7 @@ def _node_lookup(nodes, calls):
     or by name. Anything else answers None."""
 
     def get_value(doctype, filters, fields=None, as_dict=False, **k):
-        calls.append(("get_value", doctype, filters))
+        calls.append(("get_value", doctype, filters, fields))
         if doctype != "Consolidation Group":
             return None
         if isinstance(filters, dict):
@@ -1385,21 +1412,32 @@ def test_117b_validate_checks_the_cycle_after_the_owner_and_before_the_windows()
 def test_117_node_by_key_is_the_one_node_by_key_read_the_deals_share():
     """PR #449 review, finding 9: Business Combination and Business Disposal
     each copied ``_NODE_FIELDS`` and their own node lookup. One definition:
-    they import ``node_by_key`` from here, and the name list lives here only."""
-    module, _, _ = _site([], nodes=_TREE)
+    they import ``node_by_key`` from here, and the name list lives here only
+    (the one structural check kept, PR #459 finding J); what the read sends
+    is asserted on the stubbed ``get_value`` call, not on source text."""
+    module, _, calls = _site([], nodes=_TREE)
     node = module.node_by_key("ZZG", "ZZ01")
     assert (node.name, node.consolidation_group, node.data_area_id, node.parent_consolidation_group) == (
         "CG-ZZG-ZZ01", "ZZG", "ZZ01", "CG-ZZG-")
+    assert calls[-1] == ("get_value", "Consolidation Group",
+                         {"consolidation_group": "ZZG", "data_area_id": "ZZ01"}, module._NODE_FIELDS)
     assert module.node_by_key("ZZSUB", None).name == "CG-ZZSUB-", "a blank entity is the group's own node"
+    assert calls[-1][2] == {"consolidation_group": "ZZSUB", "data_area_id": ["is", "not set"]}
     assert module.node_by_key("ZZSUB", "").name == "CG-ZZSUB-"
     assert module.node_by_key("ZZ_TYPO", "ZZ01") is None
-    assert "node_by_key(" in _method_body(_src(), "_node")
-    for deal in ("business_combination", "business_disposal"):
-        with open(os.path.join(APP_DIR, "consolidation", "doctype", deal, deal + ".py")) as f:
-            src = f.read()
-        assert "_NODE_FIELDS" not in src, f"{deal} copies the node field list"
-        assert "import node_by_key" in src or "node_by_key," in src, f"{deal} does not import node_by_key"
-        assert "node_by_key(self.consolidation_group" in src, deal
+    # the document's own node read is that read: same doctype, filters and fields
+    calls.clear()
+    owned = module.OwnershipPeriod(before=None, **_declared())._node()
+    assert owned.name == "CG-ZZG-ZZ01"
+    assert calls == [("get_value", "Consolidation Group",
+                      {"consolidation_group": "ZZG", "data_area_id": "ZZ01"}, module._NODE_FIELDS)]
+    # one definition of the node field list across the three controllers
+    defined_in = []
+    for ctl in ("ownership_period", "business_combination", "business_disposal"):
+        with open(os.path.join(APP_DIR, "consolidation", "doctype", ctl, ctl + ".py")) as f:
+            if "\n_NODE_FIELDS = " in f.read():
+                defined_in.append(ctl)
+    assert defined_in == ["ownership_period"], defined_in
 
 
 def test_117f_owner_refusal_is_a_module_function_the_validate_uses():
