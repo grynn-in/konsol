@@ -116,6 +116,38 @@ def test_budget_forecast_configs_are_layered():
     assert not C["variance"].get("has_layer")
 
 
+def test_every_hierarchy_scenario_is_a_shipped_dataset_that_agrees():
+    """konsol#106's acceptance, held statically: a read of any scenario word
+    the hierarchy path knows gives the same answer, or the same error, in flat
+    mode. Flat reads resolve the word through the Dataset registry, so every
+    key of HIERARCHY_SCENARIO_CONFIG must ship a Dataset under that
+    scenario_key, with the same layer flag and at least the measures the
+    hierarchy config offers. forecast was the one that did not: flat refused
+    it with "Invalid scenario" while hierarchy mode answered. Decided option A,
+    a seeded forecast Dataset (Deepak Pai, 7 Nov 2026).
+
+    has_scenario_id is compared only where the config filters the plain
+    ``scenario_id`` column. variance filters ``budget_scenario_id`` instead
+    (konsol#214), which its Dataset does not describe as a scenario column.
+    """
+    from konsol.hierarchy_query import HIERARCHY_SCENARIO_CONFIG as C
+    from konsol.tests.shipped import shipped
+    by_key = {}
+    for row in shipped("dataset.json"):
+        by_key.setdefault(row["scenario_key"], []).append(row)
+    for sc, cfg in C.items():
+        rows = by_key.get(sc, [])
+        assert len(rows) == 1, (
+            f"hierarchy scenario {sc!r} has {len(rows)} shipped Dataset(s): a flat "
+            f"read of it is refused with 'Invalid scenario' while hierarchy mode answers")
+        ds = rows[0]
+        assert bool(ds.get("has_layer")) == bool(cfg.get("has_layer")), sc
+        if not cfg.get("scenario_column"):
+            assert bool(ds.get("has_scenario_id")) == bool(cfg.get("has_scenario_id")), sc
+        own = {m["measure"] for m in ds["fact_measures"]}
+        assert cfg["measures"] <= own, (sc, cfg["measures"] - own)
+
+
 def test_hierarchy_query_gates_layer_filter():
     src = _read("hierarchy_query.py")
     # layer threaded through the group key
@@ -649,7 +681,8 @@ def _hierarchy_api(registry):
     """(api, the requests it hands the query layer) for hierarchy reads.
 
     ``registry`` maps scenario_key → the Dataset's default_measure. A scenario
-    absent from it has no Dataset at all, as forecast has none (konsol#106);
+    absent from it has no Dataset at all (the tests use a made-up ``zz_nosuch``;
+    forecast, which once served this purpose, has one since konsol#106);
     a blank value is a Dataset that declares no default. Those are the two
     ways the registry can answer nothing, and neither is a licence to guess.
     """
@@ -707,7 +740,7 @@ def test_default_measure_for_scenario_answers_the_registry():
     # the two ways the registry answers nothing: a Dataset declaring no
     # default, and no Dataset for the scenario at all
     assert api.default_measure_for_scenario("zz_undeclared") == ""
-    assert api.default_measure_for_scenario("forecast") == ""
+    assert api.default_measure_for_scenario("zz_nosuch") == ""
 
 
 def test_a_blank_measure_on_a_hierarchy_read_takes_the_datasets_default():
@@ -726,20 +759,22 @@ def test_a_named_measure_on_a_hierarchy_read_is_not_overridden():
 
 
 def test_a_hierarchy_read_of_a_scenario_with_no_dataset_is_refused():
-    """Deliberate, and Deepak's to change: forecast has no Dataset row, and
-    whether it is a scenario of its own is konsol#106, still open. A forecast
-    hierarchy read naming no measure ends in an error that names the scenario
-    — it must not fall back to a budget measure."""
+    """A hierarchy read of a scenario no Dataset is registered for, naming no
+    measure, ends in an error that names the scenario; it must not fall back
+    to another scenario's measure. The scenario here is a made-up one: this
+    test used forecast until konsol#106 was decided (option A, a seeded
+    forecast Dataset, Deepak Pai, 7 Nov 2026), and the refusal outlives that
+    decision for any scenario that genuinely has none."""
     api, seen = _hierarchy_api({"actuals": "period_debit"})
     try:
         _run_api(api, api.epm_value, "ZZ01", 2026, "FY", "ZZ4010",
-                 scenario="forecast", node="ZZ_N")
+                 scenario="zz_nosuch", node="ZZ_N")
     except _Invalid as e:
         err = str(e)
     else:
-        raise AssertionError("a forecast hierarchy read with no measure was not refused")
+        raise AssertionError("a hierarchy read of a scenario with no Dataset and no measure was not refused")
     assert seen == [], "the read reached the query layer"
-    assert "forecast" in err, err
+    assert "zz_nosuch" in err, err
     # Both causes, offered as alternatives: a flat "no Dataset is registered"
     # would be false for a scenario that has one which declares no default.
     assert "either no Dataset is registered" in err, err
@@ -765,7 +800,7 @@ def test_epm_batch_fills_hierarchy_rows_and_refuses_one_row_at_a_time():
         {"entity": "ZZ01", "year": 2026, "period": 1, "account": "ZZ4010",
          "hierarchy_node": "ZZ_N"},
         {"entity": "ZZ01", "year": 2026, "period": 1, "account": "ZZ4011",
-         "hierarchy_node": "ZZ_N", "scenario": "forecast"},
+         "hierarchy_node": "ZZ_N", "scenario": "zz_nosuch"},
     ]
     result = _run_api(api, api.epm_batch)
     # the readable row is queried with the Dataset's default; the other is not
@@ -773,7 +808,7 @@ def test_epm_batch_fills_hierarchy_rows_and_refuses_one_row_at_a_time():
     assert [r["measure"] for r in seen] == ["period_debit"]
     first, second = result["errors"]
     assert first is None, first
-    assert "forecast" in second, second
+    assert "zz_nosuch" in second, second
     assert result["values"][1] is None
 
 

@@ -256,3 +256,45 @@ def test_every_seeded_select_value_is_one_its_doctype_allows():
                 problems += _select_problems(row["doctype"], row, where)
     assert not problems, "\n".join(problems)
 
+
+
+# --- konsol#106: forecast is its own scenario, answered by the registry ------
+
+def _seeded_dataset(scenario_key):
+    rows = [r for r in _rows(DEFAULTS)["dataset.json"]
+            if r.get("scenario_key") == scenario_key]
+    assert len(rows) == 1, (
+        f"{len(rows)} seeded Datasets carry scenario_key {scenario_key!r}")
+    return rows[0]
+
+
+def test_a_forecast_dataset_is_seeded_beside_budget():
+    """Decided by Deepak Pai on 7 Nov 2026 (konsol#106, option A): forecast is
+    a scenario word of its own, answered by the Dataset registry like every
+    other scenario. Without this row a flat ``"forecast"`` read was refused
+    ("Invalid scenario") while a hierarchy read of the same cell answered,
+    because HIERARCHY_SCENARIO_CONFIG carried forecast and the registry did
+    not. Option B (drop the word; a forecast is a budget read with a forecast
+    Scenario id) was rejected.
+
+    The row reads the budget table with budget's flags and measures: which
+    Scenario ids count as forecast is the Scenario record's business
+    (``scenario_type``), not the cell's. It is seeded create-if-missing like
+    the rest of the semantic model (konsol#230), so a site may rename or
+    retire it.
+    """
+    budget = _seeded_dataset("budget")
+    forecast = _seeded_dataset("forecast")
+    assert forecast["doctype"] == "Dataset"
+    assert forecast["clickhouse_table"] == budget["clickhouse_table"] \
+        == "epm_gold.gold_spread_budget"
+    assert forecast["dbt_model"] == budget["dbt_model"]
+    assert forecast["has_layer"] == 1
+    assert forecast["has_scenario_id"] == 1
+    assert forecast["default_measure"] == "period_amount"
+    assert forecast["status"] == "Published"
+    assert not forecast.get("generates_source")
+
+    def measures(row):
+        return sorted(m["measure"] for m in row["fact_measures"])
+    assert measures(forecast) == measures(budget) == ["annual_amount", "period_amount"]

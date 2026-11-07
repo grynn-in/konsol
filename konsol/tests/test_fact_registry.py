@@ -343,6 +343,7 @@ def test_default_measure_is_checked_during_migrate_too():
 SHIPPED_DEFAULT_MEASURES = {
     "gl_journal_entries": "period_net_amount",
     "budget_input": "period_amount",
+    "forecast_input": "period_amount",  # konsol#106, 7 Nov 2026
     "variance_analysis": "variance_abs",
     "cashflow": "cash_flow_amount",
     "consolidated": "consolidated_amount",
