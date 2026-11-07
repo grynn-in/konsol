@@ -72,7 +72,8 @@ def _frappe_stub(conf, user_row, roles, session_counts):
     frappe.rate_limiter = rate_limiter   # installed in sys.modules by _installed(), restored after
     frappe.throw = throw
     frappe.conf = dict(conf)
-    frappe.db = types.SimpleNamespace(get_value=get_value, sql=sql, set_value=calls.rec("set_value"))
+    frappe.db = types.SimpleNamespace(get_value=get_value, sql=sql, set_value=calls.rec("set_value"),
+                                      commit=calls.rec("commit"))
     frappe.clear_document_cache = calls.rec("clear_document_cache")
     frappe.clear_cache = calls.rec("clear_cache")
     frappe.get_roles = lambda user=None: calls.append(("get_roles", (user,), {})) or list(roles)
@@ -324,7 +325,9 @@ def test_end_sessions_with_no_user_does_nothing():
 
 
 def test_end_sessions_refuses_to_spin_when_nothing_is_removed():
-    module, frappe = _load({"demo_user": DEMO}, session_counts=[5, 5])
+    # one level count is tolerated (a login racing the sweep keeps the whole-table count from falling);
+    # a second one is a real stall and raises. Counts 5, 5, 5: two passes, then the error.
+    module, frappe = _load({"demo_user": DEMO}, session_counts=[5, 5, 5])
     with _installed(frappe):
         try:
             module.end_sessions()
@@ -332,7 +335,15 @@ def test_end_sessions_refuses_to_spin_when_nothing_is_removed():
             assert DEMO in str(e)
         else:
             raise AssertionError("end_sessions looped on a count that did not fall")
-    assert len([c for c in frappe.calls if c[0] == "clear_sessions"]) == 1
+    assert len([c for c in frappe.calls if c[0] == "clear_sessions"]) == 2
+
+
+def test_end_sessions_tolerates_one_racing_login():
+    # 5 -> 5 (a login landed during the pass) -> 0: no error, and the two removals are counted
+    module, frappe = _load({"demo_user": DEMO}, session_counts=[5, 5, 0])
+    with _installed(frappe):
+        assert module.end_sessions() == 5
+    assert len([c for c in frappe.calls if c[0] == "clear_sessions"]) == 2
 
 
 # ---- switch_off / switch_on --------------------------------------------------------
