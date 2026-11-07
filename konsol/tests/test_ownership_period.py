@@ -132,13 +132,19 @@ class _Refused(Exception):
 
 
 def _getdate(value):
+    """frappe.utils.getdate, near enough: a date, a datetime, an ISO date or
+    datetime string, or the ``dd-mm-yyyy`` a form may post."""
     if value in (None, ""):
         return None
     if isinstance(value, datetime.datetime):
         return value.date()
     if isinstance(value, datetime.date):
         return value
-    return datetime.date.fromisoformat(str(value)[:10])
+    text = str(value)
+    try:
+        return datetime.date.fromisoformat(text[:10])
+    except ValueError:
+        return datetime.datetime.strptime(text[:10], "%d-%m-%Y").date()
 
 
 def _load(flags, next_start=None, first_period_affected=None, gate=None):
@@ -877,6 +883,45 @@ def test_117_a_new_row_is_named_owner_owned_date_so_two_sub_groups_of_one_owner_
                   effective_date="2026-07-01") == "OP-ZZ01-ZZ03-2026-07-01"
     # the method names the row; no `format:` autoname that could drop a field
     assert "autoname" not in _meta(), _meta().get("autoname")
+
+
+def test_117_autoname_writes_the_date_as_iso_whatever_shape_it_was_posted_in():
+    """PR #459 re-review finding F: the name took ``effective_date`` as typed,
+    so a posted ``dd-mm-yyyy`` or a value with a time component gave a
+    differently shaped name for the same link and date, and the collision
+    guard the name is compared no longer held."""
+    module = _load(_no_flags())
+    for posted in (datetime.date(2026, 7, 1), datetime.datetime(2026, 7, 1, 0, 0), "2026-07-01",
+                   "2026-07-01 00:00:00", "01-07-2026"):
+        assert _named(module, owner_label="ZZG", consolidation_group="ZZSUB", data_area_id=None,
+                      effective_date=posted) == "OP-ZZG-ZZSUB-2026-07-01", posted
+
+
+def test_117_autoname_refuses_by_sentence_when_the_owner_has_no_label():
+    """Finding F: a blank ``owner_label`` gave ``OP-None-…``. The owner is
+    resolved first; when it still has no label (the Owner Node names no node,
+    or is blank and the owned node has no tree parent) the save is refused by
+    sentence, never named after None."""
+    module = _whole_site()
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, owner_node="CG-ZZ_TYPO-",
+                                                          owner_label=None, owner_group=None))
+    assert _refusal(doc, "autoname") == (
+        "Cannot name this Ownership Period: Owner Node CG-ZZ_TYPO- is not a Consolidation Group "
+        "node, so there is no owner label to name it by. Choose the node that holds the share.")
+    assert doc.get("name") is None
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, consolidation_group="ZZ_TYPO",
+                                                          owner_node=None, owner_label=None, owner_group=None))
+    assert _refusal(doc, "autoname") == (
+        "Cannot name this Ownership Period: it has no Owner Node and `ZZ01` has no tree parent "
+        "to pre-fill one from, so there is no owner label to name it by. Choose the node that holds the share.")
+    # a label the owner resolves to on the spot is used
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, owner_node="CG-ZZG-ZZ02",
+                                                          owner_label=None, owner_group=None))
+    doc.autoname()
+    assert doc.name == "OP-ZZ02-ZZ01-2024-01-01"
+    # and no effective date is refused too, never named after today
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, effective_date=None))
+    assert "Effective Date" in _refusal(doc, "autoname")
 
 
 def test_117_the_field_map_names_the_owner_columns_after_data_area_id():
