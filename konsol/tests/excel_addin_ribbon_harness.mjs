@@ -189,8 +189,8 @@ const context = {
     // the template's row 1 and data, and activate it.
     sheets[name] = {
       name,
-      row1: (input.snapshotRow1 || ["Trial Balance (snapshot)"]).slice(),
-      formulas: [["Trial Balance (snapshot)"], ["x"]],
+      row1: (input.snapshotRow1 || ["Entity TB — local currency, account level (pre-consolidation)"]).slice(),
+      formulas: [["Entity TB — local currency, account level (pre-consolidation)"], ["x"]],
     };
     active = name;
     return Promise.resolve({ sheet_name: name, row_count: 1 });

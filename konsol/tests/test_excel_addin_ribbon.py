@@ -233,7 +233,7 @@ def test_not_signed_in_workbook_refresh_also_refuses():
     out = _run(action="refreshWorkbook", user=None, active="P&L",
                snapshots={"TB": TB_PARAMS},
                sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS},
-                       {"name": "TB", "row1": ["Trial Balance (snapshot)"], "formulas": [["x"]]}])
+                       {"name": "TB", "row1": ["Entity TB — local currency, account level (pre-consolidation)"], "formulas": [["x"]]}])
     assert out["completed"] == 1
     assert out["calcs"] == [] and out["stamps"] == [] and out["snapshots"] == [], out
     assert "sign in" in _messages(out).lower()
