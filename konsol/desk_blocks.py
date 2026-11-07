@@ -19,11 +19,14 @@ import frappe
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "consolidation", "custom_html_block")
 
 #: (block name, folder, roles that see it). The roles are the ones the
-#: block's method admits (overview_api.get_checklist), so Frappe hides the
+#: block's method admits (overview_api.get_checklist; for the Handbook,
+#: handbook.get_handbook, handbook_model.READER_ROLES), so Frappe hides the
 #: block from anyone else (desktop.py is_custom_block_permitted).
 BLOCKS = (
     ("Konsol Close Checklist", "konsol_close_checklist",
      ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")),
+    ("Konsol Handbook", "konsol_handbook",
+     ("EPM Admin", "EPM Analyst", "EPM User", "Entity Accountant", "System Manager")),
 )
 
 

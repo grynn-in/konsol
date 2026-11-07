@@ -1,0 +1,155 @@
+{
+ "actions": [],
+ "autoname": "KGP-.#####",
+ "creation": "2026-11-07 15:00:00.000000",
+ "description": "A page of this site's own in the Konsol Handbook, beside the product guide that ships with Konsol (konsol#407, Handbook option C). EPM Admin writes it; every Handbook reader sees it once published.",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "page_tab",
+  "page_section",
+  "title",
+  "section",
+  "column_break_page",
+  "audience",
+  "sort_order",
+  "published",
+  "content_tab",
+  "body_section",
+  "body"
+ ],
+ "fields": [
+  {
+   "fieldname": "page_tab",
+   "fieldtype": "Tab Break",
+   "label": "Page"
+  },
+  {
+   "fieldname": "page_section",
+   "fieldtype": "Section Break",
+   "label": "Page"
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title",
+   "reqd": 1,
+   "in_list_view": 1,
+   "bold": 1,
+   "description": "What the reader looks for, for example \"Our close calendar\"."
+  },
+  {
+   "fieldname": "section",
+   "fieldtype": "Data",
+   "label": "Section",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The heading the Handbook lists this page under. Pages with the same section are listed together; the product guide's sections are Start here and Concepts."
+  },
+  {
+   "fieldname": "column_break_page",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "audience",
+   "fieldtype": "Select",
+   "label": "Audience",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "options": "Everyone\nEntity Accountant\nGroup Accountant\nClose Lead\nViewer",
+   "description": "Who the page is for. The Handbook's audience filter shows a role's pages and Everyone's. It is a reading aid, not a permission: every Handbook reader can open every published page."
+  },
+  {
+   "fieldname": "sort_order",
+   "fieldtype": "Int",
+   "label": "Sort Order",
+   "non_negative": 1,
+   "description": "Lower first among this site's pages; pages with the same number are listed by title. This site's pages are listed after the product's."
+  },
+  {
+   "fieldname": "published",
+   "fieldtype": "Check",
+   "label": "Published",
+   "default": "0",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Shown in the Konsol Handbook. Until it is ticked, only an EPM Admin or System Manager can open the page."
+  },
+  {
+   "fieldname": "content_tab",
+   "fieldtype": "Tab Break",
+   "label": "Content"
+  },
+  {
+   "fieldname": "body_section",
+   "fieldtype": "Section Break",
+   "label": "Body"
+  },
+  {
+   "fieldname": "body",
+   "fieldtype": "Markdown Editor",
+   "label": "Body",
+   "reqd": 1,
+   "description": "Markdown. Scripts, styles, forms, frames and event attributes are removed before it is shown. Links may be http, https, mailto or a Desk route such as /desk/period-close."
+  }
+ ],
+ "links": [],
+ "modified": "2026-11-07 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Consolidation",
+ "name": "Konsol Guide Page",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "share": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "share": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "print": 1
+  },
+  {
+   "role": "Entity Accountant",
+   "read": 1,
+   "report": 1,
+   "print": 1
+  }
+ ],
+ "search_fields": "section,audience",
+ "show_title_field_in_link": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "title",
+ "track_changes": 1
+}

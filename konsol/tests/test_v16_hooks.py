@@ -18,6 +18,7 @@ HOOKS = {
     "konsol.entity_permissions.has_entity_doc_permission",
     "konsol.entity_permissions.has_close_event_permission",
     "konsol.tb_bulk.has_upload_permission",
+    "konsol.handbook.has_guide_page_permission",
 }
 
 
@@ -90,6 +91,25 @@ def test_upload_hook_returns_exact_bools():
         doc = types.SimpleNamespace(owner=owner, report=report)
         got = env["has_upload_permission"](doc, "u@example.com")
         assert got is expected, f"allowed={allowed!r} owner={owner} returned {got!r}"
+
+
+def test_guide_page_hook_returns_exact_bools():
+    """konsol#407 phase 3: an editor reads every Konsol Guide Page, anyone
+    else a published one only."""
+    from konsol import handbook_model
+    cases = [
+        (["EPM Admin"], 0, True),
+        (["System Manager"], None, True),
+        (["EPM User"], 1, True),
+        (["EPM User"], 0, False),
+        (["Entity Accountant"], None, False),
+    ]
+    for roles, published, expected in cases:
+        env = {"M": handbook_model,
+               "frappe": types.SimpleNamespace(get_roles=lambda user=None, r=roles: r)}
+        _load_functions("handbook.py", ["has_guide_page_permission"], env)
+        got = env["has_guide_page_permission"]({"published": published}, "u@example.com")
+        assert got is expected, f"roles={roles} published={published!r} returned {got!r}"
 
 
 def test_apps_screen_hook_points_at_a_shipped_logo_and_the_close_app():

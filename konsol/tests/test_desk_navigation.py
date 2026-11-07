@@ -47,6 +47,16 @@ def _reports():
     return names
 
 
+def _pages():
+    names = set()
+    for path in glob.glob(os.path.join(APP_DIR, "*", "page", "*", "*.json")):
+        with open(path) as f:
+            d = json.load(f)
+        if d.get("doctype") == "Page":
+            names.add(d["name"])
+    return names
+
+
 SIDEBAR = "consolidation/sidebar/konsol/konsol.json"
 WORKSPACE = "consolidation/workspace/konsol/konsol.json"
 
@@ -95,10 +105,10 @@ def test_no_dock_ships():
 
 
 def test_workspace_shortcuts_and_cards_resolve():
-    doctypes, reports = _doctypes(), _reports()
+    doctypes, reports, pages = _doctypes(), _reports(), _pages()
     ws = _load(WORKSPACE)
     for s in ws["shortcuts"]:
-        pool = doctypes if s["type"] == "DocType" else reports
+        pool = {"DocType": doctypes, "Page": pages}.get(s["type"], reports)
         assert s["link_to"] in pool, f"workspace shortcut to missing {s['type']} {s['link_to']!r}"
     blocks = json.loads(ws["content"])
     shortcut_names = {s["label"] for s in ws["shortcuts"]}
