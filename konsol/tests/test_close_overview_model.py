@@ -248,6 +248,17 @@ def test_checklist_counts_only_ticked_lines_as_done():
     assert result["done"] == len(M.CHECKLIST) - 2
 
 
+def test_checklist_a_count_the_caller_cannot_read_is_unknown_not_zero():
+    """The reader passes None when frappe.has_permission refuses the doctype:
+    the line says so, and never shows a tick from a count it did not read."""
+    lines = {l["code"]: l for l in M.checklist(**_inputs(journals_open=None,
+                                                         equity_pending=None))["lines"]}
+    assert lines["journals"]["state"] == "unknown"
+    assert lines["journals"]["detail"] == "You cannot read Consolidation Journals"
+    assert lines["equity_rates"]["state"] == "unknown"
+    assert lines["equity_rates"]["detail"] == "You cannot read Historical Equity Rates"
+
+
 def test_checklist_with_no_current_period():
     result = M.no_period("Declare the first close period.")
     assert result == {"title": "No current period", "reason": "Declare the first close period.",
