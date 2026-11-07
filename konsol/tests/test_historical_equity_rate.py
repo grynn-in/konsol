@@ -27,12 +27,13 @@ def test_file_exists():
     assert os.path.isfile(PY)
 
 
-def test_validate_calls_both_guards():
+def test_validate_calls_all_three_guards():
     tree = ast.parse(_src())
     fns = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     assert "validate" in fns
     assert "_validate_positive_rate" in fns
     assert "_validate_references" in fns  # #92 finding #3
+    assert "_validate_to_currency" in fns  # konsol#374
 
 
 def test_positive_rate_guard_present():
@@ -96,9 +97,13 @@ class Refused(Exception):
 
 
 def _frappe(groups=(), entities=None, accounts=()):
-    """A stub frappe whose db.exists answers from the three registries."""
+    """A stub frappe whose db.exists answers from the three registries, and
+    whose db.get_value knows each group's root node (USD, no parent) for the
+    To Currency check (konsol#374)."""
     frappe = types.ModuleType("frappe")
     frappe.ValidationError = type("ValidationError", (Exception,), {})
+    frappe.MandatoryError = frappe.ValidationError
+    frappe.whitelist = lambda *a, **k: (lambda f: f)
 
     def throw(msg, exc=None, *a, **k):
         raise Refused(msg)
@@ -122,9 +127,18 @@ def _frappe(groups=(), entities=None, accounts=()):
                 return True
         return False
 
+    def get_value(doctype, filters=None, fieldname=None, as_dict=False, **k):
+        if doctype == "Consolidation Group" and isinstance(filters, dict):
+            group = filters.get("consolidation_group")
+            if group in groups:
+                return types.SimpleNamespace(
+                    name=f"CG-{group}-", consolidation_group=group,
+                    parent_consolidation_group=None, reporting_currency="USD")
+        return None
+
     frappe.throw = throw
     frappe._ = lambda s: s
-    frappe.db = types.SimpleNamespace(exists=exists)
+    frappe.db = types.SimpleNamespace(exists=exists, get_value=get_value)
     return frappe
 
 
@@ -174,7 +188,7 @@ def _validate(**fields):
     module = _controller(groups=GROUPS, entities=ENTITIES, accounts=ACCOUNTS)
     base = dict(doctype="Historical Equity Rate", consolidation_group=GROUPS[0],
                 data_area_id=ENTITY, main_account=ACCOUNTS[0],
-                rate_date="2026-01-31", historical_rate=0.92)
+                rate_date="2026-01-31", historical_rate=0.92, to_currency="USD")
     doc = module.HistoricalEquityRate(**dict(base, **fields))
     try:
         doc.validate()
