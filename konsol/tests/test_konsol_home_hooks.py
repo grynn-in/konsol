@@ -99,8 +99,8 @@ def _blocks(site):
     return _load("desk_blocks_under_test", "desk_blocks.py", {"frappe": frappe})
 
 
-def _current_doc(mod, **change):
-    name, folder, roles = mod.BLOCKS[0]
+def _current_doc(mod, entry, **change):
+    name, folder, roles = entry
     doc = _Doc(html=mod._read(folder, "html"), script=mod._read(folder, "js"),
                style=mod._read(folder, "css"), private=0,
                roles=[_Doc(role=r) for r in roles])
@@ -108,35 +108,55 @@ def _current_doc(mod, **change):
     return doc
 
 
+def _all_current(mod):
+    return {entry[0]: _current_doc(mod, entry) for entry in mod.BLOCKS}
+
+
+def test_the_app_ships_the_checklist_and_the_handbook():
+    mod = _blocks(_BlockSite())
+    assert [b[0] for b in mod.BLOCKS] == ["Konsol Close Checklist", "Konsol Handbook"]
+
+
 def test_install_creates_a_missing_block():
     site = _BlockSite({})
     mod = _blocks(site)
-    assert mod.install_custom_blocks() == ["Konsol Close Checklist: created"]
-    assert site.inserted == ["Konsol Close Checklist"]
+    names = [b[0] for b in mod.BLOCKS]
+    assert mod.install_custom_blocks() == ["%s: created" % n for n in names]
+    assert site.inserted == names
 
 
 def test_install_leaves_a_current_block_alone():
     mod = _blocks(_BlockSite())
-    doc = _current_doc(mod)
-    doc.save = lambda: pytest.fail("a current block was saved")
-    mod_site = _BlockSite({"Konsol Close Checklist": doc})
-    mod = _blocks(mod_site)
-    assert mod.install_custom_blocks() == ["Konsol Close Checklist: current"]
+    stored = _all_current(mod)
+    for doc in stored.values():
+        doc.save = lambda: pytest.fail("a current block was saved")
+    mod = _blocks(_BlockSite(stored))
+    assert mod.install_custom_blocks() == ["%s: current" % b[0] for b in mod.BLOCKS]
 
 
+@pytest.mark.parametrize("index", [0, 1])
 @pytest.mark.parametrize("change", [{"html": "<p>site edit</p>"}, {"script": ""},
                                     {"style": None}, {"private": 1},
                                     {"roles": [_Doc(role="EPM User")]}])
-def test_install_overwrites_a_block_that_differs(change):
+def test_install_overwrites_a_block_that_differs(index, change):
     mod = _blocks(_BlockSite())
-    doc = _current_doc(mod, **change)
+    stored = _all_current(mod)
+    entry = mod.BLOCKS[index]
+    doc = _current_doc(mod, entry, **change)
+    stored[entry[0]] = doc
     saves = []
     doc.save = lambda: saves.append(1)
-    mod = _blocks(_BlockSite({"Konsol Close Checklist": doc}))
-    assert mod.install_custom_blocks() == ["Konsol Close Checklist: updated"]
+    for other in stored.values():
+        if other is not doc:
+            other.save = lambda: pytest.fail("a current block was saved")
+    mod = _blocks(_BlockSite(stored))
+    lines = mod.install_custom_blocks()
+    assert lines[index] == "%s: updated" % entry[0]
+    assert [l for i, l in enumerate(lines) if i != index] == [
+        "%s: current" % b[0] for i, b in enumerate(mod.BLOCKS) if i != index]
     assert saves == [1]
-    assert doc.html == mod._read("konsol_close_checklist", "html") and doc.private == 0
-    assert sorted(r.role for r in doc.roles) == sorted(mod.BLOCKS[0][2])
+    assert doc.html == mod._read(entry[1], "html") and doc.private == 0
+    assert sorted(r.role for r in doc.roles) == sorted(entry[2])
 
 
 # --- overview_api --------------------------------------------------------------

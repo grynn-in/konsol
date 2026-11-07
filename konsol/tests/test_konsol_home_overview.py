@@ -133,9 +133,9 @@ def test_the_workspace_was_bumped():
 
 def test_the_checklist_block_is_on_the_workspace_and_installed():
     ws = _ws()
-    assert [b["custom_block_name"] for b in ws["custom_blocks"]] == [BLOCK]
+    assert BLOCK in [b["custom_block_name"] for b in ws["custom_blocks"]]
     blocks = [b for b in json.loads(ws["content"]) if b["type"] == "custom_block"]
-    assert [b["data"]["custom_block_name"] for b in blocks] == [BLOCK]
+    assert BLOCK in [b["data"]["custom_block_name"] for b in blocks]
     for ext in ("html", "js", "css"):
         assert os.path.isfile(os.path.join(BLOCK_DIR, "konsol_close_checklist." + ext)), ext
     install = _read(os.path.join(APP_DIR, "install.py"))

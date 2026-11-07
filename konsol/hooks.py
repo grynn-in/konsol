@@ -233,3 +233,8 @@ has_permission["Close Event"] = "konsol.entity_permissions.has_close_event_permi
 permission_query_conditions["Trial Balance Upload"] = "konsol.tb_bulk.upload_conditions"
 has_permission["Trial Balance Upload"] = "konsol.tb_bulk.has_upload_permission"
 
+# A site's own Handbook page (konsol#407 phase 3): an editor (EPM Admin,
+# System Manager) reads drafts; every other reader sees published pages only.
+permission_query_conditions["Konsol Guide Page"] = "konsol.handbook.guide_page_conditions"
+has_permission["Konsol Guide Page"] = "konsol.handbook.has_guide_page_permission"
+
