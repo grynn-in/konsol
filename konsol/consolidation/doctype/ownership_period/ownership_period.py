@@ -196,9 +196,18 @@ class OwnershipPeriod(Document):
 
     def before_insert(self):
         """Frappe v16 names a document after ``before_insert`` and before
-        ``validate``, so the owner (and ``owner_label``, which the autoname
+        ``validate``, so the owner (and ``owner_label``, which ``autoname``
         reads) is resolved here first."""
         self._resolve_owner()
+
+    def autoname(self):
+        """``OP-{owner}-{owned}-{effective_date}``: the owner's label, then the
+        owned node's (its entity code, else its group code). Run by Frappe for
+        a NEW row only; the 329 names written before the owner existed stay
+        (design §1). A ``format:`` autoname on ``data_area_id`` dropped a
+        sub-group's code, so two sub-group periods from one owner and date
+        collided (PR #449 review, finding 3)."""
+        self.name = f"OP-{self.owner_label}-{self._owned_label()}-{self.effective_date}"
 
     def before_validate(self):
         """On every save: a cleared owner is pre-filled again, and the derived
