@@ -112,6 +112,28 @@ class ConsolidationGroup(NestedSet):
         self._validate_reporting_currency()
         self._validate_ic_difference()
         self._validate_policy()
+        self._validate_method_declarations()
+
+    def _validate_method_declarations(self):
+        """The group's Method Declarations are on a node without an entity,
+        name a method the warehouse computes, and give each entity one method
+        on any date.
+
+        konsol#117 pair 1 (task D): the method a group declares for an entity
+        its links reach by more than one path, read by dbt only where the
+        links alone do not decide it (design comment section 2). The rules and
+        their sentences are konsol.method_declaration_model; every problem is
+        thrown at once, like the policy check. A declaration for an entity
+        reached by one path is not refused here: the warehouse reports it (it
+        may be made ahead of a link that arrives later).
+        """
+        from konsol.method_declaration_model import declaration_problems
+
+        problems = declaration_problems(
+            self.consolidation_group, self.data_area_id,
+            getattr(self, "method_declarations", None))
+        if problems:
+            frappe.throw("<br>".join(problems))
 
     def _validate_policy(self):
         """The Consolidation Policy is complete once the group has a deal,
@@ -245,9 +267,23 @@ class ConsolidationGroup(NestedSet):
         self._queue_sync()
 
     def _queue_sync(self):
-        """After the commit, once per transaction (konsol#124)."""
+        """After the commit, once per transaction (konsol#124).
+
+        The node's row, the closure, and the node's Method Declarations
+        (konsol#117 task D): a child table has no hooks of its own, so the
+        parent queues its sync, on save and on delete alike (a deleted node's
+        rows die with it and must leave the warehouse). Imported here, like
+        the rule modules: the child controller imports frappe's Document, and
+        the host tests load this module against a stub frappe.
+        """
+        from konsol.consolidation.doctype.consolidation_method_declaration.consolidation_method_declaration import (
+            ConsolidationMethodDeclaration,
+        )
+
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
         after_commit_once(("consolidation_hierarchy",), type(self).resync_staging)
+        after_commit_once(("consolidation_method_declarations",),
+                          ConsolidationMethodDeclaration.resync_staging)
 
     # -- validation ---------------------------------------------------------
 

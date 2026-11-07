@@ -11,6 +11,7 @@ transaction, through the one write-through mechanism; reconcile_all repairs
 the table like every other.
 """
 import ast
+import contextlib
 import datetime
 import importlib.util
 import json
@@ -288,18 +289,20 @@ def _load_clickhouse(frappe, stubs):
         _restore(saved)
 
 
-def _load_child(ch_module=None):
-    """The child controller, bound to a stub frappe and either the real
-    clickhouse module (``ch_module``) or a recording stub."""
+@contextlib.contextmanager
+def _child():
+    """The child controller against a stub frappe and the REAL clickhouse
+    module (loaded against the same stub). The stubs stay installed for the
+    block: clickhouse._controller imports frappe.model.base_document at call
+    time (the trap test_write_through_contract.py names)."""
     frappe, stubs = _stub_frappe()
-    ch = ch_module or _load_clickhouse(frappe, stubs)
+    ch = _load_clickhouse(frappe, stubs)
     stubs["konsol.clickhouse"] = ch
     saved = _install(stubs)
     try:
-        mod = _load("cmd_under_test", CHILD_PY)
+        yield _load("cmd_under_test", CHILD_PY), frappe, ch
     finally:
         _restore(saved)
-    return mod, frappe, ch
 
 
 def _load_group(ch_stub):
@@ -386,12 +389,12 @@ def test_validate_calls_the_declaration_check_once_from_validate():
 # --- the sync: after the commit, once per transaction, the one mechanism -------
 
 def test_the_child_declares_a_computed_staging_table_and_no_gold_table():
-    mod, _frappe, _ch = _load_child()
-    cls = mod.ConsolidationMethodDeclaration
-    assert cls.CH_STAGING_TABLE == TABLE
-    assert callable(getattr(cls, "resync_staging", None))
-    # one table, one writer: no CH_TABLE, so reconcile does not sync it twice
-    assert not getattr(cls, "CH_TABLE", None) and not getattr(cls, "CH_FIELD_MAP", None)
+    with _child() as (mod, frappe, ch):
+        cls = mod.ConsolidationMethodDeclaration
+        assert cls.CH_STAGING_TABLE == TABLE
+        assert callable(getattr(cls, "resync_staging", None))
+        # one table, one writer: no CH_TABLE, so reconcile does not sync it twice
+        assert not getattr(cls, "CH_TABLE", None) and not getattr(cls, "CH_FIELD_MAP", None)
 
 
 def _ddl_columns(table):
@@ -409,64 +412,70 @@ def _ddl_columns(table):
 
 
 def test_the_staging_columns_are_the_ddls_in_order_and_a_blank_end_is_the_default():
-    mod, _frappe, _ch = _load_child()
-    columns = _ddl_columns(TABLE)
-    assert mod.ConsolidationMethodDeclaration.CH_STAGING_COLUMNS == [
-        c.split()[0] for c in columns if not c.startswith("updated_at")]
-    assert "end_date Date DEFAULT '9999-12-31'" in columns, columns
+    with _child() as (mod, frappe, ch):
+        columns = _ddl_columns(TABLE)
+        assert mod.ConsolidationMethodDeclaration.CH_STAGING_COLUMNS == [
+            c.split()[0] for c in columns if not c.startswith("updated_at")]
+        assert "end_date Date DEFAULT '9999-12-31'" in columns, columns
 
 
 def test_build_rows_maps_each_declaration_to_its_nodes_group_code():
-    mod, _frappe, _ch = _load_child()
-    decls = [
-        {"parent": "CG-ZZGRP-", "idx": 1, "data_area_id": "ZZD", "consolidation_method": "equity",
-         "effective_date": datetime.date(2024, 1, 1), "end_date": None, "reason": "joint control"},
-        {"parent": "CG-ZZGRP-", "idx": 2, "data_area_id": "ZZE", "consolidation_method": "full",
-         "effective_date": datetime.date(2024, 1, 1), "end_date": datetime.date(2024, 12, 31), "reason": "control"},
-        # a row whose node is gone (cannot happen: child rows die with the
-        # parent) is skipped, not written under a blank group
-        {"parent": "CG-GONE-", "idx": 1, "data_area_id": "ZZF", "consolidation_method": "none",
-         "effective_date": datetime.date(2024, 1, 1), "end_date": None, "reason": "x"},
-    ]
-    rows = mod.ConsolidationMethodDeclaration.build_rows(decls, {"CG-ZZGRP-": "ZZGRP"})
-    assert rows == [
-        ["ZZGRP", "ZZD", "equity", datetime.date(2024, 1, 1), None, "joint control"],
-        ["ZZGRP", "ZZE", "full", datetime.date(2024, 1, 1), datetime.date(2024, 12, 31), "control"],
-    ]
+    with _child() as (mod, frappe, ch):
+        decls = [
+            {"parent": "CG-ZZGRP-", "idx": 1, "data_area_id": "ZZD", "consolidation_method": "equity",
+             "effective_date": datetime.date(2024, 1, 1), "end_date": None, "reason": "joint control"},
+            {"parent": "CG-ZZGRP-", "idx": 2, "data_area_id": "ZZE", "consolidation_method": "full",
+             "effective_date": datetime.date(2024, 1, 1), "end_date": datetime.date(2024, 12, 31), "reason": "control"},
+            # a row whose node is gone (cannot happen: child rows die with the
+            # parent) is skipped, not written under a blank group
+            {"parent": "CG-GONE-", "idx": 1, "data_area_id": "ZZF", "consolidation_method": "none",
+             "effective_date": datetime.date(2024, 1, 1), "end_date": None, "reason": "x"},
+        ]
+        rows = mod.ConsolidationMethodDeclaration.build_rows(decls, {"CG-ZZGRP-": "ZZGRP"})
+        assert rows == [
+            ["ZZGRP", "ZZD", "equity", datetime.date(2024, 1, 1), None, "joint control"],
+            ["ZZGRP", "ZZE", "full", datetime.date(2024, 1, 1), datetime.date(2024, 12, 31), "control"],
+        ]
 
 
 def test_resync_staging_reads_through_resolve_sync_filters_and_writes_default_for_a_blank_end():
     """The real clickhouse.sync_table, so what reaches the INSERT is measured:
     a blank end_date is the DEFAULT keyword, which the DDL makes 9999-12-31."""
-    mod, frappe, ch = _load_child()
-    cls = mod.ConsolidationMethodDeclaration
-    frappe._controllers[CHILD] = cls
-    frappe.get_meta = lambda dt: types.SimpleNamespace(is_submittable=0)
-    asked = []
+    with _child() as (mod, frappe, ch):
+        cls = mod.ConsolidationMethodDeclaration
+        frappe._controllers[CHILD] = cls
+        frappe.get_meta = lambda dt: types.SimpleNamespace(is_submittable=0)
+        asked = []
 
-    def get_all(doctype, filters=None, fields=None, pluck=None, limit_page_length=None, **kw):
-        asked.append((doctype, filters))
-        if doctype == CHILD:
-            return [types.SimpleNamespace(**{
-                "parent": "CG-ZZGRP-", "idx": 1, "data_area_id": "ZZD", "consolidation_method": "equity",
-                "effective_date": datetime.date(2024, 1, 1), "end_date": None,
-                "reason": "O'Brien JV", "modified": datetime.datetime(2026, 11, 7, 9, 0, 0)}).__dict__]
-        if doctype == "Consolidation Group":
-            return [{"name": "CG-ZZGRP-", "consolidation_group": "ZZGRP"}]
-        raise AssertionError(doctype)
-    frappe.get_all = get_all
-    sql = []
-    ch.execute = lambda s, params=None: sql.append(s) or ""
+        def get_all(doctype, filters=None, fields=None, pluck=None, limit_page_length=None, **kw):
+            asked.append((doctype, filters))
+            if doctype == CHILD:
+                return [types.SimpleNamespace(**{
+                    "parent": "CG-ZZGRP-", "idx": 1, "data_area_id": "ZZD", "consolidation_method": "equity",
+                    "effective_date": datetime.date(2024, 1, 1), "end_date": None,
+                    "reason": "O'Brien JV", "modified": datetime.datetime(2026, 11, 7, 9, 0, 0)}).__dict__]
+            if doctype == "Consolidation Group":
+                return [{"name": "CG-ZZGRP-", "consolidation_group": "ZZGRP"}]
+            raise AssertionError(doctype)
+        frappe.get_all = get_all
+        sql = []
+        ch.execute = lambda s, params=None: sql.append(s) or ""
 
-    written = cls.resync_staging(force=True)
+        written = cls.resync_staging(force=True)
 
-    assert written == 1
-    assert (CHILD, None) in asked, asked   # resolve_sync_filters: not submittable, no declaration -> every row
-    inserts = [s for s in sql if s.startswith(f"INSERT INTO {TABLE}_sync_tmp")]
-    assert inserts == [
-        f"INSERT INTO {TABLE}_sync_tmp (consolidation_group, data_area_id, consolidation_method, "
-        "effective_date, end_date, reason) VALUES ('ZZGRP', 'ZZD', 'equity', '2024-01-01', DEFAULT, 'O\\'Brien JV')"]
-    assert f"EXCHANGE TABLES {TABLE} AND {TABLE}_sync_tmp" in sql
+        assert written == 1
+        assert (CHILD, None) in asked, asked   # resolve_sync_filters: not submittable, no declaration -> every row
+        inserts = [s for s in sql if s.startswith(f"INSERT INTO {TABLE}_sync_tmp")]
+        assert inserts == [
+            f"INSERT INTO {TABLE}_sync_tmp (consolidation_group, data_area_id, consolidation_method, "
+            "effective_date, end_date, reason) VALUES ('ZZGRP', 'ZZD', 'equity', '2024-01-01', DEFAULT, 'O\\'Brien JV')"]
+        assert f"EXCHANGE TABLES {TABLE} AND {TABLE}_sync_tmp" in sql
+        # and a filter the controller declared would be the one asked for:
+        # the mechanism decides which rows belong, not the call site
+        cls.CH_SYNC_FILTERS = {"parenttype": "Consolidation Group"}
+        asked.clear()
+        cls.resync_staging(force=True)
+        assert asked[0] == (CHILD, {"parenttype": "Consolidation Group"}), asked
 
 
 def test_the_parent_queues_the_declaration_sync_after_the_commit_on_update_and_delete():
@@ -499,18 +508,18 @@ def test_the_parent_never_syncs_declarations_from_on_trash():
 def test_reconcile_all_covers_the_declarations_through_the_child_controller():
     """Discovery finds the child (CH_STAGING_TABLE + resync_staging) and the
     reconcile loop records what it wrote under the table's name."""
-    mod, frappe, ch = _load_child()
-    cls = mod.ConsolidationMethodDeclaration
-    frappe._controllers = {CHILD: cls}
-    frappe.get_meta = lambda dt: types.SimpleNamespace(is_submittable=0)
+    with _child() as (mod, frappe, ch):
+        cls = mod.ConsolidationMethodDeclaration
+        frappe._controllers = {CHILD: cls}
+        frappe.get_meta = lambda dt: types.SimpleNamespace(is_submittable=0)
 
-    def get_all(doctype, filters=None, fields=None, pluck=None, limit_page_length=None, **kw):
-        if doctype == "Module Def":
-            return ["Consolidation"]
-        if doctype == "DocType":
-            return [CHILD]
-        return []
-    frappe.get_all = get_all
-    ch.execute = lambda s, params=None: ""
-    assert ch._write_through_doctypes() == [CHILD]
-    assert ch._reconcile_tables() == {TABLE: 0}
+        def get_all(doctype, filters=None, fields=None, pluck=None, limit_page_length=None, **kw):
+            if doctype == "Module Def":
+                return ["Consolidation"]
+            if doctype == "DocType":
+                return [CHILD]
+            return []
+        frappe.get_all = get_all
+        ch.execute = lambda s, params=None: ""
+        assert ch._write_through_doctypes() == [CHILD]
+        assert ch._reconcile_tables() == {TABLE: 0}

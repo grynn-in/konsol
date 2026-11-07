@@ -252,6 +252,20 @@
    "description": "Dr a Business Combination's cost lines when Acquisition Costs Treatment is Expense."
   },
   {
+   "fieldname": "method_declarations_section",
+   "fieldtype": "Section Break",
+   "label": "Method Declarations",
+   "depends_on": "eval:doc.is_group && !doc.data_area_id",
+   "description": "Read only where the ownership links alone do not decide an entity's method: several paths from this group reach it and their weakest links disagree, or none of them is all full and together they sum past 50%. A declaration for an entity reached by one path is reported by the warehouse build, not refused."
+  },
+  {
+   "fieldname": "method_declarations",
+   "fieldtype": "Table",
+   "label": "Method Declarations",
+   "options": "Consolidation Method Declaration",
+   "depends_on": "eval:doc.is_group && !doc.data_area_id"
+  },
+  {
    "fieldname": "lft",
    "fieldtype": "Int",
    "label": "Left",
