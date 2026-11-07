@@ -858,6 +858,12 @@ export function ownershipChangeBody(period, form) {
   if (!isBlank(form.name)) {
     body.name = form.name;
   }
+  // konsol#117 pair 1: a node with several owners needs the holding named;
+  // the server implies the owner when there is one, so the key is sent only
+  // when the form has one (the selector itself is a filed follow-up).
+  if (!isBlank(form.ownerNode)) {
+    body.owner_node = form.ownerNode;
+  }
   return { body };
 }
 

@@ -253,7 +253,10 @@ test("previewParams carries exactly preview_ownership_change's parameters, from 
   const signature = endpointSignature("preview_ownership_change");
   const all = signature.map(([n]) => n).sort();
   const required = signature.filter(([, optional]) => !optional).map(([n]) => n).sort();
-  assert.deepEqual(signature.filter(([, optional]) => optional).map(([n]) => n), ["name"], "only `name` is optional (O66)");
+  // O66 made `name` the one optional parameter; konsol#117 pair 1 adds
+  // `owner_node`, sent only for a choice that names its holding.
+  assert.deepEqual(signature.filter(([, optional]) => optional).map(([n]) => n).sort(), ["name", "owner_node"], "the optional parameters are name and owner_node");
+  const allButOwner = all.filter((n) => n !== "owner_node");
   const entity = entityOptions(OWNERSHIP.change.entities)[1];
   const period = periodGroups(OWNERSHIP.change.periods)[1].options[0];
   const params = previewParams(entity, period, " 80 ", "full", null);
@@ -268,8 +271,12 @@ test("previewParams carries exactly preview_ownership_change's parameters, from 
   assert.deepEqual(Object.keys(params).sort(), required, "a new change sends every required parameter and no name");
   const edited = previewParams(entity, period, " 80 ", "full", "OP-ZZ5B1-2025-10-01");
   assert.equal(edited.name, "OP-ZZ5B1-2025-10-01", "O67: editing a draft previews it by name");
-  assert.deepEqual(Object.keys(edited).sort(), all, "an edit sends exactly every parameter");
+  assert.deepEqual(Object.keys(edited).sort(), allButOwner, "an edit sends every parameter but owner_node for a sole owner");
   assert.equal("name" in previewParams(entity, period, "80", "full", ""), false, "a blank name is no edit");
+  const holding = previewParams({ ...entity, owner_node: "CG-ZZ5-" }, period, "80", "full", "OP-ZZ5B1-2025-10-01");
+  assert.equal(holding.owner_node, "CG-ZZ5-", "k117: a choice that names its holding sends owner_node");
+  assert.deepEqual(Object.keys(holding).sort(), all, "with a holding, every parameter is sent");
+  assert.equal("owner_node" in previewParams(entity, period, "80", "full", null), false, "a sole owner sends no owner_node");
 });
 
 test("Failure path: an incomplete form asks for no preview (null), so no refusal is guessed for an untouched field", () => {

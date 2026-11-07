@@ -99,6 +99,7 @@ function entityOptions(entities) {
 		key: `${e.entity}|${e.consolidation_group}`,
 		entity: e.entity,
 		group: e.consolidation_group,
+		owner_node: e.owner_node || null,
 		label: `${e.entity} — ${e.entity_name}${nodes[e.entity] > 1 ? ` (in ${e.consolidation_group})` : ""}`,
 		current: e.current,
 	}));
@@ -144,6 +145,10 @@ function previewParams(entity, period, pct, method, name) {
 		consolidation_method: method,
 	};
 	if (name) params.name = name;
+	// konsol#117 pair 1: the server lists one choice per holding and accepts
+	// owner_node; a choice that names its holding sends it, a sole owner is
+	// implied by the server and nothing is sent.
+	if (entity.owner_node) params.owner_node = entity.owner_node;
 	return params;
 }
 
