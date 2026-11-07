@@ -11,9 +11,11 @@
  * shells (Build, Data, System, ...) keep their look.
  * test_konsol_sidebar_look.py pins the scope to the shipped sidebar titles.
  *
- * Colours are variables only. The band is the site's Brand Colour
- * (--konsol-brand from konsol_brand.js), or Frappe's --primary when none is
- * set. brand_model.validate refuses a Brand Colour that white text cannot be
+ * Colours are variables only. The band is the darker shade of the site's
+ * Brand Colour (--konsol-brand-strong from konsol_brand.js; "a slightly darker
+ * colored sections", Deepak Pai, 7 Nov 2026), or Frappe's --primary when none
+ * is set. It is darker than the Brand Colour, so white on it reads at least
+ * as well. brand_model.validate refuses a Brand Colour that white text cannot be
  * read on (WCAG AA 4.5:1), so the white label is safe on every accepted one.
  */
 
@@ -21,7 +23,7 @@
  * nearly square corners (2px; "less rounded", Deepak Pai, 7 Nov 2026).
  * Frappe sets the heading ink with !important (sidebar.scss .section-break). */
 :is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Planning"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break {
-	background-color: var(--konsol-brand, var(--primary));
+	background-color: var(--konsol-brand-strong, var(--primary));
 	color: var(--white) !important;
 	border-radius: 2px;
 	height: 24px;
