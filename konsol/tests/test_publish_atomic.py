@@ -665,7 +665,10 @@ class _Site:
                 if name in site.visible() or site.fail_insert == "validate":  # CustomField.validate (get_meta)
                     raise _Validation(f"A field with the name {self.fieldname} already exists")
                 self.creation = self.creation or site._stamp()   # db_insert stamps it before the INSERT
-                if name in site.committed:                       # the INSERT hits the unique key
+                # The INSERT hits the unique key: a current read of committed rows,
+                # less the ones this transaction has deleted (a repair deletes the
+                # broken row and re-inserts the same name, konsol#169).
+                if name in site.committed and ("delete", name) not in site.own:
                     raise _Duplicate(name)
                 site.own.append(("insert", name, {"fieldname": self.fieldname, "creation": self.creation,
                                                   "dt": self.dt}))
@@ -1038,7 +1041,9 @@ def test_every_add_runs_before_every_delete_across_both_tables():
 # -- konsol#169: a Custom Field row is not a column ---------------------------------
 
 def _column_present(site, dt, fieldname):
-    return any(row[0] == fieldname for row in site.describe(dt))
+    """The stub's state, not ``describe``: that read is the sync's, under the lock."""
+    name = f"{dt}-{fieldname}"
+    return name in site.committed and name not in site.missing_columns
 
 
 def test_a_committed_row_whose_column_alter_failed_is_repaired():
