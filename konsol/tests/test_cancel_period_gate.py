@@ -321,7 +321,7 @@ def test_cancel_past_last_declared_period():
         # declared period.
         module = _ownership_period_module(ps, next_start=next_start)
         module.OwnershipPeriod(
-            consolidation_group="CG1", data_area_id="E1", name="OP-1",
+            consolidation_group="CG1", data_area_id="E1", owner_node="CG-CG1-", name="OP-1",
             effective_date=datetime.date(2025, 2, 1),
             end_date=datetime.date(2026, 6, 30)).before_cancel()
 
@@ -329,7 +329,7 @@ def test_cancel_past_last_declared_period():
         # than crashing.
         module = _ownership_period_module(ps, next_start=next_start)
         doc = module.OwnershipPeriod(
-            consolidation_group="CG1", data_area_id="E1", name="OP-2",
+            consolidation_group="CG1", data_area_id="E1", owner_node="CG-CG1-", name="OP-2",
             effective_date=datetime.date(2024, 11, 1),
             end_date=datetime.date(2026, 6, 30))
         assert _refused(doc.before_cancel) == (
