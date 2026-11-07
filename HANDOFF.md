@@ -4,6 +4,12 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (7 Nov 2026): demo mode, branch `demo-mode` (PR pending, live verification pending).** Deepak Pai decided (7 Nov): a public trial of a shared, hourly-reset site, built on main behind a site_config key, with demo user roles **EPM Analyst + Entity Accountant**. Rejected: a demo-only branch (a fork to maintain; the ext stack runs the main image) and a read-only demo user.
+- **Built in konsol:** `konsol/demo_mode_model.py` (the pure rule `decide`: refused when the key is unset, the user is missing, disabled or not a System User, or holds Administrator / System Manager / EPM Admin); `konsol/demo_mode.py` (`try_demo`, a Guest GET that logs in as the demo user through Frappe's login manager and redirects to `/desk`, a bare 404 on refusal with the reason in the konsol log; `end_sessions` for the off switch); `/try` (`konsol/www/try.py` + `try.html`: one button while on, Frappe's 404 while off). Nothing else in konsol reads the key; `test_demo_mode_endpoint.py` pins that.
+- **Switch:** `bench --site <site> set-config demo_user <email>` turns it on; `set-config demo_user ""` plus `bench execute konsol.demo_mode.end_sessions --args "['<email>']"` turns it off. INSTALL.md, "Demo mode".
+- **Tests:** `test_demo_mode_model.py`, `test_demo_mode_endpoint.py` (stub `frappe`), `test_try_www.py`: red before the implementation (0/25), green after.
+- **Pending:** live verification on the second stack (demo-ext.konsolidat.com): with the key unset, `/try` and `try_demo` answer 404; with the key, `/try` is 200 with the button and `try_demo` is 302 to `/desk` as the demo user; `end_sessions` logs the demo user out. The stack side (konsolidat `docker/demo/`: `demo.sh on|off|snapshot|reset|status`, the hourly systemd timer, the maintenance page) is a separate PR.
+
 **Update (5 Nov 2026, night): approvals in the record's Actions menu; the Desk can upload trial balances (#370, merged 69be0ad6).** Deepak Pai asked for approvals to work the way they do in the compliance app (5 Nov).
 - **Approvals:** a reviewer opens the sidebar's **Approvals** section (lists filtered to what is waiting, Builds included), opens the record, and picks **Actions → Approve / Reject**.
   - The form asks `approval_api.approve_mode` (GET) whether a self-approval reason is needed.

@@ -8,6 +8,7 @@ answers 404 otherwise, so nothing hints at the feature when it is off.
 Loaded by path against a stub `frappe` module (pattern: test_close_www.py).
 The decision rule itself is tested in test_demo_mode_model.py.
 """
+import contextlib
 import importlib.util
 import os
 import sys
@@ -50,14 +51,15 @@ def _frappe_stub(conf, user_row, roles, session_count=0):
         calls.append(("get_value", (doctype, name, fields), k))
         return user_row
 
-    def count(doctype, filters=None, **k):
-        calls.append(("count", (doctype, filters), k))
-        return session_count
+    def sql(query, values=None, **k):
+        # `Sessions` has no DocType, so the module counts with plain SQL.
+        calls.append(("sql", (query, values), k))
+        return [(session_count,)]
 
     frappe.whitelist = whitelist
     frappe.throw = throw
     frappe.conf = dict(conf)
-    frappe.db = types.SimpleNamespace(get_value=get_value, count=count)
+    frappe.db = types.SimpleNamespace(get_value=get_value, sql=sql)
     frappe.get_roles = lambda user=None: calls.append(("get_roles", (user,), {})) or list(roles)
     frappe.logger = lambda name=None: types.SimpleNamespace(info=calls.rec("log.info:%s" % name))
     frappe.local = types.SimpleNamespace(
@@ -70,23 +72,31 @@ def _frappe_stub(conf, user_row, roles, session_count=0):
     return frappe, sessions
 
 
-def _load(conf, user_row=None, roles=(), session_count=0):
-    frappe, sessions = _frappe_stub(conf, user_row, roles, session_count)
-    if ROOT not in sys.path:
-        sys.path.insert(0, ROOT)
+@contextlib.contextmanager
+def _installed(frappe):
+    """Put the stub `frappe` (and its `frappe.sessions`) in sys.modules for
+    the block; `end_sessions` imports frappe.sessions lazily, at call time."""
     saved = {k: sys.modules.get(k) for k in ("frappe", "frappe.sessions")}
     sys.modules["frappe"] = frappe
-    sys.modules["frappe.sessions"] = sessions
+    sys.modules["frappe.sessions"] = frappe.sessions
     try:
-        spec = importlib.util.spec_from_file_location("demo_mode_under_test", PY_PATH)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        yield
     finally:
         for k, v in saved.items():
             if v is not None:
                 sys.modules[k] = v
             else:
                 sys.modules.pop(k, None)
+
+
+def _load(conf, user_row=None, roles=(), session_count=0):
+    frappe, _sessions = _frappe_stub(conf, user_row, roles, session_count)
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    with _installed(frappe):
+        spec = importlib.util.spec_from_file_location("demo_mode_under_test", PY_PATH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
     return module, frappe
 
 
@@ -234,17 +244,22 @@ def test_login_as_happens_before_the_redirect_is_set():
 
 def test_end_sessions_clears_the_demo_user_and_returns_the_count():
     module, frappe = _load({"demo_user": DEMO}, session_count=3)
-    assert module.end_sessions() == 3
+    with _installed(frappe):
+        assert module.end_sessions() == 3
     assert [c for c in frappe.calls if c[0] == "clear_sessions"] == [("clear_sessions", (DEMO,), {})]
-    count = [c for c in frappe.calls if c[0] == "count"][0]
-    assert count[1][0] == "Sessions"
-    assert count[1][1] == {"user": DEMO}
+    count = [c for c in frappe.calls if c[0] == "sql"][0]
+    assert "tabSessions" in count[1][0]
+    assert count[1][1] == DEMO
+    # Counted before clearing, so the number is what the switch logged out.
+    names = _names(frappe)
+    assert names.index("sql") < names.index("clear_sessions")
 
 
 def test_end_sessions_takes_an_explicit_user_after_the_key_is_removed():
     # The off switch unsets the key first, then ends the sessions by name.
     module, frappe = _load({}, session_count=1)
-    assert module.end_sessions(DEMO) == 1
+    with _installed(frappe):
+        assert module.end_sessions(DEMO) == 1
     assert [c for c in frappe.calls if c[0] == "clear_sessions"] == [("clear_sessions", (DEMO,), {})]
 
 
@@ -252,12 +267,15 @@ def test_end_sessions_with_no_user_does_nothing():
     module, frappe = _load({}, session_count=9)
     assert module.end_sessions() == 0
     assert "clear_sessions" not in _names(frappe)
-    assert "count" not in _names(frappe)
+    assert "sql" not in _names(frappe)
 
 
 # ---- source: nothing else reads the key --------------------------------------------
 
 def test_only_demo_mode_reads_the_demo_user_key():
+    # The quoted key, as frappe.conf.get("demo_user") or a JS/JSON string,
+    # may appear in one file. The pure model takes the value as a parameter
+    # named demo_user, which is not a read of the key.
     hits = []
     for dirpath, dirnames, filenames in os.walk(APP_DIR):
         dirnames[:] = [d for d in dirnames if d not in ("tests", "node_modules", "public", "__pycache__")]
@@ -266,6 +284,7 @@ def test_only_demo_mode_reads_the_demo_user_key():
                 continue
             path = os.path.join(dirpath, fn)
             with open(path, errors="replace") as fh:
-                if "demo_user" in fh.read():
-                    hits.append(os.path.relpath(path, APP_DIR))
+                src = fh.read()
+            if '"demo_user"' in src or "'demo_user'" in src:
+                hits.append(os.path.relpath(path, APP_DIR))
     assert hits == ["demo_mode.py"], hits

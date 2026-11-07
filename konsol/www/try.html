@@ -1,0 +1,23 @@
+{% extends "templates/web.html" %}
+{% block title %}Try Konsol{% endblock %}
+{% block style %}
+<style>
+  .navbar, .web-footer, footer, .page-header { display: none !important; }
+  .try-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; padding: 2rem; }
+  .try-page h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+  .try-page .lead { color: var(--text-muted); margin-bottom: 1.5rem; }
+  .try-page .btn-try { background: #0F766E; border-color: #0F766E; color: #fff; padding: 0.75rem 2rem; font-size: 1.1rem; }
+  .try-page .btn-try:hover { filter: brightness(0.92); color: #fff; }
+  .try-page .note { color: var(--text-muted); font-size: 0.9rem; margin-top: 1.5rem; }
+</style>
+{% endblock %}
+{% block page_content %}
+<div class="try-page">
+  <div>
+    <h1>Konsol</h1>
+    <p class="lead">Group consolidation, budgets and allocation, in a close you can audit.</p>
+    <a class="btn btn-try" href="{{ try_url }}">Try the demo</a>
+    <p class="note">This is a shared demo site that resets every hour: anything you enter is visible to other visitors and is gone at the next reset.</p>
+  </div>
+</div>
+{% endblock %}
