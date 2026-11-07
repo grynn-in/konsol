@@ -39,6 +39,9 @@ class _Site:
         self.allowed = None
         self.raise_in = set()
         self.rate_gate_args = None
+        self.blockers = []
+        self.ic_published = 0
+        self.ic_declared_none = True
         self.counts = {"EPM Fiscal Year": 1, "Entity Fiscal Calendar": 0, "ISO Currency": 150,
                        ("Trial Balance Submission", 1): 3}
         self.records = {
@@ -119,6 +122,8 @@ def _load(site):
 
     frappe.whitelist = whitelist
     frappe.only_for = only_for
+    frappe.get_roles = lambda user=None: sorted(site.roles)
+    frappe.session = types.SimpleNamespace(user="zz-setup@example.com")
     frappe.get_all = get_all
     frappe.db = types.SimpleNamespace(count=count, commit=_refuse("db.commit"),
                                       set_value=_refuse("db.set_value"), sql=_refuse("db.sql"),
@@ -143,7 +148,7 @@ def _load(site):
 
     def rate_gate(fy, fp, lock=False):
         site.rate_gate_args = (fy, fp, lock)
-        return [], None, []
+        return [], None, list(site.blockers)
 
     gca_spec = importlib.util.spec_from_file_location("konsol.group_chart_model",
                                                       os.path.join(APP_DIR, "group_chart_model.py"))
@@ -153,6 +158,10 @@ def _load(site):
                                                       os.path.join(APP_DIR, "dimension_value_model.py"))
     dvm = importlib.util.module_from_spec(dvm_spec)
     dvm_spec.loader.exec_module(dvm)
+    icm_spec = importlib.util.spec_from_file_location("konsol.close.ic_model",
+                                                      os.path.join(APP_DIR, "close", "ic_model.py"))
+    icm = importlib.util.module_from_spec(icm_spec)
+    icm_spec.loader.exec_module(icm)
 
     modules = {
         "frappe": frappe,
@@ -161,6 +170,10 @@ def _load(site):
         "konsol.setup_model": model,
         "konsol.group_chart_model": gcm,
         "konsol.dimension_value_model": dvm,
+        "konsol.close.ic_model": icm,
+        "konsol.api": mod("konsol.api", _permission_controlled_dimensions=lambda: {
+            r["name"]: r["permission_doctype"].strip() for r in site.records["Dimension"]
+            if r.get("status") == "Published" and r.get("in_budget") and (r.get("permission_doctype") or "").strip()}),
         "konsol.clickhouse": mod("konsol.clickhouse",
                                  check_health=lambda: {"clickhouse_reachable": True, "message": ""}),
         "konsol.entity_permissions": mod("konsol.entity_permissions",
@@ -173,7 +186,8 @@ def _load(site):
         "konsol.close.freshness_api": mod("konsol.close.freshness_api", current_freshness=lambda: {
             "state": "fresh", "as_of": "2026-11-07T10:00:00+00:00", "changed_since": [], "pending": 0,
             "last_failed": None}),
-        "konsol.close.ic_api": mod("konsol.close.ic_api", published_count=lambda: 0, declared_none=lambda: True,
+        "konsol.close.ic_api": mod("konsol.close.ic_api", published_count=lambda: site.ic_published,
+                                   declared_none=lambda: site.ic_declared_none,
                                    tolerance_gap=lambda: None, setup_gap=lambda: None),
         "konsol.close.signoff_gate": mod("konsol.close.signoff_gate", statement_gap=lambda: None,
                                          currency_gaps=lambda: {"blocking": None, "reported": None}),
@@ -244,7 +258,7 @@ def test_admin_and_system_manager_get_every_step(roles):
     out, steps = _run(_Site(roles), lambda setup: (setup.status(), setup._model.STEPS))
     keys = [s["key"] for s in out["steps"]]
     assert keys == [k for k, _, _ in steps]
-    assert out["total"] == 11
+    assert out["total"] == 12
 
 
 def test_fixture_site_reads_each_step_from_its_reader():
@@ -325,3 +339,33 @@ def test_page_puts_server_text_in_as_text_only():
     assert ".html(" not in js and "innerHTML" not in js and "${" not in js
     for field in ("step.label", "step.detail"):
         assert ".text(%s" % field in js
+
+
+def test_rate_blockers_are_cut_to_what_the_caller_may_see():
+    site = _Site()
+    site.allowed = {"E1"}
+    site.blockers = ["Entity E1 has no functional currency", "Entity E2 has no functional currency"]
+    out = {s["key"]: s for s in _status(site)["steps"]}
+    assert "E2" not in out["rates"]["detail"] and "E1 and 1 you cannot see" in out["rates"]["detail"]
+
+
+def test_declared_none_with_published_pairings_is_not_done():
+    site = _Site()
+    site.ic_published, site.ic_declared_none = 3, True
+    out = {s["key"]: s for s in _status(site)["steps"]}
+    assert out["intercompany"]["state"] == "not_done"
+    assert "3 Intercompany Account(s) are Published" in out["intercompany"]["detail"]
+
+
+def test_users_link_needs_system_manager():
+    admin = {s["key"]: s for s in _status(_Site(("EPM Admin",)))["steps"]}
+    sm = {s["key"]: s for s in _status(_Site(("EPM Admin", "System Manager")))["steps"]}
+    assert admin["users"]["route"] is None
+    assert sm["users"]["route"] == ["List", "User Permission"]
+
+
+def test_budget_gating_reads_the_budget_write_gate():
+    site = _Site()
+    site.records["Dimension"][0]["permission_doctype"] = " Dimension Value "
+    out = {s["key"]: s for s in _status(site)["steps"]}
+    assert "restricted by User Permission on region" in out["dimensions"]["detail"]

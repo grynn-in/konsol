@@ -44,33 +44,46 @@ def test_fiscal_calendar_done_counts_open_periods_and_mapped_areas():
 # -- consolidation group -----------------------------------------------------------
 
 def test_group_not_done_without_a_group_node():
-    assert M.consolidation_group_step([], False, None)["state"] == M.NOT_DONE
+    assert M.consolidation_group_step([], False)["state"] == M.NOT_DONE
 
 
 def test_group_not_done_when_no_node_has_a_reporting_currency():
-    s = M.consolidation_group_step([_group(currency="")], False, None)
+    s = M.consolidation_group_step([_group(currency="")], False)
     assert s["state"] == M.NOT_DONE
     assert "No Reporting Currency on G1" in s["detail"]
 
 
 def test_group_done_with_currency_accounts_and_cta():
-    s = M.consolidation_group_step([_group()], True, None)
+    s = M.consolidation_group_step([_group()], True)
     assert s["state"] == M.DONE and s["count"] == 1
 
 
 def test_group_difference_account_needed_only_when_intercompany_is_configured():
     g = _group(diff="")
-    assert M.consolidation_group_step([g], False, None)["state"] == M.DONE
-    s = M.consolidation_group_step([g], True, None)
+    assert M.consolidation_group_step([g], False)["state"] == M.DONE
+    s = M.consolidation_group_step([g], True)
     assert s["state"] == M.PARTIAL
     assert "No Intercompany Difference Account on G1" in s["detail"]
 
 
-def test_group_partial_without_nci_account_or_with_a_cta_gap():
-    s = M.consolidation_group_step([_group(nci="")], False, None)
-    assert s["state"] == M.PARTIAL and "Non-controlling Interest Account" in s["detail"]
-    s = M.consolidation_group_step([_group()], False, "No CTA account is declared in Close Settings.")
-    assert s["state"] == M.PARTIAL and "No CTA account" in s["detail"]
+def test_group_missing_nci_account_is_reported_never_judged():
+    # consolidation_policy_model.required_accounts needs it only for a deal below
+    # 100%: a group owning every subsidiary outright is still done (review F3).
+    s = M.consolidation_group_step([_group(nci="")], False)
+    assert s["state"] == M.DONE and "Non-controlling Interest Account" in s["detail"]
+
+
+def test_group_with_two_nodes_without_an_entity_is_partial():
+    g = dict(_group(), nodes=2)
+    s = M.consolidation_group_step([g], False)
+    assert s["state"] == M.PARTIAL and "2 nodes without an entity" in s["detail"]
+
+
+def test_statement_accounts_step_routes_to_close_settings():
+    s = M.statement_accounts_step(None)
+    assert s["state"] == M.DONE and s["route"] == ["Form", "Close Settings"]
+    s = M.statement_accounts_step("No CTA account is declared in Close Settings.")
+    assert s["state"] == M.NOT_DONE and "No CTA account" in s["detail"]
 
 
 # -- entities ----------------------------------------------------------------------
@@ -146,30 +159,46 @@ def test_currencies_follow_the_330_check():
 
 # -- intercompany ------------------------------------------------------------------
 
+def _ic(state, message="m"):
+    return {"state": state, "message": message}
+
+
 def test_intercompany_states():
-    assert M.intercompany_step(0, True, None, None)["state"] == M.DONE
-    s = M.intercompany_step(0, False, None, "Intercompany not configured.")
+    assert M.intercompany_step(0, _ic("not_applicable"), None, None)["state"] == M.DONE
+    s = M.intercompany_step(0, _ic("not_configured"), None, "Intercompany not configured.")
     assert s["state"] == M.NOT_DONE and s["detail"] == "Intercompany not configured."
-    s = M.intercompany_step(2, False, {"message": "1 group has no tolerance: G1"}, None)
+    s = M.intercompany_step(2, _ic("checked"), {"message": "1 group has no tolerance: G1"}, None)
     assert s["state"] == M.PARTIAL and "G1" in s["detail"]
-    assert M.intercompany_step(2, False, None, None)["state"] == M.DONE
+    assert M.intercompany_step(2, _ic("checked"), None, None)["state"] == M.DONE
+
+
+def test_intercompany_declared_none_with_published_pairings_is_not_done():
+    # ic_model.state calls this an error (review F2): never "none in this group".
+    s = M.intercompany_step(3, _ic("error", "Close Settings declares no intercompany ... 3 ..."), None, None)
+    assert s["state"] == M.NOT_DONE and "declares no intercompany" in s["detail"]
 
 
 # -- users -------------------------------------------------------------------------
 
 def test_users_not_done_without_an_epm_admin():
-    assert M.users_step(0, 3, 0)["state"] == M.NOT_DONE
+    assert M.users_step(0, 3, 0, True)["state"] == M.NOT_DONE
+
+
+def test_users_link_only_for_a_caller_who_can_open_user_lists():
+    # User and User Permission are System Manager's (review F4).
+    s = M.users_step(1, 3, 2, False)
+    assert s["route"] is None and "a System Manager" in s["detail"]
 
 
 def test_users_partial_routes_to_entity_user_permissions():
-    s = M.users_step(1, 3, 2)
+    s = M.users_step(1, 3, 2, True)
     assert s["state"] == M.PARTIAL
     assert "2 Entity Accountants have no Entity User Permission" in s["detail"]
     assert s["route"] == ["List", "User Permission"] and s["route_options"] == {"allow": "Entity"}
 
 
 def test_users_done_with_admin_and_every_accountant_assigned():
-    assert M.users_step(1, 0, 0)["state"] == M.DONE
+    assert M.users_step(1, 0, 0, True)["state"] == M.DONE
 
 
 # -- trial balance and rates -------------------------------------------------------
@@ -194,6 +223,22 @@ def test_rates_follow_the_rate_gate():
     assert s["state"] == M.NOT_DONE and "E1" in s["detail"]
 
 
+def test_rates_blockers_never_name_an_entity_the_caller_cannot_see():
+    # review F1: rate_gate's blocker sentences name entities.
+    gate = ([], None, ["Consolidation Group G1 has no reporting currency",
+                       "Entity SEEN has no functional currency", "Entity HIDDEN has no functional currency"])
+    s = M.rates_step("FY2025 P03", gate, {"SEEN"})
+    assert "HIDDEN" not in s["detail"] and "SEEN and 1 you cannot see" in s["detail"]
+    assert "Consolidation Group G1 has no reporting currency" in s["detail"]
+
+
+def test_rates_entity_blocker_wording_is_group_rates_own():
+    with open(os.path.join(APP_DIR, "group_rates.py")) as f:
+        src = f.read()
+    assert 'f"Entity {e} has no functional currency"' in src
+    assert M.ENTITY_BLOCKER.match("Entity E 1 has no functional currency").group(1) == "E 1"
+
+
 # -- warehouse ---------------------------------------------------------------------
 
 def test_warehouse_states():
@@ -206,7 +251,7 @@ def test_warehouse_states():
     s = M.warehouse_step(up, {"state": "stale", "as_of": "x", "changed_since": ["Entity"]})
     assert s["state"] == M.PARTIAL and "Entity" in s["detail"]
     s = M.warehouse_step(up, None, "ValueError: no build scope")
-    assert s["state"] == M.PARTIAL and "ValueError: no build scope" in s["detail"]
+    assert s["state"] == M.NOT_DONE and "ValueError: no build scope" in s["detail"]
 
 
 # -- the whole --------------------------------------------------------------------
