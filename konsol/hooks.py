@@ -56,14 +56,17 @@ after_migrate = ["konsol.install.after_migrate"]
 
 # include js, css files in header of desk.html
 # konsol#407 follow-up (Deepak Pai, 7 Nov 2026, "improve the look and feel of
-# the home page"): every rule in konsol_desk.css is scoped to the Konsol
+# the home page"): every rule in konsol_desk.bundle.css is scoped to the Konsol
 # workspace (body[data-route="Workspaces/Konsol"]); no other Desk page changes.
 # Konsol sidebars (Deepak Pai, 7 Nov 2026): section headings one step darker
-# and closer together; scoped to konsol's own sidebars (konsol_sidebar.css).
+# and closer together; scoped to konsol's own sidebars (konsol_sidebar.bundle.css).
 # Nearly square corners on every Desk page (Deepak Pai, 7 Nov 2026, "Whole
-# Desk"): konsol_theme.css sets Frappe's radius variables to 2px.
-app_include_css = ["/assets/konsol/css/konsol_desk.css", "/assets/konsol/css/konsol_sidebar.css",
-                   "/assets/konsol/css/konsol_theme.css"]
+# Desk"): konsol_theme.bundle.css sets Frappe's radius variables to 2px.
+# Bundles, named bare (Deepak Pai, 7 Nov 2026): Frappe builds each into a
+# hashed dist file and resolves the name through assets.json, so every deploy
+# gives browsers a new URL instead of a cached stale copy.
+app_include_css = ["konsol_desk.bundle.css", "konsol_sidebar.bundle.css",
+                   "konsol_theme.bundle.css"]
 # konsol#415: the site's Brand Colour on every Desk page (see konsol/brand.py).
 app_include_js = ["/assets/konsol/js/konsol_brand.js"]
 boot_session = ["konsol.brand.boot_session"]

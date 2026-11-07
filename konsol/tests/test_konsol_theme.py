@@ -4,7 +4,7 @@ alternative, konsol pages only, was rejected).
 
 Frappe v16 defines every radius as a variable on :root
 (frappe/public/css/espresso/radius.css: --radius 8px, --radius-md 10px,
---radius-lg 12px, ...). konsol_theme.css, loaded by app_include_css after
+--radius-lg 12px, ...). konsol_theme.bundle.css, loaded by app_include_css after
 desk.bundle.css, sets each box radius to 2px. --radius-full (9999px) and
 --radius-9 (999px) stay, so avatars and status pills keep their round shape.
 """
@@ -14,8 +14,8 @@ import re
 from konsol.tests.test_brand_colour import _hooks
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CSS = os.path.join(APP_DIR, "public", "css", "konsol_theme.css")
-URL = "/assets/konsol/css/konsol_theme.css"
+CSS = os.path.join(APP_DIR, "public", "css", "konsol_theme.bundle.css")
+URL = "konsol_theme.bundle.css"
 
 #: Frappe's box radii (radius.css). Every one is set to 2px.
 BOX = ("--radius", "--radius-sm", "--radius-md", "--radius-lg", "--radius-xl", "--radius-2xl",

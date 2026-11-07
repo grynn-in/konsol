@@ -5,7 +5,7 @@ horizontal is fine").
 
 What this pins:
 
-- ``hooks.py`` loads ``konsol_sidebar.css`` and the file exists.
+- ``hooks.py`` loads ``konsol_sidebar.bundle.css`` and the file exists.
 - Every rule is scoped to konsol's own sidebars. Frappe v16 writes the shell's
   name onto ``.body-sidebar`` as ``data-title`` (frappe/public/js/frappe/ui/
   sidebar/sidebar.js ``setup``: ``this.$sidebar.attr("data-title",
@@ -25,8 +25,8 @@ import re
 from konsol.tests.test_brand_colour import _hooks  # one parser of hooks.py
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CSS = os.path.join(APP_DIR, "public", "css", "konsol_sidebar.css")
-CSS_URL = "/assets/konsol/css/konsol_sidebar.css"
+CSS = os.path.join(APP_DIR, "public", "css", "konsol_sidebar.bundle.css")
+CSS_URL = "konsol_sidebar.bundle.css"
 
 HORIZONTAL = re.compile(
     r"^\s*(margin|padding)-(left|right|inline\S*)\s*:|^\s*(left|right|width|gap|column-gap)\s*:"
