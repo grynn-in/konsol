@@ -58,7 +58,9 @@ after_migrate = ["konsol.install.after_migrate"]
 # konsol#407 follow-up (Deepak Pai, 7 Nov 2026, "improve the look and feel of
 # the home page"): every rule in konsol_desk.css is scoped to the Konsol
 # workspace (body[data-route="Workspaces/Konsol"]); no other Desk page changes.
-app_include_css = ["/assets/konsol/css/konsol_desk.css"]
+# Konsol sidebars (Deepak Pai, 7 Nov 2026): section headings one step darker
+# and closer together; scoped to konsol's own sidebars (konsol_sidebar.css).
+app_include_css = ["/assets/konsol/css/konsol_desk.css", "/assets/konsol/css/konsol_sidebar.css"]
 # konsol#415: the site's Brand Colour on every Desk page (see konsol/brand.py).
 app_include_js = ["/assets/konsol/js/konsol_brand.js"]
 boot_session = ["konsol.brand.boot_session"]
