@@ -180,17 +180,49 @@ function helpers() {
   });
 }
 
-test("Entity choices: one per node from the golden; an entity on two nodes names its group, never a guessed one", () => {
+test("Entity choices: one per holding from the golden, keyed by node AND owner; an entity on two nodes names its group, never a guessed one", () => {
   const { entityOptions } = helpers();
   const opts = entityOptions(OWNERSHIP.change.entities);
   assert.deepEqual(
     opts.map((o) => [o.key, o.entity, o.group, o.label]),
     [
-      ["ZZ5B1|ECL_GROUP", "ZZ5B1", "ECL_GROUP", "ZZ5B1 — ZZ Five B One (in ECL_GROUP)"],
-      ["ZZ5B1|ZZ_SUBGROUP", "ZZ5B1", "ZZ_SUBGROUP", "ZZ5B1 — ZZ Five B One (in ZZ_SUBGROUP)"],
-      ["ZZ5B3|ECL_GROUP", "ZZ5B3", "ECL_GROUP", "ZZ5B3 — ZZ Five B Three"],
+      ["ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", "ZZ5B1", "ECL_GROUP", "ZZ5B1 — ZZ Five B One (in ECL_GROUP)"],
+      ["ZZ5B1|ZZ_SUBGROUP|CG-ZZ_SUBGROUP-", "ZZ5B1", "ZZ_SUBGROUP", "ZZ5B1 — ZZ Five B One (in ZZ_SUBGROUP)"],
+      ["ZZ5B3|ECL_GROUP|CG-ECL_GROUP-", "ZZ5B3", "ECL_GROUP", "ZZ5B3 — ZZ Five B Three"],
     ],
   );
+  // a sole owner is implied by the server (design §1): the choice names none
+  assert.deepEqual(opts.map((o) => o.owner_node), [null, null, null]);
+});
+
+test("k117 finding 5: two holdings of one entity in one group are two choices, told apart by the holder", () => {
+  // konsol#117 pair 1: the server lists one choice per (entity, group, owner_node).
+  // Keyed by entity|group alone the two collapsed into one <option>, and the
+  // label could not say whose holding was being changed (PR #449 review).
+  const { entityOptions, previewParams, periodGroups } = helpers();
+  const held = (owner_node, owner_label, pct) => ({
+    entity: "ZZ5EC", entity_name: "ZZ Five EC", consolidation_group: "ECL_GROUP",
+    current: { name: `OP-${owner_label}-ZZ5EC-2025-01-01`, effective_date: "2025-01-01", end_date: null,
+      ownership_pct: pct, consolidation_method: "full", owner_node, owner_label },
+  });
+  const opts = entityOptions([held("CG-ECL_GROUP-US_USA", "US_USA", 60), held("CG-ECL_GROUP-", "ECL_GROUP", 20)]);
+  assert.deepEqual(
+    opts.map((o) => [o.key, o.label, o.owner_node]),
+    [
+      ["ZZ5EC|ECL_GROUP|CG-ECL_GROUP-US_USA", "ZZ5EC — ZZ Five EC — held by US_USA", "CG-ECL_GROUP-US_USA"],
+      ["ZZ5EC|ECL_GROUP|CG-ECL_GROUP-", "ZZ5EC — ZZ Five EC — held by ECL_GROUP", "CG-ECL_GROUP-"],
+    ],
+    "one group, so no '(in GROUP)'; two holders, so each names its holder",
+  );
+  assert.equal(new Set(opts.map((o) => o.key)).size, 2, "distinct keys, one <option> each");
+  // a choice that names its holding sends owner_node to the preview and the save
+  const period = periodGroups(OWNERSHIP.change.periods)[1].options[0];
+  assert.equal(previewParams(opts[0], period, "70", "full", null).owner_node, "CG-ECL_GROUP-US_USA");
+  assert.equal(previewParams(opts[1], period, "25", "full", null).owner_node, "CG-ECL_GROUP-");
+  // the holder is the server's; a choice whose current period cannot name it throws, never a guess
+  const nameless = held("CG-ECL_GROUP-US_USA", "US_USA", 60);
+  delete nameless.current.owner_label;
+  assert.throws(() => entityOptions([nameless, held("CG-ECL_GROUP-", "ECL_GROUP", 20)]), /owner_label/);
 });
 
 test("Failure path: an entity choice without its group, or no entities list, throws", () => {
@@ -481,7 +513,7 @@ test("O67 editForm: the golden pending draft's server edit loads its node, first
   const edit = EDITABLE()[name];
   assert.ok(edit, "the golden draft is editable");
   const loaded = editForm(name, edit, entities, groups);
-  assert.deepEqual(loaded, { entityKey: "ZZ5B1|ECL_GROUP", periodKey: "2025/10", pct: "80", method: "full" });
+  assert.deepEqual(loaded, { entityKey: "ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", periodKey: "2025/10", pct: "80", method: "full" });
   const entity = entities.find((o) => o.key === loaded.entityKey);
   const period = groups.flatMap((g) => g.options).find((o) => o.key === loaded.periodKey);
   assert.deepEqual(previewParams(entity, period, loaded.pct, loaded.method, name), {
