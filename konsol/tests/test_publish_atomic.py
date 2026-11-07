@@ -515,8 +515,29 @@ class _Site:
         self.release_error = None
         self.logged = []
         self.exceptions = []
+        # konsol#169: "{dt}-{fieldname}" rows that are committed with no column
+        # behind them. sql_ddl commits the Custom Field row before it runs the
+        # ALTER, so a failed ALTER leaves exactly this. DDL is not transactional:
+        # a column exists or not, whatever the snapshot says about the row.
+        self.missing_columns = set()
 
     # -- transactions --
+    def drop_column(self, fieldname, dt):
+        """The ALTER for a committed Custom Field row failed (konsol#169): the
+        row is there, the column is not."""
+        assert f"{dt}-{fieldname}" in self.committed, (dt, fieldname)
+        self.missing_columns.add(f"{dt}-{fieldname}")
+
+    def describe(self, doctype):
+        """``DESC tabX``, as frappe.db.describe: the columns that exist now,
+        read from the table and not from any cache. Every committed row has
+        its column unless its ALTER failed; Frappe never drops a column, so a
+        deleted row's column stays, but the sync only asks about rows it has."""
+        self._read(f"{doctype} columns")
+        return [(r["fieldname"], "varchar(140)", "YES", "", None, "")
+                for n, r in self.committed.items()
+                if r.get("dt", "Budget Line") == doctype and n not in self.missing_columns]
+
     def seed(self, fieldname, creation="old", dt=None):
         """``dt`` None seeds the field on every in_budget table, as a synced
         site has it (konsol#287: Budget Annual Input carries the same fields as
@@ -654,8 +675,10 @@ class _Site:
                     raise _Validation("updatedb: MariaDBTable.validate refused the column")
                 if site.fail_insert == "alter":
                     site.commit()
+                    site.missing_columns.add(name)   # the row is committed, the column is not (#169)
                     raise RuntimeError("updatedb: ALTER TABLE failed")
                 site.commit()
+                site.missing_columns.discard(name)   # the ALTER added the column
 
         return CustomField()
 
@@ -669,9 +692,10 @@ class _Site:
     def frappe(self):
         return types.SimpleNamespace(
             db=types.SimpleNamespace(sql=self.sql, commit=self.commit, rollback=self.rollback,
-                                     exists=self.exists),
+                                     exists=self.exists, describe=self.describe),
             get_all=self.get_all, new_doc=self.new_doc, delete_doc=self.delete_doc,
             conf=types.SimpleNamespace(db_name="_zzdb"),
+            get_traceback=lambda: "Traceback (stub)",
             log_error=lambda *a, **kw: self.logged.append(a),
             logger=lambda: types.SimpleNamespace(exception=lambda msg: self.exceptions.append(msg)))
 
@@ -1009,3 +1033,73 @@ def test_every_add_runs_before_every_delete_across_both_tables():
     # and both tables are still covered, each named once per phase
     assert sorted(c[1] for c in calls if c[0] == "add") == \
         ["Budget Annual Input", "Budget Line", "Consolidation Journal Line"], calls
+
+
+# -- konsol#169: a Custom Field row is not a column ---------------------------------
+
+def _column_present(site, dt, fieldname):
+    return any(row[0] == fieldname for row in site.describe(dt))
+
+
+def test_a_committed_row_whose_column_alter_failed_is_repaired():
+    """konsol#169, Deepak Pai's option A (7 Nov 2026). Frappe's sql_ddl commits
+    the Custom Field row before it runs the ALTER, so a failed ALTER leaves a
+    row with no column behind it. The sync compared rows, so the field counted
+    as existing on every later run and nothing ever repaired it: Budget Line
+    had a field in its meta with no column, and reads of it failed."""
+    site = _site_with(dim_zz="Published")
+    site.seed("dim_zz")                              # synced earlier, on both budget tables
+    site.drop_column("dim_zz", dt="Budget Line")     # ... but Budget Line's ALTER had failed
+    assert not _column_present(site, "Budget Line", "dim_zz")
+
+    actions = _sync(site)()
+
+    assert actions == ["repaired dim_zz"], actions
+    assert _column_present(site, "Budget Line", "dim_zz"), "the ALTER did not run again"
+    assert "Budget Line-dim_zz" in site.committed, "the row must be re-added, not just dropped"
+    assert site.committed["Budget Line-dim_zz"]["creation"] != "old", "the old row was kept"
+    assert site.committed["Budget Annual Input-dim_zz"]["creation"] == "old", \
+        "a table whose column is fine must not be touched"
+    assert _sync(site)() == [], "once repaired, a second run changes nothing"
+    assert site.violations == [] and not site.held
+
+
+def test_a_repair_whose_alter_fails_again_is_reported_by_name_not_counted_present():
+    """The decision's second half: if the ALTER fails again, the sync reports
+    the field by name in its actions instead of counting it as present. The
+    rest of the sync still runs (here: the orphan removals), and the next run
+    tries again, because the row still has no column. An ordinary add whose
+    ALTER fails still raises (test_an_alter_failure_leaves_our_row_committed_
+    and_still_raises): the repair differs because the damage is older than this
+    run, and raising would let one broken field block every later sync."""
+    site = _site_with(dim_zz="Published", dim_old="Inactive")
+    site.seed("dim_zz")                              # on both budget tables
+    site.seed("dim_old")                             # an orphan on both, to show the sync goes on
+    site.drop_column("dim_zz", dt="Budget Line")
+    site.fail_insert = "alter"                       # every ALTER in this run fails
+
+    actions = _sync(site)()
+
+    assert len(actions) == 3 and actions[0].startswith("repair of dim_zz failed"), actions
+    assert "ALTER TABLE failed" in actions[0], actions
+    assert actions[1:] == ["removed dim_old"] * 2, "the rest of the sync must still run"
+    assert not _column_present(site, "Budget Line", "dim_zz")
+    assert "Budget Line-dim_zz" in site.committed, "the row stays, as Frappe leaves it"
+    assert len(site.logged) == 1 and "dim_zz" in site.logged[0][0], site.logged
+    assert site.violations == [] and not site.held
+    # still broken, still not counted present: the next run tries once more
+    site.fail_insert = None
+    assert _sync(site)() == ["repaired dim_zz"]
+    assert _column_present(site, "Budget Line", "dim_zz")
+
+
+def test_a_broken_row_for_an_undeclared_dimension_is_still_removed():
+    """A row with no column whose dimension is no longer declared is an orphan
+    like any other: dropping it from ``existing`` must not hide it from the
+    remove phase, or it would outlive the dimension for ever."""
+    site = _site_with(dim_old="Inactive")
+    site.seed("dim_old")
+    site.drop_column("dim_old", dt="Budget Line")
+    assert _sync(site)() == ["removed dim_old"] * 2
+    assert not [n for n in site.committed if n.endswith("-dim_old")], site.committed
+    assert site.violations == [] and not site.held
