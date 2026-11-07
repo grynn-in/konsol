@@ -56,9 +56,7 @@ HELP = {
         "The method the group applies to this entity where its ownership paths do not "
         "decide it. Proportional is refused until it is implemented (konsol#429)."),
     "effective_date": "The first day this method applies.",
-    "end_date": (
-        "The last day this method applies. Blank means open-ended; the warehouse "
-        "stores it as 9999-12-31."),
+    "end_date": "The last day this method applies. Blank means open-ended.",
     "reason": (
         "Why this method and not the one the percentages suggest: name the arrangement, "
         "the holders and the standard, e.g. \"60% held via two members under a joint "
@@ -210,7 +208,6 @@ def test_dates_may_arrive_as_dates_or_iso_strings():
 def test_the_select_offers_exactly_the_rule_modules_methods():
     fields = _fields(_json(CHILD_JSON))
     assert fields["consolidation_method"]["options"].split("\n") == list(MD.METHODS)
-    assert MD.OPEN_END == "9999-12-31"
 
 
 # --- loaders: the controllers against a stub frappe ----------------------------
@@ -412,6 +409,10 @@ def _ddl_columns(table):
 
 
 def test_the_staging_columns_are_the_ddls_in_order_and_a_blank_end_is_the_default():
+    """The DDL is task C's, byte-identical to konsolidat's init-db.sql. Live,
+    ClickHouse's Date clamps that DEFAULT to 2149-06-06 (measured 7 Nov 2026,
+    the same open end epm_staging.ownership_periods holds); dbt reads an open
+    end as ``end_date >= period_date``, so the clamp changes no number."""
     with _child() as (mod, frappe, ch):
         columns = _ddl_columns(TABLE)
         assert mod.ConsolidationMethodDeclaration.CH_STAGING_COLUMNS == [
@@ -440,7 +441,7 @@ def test_build_rows_maps_each_declaration_to_its_nodes_group_code():
 
 def test_resync_staging_reads_through_resolve_sync_filters_and_writes_default_for_a_blank_end():
     """The real clickhouse.sync_table, so what reaches the INSERT is measured:
-    a blank end_date is the DEFAULT keyword, which the DDL makes 9999-12-31."""
+    a blank end_date is the DEFAULT keyword, the open end the DDL declares."""
     with _child() as (mod, frappe, ch):
         cls = mod.ConsolidationMethodDeclaration
         frappe._controllers[CHILD] = cls

@@ -22,8 +22,10 @@ DOCTYPE = "Consolidation Method Declaration"
 
 class ConsolidationMethodDeclaration(Document):
     # The DDL's columns in order, updated_at excepted (ClickHouse stamps it).
-    # A blank end_date reaches the INSERT as DEFAULT, which the DDL makes
-    # 9999-12-31 (method_declaration_model.OPEN_END).
+    # A blank end_date reaches the INSERT as DEFAULT: the DDL's '9999-12-31',
+    # which ClickHouse's Date clamps to 2149-06-06 (measured live, 7 Nov 2026),
+    # the same open end epm_staging.ownership_periods holds; dbt reads an open
+    # end as ``end_date >= period_date``.
     CH_STAGING_TABLE = "epm_staging.consolidation_method_declarations"
     CH_STAGING_COLUMNS = [
         "consolidation_group", "data_area_id", "consolidation_method",

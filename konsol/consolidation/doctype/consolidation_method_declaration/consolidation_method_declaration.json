@@ -42,7 +42,7 @@
    "label": "End Date",
    "in_list_view": 1,
    "columns": 2,
-   "description": "The last day this method applies. Blank means open-ended; the warehouse stores it as 9999-12-31."
+   "description": "The last day this method applies. Blank means open-ended."
   },
   {
    "fieldname": "reason",

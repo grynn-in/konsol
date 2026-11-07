@@ -17,10 +17,6 @@ import datetime
 #: (PROPORTIONAL_REFUSAL) until konsol#117 pair 3 decides it.
 METHODS = ("full", "proportional", "equity", "none")
 
-#: What the warehouse stores for a blank End Date: the column's DEFAULT in
-#: epm_staging.consolidation_method_declarations (clickhouse._REFERENCE_TABLE_DDL).
-OPEN_END = "9999-12-31"
-
 #: Ownership Period's #432 sentence (ownership_period.py), for a declaration.
 PROPORTIONAL_REFUSAL = (
     "Proportional consolidation is not implemented (konsol#429): the warehouse would "
