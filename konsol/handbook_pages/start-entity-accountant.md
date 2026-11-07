@@ -17,9 +17,10 @@ You send each entity's trial balance (TB) for each period, for the entities assi
 The CSV has a header row:
 
 ```
-main_account,debit,credit,currency[,description][,partner_data_area_id][,amount_basis]
+main_account,debit,credit,currency[,description][,partner_data_area_id][,amount_basis][,<dimension>...]
 ```
 
+- A dimension column is named exactly as the Dimension record (its name starts with `dim_`). It is accepted when the dimension is Published and ticked for trial balances; a cell may be blank.
 - `currency` is on every row and must be the entity's functional currency.
 - `partner_data_area_id` is the other group entity an intercompany row is held with, for example `ZZ02`. Leave it blank for a third party.
 - `amount_basis`, when you give it, must agree with the form.
@@ -27,7 +28,7 @@ main_account,debit,credit,currency[,description][,partner_data_area_id][,amount_
 
 ## When the file is refused
 
-Nothing is saved, and the message lists every problem. Fix the CSV, attach it again and save. The usual causes:
+Nothing is saved. The period, access and duplicate checks come first and each stops the save on its own; after them, the message lists the problems found in the file. Fix them, attach the CSV again and save. The usual causes:
 
 - the period is not declared, or is not Open;
 - you are not assigned to the entity;

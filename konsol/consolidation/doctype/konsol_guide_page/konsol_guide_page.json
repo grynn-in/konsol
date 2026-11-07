@@ -93,7 +93,7 @@
    "fieldtype": "Markdown Editor",
    "label": "Body",
    "reqd": 1,
-   "description": "Markdown. Scripts, styles, forms, frames and event attributes are removed before it is shown. Links may be http, https, mailto or a Desk route such as /desk/period-close."
+   "description": "Markdown. Scripts, styles, forms, frames and event attributes are removed before it is shown. Links may be http, https, mailto or a Desk route such as /desk/period-close. Images show only from this site's files (/files/ or /private/files/); a class is removed."
   }
  ],
  "links": [],

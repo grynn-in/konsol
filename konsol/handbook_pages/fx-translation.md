@@ -26,7 +26,7 @@ An entity whose functional currency is the reporting currency translates at 1, w
 
 Each period has one **Closing** and one **Average** rate per currency pair, into the group's reporting currency. The rate is units of the reporting currency for one unit of the from-currency (Quote / Quoted Per). If a needed pair does not have exactly one approved Closing and one approved Average rate for the period, the build stops. It never guesses a rate.
 
-A Balance Sheet balance is translated at the closing rate of each reporting date, not as the sum of each period's movement at that period's rate.
+A Balance Sheet balance on an account translated at closing (not Equity) is translated at the closing rate of each reporting date, not as the sum of each period's movement at that period's rate. Equity and historical accounts are never retranslated: each movement keeps the rate it was translated at.
 
 ## Historical Equity Rate
 

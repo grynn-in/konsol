@@ -39,6 +39,7 @@ Submitting or cancelling a trial balance, and approving a rate, ownership period
 - A build that an approval requested is approved at once.
 - Any other build of a high-risk scope (actuals, scenarios, consolidation, chart, full) waits in **Pending Review** for the Close Lead.
 - Staging and reporting builds are low risk and are approved at once.
-- A change made while a build of the same scope is pending is added to that build.
+- If a build of the same scope is already waiting, no new build is made: the change joins the waiting build, which still needs the Close Lead's approval, even when an approval requested it.
+- If a build of the same scope is running, the change gets one more build when the running one finishes.
 
 To request a build yourself, add a Build Approval with its **Build Scope**. After a build is Completed, Failed or Cancelled, **Run Again** requests it again.

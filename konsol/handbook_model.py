@@ -185,7 +185,11 @@ def site_page_condition(roles):
 #: What markdown writes, and nothing that runs, loads a frame, submits or
 #: restyles the page. ``style`` attributes and elements, ``svg``, forms and
 #: every ``on*`` attribute are dropped; ``script`` and ``style`` lose their
-#: content too (nh3's default clean_content_tags).
+#: content too (nh3's default clean_content_tags). No element keeps a
+#: ``class``: Frappe links desk.bundle.css into the block's shadow root, so a
+#: class such as ``position-fixed`` would let a page cover the Desk (review
+#: of #412). An image loads only from this site's files (``_IMAGE_SOURCES``),
+#: so a page cannot track its readers or send a request as them.
 _TAGS = {
     "a", "abbr", "b", "blockquote", "br", "code", "dd", "del", "div", "dl", "dt", "em",
     "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "kbd", "li", "ol", "p", "pre",
@@ -197,21 +201,28 @@ _ATTRIBUTES = {
     "img": {"src", "alt", "title"},
     "td": {"align"},
     "th": {"align"},
-    "code": {"class"},
-    "table": {"class"},
     **{h: {"id"} for h in _HEADINGS},
 }
 _URL_SCHEMES = {"http", "https", "mailto"}
+_IMAGE_SOURCES = ("/files/", "/private/files/")
+
+
+def _attribute(tag, attribute, value):
+    """nh3's attribute_filter: an image source outside this site's files is
+    dropped (the image keeps its alt text)."""
+    if tag == "img" and attribute == "src" and not value.startswith(_IMAGE_SOURCES):
+        return None
+    return value
 
 
 def sanitize(html):
     """``html`` with everything outside the allowlist removed (nh3, the
     sanitiser Frappe v16's own sanitize_html uses, with a narrower list).
     Links keep http, https, mailto and relative URLs and open with
-    rel="noopener noreferrer"."""
+    rel="noopener noreferrer"; images load from /files/ or /private/files/."""
     return nh3.clean(html or "", tags=_TAGS, attributes=_ATTRIBUTES,
                      url_schemes=_URL_SCHEMES, strip_comments=True,
-                     link_rel="noopener noreferrer")
+                     link_rel="noopener noreferrer", attribute_filter=_attribute)
 
 
 # --- the handbook ---------------------------------------------------------------------

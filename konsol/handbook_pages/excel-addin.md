@@ -16,7 +16,7 @@ Open the add-in's pane (the **Konsolidat** button on the Home ribbon) and sign i
 =K.EPM(entity, year, period, account, [measure], [scenario], [dimensions], [scenarioId], [hierarchy], [node], [layer])
 ```
 
-- `period` is 1 to 12, or a range: Q1 to Q4, H1, H2 or FY.
+- `period` is a period number or code of the declared fiscal calendar (the Closing period included), or a range: Q1 to Q4, H1, H2 or FY.
 - Arguments in brackets are optional. To reach a later one, leave the slot empty: `, ,`.
 - `dimensions` is **one** argument for any number of dimensions. Give one text cell such as `"region=EU;product=X"`, or a 2-column range with a name and a value on each row (no header row). A name must be a dimension this site declared.
 
@@ -24,7 +24,18 @@ For example, `=K.EPM("E1",2026,3,"4000","","","region=EU")`.
 
 An actuals read of a period with no trial balance shows `#N/A` with the message "No trial balance for …". A loaded period where the account has no balance shows 0. A range such as Q1 reads if at least one of its periods is loaded. A malformed argument shows `#VALUE!` with the reason.
 
-The other functions take the same arguments where they share them: `K.EPM_BUDGET`, `K.EPM_VARIANCE`, `K.EPM_DEBIT`, `K.EPM_CREDIT`, `K.EPMSAVE` (writes a budget figure) and `K.CF`.
+The other functions have their own argument order. `dimensions` is the fifth argument in the first four:
+
+```
+=K.EPM_BUDGET(entity, year, period, account, [dimensions], [scenarioId], [hierarchy], [node], [layer])
+=K.EPM_VARIANCE(entity, year, period, account, [dimensions], [scenarioId], [hierarchy], [node])
+=K.EPM_DEBIT(entity, year, period, account, [dimensions], [hierarchy], [node])
+=K.EPM_CREDIT(entity, year, period, account, [dimensions], [hierarchy], [node])
+=K.EPMSAVE(amount, entity, year, period, account, scenarioId, layer, [dimensions], [hierarchy], [node])
+=K.CF(group, year, period, line)
+```
+
+`K.EPMSAVE` writes a budget figure.
 
 ## Refresh
 
