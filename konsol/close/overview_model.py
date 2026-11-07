@@ -10,9 +10,9 @@ the close app's own readers return. No rule is decided here:
   own landing is the latest signed period; the home page shows the close in
   progress, so a Viewer gets the landing's ``provisional`` (the same working
   landing every other persona gets);
-- the checklist's first nine lines are ``readiness_model.readiness`` (the
+- the checklist carries every ``readiness_model.readiness`` item (the
   sign-off gate's ``sign_off_problems``, the rate gate and the latest run),
-  item for item; then the intercompany line (``ic_api.signoff_summary``,
+  in ``CHECKLIST`` order, interleaved with the intercompany line (``ic_api.signoff_summary``,
   read through ``signoff_model.ic_over_tolerance``), the open journals
   (``deadline_model.journals_open``'s count), the equity rates awaiting
   approval, the build (``freshness_model``) and the sign-off itself
@@ -200,9 +200,9 @@ def ic_card(ic):
     if state in ("not_built", "error"):
         return "Cannot check", BLOCKED
     if state == "not_configured":
-        return "Not configured", UNKNOWN
+        return "Not configured", OK
     if state == "not_applicable":
-        return "Not applicable", UNKNOWN
+        return "Not applicable", OK
     n = signoff_model.ic_over_tolerance(ic)
     return str(n), WARN if n else OK
 
@@ -311,14 +311,31 @@ def _signed_line(run, key):
     raise ValueError("unknown sign-off status %r" % (status,))
 
 
-def checklist(key, readiness, run, ic, journals_open, equity_pending, freshness):
+_NOT_COUNTED = "drafts outside your scope are not counted"
+
+
+def _equity_line(count, scoped, key):
+    """Historical Equity Rate is entity-scoped (entity_permissions), so a
+    caller restricted to some entities (``scoped``) counts only theirs: none
+    visible is unknown, never a tick, and the detail says so."""
+    def some(n):
+        text = ("1 equity rate is a draft or awaiting approval" if n == 1
+                else "%d equity rates are drafts or awaiting approval" % n)
+        return text + ("; " + _NOT_COUNTED if scoped else "")
+    line = _count_line("equity_rates", count, some, "No equity rate is a draft or awaiting approval",
+                       key)
+    if scoped and count == 0:
+        line.update(state=UNKNOWN, detail="No equity rate draft you can see; " + _NOT_COUNTED)
+    return line
+
+
+def checklist(key, readiness, run, ic, journals_open, equity_pending, freshness,
+              equity_scoped=False):
     """``{"title", "reason", "lines", "done", "total"}``: one line per
-    ``CHECKLIST`` code, in that order. ``done`` counts the ``ok`` lines."""
+    ``CHECKLIST`` code, in that order. ``done`` counts the ``ok`` lines.
+    ``equity_scoped``: the caller sees only some entities' equity rates."""
     lines = _readiness_lines(readiness, run, key)
-    lines["equity_rates"] = _count_line(
-        "equity_rates", equity_pending,
-        lambda n: "%s awaiting approval" % _noun(n, "equity rate"),
-        "No equity rate awaiting approval", key)
+    lines["equity_rates"] = _equity_line(equity_pending, equity_scoped, key)
     lines["intercompany"] = _ic_line(ic, key)
     lines["journals"] = _count_line(
         "journals", journals_open,
