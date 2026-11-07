@@ -2638,8 +2638,8 @@ def test_o68_an_unscoped_caller_still_gets_the_edit_refusal():
 # ``get_ownership.can_record`` (a different test from the save's roles).
 
 O69_CHANGE = "OP-ZZ5B1-2025-10-01"
-O69_EDIT = {"consolidation_group": O55_GROUP, "entity": O55_LEAF, "fiscal_year": 2025,
-            "fiscal_period": 10, "ownership_pct": 80.0, "consolidation_method": "full"}
+O69_EDIT = {"consolidation_group": O55_GROUP, "entity": O55_LEAF, "owner_node": "CG-%s-" % O55_GROUP,
+            "fiscal_year": 2025, "fiscal_period": 10, "ownership_pct": 80.0, "consolidation_method": "full"}
 
 
 def _o69_site(roles=("EPM Analyst",), user=ANALYST):

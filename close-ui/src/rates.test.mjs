@@ -1086,7 +1086,10 @@ test("O67 pendingView keeps each OP item's server `edit` as sent; an HER item ge
   const view = pendingView(PENDING);
   const byName = Object.fromEntries(view.items.map((i) => [i.name, i]));
   assert.deepEqual(byName["OP-ZZ5B1-2025-10-01"].edit, PENDING.items[1].edit);
-  assert.deepEqual(Object.keys(byName["OP-ZZ5B1-2025-10-01"].edit).sort(), [...EDIT_KEYS].sort());
+  // konsol#117 pair 1 / PR #459 finding G: the server's edit also names the
+  // draft's holding (owner_node); it is passed through, never required here,
+  // so an older backend's edit without it still loads (by entity + group).
+  assert.deepEqual(Object.keys(byName["OP-ZZ5B1-2025-10-01"].edit).sort(), [...EDIT_KEYS, "owner_node"].sort());
   assert.equal(byName["OP-ZZ5B2-2025-10-01"].edit, null, "the Desk draft is not editable here");
   assert.equal("edit" in byName["HER-ZZ5B1-1"], false);
 });

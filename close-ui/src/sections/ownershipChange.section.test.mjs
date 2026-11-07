@@ -174,7 +174,7 @@ test("The method choices are ownership_change_model.METHODS, in its order (no se
 // ---------------------------------------------------------------------------
 
 function helpers() {
-  return load(["need", "entityOptions", "periodGroups", "previewParams", "currentText", "effectPanel", "saveBlocked", "savedLine", "makePreviewer"], {
+  return load(["need", "ownerOf", "entityOptions", "periodGroups", "previewParams", "currentText", "effectPanel", "saveBlocked", "savedLine", "makePreviewer"], {
     ownershipEffectView,
     dueDateText,
   });
@@ -526,7 +526,7 @@ test("A request error for the newest input is shown as its message; cancel drops
 const EDITABLE = () => ratesModule.ownershipDraftEdits(pendingView(PENDING).items);
 
 function editHelpers() {
-  return load(["need", "entityOptions", "periodGroups", "previewParams", "effectPanel", "editForm", "pendingEdits"], {
+  return load(["need", "ownerOf", "entityOptions", "periodGroups", "previewParams", "effectPanel", "editForm", "pendingEdits"], {
     ownershipEffectView,
     dueDateText,
     periodName,
@@ -741,7 +741,7 @@ test("O67 wiring: props editable + openEdit, opened once on mount, the preview w
 // ---------------------------------------------------------------------------
 
 function currentHelpers() {
-  return load(["need", "entityOptions", "periodGroups", "currentText", "effectPanel", "shownCurrent"], {
+  return load(["need", "ownerOf", "entityOptions", "periodGroups", "currentText", "effectPanel", "shownCurrent"], {
     ownershipEffectView,
     dueDateText,
   });

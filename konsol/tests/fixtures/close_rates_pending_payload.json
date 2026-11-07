@@ -33,6 +33,7 @@
         "entity": "ZZ5B1",
         "fiscal_period": 10,
         "fiscal_year": 2025,
+        "owner_node": "CG-ECL_GROUP-",
         "ownership_pct": 80.0
       },
       "edited_by": [],
