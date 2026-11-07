@@ -438,8 +438,24 @@ def _site(rows, nodes=None):
                 return _Stored(frappe, r, log)
         raise AssertionError(f"no such period {name}")
 
+    def sql(query, values=(), as_dict=False, **k):
+        """The two statements the cycle check sends (task B): the serialising
+        lock on Ownership Period's tabDocType row, and the links OUT of one
+        node (``owner_node = %s``, optionally ``name != %s``), both FOR
+        UPDATE. Anything else is a test's mistake."""
+        calls.append(("sql", query, tuple(values)))
+        if "`tabDocType`" in query:
+            return []
+        assert "`tabOwnership Period`" in query and "`owner_node` = %s" in query, query
+        assert as_dict, "the controller reads links as dicts"
+        owner = values[0]
+        exclude = values[1] if "`name` != %s" in query else None
+        return [types.SimpleNamespace(**vars(r)) for r in rows
+                if r.owner_node == owner and r.docstatus != 2 and r.name != exclude]
+
     frappe.get_all = get_all
     frappe.get_doc = get_doc
+    frappe.db.sql = sql
     frappe.db.exists = lambda doctype, name, *a, **k: any(r.name == name for r in rows)
     return module, log, calls
 
@@ -1018,3 +1034,132 @@ def test_117_validate_runs_the_owner_and_total_checks_after_the_node_check():
     steps = [line.strip() for line in body.splitlines() if line.strip().startswith("self._")]
     assert steps.index("self._validate_node_exists()") < steps.index("self._validate_owner()")
     assert steps.index("self._check_no_gaps_or_overlaps()") < steps.index("self._check_total_issued()")
+
+
+# --- #117 pair 1 task B: a link that closes a cycle is refused by name (§3) ----
+#
+# From the OWNED node, follow outgoing non-cancelled links (owner → owned,
+# docstatus != 2, undated: a dated cycle is still a cycle) and refuse when the
+# owner node is reached, naming every node on the path. Two links saved
+# concurrently could each pass that walk under REPEATABLE READ, so the check
+# first takes the serialising lock the group uses for its difference account
+# (``SELECT … FROM tabDocType WHERE name = 'Ownership Period' FOR UPDATE``,
+# consolidation_group.py:183) and reads the links FOR UPDATE, which sees the
+# latest committed rows. The self-link is refusal 1's (task A). The build-time
+# backstop (``build_rows`` raising on a repeated node) is task C's DFS.
+
+CYCLE_TAIL = " Cross-holdings are refused until a treasury-share rule is decided (konsol#117)."
+
+
+def _cycle_sentence(*labels):
+    return "This link would close a cycle: " + " → ".join(f"`{l}`" for l in labels) + "." + CYCLE_TAIL
+
+
+def _edge(name, owner, owner_label, group, entity, start=_D(2026, 1, 1), end=None, **over):
+    """An existing link ``owner`` → (group, entity)."""
+    return _row(name, start, end=end, docstatus=over.pop("docstatus", 1), group=group, entity=entity,
+                owner=owner, owner_label=owner_label, pct=over.pop("pct", 80.0))
+
+
+#: ZZ01 owns ZZ02; ZZ02 owns ZZ03 (a chain under the ZZG root).
+_ZZ01_OWNS_ZZ02 = _edge("OP-ZZ01-ZZ02-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", "ZZG", "ZZ02")
+_ZZ02_OWNS_ZZ03 = _edge("OP-ZZ02-ZZ03-2026-01-01", "CG-ZZG-ZZ02", "ZZ02", "ZZSUB", "ZZ03")
+
+
+def _closing_link(module, owner, group, entity, pct=20, **over):
+    """A new link ``owner`` → (group, entity) under validate."""
+    fields = dict(_declared(name=None, consolidation_group=group, data_area_id=entity, owner_node=owner,
+                            ownership_pct=pct, effective_date="2026-01-01", end_date=None), **over)
+    return module.OwnershipPeriod(before=None, **fields)
+
+
+def test_117b_a_link_closing_a_two_node_cycle_is_refused_by_the_sentence():
+    """Shape 6 (§4): ZZ01 holds ZZ02; ZZ02 taking a share of ZZ01 is the
+    cross-holding, named owner → owned → … → owner."""
+    module, _, _ = _site([_ZZ01_OWNS_ZZ02], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ02", "ZZG", "ZZ01")
+    assert _refusal(doc) == _cycle_sentence("ZZ02", "ZZ01", "ZZ02")
+
+
+def test_117b_a_three_node_cycle_names_every_node_on_the_path():
+    module, _, _ = _site([_ZZ01_OWNS_ZZ02, _ZZ02_OWNS_ZZ03], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZSUB-ZZ03", "ZZG", "ZZ01")
+    assert _refusal(doc) == _cycle_sentence("ZZ03", "ZZ01", "ZZ02", "ZZ03")
+    # a group node on the cycle is named by its group code
+    sub_owns_zz01 = _edge("OP-ZZSUB-ZZ01-2026-01-01", "CG-ZZSUB-", "ZZSUB", "ZZG", "ZZ01")
+    module, _, _ = _site([sub_owns_zz01], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ01")
+
+
+def test_117b_a_dated_cycle_is_still_a_cycle():
+    """The walk is undated: a link that ended years ago still closes the ring."""
+    old = _edge("OP-ZZ01-ZZ02-2019-01-01", "CG-ZZG-ZZ01", "ZZ01", "ZZG", "ZZ02",
+                start=_D(2019, 1, 1), end=_D(2019, 12, 31))
+    module, _, _ = _site([old], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ02", "ZZG", "ZZ01")
+    assert _refusal(doc) == _cycle_sentence("ZZ02", "ZZ01", "ZZ02")
+
+
+def test_117b_a_chain_and_a_direct_plus_indirect_holding_pass():
+    module, _, _ = _site([_ZZ01_OWNS_ZZ02, _ZZ02_OWNS_ZZ03], nodes=_TREE)
+    # the root takes ZZ01: the chain ZZG → ZZ01 → ZZ02 → ZZ03 has no ring
+    _closing_link(module, "CG-ZZG-", "ZZG", "ZZ01").validate()
+    # shape 1: ZZ01 also holds ZZ03 directly; two paths, no cycle
+    _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", "ZZ03").validate()
+    # a sibling with no links at all
+    _closing_link(module, "CG-ZZG-ZZ02", "ZZSUB", None).validate()
+
+
+def test_117b_a_cancelled_link_does_not_count_but_a_draft_does():
+    cancelled = _edge("OP-ZZ01-ZZ02-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", "ZZG", "ZZ02", docstatus=2)
+    module, _, _ = _site([cancelled], nodes=_TREE)
+    _closing_link(module, "CG-ZZG-ZZ02", "ZZG", "ZZ01").validate()
+    draft = _edge("OP-ZZ01-ZZ02-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", "ZZG", "ZZ02", docstatus=0)
+    module, _, _ = _site([draft], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ02", "ZZG", "ZZ01")
+    assert _refusal(doc) == _cycle_sentence("ZZ02", "ZZ01", "ZZ02")
+
+
+def test_117b_editing_a_link_does_not_see_its_own_stored_row():
+    """Reversing a link in place (ZZ02 → ZZ01 becomes ZZ01 → ZZ02): the stored
+    row is this document, not a second link, so there is no ring."""
+    stored = _edge("OP-ZZ02-ZZ01-2026-01-01", "CG-ZZG-ZZ02", "ZZ02", "ZZG", "ZZ01")
+    module, _, calls = _site([stored], nodes=_TREE)
+    _closing_link(module, "CG-ZZG-ZZ01", "ZZG", "ZZ02", name=stored.name).validate()
+    reads = [c for c in calls if c[0] == "sql" and "`tabOwnership Period`" in c[1]]
+    assert reads and all("`name` != %s" in c[1] and c[2][1] == stored.name for c in reads), reads
+    # a NEW document (no name yet) sends no name clause: `name != NULL` matches nothing
+    module, _, calls = _site([stored], nodes=_TREE)
+    _closing_link(module, "CG-ZZG-", "ZZG", "ZZ01").validate()
+    reads = [c for c in calls if c[0] == "sql" and "`tabOwnership Period`" in c[1]]
+    assert reads and all("`name` != %s" not in c[1] and len(c[2]) == 1 for c in reads), reads
+
+
+def test_117b_the_check_takes_the_serialising_lock_then_reads_the_links_for_update():
+    """Under REPEATABLE READ a plain read in a transaction can miss rows
+    committed after its first read: two links saved at once could each pass
+    the walk. The lock (consolidation_group.py:183 pattern) is taken first, and
+    every link read is a locking read, which sees the latest committed rows."""
+    module, _, calls = _site([_ZZ01_OWNS_ZZ02], nodes=_TREE)
+    _closing_link(module, "CG-ZZG-", "ZZSUB", "ZZ03").validate()
+    sqls = [c for c in calls if c[0] == "sql"]
+    assert sqls, "the cycle check reads through frappe.db.sql"
+    lock = sqls[0]
+    assert lock[1] == "SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", lock
+    assert lock[2] == ("Ownership Period",)
+    reads = sqls[1:]
+    assert reads, "the links out of the owned node are read after the lock"
+    for c in reads:
+        assert c[1].rstrip().endswith("FOR UPDATE"), c
+        assert "`docstatus` != 2" in c[1], c
+    # the walk starts at the owned node
+    assert reads[0][2][0] == "CG-ZZSUB-ZZ03"
+
+
+def test_117b_validate_checks_the_cycle_after_the_owner_and_before_the_windows():
+    body = _method_body(_src(), "validate")
+    steps = [line.strip() for line in body.splitlines() if line.strip().startswith("self._")]
+    assert steps.index("self._validate_owner()") < steps.index("self._validate_no_cycle()")
+    assert steps.index("self._validate_no_cycle()") < steps.index("self._check_no_gaps_or_overlaps()")
+    assert CYCLE_TAIL.strip() in _src()
