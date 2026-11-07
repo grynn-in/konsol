@@ -694,6 +694,22 @@ _REFERENCE_TABLE_DDL = {
         "status String) "
         "ENGINE = MergeTree ORDER BY main_account"
     ),
+    # konsol#374 (option b; Deepak Pai, 7 Nov 2026): a Historical Equity Rate
+    # converts into ONE presentation currency, and to_currency is in the sort
+    # key so the EUR and the USD rate of one tranche are two rows, not one
+    # that ReplacingMergeTree collapses on merge. Last in ORDER BY and with no
+    # DEFAULT: an existing table is upgraded by _HISTORICAL_RATE_UPGRADE, and
+    # ClickHouse appends to a sorting key only the column that ALTER adds,
+    # without a default expression (konsolidat#246 measured it on 24.8). Owned
+    # here from now on; konsolidat tests/test_historical_equity_rates_ddl.py
+    # pins this string against init-db.sql.
+    "epm_staging.historical_equity_rates": (
+        "(consolidation_group String, data_area_id String, main_account String, "
+        "rate_date Date, historical_rate Decimal(18,6), to_currency LowCardinality(String), "
+        "updated_at DateTime DEFAULT now()) "
+        "ENGINE = ReplacingMergeTree(updated_at) "
+        "ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency)"
+    ),
     # F2: the flat tree. Listed here because _RETIRED_COLUMNS ALTERs it — on a
     # stack that has never run dbt the table would not exist, the ALTER would
     # fail, and the sync after it would fail too, invisibly.
@@ -1107,6 +1123,43 @@ def _widened_column_ddl():
     return out
 
 
+#: konsol#374: the one ALTER that gives an existing rates table the currency
+#: column AND the key. The two clauses must be one statement: MODIFY ORDER BY
+#: may only name a column the same ALTER adds. AFTER historical_rate puts the
+#: column where init-db.sql declares it, so a fresh and an upgraded table read
+#: the same.
+_HISTORICAL_RATE_TABLE = "epm_staging.historical_equity_rates"
+_HISTORICAL_RATE_UPGRADE = (
+    f"ALTER TABLE {_HISTORICAL_RATE_TABLE} "
+    "ADD COLUMN IF NOT EXISTS to_currency LowCardinality(String) AFTER historical_rate, "
+    "MODIFY ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency)"
+)
+
+
+def _historical_rate_key_upgrade_ddl():
+    """The ALTER that puts to_currency into an existing rates table's sort key,
+    or nothing (konsol#374).
+
+    Asked first, like _watermark_upgrade_ddl: an ALTER that changes nothing
+    still rewrites the table's metadata_modification_time, and a MODIFY ORDER
+    BY naming a column the statement did not add is refused outright. A
+    missing table is left to the CREATE that precedes this in
+    ensure_reference_tables, which gives it the new shape. Unreachable server:
+    [] (the next migrate asks again).
+    """
+    try:
+        key = execute(
+            "SELECT sorting_key FROM system.tables "
+            "WHERE database = 'epm_staging' AND name = 'historical_equity_rates'"
+        )
+    except Exception:  # noqa: BLE001 — unreachable: the next migrate asks again
+        return []
+    key = (key or "").strip()
+    if not key or "to_currency" in key:
+        return []
+    return [_HISTORICAL_RATE_UPGRADE]
+
+
 def _added_column_ddl(tables):
     return [f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS {c} {typ}"
             for t, cols in _ADDED_COLUMNS.items() if t in tables for c, typ in cols]
@@ -1158,6 +1211,10 @@ def ensure_reference_tables():
         *[f"CREATE TABLE IF NOT EXISTS {t} {body}"
           for t, body in _REFERENCE_TABLE_DDL.items()],
         *_added_column_ddl(_REFERENCE_TABLE_DDL),
+        # konsol#374: an existing rates table gets to_currency in its key by
+        # one ALTER, after the CREATE above has given a missing one the new
+        # shape, and before reconcile_all re-sends the rows with the column.
+        *_historical_rate_key_upgrade_ddl(),
         # konsol#353: asked when this list is built, before the CREATEs run.
         # A table that does not exist yet answers nothing, and its CREATE
         # above makes it wide; an existing one is widened after its CREATE.

@@ -23,9 +23,19 @@ MODULE = "konsol.patches.fill_historical_rate_to_currency"
 
 
 def _digest_name():
-    spec = importlib.util.spec_from_file_location("budget_grain_for_patch_test", GRAIN_PY)
-    grain = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(grain)
+    """The real digest_name. budget_grain imports frappe at module level and
+    uses it only in other functions, so a bare stub module satisfies the import."""
+    saved = sys.modules.get("frappe")
+    sys.modules["frappe"] = types.ModuleType("frappe")
+    try:
+        spec = importlib.util.spec_from_file_location("budget_grain_for_patch_test", GRAIN_PY)
+        grain = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(grain)
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe", None)
+        else:
+            sys.modules["frappe"] = saved
     return grain.digest_name
 
 
@@ -94,9 +104,19 @@ class _Stopped(Exception):
 
 
 def _load(site=None):
+    """Import the patch under ``site``'s stub frappe. budget_grain is stubbed
+    with the REAL digest_name read from its file, so the names the patch
+    computes are the controller's, without importing the konsol package
+    (whose __init__ needs frappe)."""
     site = site or _Site()
-    saved = {k: sys.modules.get(k) for k in ("frappe", "konsol.epm.budget_grain")}
-    sys.modules["frappe"] = site.module()
+    stubs = {
+        "frappe": site.module(),
+        "konsol": types.ModuleType("konsol"),
+        "konsol.epm": types.ModuleType("konsol.epm"),
+        "konsol.epm.budget_grain": types.SimpleNamespace(digest_name=_digest_name()),
+    }
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
     try:
         spec = importlib.util.spec_from_file_location("_fill_her_to_currency_under_test", PATCH_PY)
         patch = importlib.util.module_from_spec(spec)
@@ -166,7 +186,7 @@ def test_execute_reloads_the_doctype_then_sets_and_renames_each_blank_row():
     assert sets == [("set_value", "Historical Equity Rate", "HER-old", "to_currency", "USD", False)]
     renames = [c for c in site.calls if c[0] == "rename_doc"]
     assert len(renames) == 1 and renames[0][2] == "HER-old" and renames[0][4] is True
-    assert renames[0][3].startswith("HER-ZZGRP-ZZNL-ZZ3000-2024-01-01-USD-")
+    assert renames[0][3].startswith("HER-ZZGRP-ZZNL-ZZ3000-2024_01_01-USD-"), renames[0][3]
     # the already-filled row was not touched
     assert not [c for c in site.calls if c[0] in ("set_value", "rename_doc") and c[2] == "HER-done"]
 

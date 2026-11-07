@@ -127,6 +127,7 @@ def _controller(values=None, exists=None, digest=None):
 
     frappe.db = types.SimpleNamespace(get_value=get_value, exists=db_exists)
     frappe.throw = throw
+    frappe.whitelist = lambda *a, **k: (lambda f: f)
     frappe.ValidationError = _Refused
     frappe.MandatoryError = _Refused
     frappe._ = lambda s: s
@@ -142,9 +143,18 @@ def _controller(values=None, exists=None, digest=None):
     document.Document = Document
     model = types.ModuleType("frappe.model")
     if digest:
-        spec = importlib.util.spec_from_file_location("budget_grain_for_her_test", GRAIN_PY)
-        grain = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(grain)
+        # budget_grain imports frappe at module level: load it under the stub
+        saved_frappe = sys.modules.get("frappe")
+        sys.modules["frappe"] = frappe
+        try:
+            spec = importlib.util.spec_from_file_location("budget_grain_for_her_test", GRAIN_PY)
+            grain = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(grain)
+        finally:
+            if saved_frappe is None:
+                sys.modules.pop("frappe", None)
+            else:
+                sys.modules["frappe"] = saved_frappe
         digest_name = grain.digest_name
     else:
         digest_name = lambda *a: "HER-ZZ"  # noqa: E731
@@ -283,7 +293,9 @@ def test_two_rates_for_two_presentation_currencies_get_distinct_names():
     eur.autoname()
     usd.autoname()
     assert eur.name != usd.name, (eur.name, usd.name)
-    assert eur.name.startswith("HER-ZZSUB-ZZNL-ZZ3000-2024-01-01-EUR-"), eur.name
+    # digest_name slugs the readable head (the date's dashes become
+    # underscores) and appends the hash of the exact tuple.
+    assert eur.name.startswith("HER-ZZSUB-ZZNL-ZZ3000-2024_01_01-EUR-"), eur.name
     expected = hashlib.sha1("\x1f".join(
         ["ZZSUB", "ZZNL", "ZZ3000", "2024-01-01", "EUR"]).encode()).hexdigest()[:8]
     assert eur.name.endswith("-" + expected), eur.name

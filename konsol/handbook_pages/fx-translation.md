@@ -30,7 +30,7 @@ A Balance Sheet balance on an account translated at closing (not Equity) is tran
 
 ## Historical Equity Rate
 
-A rate for one entity and one equity account, from a **Rate Date**. A period uses the latest rate whose date is on or before the period's date. Before the first rate date, the account translates at the closing rate. The rate is recorded under the group that owns the entity, and every group above it uses the same rate.
+A rate for one entity and one equity account, from a **Rate Date**, into one **To Currency**. A period uses the latest rate whose date is on or before the period's date. Before the first rate date, the account translates at the closing rate. The rate is recorded under the group that owns the entity; a group above it applies the rate whose To Currency is its own reporting currency, so a sub-group presenting in EUR under a parent presenting in USD needs two rates for the same account. A group with no rate into its currency is named by the warehouse check and translates the account at the closing rate.
 
 ## CTA
 

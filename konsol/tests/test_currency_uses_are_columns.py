@@ -1,9 +1,9 @@
 """Every place currency_references counts as "using" a currency is a stored
 column. used_currencies() reads them with get_all(pluck=field); a virtual
 field there raises "Unknown column" and breaks sign-off and migrate on every
-site. Historical Equity Rate's from_currency / to_currency are virtual (#373),
-and derive from Entity.functional_currency and the group root's
-reporting_currency, which are counted already (PR #384 review, 5 Nov 2026)."""
+site. Historical Equity Rate's from_currency is virtual (#373) and derives
+from Entity.functional_currency, which is counted already (PR #384 review,
+5 Nov 2026); its to_currency is stored since konsol#374 and is counted."""
 import ast
 import glob
 import json
