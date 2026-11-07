@@ -371,3 +371,20 @@ def test_every_page_row_shows_an_explicit_open_close_control():
         assert needle in js, needle
     assert ".kh-chevron" in css and ".kh-page[open] .kh-chevron" in css
     assert "list-style: none" in css and "::-webkit-details-marker" in css
+
+
+def test_title_buttons_and_search_share_one_line_with_a_separator():
+    """Deepak Pai, 7 Nov 2026: "put konsol handbook, expand all/collapse all
+    buttons and search in the same line and put a separator". The tools never
+    wrap on a wide screen; only a narrow one may stack them."""
+    js = _read(os.path.join(BLOCK_DIR, "konsol_handbook.js"))
+    css = _read(os.path.join(BLOCK_DIR, "konsol_handbook.css"))
+    assert 'el("span", "kh-sep")' in js
+    order = [js.index(s) for s in ('"Expand all"', 'el("span", "kh-sep")', "tools.append(search)")]
+    assert order == sorted(order), order
+    head = css[css.index(".kh-head {"):]
+    head = head[:head.index("}")]
+    tools = css[css.index(".kh-tools {"):]
+    tools = tools[:tools.index("}")]
+    assert "flex-wrap: nowrap" in head and "flex-wrap: nowrap" in tools
+    assert ".kh-sep {" in css and "@media (max-width:" in css
