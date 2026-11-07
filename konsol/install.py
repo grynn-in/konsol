@@ -333,7 +333,9 @@ def after_migrate():
     _reconcile_clickhouse()
     _install_workflows()
     _ensure_indexes()
-    _setup_dashboard()
+    # No Konsolidat workspace any more (Desk IA, 7 Nov 2026): the shipped Dock,
+    # sidebars and workspaces are the navigation, and
+    # patches/delete_konsolidat_workspace.py removes the old copy.
     _install_custom_blocks()
     _retire_konsol_control_page()
     # Last: the Dimension and Measure hooks apply nothing during a migrate
@@ -446,18 +448,6 @@ def _retire_konsol_control_page():
     except Exception:
         frappe.logger().warning("konsol-control page retirement skipped", exc_info=True)
 
-
-def _setup_dashboard():
-    """Ensure the Konsolidat desk workspace exists. Best-effort — never fail a
-    migrate over a desk convenience (e.g. a doctype not yet present)."""
-    try:
-        from konsol.dashboard import setup_workspace
-        setup_workspace()
-    except Exception:
-        frappe.logger().warning(
-            "Konsolidat workspace setup skipped after migrate",
-            exc_info=True,
-        )
 
 
 def _reconcile_clickhouse():

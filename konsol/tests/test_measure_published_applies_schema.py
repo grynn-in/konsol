@@ -669,7 +669,7 @@ def _install_module(events):
     mod = _load(_INSTALL, "install_under_test_351")
     for step in ("_restore_asset_manifest", "create_roles", "_seed_iso_currencies",
                  "_sync_budget_line_custom_fields", "_reconcile_clickhouse",
-                 "_install_workflows", "_ensure_indexes", "_setup_dashboard",
+                 "_install_workflows", "_ensure_indexes",
                  "_retire_konsol_control_page"):
         assert hasattr(mod, step), step
         setattr(mod, step, (lambda s: lambda *a, **k: events.append((s, None)))(step))

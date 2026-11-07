@@ -577,6 +577,9 @@ ALLOWED = {
     # #305-W5-1 (story 9.4): reads signoff_rejected / signed_off events for
     # the preparer's "sent back" My work item.
     "close/mywork_api.py",
+    # Desk IA (7 Nov 2026): the doctype's Desk label only; the write checks
+    # below still apply to it.
+    "desk_labels.py",
 }
 WRITER = "close/close_event.py"
 FORBIDDEN = (

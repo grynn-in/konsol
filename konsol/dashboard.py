@@ -6,8 +6,11 @@ konsol-related shortcuts and workflow link cards — organized so every function
 process's doctypes/configs sit together (pipeline, model, reference, budgeting,
 consolidation, assertions, settings).
 
-Called best-effort from ``konsol.install.after_migrate`` so the dashboard is
-recreated on every ``bench migrate`` (and therefore survives a clean redeploy).
+No longer called on migrate (Desk IA, #443, 7 Nov 2026): the shipped Dock,
+sidebars and workspaces are the navigation, and
+``patches/delete_konsolidat_workspace.py`` deletes the Konsolidat workspace.
+Kept only because ``patches/retire_allocation.py`` still calls it; remove it
+when that patch is dropped.
 Everything self-filters to the doctypes actually installed on the site, so it is
 safe to run on any branch/phase — links to doctypes that don't exist yet are
 simply skipped.
