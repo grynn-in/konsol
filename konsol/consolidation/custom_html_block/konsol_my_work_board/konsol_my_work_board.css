@@ -1,0 +1,151 @@
+.konsol-mywork {
+	/* Columns stack on the block's own width, not the window's. */
+	container-type: inline-size;
+	color: var(--text-color);
+}
+.kmw-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: var(--margin-md);
+	margin-bottom: var(--margin-md);
+}
+.kmw-title {
+	font-weight: 600;
+	font-size: var(--text-lg);
+	color: var(--heading-color);
+}
+.kmw-tools {
+	display: flex;
+	gap: var(--margin-sm);
+}
+.kmw-board {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: var(--margin-md);
+	align-items: start;
+}
+@container (max-width: 720px) {
+	.kmw-board {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+.kmw-column {
+	background: var(--subtle-fg);
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius-md);
+	padding: var(--padding-sm);
+	display: flex;
+	flex-direction: column;
+	gap: var(--margin-sm);
+	border-top: 3px solid var(--gray-500);
+}
+.kmw-col-blocking {
+	border-top-color: var(--red-500);
+}
+.kmw-col-todo {
+	border-top-color: var(--primary);
+}
+.kmw-column-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	font-weight: 600;
+	color: var(--heading-color);
+	padding: 2px 4px;
+}
+.kmw-count {
+	border-radius: 999px;
+	background: var(--control-bg);
+	color: var(--text-muted);
+	padding: 0 8px;
+	font-size: var(--text-sm);
+}
+.kmw-card {
+	background: var(--card-bg);
+	border: 1px solid var(--border-color);
+	border-left: 3px solid var(--gray-400);
+	border-radius: var(--border-radius-md);
+	padding: var(--padding-sm) var(--padding-md);
+	box-shadow: var(--shadow-xs);
+}
+.kmw-blocking {
+	border-left-color: var(--red-500);
+}
+.kmw-todo {
+	border-left-color: var(--primary);
+}
+.kmw-card-head {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--margin-sm);
+	align-items: baseline;
+}
+.kmw-card-title {
+	font-weight: 600;
+	color: var(--heading-color);
+	overflow-wrap: anywhere;
+}
+.kmw-period,
+.kmw-owner,
+.kmw-empty,
+.kmw-loading,
+.kmw-detail,
+.kmw-fix-label {
+	color: var(--text-muted);
+	font-size: var(--text-sm);
+}
+.kmw-period {
+	white-space: nowrap;
+}
+.kmw-detail {
+	margin: 4px 0 0;
+	overflow-wrap: anywhere;
+}
+.kmw-fix {
+	margin-top: var(--margin-sm);
+}
+.kmw-fix-label {
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	font-size: var(--text-xs);
+}
+.kmw-steps {
+	margin: 2px 0 0;
+	padding-left: 1.2em;
+	font-size: var(--text-sm);
+}
+.kmw-no-go {
+	margin: var(--margin-sm) 0 0;
+	font-size: var(--text-sm);
+	color: var(--text-muted);
+	font-style: italic;
+}
+.kmw-meta {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--margin-sm);
+	margin-top: var(--margin-sm);
+	font-size: var(--text-sm);
+}
+.kmw-due {
+	color: var(--text-color);
+}
+.kmw-due.overdue {
+	color: var(--red-600);
+	font-weight: 600;
+}
+.kmw-handbook {
+	color: var(--primary);
+}
+.kmw-go {
+	margin-left: auto;
+}
+.kmw-error {
+	color: var(--red-600);
+}
+.kmw-message {
+	color: var(--text-muted);
+}

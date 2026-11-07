@@ -43,7 +43,9 @@ Rules:
   ``since_reason: "configuration gap"`` — the screen shows nothing it was
   not sent, never an invented age.
 """
+import json
 import re
+from urllib.parse import urlencode
 
 GAPS = ("first_close", "self_approval", "rate_move", "statement_accounts", "commentary_threshold",
         "iso_currency", "iso_currency_unused", "chart", "ic_accounts", "ic_tolerance", "ic_rule", "ic_rule_ambiguous", "frequency",
@@ -86,6 +88,16 @@ _IC_RULE_GAPS = {
     "ic_unrealized_profit_rule_ambiguous": ("ic_rule_ambiguous",
                                             "More than one unrealised-profit rule for"),
 }
+
+
+def _desk_list(path, names):
+    """A Desk list filtered to ``names`` (konsol#419: Go opens what the item
+    names). The list view reads a JSON ``["in", [...]]`` query value as an
+    ``in`` filter (frappe list_view.parse_filters_from_route_options)."""
+    names = sorted(set(names or ()))
+    if not names:
+        return path
+    return path + "?" + urlencode({"name": json.dumps(["in", names])})
 
 
 def _declared(first_close):
@@ -132,8 +144,11 @@ def setup_gap_items(facts):
                            "/desk/close-settings"))
     for gap in facts["policy_gaps"] or ():
         gap_id, title = _POLICY_GAPS[gap["code"]]
-        items.append(_item(gap_id, title, gap["message"], "EPM Admin",
-                           _POLICY_GAP_DESKS.get(gap_id, "/desk/close-settings"),
+        desk = _POLICY_GAP_DESKS.get(gap_id, "/desk/close-settings")
+        if gap_id in _POLICY_GAP_DESKS:
+            # konsol#419: the ISO Currency list, filtered to the currencies named.
+            desk = _desk_list(desk, gap.get("currencies"))
+        items.append(_item(gap_id, title, gap["message"], "EPM Admin", desk,
                            kind=_POLICY_GAP_KINDS.get(gap_id, "blocking")))
     if not facts["chart_published"]:
         items.append(_item("chart", "Group chart not published",
@@ -165,7 +180,8 @@ def setup_gap_items(facts):
     freq = sorted(set(facts["frequency_missing"] or ()))
     if freq:
         items.append(_item("frequency", f"Reporting frequency missing for {_entities(len(freq))}",
-                           ", ".join(freq), "EPM Admin", "/desk/entity", entities=freq))
+                           ", ".join(freq), "EPM Admin", _desk_list("/desk/entity", freq),
+                           entities=freq))
     own = sorted(set(facts["ownership_missing"] or ()))
     if own:
         items.append(_item("ownership", f"Ownership missing for {_entities(len(own))}",
