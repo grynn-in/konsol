@@ -65,7 +65,12 @@ def _frappe_stub(conf, user_row, roles, session_counts):
         return [(n,)]
 
     frappe.whitelist = decorator_recorder("whitelist")
-    frappe.rate_limit = decorator_recorder("rate_limit")
+    # the decorator lives in frappe.rate_limiter (v15 and v16); a bare frappe.rate_limit does not exist
+    # and broke the module import on the live v16 stack (7 Nov 2026)
+    rate_limiter = types.ModuleType("frappe.rate_limiter")
+    rate_limiter.rate_limit = decorator_recorder("rate_limit")
+    frappe.rate_limiter = rate_limiter
+    sys.modules["frappe.rate_limiter"] = rate_limiter
     frappe.throw = throw
     frappe.conf = dict(conf)
     frappe.db = types.SimpleNamespace(get_value=get_value, sql=sql, set_value=calls.rec("set_value"))

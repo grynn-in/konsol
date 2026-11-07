@@ -31,6 +31,7 @@ The rule (who may be logged in, and why not) is `konsol.demo_mode_model.decide`.
 """
 import frappe
 from frappe import _
+from frappe.rate_limiter import rate_limit
 
 from konsol.demo_mode_model import OFF_REASON, Decision, decide
 
@@ -43,7 +44,7 @@ USER_FIELDS = ["name", "enabled", "user_type"]
 #: Where a demo visitor lands (the v16 Desk; a v15 stack has no /desk route).
 LANDING = "/desk"
 
-#: try_demo's throttle, per client IP (frappe.rate_limit): a GET that writes
+#: try_demo's throttle, per client IP (frappe.rate_limiter.rate_limit; there is no frappe.rate_limit): a GET that writes
 #: a session row and a User update, open to Guests, must not be free.
 RATE_LIMIT = 10
 RATE_SECONDS = 60
@@ -67,7 +68,7 @@ def decision() -> Decision:
 
 
 @frappe.whitelist(allow_guest=True, methods=["GET"])
-@frappe.rate_limit(limit=RATE_LIMIT, seconds=RATE_SECONDS)
+@rate_limit(limit=RATE_LIMIT, seconds=RATE_SECONDS)
 def try_demo():
     """Log the visitor in as the demo user and redirect to the Desk.
 
