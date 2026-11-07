@@ -17,12 +17,13 @@
  * read on (WCAG AA 4.5:1), so the white label is safe on every accepted one.
  */
 
-/* A heading is a green band with white text, 24px tall instead of 28px.
+/* A heading is a green band with white text, 24px tall instead of 28px, with
+ * nearly square corners (2px; "less rounded", Deepak Pai, 7 Nov 2026).
  * Frappe sets the heading ink with !important (sidebar.scss .section-break). */
 :is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Budget"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break {
 	background-color: var(--konsol-brand, var(--primary));
 	color: var(--white) !important;
-	border-radius: var(--radius);
+	border-radius: 2px;
 	height: 24px;
 }
 
