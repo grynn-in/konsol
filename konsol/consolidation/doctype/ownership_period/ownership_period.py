@@ -88,6 +88,7 @@ class OwnershipPeriod(Document):
         self._validate_deal_fields_untouched()
         self._validate_node_exists()
         self._validate_pct_range()
+        self._validate_consolidation_method()
         self._validate_dates_representable()
         self._check_no_gaps_or_overlaps()
 
@@ -264,6 +265,25 @@ class OwnershipPeriod(Document):
             frappe.throw(
                 f"ownership_pct must be between 0 and 100 (got {self.ownership_pct}). "
                 f"0 is allowed and means 0 — it is not a way to say 'unknown'."
+            )
+
+    def _validate_consolidation_method(self):
+        """Refuse a method the warehouse does not compute (konsol#429).
+
+        gold_consolidated_trial_balance excludes only ``equity`` and ``none``
+        and computes group_amount = translated x pct and nci_amount =
+        translated x (1 - pct) with no method branch, so a period declared
+        ``proportional`` consolidates as a full subsidiary with NCI. Proportional
+        consolidation is the venturer's share of each line with no NCI: the
+        number would be wrong and nothing would say so. The Select keeps the
+        option (#117 decides whether to implement it for IFRS 11 joint
+        operations or drop it); this guard is what makes it safe to offer.
+        """
+        if self.consolidation_method == "proportional":
+            frappe.throw(
+                "Proportional consolidation is not implemented (konsol#429): the "
+                "warehouse would consolidate this period as full with NCI, which is "
+                "not proportional consolidation. Use full with NCI, or equity."
             )
 
     #: the old doctype default for "open ended", which ClickHouse cannot hold
