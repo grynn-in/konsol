@@ -14,6 +14,7 @@ import ast
 import importlib.util
 import json
 import os
+import re
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(_HERE)
@@ -71,3 +72,45 @@ def test_an_unknown_scope_is_refused_not_defaulted_to_high():
         else:
             raise AssertionError(f"an unknown scope was accepted (workflow={workflow})")
         assert "ZZ-BA-0001" not in site.rows
+
+
+def test_a_missing_scope_is_refused():
+    site = _harness._Site()
+    try:
+        site.insert(None)
+    except site.frappe.ValidationError as exc:
+        assert "None" in str(exc), str(exc)
+    else:
+        raise AssertionError("a build with no scope was accepted")
+    assert "ZZ-BA-0001" not in site.rows
+
+
+def _scopes_callers_pass():
+    """The scopes konsol's own code can put on a Build Approval: the
+    build_scope fixture, and the literals its callers pass (DOCTYPE_BUILD_MAP's
+    "scope", every BUILD_SCOPE constant, schema_lifecycle's publish scope)."""
+    with open(os.path.join(APP_DIR, "fixtures", "build_scope.json")) as f:
+        fixture = {row["name"] for row in json.load(f)}
+    produced = set()
+    pattern = re.compile(r'(?:"scope":\s*|BUILD_SCOPE\s*=\s*)"([a-z_]+)"')
+    for root, dirs, files in os.walk(APP_DIR):
+        dirs[:] = [d for d in dirs if d not in ("tests", "node_modules", "__pycache__")]
+        for fn in files:
+            if fn.endswith(".py"):
+                with open(os.path.join(root, fn)) as f:
+                    produced |= set(pattern.findall(f.read()))
+    return fixture, produced
+
+
+def test_the_caller_scan_finds_the_scopes():
+    """A guard on the scan below: if it found nothing it would check nothing."""
+    fixture, produced = _scopes_callers_pass()
+    assert "reporting" in fixture, fixture
+    assert {"full", "chart", "consolidation", "reporting"} <= produced, produced
+
+
+def test_every_scope_a_caller_passes_is_an_option_with_a_declared_risk():
+    fixture, produced = _scopes_callers_pass()
+    scopes = fixture | produced
+    assert scopes <= set(_scope_options()), scopes - set(_scope_options())
+    assert scopes <= set(_scope_risk()), scopes - set(_scope_risk())

@@ -264,11 +264,13 @@ def publish_dimension(name):
         frappe.throw(f"Dimension '{name}' not found", frappe.DoesNotExistError)
 
     doc = frappe.get_doc("Dimension", name)
-    doc.publish()
+    # The Build Approval queued, or the pending one debounced onto (konsol#301).
+    build_approval = doc.publish()
     doc.reload()
 
     return {
         "published": True,
+        "build_approval": build_approval,
         "dimension": _dimension_row(doc),
     }
 
@@ -279,11 +281,13 @@ def unpublish_dimension(name):
         frappe.throw(f"Dimension '{name}' not found", frappe.DoesNotExistError)
 
     doc = frappe.get_doc("Dimension", name)
-    doc.unpublish()
+    # The Build Approval queued, or the pending one debounced onto (konsol#301).
+    build_approval = doc.unpublish()
     doc.reload()
 
     return {
         "unpublished": True,
+        "build_approval": build_approval,
         "dimension": _dimension_row(doc),
     }
 

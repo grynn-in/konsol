@@ -740,3 +740,19 @@ def test_upsert_reports_the_build_approval_its_save_queued():
         _reset()
         result = config_service.upsert_dimension(_spec_for("Published"), publish=publish)
         assert result.get("build_approval") == "ZZ-BAPR-1", (publish, result)
+
+
+def test_publish_dimension_reports_the_build_approval():
+    """The CLI/MCP publish endpoint names the approval its publish queued, or
+    the pending one it was debounced onto, as upsert_dimension does (konsol#301)."""
+    _reset()
+    _stored("Draft")
+    result = config_service.publish_dimension(NAME)
+    assert result.get("build_approval") == "ZZ-BAPR-1", result
+
+
+def test_unpublish_dimension_reports_the_build_approval():
+    _reset()
+    _stored("Published")
+    result = config_service.unpublish_dimension(NAME)
+    assert result.get("build_approval") == "ZZ-BAPR-1", result
