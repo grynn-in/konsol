@@ -375,10 +375,11 @@ _D = datetime.date
 
 
 def _row(name, effective, end=None, docstatus=1, group="ZZG", entity="ZZ01",
-         owner="CG-ZZG-", owner_label="ZZG", pct=80.0):
+         owner="CG-ZZG-", owner_label="ZZG", pct=80.0, supersedes=None):
     return types.SimpleNamespace(name=name, consolidation_group=group, data_area_id=entity,
                                  owner_node=owner, owner_label=owner_label, ownership_pct=pct,
-                                 effective_date=effective, end_date=end, docstatus=docstatus)
+                                 effective_date=effective, end_date=end, docstatus=docstatus,
+                                 supersedes=supersedes)
 
 
 class _Stored:
@@ -1040,6 +1041,27 @@ def test_117_total_issued_ignores_cancelled_links_and_the_superseded_predecessor
                     superseded_end_date=None)
     assert _refusal(doc) == (
         "`ZZ03` is already 30% owned in 2026-07-01..open (`ZZG` 30%); this 71% would exceed 100%.")
+
+
+def test_117_a_draft_change_ends_the_period_it_supersedes_for_the_total():
+    """PR #449 review, finding 4: the sweep summed every non-cancelled period,
+    drafts included, so a Desk ownership-change draft superseding a still-open
+    submitted period was counted on top of it. A period another non-cancelled
+    period supersedes ends the day before that successor starts. ZZ01 holds
+    60% open; a draft change to 70% from 2027-01-01 supersedes it; ZZ02's 30%
+    from 2026-06-01 is accepted (totals 90, then 100, never 130), 31% is not."""
+    a = _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1))
+    change = _link("OP-ZZ01-ZZ03-2027-01-01", "CG-ZZG-ZZ01", "ZZ01", 70, _D(2027, 1, 1),
+                   docstatus=0, supersedes=a.name)
+    module, _, _ = _site([a, change], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ02", 30, "2026-06-01").validate()
+    doc = _new_link(module, "CG-ZZG-ZZ02", 31, "2026-06-01")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 70% owned in 2027-01-01..open (`ZZ01` 70%); this 31% would exceed 100%.")
+    # before the change starts, the predecessor's 60% is what counts
+    doc = _new_link(module, "CG-ZZG-ZZ02", 41, "2026-06-01", "2026-12-31")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 60% owned in 2026-06-01..2026-12-31 (`ZZ01` 60%); this 41% would exceed 100%.")
 
 
 def test_117_gaps_and_overlaps_are_checked_per_owner_owned_edge():
