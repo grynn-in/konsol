@@ -26,9 +26,10 @@ or whose tree parent is not a node stops the migrate naming the period:
 guessing an owner would invent a link. Nothing is written when any row fails.
 A CANCELLED period in that state is the audit trail of a link that is gone
 (its node may have been deleted since) and is read by nothing — the sync
-sends ``docstatus = 1`` only — so it is skipped and reported by name, not
-fatal (PR #449 review, finding 6); a cancelled period whose node exists is
-still filled. Idempotent: a second run finds every ``owner_node`` filled and
+sends ``docstatus = 1`` only — so it is skipped and reported by name, on
+stdout and as an Error Log titled after this patch (PR #449 review, finding
+6; PR #459 re-review, finding I), not fatal; a cancelled period whose node
+exists is still filled. Idempotent: a second run finds every ``owner_node`` filled and
 writes nothing.
 
 Runs before the model sync (konsol's patches.txt has no sections), so it
@@ -106,9 +107,19 @@ def execute():
         limit_page_length=0,
     )
     updates, problems, skipped = plan(rows, nodes)
-    for name, reason in sorted(skipped):
-        print(f"add_owner_to_ownership_periods: cancelled Ownership Period {name} left without "
-              f"an owner ({reason}); it is the audit trail of a link that is gone and is read by nothing.")
+    if skipped:
+        # On stdout for the migrate's operator, and as an Error Log so the skip
+        # is still visible in Desk afterwards (PR #459 re-review, finding I).
+        lines = [f"{name}: {reason}" for name, reason in sorted(skipped)]
+        for line in lines:
+            print(f"add_owner_to_ownership_periods: cancelled Ownership Period {line}; left without "
+                  f"an owner, it is the audit trail of a link that is gone and is read by nothing.")
+        frappe.log_error(
+            title="add_owner_to_ownership_periods: cancelled Ownership Periods left without an owner",
+            message=("These cancelled Ownership Periods could not be given an owner and were skipped. "
+                     "Each is the audit trail of a link that is gone and is read by nothing (the "
+                     "warehouse sync sends submitted rows only).\n" + "\n".join(lines)),
+        )
     if problems:
         detail = "; ".join(f"{name}: {reason}" for name, reason in sorted(problems))
         frappe.throw(
