@@ -48,6 +48,12 @@ def chart(labels, datasets):
             "datasets": [{"name": name, "values": list(values)} for name, values in datasets]}
 
 
+def _amount(value):
+    """``value`` as a float, with -0.0 (the P&L sign flip of an empty
+    period) made 0.0."""
+    return float(value) + 0.0
+
+
 def _key(value):
     return int(value[0]), int(value[1])
 
@@ -122,7 +128,7 @@ def pl_trend(keys, statements, heading, currency):
         if len(net) != 1:
             raise ValueError("the statement for %s has %d net result lines"
                              % (period_name(*key), len(net)))
-        result.append(float(net[0]["current"]))
+        result.append(_amount(net[0]["current"]))
         if heading:
             line = next((line for line in lines if line.get("kind") == "heading"
                          and line.get("heading") == heading), None)
@@ -130,7 +136,7 @@ def pl_trend(keys, statements, heading, currency):
                 raise ValueError(
                     "the Net Sales Heading %s is not a Profit and Loss heading of the published "
                     "chart; correct it in Close Settings" % heading)
-            sales.append(float(line["current"]))
+            sales.append(_amount(line["current"]))
         else:
             sales.append(0)
     unit = " (%s)" % currency if currency else ""

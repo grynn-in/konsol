@@ -34,8 +34,9 @@ The readers:
    items, as My work);
 5. closing vs average rate: submitted Group Exchange Rates of the current
    year into the default group's reporting currency, for the three
-   functional currencies the most Active entities hold (get_list), each
-   quote made a rate by ``group_rates.true_rate``;
+   functional currencies held by the most Active entities the caller can
+   see (get_list; none is the chart's note), each quote made a rate by
+   ``group_rates.true_rate``;
 6. entities by status: Entity (not group nodes) by ``status`` (get_list);
 7. days to close: ``signoff_gate.latest_signed_runs`` (the periods whose
    latest run is signed) against each period's end date.
@@ -216,17 +217,21 @@ def closing_vs_average_rate(chart_name=None, filters=None, refresh=None, time_in
                                pluck="functional_currency", limit_page_length=0,
                                order_by="name asc")
         top = model.top_currencies(held, currency, TOP_CURRENCIES)
+        if not top:
+            # An empty chart would read as "no rate approved" (review of the
+            # live check, 7 Nov): say why there is no currency to chart.
+            _unavailable(title, "none of the Active entities you can see holds a currency "
+                         "other than %s" % currency)
         rows = []
-        if top:
-            for row in frappe.get_list(
-                    "Group Exchange Rate",
-                    filters={"docstatus": 1, "fiscal_year": key[0], "to_currency": currency,
-                             "from_currency": ["in", top]},
-                    fields=["from_currency", "rate_type", "fiscal_year", "fiscal_period",
-                            "quote", "quoted_per"],
-                    limit_page_length=0, order_by="name asc"):
-                row["rate"] = group_rates.true_rate(row["quote"], row["quoted_per"])
-                rows.append(row)
+        for row in frappe.get_list(
+                "Group Exchange Rate",
+                filters={"docstatus": 1, "fiscal_year": key[0], "to_currency": currency,
+                         "from_currency": ["in", top]},
+                fields=["from_currency", "rate_type", "fiscal_year", "fiscal_period",
+                        "quote", "quoted_per"],
+                limit_page_length=0, order_by="name asc"):
+            row["rate"] = group_rates.true_rate(row["quote"], row["quoted_per"])
+            rows.append(row)
         return model.rates(_keys(states), top, rows)
 
     return _shown(title, build)
