@@ -135,6 +135,16 @@ def test_pl_trend_reads_net_result_and_the_declared_heading():
     assert _values(chart) == {"Net sales (USD)": [100.0, 0.0], "Net result (USD)": [10.0, -5.0]}
 
 
+def test_pl_trend_never_sends_negative_zero():
+    """The statement flips the P&L sign, so an empty period comes back as
+    Decimal('-0.00'); measured live (7 Nov), the chart got -0.0."""
+    from decimal import Decimal
+    m = _model()
+    chart = m.pl_trend([P1], {P1: _statement(Decimal("-0.00"), Decimal("-0.00"))}, "4", "USD")
+    for values in _values(chart).values():
+        assert [str(v) for v in values] == ["0.0"]
+
+
 def test_pl_trend_names_an_undeclared_heading_rather_than_guessing_one():
     m = _model()
     chart = m.pl_trend([P1], {P1: _statement(10, 100)}, None, "USD")
@@ -410,6 +420,17 @@ def test_closing_vs_average_rate_reads_submitted_rates_into_the_group_currency()
     (filters,) = [f for dt, f in site.calls if dt == "Group Exchange Rate"]
     assert filters["docstatus"] == 1 and filters["to_currency"] == "USD"
     assert filters["fiscal_year"] == 2025
+
+
+def test_closing_vs_average_rate_with_no_foreign_currency_in_view_is_a_note():
+    """Measured live (7 Nov): an EPM User scoped to one USD entity got an
+    empty chart, which the widget shows as "no rate approved". The note says
+    why instead."""
+    site = _Site(lists={"Entity": [{"functional_currency": "USD"}]})
+    api, frappe = _api(site)
+    with pytest.raises(frappe.ValidationError, match="other than USD"):
+        api.closing_vs_average_rate()
+    assert not [dt for dt, _f in site.calls if dt == "Group Exchange Rate"]
 
 
 def test_closing_vs_average_rate_with_several_groups_is_a_note():
