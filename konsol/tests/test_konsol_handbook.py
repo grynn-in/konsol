@@ -387,4 +387,6 @@ def test_title_buttons_and_search_share_one_line_with_a_separator():
     tools = css[css.index(".kh-tools {"):]
     tools = tools[:tools.index("}")]
     assert "flex-wrap: nowrap" in head and "flex-wrap: nowrap" in tools
-    assert ".kh-sep {" in css and "@media (max-width:" in css
+    # Wrap on the block's width (a container query), never the window's.
+    assert ".kh-sep {" in css and "@container (max-width:" in css and "@media (max-width:" not in css
+    assert "container-type: inline-size" in css and "min-width: 120px" in css

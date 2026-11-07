@@ -1,4 +1,7 @@
 .konsol-handbook {
+	/* The header wraps on the block's own width, not the window's: the Desk
+	   sidebar can leave a wide window with a narrow block (#417 review). */
+	container-type: inline-size;
 	border: 1px solid var(--border-color);
 	border-radius: var(--border-radius-md);
 	padding: var(--padding-lg);
@@ -36,10 +39,10 @@
 	background: var(--border-color);
 }
 .kh-search {
-	width: 260px;
-	max-width: 100%;
+	flex: 0 1 260px;
+	min-width: 120px;
 }
-@media (max-width: 640px) {
+@container (max-width: 640px) {
 	.kh-head,
 	.kh-tools {
 		flex-wrap: wrap;
