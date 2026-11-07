@@ -250,7 +250,7 @@ def test_shape_1_emits_two_paths_to_d_with_distinct_path_ids():
     """From P, two paths reach D: P/A/D (two links) and P/D (one). A's own
     path to D (A/D) keys under (P, D) as well, because A is an entity node
     under P and the row's group is the ancestor's group code, which is how the
-    live tree reads (every node's group code is ECL_GROUP). path_id is what
+    live tree reads (every node there carries the one group code). path_id is what
     tells the paths apart; today's rows could not."""
     _, ancestry = _rows(SHAPE_1, SHAPE_1_LINKS)
     to_d = sorted(tuple(r) for r in ancestry if r[0] == "P" and r[1] == "D")
