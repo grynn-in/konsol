@@ -675,14 +675,17 @@ def _node_site(nodes):
 
     def get_value(doctype, filters, fields, as_dict=False):
         assert doctype == "Consolidation Group", doctype
-        assert fields == ["name", "parent_consolidation_group"] and as_dict, (fields, as_dict)
+        # PR #449 review, finding 8: the owned node is read as the
+        # ``_NODE_FIELDS`` row ``owner_refusal`` documents, through node_by_key.
+        assert fields == module._NODE_FIELDS and as_dict, (fields, as_dict)
         asked.append(filters)
         entity = filters["data_area_id"]
         entity = "" if entity == ["is", "not set"] else entity
         key = (filters["consolidation_group"], entity)
         if key not in nodes:
             return None
-        return types.SimpleNamespace(name=f"CG-{key[0]}-{key[1]}", parent_consolidation_group=nodes[key])
+        return types.SimpleNamespace(name=f"CG-{key[0]}-{key[1]}", consolidation_group=key[0],
+                                     data_area_id=entity or None, parent_consolidation_group=nodes[key])
 
     module.frappe.db = types.SimpleNamespace(get_value=get_value)
     return module, asked

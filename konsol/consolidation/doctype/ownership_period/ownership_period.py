@@ -114,6 +114,20 @@ def node_by_name(name):
     return frappe.db.get_value("Consolidation Group", name, _NODE_FIELDS, as_dict=True)
 
 
+def node_by_key(group, entity):
+    """The Consolidation Group node ``(group, entity)`` names — the entity's
+    node in that group, or the group's own node when ``entity`` is blank — as
+    a row with ``_NODE_FIELDS``, or None. The one node-by-key read: this
+    doctype's ``_node``, the cycle walk, the Business Combination's acquired
+    node and the Business Disposal's disposed node all go through it (PR #449
+    review, findings 8 and 9)."""
+    return frappe.db.get_value(
+        "Consolidation Group",
+        {"consolidation_group": group, "data_area_id": entity or _BLANK},
+        _NODE_FIELDS, as_dict=True,
+    )
+
+
 def node_root(node):
     """The name of the root of the hierarchy ``node`` sits in, by walking
     tree parents (a NestedSet has no cycles; the live tree is six deep at
@@ -338,14 +352,9 @@ class OwnershipPeriod(Document):
             )
 
     def _node(self):
-        """The Consolidation Group node this period describes, or None."""
-        return frappe.db.get_value(
-            "Consolidation Group",
-            {"consolidation_group": self.consolidation_group,
-             "data_area_id": self.data_area_id or _BLANK},
-            ["name", "parent_consolidation_group"],
-            as_dict=True,
-        )
+        """The owned Consolidation Group node, as a ``_NODE_FIELDS`` row (the
+        row ``owner_refusal`` documents), or None."""
+        return node_by_key(self.consolidation_group, self.data_area_id)
 
     def _validate_node_exists(self):
         """A period must describe a real node, and not a root.
@@ -420,11 +429,19 @@ class OwnershipPeriod(Document):
     def _validate_no_cycle(self):
         """§1 refusal 3: this link may not close a ring.
 
-        From the OWNED node, follow the outgoing non-cancelled links (owner →
-        owned, ``docstatus != 2``, undated: a link that ended years ago still
-        closes the ring) and refuse when the OWNER node is reached, naming
-        every node on the path owner → owned → … → owner. The self-link is
-        the one-node case and ``_validate_owner`` has already refused it.
+        From the OWNED node, follow the outgoing edges and refuse when the
+        OWNER node is reached, naming every node on the path owner → owned →
+        … → owner. The self-link is the one-node case and ``_validate_owner``
+        has already refused it. A node's outgoing edges are its non-cancelled
+        links (owner → owned, ``docstatus != 2``, undated: a link that ended
+        years ago still closes the ring) PLUS its tree children that no
+        submitted link names: ``ConsolidationGroup.build_rows`` owns such a
+        child by its tree parent, so that implicit edge closes a ring as
+        surely as a link does, and a ring that passed here raised
+        OwnershipCycle at every reconcile (PR #449 review, finding 2).
+        Submitted, because that is what ``build_rows`` reads (``_links``): a
+        draft into the child is not yet a link there, so until it is
+        submitted the tree edge stands and so does any ring through it.
 
         Two links saved concurrently could each pass the walk under REPEATABLE
         READ (each transaction reads its own snapshot). The check first takes
@@ -464,23 +481,57 @@ class OwnershipPeriod(Document):
             values.append(self.name)
         return frappe.db.sql(query + " FOR UPDATE", tuple(values), as_dict=True)
 
+    def _nodes_a_submitted_link_names(self):
+        """The ``(group, entity)`` keys of every node a submitted link names,
+        read FOR UPDATE once per walk; this document's own stored row is not
+        one. A tree child outside this set is owned by its tree parent in
+        ``build_rows``, so the walk follows that edge too."""
+        query = ("SELECT `consolidation_group`, `data_area_id` FROM `tabOwnership Period` "
+                 "WHERE `docstatus` = 1")
+        values = []
+        if self.name:
+            query += " AND `name` != %s"
+            values.append(self.name)
+        return {(r.consolidation_group, r.data_area_id or None)
+                for r in frappe.db.sql(query + " FOR UPDATE", tuple(values), as_dict=True)}
+
+    @staticmethod
+    def _tree_children_of(node_name):
+        """The Consolidation Group nodes whose tree parent is ``node_name``."""
+        return frappe.get_all(
+            "Consolidation Group", filters={"parent_consolidation_group": node_name},
+            fields=_NODE_FIELDS, limit_page_length=0, order_by="name asc")
+
     def _path_between(self, start, target):
-        """Depth-first over outgoing links from node ``start``: the labels
-        (entity code, else group code) of the nodes after ``start`` on a path
-        that reaches ``target``, or None when none does. A ``visited`` set
-        keeps a graph that already holds a ring (through a patch or an import)
-        from looping; the live tree is six links deep at most."""
+        """Depth-first over the outgoing edges of node ``start`` (its links,
+        and its tree children no submitted link names): the labels (entity
+        code, else group code) of the nodes after ``start`` on a path that
+        reaches ``target``, or None when none does. A ``visited`` set keeps a
+        graph that already holds a ring (through a patch or an import) from
+        looping; the live tree is six links deep at most."""
         names = {}   # (group, entity) -> node name, one lookup per node
+        linked = None   # the nodes a submitted link names, read when first needed
 
         def node_name(group, entity):
             key = (group, entity or None)
             if key not in names:
-                row = frappe.db.get_value(
-                    "Consolidation Group",
-                    {"consolidation_group": group, "data_area_id": entity or _BLANK},
-                    _NODE_FIELDS, as_dict=True)
+                row = node_by_key(group, entity)
                 names[key] = row.name if row else None
             return names[key]
+
+        def edges_out_of(node):
+            """(label, next node name) for every outgoing edge of ``node``."""
+            nonlocal linked
+            for link in self._links_out_of(node):
+                nxt = node_name(link.consolidation_group, link.data_area_id)
+                if nxt is not None:   # a link into a node that no longer exists is read by nothing
+                    yield link.data_area_id or link.consolidation_group, nxt
+            for child in self._tree_children_of(node):
+                if linked is None:
+                    linked = self._nodes_a_submitted_link_names()
+                if (child.consolidation_group, child.data_area_id or None) not in linked:
+                    names[(child.consolidation_group, child.data_area_id or None)] = child.name
+                    yield child.data_area_id or child.consolidation_group, child.name
 
         visited, stack = set(), [(start, [])]
         while stack:
@@ -488,11 +539,7 @@ class OwnershipPeriod(Document):
             if node in visited:
                 continue
             visited.add(node)
-            for link in self._links_out_of(node):
-                label = link.data_area_id or link.consolidation_group
-                nxt = node_name(link.consolidation_group, link.data_area_id)
-                if nxt is None:
-                    continue   # a link into a node that no longer exists is read by nothing
+            for label, nxt in edges_out_of(node):
                 if nxt == target:
                     return trail + [label]
                 if nxt not in visited:
