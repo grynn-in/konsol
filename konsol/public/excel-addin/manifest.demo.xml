@@ -7,7 +7,7 @@
   xsi:type="TaskPaneApp">
 
   <Id>c3d7e9f1-2a4b-5c6d-8e0f-1a2b3c4d5e6f</Id>
-  <Version>2.0.1.0</Version>
+  <Version>2.0.2.0</Version>
   <ProviderName>Konsolidat</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Konsolidat" />
@@ -94,6 +94,36 @@
                     <SourceLocation resid="KonsolidatAddin.Url" />
                   </Action>
                 </Control>
+                <Control xsi:type="Button" id="RefreshSheetButton">
+                  <Label resid="RefreshSheet.Label" />
+                  <Supertip>
+                    <Title resid="RefreshSheet.Label" />
+                    <Description resid="RefreshSheet.Tooltip" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16x16" />
+                    <bt:Image size="32" resid="Icon.32x32" />
+                    <bt:Image size="80" resid="Icon.80x80" />
+                  </Icon>
+                  <Action xsi:type="ExecuteFunction">
+                    <FunctionName>refreshSheet</FunctionName>
+                  </Action>
+                </Control>
+                <Control xsi:type="Button" id="RefreshWorkbookButton">
+                  <Label resid="RefreshWorkbook.Label" />
+                  <Supertip>
+                    <Title resid="RefreshWorkbook.Label" />
+                    <Description resid="RefreshWorkbook.Tooltip" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16x16" />
+                    <bt:Image size="32" resid="Icon.32x32" />
+                    <bt:Image size="80" resid="Icon.80x80" />
+                  </Icon>
+                  <Action xsi:type="ExecuteFunction">
+                    <FunctionName>refreshWorkbook</FunctionName>
+                  </Action>
+                </Control>
               </Group>
             </OfficeTab>
           </ExtensionPoint>
@@ -130,6 +160,36 @@
                     <SourceLocation resid="KonsolidatAddin.Url" />
                   </Action>
                 </Control>
+                <Control xsi:type="Button" id="RefreshSheetWebButton">
+                  <Label resid="RefreshSheet.Label" />
+                  <Supertip>
+                    <Title resid="RefreshSheet.Label" />
+                    <Description resid="RefreshSheet.Tooltip" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16x16" />
+                    <bt:Image size="32" resid="Icon.32x32" />
+                    <bt:Image size="80" resid="Icon.80x80" />
+                  </Icon>
+                  <Action xsi:type="ExecuteFunction">
+                    <FunctionName>refreshSheet</FunctionName>
+                  </Action>
+                </Control>
+                <Control xsi:type="Button" id="RefreshWorkbookWebButton">
+                  <Label resid="RefreshWorkbook.Label" />
+                  <Supertip>
+                    <Title resid="RefreshWorkbook.Label" />
+                    <Description resid="RefreshWorkbook.Tooltip" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16x16" />
+                    <bt:Image size="32" resid="Icon.32x32" />
+                    <bt:Image size="80" resid="Icon.80x80" />
+                  </Icon>
+                  <Action xsi:type="ExecuteFunction">
+                    <FunctionName>refreshWorkbook</FunctionName>
+                  </Action>
+                </Control>
               </Group>
             </OfficeTab>
           </ExtensionPoint>
@@ -153,10 +213,14 @@
         <bt:String id="CommandsGroup.Label" DefaultValue="Konsolidat" />
         <bt:String id="TaskpaneButton.Label" DefaultValue="Konsolidat" />
         <bt:String id="Functions.Namespace" DefaultValue="K" />
+        <bt:String id="RefreshSheet.Label" DefaultValue="Refresh sheet" />
+        <bt:String id="RefreshWorkbook.Label" DefaultValue="Refresh workbook" />
       </bt:ShortStrings>
       <bt:LongStrings>
         <bt:String id="GetStarted.Description" DefaultValue="Sign in via the task pane, then use =K.EPM() formulas." />
         <bt:String id="TaskpaneButton.Tooltip" DefaultValue="Open Konsolidat (required once before =K.EPM formulas work)" />
+        <bt:String id="RefreshSheet.Tooltip" DefaultValue="Recalculate the K.* formulas on this sheet, or take its snapshot again, and stamp row 1 with the time. Sign in first." />
+        <bt:String id="RefreshWorkbook.Tooltip" DefaultValue="Take every saved snapshot again, recalculate the whole workbook, and stamp each refreshed sheet with the time. Sign in first." />
       </bt:LongStrings>
     </Resources>
   </VersionOverrides>

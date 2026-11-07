@@ -239,11 +239,12 @@
   </style>
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
   <script src="functions.js"></script>
+  <script src="ribbon.js"></script>
 </head>
 <body>
   <header>
     <h1>Konsolidat</h1>
-    <p class="version" id="addin-version">v2.0.1.0</p>
+    <p class="version" id="addin-version">v2.0.2.0</p>
     <p id="boot-status">Connecting to Excel…</p>
   </header>
 
@@ -365,6 +366,7 @@
         if (sessionUser !== undefined) currentSession = sessionUser || "none";
         if (namesResult !== undefined) currentNames = namesResult;
         diag.textContent = "diag: associate=" + associateLabel() +
+          " · ribbon=" + (window.konsolRibbonAssociated ? "yes" : "no") +
           " · names=" + currentNames + " · token=" + tokenLabel() +
           " · session=" + currentSession;
       }
@@ -652,6 +654,37 @@
         });
       }
 
+      // Paint a snapshot, then save its parameters in the workbook so the
+      // ribbon's Refresh sheet / Refresh workbook can take it again. A failed
+      // save is reported; the snapshot itself stands.
+      function snapshotAndRemember(params) {
+        return buildSnapshot(
+          params.template_id,
+          params.entity,
+          params.year,
+          params.period_from || 1,
+          params.period_to || 12
+        ).then(function (spec) {
+          return applyCellMap(spec).then(function () {
+            if (!window.konsolRibbon) {
+              appendLog("err", "Snapshot painted, but ribbon.js is not loaded, so Refresh cannot find it again. Reload the add-in.");
+              return spec;
+            }
+            return window.konsolRibbon.rememberSnapshot({
+              template_id: params.template_id,
+              entity: params.entity,
+              year: params.year,
+              period_from: params.period_from || 1,
+              period_to: params.period_to || 12,
+              sheet_name: spec.sheet_name || "TB"
+            }).catch(function (err) {
+              appendLog("err", "Snapshot painted, but Refresh cannot find it again: " +
+                (err.message || String(err)));
+            }).then(function () { return spec; });
+          });
+        });
+      }
+
       function syncReportTemplateUi() {
         var isTb = document.getElementById("template-id").value === "trial_balance_long";
         document.getElementById("period-range-fields").hidden = !isTb;
@@ -752,27 +785,35 @@
           return;
         }
 
+        // A ribbon refresh may be repainting the same sheet.
+        if (window.konsolRibbon && window.konsolRibbon.isBusy()) {
+          appendLog("err", "Snapshot: a ribbon refresh is running; try again when it finishes.");
+          return;
+        }
+
         btn.disabled = true;
+        window.konsolSnapshotBusy = true;
         appendLog("info", "Snapshot: loading TB for " + entity + " " + year +
           " P" + periodFrom + "–" + periodTo + "…");
 
-        var sheetName = "TB";
-        buildSnapshot(templateId, entity, year, periodFrom, periodTo)
+        snapshotAndRemember({
+          template_id: templateId,
+          entity: entity,
+          year: year,
+          period_from: periodFrom,
+          period_to: periodTo
+        })
           .then(function (spec) {
-            sheetName = spec.sheet_name || "TB";
-            var rows = spec.row_count || 0;
-            appendLog("info", "Painting " + rows + " rows on sheet \"" + sheetName + "\"…");
-            return applyCellMap(spec);
-          })
-          .then(function () {
-            appendLog("ok", "Snapshot done — values on sheet \"" + sheetName +
-              "\". Build other sheets with Excel formulas referencing TB.");
+            var sheetName = spec.sheet_name || "TB";
+            appendLog("ok", "Snapshot done — " + (spec.row_count || 0) + " rows on sheet \"" + sheetName +
+              "\". Build other sheets with Excel formulas referencing TB. Refresh sheet on the ribbon takes it again.");
           })
           .catch(function (err) {
             appendLog("err", err.message || "Snapshot failed");
           })
           .finally(function () {
             btn.disabled = false;
+            window.konsolSnapshotBusy = false;
           });
       }
 
@@ -782,14 +823,29 @@
       };
 
       window.konsolidatSnapshotReport = function (params) {
-        return buildSnapshot(
-          params.template_id,
-          params.entity,
-          params.year,
-          params.period_from || 1,
-          params.period_to || 12
-        ).then(applyCellMap);
+        return snapshotAndRemember(params);
       };
+
+      // For ribbon.js (Refresh sheet / Refresh workbook): the same sign-in
+      // check and Messages log the pane uses.
+      // Unlike whoami(), this rejects when the server could not be asked, so
+      // the ribbon says "could not reach the server", not "sign in".
+      window.konsolWhoami = function () {
+        return api("/api/method/konsol.api.excel_addin_whoami", { credentials: "omit" })
+          .then(function (res) {
+            if (res.status === 401 || res.status === 403) {
+              setDiag(undefined, "none");
+              return null;
+            }
+            return res.json().catch(function () { return {}; }).then(function (data) {
+              if (!res.ok) throw new Error(parseApiError(res, data));
+              var user = (data.message && data.message.user) || null;
+              setDiag(undefined, user || "none");
+              return user;
+            });
+          });
+      };
+      window.konsolLog = appendLog;
 
       function logout() {
         var token = getToken();
