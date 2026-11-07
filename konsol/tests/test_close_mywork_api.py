@@ -1862,7 +1862,7 @@ def test_iso_currency_gap_reaches_the_group_personas():
         item = _gap(_call(site), "iso_currency")
         assert item is not None, roles
         assert item["detail"] == _CURRENCY_GAP["message"]
-        assert item["action"] == {"desk": "/desk/iso-currency"}
+        assert item["action"] == {"desk": '/desk/iso-currency?name=%5B%22in%22%2C+%5B%22USD%22%5D%5D'}
 
 
 def test_entity_accountant_never_sees_the_iso_currency_gap():
@@ -1884,7 +1884,7 @@ def test_an_unused_iso_currency_row_is_a_todo_not_a_blocker():
         assert item is not None, roles
         assert item["kind"] == "todo", item
         assert item["detail"] == _CURRENCY_REPORT["message"]
-        assert item["action"] == {"desk": "/desk/iso-currency"}
+        assert item["action"] == {"desk": '/desk/iso-currency?name=%5B%22in%22%2C+%5B%22XDR%22%5D%5D'}
         assert _gap(result, "iso_currency") is None, "nothing used, nothing blocks"
 
 

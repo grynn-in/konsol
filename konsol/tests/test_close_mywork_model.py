@@ -4,6 +4,7 @@ One configuration gap is ONE item listing the affected entities (#291: never
 one item per entity per month). Loaded by path; imports nothing from frappe.
 """
 import ast
+import json
 import importlib.util
 import os
 
@@ -138,7 +139,12 @@ def test_desk_actions_point_at_configuration():
     assert items["gap:chart"]["action"] == {"desk": "/desk/main-account"}
     assert items["gap:ic_accounts"]["action"] == {"desk": "/desk/intercompany-account"}
     assert items["gap:ic_tolerance"]["action"] == {"desk": "/desk/consolidation-group"}
-    assert items["gap:frequency"]["action"] == {"desk": "/desk/entity"}
+    # #419: Go opens the Entity list filtered to the entities named.
+    freq = items["gap:frequency"]
+    assert freq["action"]["desk"].startswith("/desk/entity?name=")
+    from urllib.parse import parse_qs, urlsplit
+    assert json.loads(parse_qs(urlsplit(freq["action"]["desk"]).query)["name"][0]) == [
+        "in", freq["entities"]]
     assert items["gap:ownership"]["action"] == {"desk": "/desk/ownership-period"}
     assert items["gap:accountants"]["action"] == {"desk": "/desk/user"}
     assert items["gap:accountants"]["users"] == ["zz-a@example.com"]
@@ -1566,7 +1572,9 @@ def test_iso_currency_gap_is_one_item_that_opens_iso_currency():
     assert [i["id"] for i in items] == ["gap:iso_currency"]
     item = items[0]
     assert item["kind"] == "blocking" and item["owner"] == "EPM Admin"
-    assert item["action"] == {"desk": "/desk/iso-currency"}, "not Close Settings"
+    # #419: Go opens the ISO Currency list filtered to the currencies named.
+    assert item["action"] == {"desk": '/desk/iso-currency?name=%5B%22in%22%2C+%5B%22USD%22%2C+%22XDR%22%5D%5D'}, \
+        "not Close Settings"
     assert item["detail"] == _CURRENCY_GAP["message"]
     assert item["title"] == "ISO Currency minor unit disagrees with ISO 4217 (used: blocks sign-off)"
     assert "iso_currency" in M.GAPS
@@ -1583,7 +1591,7 @@ def test_an_unused_iso_currency_row_is_a_todo_item():
     blocking, reported = items
     assert blocking["kind"] == "blocking"
     assert reported["kind"] == "todo" and reported["owner"] == "EPM Admin"
-    assert reported["action"] == {"desk": "/desk/iso-currency"}
+    assert reported["action"] == {"desk": '/desk/iso-currency?name=%5B%22in%22%2C+%5B%22XDR%22%5D%5D'}
     assert reported["detail"] == _CURRENCY_REPORT["message"]
     assert reported["title"] == "ISO Currency minor unit disagrees with ISO 4217 (unused: does not block)"
     assert "iso_currency_unused" in M.GAPS
