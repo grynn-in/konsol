@@ -1,7 +1,9 @@
 // Historical Equity Rate: say what the rate converts, right under the rate
 // (Deepak Pai, 5 Nov 2026: "1 INR = 0.018800 USD at 01-12-2011, for account
-// 3000 of IN_NALCO" next to or below Rate). from_currency and to_currency are
-// virtual fields computed by the controller; the rate reads 1 From = rate To.
+// 3000 of IN_NALCO" next to or below Rate). from_currency is a virtual field
+// computed by the controller; to_currency is stored and entered (konsol#374):
+// the presentation currency this rate converts into. The rate reads
+// 1 From = rate To.
 frappe.ui.form.on("Historical Equity Rate", {
 	refresh(frm) {
 		const d = frm.doc;
@@ -31,5 +33,47 @@ frappe.ui.form.on("Historical Equity Rate", {
 			? `<b>${frappe.utils.escape_html(sentence)}</b><br>${frappe.utils.escape_html(base)}`
 			: frappe.utils.escape_html(base);
 		frm.set_df_property("historical_rate", "description", text);
+	},
+
+	consolidation_group(frm) {
+		// A visible default, never a silent one (konsol#374): when the group is
+		// set and To Currency is still blank, offer the owning group's own
+		// reporting currency and say which groups above it present in what.
+		// The field stays editable: a rate for the parent's currency is the
+		// same form with another To Currency.
+		// The description names the groups of the LAST group asked about:
+		// clear it on every change, or a group with one presentation currency
+		// keeps the previous group's list (PR #436 review).
+		frm.set_df_property("to_currency", "description", "");
+		const group = frm.doc.consolidation_group;
+		const blank = !frm.doc.to_currency;
+		if (!group || !blank) {
+			return;
+		}
+		frappe.call({
+			method: "konsol.consolidation.doctype.historical_equity_rate.historical_equity_rate.presentation_currencies",
+			args: { consolidation_group: group },
+			callback(r) {
+				const chain = r.message || [];
+				// The answer is for `group`; the user may have changed the group
+				// (or typed a currency) while it was in flight.
+				if (!chain.length || frm.doc.to_currency || frm.doc.consolidation_group !== group) {
+					return;
+				}
+				frm.set_value("to_currency", chain[0][1]);
+				if (chain.length > 1) {
+					const others = chain.slice(1).map((g) => __("{0} ({1})", [g[0], g[1]])).join(", ");
+					frm.set_df_property(
+						"to_currency",
+						"description",
+						__("{0} presents in {1}. Groups above it: {2}. Each presentation currency needs its own rate.", [
+							chain[0][0],
+							chain[0][1],
+							others,
+						])
+					);
+				}
+			},
+		});
 	},
 });

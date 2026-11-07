@@ -62,14 +62,16 @@ def _stored():
 #: count once submitted; a child row counts under a submitted parent of its
 #: own doctype (Frappe keeps a child's docstatus equal to its parent's).
 #: Business Combination Acquired Balance links no currency, so it is absent.
-#: Historical Equity Rate's from/to currency are virtual (#373): computed from
-#: the Entity's functional currency and the group root's reporting currency,
-#: both counted above, and get_all cannot read a virtual field.
+#: Historical Equity Rate's from_currency is virtual (#373): the Entity's
+#: functional currency, counted above, and get_all cannot read a virtual
+#: field. Its to_currency is stored (konsol#374): the presentation currency a
+#: submitted rate converts into.
 _SUBMITTED = {"docstatus": 1}
 _USES = (
     ("Entity", "functional_currency", None, "Entity"),
     ("Consolidation Group", "reporting_currency", {"data_area_id": ["is", "not set"]},
      "Consolidation Group"),
+    ("Historical Equity Rate", "to_currency", _SUBMITTED, "Historical Equity Rate"),
     ("Group Exchange Rate", "from_currency", _SUBMITTED, "Group Exchange Rate"),
     ("Group Exchange Rate", "to_currency", _SUBMITTED, "Group Exchange Rate"),
     ("Trial Balance Submission", "currency", _SUBMITTED, "Trial Balance Submission"),

@@ -196,6 +196,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # now the only thing that creates it.
         "epm_gold.consolidation_groups",
         "epm_staging.consolidation_ancestry",
+        # konsol#374: owned here so an existing stack gets to_currency in the
+        # sort key (test_her_table_upgrade.py)
+        "epm_staging.historical_equity_rates",
         # listed because _RETIRED_COLUMNS ALTERs it — an ALTER against a table
         # that does not exist fails, and so does the sync behind it
         "epm_staging.consolidation_hierarchy",
@@ -351,7 +354,7 @@ def test_a_migrate_widens_existing_journal_amounts_to_four_places():
 
 def test_a_migrate_asks_first_and_issues_nothing_when_already_wide():
     """An ALTER that changes nothing still rewrites the table's metadata time
-    (_watermark_upgrade_ddl): a widened or fresh table gets no MODIFY."""
+    (_sorting_key_upgrade_ddl): a widened or fresh table gets no MODIFY."""
     m, _ = _load_clickhouse()
     for answer in (_columns_answer({"debit_amount": "Decimal(20, 4)",
                                     "credit_amount": "Decimal(20, 4)"}), ""):
