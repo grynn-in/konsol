@@ -88,8 +88,16 @@ def test_headings_are_a_brand_green_band_with_white_text():
     # sections" -> the darker brand shade konsol/brand.py derives (strong).
     assert "background-color: var(--konsol-brand-strong, var(--primary))" in body, body
     assert "color: var(--white) !important" in body, body
-    icon = [b for s, b in rules if ".section-break" in s and "stroke" in b]
-    assert icon and "var(--white)" in icon[0], "chevron must be white on the band"
+    # The chevron is the label's colour (Deepak Pai, 7 Nov 2026: "The arrow in
+    # the side menu > or pointing down should be the same as font. It is not
+    # visible."). Frappe writes stroke="#7c7c7c" on the <svg> AND on its <use>
+    # (ui/sidebar/sidebar_item.js enable_collapsible), and the <use> attribute
+    # won over a rule on the svg alone: grey on dark green.
+    icon = [(s, b) for s, b in rules if ".drop-icon" in s and "stroke" in b]
+    assert icon, "no chevron rule"
+    selector, body = icon[0]
+    assert "svg use" in selector and "stroke: currentColor" in body, icon[0]
+    assert any(".drop-icon" in s and "color: var(--white)" in b for s, b in rules), "chevron colour"
 
 
 def test_headings_sit_tightly():

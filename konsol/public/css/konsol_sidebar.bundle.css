@@ -29,9 +29,16 @@
 	height: 24px;
 }
 
-/* The chevron is drawn with --ink-gray-5 as its stroke; white on the band. */
-:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Planning"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break .drop-icon svg {
-	stroke: var(--white);
+/* The chevron is the label's colour (Deepak Pai, 7 Nov 2026: "should be the
+ * same as font. It is not visible."). Frappe writes stroke="#7c7c7c" on the
+ * <svg> and on its <use> (sidebar_item.js enable_collapsible); a CSS stroke
+ * beats the presentation attribute on each, so both take currentColor. */
+:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Planning"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break .drop-icon {
+	color: var(--white);
+}
+:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Planning"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break .drop-icon svg,
+:is(.body-sidebar[data-title="Close"], .body-sidebar[data-title="Planning"], .body-sidebar[data-title="Structure"], .body-sidebar[data-title="Pipeline"]) .section-break .drop-icon svg use {
+	stroke: currentColor;
 }
 
 /* Groups sit tight: 2px above a heading instead of Frappe's 16px
