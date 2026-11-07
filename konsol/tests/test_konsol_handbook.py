@@ -339,3 +339,35 @@ def test_desk_blocks_ships_the_handbook_to_its_readers():
     (entry,) = [b for b in blocks if b[0] == "Konsol Handbook"]
     assert entry[1] == "konsol_handbook"
     assert set(entry[2]) == set(M.READER_ROLES)
+
+
+HANDBOOK_WORKSPACE = os.path.join(APP_DIR, "consolidation", "workspace", "konsol_handbook",
+                                  "konsol_handbook.json")
+
+
+def test_the_handbook_has_its_own_workspace_holding_only_the_block():
+    """The left-menu Handbook row opens this page; a user may make it their
+    Default Workspace (User > Workspace), which is then where /desk lands."""
+    ws = json.loads(_read(HANDBOOK_WORKSPACE))
+    assert (ws["doctype"], ws["name"], ws["label"], ws["title"]) == (
+        "Workspace", "Konsol Handbook", "Konsol Handbook", "Konsol Handbook")
+    assert ws["public"] == 1 and ws["standard"] == 1 and ws["module"] == "Consolidation"
+    assert ws["roles"] == [] and not ws["for_user"]
+    assert [b["custom_block_name"] for b in ws["custom_blocks"]] == ["Konsol Handbook"]
+    content = json.loads(ws["content"])
+    assert [(b["type"], b["data"].get("custom_block_name"), b["data"]["col"]) for b in content] == [
+        ("custom_block", "Konsol Handbook", 12)]
+
+
+def test_every_page_row_shows_an_explicit_open_close_control():
+    """Deepak Pai, 7 Nov 2026: "the handbook doesnt have a visible button to
+    open/close". A flex <summary> loses the browser's disclosure triangle, so
+    the block draws its own chevron and an Open/Close label, and offers
+    Expand all / Collapse all."""
+    js = _read(os.path.join(BLOCK_DIR, "konsol_handbook.js"))
+    css = _read(os.path.join(BLOCK_DIR, "konsol_handbook.css"))
+    for needle in ('"kh-chevron"', '"kh-toggle"', '"Expand all"', '"Collapse all"',
+                   'setAttribute("aria-expanded"'):
+        assert needle in js, needle
+    assert ".kh-chevron" in css and ".kh-page[open] .kh-chevron" in css
+    assert "list-style: none" in css and "::-webkit-details-marker" in css

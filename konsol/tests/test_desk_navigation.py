@@ -59,11 +59,21 @@ def _pages():
 
 SIDEBAR = "consolidation/sidebar/konsol/konsol.json"
 WORKSPACE = "consolidation/workspace/konsol/konsol.json"
+HANDBOOK_WORKSPACE = "consolidation/workspace/konsol_handbook/konsol_handbook.json"
+
+
+def _workspaces():
+    names = set()
+    for path in glob.glob(os.path.join(APP_DIR, "*", "workspace", "*", "*.json")):
+        with open(path) as f:
+            d = json.load(f)
+        if d.get("doctype") == "Workspace":
+            names.add(d["name"])
+    return names
 
 
 def test_every_sidebar_link_resolves():
-    doctypes, reports = _doctypes(), _reports()
-    workspace = _load(WORKSPACE)["name"]
+    doctypes, reports, workspaces = _doctypes(), _reports(), _workspaces()
     for item in _load(SIDEBAR)["items"]:
         if item["type"] != "Link":
             continue
@@ -73,7 +83,7 @@ def test_every_sidebar_link_resolves():
         elif kind == "Report":
             assert target in reports, f"sidebar links missing Report {target!r}"
         elif kind == "Workspace":
-            assert target == workspace, f"sidebar links unknown Workspace {target!r}"
+            assert target in workspaces, f"sidebar links unknown Workspace {target!r}"
         else:
             raise AssertionError(f"unexpected link_type {kind!r} for {target!r}")
 
@@ -160,3 +170,14 @@ def test_sidebar_positions_follow_the_file_order():
     IC balances on demo.konsolidat.com (5 Nov 2026) because both were 11."""
     idx = [i["idx"] for i in _load(SIDEBAR)["items"]]
     assert idx == sorted(idx) and len(idx) == len(set(idx)), idx
+
+
+def test_the_handbook_is_the_second_sidebar_row():
+    """Deepak Pai, 7 Nov 2026: "add konsol handbook as a menu on the left".
+    It sits under Home, outside every section, so it is one click from anywhere."""
+    items = _load(SIDEBAR)["items"]
+    row = items[1]
+    assert (row["type"], row["label"], row["link_type"], row["link_to"]) == (
+        "Link", "Handbook", "Workspace", "Konsol Handbook")
+    assert row["child"] == 0 and row["icon"]
+    assert _load(SIDEBAR)["modified"] >= "2026-11-07 18:00:00"
