@@ -1,0 +1,161 @@
+/*
+ * Konsol Setup page (Deepak Pai, 7 Nov 2026, picked from a sketch).
+ *
+ * Page-level CSS: Frappe's Page.load_assets reads this file into the page's
+ * style and the Desk adds it when the page first opens, so it loads with this
+ * page only and needs no hooks.py entry. It travels in the page's localStorage
+ * copy, which the Desk drops when the site's metadata_version changes (after a
+ * deploy or clear_cache). The <style> stays in the document once the page has
+ * been opened, so every rule is scoped to .konsol-setup (the page's root,
+ * konsol_setup.js); test_setup_page_look.py pins the scope.
+ *
+ * Colours are variables only. Group headers are the sidebar bands' darker
+ * Brand Colour (--konsol-brand-strong, konsol_brand.js) with white text, as in
+ * konsol_sidebar.bundle.css; marks use Frappe's indicator colours.
+ */
+
+.konsol-setup {
+	max-width: 760px;
+	color: var(--text-color);
+}
+
+/* Progress: a thin bar, then "N of M done". */
+.konsol-setup .ks-progress {
+	display: flex;
+	align-items: center;
+	gap: var(--margin-sm);
+	margin: var(--margin-sm) 0 var(--margin-md);
+}
+.konsol-setup .ks-bar {
+	flex: 1;
+	height: 8px;
+	appearance: none;
+	border: none;
+	border-radius: 2px;
+	background: var(--control-bg);
+	overflow: hidden;
+}
+.konsol-setup .ks-bar::-webkit-progress-bar {
+	background: var(--control-bg);
+	border-radius: 2px;
+}
+.konsol-setup .ks-bar::-webkit-progress-value {
+	background: var(--konsol-brand-strong, var(--primary));
+	border-radius: 2px;
+}
+.konsol-setup .ks-bar::-moz-progress-bar {
+	background: var(--konsol-brand-strong, var(--primary));
+	border-radius: 2px;
+}
+.konsol-setup .ks-progress-text {
+	color: var(--text-muted);
+	font-size: var(--text-sm);
+	white-space: nowrap;
+}
+
+.konsol-setup .ks-complete {
+	margin: 0 0 var(--margin-sm);
+	color: var(--text-on-green);
+	font-weight: 600;
+}
+
+/* Groups: a band with white text, tight to the next. */
+.konsol-setup .ks-group {
+	margin-bottom: var(--margin-sm);
+}
+.konsol-setup .ks-group-head {
+	display: flex;
+	align-items: center;
+	height: 26px;
+	padding: 0 var(--padding-sm);
+	background: var(--konsol-brand-strong, var(--primary));
+	color: var(--white);
+	border-radius: 2px;
+	font-size: var(--text-sm);
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	cursor: pointer;
+	list-style: none;
+}
+.konsol-setup .ks-rows {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+/* Rows: one line each; the detail opens beneath. */
+.konsol-setup .ks-step {
+	border-bottom: 1px solid var(--border-color);
+}
+.konsol-setup .ks-step-head {
+	display: flex;
+	align-items: center;
+	gap: var(--margin-sm);
+	padding: 4px var(--padding-sm);
+	cursor: pointer;
+	list-style: none;
+}
+.konsol-setup .ks-step-head:hover {
+	background: var(--subtle-fg);
+}
+.konsol-setup .ks-mark {
+	width: 1.2em;
+	text-align: center;
+	font-weight: 600;
+}
+.konsol-setup .ks-done .ks-mark {
+	color: var(--text-on-green);
+}
+.konsol-setup .ks-partial .ks-mark {
+	color: var(--text-on-orange);
+}
+.konsol-setup .ks-not-done .ks-mark {
+	color: var(--text-on-red);
+}
+.konsol-setup .ks-label {
+	flex: 1;
+	min-width: 0;
+	font-weight: 500;
+	color: var(--heading-color);
+	overflow-wrap: anywhere;
+}
+.konsol-setup .ks-count {
+	min-width: 4em;
+	text-align: right;
+	color: var(--text-muted);
+	font-size: var(--text-sm);
+	font-variant-numeric: tabular-nums;
+}
+.konsol-setup .ks-open {
+	min-width: 4.5em;
+	text-align: right;
+	color: var(--primary);
+	font-size: var(--text-sm);
+	white-space: nowrap;
+}
+.konsol-setup .ks-detail {
+	margin: 0;
+	padding: 0 var(--padding-sm) 6px calc(1.2em + var(--padding-sm) + var(--margin-sm));
+	color: var(--text-muted);
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+/* The open/closed marker is drawn here so it follows the theme. */
+.konsol-setup .ks-group-head::-webkit-details-marker,
+.konsol-setup .ks-step-head::-webkit-details-marker {
+	display: none;
+}
+.konsol-setup .ks-group-head::before,
+.konsol-setup .ks-step-head::before {
+	content: "\25B8";
+	margin-right: var(--margin-xs);
+}
+.konsol-setup .ks-step-head::before {
+	color: var(--text-muted);
+}
+.konsol-setup details[open] > .ks-group-head::before,
+.konsol-setup details[open] > .ks-step-head::before {
+	content: "\25BE";
+}

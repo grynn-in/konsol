@@ -34,8 +34,8 @@ def test_two_groups_needs_you_open_done_folded():
     assert '__("Needs you")' in js and '__("Done")' in js
     assert "ks-group-needs" in js and "ks-group-done" in js
     # Needs you opens on load; Done does not.
-    assert re.search(r"group\([^)]*needs[^)]*,\s*true\)", js), "Needs you must start open"
-    assert re.search(r"group\([^)]*done[^)]*,\s*false\)", js), "Done must start folded"
+    assert re.search(r'group\("ks-group-needs".*,\s*true\)', js), "Needs you must start open"
+    assert re.search(r'group\("ks-group-done".*,\s*false\)', js), "Done must start folded"
     assert '__("Setup is complete")' in js
 
 
