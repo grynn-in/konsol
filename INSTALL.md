@@ -35,15 +35,36 @@ It is off by default. One site_config key switches it, and only
 `konsol/demo_mode.py` reads the key:
 
 ```bash
-# on: name an enabled System User with no privileged role
+# on: name an enabled System User whose roles are exactly
+# EPM Analyst + Entity Accountant (plus what Frappe gives every System User)
 bench --site <site> set-config demo_user demo@example.com
+bench --site <site> execute konsol.demo_mode.switch_on      # re-enables the user after an earlier switch_off
 
-# off: unset the key, then end the demo user's sessions
+# off, in this order
+bench --site <site> execute konsol.demo_mode.switch_off     # disables the user, ends all its sessions
 bench --site <site> set-config demo_user ""
-bench --site <site> execute konsol.demo_mode.end_sessions --args "['demo@example.com']"
 ```
 
+Why `switch_off` comes first: Frappe v16 caches site_config per worker for
+60 seconds, so after the key is unset a worker can keep logging visitors in
+for up to a minute. The decision reads the User's `enabled` flag from the
+database on every request, and Frappe refuses a disabled user's session
+whatever the key says, so `switch_off` shuts the door at once; the key then
+turns `/try` into a 404 once the cache turns over. (The ext stack's
+`demo.sh` also sends gunicorn a HUP so the window closes sooner.)
+`switch_off` prints `{"user", "enabled": 0, "sessions_ended"}`;
+`switch_on` prints `{"user", "enabled": 1, "key"}`. Both take an explicit
+user as `--args "['demo@example.com']"` when the key is already unset.
+`konsol.demo_mode.end_sessions` ends the sessions alone; it loops past
+Frappe's 100-sessions-per-call limit and returns the number removed.
+
 While it is off, `/try` and `/api/method/konsol.demo_mode.try_demo` answer
-404. The button is refused (also 404, with the reason in the konsol log) when
-the named user is missing, disabled, not a System User, or holds
-Administrator, System Manager or EPM Admin.
+404 and log nothing. The button is also refused with 404 when the named
+user is missing, disabled, not a System User, or holds a role outside the
+demo set (Administrator, System Manager, EPM Admin, Script Manager, any
+other); that is an operator error and is logged at ERROR in the konsol log
+(`logs/konsol.log`), the level that shows by default. `try_demo` is
+rate-limited to 10 requests per 60 seconds per client IP.
+
+The demo lands on `/desk`, the Frappe v16 Desk. A stack still on v15 has no
+`/desk` route (its Desk is `/app`): run the demo on a v16 stack.
