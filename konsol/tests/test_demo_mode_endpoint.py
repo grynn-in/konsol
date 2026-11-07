@@ -69,8 +69,7 @@ def _frappe_stub(conf, user_row, roles, session_counts):
     # and broke the module import on the live v16 stack (7 Nov 2026)
     rate_limiter = types.ModuleType("frappe.rate_limiter")
     rate_limiter.rate_limit = decorator_recorder("rate_limit")
-    frappe.rate_limiter = rate_limiter
-    sys.modules["frappe.rate_limiter"] = rate_limiter
+    frappe.rate_limiter = rate_limiter   # installed in sys.modules by _installed(), restored after
     frappe.throw = throw
     frappe.conf = dict(conf)
     frappe.db = types.SimpleNamespace(get_value=get_value, sql=sql, set_value=calls.rec("set_value"))
@@ -95,9 +94,10 @@ def _frappe_stub(conf, user_row, roles, session_counts):
 def _installed(frappe):
     """Put the stub `frappe` (and its `frappe.sessions`) in sys.modules for
     the block; `end_sessions` imports frappe.sessions lazily, at call time."""
-    saved = {k: sys.modules.get(k) for k in ("frappe", "frappe.sessions")}
+    saved = {k: sys.modules.get(k) for k in ("frappe", "frappe.sessions", "frappe.rate_limiter")}
     sys.modules["frappe"] = frappe
     sys.modules["frappe.sessions"] = frappe.sessions
+    sys.modules["frappe.rate_limiter"] = frappe.rate_limiter
     try:
         yield
     finally:
