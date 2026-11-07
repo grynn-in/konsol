@@ -34,7 +34,9 @@
     "effective_date": "2025-01-01",
     "end_date": null,
     "ownership_pct": 100.0,
-    "consolidation_method": "full"
+    "consolidation_method": "full",
+    "owner_node": "CG-ECL_GROUP-",
+    "owner_label": "ECL_GROUP"
   },
   "pending": []
 }

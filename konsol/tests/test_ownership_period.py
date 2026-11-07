@@ -1163,3 +1163,31 @@ def test_117b_validate_checks_the_cycle_after_the_owner_and_before_the_windows()
     assert steps.index("self._validate_owner()") < steps.index("self._validate_no_cycle()")
     assert steps.index("self._validate_no_cycle()") < steps.index("self._check_no_gaps_or_overlaps()")
     assert CYCLE_TAIL.strip() in _src()
+
+
+# --- #117 pair 1 F: the owner sentences are one helper the deals share -----------
+
+def test_117f_owner_refusal_is_a_module_function_the_validate_uses():
+    src = _src()
+    assert "\ndef owner_refusal(" in src
+    assert "owner_refusal(" in _method_body(src, "_validate_owner")
+
+
+def test_117f_owner_refusal_names_the_callers_field_and_gives_none_when_sound():
+    module, _, _ = _site([], nodes=_TREE)
+    owned = module.OwnershipPeriod(before=None, **_declared())._node()   # CG-ZZG-ZZ01
+    assert module.owner_refusal("CG-ZZG-", owned, "ZZ01") is None
+    assert module.owner_refusal("CG-ZZG-ZZ02", owned, "ZZ01", field="Acquirer Node") is None
+    assert module.owner_refusal("CG-ZZG-ZZ01", owned, "ZZ01", field="Acquirer Node") == (
+        "`ZZ01` cannot own itself: Acquirer Node CG-ZZG-ZZ01 is the owned node. "
+        "Name the node that holds the share.")
+    assert module.owner_refusal("CG-ZZ_TYPO-", owned, "ZZ01", field="Disposer Node") == (
+        "Disposer Node CG-ZZ_TYPO- is not a Consolidation Group node.")
+    assert module.owner_refusal("CG-ZZOTHER-ZZ09", owned, "ZZ01") == (
+        "Owner Node CG-ZZOTHER-ZZ09 is under root CG-ZZOTHER-, not under CG-ZZG- like `ZZ01`: "
+        "an owner is a node of the same hierarchy as the node it owns.")
+    # the owned node not there yet (a deal drafted before the tree has it): only
+    # the owner's existence can be checked
+    assert module.owner_refusal("CG-ZZG-", None, "ZZ01") is None
+    assert module.owner_refusal("CG-ZZ_TYPO-", None, "ZZ01") == (
+        "Owner Node CG-ZZ_TYPO- is not a Consolidation Group node.")

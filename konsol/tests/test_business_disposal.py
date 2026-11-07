@@ -356,6 +356,9 @@ def _load():
     ch.sync_doctype_after_commit = lambda *a, **k: None
     ps = types.ModuleType("konsol.period_status")
     ps.assert_open = lambda *a, **k: None
+    # imported by ownership_period.py, whose owner helper the disposal shares
+    ps.assert_open_between = lambda *a, **k: None
+    ps.first_period_affected = lambda *a, **k: None
     ps.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
     gr = types.ModuleType("konsol.group_rates")
     gr.true_rate = lambda quote, per: float(Decimal(str(quote or 0)) / int(per or 1))
@@ -371,7 +374,9 @@ def _load():
         stubs["konsol"] = types.ModuleType("konsol")
         stubs["konsol"].__path__ = [APP_DIR]
     saved = {k: sys.modules.get(k) for k in stubs}
-    for name in [n for n in sys.modules if n.startswith("konsol.consolidation.doctype.business_disposal")]:
+    for name in [n for n in sys.modules
+                 if n.startswith(("konsol.consolidation.doctype.business_disposal",
+                                  "konsol.consolidation.doctype.ownership_period"))]:
         del sys.modules[name]
     sys.modules.update(stubs)
     try:
@@ -436,7 +441,9 @@ class _OwnershipPeriodDoc(_Doc):
 
 class _Site:
     def __init__(self, *, periods=None, root=None, rates=None, accounts=None, ownership=None,
-                 disposals=None):
+                 disposals=None, nodes=None):
+        #: Consolidation Group nodes by name (#117 pair 1 F); the root row is the group node.
+        self.nodes = {n["name"]: dict(n) for n in (nodes or ())}
         self.periods = [dict(p) for p in (periods if periods is not None else [PERIOD_DEC_2025])]
         self.root = dict(ROOT_IFRS) if root is None else root
         self.rates = dict(rates or {})  # (from, to, fy, fp) -> (quote, quoted_per)
@@ -462,6 +469,14 @@ class _Site:
 
     def _get_value(self, doctype, filters, fieldname=None, as_dict=False, **k):
         if doctype == "Consolidation Group":
+            if isinstance(filters, str):           # a node by name (the owner helper)
+                node = self.nodes.get(filters)
+                return _Row(node) if node else None
+            if filters.get("data_area_id") not in (None, "", ["is", "not set"]):
+                node = next((n for n in self.nodes.values()
+                             if n["consolidation_group"] == filters["consolidation_group"]
+                             and n["data_area_id"] == filters["data_area_id"]), None)
+                return _Row(node) if node else None
             if filters.get("consolidation_group") != self.root["consolidation_group"]:
                 return None
             return _Row(self.root) if as_dict else self.root.get(fieldname)
@@ -923,3 +938,89 @@ def test_source_keeps_the_hooks_clean():
     assert "self.save()" not in src
     assert "frappe.db.commit" not in src
     assert HEADER_TABLE in src and f'"{CHILD_NAME}"' in src
+
+
+# -- #117 pair 1 F: the disposal names the disposer ---------------------------------
+# Option A (Deepak Pai, 7 Nov 2026): a node may have several owners, so a
+# disposal says whose holding is sold (``disposer_node``, a Consolidation
+# Group node), pre-filled from the disposed node's tree parent when blank (the
+# one default, visible on the form). The holding ``validate`` measures against
+# and ``on_submit`` closes is that owner's link. The refusals are the
+# Ownership Period's owner sentences through one shared helper, in this
+# document's name and naming its field.
+
+def _cg(name, group, entity, parent):
+    return {"name": name, "consolidation_group": group, "data_area_id": entity,
+            "parent_consolidation_group": parent}
+
+
+TREE_117 = [_cg("CG-ZZG-", "ZZG", None, None), _cg("CG-ZZG-ZZE", "ZZG", "ZZE", "CG-ZZG-"),
+            _cg("CG-ZZG-ZZB", "ZZG", "ZZB", "CG-ZZG-"), _cg("CG-ZZOTHER-", "ZZOTHER", None, None)]
+ROOT_HOLDS_80 = dict(HOLDING_80, owner_node="CG-ZZG-", owner_label="ZZG")
+ZZB_HOLDS_20 = {"name": "OP-ZZB-ZZE-2020-01-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+                "owner_node": "CG-ZZG-ZZB", "owner_label": "ZZB", "effective_date": "2020-01-01",
+                "end_date": None, "ownership_pct": 20, "consolidation_method": "equity", "docstatus": 1}
+
+
+def test_117f_disposer_node_is_a_required_visible_link_beside_the_disposed_entity():
+    doc = _json("business_disposal")
+    fields = _fields(doc)
+    order = [f["fieldname"] for f in doc["fields"]]
+    f = fields["disposer_node"]
+    assert f["fieldtype"] == "Link" and f["options"] == "Consolidation Group"
+    assert f["label"] == "Disposer Node"
+    assert f.get("reqd") == 1, "every disposal says whose holding is sold"
+    assert not f.get("read_only") and not f.get("hidden") and not f.get("allow_on_submit")
+    assert order.index("disposed_entity") < order.index("disposer_node") < order.index("disposal_date")
+    desc = f.get("description", "")
+    assert "pre-filled" in desc.lower() and "parent" in desc.lower(), desc
+    assert "disposer_node" not in M.BusinessDisposal.CH_FIELD_MAP, "not a warehouse column"
+    with open(os.path.join(DOCTYPE_DIR, "business_disposal", "business_disposal.js")) as fh:
+        js = fh.read()
+    assert "disposer_node" in js and "parent_consolidation_group" in js and "disposed_entity" in js
+
+
+def test_117f_a_blank_disposer_is_prefilled_from_the_disposed_nodes_tree_parent():
+    _Site(nodes=TREE_117)
+    deal = _deal()
+    deal.before_validate()
+    assert deal.disposer_node == "CG-ZZG-"
+    deal = _deal(disposer_node="CG-ZZG-ZZB")
+    deal.before_validate()
+    assert deal.disposer_node == "CG-ZZG-ZZB"
+    _Site(nodes=[n for n in TREE_117 if n["name"] != "CG-ZZG-ZZE"])
+    deal = _deal()
+    deal.before_validate()
+    assert not deal.get("disposer_node")
+
+
+def test_117f_the_disposer_is_refused_by_the_ownership_periods_sentences_in_the_disposals_name():
+    _Site(nodes=TREE_117)
+    assert _refused(_deal(disposer_node="CG-ZZG-ZZE").validate) == (
+        "Business Disposal: `ZZE` cannot own itself: Disposer Node CG-ZZG-ZZE is the owned node. "
+        "Name the node that holds the share.")
+    assert _refused(_deal(disposer_node="CG-ZZ_TYPO-").validate) == (
+        "Business Disposal: Disposer Node CG-ZZ_TYPO- is not a Consolidation Group node.")
+    assert _refused(_deal(disposer_node="CG-ZZOTHER-").validate) == (
+        "Business Disposal: Disposer Node CG-ZZOTHER- is under root CG-ZZOTHER-, not under "
+        "CG-ZZG- like `ZZE`: an owner is a node of the same hierarchy as the node it owns.")
+
+
+def test_117f_the_holding_sold_is_the_disposers_link():
+    """Two owners hold ZZE: the root 80%, ZZB 20%. The disposer's own link is
+    the holding measured and closed; the other owner's is untouched."""
+    site = _Site(nodes=TREE_117, ownership=[ROOT_HOLDS_80, ZZB_HOLDS_20])
+    deal = _deal(share_disposed_pct=20, disposer_node="CG-ZZG-ZZB")
+    deal.validate()
+    deal.on_submit()
+    assert [p.name for p in site.loaded] == ["OP-ZZB-ZZE-2020-01-01"]
+    assert ("ownership_period", "OP-ZZB-ZZE-2020-01-01") in deal.db_sets
+    # measured against the disposer's holding, not the node's other one
+    _Site(nodes=TREE_117, ownership=[ROOT_HOLDS_80, ZZB_HOLDS_20])
+    message = _refused(_deal(share_disposed_pct=80, disposer_node="CG-ZZG-ZZB").validate)
+    assert "current holding" in message and "20" in message
+    site = _Site(nodes=TREE_117, ownership=[ROOT_HOLDS_80, ZZB_HOLDS_20])
+    deal = _deal(share_disposed_pct=80, disposer_node="CG-ZZG-")
+    deal.validate()
+    deal.on_submit()
+    assert [p.name for p in site.loaded] == ["OP-ZZG-ZZE-2020-01-01"]

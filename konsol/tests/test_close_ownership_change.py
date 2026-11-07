@@ -608,3 +608,92 @@ def test_r52f_nothing_signed_never_reads_the_rule():
     for eff in _r52f_effects(site):
         assert eff["resign"] == []
     assert not [r for r in site.reads if r[0] == "gate"], site.reads
+
+
+# --- #117 pair 1 F: the context names the holding's owner ------------------------
+# A node may have several owners. ``context`` groups the submitted periods
+# covering the start by ``owner_node`` and asks the REAL model which holding
+# the change is for: one is implied (and ``current`` names it), several need
+# ``owner_node`` in the request, else the model's sentence is raised. Two
+# periods of ONE link covering the start are still corrupt. The later-period
+# and pending-draft checks are per link once the owner is known.
+
+OWNER_USA, OWNER_ROOT = "CG-ECL_GROUP-US_USA", "CG-ECL_GROUP-"
+
+
+def _held(name, owner_node, owner_label, pct, eff=datetime.date(2025, 1, 1), **kw):
+    row = _op(name, eff, pct=pct, **kw)
+    row.update(owner_node=owner_node, owner_label=owner_label)
+    return row
+
+
+def test_117f_one_owner_is_implied_and_shown_on_current():
+    site = _Site(ops=[_held("OP-USA", OWNER_USA, "US_USA", 60.0)])
+    ctx = _Helper(site)("context", GROUP, LEAF, 2025, 10)
+    assert ctx["owner_node"] == OWNER_USA
+    assert ctx["owner_label"] == "US_USA"
+    assert ctx["current"]["owner_node"] == OWNER_USA
+    assert ctx["current"]["owner_label"] == "US_USA"
+    assert ctx["current"]["name"] == "OP-USA"
+    # the owner fields are read, not guessed: the one Ownership Period read asks for them
+    reads = [r for r in site.reads if r[0] == "get_all" and r[1] == "Ownership Period"]
+    assert len(reads) == 1 and {"owner_node", "owner_label"} <= set(reads[0][2]["fields"])
+
+
+def test_117f_two_owners_without_a_named_one_raise_the_designs_sentence():
+    site = _Site(ops=[_held("OP-USA", OWNER_USA, "US_USA", 60.0),
+                      _held("OP-ROOT", OWNER_ROOT, "ECL_GROUP", 20.0)])
+    msg = _raises(_Helper(site), "context", GROUP, LEAF, 2025, 10)
+    assert msg == ("`%s` has two owners (`US_USA` 60%%, `ECL_GROUP` 20%%): choose the holding "
+                   "to change." % LEAF)
+
+
+def test_117f_a_named_owner_picks_its_holding_and_keys_the_later_and_pending_checks():
+    site = _Site(ops=[
+        _held("OP-USA", OWNER_USA, "US_USA", 60.0),
+        _held("OP-ROOT", OWNER_ROOT, "ECL_GROUP", 20.0),
+        # the root's link steps later and has a draft: neither concerns US_USA's holding
+        _held("OP-ROOT-2", OWNER_ROOT, "ECL_GROUP", 25.0, eff=datetime.date(2025, 12, 1)),
+        _held("OP-ROOT-D", OWNER_ROOT, "ECL_GROUP", 30.0, eff=datetime.date(2025, 11, 1), docstatus=0),
+        # US_USA's own later period and draft do
+        _held("OP-USA-2", OWNER_USA, "US_USA", 65.0, eff=datetime.date(2026, 1, 1)),
+        _held("OP-USA-D", OWNER_USA, "US_USA", 70.0, eff=datetime.date(2025, 11, 1), docstatus=0),
+    ])
+    helper = _Helper(site)
+    ctx = helper("context", GROUP, LEAF, 2025, 10, OWNER_USA)
+    assert ctx["current"]["name"] == "OP-USA" and ctx["owner_node"] == OWNER_USA
+    assert ctx["later_exists"] == "2026-01-01"
+    assert ctx["pending_exists"] == "OP-USA-D"
+    ctx = helper("context", GROUP, LEAF, 2025, 10, OWNER_ROOT)
+    assert ctx["current"]["name"] == "OP-ROOT" and ctx["owner_label"] == "ECL_GROUP"
+    assert ctx["later_exists"] == "2025-12-01"
+    assert ctx["pending_exists"] == "OP-ROOT-D"
+
+
+def test_117f_a_named_owner_that_holds_nothing_raises_naming_who_does():
+    site = _Site(ops=[_held("OP-USA", OWNER_USA, "US_USA", 60.0)])
+    msg = _raises(_Helper(site), "context", GROUP, LEAF, 2025, 10, "CG-ECL_GROUP-US_X")
+    assert msg == "`%s` is not held by CG-ECL_GROUP-US_X: its owners are `US_USA` 60%%." % LEAF
+
+
+def test_117f_two_periods_of_one_link_covering_the_start_are_still_corrupt():
+    site = _Site(ops=[_held("OP-USA", OWNER_USA, "US_USA", 60.0),
+                      _held("OP-USA-X", OWNER_USA, "US_USA", 50.0, eff=datetime.date(2025, 6, 1))])
+    msg = _raises(_Helper(site), "context", GROUP, LEAF, 2025, 10)
+    assert "corrupt" in msg and "OP-USA" in msg and "OP-USA-X" in msg and "US_USA" in msg
+
+
+def test_117f_no_covering_period_gives_current_none_and_no_owner():
+    site = _Site(ops=[_held("OP-USA", OWNER_USA, "US_USA", 60.0, end=datetime.date(2025, 6, 30))])
+    ctx = _Helper(site)("context", GROUP, LEAF, 2025, 10)
+    assert ctx["current"] is None and ctx["owner_node"] is None and ctx["owner_label"] is None
+
+
+def test_117f_node_periods_filter_by_owner_only_when_one_is_given():
+    site = _Site(ops=[_held("OP-USA", OWNER_USA, "US_USA", 60.0),
+                      _held("OP-ROOT", OWNER_ROOT, "ECL_GROUP", 20.0)])
+    helper = _Helper(site)
+    assert sorted(r["name"] for r in helper("_node_periods", GROUP, LEAF)) == ["OP-ROOT", "OP-USA"]
+    assert [r["name"] for r in helper("_node_periods", GROUP, LEAF, OWNER_ROOT)] == ["OP-ROOT"]
+    filters = [r for r in site.reads if r[0] == "get_all"][-1][2]["filters"]
+    assert filters["owner_node"] == OWNER_ROOT
