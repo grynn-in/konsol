@@ -65,16 +65,32 @@ def _none(reason, route=model.PERIOD_CLOSE):
     return model.card(reason or "No current period", model.UNKNOWN, route)
 
 
+def _shown(build):
+    """``build()``'s card, or a gray "Cannot read" card naming the
+    ValueError a reader or model raised (an unknown status, an undeclared
+    build scope). The number card widget has no error state: an exception
+    would leave the card on "Loading..." and open a dialog on every visit
+    (review of #409). The reason is shown, never guessed away."""
+    try:
+        return build()
+    except ValueError as e:
+        return model.card("Cannot read: %s" % e, model.UNKNOWN)
+
+
 @frappe.whitelist(methods=["POST"])
 def close_status(filters=None):
     """The current period's close status: "FY2025 P07 · Amber"."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     _no_filters(filters)
-    key, reason, state = _current()
-    if key is None:
-        return _none(reason)
-    text, tone = model.close_status(key, state)
-    return model.card(text, tone, model.PERIOD_CLOSE)
+
+    def build():
+        key, reason, state = _current()
+        if key is None:
+            return _none(reason)
+        text, tone = model.close_status(key, state)
+        return model.card(text, tone, model.PERIOD_CLOSE)
+
+    return _shown(build)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -82,14 +98,18 @@ def trial_balances_in(filters=None):
     """Trial balances in / expected for the current period."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     _no_filters(filters)
-    key, reason, _state = _current()
-    if key is None:
-        return _none(reason)
-    progress = signoff_gate.trial_balance_progress(*key)
-    text, tone = model.tb_progress(progress["expected"], progress["missing"],
-                                   allowed_entity_codes())
-    return model.card(text, tone, "/desk/trial-balance-submission?fiscal_year=%d&fiscal_period=%d"
-                      % key)
+
+    def build():
+        key, reason, _state = _current()
+        if key is None:
+            return _none(reason)
+        progress = signoff_gate.trial_balance_progress(*key)
+        text, tone = model.tb_progress(progress["expected"], progress["missing"],
+                                       allowed_entity_codes())
+        return model.card(text, tone, "/desk/trial-balance-submission?fiscal_year=%d&fiscal_period=%d"
+                          % key)
+
+    return _shown(build)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -97,10 +117,14 @@ def waiting_for_me(filters=None):
     """How many documents the caller may approve now (the My work count)."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     _no_filters(filters)
-    user = frappe.session.user
-    count = approvals_api.queue_for(user, frappe.get_roles(user))["waiting"]["count"]
-    text, tone = model.waiting(count)
-    return model.card(text, tone, model.MY_WORK)
+
+    def build():
+        user = frappe.session.user
+        count = approvals_api.queue_for(user, frappe.get_roles(user))["waiting"]["count"]
+        text, tone = model.waiting(count)
+        return model.card(text, tone, model.MY_WORK)
+
+    return _shown(build)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -108,11 +132,15 @@ def ic_over_tolerance(filters=None):
     """Intercompany pairs over tolerance in the current period's last build."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     _no_filters(filters)
-    key, reason, _state = _current()
-    if key is None:
-        return _none(reason)
-    text, tone = model.ic_card(ic_api.signoff_summary(*key))
-    return model.card(text, tone, model.PERIOD_CLOSE)
+
+    def build():
+        key, reason, _state = _current()
+        if key is None:
+            return _none(reason)
+        text, tone = model.ic_card(ic_api.signoff_summary(*key))
+        return model.card(text, tone, model.PERIOD_CLOSE)
+
+    return _shown(build)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -121,18 +149,22 @@ def tb_exceptions(filters=None):
     caller may read."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     _no_filters(filters)
-    key, reason, _state = _current()
-    if key is None:
-        return _none(reason)
-    frappe.has_permission("TB Exception", "read", throw=True)
-    entities = frappe.get_list(
-        "TB Exception", filters={"fiscal_year": key[0], "fiscal_period": key[1], "docstatus": 1},
-        pluck="data_area_id", limit_page_length=0, order_by="name asc")
-    allowed = allowed_entity_codes()
-    count = len([e for e in entities if allowed is None or e in allowed])
-    text, tone = model.exceptions_card(count)
-    return model.card(text, tone, "/desk/tb-exception?fiscal_year=%d&fiscal_period=%d&docstatus=1"
-                      % key)
+
+    def build():
+        key, reason, _state = _current()
+        if key is None:
+            return _none(reason)
+        frappe.has_permission("TB Exception", "read", throw=True)
+        entities = frappe.get_list(
+            "TB Exception", filters={"fiscal_year": key[0], "fiscal_period": key[1], "docstatus": 1},
+            pluck="data_area_id", limit_page_length=0, order_by="name asc")
+        allowed = allowed_entity_codes()
+        count = len([e for e in entities if allowed is None or e in allowed])
+        text, tone = model.exceptions_card(count)
+        return model.card(text, tone, "/desk/tb-exception?fiscal_year=%d&fiscal_period=%d&docstatus=1"
+                          % key)
+
+    return _shown(build)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -140,8 +172,12 @@ def warehouse_freshness(filters=None):
     """Whether the consolidated numbers are current (the last build)."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     _no_filters(filters)
-    text, tone = model.freshness_card(freshness_api.current_freshness())
-    return model.card(text, tone, model.BUILDS)
+
+    def build():
+        text, tone = model.freshness_card(freshness_api.current_freshness())
+        return model.card(text, tone, model.BUILDS)
+
+    return _shown(build)
 
 
 def _count(doctype, filters):
@@ -174,5 +210,6 @@ def get_checklist():
         journals_open=_count("Consolidation Journal",
                              {"fiscal_year": key[0], "fiscal_period": key[1], "docstatus": 0}),
         equity_pending=_count("Historical Equity Rate", {"docstatus": 0}),
+        equity_scoped=allowed_entity_codes() is not None,
         freshness=freshness_api.current_freshness(),
     )

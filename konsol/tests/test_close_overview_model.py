@@ -124,9 +124,9 @@ def test_ic_over_tolerance_reads_the_gate_line():
     assert M.ic_card(checked(0)) == ("0", "ok")
     assert M.ic_card(checked(2)) == ("2", "warn")
     assert M.ic_card({"state": "not_configured", "message": "m", "counts": None,
-                      "sent_back_open": None}) == ("Not configured", "unknown")
+                      "sent_back_open": None}) == ("Not configured", "ok")
     assert M.ic_card({"state": "not_applicable", "message": "m", "counts": None,
-                      "sent_back_open": None}) == ("Not applicable", "unknown")
+                      "sent_back_open": None}) == ("Not applicable", "ok")
     assert M.ic_card({"state": "not_built", "message": "m", "counts": None,
                       "sent_back_open": None}) == ("Cannot check", "blocked")
     assert M.ic_card({"state": "error", "message": "m", "counts": None,
@@ -238,7 +238,7 @@ def test_checklist_journals_equity_and_build_lines():
     assert lines["journals"]["route"] == (
         "/desk/consolidation-journal?fiscal_year=2025&fiscal_period=7")
     assert lines["equity_rates"]["state"] == "warn"
-    assert lines["equity_rates"]["detail"] == "1 equity rate awaiting approval"
+    assert lines["equity_rates"]["detail"] == "1 equity rate is a draft or awaiting approval"
     assert lines["build"]["state"] == "warn"
     assert lines["build"]["detail"] == "Changed since the last build: Entity, IC Balance"
 
@@ -263,3 +263,28 @@ def test_checklist_with_no_current_period():
     result = M.no_period("Declare the first close period.")
     assert result == {"title": "No current period", "reason": "Declare the first close period.",
                       "lines": [], "done": 0, "total": 0}
+
+
+def test_ic_card_and_checklist_line_agree_when_ic_is_not_configured():
+    """Review of #409: the gate passes an unconfigured or inapplicable
+    intercompany line, so the card and the checklist both show it as ok."""
+    ic = {"state": "not_configured", "message": "Not configured.", "counts": None,
+          "sent_back_open": None}
+    line = {l["code"]: l for l in M.checklist(**_inputs(ic=ic))["lines"]}["intercompany"]
+    assert M.ic_card(ic)[1] == line["state"] == "ok"
+
+
+def test_equity_rates_seen_by_a_scoped_caller_never_tick():
+    """Review of #409: Historical Equity Rate is entity-scoped, so a caller
+    restricted to some entities counts only theirs; none visible is unknown,
+    never a tick, and the detail says drafts outside the scope are not counted."""
+    lines = lambda **kw: {l["code"]: l for l in M.checklist(**_inputs(**kw))["lines"]}  # noqa: E731
+    scoped = lines(equity_pending=0, equity_scoped=True)["equity_rates"]
+    assert scoped["state"] == "unknown"
+    assert scoped["detail"] == ("No equity rate draft you can see; drafts outside your scope "
+                                "are not counted")
+    some = lines(equity_pending=2, equity_scoped=True)["equity_rates"]
+    assert some["state"] == "warn"
+    assert some["detail"] == ("2 equity rates are drafts or awaiting approval; drafts outside "
+                              "your scope are not counted")
+    assert lines(equity_pending=0)["equity_rates"]["state"] == "ok"
