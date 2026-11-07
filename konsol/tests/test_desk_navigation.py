@@ -432,6 +432,17 @@ def test_each_rail_entry_has_its_landing_workspace():
         assert ws["modified"] >= BUMPED, (name, ws["modified"])
 
 
+def test_every_navigation_module_is_declared_in_modules_txt():
+    """migrate imports only the modules modules.txt declares (model/sync.py
+    sync_for), so a module dropped from it would ship a sidebar nobody imports
+    (re-review of #451)."""
+    with open(os.path.join(APP_DIR, "modules.txt")) as f:
+        declared = {line.strip() for line in f if line.strip()}
+    assert declared == set(MODULE_FOLDERS), (declared, set(MODULE_FOLDERS))
+    for module, folder in MODULE_FOLDERS.items():
+        assert folder == _scrub(module), (module, folder)
+
+
 def test_each_workspace_module_has_exactly_one_sidebar():
     """A sidebar lists every workspace of its module (sidebar.py
     get_sidebar_bases: ``workspaces = context.workspaces.get(base.module)``), and
