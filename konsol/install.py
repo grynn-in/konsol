@@ -334,6 +334,7 @@ def after_migrate():
     _install_workflows()
     _ensure_indexes()
     _setup_dashboard()
+    _install_custom_blocks()
     _retire_konsol_control_page()
     # Last: the Dimension and Measure hooks apply nothing during a migrate
     # (#351 review), so the vars are rewritten once here, after every seed
@@ -539,6 +540,20 @@ def _seed_defaults():
         frappe.logger().warning("defaults seeding skipped during migrate", exc_info=True)
         print(f"konsol defaults: skipped ({type(e).__name__}: {e}); "
               "the next migrate tries again")
+
+
+def _install_custom_blocks():
+    """Write the app's Custom HTML Blocks (konsol.desk_blocks, konsol#407):
+    a Custom HTML Block has no module, so migrate never imports one. Never
+    fails a migrate; printed, like the workflows, so the person running it
+    sees a block that did not install."""
+    try:
+        from konsol.desk_blocks import install_custom_blocks
+        for line in install_custom_blocks():
+            print(f"konsol custom blocks: {line}")
+    except Exception as e:
+        frappe.logger().warning("custom block install skipped during migrate", exc_info=True)
+        print(f"konsol custom blocks: skipped ({type(e).__name__}: {e}); the next migrate tries again")
 
 
 def _install_workflows():

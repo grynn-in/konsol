@@ -581,6 +581,27 @@ def test_a_submitted_tb_exception_covers_the_missing_tb_but_a_draft_does_not():
     assert _call(site, "sign_off_problems", 2025, 9)["completeness"] is None
 
 
+def test_trial_balance_progress_is_the_completeness_gate_with_its_expected_list():
+    """konsol#407: the home band's "TBs in / expected" reads the gate's own
+    expected list and missing list, never a second rule."""
+    site = _Site()
+    site.records["Trial Balance Submission"] = [_rec("ZZA", 2025, 9), _rec("ZZB", 2025, 9, docstatus=0)]
+    progress = _call(site, "trial_balance_progress", 2025, 9)
+    assert progress == {"expected": ["ZZA", "ZZB"],
+                        "missing": _call(site, "sign_off_problems", 2025, 9)["completeness"]["missing"]}
+    assert progress["missing"] == ["ZZB"]
+    site.records["TB Exception"] = [_rec("ZZB", 2025, 9)]
+    assert _call(site, "trial_balance_progress", 2025, 9) == {"expected": ["ZZA", "ZZB"], "missing": []}
+
+
+def test_trial_balance_progress_skips_a_quarterly_entity_before_quarter_end():
+    site = _Site()
+    site.rows = _year(2025, overrides={8: "Open", 9: "Open"})
+    site.records["Assertion Run"] = [_run("RUN-7", 2025, 7)]
+    site.records["Trial Balance Submission"] = [_rec("ZZA", 2025, 8)]
+    assert _call(site, "trial_balance_progress", 2025, 8) == {"expected": ["ZZA"], "missing": []}
+
+
 def test_other_periods_records_do_not_count():
     site = _Site()
     site.records["Trial Balance Submission"] = [_rec("ZZA", 2025, 9), _rec("ZZB", 2025, 8),

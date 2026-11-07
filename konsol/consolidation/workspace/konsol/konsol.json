@@ -1,8 +1,13 @@
 {
  "charts": [],
- "content": "[{\"id\": \"kh1\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Where the close stands</b></span>\", \"col\": 12}}, {\"id\": \"kn0\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Trial Balances Submitted\", \"col\": 3}}, {\"id\": \"kn1\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Rates Awaiting Approval\", \"col\": 3}}, {\"id\": \"kn2\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Equity Rates Awaiting Approval\", \"col\": 3}}, {\"id\": \"kn3\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Journals Awaiting Approval\", \"col\": 3}}, {\"id\": \"ksp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kah\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Waiting for approval</b></span>\", \"col\": 12}}, {\"id\": \"ka0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Journals waiting\", \"col\": 3}}, {\"id\": \"ka1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Business combinations waiting\", \"col\": 3}}, {\"id\": \"ka2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Business disposals waiting\", \"col\": 3}}, {\"id\": \"ka3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Exchange rates waiting\", \"col\": 3}}, {\"id\": \"ka4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Ownership periods waiting\", \"col\": 3}}, {\"id\": \"ka5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Equity rates waiting\", \"col\": 3}}, {\"id\": \"ka6\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"IC balances waiting\", \"col\": 3}}, {\"id\": \"ka7\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Builds waiting\", \"col\": 3}}, {\"id\": \"kasp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kh2\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Monthly close</b></span>\", \"col\": 12}}, {\"id\": \"kw0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"My Work\", \"col\": 4}}, {\"id\": \"kw2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Period Close\", \"col\": 4}}, {\"id\": \"ksr\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Consolidated Statement\", \"col\": 4}}, {\"id\": \"ks0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Upload Trial Balances\", \"col\": 4}}, {\"id\": \"ks1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Trial Balances\", \"col\": 4}}, {\"id\": \"ks2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Exchange Rates\", \"col\": 4}}, {\"id\": \"ks3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Consolidation Journals\", \"col\": 4}}, {\"id\": \"ks4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Close Assertions\", \"col\": 4}}, {\"id\": \"ks5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Entities\", \"col\": 4}}]",
+ "content": "[{\"id\": \"kh1\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Where the close stands</b></span>\", \"col\": 12}}, {\"id\": \"kb0\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Close Status\", \"col\": 4}}, {\"id\": \"kb1\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Trial Balances In\", \"col\": 4}}, {\"id\": \"kb2\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Waiting for My Approval\", \"col\": 4}}, {\"id\": \"kb3\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"IC Pairs over Tolerance\", \"col\": 4}}, {\"id\": \"kb4\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"TB Exceptions Declared\", \"col\": 4}}, {\"id\": \"kb5\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Warehouse Freshness\", \"col\": 4}}, {\"id\": \"kcl\", \"type\": \"custom_block\", \"data\": {\"custom_block_name\": \"Konsol Close Checklist\", \"col\": 12}}, {\"id\": \"ksp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kah\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Waiting for approval</b></span>\", \"col\": 12}}, {\"id\": \"ka0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Journals waiting\", \"col\": 3}}, {\"id\": \"ka1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Business combinations waiting\", \"col\": 3}}, {\"id\": \"ka2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Business disposals waiting\", \"col\": 3}}, {\"id\": \"ka3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Exchange rates waiting\", \"col\": 3}}, {\"id\": \"ka4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Ownership periods waiting\", \"col\": 3}}, {\"id\": \"ka5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Equity rates waiting\", \"col\": 3}}, {\"id\": \"ka6\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"IC balances waiting\", \"col\": 3}}, {\"id\": \"ka7\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Builds waiting\", \"col\": 3}}, {\"id\": \"kasp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kh2\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Monthly close</b></span>\", \"col\": 12}}, {\"id\": \"kw0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"My Work\", \"col\": 4}}, {\"id\": \"kw2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Period Close\", \"col\": 4}}, {\"id\": \"ksr\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Consolidated Statement\", \"col\": 4}}, {\"id\": \"ks0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Upload Trial Balances\", \"col\": 4}}, {\"id\": \"ks1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Trial Balances\", \"col\": 4}}, {\"id\": \"ks2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Exchange Rates\", \"col\": 4}}, {\"id\": \"ks3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Consolidation Journals\", \"col\": 4}}, {\"id\": \"ks4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Close Assertions\", \"col\": 4}}, {\"id\": \"ks5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Entities\", \"col\": 4}}]",
  "creation": "2026-11-05 09:00:00.000000",
- "custom_blocks": [],
+ "custom_blocks": [
+  {
+   "custom_block_name": "Konsol Close Checklist",
+   "label": "Konsol Close Checklist"
+  }
+ ],
  "docstatus": 0,
  "doctype": "Workspace",
  "for_user": "",
@@ -12,26 +17,34 @@
  "is_hidden": 0,
  "label": "Konsol",
  "links": [],
- "modified": "2026-11-05 23:00:00.000000",
+ "modified": "2026-11-07 09:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Konsol",
  "number_cards": [
   {
-   "label": "Trial Balances Submitted",
-   "number_card_name": "Trial Balances Submitted"
+   "label": "Close Status",
+   "number_card_name": "Close Status"
   },
   {
-   "label": "Rates Awaiting Approval",
-   "number_card_name": "Rates Awaiting Approval"
+   "label": "Trial Balances In",
+   "number_card_name": "Trial Balances In"
   },
   {
-   "label": "Equity Rates Awaiting Approval",
-   "number_card_name": "Equity Rates Awaiting Approval"
+   "label": "Waiting for My Approval",
+   "number_card_name": "Waiting for My Approval"
   },
   {
-   "label": "Journals Awaiting Approval",
-   "number_card_name": "Journals Awaiting Approval"
+   "label": "IC Pairs over Tolerance",
+   "number_card_name": "IC Pairs over Tolerance"
+  },
+  {
+   "label": "TB Exceptions Declared",
+   "number_card_name": "TB Exceptions Declared"
+  },
+  {
+   "label": "Warehouse Freshness",
+   "number_card_name": "Warehouse Freshness"
   }
  ],
  "owner": "Administrator",

@@ -44,7 +44,8 @@ fixtures = [
 # regenerate_dbt_vars last: install_defaults' Measures apply nothing under
 # in_install (#351 review), so the vars are written once, after the seeding.
 after_install = ["konsol.install.create_roles", "konsol.workflows.install_workflows",
-                 "konsol.defaults.install_defaults", "konsol.install.regenerate_dbt_vars"]
+                 "konsol.defaults.install_defaults", "konsol.desk_blocks.install_custom_blocks",
+                 "konsol.install.regenerate_dbt_vars"]
 # Fills a fresh site's warehouse (#142): queues reconcile_all as a job after
 # the install commits. after_sync, because after_install runs before fixtures.
 after_sync = ["konsol.install.after_sync"]

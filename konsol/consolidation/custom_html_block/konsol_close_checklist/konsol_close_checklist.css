@@ -1,0 +1,53 @@
+.konsol-checklist {
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius-md);
+	padding: var(--padding-md);
+	background: var(--card-bg);
+}
+.kc-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	margin-bottom: var(--margin-sm);
+}
+.kc-title {
+	font-weight: 600;
+	font-size: var(--text-lg);
+	color: var(--heading-color);
+}
+.kc-count,
+.kc-reason,
+.kc-loading,
+.kc-detail {
+	color: var(--text-muted);
+}
+.kc-error {
+	color: var(--red-600);
+}
+.kc-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+.kc-line {
+	display: flex;
+	gap: var(--margin-sm);
+	align-items: flex-start;
+	padding: 6px 0;
+	border-top: 1px solid var(--border-color);
+}
+.kc-glyph {
+	min-width: 28px;
+	justify-content: center;
+}
+.kc-body {
+	display: flex;
+	flex-direction: column;
+}
+.kc-label {
+	font-weight: 500;
+	color: var(--text-color);
+}
+a.kc-label:hover {
+	text-decoration: underline;
+}
