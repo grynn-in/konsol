@@ -149,6 +149,22 @@
    "options": "Close Holiday",
    "label": "Holidays",
    "description": "Days that are not counted as working days, group-wide."
+  },
+  {
+   "fieldname": "appearance_tab",
+   "fieldtype": "Tab Break",
+   "label": "Appearance"
+  },
+  {
+   "fieldname": "brand_section",
+   "fieldtype": "Section Break",
+   "label": "Brand"
+  },
+  {
+   "fieldname": "brand_colour",
+   "fieldtype": "Color",
+   "label": "Brand Colour",
+   "description": "The Desk's accent colour: primary buttons, the active menu row, checkboxes, active filters and the Handbook's chips. Icons and text keep Frappe's colours. Konsol sets #0F766E (teal-green, decided 7 Nov 2026, konsol#415) once, on install or upgrade, when the field is blank. It must give white text at least 4.5 : 1 contrast. Leave blank to keep Frappe's own colours. Users see a new colour on their next page load."
   }
  ],
  "field_order": [
@@ -175,7 +191,10 @@
   "deadline_rules_section",
   "deadline_rules",
   "holidays_section",
-  "close_holidays"
+  "close_holidays",
+  "appearance_tab",
+  "brand_section",
+  "brand_colour"
  ],
  "permissions": [
   {

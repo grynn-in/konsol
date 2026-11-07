@@ -49,3 +49,4 @@ konsol.patches.retire_budget_annual_input_fixed_dimensions
 konsol.patches.delete_approvals_report
 konsol.patches.adopt_dimension_value
 konsol.patches.retire_approval_number_cards
+konsol.patches.set_default_brand_colour
