@@ -1039,25 +1039,76 @@ def test_117_total_issued_ignores_cancelled_links_and_the_superseded_predecessor
         "`ZZ03` is already 30% owned in 2026-07-01..open (`ZZG` 30%); this 71% would exceed 100%.")
 
 
-def test_117_a_draft_change_ends_the_period_it_supersedes_for_the_total():
-    """PR #449 review, finding 4: the sweep summed every non-cancelled period,
-    drafts included, so a Desk ownership-change draft superseding a still-open
-    submitted period was counted on top of it. A period another non-cancelled
-    period supersedes ends the day before that successor starts. ZZ01 holds
-    60% open; a draft change to 70% from 2027-01-01 supersedes it; ZZ02's 30%
-    from 2026-06-01 is accepted (totals 90, then 100, never 130), 31% is not."""
+def test_117_a_strangers_draft_neither_cuts_its_predecessor_nor_counts_for_the_total():
+    """PR #459 re-review finding D (revising #449 finding 4). The sweep let
+    ANY other non-cancelled draft's ``supersedes`` end its predecessor, so a
+    third party's period was accepted past 100% on the strength of a draft
+    that may still be deleted. Only THIS document's own ``supersedes`` and
+    SUBMITTED successors cut a predecessor, and a stranger's draft is not a
+    link yet, so it is not counted either: its own approval re-runs this
+    check against whatever is submitted by then. ZZ01 holds 60% open; a
+    stranger's draft of 30% from 2027-01-01 supersedes it; ZZ02's 70% from
+    2027-01-01 is refused (60 + 70), 40% passes (60 + 40)."""
+    a = _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1))
+    stranger = _link("OP-ZZ01-ZZ03-2027-01-01", "CG-ZZG-ZZ01", "ZZ01", 30, _D(2027, 1, 1),
+                     docstatus=0, supersedes=a.name)
+    module, _, _ = _site([a, stranger], nodes=_TREE)
+    doc = _new_link(module, "CG-ZZG-ZZ02", 70, "2027-01-01")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 60% owned in 2027-01-01..open (`ZZ01` 60%); this 70% would exceed 100%.")
+    _new_link(module, "CG-ZZG-ZZ02", 40, "2027-01-01").validate()
+    # the self case: this document's own supersedes cuts its predecessor (A 60,
+    # own change 70 superseding A, another holder's 30: 30 + 70 = 100)
+    other = _link("OP-ZZG-ZZ03-2026-01-01", "CG-ZZG-", "ZZG", 30, _D(2026, 1, 1))
+    module, _, _ = _site([a, other], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ01", 70, "2027-01-01", supersedes=a.name, superseded_end_date=None).validate()
+
+
+def test_117_a_draft_change_is_checked_against_the_submitted_graph_when_it_is_approved():
+    """#449 finding 4 revised by #459 finding D: while ZZ01's change (70% from
+    2027-01-01, superseding its open 60%) is a draft, ZZ02's 30% from
+    2026-06-01 is checked against the submitted graph alone (60 + 30 = 90,
+    accepted; 41 is refused by the 60%), never against 60 + 70. The change's
+    own approval then runs this check with ZZ02's share submitted: 70 + 30 =
+    100 passes, 70 + 31 does not."""
     a = _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1))
     change = _link("OP-ZZ01-ZZ03-2027-01-01", "CG-ZZG-ZZ01", "ZZ01", 70, _D(2027, 1, 1),
                    docstatus=0, supersedes=a.name)
     module, _, _ = _site([a, change], nodes=_TREE)
     _new_link(module, "CG-ZZG-ZZ02", 30, "2026-06-01").validate()
-    doc = _new_link(module, "CG-ZZG-ZZ02", 31, "2026-06-01")
+    doc = _new_link(module, "CG-ZZG-ZZ02", 41, "2026-06-01")
     assert _refusal(doc) == (
-        "`ZZ03` is already 70% owned in 2027-01-01..open (`ZZ01` 70%); this 31% would exceed 100%.")
-    # before the change starts, the predecessor's 60% is what counts
-    doc = _new_link(module, "CG-ZZG-ZZ02", 41, "2026-06-01", "2026-12-31")
+        "`ZZ03` is already 60% owned in 2026-06-01..open (`ZZ01` 60%); this 41% would exceed 100%.")
+    # approval of the change: validate runs with docstatus 1 and ZZ02's 31% submitted
+    zz02 = _link("OP-ZZ02-ZZ03-2026-06-01", "CG-ZZG-ZZ02", "ZZ02", 31, _D(2026, 6, 1))
+    module, _, _ = _site([a, zz02], nodes=_TREE)
+    doc = _new_link(module, "CG-ZZG-ZZ01", 70, "2027-01-01", name=change.name, docstatus=1,
+                    supersedes=a.name, superseded_end_date=None)
     assert _refusal(doc) == (
-        "`ZZ03` is already 60% owned in 2026-06-01..2026-12-31 (`ZZ01` 60%); this 41% would exceed 100%.")
+        "`ZZ03` is already 31% owned in 2027-01-01..open (`ZZ02` 31%); this 70% would exceed 100%.")
+    zz02.ownership_pct = 30
+    module, _, _ = _site([a, zz02], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ01", 70, "2027-01-01", name=change.name, docstatus=1,
+              supersedes=a.name, superseded_end_date=None).validate()
+
+
+def test_117_when_several_successors_name_one_predecessor_the_earliest_cut_wins():
+    """PR #459 re-review finding E: the cuts were a dict keyed by predecessor,
+    so with two successors naming one predecessor the last by ordering won.
+    Two SUBMITTED successors of one predecessor is a state the overlap check
+    refuses, so this models rows written before it existed, whose end dates
+    were never written: the predecessor ends the day before the EARLIEST
+    successor. ZZ01 60% open; successors 65% from 2026-07-01 and 70% from
+    2027-01-01 both name it; ZZ02's 30% over 2026-08-01..2026-12-31 meets
+    65 only (95), not 60 + 65 (155)."""
+    a = _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1))
+    early = _link("OP-ZZ01-ZZ03-2026-07-01", "CG-ZZG-ZZ01", "ZZ01", 65, _D(2026, 7, 1), supersedes=a.name)
+    late = _link("OP-ZZ01-ZZ03-2027-01-01", "CG-ZZG-ZZ01", "ZZ01", 70, _D(2027, 1, 1), supersedes=a.name)
+    module, _, _ = _site([a, early, late], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ02", 30, "2026-08-01", "2026-12-31").validate()
+    doc = _new_link(module, "CG-ZZG-ZZ02", 36, "2026-08-01", "2026-12-31")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 65% owned in 2026-08-01..2026-12-31 (`ZZ01` 65%); this 36% would exceed 100%.")
 
 
 def test_117_gaps_and_overlaps_are_checked_per_owner_owned_edge():
