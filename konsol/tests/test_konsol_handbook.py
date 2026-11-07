@@ -189,9 +189,30 @@ def test_sanitise_strips_script_and_event_attributes(dirty, gone):
         assert bad not in clean, (bad, clean)
 
 
+def test_sanitise_drops_every_class_so_a_page_cannot_reach_desk_css():
+    """Review of #412: desk.bundle.css is linked into the block's shadow
+    root, so a class such as position-fixed could lay a page over the Desk."""
+    clean = M.sanitize('<code class="position-fixed w-100 vh-100">x</code>'
+                       '<table class="table"><tr><td>d</td></tr></table>')
+    assert "class=" not in clean, clean
+
+
+@pytest.mark.parametrize("src, kept", [
+    ("https://tracker.example.com/p.png", False),
+    ("//tracker.example.com/p.png", False),
+    ("/api/method/frappe.auth.get_logged_user", False),
+    ("/files/close-calendar.png", True),
+    ("/private/files/close-calendar.png", True),
+])
+def test_an_image_loads_only_from_this_sites_files(src, kept):
+    clean = M.sanitize('<img src="%s" alt="calendar">' % src)
+    assert ('src="%s"' % src in clean) is kept, clean
+    assert 'alt="calendar"' in clean
+
+
 def test_sanitise_keeps_what_markdown_writes():
     html = ('<h2 id="rates">Rates</h2><p><strong>a</strong> <em>b</em> <code>c</code></p>'
-            '<ul><li>x</li></ul><table class="table table-bordered"><thead><tr><th>h</th></tr>'
+            '<ul><li>x</li></ul><table><thead><tr><th>h</th></tr>'
             '</thead><tbody><tr><td>d</td></tr></tbody></table><pre><code>K.EPM</code></pre>'
             '<a href="/desk/konsol-setup">Setup</a> <a href="https://example.com">x</a>')
     clean = M.sanitize(html)
