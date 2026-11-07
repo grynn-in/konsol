@@ -307,14 +307,15 @@ def test_the_block_writes_only_sanitised_html():
     assert "<script" not in _read(os.path.join(BLOCK_DIR, "konsol_handbook.html")).lower()
 
 
-def test_the_handbook_is_on_the_workspace_below_the_checklist():
+def test_the_home_page_does_not_show_the_handbook():
+    """Deepak Pai, 7 Nov 2026: "dont show handbook on .../desk/konsol". The
+    Handbook lives on its own workspace, opened from the left menu."""
     ws = json.loads(_read(WORKSPACE))
-    names = [b["custom_block_name"] for b in ws["custom_blocks"]]
-    assert "Konsol Handbook" in names
+    assert "Konsol Handbook" not in [b["custom_block_name"] for b in ws["custom_blocks"]]
     content = json.loads(ws["content"])
-    order = [b["data"].get("custom_block_name") for b in content if b["type"] == "custom_block"]
-    assert order.index("Konsol Close Checklist") < order.index("Konsol Handbook")
-    assert ws["modified"] >= "2026-11-07 15:00:00", ws["modified"]
+    assert "Konsol Handbook" not in [b["data"].get("custom_block_name") for b in content]
+    assert "Konsol Close Checklist" in [b["data"].get("custom_block_name") for b in content]
+    assert ws["modified"] >= "2026-11-07 20:00:00", ws["modified"]
 
 
 def test_the_setup_shortcut_is_a_page_link_shown_only_to_its_roles():
