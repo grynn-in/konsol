@@ -41,16 +41,23 @@ frappe.ui.form.on("Historical Equity Rate", {
 		// reporting currency and say which groups above it present in what.
 		// The field stays editable: a rate for the parent's currency is the
 		// same form with another To Currency.
+		// The description names the groups of the LAST group asked about:
+		// clear it on every change, or a group with one presentation currency
+		// keeps the previous group's list (PR #436 review).
+		frm.set_df_property("to_currency", "description", "");
+		const group = frm.doc.consolidation_group;
 		const blank = !frm.doc.to_currency;
-		if (!frm.doc.consolidation_group || !blank) {
+		if (!group || !blank) {
 			return;
 		}
 		frappe.call({
 			method: "konsol.consolidation.doctype.historical_equity_rate.historical_equity_rate.presentation_currencies",
-			args: { consolidation_group: frm.doc.consolidation_group },
+			args: { consolidation_group: group },
 			callback(r) {
 				const chain = r.message || [];
-				if (!chain.length || frm.doc.to_currency) {
+				// The answer is for `group`; the user may have changed the group
+				// (or typed a currency) while it was in flight.
+				if (!chain.length || frm.doc.to_currency || frm.doc.consolidation_group !== group) {
 					return;
 				}
 				frm.set_value("to_currency", chain[0][1]);

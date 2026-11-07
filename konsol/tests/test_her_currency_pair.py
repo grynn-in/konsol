@@ -97,15 +97,25 @@ class _Refused(Exception):
     pass
 
 
-def _controller(values=None, exists=None, digest=None):
+def _controller(values=None, exists=None, digest=None, can_read=True):
     """The real controller class under a stub frappe.
 
     ``values``: {(doctype, frozen filters or name, frozen fieldname): answer}
     for frappe.db.get_value. ``exists``: a set of (doctype, frozen filters or
     name) that frappe.db.exists answers True for. ``digest``: the real
-    digest_name when True, else a stub."""
+    digest_name when True, else a stub. ``can_read``: what frappe.has_permission
+    answers; with throw=True a False raises _Refused, as Frappe would."""
     calls = []
     frappe = types.ModuleType("frappe")
+
+    def has_permission(doctype, ptype="read", doc=None, throw=False, **k):
+        calls.append(("has_permission", doctype, ptype, throw))
+        if not can_read and throw:
+            raise _Refused(f"No permission for {doctype}")
+        return can_read
+
+    frappe.has_permission = has_permission
+    frappe.PermissionError = _Refused
 
     def _freeze(x):
         return json.dumps(x, sort_keys=True) if isinstance(x, (dict, list)) else x
@@ -239,6 +249,29 @@ def test_presentation_currencies_walk_from_the_owning_group_to_the_top():
     assert mod.presentation_currencies("ZZSUB") == [("ZZSUB", "EUR"), ("ZZGRP", "USD")]
 
 
+def test_the_whitelisted_walk_requires_read_on_consolidation_group():
+    """PR #436 review: a whitelisted read with no permission check lets any
+    logged-in user walk the group tree. Refused before the first read."""
+    mod, calls = _controller(TREE, can_read=False)
+    try:
+        mod.presentation_currencies("ZZSUB")
+    except _Refused:
+        pass
+    else:
+        raise AssertionError("a caller without read on Consolidation Group must be refused")
+    assert ("has_permission", "Consolidation Group", "read", True) in calls
+    assert not [c for c in calls if c[0] == "get_value"], "refused before the walk"
+
+
+def test_the_controllers_own_check_does_not_ask_the_sessions_permission():
+    """validate() walks the tree through the unguarded helper: a document's
+    permission is its own save's business, and a patch or a system import
+    must not fail on the session's Consolidation Group rights."""
+    mod, calls = _controller(TREE, exists=EXISTS, can_read=False)
+    _rate(mod, to_currency="EUR").validate()
+    assert not [c for c in calls if c[0] == "has_permission"], calls
+
+
 def test_a_blank_to_currency_is_refused():
     mod, _ = _controller(TREE, EXISTS)
     doc = _rate(mod, to_currency=None)
@@ -345,3 +378,19 @@ def test_the_form_offers_the_owning_groups_currency_and_leaves_it_editable():
     assert "presentation_currencies" in js
     assert 'frm.set_value("to_currency"' in js
     assert "!frm.doc.to_currency" in js, "never overwrite a value the user entered"
+
+
+def test_the_form_ignores_an_answer_for_a_group_the_user_has_since_changed():
+    """PR #436 review: the callback must check that the group it asked about
+    is still the group on the form, or a slow answer for the old group fills
+    the new group's To Currency; and the description (the groups above it)
+    is reset on every change, or it outlives the group it describes."""
+    js = open(HER_JS).read()
+    trigger = js[js.index("consolidation_group(frm)"):]
+    assert "const group = frm.doc.consolidation_group;" in trigger
+    assert "args: { consolidation_group: group }" in trigger, "ask about the captured group"
+    callback = trigger[trigger.index("callback(r)"):]
+    guard = callback[:callback.index('frm.set_value("to_currency"')]
+    assert "frm.doc.consolidation_group !== group" in guard, "compare before set_value"
+    reset = trigger.index('frm.set_df_property("to_currency", "description", "")')
+    assert reset < trigger.index("frappe.call("), "reset the description before asking"

@@ -25,8 +25,20 @@ _NODE_FIELDS = ["name", "consolidation_group", "parent_consolidation_group", "re
 
 @frappe.whitelist()
 def presentation_currencies(consolidation_group):
-    """The currencies a rate recorded under ``consolidation_group`` may convert
-    into: [(group code, reporting currency)] for the group's own node and every
+    """The form's read of :func:`_presentation_currencies`: the currencies a
+    rate recorded under ``consolidation_group`` may convert into.
+
+    Reads Consolidation Group rows, so the caller needs read on that doctype
+    (PR #436 review: a whitelisted read without a permission check lets any
+    logged-in user walk the group tree). The controller's own validation uses
+    the walk directly: a document's permission is checked by its own save.
+    """
+    frappe.has_permission("Consolidation Group", "read", throw=True)
+    return _presentation_currencies(consolidation_group)
+
+
+def _presentation_currencies(consolidation_group):
+    """[(group code, reporting currency)] for the group's own node and every
     ancestor, nearest first.
 
     Those are exactly the groups that consolidate an entity owned by this
@@ -213,7 +225,7 @@ class HistoricalEquityRate(Document):
             )
         if not self.consolidation_group:
             return
-        chain = presentation_currencies(self.consolidation_group)
+        chain = _presentation_currencies(self.consolidation_group)
         if not chain:
             frappe.throw(
                 f"Consolidation group '{self.consolidation_group}' has no root node "
