@@ -32,7 +32,7 @@ import frappe
 from frappe.model.document import Document
 from frappe.utils import getdate
 
-from konsol.clickhouse import sync_doctype_after_commit
+from konsol.clickhouse import after_commit_once, sync_doctype_after_commit
 from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
 from konsol.ownership_graph_model import ownership_edges, path_between
 from konsol.period_status import assert_open_between, first_period_affected
@@ -174,6 +174,25 @@ def owner_refusal(owner_node, owned, owned_label, field="Owner Node"):
     return None
 
 
+def _resync_closure():
+    """Rebuild the link closure (``epm_staging.consolidation_ancestry``) and
+    the flat hierarchy after a link is submitted or cancelled.
+
+    The closure is built from the LINKS (konsol#117 pair 1), but only the
+    group's own ``on_update`` queued the rebuild: a link submitted after the
+    tree existed left every path on the tree parent, so an owner that is
+    another entity (Mini Holding AG owning its subsidiaries on demo-ext-simple,
+    8 Nov 2026) resolved to 0% / method ``none`` and
+    ``assert_ownership_chain_complete`` stopped the build until
+    ``reconcile_all`` ran by hand. Same dedupe key as the group's registration
+    (``consolidation_hierarchy``), so a transaction that touches both queues
+    one rebuild. The group controller is imported here, when the callback
+    runs after the commit, so this module never imports the tree controller
+    at load (the stub harnesses load it alone)."""
+    from konsol.consolidation.doctype.consolidation_group.consolidation_group import ConsolidationGroup
+    ConsolidationGroup.resync_staging()
+
+
 class OwnershipPeriod(Document):
     CH_TABLE = "epm_staging.ownership_periods"
     CH_FIELD_MAP = {
@@ -284,10 +303,12 @@ class OwnershipPeriod(Document):
     def on_submit(self):
         self._end_predecessor()
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        after_commit_once(("consolidation_hierarchy",), _resync_closure)
 
     def on_cancel(self):
         self._restore_predecessor()
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        after_commit_once(("consolidation_hierarchy",), _resync_closure)
 
     # -- ownership change (#305-Q1-1, Deepak Pai 7 Oct 2026) -------------------
     #

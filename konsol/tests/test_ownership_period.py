@@ -1470,7 +1470,7 @@ def test_117f_owner_refusal_names_the_callers_field_and_gives_none_when_sound():
 # --- a link rebuilds the closure (demo-ext-simple, 8 Nov 2026) ---------------
 
 def _link_doc(module, docstatus):
-    return module.OwnershipPeriod(dict(_SAVED), docstatus=docstatus, supersedes=None)
+    return module.OwnershipPeriod(dict(_SAVED), doctype="Ownership Period", docstatus=docstatus, supersedes=None)
 
 
 def _capture_after_commit(module):
