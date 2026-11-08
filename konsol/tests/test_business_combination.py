@@ -186,6 +186,9 @@ def _match(row, filters):
 PERIOD_DEC_2025 = {"fiscal_year": 2025, "fiscal_period": 12, "period_code": "P12",
                    "period_type": "Regular", "start_date": "2025-12-01", "end_date": "2025-12-31"}
 
+PERIOD_NOV_2025 = {"fiscal_year": 2025, "fiscal_period": 11, "period_code": "P11",
+                   "period_type": "Regular", "start_date": "2025-11-01", "end_date": "2025-11-30"}
+
 ROOT_IFRS_PARTIAL = {
     "name": "ZZG", "consolidation_group": "ZZG", "reporting_currency": "EUR",
     "accounting_framework": "IFRS", "framework_note": "", "goodwill_method": "partial",
@@ -297,6 +300,8 @@ class _Site:
         date = _getdate(values["d"] if isinstance(values, dict) else values[0])
         rows = [_Row(p) for p in self.periods
                 if _getdate(p["start_date"]) <= date <= _getdate(p["end_date"])]
+        if "<> 'Closing'" in query:
+            rows = [r for r in rows if r["period_type"] != "Closing"]
         rows.sort(key=lambda p: (p["period_type"] != "Regular", _getdate(p["start_date"])))
         return rows[:1]
 
@@ -578,18 +583,46 @@ def test_a_none_declaration_and_an_ended_proportional_declaration_do_not_refuse_
     _deal().validate()
 
 
-def test_a_joint_operation_that_ended_within_31_days_before_the_deal_is_a_refused_step():
-    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-12-30")])
+def test_a_joint_operation_that_ended_in_the_deals_own_period_is_a_refused_step():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-12-01")])
     message = _refused(_deal().validate)
-    assert ("ZZE was a joint operation until 2025-12-30 (OP-ZZG-ZZE-2020-01-01, proportional): a step from a "
+    assert ("ZZE was a joint operation until 2025-12-01 (OP-ZZG-ZZE-2020-01-01, proportional): a step from a "
             "joint operation to control " + REFUSE_TAIL) in message
 
 
-def test_a_joint_operation_that_ended_31_days_before_the_deal_is_still_a_step_and_32_is_not():
-    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-11-30")])
+def test_the_step_window_reaches_back_to_the_first_day_of_the_previous_period_and_no_further():
+    periods = [PERIOD_NOV_2025, PERIOD_DEC_2025]
+    _Site(periods=periods, ownership=[dict(JOINT_OPERATION, end_date="2025-11-01")])
     assert "a step from a joint operation to control" in _refused(_deal().validate)
-    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-11-29")])
+    _Site(periods=periods, ownership=[dict(JOINT_OPERATION, end_date="2025-10-31")])
     _deal().validate()
+
+
+def test_without_a_previous_period_the_window_starts_in_the_deals_own_period():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-11-30")])
+    _deal().validate()
+
+
+def test_a_later_full_declaration_over_an_older_open_proportional_one_does_not_refuse():
+    _Site(declarations=[DECLARATION, dict(DECLARATION, consolidation_method="full", effective_date="2025-06-01")])
+    _deal().validate()
+
+
+def test_a_declaration_ending_on_the_deal_date_no_longer_applies_end_date_is_exclusive():
+    _Site(declarations=[dict(DECLARATION, end_date="2025-12-31")])
+    _deal().validate()
+    _Site(declarations=[dict(DECLARATION, end_date="2026-01-01")])
+    assert "is declared a joint operation of ZZG" in _refused(_deal().validate)
+
+
+def test_a_proportional_declaration_on_an_ancestor_group_refuses_the_deal_naming_that_group():
+    _Site(nodes=[{"name": "ZZG", "consolidation_group": "ZZG", "data_area_id": "",
+                  "parent_consolidation_group": "CG-ZZP-"},
+                 {"name": "CG-ZZP-", "consolidation_group": "ZZP", "data_area_id": "",
+                  "parent_consolidation_group": None}],
+           declarations=[dict(DECLARATION, parent="CG-ZZP-")])
+    message = _refused(_deal().validate)
+    assert "ZZE is declared a joint operation of ZZP (Method Declaration, proportional, from 2020-01-01)" in message
 
 
 # -- NCI measurement elected per deal (konsol#205, IFRS 3.19) ------------------

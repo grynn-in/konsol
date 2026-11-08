@@ -468,6 +468,8 @@ class _Site:
         assert "`tabEPM Fiscal Year Period`" in query and "`tabEPM Fiscal Year`" in query, query
         date = _getdate(values["d"] if isinstance(values, dict) else values[0])
         rows = [_Row(p) for p in self.periods if _getdate(p["start_date"]) <= date <= _getdate(p["end_date"])]
+        if "<> 'Closing'" in query:
+            rows = [r for r in rows if r["period_type"] != "Closing"]
         rows.sort(key=lambda p: (p["period_type"] != "Regular", _getdate(p["start_date"])))
         return rows[:1]
 
@@ -613,11 +615,37 @@ def test_a_joint_operation_period_that_ended_before_the_disposal_does_not_refuse
     _deal().validate()
 
 
-def test_a_joint_operation_that_ended_within_31_days_before_the_disposal_is_a_refused_step():
-    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-12-30"), dict(HOLDING_80, name="OP-ZZG-ZZE-2025-12-31", effective_date="2025-12-31")])
+def test_a_joint_operation_that_ended_in_the_disposals_own_period_is_refused_in_the_disposals_words():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-12-01"),
+                     dict(HOLDING_80, name="OP-ZZG-ZZE-2025-12-31", effective_date="2025-12-31")])
     message = _refused(_deal().validate)
-    assert ("ZZE was a joint operation until 2025-12-30 (OP-ZZG-ZZE-2020-01-01, proportional): a step from a "
-            "joint operation to control " + REFUSE_TAIL) in message
+    assert ("ZZE was a joint operation until 2025-12-01 (OP-ZZG-ZZE-2020-01-01, proportional): a disposal "
+            "shortly after a joint operation ended " + REFUSE_TAIL) in message
+
+
+def test_the_step_window_reaches_back_to_the_first_day_of_the_previous_period_and_no_further():
+    periods = [dict(PERIOD_DEC_2025, fiscal_period=11, period_code="P11", start_date="2025-11-01",
+                    end_date="2025-11-30"), PERIOD_DEC_2025]
+    holding = dict(HOLDING_80, name="OP-ZZG-ZZE-2025-12-31", effective_date="2025-12-31")
+    _Site(periods=periods, ownership=[dict(JOINT_OPERATION, end_date="2025-11-01"), holding])
+    assert "a disposal shortly after a joint operation ended" in _refused(_deal().validate)
+    _Site(periods=periods, ownership=[dict(JOINT_OPERATION, end_date="2025-10-31"), holding])
+    _deal().validate()
+
+
+def test_a_later_full_declaration_over_an_older_open_proportional_one_does_not_refuse_the_disposal():
+    _Site(declarations=[DECLARATION, dict(DECLARATION, consolidation_method="full", effective_date="2025-06-01")])
+    _deal().validate()
+
+
+def test_a_proportional_declaration_on_an_ancestor_group_refuses_the_disposal_naming_that_group():
+    _Site(nodes=[{"name": "ZZG", "consolidation_group": "ZZG", "data_area_id": "",
+                  "parent_consolidation_group": "CG-ZZP-"},
+                 {"name": "CG-ZZP-", "consolidation_group": "ZZP", "data_area_id": "",
+                  "parent_consolidation_group": None}],
+           declarations=[dict(DECLARATION, parent="CG-ZZP-")])
+    message = _refused(_deal().validate)
+    assert "ZZE is declared a joint operation of ZZP (Method Declaration, proportional, from 2020-01-01)" in message
 
 
 def test_validate_translates_a_deferred_line_at_the_periods_closing_rate():
