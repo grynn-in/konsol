@@ -14,6 +14,24 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 - **Follow-ups filed:** konsol#467 (Desk: add a second owner), konsolidat#292 (WARN test for a declaration on a single-path entity), konsolidat#293 (fixture in the live same-code shape), konsolidat#294 (`assert_equity_rate_coverage` assumes one group currency, pre-existing). Open for Deepak on #117: may the historical-rate join drop the owning group (pair 1 kept it).
 - **Next per #424:** pair 2 (konsolidat#204 (a) layer 1 at 100% + NCI line, aquila-bike ABJV; depends on konsolidat#279), pair 3 (`proportional` for IFRS 11 joint operations), then #428, #111 with #255, #348 S1 onward.
 
+**Update (8 Nov 2026, morning): both Hetzner stacks deployed; K tile; Setup page; open items.**
+- **Merged:**
+  - #465: the K tile is #0C5C56 with rx 4, and its logo URL carries `?v=` (bump it with every logo edit).
+  - #469: the Konsol Setup page is grouped (Needs you / Done folded), with collapsible rows, a progress bar and Expand all. Not yet on the Hetzner stacks.
+- **Deployed (Deepak Pai, "Both stacks, demo first"):** konsol main through #465 plus konsolidat main 10ad6b4 on demo.konsolidat.com (deploy.sh) and demo-ext (image re-tag, migrate).
+  - dbt PASS=331 WARN=1 on both. Aquila-bike matches expected.json (1,512 cells, 0 diffs).
+  - Cube removed; new demo-ext golden copy taken 07:14 UTC; demo on.
+  - Saved state on the server: `/root/deploy-save-20261108`. Backup: 2026-11-07_2346. ext rollback image: `konsolidat-ext-frappe:pre-20261108`.
+- **Upgrade gotcha (konsol#470):** a release that adds a module needs `bench clear-cache` **before** `bench migrate`, or the new module's sidebar and workspace are not imported. demo needed a second migrate.
+- **Open, for Deepak Pai:**
+  - konsol#466: review of the approval and status patterns (Workflow vs Actions menu vs submit vs lifecycle; seven items).
+  - konsolidat#296: the demo-ext hourly reset timer is not installed (found so before and after the deploy). Turn it on?
+  - Restyle the plain Planning, Structure and Data home pages and the Handbook block? (asked, not answered)
+- **Filed:**
+  - konsol#470 (module sync)
+  - konsolidat#295 (the historical-rate test flags same-currency entities: 156 / 163 false warnings)
+  - konsolidat#296 (`demo.sh on` leaves `/try` at a cached 404 until `clear-website-cache`)
+
 **Update (8 Nov 2026, small hours): rail, Planning and Desk look, #454–#463.** Every item below was decided by Deepak Pai on 7 Nov 2026 (record: #443 comments; memory `decision-desk-ia-rail`) and checked live on konsolidat.local.
 - **Rail:** Close · Planning · Structure · Data · Info. "Handbook" is titled Info (#454).
 - **Planning (#460, option B; rejected A two rail entries, C Forecast doctypes, D unfiltered duplicates):**
