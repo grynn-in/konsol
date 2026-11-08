@@ -1,8 +1,8 @@
 """Close home dashboard endpoint, against stubbed sources (trial, 8 Nov 2026).
 
-``home_api.get_home`` is loaded by path against a stub ``frappe`` and stub
+``home_dashboard_api.get_home`` is loaded by path against a stub ``frappe`` and stub
 readers (period_api, statement_api, signoff_gate, ic_api, mywork_api,
-approvals_api, freshness_api, setup); ``home_model``, ``charts_model`` and
+approvals_api, freshness_api, setup); ``home_dashboard_model``, ``charts_model`` and
 ``overview_model`` are the real ones. What this pins:
 
 - with every source answering, every section is filled from it;
@@ -15,14 +15,16 @@ approvals_api, freshness_api, setup); ``home_model``, ``charts_model`` and
 """
 import ast
 import importlib.util
+import json
 import os
+import re
 import sys
 import types
 
 import pytest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-API = os.path.join(APP_DIR, "close", "home_api.py")
+API = os.path.join(APP_DIR, "close", "home_dashboard_api.py")
 ROLES = {"EPM Admin", "EPM Analyst", "EPM User", "System Manager"}
 P05, P06, P07 = (2025, 5), (2025, 6), (2025, 7)
 
@@ -38,9 +40,9 @@ def _load_path(name, rel):
     return module
 
 
-HOME_MODEL = _load_path("test_home_api_home_model", os.path.join("close", "home_model.py"))
-CHARTS_MODEL = _load_path("test_home_api_charts_model", os.path.join("close", "charts_model.py"))
-OVERVIEW_MODEL = _load_path("test_home_api_overview_model", os.path.join("close", "overview_model.py"))
+HOME_MODEL = _load_path("test_home_dashboard_api_home_dashboard_model", os.path.join("close", "home_dashboard_model.py"))
+CHARTS_MODEL = _load_path("test_home_dashboard_api_charts_model", os.path.join("close", "charts_model.py"))
+OVERVIEW_MODEL = _load_path("test_home_dashboard_api_overview_model", os.path.join("close", "overview_model.py"))
 
 
 def _state(key, end):
@@ -62,7 +64,7 @@ def _pairs(fp):
 
 
 def _sources():
-    """Every reader home_api calls, answering."""
+    """Every reader home_dashboard_api calls, answering."""
     def choose_group(groups, group=None):
         if group:
             return group, None, "ok", None
@@ -111,7 +113,7 @@ def _sources():
 
 
 def _home(**over):
-    """``(home_api module, frappe stub)`` with ``over`` replacing sources."""
+    """``(home_dashboard_api module, frappe stub)`` with ``over`` replacing sources."""
     sources = _sources()
     for name, fn in over.items():
         sources[name.replace("__", ".")] = fn
@@ -148,7 +150,7 @@ def _home(**over):
     for name in ("period_api", "statement_api", "statement_model", "signoff_gate", "ic_api",
                  "approvals_api", "freshness_api", "mywork_api"):
         setattr(close, name, modules[name])
-    close.home_model = HOME_MODEL
+    close.home_dashboard_model = HOME_MODEL
     close.charts_model = CHARTS_MODEL
     close.overview_model = OVERVIEW_MODEL
     konsol = types.ModuleType("konsol")
@@ -160,7 +162,7 @@ def _home(**over):
     saved = {k: sys.modules.get(k) for k in stubs}
     sys.modules.update(stubs)
     try:
-        spec = importlib.util.spec_from_file_location("home_api_under_test", API)
+        spec = importlib.util.spec_from_file_location("home_dashboard_api_under_test", API)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     finally:
@@ -337,9 +339,59 @@ def test_get_home_is_a_gated_get():
     assert set(ast.literal_eval(call.args[0])) == ROLES
 
 
-def test_home_api_bypasses_no_permission_and_adds_no_query():
+def test_home_dashboard_api_bypasses_no_permission_and_adds_no_query():
     source = _source()
     assert "ignore_permissions" not in source
     assert "frappe.get_all(" not in source
     assert "frappe.db.sql" not in source and "ch_read" not in source
     assert "frappe.db.commit" not in source
+
+
+# --- the block -----------------------------------------------------------------------
+
+BLOCK_DIR = os.path.join(APP_DIR, "consolidation", "custom_html_block", "konsol_home_dashboard")
+WORKSPACE = os.path.join(APP_DIR, "consolidation", "workspace", "konsol", "konsol.json")
+
+
+def _block(ext):
+    with open(os.path.join(BLOCK_DIR, "konsol_home_dashboard." + ext)) as f:
+        return f.read()
+
+
+def test_the_block_is_registered_with_the_endpoints_roles_and_opens_the_home():
+    with open(os.path.join(APP_DIR, "desk_blocks.py")) as f:
+        tree = ast.parse(f.read())
+    blocks = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                  and ast.unparse(n.targets[0]) == "BLOCKS")
+    (entry,) = [b for b in blocks if b[0] == "Konsol Home Dashboard"]
+    assert entry[1] == "konsol_home_dashboard" and set(entry[2]) == ROLES
+    with open(WORKSPACE) as f:
+        ws = json.load(f)
+    assert "Konsol Home Dashboard" in [b["custom_block_name"] for b in ws["custom_blocks"]]
+    first = json.loads(ws["content"])[0]
+    assert first["type"] == "custom_block"
+    assert first["data"]["custom_block_name"] == "Konsol Home Dashboard"
+    assert ws["modified"] >= "2026-11-08 12:00"
+
+
+def test_the_block_renders_server_text_as_text_and_links_only_to_the_desk():
+    js = _block("js")
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", ".html(", "document.write",
+                 "eval(", "new Function"):
+        assert sink not in js, sink
+    assert "textContent" in js and 'startsWith("/desk/")' in js
+    assert 'const METHOD = "konsol.close.home_dashboard_api.get_home";' in js
+    assert '.xcall(METHOD, args, "GET")' in js
+    assert "frappe.Chart" not in js  # inline SVG sparklines only
+    assert '"Unavailable: "' in js  # a failed section says why, in place
+    assert "<script" not in _block("html").lower()
+
+
+def test_the_block_names_no_colour_of_its_own_and_keeps_the_desk_radius():
+    css = re.sub(r"/\*.*?\*/", "", _block("css"), flags=re.S)
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", css)
+    assert not re.search(r"\b(rgb|hsl)a?\(", css)
+    assert "var(--primary)" in css
+    radii = set(re.findall(r"border-radius:\s*([^;]+);", css))
+    assert radii <= {"2px", "50%"}, radii
+    assert not re.search(r"#[0-9a-fA-F]{6}\b", _block("js"))

@@ -2,7 +2,7 @@
 
 ``get_home(group=None, periods=6)`` feeds the "Konsol Home Dashboard"
 Custom HTML Block on the Konsol workspace. It assembles sections from the
-readers that already exist and lays each out through ``home_model``; it
+readers that already exist and lays each out through ``home_dashboard_model``; it
 writes nothing and adds no warehouse query:
 
 - header: ``period_api.get_context`` (the D5 working landing, as the home
@@ -40,7 +40,7 @@ sparkline, with its reason.
 import frappe
 
 from konsol import setup
-from konsol.close import (approvals_api, charts_model, freshness_api, home_model as model,
+from konsol.close import (approvals_api, charts_model, freshness_api, home_dashboard_model as model,
                           ic_api, mywork_api, overview_model, period_api, signoff_gate,
                           statement_api, statement_model)
 from konsol.entity_permissions import allowed_entity_codes

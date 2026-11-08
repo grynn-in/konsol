@@ -16,8 +16,8 @@ What this pins, file by file:
 - Every selector in ``konsol_desk.bundle.css`` is scoped under the Konsol workspace
   body, so no other Desk page changes; the file names no hex colour (dark
   theme and the per-site Brand Colour both come through Frappe variables).
-- The workspace reads band -> checklist -> actions -> trends: every chart
-  block comes after the last shortcut block; the waiting shortcuts carry a
+- The workspace reads dashboard -> actions -> checklist (the Close home
+  dashboard trial, 8 Nov 2026, replaced the band and the trends); the waiting shortcuts carry a
   short noun label whose "waiting" lives in the section header and the
   ``{} waiting`` count badge; every content shortcut has its row and back.
 - The checklist block draws a progress bar and lays out two columns on a
@@ -138,16 +138,22 @@ def test_the_section_header_margin_skips_the_first_block():
 # --- C. workspace layout -------------------------------------------------------
 
 
-def test_the_home_page_reads_band_checklist_actions_then_trends():
+def test_the_home_page_reads_dashboard_actions_then_checklist():
+    """The Close home dashboard (trial, Deepak Pai, 8 Nov 2026): one block
+    first, the two shortcut sections, then the checklist. No number card and
+    no chart on the page (their records stay)."""
     content = json.loads(_ws()["content"])
     kinds = [b["type"] for b in content]
-    first = {k: kinds.index(k) for k in ("number_card", "custom_block", "shortcut", "chart")}
+    assert "number_card" not in kinds and "chart" not in kinds, kinds
+    blocks = [(i, b["data"]["custom_block_name"]) for i, b in enumerate(content)
+              if b["type"] == "custom_block"]
+    assert [name for _, name in blocks] == ["Konsol Home Dashboard", "Konsol Close Checklist"]
+    assert blocks[0][0] == 0
+    first_shortcut = kinds.index("shortcut")
     last_shortcut = len(kinds) - 1 - kinds[::-1].index("shortcut")
-    assert first["number_card"] < first["custom_block"] < first["shortcut"], first
-    assert first["chart"] > last_shortcut, (first["chart"], last_shortcut)
+    assert blocks[0][0] < first_shortcut and last_shortcut < blocks[1][0], (blocks, kinds)
     headers = [re.sub(r"<[^>]+>", "", b["data"]["text"]) for b in content if b["type"] == "header"]
-    assert headers == ["Where the close stands", "Waiting for approval", "Monthly close",
-                       "Close trends"], headers
+    assert headers == ["Waiting for approval", "Monthly close"], headers
     ids = [b["id"] for b in content]
     assert len(ids) == len(set(ids))
 

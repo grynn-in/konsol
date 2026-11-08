@@ -30,6 +30,10 @@ BLOCKS = (
     # konsol#419: the roles mywork_api.get_my_work admits (frappe.only_for).
     ("Konsol My Work Board", "konsol_my_work_board",
      ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")),
+    # The Close home dashboard (trial, 8 Nov 2026): the roles
+    # home_dashboard_api.get_home admits (frappe.only_for).
+    ("Konsol Home Dashboard", "konsol_home_dashboard",
+     ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")),
 )
 
 

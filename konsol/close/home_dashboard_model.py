@@ -2,7 +2,7 @@
 
 Lays out the "Konsol Home Dashboard" block (one Custom HTML Block on the
 Konsol workspace) from what the close app's readers already return. No close
-rule is decided here; ``home_api`` names each reader:
+rule is decided here; ``home_dashboard_api`` names each reader:
 
 - a KPI tile is a list of points, one per period of the window, oldest
   first. Its value is the newest point; its delta is against the point
@@ -36,7 +36,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 def _load_sibling(name):
     spec = importlib.util.spec_from_file_location(
-        "konsol_close_home_model_" + name, os.path.join(_HERE, name + ".py"))
+        "konsol_close_home_dashboard_model_" + name, os.path.join(_HERE, name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

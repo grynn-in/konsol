@@ -1,37 +1,12 @@
 {
- "charts": [
-  {
-   "chart_name": "TB Submission Progress",
-   "label": "TB Submission Progress"
-  },
-  {
-   "chart_name": "Net Sales and Net Result",
-   "label": "Net Sales and Net Result"
-  },
-  {
-   "chart_name": "Top IC Differences",
-   "label": "Top IC Differences"
-  },
-  {
-   "chart_name": "Approvals Backlog",
-   "label": "Approvals Backlog"
-  },
-  {
-   "chart_name": "Closing vs Average Rate",
-   "label": "Closing vs Average Rate"
-  },
-  {
-   "chart_name": "Entities by Status",
-   "label": "Entities by Status"
-  },
-  {
-   "chart_name": "Days to Close",
-   "label": "Days to Close"
-  }
- ],
- "content": "[{\"id\": \"kh1\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Where the close stands</b></span>\", \"col\": 12}}, {\"id\": \"kb0\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Close Status\", \"col\": 4}}, {\"id\": \"kb1\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Trial Balances In\", \"col\": 4}}, {\"id\": \"kb2\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Waiting for My Approval\", \"col\": 4}}, {\"id\": \"kb3\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"IC Pairs over Tolerance\", \"col\": 4}}, {\"id\": \"kb4\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"TB Exceptions Declared\", \"col\": 4}}, {\"id\": \"kb5\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Warehouse Freshness\", \"col\": 4}}, {\"id\": \"kcl\", \"type\": \"custom_block\", \"data\": {\"custom_block_name\": \"Konsol Close Checklist\", \"col\": 12}}, {\"id\": \"kchsp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kah\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Waiting for approval</b></span>\", \"col\": 12}}, {\"id\": \"ka0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Consolidation Journals\", \"col\": 4}}, {\"id\": \"ka1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Business Combinations\", \"col\": 4}}, {\"id\": \"ka2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Business Disposals\", \"col\": 4}}, {\"id\": \"ka3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Group Exchange Rates\", \"col\": 4}}, {\"id\": \"ka4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Ownership Periods\", \"col\": 4}}, {\"id\": \"ka5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Historical Equity Rates\", \"col\": 4}}, {\"id\": \"ka6\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"IC Balances\", \"col\": 4}}, {\"id\": \"ka7\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Build Approvals\", \"col\": 4}}, {\"id\": \"kasp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kh2\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Monthly close</b></span>\", \"col\": 12}}, {\"id\": \"kw0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"My Work\", \"col\": 4}}, {\"id\": \"kw2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Period Close\", \"col\": 4}}, {\"id\": \"ksr\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Consolidated Statement\", \"col\": 4}}, {\"id\": \"ks0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Trial Balance Uploads\", \"col\": 4}}, {\"id\": \"ks1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Trial Balance Submissions\", \"col\": 4}}, {\"id\": \"ks4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Close Assertions\", \"col\": 4}}, {\"id\": \"ksp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kchh\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Close trends</b></span>\", \"col\": 12}}, {\"id\": \"kch0\", \"type\": \"chart\", \"data\": {\"chart_name\": \"TB Submission Progress\", \"col\": 12}}, {\"id\": \"kch1\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Net Sales and Net Result\", \"col\": 6}}, {\"id\": \"kch2\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Top IC Differences\", \"col\": 6}}, {\"id\": \"kch3\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Approvals Backlog\", \"col\": 6}}, {\"id\": \"kch4\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Closing vs Average Rate\", \"col\": 6}}, {\"id\": \"kch5\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Entities by Status\", \"col\": 6}}, {\"id\": \"kch6\", \"type\": \"chart\", \"data\": {\"chart_name\": \"Days to Close\", \"col\": 6}}]",
+ "charts": [],
+ "content": "[{\"id\": \"khd\", \"type\": \"custom_block\", \"data\": {\"custom_block_name\": \"Konsol Home Dashboard\", \"col\": 12}}, {\"id\": \"khdsp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kah\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Waiting for approval</b></span>\", \"col\": 12}}, {\"id\": \"ka0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Consolidation Journals\", \"col\": 4}}, {\"id\": \"ka1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Business Combinations\", \"col\": 4}}, {\"id\": \"ka2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Business Disposals\", \"col\": 4}}, {\"id\": \"ka3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Group Exchange Rates\", \"col\": 4}}, {\"id\": \"ka4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Ownership Periods\", \"col\": 4}}, {\"id\": \"ka5\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Historical Equity Rates\", \"col\": 4}}, {\"id\": \"ka6\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"IC Balances\", \"col\": 4}}, {\"id\": \"ka7\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Build Approvals\", \"col\": 4}}, {\"id\": \"kasp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kh2\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Monthly close</b></span>\", \"col\": 12}}, {\"id\": \"kw0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"My Work\", \"col\": 4}}, {\"id\": \"kw2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Period Close\", \"col\": 4}}, {\"id\": \"ksr\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Consolidated Statement\", \"col\": 4}}, {\"id\": \"ks0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Trial Balance Uploads\", \"col\": 4}}, {\"id\": \"ks1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Trial Balance Submissions\", \"col\": 4}}, {\"id\": \"ks4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Close Assertions\", \"col\": 4}}, {\"id\": \"kclsp\", \"type\": \"spacer\", \"data\": {\"col\": 12}}, {\"id\": \"kcl\", \"type\": \"custom_block\", \"data\": {\"custom_block_name\": \"Konsol Close Checklist\", \"col\": 12}}]",
  "creation": "2026-11-05 09:00:00.000000",
  "custom_blocks": [
+  {
+   "custom_block_name": "Konsol Home Dashboard",
+   "label": "Konsol Home Dashboard"
+  },
   {
    "custom_block_name": "Konsol Close Checklist",
    "label": "Konsol Close Checklist"
@@ -46,36 +21,11 @@
  "is_hidden": 0,
  "label": "Konsol",
  "links": [],
- "modified": "2026-11-07 23:55:00.000000",
+ "modified": "2026-11-08 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Konsol",
- "number_cards": [
-  {
-   "label": "Close Status",
-   "number_card_name": "Close Status"
-  },
-  {
-   "label": "Trial Balances In",
-   "number_card_name": "Trial Balances In"
-  },
-  {
-   "label": "Waiting for My Approval",
-   "number_card_name": "Waiting for My Approval"
-  },
-  {
-   "label": "IC Pairs over Tolerance",
-   "number_card_name": "IC Pairs over Tolerance"
-  },
-  {
-   "label": "TB Exceptions Declared",
-   "number_card_name": "TB Exceptions Declared"
-  },
-  {
-   "label": "Warehouse Freshness",
-   "number_card_name": "Warehouse Freshness"
-  }
- ],
+ "number_cards": [],
  "owner": "Administrator",
  "parent_page": "",
  "public": 1,
@@ -129,74 +79,74 @@
   {
    "color": "Orange",
    "doc_view": "List",
+   "format": "{} waiting",
    "label": "Consolidation Journals",
    "link_to": "Consolidation Journal",
-   "type": "DocType",
    "stats_filter": "[[\"Consolidation Journal\", \"status\", \"=\", \"Pending Approval\"]]",
-   "format": "{} waiting"
+   "type": "DocType"
   },
   {
    "color": "Orange",
    "doc_view": "List",
+   "format": "{} waiting",
    "label": "Business Combinations",
    "link_to": "Business Combination",
-   "type": "DocType",
    "stats_filter": "[[\"Business Combination\", \"status\", \"=\", \"Pending Approval\"]]",
-   "format": "{} waiting"
+   "type": "DocType"
   },
   {
    "color": "Orange",
    "doc_view": "List",
+   "format": "{} waiting",
    "label": "Business Disposals",
    "link_to": "Business Disposal",
-   "type": "DocType",
    "stats_filter": "[[\"Business Disposal\", \"status\", \"=\", \"Pending Approval\"]]",
-   "format": "{} waiting"
+   "type": "DocType"
   },
   {
    "color": "Orange",
    "doc_view": "List",
+   "format": "{} waiting",
    "label": "Group Exchange Rates",
    "link_to": "Group Exchange Rate",
-   "type": "DocType",
    "stats_filter": "[[\"Group Exchange Rate\", \"docstatus\", \"=\", 0]]",
-   "format": "{} waiting"
+   "type": "DocType"
   },
   {
    "color": "Orange",
    "doc_view": "List",
+   "format": "{} waiting",
    "label": "Ownership Periods",
    "link_to": "Ownership Period",
-   "type": "DocType",
    "stats_filter": "[[\"Ownership Period\", \"docstatus\", \"=\", 0]]",
-   "format": "{} waiting"
+   "type": "DocType"
   },
   {
    "color": "Orange",
    "doc_view": "List",
+   "format": "{} waiting",
    "label": "Historical Equity Rates",
    "link_to": "Historical Equity Rate",
-   "type": "DocType",
    "stats_filter": "[[\"Historical Equity Rate\", \"docstatus\", \"=\", 0]]",
-   "format": "{} waiting"
+   "type": "DocType"
   },
   {
    "color": "Orange",
    "doc_view": "List",
+   "format": "{} waiting",
    "label": "IC Balances",
    "link_to": "IC Balance",
-   "type": "DocType",
    "stats_filter": "[[\"IC Balance\", \"docstatus\", \"=\", 0]]",
-   "format": "{} waiting"
+   "type": "DocType"
   },
   {
    "color": "Orange",
    "doc_view": "List",
+   "format": "{} waiting",
    "label": "Build Approvals",
    "link_to": "Build Approval",
-   "type": "DocType",
    "stats_filter": "[[\"Build Approval\", \"workflow_state\", \"=\", \"Pending Review\"]]",
-   "format": "{} waiting"
+   "type": "DocType"
   }
  ],
  "standard": 1,

@@ -66,13 +66,15 @@ def _roles_of(fn):
     return None
 
 
-def test_the_band_is_six_custom_cards_on_the_workspace():
+def test_the_band_cards_ship_but_the_close_home_shows_none():
+    """The Close home dashboard (trial, 8 Nov 2026) replaced the band on the
+    Konsol workspace; the six cards still ship (other workspaces, e.g. Data,
+    show Warehouse Freshness) and are checked below."""
     ws = _ws()
-    names = [c["number_card_name"] for c in ws["number_cards"]]
-    assert names == list(BAND), names
-    blocks = [b["data"]["number_card_name"] for b in json.loads(ws["content"])
-              if b["type"] == "number_card"]
-    assert blocks == list(BAND), blocks
+    assert ws["number_cards"] == []
+    assert not [b for b in json.loads(ws["content"]) if b["type"] == "number_card"]
+    for name in BAND:
+        assert os.path.isfile(os.path.join(CARDS_DIR, _slug(name), _slug(name) + ".json")), name
 
 
 def test_each_band_card_calls_a_gated_overview_method():

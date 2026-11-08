@@ -1,6 +1,6 @@
 """Close home dashboard, pure layout (trial, Deepak Pai, 8 Nov 2026).
 
-``home_model`` lays out the one "Konsol Home Dashboard" block from what the
+``home_dashboard_model`` lays out the one "Konsol Home Dashboard" block from what the
 close app's readers already return (charts_model charts, ic_api.get_ic,
 period states, get_my_work counts, setup.status, freshness). It decides no
 close rule. What this pins:
@@ -27,8 +27,8 @@ def _load(name, rel):
     return module
 
 
-M = _load("test_home_model_home_model", os.path.join("close", "home_model.py"))
-CM = _load("test_home_model_charts_model", os.path.join("close", "charts_model.py"))
+M = _load("test_home_dashboard_model_home_dashboard_model", os.path.join("close", "home_dashboard_model.py"))
+CM = _load("test_home_dashboard_model_charts_model", os.path.join("close", "charts_model.py"))
 
 P05, P06, P07 = (2025, 5), (2025, 6), (2025, 7)
 
