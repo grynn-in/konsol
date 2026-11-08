@@ -563,6 +563,23 @@ def test_validate_computes_the_total_proceeds():
     assert deal.total_proceeds == 9000.0
 
 
+JOINT_OPERATION = dict(HOLDING_80, name="OP-ZZG-ZZE-2020-01-01", owner_node="CG-ZZG-",
+                       ownership_pct=50, consolidation_method="proportional")
+
+
+def test_a_disposal_of_a_joint_operation_is_refused_by_name():
+    _Site(ownership=[JOINT_OPERATION])
+    message = _refused(_deal(share_disposed_pct=50).validate)
+    assert ("ZZE is held as a joint operation (OP-ZZG-ZZE-2020-01-01, proportional, 50%): a disposal "
+            "of a joint operation is not implemented (IFRS 11.21A). "
+            "Record the change as an Ownership Period.") in message
+
+
+def test_a_disposal_of_a_fully_held_entity_is_not_refused_as_a_joint_operation():
+    _Site()
+    _deal().validate()
+
+
 def test_validate_translates_a_deferred_line_at_the_periods_closing_rate():
     _Site(rates={("USD", "EUR", 2025, 12): (90, 100)})  # 0.90 EUR per USD, quoted per 100
     deal = _deal(proceeds=[{"component": "Cash", "amount": 8000, "currency": "EUR"},

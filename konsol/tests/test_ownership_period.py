@@ -754,15 +754,10 @@ def test_a_date_outside_the_warehouse_range_is_refused_by_sentence_at_both_bound
     assert doc.end_date is None
 
 
-# --- #429: proportional is offered, and the warehouse computes it as full ------
+# --- all four methods pass validate ---------------------------------------------
 #
-# gold_consolidated_trial_balance excludes only ``equity`` and ``none`` and
-# computes group_amount = translated × pct and nci_amount = translated × (1 − pct)
-# with no method branch, so a period declared ``proportional`` consolidates as a
-# full subsidiary with NCI — the venturer's share of each line, with no NCI, is
-# what proportional means. Per the 17 Sep principle (refuse what makes a number
-# wrong) validate() refuses it by name until a model computes it; the Select
-# keeps the option because #117 decides whether to implement or drop it.
+# konsol#117 pair 3 computes `proportional` (IFRS 11.20, a joint operation's
+# share of each line, no NCI), so konsol#429's guard is lifted.
 
 def _whole_site():
     """``_site`` over the ``_TREE`` nodes, so ``validate()`` runs end to end."""
@@ -820,19 +815,9 @@ def _node_lookup(nodes, calls):
     return get_value
 
 
-def test_429_proportional_is_refused_by_validate_naming_the_method_and_the_issue():
+def test_all_four_methods_pass_validate():
     module = _whole_site()
-    with pytest.raises(_Refused) as e:
-        module.OwnershipPeriod(before=None, **_declared(consolidation_method="proportional")).validate()
-    message = str(e.value)
-    assert "proportional" in message.lower(), message
-    assert "konsol#429" in message, message
-    assert "full" in message and "equity" in message, message
-
-
-def test_429_full_equity_and_none_still_pass_validate():
-    module = _whole_site()
-    for method in ("full", "equity", "none"):
+    for method in ("full", "proportional", "equity", "none"):
         module.OwnershipPeriod(before=None, **_declared(consolidation_method=method)).validate()
 
 

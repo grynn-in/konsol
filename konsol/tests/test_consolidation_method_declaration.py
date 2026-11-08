@@ -54,7 +54,7 @@ HELP = {
         "refused: it may be made ahead of a link that arrives later."),
     "consolidation_method": (
         "The method the group applies to this entity where its ownership paths do not "
-        "decide it. Proportional is refused until it is implemented (konsol#429)."),
+        "decide it. Proportional is the operator's share of each line, no NCI (IFRS 11 joint operation)."),
     "effective_date": "The first day this method applies.",
     "end_date": "The last day this method applies. Blank means open-ended.",
     "reason": (
@@ -180,15 +180,9 @@ def test_overlapping_windows_for_one_entity_are_refused_naming_both_rows():
         "Method declarations for ZZD overlap: row 1 (equity, 2024-01-01 to 2025-06-30) and row 2"), problems
 
 
-def test_proportional_is_refused_the_way_ownership_period_refuses_it():
-    """#432's guard on Ownership Period, with the same sentence, until konsol#117
-    pair 3 implements proportional consolidation."""
-    problems = MD.declaration_problems("ZZGRP", None, [_row(1, method="proportional")])
-    assert problems == ["Row 1 (ZZD): " + MD.PROPORTIONAL_REFUSAL]
-    assert MD.PROPORTIONAL_REFUSAL == (
-        "Proportional consolidation is not implemented (konsol#429): the warehouse would "
-        "consolidate this declaration as full with NCI, which is not proportional "
-        "consolidation. Use full with NCI, or equity.")
+def test_proportional_is_accepted_like_the_other_three():
+    for method in ("full", "proportional", "equity", "none"):
+        assert MD.declaration_problems("ZZGRP", None, [_row(1, method=method)]) == []
 
 
 def test_an_end_before_the_start_and_an_unknown_method_are_refused():
@@ -389,11 +383,10 @@ def test_validate_refuses_declarations_on_an_entity_node():
         _unload(mod)
 
 
-def test_validate_refuses_overlaps_and_proportional_joining_every_problem():
+def test_validate_refuses_overlaps_joining_every_problem():
     mod, frappe = _load_group(_ch_stub())
     try:
         msg = _refusal(_node(mod, rows=[_row(1, method="proportional"), _row(2, start="2025-01-01")]).validate)
-        assert "konsol#429" in msg
         assert "Method declarations for ZZD overlap" in msg
         assert "<br>" in msg, "every problem at once, like the policy check"
     finally:

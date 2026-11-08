@@ -514,6 +514,34 @@ def test_validate_at_eighty_percent_partial_measures_the_nci():
     assert deal.nci_at_acquisition == 316.0
 
 
+# -- a deal into a joint operation is refused by name (konsol#117 pair 3) -------
+#
+# `proportional` is IFRS 11.20 proportionate consolidation; a business
+# combination into a joint operation (IFRS 11.21A) is not implemented.
+
+JOINT_OPERATION = {"name": "OP-ZZG-ZZE-2020-01-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+                   "owner_node": "CG-ZZG-", "effective_date": "2020-01-01", "end_date": None,
+                   "ownership_pct": 50, "consolidation_method": "proportional", "docstatus": 1}
+
+
+def test_a_deal_into_a_joint_operation_is_refused_by_name():
+    _Site(ownership=[JOINT_OPERATION])
+    message = _refused(_deal().validate)
+    assert ("ZZE is held as a joint operation (OP-ZZG-ZZE-2020-01-01, proportional, 50%): a business "
+            "combination into a joint operation is not implemented (IFRS 11.21A). "
+            "Record the change as an Ownership Period.") in message
+
+
+def test_a_deal_into_a_fully_held_entity_is_not_refused_as_a_joint_operation():
+    _Site(ownership=[dict(JOINT_OPERATION, consolidation_method="full", ownership_pct=80)])
+    _deal().validate()
+
+
+def test_a_joint_operation_period_that_ended_before_the_deal_does_not_refuse_it():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-06-30")])
+    _deal().validate()
+
+
 # -- NCI measurement elected per deal (konsol#205, IFRS 3.19) ------------------
 
 US_GAAP_NCI = "US GAAP measures non-controlling interest at fair value"
