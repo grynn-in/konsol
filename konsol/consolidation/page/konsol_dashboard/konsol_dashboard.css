@@ -4,8 +4,12 @@
  * colour of its own, so the dark theme comes through. Actions use
  * var(--primary); status uses Frappe's green/orange/red/gray. Desk radius 2px.
  * Columns follow the page's own width (container queries). */
+/* Frappe v16 gives .page-body no padding (frappe page.scss) and its own pages pad
+ * themselves (data_import_wizard.scss), so the page root carries the margin. */
 .konsol-dashboard {
 	container-type: inline-size;
+	box-sizing: border-box;
+	padding: var(--padding-lg) var(--padding-xl);
 	color: var(--text-color);
 	display: flex;
 	flex-direction: column;
