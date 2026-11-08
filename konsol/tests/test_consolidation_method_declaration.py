@@ -114,7 +114,7 @@ def test_child_help_text_on_every_field():
     for name, text in HELP.items():
         assert fields[name].get("description") == text, name
     assert "IFRS 11.7" in fields["reason"]["description"]
-    assert "konsol#429" in fields["consolidation_method"]["description"]
+    assert "IFRS 11 joint operation" in fields["consolidation_method"]["description"]
 
 
 # --- the parent: a section on the Policy tab, group nodes only ----------------
@@ -386,7 +386,8 @@ def test_validate_refuses_declarations_on_an_entity_node():
 def test_validate_refuses_overlaps_joining_every_problem():
     mod, frappe = _load_group(_ch_stub())
     try:
-        msg = _refusal(_node(mod, rows=[_row(1, method="proportional"), _row(2, start="2025-01-01")]).validate)
+        msg = _refusal(_node(mod, rows=[_row(1, method="proportional"), _row(2, start="2025-01-01"),
+                                       _row(3, start="2026-01-01", end="2025-12-31")]).validate)
         assert "Method declarations for ZZD overlap" in msg
         assert "<br>" in msg, "every problem at once, like the policy check"
     finally:

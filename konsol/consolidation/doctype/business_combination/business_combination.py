@@ -134,6 +134,7 @@ class BusinessCombination(Document):
         period = self._acquisition_period()
         root = self._root()
         self._validate_acquirer()
+        self._joint_operation_problem()
         # konsol#205 (IFRS 3.19): each deal may elect its NCI measurement; blank
         # takes the group's. The model measures with the value in force.
         self.nci_measurement = self.get("nci_measurement_override") or root.get("goodwill_method") or ""
@@ -343,6 +344,31 @@ class BusinessCombination(Document):
         node = self._acquired_node()
         if node and node.parent_consolidation_group:
             self.acquirer_node = node.parent_consolidation_group
+
+    def _joint_operation_problem(self):
+        """Refuse a deal into / out of a joint operation by name (konsol#117
+        pair 3): ``proportional`` is IFRS 11.20 proportionate consolidation, and
+        IFRS 11.21A (a business combination into, or a disposal of, an interest
+        in a joint operation) is not implemented. Any owner's submitted
+        Ownership Period of the entity in this group, effective on the deal
+        date, that is held ``proportional`` refuses the deal."""
+        rows = frappe.get_all(
+            "Ownership Period",
+            filters={"consolidation_group": self.consolidation_group, "data_area_id": self.acquired_entity,
+                     "docstatus": 1, "consolidation_method": "proportional",
+                     "effective_date": ["<=", self.acquisition_date]},
+            fields=["name", "ownership_pct", "effective_date", "end_date"],
+            order_by="effective_date desc",
+            limit_page_length=0,
+        )
+        for row in rows:
+            if row.end_date and getdate(row.end_date) < getdate(self.acquisition_date):
+                continue
+            frappe.throw(
+                f"{_PREFIX}{self.acquired_entity} is held as a joint operation ({row.name}, proportional, "
+                f"{float(row.ownership_pct):g}%): a business combination into a joint operation is not implemented (IFRS 11.21A). "
+                "Record the change as an Ownership Period."
+            )
 
     def _validate_acquirer(self):
         """The Ownership Period's owner rule (§1 refusal 1), in this deal's

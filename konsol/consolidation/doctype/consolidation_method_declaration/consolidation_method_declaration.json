@@ -25,7 +25,7 @@
    "reqd": 1,
    "in_list_view": 1,
    "columns": 2,
-   "description": "The method the group applies to this entity where its ownership paths do not decide it. Proportional is refused until it is implemented (konsol#429)."
+   "description": "The method the group applies to this entity where its ownership paths do not decide it. Proportional is the operator's share of each line, no NCI (IFRS 11 joint operation)."
   },
   {
    "fieldname": "effective_date",
