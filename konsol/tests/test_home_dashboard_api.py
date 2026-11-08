@@ -433,3 +433,16 @@ def test_the_page_stylesheet_is_scoped_hex_free_and_keeps_the_desk_radius():
     radii = set(re.findall(r"border-radius:\s*([^;]+);", css))
     assert radii <= {"2px", "50%"}, radii
     assert not re.search(r"#[0-9a-fA-F]{6}\b", _page("js"))
+
+
+def test_selector_change_ignores_its_own_refill():
+    """A refill of the head selectors must not reload the page (8 Nov 2026 loop on 8069).
+
+    Frappe's set_value fires `change` asynchronously, after sync_field has cleared
+    `syncing`, so changed() itself must return when the value equals the view.
+    """
+    with open(os.path.join(APP_DIR, "consolidation", "page", "konsol_dashboard", "konsol_dashboard.js")) as f:
+        src = f.read()
+    body = src.split("changed(which) {", 1)[1].split("\n\t}\n", 1)[0]
+    assert "if (group === this.view.group) return;" in body
+    assert "if (periods === this.view.periods) return;" in body

@@ -288,8 +288,19 @@ class KonsolDashboard {
 
 	changed(which) {
 		if (this.syncing) return;
-		if (which === "group") this.view.group = this.group_field.get_value() || null;
-		else this.view.periods = Number(this.periods_field.get_value()) || this.view.periods;
+		// Frappe's set_value fires change after sync_field has cleared `syncing` (it is
+		// async), so a refill from render() arrives here too. Reload only when the value
+		// differs from the view render() just recorded; otherwise every render would
+		// reload the page, forever (8 Nov 2026, found live on 8069).
+		if (which === "group") {
+			const group = this.group_field.get_value() || null;
+			if (group === this.view.group) return;
+			this.view.group = group;
+		} else {
+			const periods = Number(this.periods_field.get_value()) || this.view.periods;
+			if (periods === this.view.periods) return;
+			this.view.periods = periods;
+		}
 		this.refresh();
 	}
 
