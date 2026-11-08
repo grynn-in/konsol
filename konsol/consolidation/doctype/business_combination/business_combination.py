@@ -373,8 +373,10 @@ class BusinessCombination(Document):
             seen.add(parent)
             above = frappe.db.get_value("Consolidation Group", parent, ["consolidation_group"], as_dict=True)
             group = above and above.get("consolidation_group")
-            if group:
-                found.append((group, f"CG-{group}-"))
+            own = group and frappe.db.get_value(
+                "Consolidation Group", {"consolidation_group": group, "data_area_id": _BLANK}, "name")
+            if own:
+                found.append((group, own))
             node = parent
         return found
 

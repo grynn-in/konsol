@@ -11,8 +11,9 @@ deal is refused by name when the entity in the group is, on the deal date:
 * held ``proportional`` by an Ownership Period, draft or submitted, of any
   owner (a Draft the approval would submit keeps its hand-set method);
 * declared ``proportional`` by the latest Consolidation Method Declaration
-  (effective on or before the deal date, End Date exclusive, as the
-  warehouse's ownership_resolution macro reads it) of the group's own node or
+  (effective on or before the day, End Date exclusive, as the warehouse's
+  ownership_resolution macro reads it) on any day from ``window_start`` to
+  the deal date of the group's own node or
   of any ancestor group's node; or
 * a joint operation whose window reaches back to ``window_start``, the first
   day of the fiscal period before the deal's (the warehouse's rule in
@@ -66,16 +67,23 @@ def joint_operation_problem(entity, deal_date, deal_phrase, step_phrase, window_
         draft = ", Draft period" if int(row.docstatus or 0) == 0 else ""
         return (f"{entity} is held as a joint operation ({row.name}, proportional, "
                 f"{float(row.ownership_pct):g}%{draft}): {deal_phrase} a joint operation {_TAIL}")
+    start = floor if floor < deal else deal
     for group, rows in declarations:
-        asof = [r for r in rows if _date(r.effective_date) is not None and _date(r.effective_date) <= deal]
-        if not asof:
-            continue
-        latest = max(asof, key=lambda r: _date(r.effective_date))
-        end = _date(latest.end_date)
-        if latest.consolidation_method != "proportional" or (end is not None and end <= deal):
-            continue
-        return (f"{entity} is declared a joint operation of {group} (Method Declaration, proportional, "
-                f"from {_date(latest.effective_date)}): {deal_phrase} a joint operation {_TAIL}")
+        dated = [r for r in rows if _date(r.effective_date) is not None]
+        # The latest-effective row is piecewise constant in time: evaluate it
+        # at the window start, the deal date and every row's start inside the
+        # window (dbt resolves the previous period at its first day).
+        points = {start, deal} | {_date(r.effective_date) for r in dated if start < _date(r.effective_date) <= deal}
+        for day in sorted(points):
+            asof = [r for r in dated if _date(r.effective_date) <= day]
+            if not asof:
+                continue
+            latest = max(asof, key=lambda r: _date(r.effective_date))
+            end = _date(latest.end_date)
+            if latest.consolidation_method != "proportional" or (end is not None and end <= day):
+                continue
+            return (f"{entity} is declared a joint operation of {group} (Method Declaration, proportional, "
+                    f"from {_date(latest.effective_date)}): {deal_phrase} a joint operation {_TAIL}")
     if ended:
         row, end = max(ended, key=lambda pair: pair[1])
         return (f"{entity} was a joint operation until {end} ({row.name}, proportional): {step_phrase} {_TAIL}")
