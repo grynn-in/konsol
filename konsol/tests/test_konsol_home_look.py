@@ -138,20 +138,18 @@ def test_the_section_header_margin_skips_the_first_block():
 # --- C. workspace layout -------------------------------------------------------
 
 
-def test_the_home_page_reads_dashboard_actions_then_checklist():
-    """The Close home dashboard (trial, Deepak Pai, 8 Nov 2026): one block
-    first, the two shortcut sections, then the checklist. No number card and
-    no chart on the page (their records stay)."""
+def test_the_home_page_reads_actions_then_checklist():
+    """The Close dashboard is its own Page (konsol-dashboard, 8 Nov 2026), linked
+    first in the Close sidebar: the home reads the two shortcut sections, then
+    the checklist. No number card and no chart on the page (their records stay)."""
     content = json.loads(_ws()["content"])
     kinds = [b["type"] for b in content]
     assert "number_card" not in kinds and "chart" not in kinds, kinds
     blocks = [(i, b["data"]["custom_block_name"]) for i, b in enumerate(content)
               if b["type"] == "custom_block"]
-    assert [name for _, name in blocks] == ["Konsol Home Dashboard", "Konsol Close Checklist"]
-    assert blocks[0][0] == 0
-    first_shortcut = kinds.index("shortcut")
+    assert [name for _, name in blocks] == ["Konsol Close Checklist"]
     last_shortcut = len(kinds) - 1 - kinds[::-1].index("shortcut")
-    assert blocks[0][0] < first_shortcut and last_shortcut < blocks[1][0], (blocks, kinds)
+    assert last_shortcut < blocks[0][0], (blocks, kinds)
     headers = [re.sub(r"<[^>]+>", "", b["data"]["text"]) for b in content if b["type"] == "header"]
     assert headers == ["Waiting for approval", "Monthly close"], headers
     ids = [b["id"] for b in content]

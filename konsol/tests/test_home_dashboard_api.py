@@ -347,51 +347,89 @@ def test_home_dashboard_api_bypasses_no_permission_and_adds_no_query():
     assert "frappe.db.commit" not in source
 
 
-# --- the block -----------------------------------------------------------------------
+# --- the page ------------------------------------------------------------------------
+# A standard Page like Konsol Setup (test_setup_page_look.py), not a Custom HTML Block.
 
-BLOCK_DIR = os.path.join(APP_DIR, "consolidation", "custom_html_block", "konsol_home_dashboard")
+PAGE_DIR = os.path.join(APP_DIR, "consolidation", "page", "konsol_dashboard")
 WORKSPACE = os.path.join(APP_DIR, "consolidation", "workspace", "konsol", "konsol.json")
+SIDEBAR = os.path.join(APP_DIR, "consolidation", "sidebar", "close", "close.json")
 
 
-def _block(ext):
-    with open(os.path.join(BLOCK_DIR, "konsol_home_dashboard." + ext)) as f:
+def _page(ext):
+    with open(os.path.join(PAGE_DIR, "konsol_dashboard." + ext)) as f:
         return f.read()
 
 
-def test_the_block_is_registered_with_the_endpoints_roles_and_opens_the_home():
+def test_the_page_is_a_standard_page_with_the_endpoints_roles():
+    d = json.loads(_page("json"))
+    assert (d["doctype"], d["name"], d["page_name"], d["standard"], d["module"]) == (
+        "Page", "konsol-dashboard", "konsol-dashboard", "Yes", "Consolidation")
+    assert d["title"] == "Konsol Dashboard" and d["icon"] == "dashboard"
+    assert {r["role"] for r in d["roles"]} == ROLES
+    assert os.path.exists(os.path.join(PAGE_DIR, "__init__.py"))
+
+
+def test_the_custom_block_is_gone_and_the_page_is_linked_first_in_close():
     with open(os.path.join(APP_DIR, "desk_blocks.py")) as f:
-        tree = ast.parse(f.read())
-    blocks = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
-                  and ast.unparse(n.targets[0]) == "BLOCKS")
-    (entry,) = [b for b in blocks if b[0] == "Konsol Home Dashboard"]
-    assert entry[1] == "konsol_home_dashboard" and set(entry[2]) == ROLES
+        assert "Konsol Home Dashboard" not in f.read()
+    assert not os.path.exists(os.path.join(APP_DIR, "consolidation", "custom_html_block", "konsol_home_dashboard"))
     with open(WORKSPACE) as f:
         ws = json.load(f)
-    assert "Konsol Home Dashboard" in [b["custom_block_name"] for b in ws["custom_blocks"]]
-    first = json.loads(ws["content"])[0]
-    assert first["type"] == "custom_block"
-    assert first["data"]["custom_block_name"] == "Konsol Home Dashboard"
-    assert ws["modified"] >= "2026-11-08 12:00"
+    assert "Konsol Home Dashboard" not in [b["custom_block_name"] for b in ws["custom_blocks"]]
+    assert "Konsol Home Dashboard" not in ws["content"]
+    assert ws["modified"] >= "2026-11-08 14:00"
+    with open(SIDEBAR) as f:
+        sb = json.load(f)
+    first = sb["items"][0]
+    assert (first["type"], first["link_type"], first["link_to"], first["label"]) == (
+        "Link", "Page", "konsol-dashboard", "Dashboard")
+    assert sb["items"][1]["label"] == "Home"
+    assert sb["modified"] >= "2026-11-08 14:00"
 
 
-def test_the_block_renders_server_text_as_text_and_links_only_to_the_desk():
-    js = _block("js")
+def test_the_patch_deletes_the_retired_block_when_present():
+    with open(os.path.join(APP_DIR, "patches", "delete_konsol_home_dashboard_block.py")) as f:
+        src = f.read()
+    assert '"Custom HTML Block"' in src and "frappe.db.exists" in src
+    with open(os.path.join(APP_DIR, "patches.txt")) as f:
+        assert "konsol.patches.delete_konsol_home_dashboard_block" in f.read().split()
+
+
+def test_the_page_renders_server_text_as_text_and_links_only_to_the_desk():
+    js = _page("js")
     for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", ".html(", "document.write",
-                 "eval(", "new Function"):
+                 "eval(", "new Function", "${"):
         assert sink not in js, sink
     assert "textContent" in js and 'startsWith("/desk/")' in js
-    assert 'const METHOD = "konsol.close.home_dashboard_api.get_home";' in js
-    assert '.xcall(METHOD, args, "GET")' in js
+    assert 'const KONSOL_DASHBOARD_METHOD = "konsol.close.home_dashboard_api.get_home";' in js
+    assert '.xcall(KONSOL_DASHBOARD_METHOD, args, "GET")' in js
     assert "frappe.Chart" not in js  # inline SVG sparklines only
     assert '"Unavailable: "' in js  # a failed section says why, in place
-    assert "<script" not in _block("html").lower()
+    assert "root_element" not in js
+    assert "style=" not in js
 
 
-def test_the_block_names_no_colour_of_its_own_and_keeps_the_desk_radius():
-    css = re.sub(r"/\*.*?\*/", "", _block("css"), flags=re.S)
+def test_the_page_is_built_like_konsol_setup_with_selectors_in_the_head():
+    js = _page("js")
+    assert 'frappe.pages["konsol-dashboard"].on_page_load' in js
+    assert 'frappe.pages["konsol-dashboard"].refresh' in js
+    assert "frappe.ui.make_app_page(" in js and "single_column: true" in js
+    assert 'addClass("konsol-dashboard")' in js
+    assert js.count("page.add_field(") == 2 and '"group"' in js and '"periods"' in js
+    assert "page.set_secondary_action(" in js
+
+
+def test_the_page_stylesheet_is_scoped_hex_free_and_keeps_the_desk_radius():
+    css = re.sub(r"/\*.*?\*/", "", _page("css"), flags=re.S)
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", css)
     assert not re.search(r"\b(rgb|hsl)a?\(", css)
     assert "var(--primary)" in css
+    for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+        sel = m.group(1).strip()
+        if sel.startswith("@"):
+            continue
+        for part in sel.split(","):
+            assert part.strip().startswith(".konsol-dashboard"), part
     radii = set(re.findall(r"border-radius:\s*([^;]+);", css))
     assert radii <= {"2px", "50%"}, radii
-    assert not re.search(r"#[0-9a-fA-F]{6}\b", _block("js"))
+    assert not re.search(r"#[0-9a-fA-F]{6}\b", _page("js"))

@@ -1,102 +1,79 @@
-/* Konsol Home Dashboard (trial, 8 Nov 2026). Frappe variables only: no
+/* Konsol Dashboard page (trial, 8 Nov 2026). Page-level CSS, as konsol_setup.css:
+ * Frappe keeps this <style> in the document after the page is left, so every rule
+ * is scoped to .konsol-dashboard (the page root, konsol_dashboard.js). Frappe variables only: no
  * colour of its own, so the dark theme comes through. Actions use
  * var(--primary); status uses Frappe's green/orange/red/gray. Desk radius 2px.
- * Columns follow the block's own width (container queries). */
-.konsol-home {
+ * Columns follow the page's own width (container queries). */
+.konsol-dashboard {
 	container-type: inline-size;
 	color: var(--text-color);
 	display: flex;
 	flex-direction: column;
 	gap: var(--margin-md);
 }
-.kh-card {
+.konsol-dashboard .kd-card {
 	border: 1px solid var(--border-color);
 	border-radius: 2px;
 	background: var(--card-bg);
 	padding: var(--padding-md);
 	min-width: 0;
 }
-.kh-muted,
-.kh-loading {
+.konsol-dashboard .kd-muted,
+.konsol-dashboard .kd-loading {
 	color: var(--text-muted);
 }
-.kh-small {
+.konsol-dashboard .kd-small {
 	font-size: var(--text-sm);
 }
-.kh-unavailable {
+.konsol-dashboard .kd-unavailable {
 	margin: 0;
 	color: var(--text-muted);
 	font-size: var(--text-sm);
 }
-.kh-plain {
+.konsol-dashboard .kd-plain {
 	color: var(--text-color);
 }
-a.kh-plain:hover,
-a.kh-tile-title:hover,
-a.kh-tile-value:hover {
+.konsol-dashboard a.kd-plain:hover,
+.konsol-dashboard a.kd-tile-title:hover,
+.konsol-dashboard a.kd-tile-value:hover {
 	text-decoration: underline;
 }
 
 /* header */
-.kh-header {
+.konsol-dashboard .kd-header {
 	display: flex;
 	flex-wrap: wrap;
 	justify-content: space-between;
 	align-items: flex-end;
 	gap: var(--margin-sm) var(--margin-md);
 }
-.kh-heading {
-	display: flex;
-	flex-direction: column;
-}
-.kh-title {
-	font-size: var(--text-2xl);
-	font-weight: 600;
-	color: var(--heading-color);
-}
-.kh-subtitle {
+.konsol-dashboard .kd-subtitle {
 	color: var(--text-muted);
-}
-.kh-tools {
-	display: flex;
-	gap: var(--margin-sm);
-}
-.kh-select {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	margin: 0;
-	font-size: var(--text-xs);
-	color: var(--text-muted);
-}
-.kh-select select {
-	min-width: 120px;
-	border-radius: 2px;
 }
 
 /* headline */
-.kh-headline {
+.konsol-dashboard .kd-headline {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
 	gap: var(--margin-md);
 	border-left: 3px solid var(--primary);
 }
-.kh-headline-text {
+.konsol-dashboard .kd-headline-text {
 	display: flex;
 	flex-direction: column;
 }
-.kh-headline-count {
+.konsol-dashboard .kd-headline-count {
 	font-size: var(--text-xl);
 	font-weight: 600;
 	color: var(--heading-color);
 }
-.kh-start {
+.konsol-dashboard .kd-start {
 	border-radius: 2px;
 }
 
 /* banners */
-.kh-banner {
+.konsol-dashboard .kd-banner {
 	display: flex;
 	justify-content: space-between;
 	gap: var(--margin-md);
@@ -106,19 +83,19 @@ a.kh-tile-value:hover {
 	background: var(--subtle-fg);
 	font-size: var(--text-sm);
 }
-.kh-banner-build {
+.konsol-dashboard .kd-banner-build {
 	border-left: 3px solid var(--blue-500);
 }
-.kh-banner-setup {
+.konsol-dashboard .kd-banner-setup {
 	border-left: 3px solid var(--orange-500);
 }
-.kh-banner-action {
+.konsol-dashboard .kd-banner-action {
 	font-weight: 500;
 	color: var(--primary);
 }
 
 /* tiles */
-.kh-section-label {
+.konsol-dashboard .kd-section-label {
 	margin-top: var(--margin-sm);
 	font-size: var(--text-xs);
 	font-weight: 600;
@@ -126,147 +103,147 @@ a.kh-tile-value:hover {
 	text-transform: uppercase;
 	color: var(--text-muted);
 }
-.kh-tiles {
+.konsol-dashboard .kd-tiles {
 	display: grid;
 	grid-template-columns: repeat(4, minmax(0, 1fr));
 	gap: var(--margin-md);
 }
 @container (max-width: 900px) {
-	.kh-tiles {
+	.konsol-dashboard .kd-tiles {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 }
 @container (max-width: 480px) {
-	.kh-tiles {
+	.konsol-dashboard .kd-tiles {
 		grid-template-columns: minmax(0, 1fr);
 	}
 }
-.kh-tile {
+.konsol-dashboard .kd-tile {
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
 }
-.kh-tile-title {
+.konsol-dashboard .kd-tile-title {
 	font-size: var(--text-sm);
 	color: var(--text-muted);
 }
-.kh-tile-body {
+.konsol-dashboard .kd-tile-body {
 	display: flex;
 	justify-content: space-between;
 	align-items: flex-end;
 	gap: var(--margin-sm);
 }
-.kh-tile-main {
+.konsol-dashboard .kd-tile-main {
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
 }
-.kh-tile-value {
+.konsol-dashboard .kd-tile-value {
 	font-size: var(--text-2xl);
 	font-weight: 600;
 	line-height: 1.2;
 	color: var(--heading-color);
 	white-space: nowrap;
 }
-.kh-delta {
+.konsol-dashboard .kd-delta {
 	font-size: var(--text-xs);
 }
-.kh-delta-good {
+.konsol-dashboard .kd-delta-good {
 	color: var(--green-600);
 }
-.kh-delta-bad {
+.konsol-dashboard .kd-delta-bad {
 	color: var(--red-600);
 }
-.kh-delta-flat {
+.konsol-dashboard .kd-delta-flat {
 	color: var(--text-muted);
 }
-.kh-spark {
+.konsol-dashboard .kd-spark {
 	flex: 0 0 60px;
 	width: 60px;
 	height: 22px;
 	overflow: visible;
 }
-.kh-spark polyline {
+.konsol-dashboard .kd-spark polyline {
 	fill: none;
 	stroke: var(--primary);
 	stroke-width: 1.5;
 	stroke-linejoin: round;
 	stroke-linecap: round;
 }
-.kh-spark circle {
+.konsol-dashboard .kd-spark circle {
 	fill: var(--primary);
 }
-.kh-empty {
+.konsol-dashboard .kd-empty {
 	color: var(--text-muted);
 }
-.kh-empty-action {
+.konsol-dashboard .kd-empty-action {
 	color: var(--primary);
 	font-weight: 500;
 }
 
 /* period status and entities */
-.kh-lower {
+.konsol-dashboard .kd-lower {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
 	gap: var(--margin-md);
 	align-items: start;
 }
 @container (max-width: 720px) {
-	.kh-lower {
+	.konsol-dashboard .kd-lower {
 		grid-template-columns: minmax(0, 1fr);
 	}
 }
-.kh-card-title {
+.konsol-dashboard .kd-card-title {
 	font-weight: 600;
 	color: var(--heading-color);
 }
-.kh-period-head {
+.konsol-dashboard .kd-period-head {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
 	margin: var(--margin-sm) 0;
 }
-.kh-period-name {
+.konsol-dashboard .kd-period-name {
 	font-size: var(--text-lg);
 	font-weight: 600;
 }
-.kh-facts {
+.konsol-dashboard .kd-facts {
 	display: grid;
 	grid-template-columns: auto minmax(0, 1fr);
 	gap: 4px var(--margin-sm);
 	margin: 0 0 var(--margin-sm);
 	font-size: var(--text-sm);
 }
-.kh-facts dt {
+.konsol-dashboard .kd-facts dt {
 	font-weight: 400;
 	color: var(--text-muted);
 }
-.kh-facts dd {
+.konsol-dashboard .kd-facts dd {
 	margin: 0;
 }
-.kh-manage,
-.kh-toggle .btn {
+.konsol-dashboard .kd-manage,
+.konsol-dashboard .kd-toggle .btn {
 	border-radius: 2px;
 }
-.kh-entities-head {
+.konsol-dashboard .kd-entities-head {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
 }
-.kh-legend {
+.konsol-dashboard .kd-legend {
 	margin: 4px 0;
 }
-.kh-entity-list {
+.konsol-dashboard .kd-entity-list {
 	list-style: none;
 	margin: 0 0 var(--margin-sm);
 	padding: 0;
 	max-height: 360px;
 	overflow-y: auto;
 }
-.kh-entity {
+.konsol-dashboard .kd-entity {
 	border-top: 1px solid var(--border-color);
 }
-.kh-entity-link {
+.konsol-dashboard .kd-entity-link {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
@@ -274,10 +251,10 @@ a.kh-tile-value:hover {
 	padding: 6px 2px;
 	color: var(--text-color);
 }
-.kh-entity-link:hover {
+.konsol-dashboard .kd-entity-link:hover {
 	background: var(--subtle-fg);
 }
-.kh-entity-name {
+.konsol-dashboard .kd-entity-name {
 	display: flex;
 	gap: var(--margin-sm);
 	min-width: 0;
@@ -285,31 +262,31 @@ a.kh-tile-value:hover {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
-.kh-entity-code {
+.konsol-dashboard .kd-entity-code {
 	font-weight: 500;
 }
-.kh-dots {
+.konsol-dashboard .kd-dots {
 	display: flex;
 	gap: 6px;
 }
-.kh-dot {
+.konsol-dashboard .kd-dot {
 	width: 10px;
 	height: 10px;
 	border-radius: 50%;
 	background: var(--gray-400);
 }
-.kh-dot-green {
+.konsol-dashboard .kd-dot-green {
 	background: var(--green-500);
 }
-.kh-dot-orange {
+.konsol-dashboard .kd-dot-orange {
 	background: var(--orange-500);
 }
-.kh-dot-red {
+.konsol-dashboard .kd-dot-red {
 	background: var(--red-500);
 }
 
 /* setup pill */
-.kh-setup-pill {
+.konsol-dashboard .kd-setup-pill {
 	position: fixed;
 	right: var(--margin-lg);
 	bottom: var(--margin-lg);
@@ -325,14 +302,14 @@ a.kh-tile-value:hover {
 	box-shadow: var(--shadow-md);
 	color: var(--text-color);
 }
-.kh-setup-bar {
+.konsol-dashboard .kd-setup-bar {
 	display: block;
 	height: 4px;
 	border-radius: 2px;
 	background: var(--control-bg);
 	overflow: hidden;
 }
-.kh-setup-fill {
+.konsol-dashboard .kd-setup-fill {
 	display: block;
 	height: 100%;
 	background: var(--primary);

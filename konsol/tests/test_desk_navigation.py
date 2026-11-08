@@ -85,6 +85,7 @@ DOCK = [
 #: filtered on scenario_type is (link_type, link_to, scenario_type).
 SIDEBARS = {
     "Close": ("Consolidation", [
+        ("Page", "konsol-dashboard"),
         ("Workspace", "Konsol", "Home"),
         ("Workspace", "My Work", "My Work"),
         ("Workspace", "Konsol Handbook", "Handbook"),
@@ -478,8 +479,9 @@ def test_every_scenario_type_but_actual_is_reachable():
 
 
 def test_every_sidebar_starts_at_its_home():
+    """Close leads with its Dashboard page (konsol-dashboard), then Home."""
     for name, (_, d) in _sidebars().items():
-        first = d["items"][0]
+        first = d["items"][1 if name == "Close" else 0]
         assert (first["type"], first["link_type"], first["label"]) == (
             "Link", "Workspace", "Home"), name
 
@@ -488,7 +490,7 @@ def test_close_lists_my_work_then_the_handbook_under_home():
     """My Work is the second Close row, not a rail entry (plan); the Handbook
     row stays so the Handbook dock row resolves a shell."""
     items = _sidebars()["Close"][1]["items"]
-    assert [(i["label"], i["link_to"], i["child"]) for i in items[1:3]] == [
+    assert [(i["label"], i["link_to"], i["child"]) for i in items[2:4]] == [
         ("My Work", "My Work", 0), ("Handbook", "Konsol Handbook", 0)]
 
 
