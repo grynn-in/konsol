@@ -245,6 +245,13 @@ def test_period_card_carries_status_checks_freshness_and_waiting():
     assert card["route"].startswith("/desk/")
 
 
+def test_period_card_names_a_failed_freshness_read_on_its_line_only():
+    card = M.period_card(P07, _state(P07, checks="Green"), M.unavailable("Redis is down"), 0)
+    assert card["freshness"] == {"text": "Unavailable: Redis is down", "tone": "unknown",
+                                 "route": M.BUILDS}
+    assert card["close"]["tone"] == "ok"
+
+
 def _entities():
     return [{"name": "A", "entity_name": "Alpha"}, {"name": "B", "entity_name": "Beta"},
             {"name": "C", "entity_name": "Gamma"}, {"name": "D", "entity_name": "Delta"}]

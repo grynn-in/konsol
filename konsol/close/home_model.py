@@ -321,7 +321,11 @@ def banners(freshness, setup):
 def period_card(key, state, freshness, waiting):
     key = _key(key)
     text, tone = overview_model.close_status(key, state)
-    fresh_text, fresh_tone = overview_model.freshness_card(freshness)
+    if freshness.get("state") == UNAVAILABLE:
+        # The freshness read failed: the card says so on that line only.
+        fresh_text, fresh_tone = "Unavailable: %s" % freshness["reason"], overview_model.UNKNOWN
+    else:
+        fresh_text, fresh_tone = overview_model.freshness_card(freshness)
     return {"state": OK, "title": period_name(*key), "status": state.get("status"),
             "close": {"text": text, "tone": tone},
             "freshness": {"text": fresh_text, "tone": fresh_tone, "route": BUILDS},
