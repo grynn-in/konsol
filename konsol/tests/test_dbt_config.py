@@ -157,3 +157,32 @@ def test_regenerate_model_domains_refuses_unsafe_names():
     assert "return" in body.split("except UnsafeDomainMapping")[1]
 
 
+
+
+def test_regenerate_vars_writes_an_empty_dimensions_list(tmp_path):
+    """A site that declares no Dimension must get `dimensions: []`, never a
+    missing key: konsolidat's macros iterate `var('dimensions')`, and a missing
+    key makes it None, so `dbt parse` dies with "'NoneType' object is not
+    iterable" in stg_gl_entries (found 8 Nov 2026 on the first zero-dimension
+    site, demo-ext-simple; the repo's committed block hid it with example
+    dimensions). konsol#482."""
+    import yaml
+    m = _load()
+    project = tmp_path / "dbt_project.yml"
+    project.write_text(
+        "name: open_epm\nvars:\n  erp_sources: [d365_fo]\n"
+        + m.MANAGED_BEGIN + "\n"
+        + "  dimensions:\n  - name: dim_cost_center\n    source_column: dim_cost_center\n"
+        + m.MANAGED_END + "\n"
+    )
+    m._get_dbt_project_path = lambda: str(project)
+    m._build_dimensions_vars = lambda: []
+    m._build_measures_vars = lambda: [{"name": "period_net_amount", "expression": "sum(debit_amount) - sum(credit_amount)"}]
+    m._build_fiscal_vars = lambda: {}
+
+    m.regenerate_vars()
+
+    result = yaml.safe_load(project.read_text())
+    assert result["vars"]["dimensions"] == []
+    assert result["vars"]["erp_sources"] == ["d365_fo"]
+    assert result["vars"]["base_measures"][0]["name"] == "period_net_amount"
