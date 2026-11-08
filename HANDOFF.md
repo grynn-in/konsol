@@ -14,6 +14,20 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 - **Follow-ups filed:** konsol#467 (Desk: add a second owner), konsolidat#292 (WARN test for a declaration on a single-path entity), konsolidat#293 (fixture in the live same-code shape), konsolidat#294 (`assert_equity_rate_coverage` assumes one group currency, pre-existing). Open for Deepak on #117: may the historical-rate join drop the owning group (pair 1 kept it).
 - **Next per #424:** pair 2 (konsolidat#204 (a) layer 1 at 100% + NCI line, aquila-bike ABJV; depends on konsolidat#279), pair 3 (`proportional` for IFRS 11 joint operations), then #428, #111 with #255, #348 S1 onward.
 
+**Update (8 Nov 2026): worktree cleanup; the rest is for a new session.** Deepak Pai asked to remove the worktrees that are stale, committed, pushed or merged to main. The demo-ext hourly reset stays **off** (Deepak, "lets not do the hours reset yet"). The timer and `demo.sh` are already merged in konsolidat main under `docker/demo/` and are simply not installed.
+- **Removed:** 419 worktrees and 416 local branches (konsol 456 → 36 worktrees, konsolidat 18 → 6, both counts including the main checkout). A worktree was removed only if all of these held:
+  1. it was clean, ignoring `__pycache__` and `.pytest_cache`;
+  2. **either** `git merge-tree --write-tree origin/main HEAD` returned origin/main's own tree (merging it changes nothing, so squash merges count), **or** its HEAD is a merged PR's `headRefOid`, or an ancestor of one (`gh pr list --state merged --json headRefOid`);
+  3. no running process had its cwd inside it (`lsof -d cwd`).
+
+  Each was re-checked for changes just before `git worktree remove --force`, then `git branch -D`. Write such loops as **bash** scripts: in zsh a loop variable named `path` overwrites `PATH` (the first attempt failed that way and removed nothing).
+- **Left for review (new session):**
+  - **Uncommitted changes, 24 worktrees:** konsol `.claude/worktrees/agent-a05fcccdc0c09c9db` (fix/401-no-tb-period-reads-error); `bench-15/wt-305-A03`, `-A05`, `-A07`, `-A08`, `-A13`, `-A14` (515 files), `-A15`, `-A16`, `-A16b`, `-A17`, `-A20`, `-A36b` (444), `-A38`, `-B01` (411), `-B03`, `-B16` (701), `-B17` (707), `wt-305-d2w5`, `wt-305d2-J04b`, `wt-305d2w3-C22`, `wt-305d2w5-R85`; konsolidat `repo/docker/worktrees/v16-image` (118), `konsolidat/wt-onboarding` (1). Decide per worktree: are these changes wanted (commit and PR) or residue (discard)? The large counts are likely build output or a copied tree, so check `git status` first.
+  - **Commits not in any merged PR, 7 worktrees:** konsol `agent-ab13ab7a8f1c299cd` (desk-statement-drill), `agent-ab662d047c1942676` (v16-sort-audit), `agent-ae914c57eb80479e1` (desk-consolidated-statement), `agent-aec9abcc4f3e9a9ee` (desk-approvals-mywork), `bench-15/wt-305-A36` (k305-A36), `bench-15/wt-305-B11` (detached); konsolidat `worktrees/konsol-docs-guard` (docs/guard). They may be superseded by other merged work: compare each with main before deleting.
+  - **Locked by a live Claude session (pid 89630, running since 4 Nov), 5 merged worktrees:** konsol `agent-a08eb5846261cf653`, `agent-a64380ec115157be3`, `agent-a73c3f063ed7212cb`, `agent-aa4d739dd21481a3b`, `agent-aa8488fb20cbfc416`. Remove them once that session has ended (`git worktree remove`; they are merged).
+  - **Session leftovers, merged:** `.claude/worktrees/handoff-deploy-20261108` and `handoff-worktree-cleanup`.
+  - **Not swept yet:** about 280 local konsol branches without a worktree, and the merged remote branches on GitHub. Use the same merged-into-main test; ask before deleting remote branches.
+
 **Update (8 Nov 2026, morning): both Hetzner stacks deployed; K tile; Setup page; open items.**
 - **Merged:**
   - #465: the K tile is #0C5C56 with rx 4, and its logo URL carries `?v=` (bump it with every logo edit).
