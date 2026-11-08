@@ -442,7 +442,9 @@ class _OwnershipPeriodDoc(_Doc):
 
 class _Site:
     def __init__(self, *, periods=None, root=None, rates=None, accounts=None, ownership=None,
-                 disposals=None, nodes=None):
+                 disposals=None, nodes=None, declarations=()):
+        #: Consolidation Method Declaration child rows of the root (konsol#117 pair 3 D)
+        self.declarations = [dict(d) for d in declarations]
         #: Consolidation Group nodes by name (#117 pair 1 F); the root row is the group node.
         self.nodes = {n["name"]: dict(n) for n in (nodes or ())}
         self.periods = [dict(p) for p in (periods if periods is not None else [PERIOD_DEC_2025])]
@@ -466,6 +468,10 @@ class _Site:
         assert "`tabEPM Fiscal Year Period`" in query and "`tabEPM Fiscal Year`" in query, query
         date = _getdate(values["d"] if isinstance(values, dict) else values[0])
         rows = [_Row(p) for p in self.periods if _getdate(p["start_date"]) <= date <= _getdate(p["end_date"])]
+        if "<> 'Closing'" in query:
+            # the step-window lookup: assert the clauses it sends, then apply them
+            assert "AND p.period_type <> 'Closing' AND p.start_date <= %(d)s AND p.end_date >= %(d)s" in query, query
+            rows = [r for r in rows if r["period_type"] != "Closing"]
         rows.sort(key=lambda p: (p["period_type"] != "Regular", _getdate(p["start_date"])))
         return rows[:1]
 
@@ -480,7 +486,12 @@ class _Site:
                              and n["data_area_id"] == filters["data_area_id"]), None)
                 return _Row(node) if node else None
             if filters.get("consolidation_group") != self.root["consolidation_group"]:
-                return None
+                # another group's own node (no entity): the project's lookup by group + blank entity
+                assert filters.get("data_area_id") == ["is", "not set"], filters
+                node = next((n for n in self.nodes.values()
+                             if n["consolidation_group"] == filters["consolidation_group"]
+                             and not n["data_area_id"]), None)
+                return node["name"] if node else None
             return _Row(self.root) if as_dict else self.root.get(fieldname)
         if doctype == "Main Account":
             row = self.accounts.get(filters)
@@ -505,6 +516,8 @@ class _Site:
                 return []
             quote, per = self.rates[key]
             return [_Row(quote=quote, quoted_per=per)]
+        if doctype == "Consolidation Method Declaration":
+            return [_Row(r) for r in self.declarations if _match(r, filters or {})]
         if doctype == "Ownership Period":
             rows = [_Row(r) for r in self.ownership if _match(r, filters or {})]
             if order_by:
@@ -561,6 +574,85 @@ def test_validate_computes_the_total_proceeds():
     deal = _deal()
     deal.validate()
     assert deal.total_proceeds == 9000.0
+
+
+JOINT_OPERATION = dict(HOLDING_80, name="OP-ZZG-ZZE-2020-01-01", owner_node="CG-ZZG-",
+                       ownership_pct=50, consolidation_method="proportional")
+
+
+def test_a_disposal_of_a_joint_operation_is_refused_by_name():
+    _Site(ownership=[JOINT_OPERATION])
+    message = _refused(_deal(share_disposed_pct=50).validate)
+    assert ("ZZE is held as a joint operation (OP-ZZG-ZZE-2020-01-01, proportional, 50%): a disposal "
+            "of a joint operation is not implemented (IFRS 11.21A). "
+            "Record the change as an Ownership Period.") in message
+
+
+def test_a_disposal_of_a_fully_held_entity_is_not_refused_as_a_joint_operation():
+    _Site()
+    _deal().validate()
+
+
+DECLARATION = {"parent": "ZZG", "parenttype": "Consolidation Group", "data_area_id": "ZZE",
+               "consolidation_method": "proportional", "effective_date": "2020-01-01", "end_date": None}
+REFUSE_TAIL = "is not implemented (IFRS 11.21A). Record the change as an Ownership Period."
+
+
+def test_a_draft_proportional_period_refuses_the_disposal_and_says_it_is_a_draft():
+    _Site(ownership=[dict(JOINT_OPERATION, docstatus=0)])
+    message = _refused(_deal(share_disposed_pct=50).validate)
+    assert ("ZZE is held as a joint operation (OP-ZZG-ZZE-2020-01-01, proportional, 50%, Draft period): "
+            "a disposal of a joint operation " + REFUSE_TAIL) in message
+
+
+def test_a_proportional_declaration_refuses_the_disposal():
+    _Site(declarations=[DECLARATION])
+    message = _refused(_deal().validate)
+    assert ("ZZE is declared a joint operation of ZZG (Method Declaration, proportional, from 2020-01-01): "
+            "a disposal of a joint operation " + REFUSE_TAIL) in message
+
+
+def test_a_none_declaration_does_not_refuse_the_disposal():
+    _Site(declarations=[dict(DECLARATION, consolidation_method="none")])
+    _deal().validate()
+
+
+def test_a_joint_operation_period_that_ended_before_the_disposal_does_not_refuse_it():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-06-30"), dict(HOLDING_80, name="OP-ZZG-ZZE-2025-07-01", effective_date="2025-07-01")])
+    _deal().validate()
+
+
+def test_a_joint_operation_that_ended_in_the_disposals_own_period_is_refused_in_the_disposals_words():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-12-01"),
+                     dict(HOLDING_80, name="OP-ZZG-ZZE-2025-12-31", effective_date="2025-12-31")])
+    message = _refused(_deal().validate)
+    assert ("ZZE was a joint operation until 2025-12-01 (OP-ZZG-ZZE-2020-01-01, proportional): a disposal "
+            "shortly after a joint operation ended " + REFUSE_TAIL) in message
+
+
+def test_the_step_window_reaches_back_to_the_first_day_of_the_previous_period_and_no_further():
+    periods = [dict(PERIOD_DEC_2025, fiscal_period=11, period_code="P11", start_date="2025-11-01",
+                    end_date="2025-11-30"), PERIOD_DEC_2025]
+    holding = dict(HOLDING_80, name="OP-ZZG-ZZE-2025-12-31", effective_date="2025-12-31")
+    _Site(periods=periods, ownership=[dict(JOINT_OPERATION, end_date="2025-11-01"), holding])
+    assert "a disposal shortly after a joint operation ended" in _refused(_deal().validate)
+    _Site(periods=periods, ownership=[dict(JOINT_OPERATION, end_date="2025-10-31"), holding])
+    _deal().validate()
+
+
+def test_a_later_full_declaration_over_an_older_open_proportional_one_does_not_refuse_the_disposal():
+    _Site(declarations=[DECLARATION, dict(DECLARATION, consolidation_method="full", effective_date="2025-06-01")])
+    _deal().validate()
+
+
+def test_a_proportional_declaration_on_an_ancestor_group_refuses_the_disposal_naming_that_group():
+    _Site(nodes=[{"name": "ZZG", "consolidation_group": "ZZG", "data_area_id": "",
+                  "parent_consolidation_group": "IMPORTED-ZZP"},
+                 {"name": "IMPORTED-ZZP", "consolidation_group": "ZZP", "data_area_id": "",
+                  "parent_consolidation_group": None}],
+           declarations=[dict(DECLARATION, parent="IMPORTED-ZZP")])
+    message = _refused(_deal().validate)
+    assert "ZZE is declared a joint operation of ZZP (Method Declaration, proportional, from 2020-01-01)" in message
 
 
 def test_validate_translates_a_deferred_line_at_the_periods_closing_rate():
@@ -1026,3 +1118,17 @@ def test_117f_the_holding_sold_is_the_disposers_link():
     deal.validate()
     deal.on_submit()
     assert [p.name for p in site.loaded] == ["OP-ZZG-ZZE-2020-01-01"]
+
+def test_a_proportional_declaration_ending_on_the_deal_date_still_refuses_via_the_window_start():
+    _Site(declarations=[dict(DECLARATION, end_date="2025-12-31")])
+    assert "is declared a joint operation of ZZG" in _refused(_deal().validate)
+
+
+def test_a_proportional_declaration_superseded_by_a_full_one_before_the_window_starts_does_not_refuse():
+    _Site(declarations=[DECLARATION, dict(DECLARATION, consolidation_method="full", effective_date="2025-11-15")])
+    _deal().validate()
+
+
+def test_a_proportional_declaration_superseded_inside_the_window_still_refuses():
+    _Site(declarations=[DECLARATION, dict(DECLARATION, consolidation_method="full", effective_date="2025-12-10")])
+    assert "is declared a joint operation of ZZG" in _refused(_deal().validate)

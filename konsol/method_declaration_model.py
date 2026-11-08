@@ -18,16 +18,10 @@ import datetime
 # _validate_dates_representable (PR #449 review, finding 7).
 from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
 
-#: The Select's options, in order. ``proportional`` is offered and refused
-#: (PROPORTIONAL_REFUSAL) until konsol#117 pair 3 decides it.
+#: The Select's options, in order. ``proportional`` is IFRS 11.20 proportionate
+#: consolidation (the operator's share of each line, no NCI), computed since
+#: konsol#117 pair 3; konsol#429's refusal is lifted.
 METHODS = ("full", "proportional", "equity", "none")
-
-#: Ownership Period's #432 sentence (ownership_period.py), for a declaration.
-PROPORTIONAL_REFUSAL = (
-    "Proportional consolidation is not implemented (konsol#429): the warehouse would "
-    "consolidate this declaration as full with NCI, which is not proportional "
-    "consolidation. Use full with NCI, or equity."
-)
 
 
 def _date(value):
@@ -75,8 +69,6 @@ def declaration_problems(group, node_entity, rows):
             problems.append(
                 f"{where}: '{row.consolidation_method}' is not a consolidation method "
                 f"({', '.join(METHODS)}).")
-        elif row.consolidation_method == "proportional":
-            problems.append(f"{where}: {PROPORTIONAL_REFUSAL}")
         start, end = _date(row.effective_date), _date(row.end_date)
         for label, value in (("Effective Date", start), ("End Date", end)):
             if value and not (MIN_DATE <= value <= MAX_DATE):

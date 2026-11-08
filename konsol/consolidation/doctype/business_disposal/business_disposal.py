@@ -34,12 +34,15 @@ Ownership Period of the entity has been approved since, and it gives the
 Ownership Period the approval closed back what it held before. Nothing here
 saves the document from a hook or commits.
 """
+import datetime
+
 import frappe
 from frappe.model.document import Document
 from frappe.utils import getdate
 
 from konsol.business_disposal_model import problems, totals
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.joint_operation_model import joint_operation_problem
 from konsol.close.reject_reason import refuse_reasonless_reject
 from konsol.consolidation.doctype.business_disposal_proceeds.business_disposal_proceeds import (
     BusinessDisposalProceeds,
@@ -114,6 +117,7 @@ class BusinessDisposal(Document):
         period = self._disposal_period()
         root = self._root()
         self._validate_disposer()
+        self._joint_operation_problem(root.get("name"))
 
         rate_to_group = self._rate_to_group(root.get("reporting_currency"), period)
         try:
@@ -243,6 +247,80 @@ class BusinessDisposal(Document):
             return
         sentence = owner_refusal(self.disposer_node, self._disposed_node(), self.disposed_entity,
                                  field="Disposer Node")
+        if sentence:
+            frappe.throw(_PREFIX + sentence)
+
+    def _declared_methods(self, node_name):
+        """Every method the node declares for this deal's entity (all
+        methods: the rule keeps only the latest one effective by the date)."""
+        return frappe.get_all(
+            "Consolidation Method Declaration",
+            filters={"parent": node_name, "parenttype": "Consolidation Group", "data_area_id": self.disposed_entity},
+            fields=["consolidation_method", "effective_date", "end_date"],
+            order_by="effective_date desc",
+            limit_page_length=0,
+        )
+
+    def _ancestor_group_nodes(self, root_name):
+        """(group, own node name) of every group above this one: walk
+        parent_consolidation_group from the group's root to the top. A
+        sub-group's entity is also reached through its ancestors' policy."""
+        seen, found, node = {root_name}, [], root_name
+        while node:
+            row = frappe.db.get_value("Consolidation Group", node,
+                                      ["parent_consolidation_group"], as_dict=True)
+            parent = row and row.get("parent_consolidation_group")
+            if not parent or parent in seen:
+                break
+            seen.add(parent)
+            above = frappe.db.get_value("Consolidation Group", parent, ["consolidation_group"], as_dict=True)
+            group = above and above.get("consolidation_group")
+            own = group and frappe.db.get_value(
+                "Consolidation Group", {"consolidation_group": group, "data_area_id": _BLANK}, "name")
+            if own:
+                found.append((group, own))
+            node = parent
+        return found
+
+    def _step_window_start(self):
+        """The first day of the fiscal period before the deal's period (the
+        non-Closing one ending the day before it starts); the deal's own
+        period start when none is declared; None when no period covers the
+        date (refused elsewhere)."""
+        sql = ("SELECT p.start_date, p.period_type FROM `tabEPM Fiscal Year Period` p "
+               "JOIN `tabEPM Fiscal Year` y ON y.name = p.parent "
+               "WHERE p.parentfield = 'periods' AND p.period_type <> 'Closing' "
+               "AND p.start_date <= %(d)s AND p.end_date >= %(d)s "
+               "ORDER BY (p.period_type <> 'Regular'), p.start_date LIMIT 1")
+        current = frappe.db.sql(sql, {"d": getdate(self.disposal_date)}, as_dict=True)
+        if not current:
+            return None
+        start = getdate(current[0]["start_date"])
+        previous = frappe.db.sql(sql, {"d": start - datetime.timedelta(days=1)}, as_dict=True)
+        return getdate(previous[0]["start_date"]) if previous else start
+
+    def _joint_operation_problem(self, root_name):
+        """Refuse a deal into / out of a joint operation by name (konsol#117
+        pair 3, review finding D): IFRS 11.21A is not implemented. Reads the
+        entity's Ownership Periods in this group, draft or submitted, of any
+        owner, and the group's Consolidation Method Declarations; the rule is
+        konsol.joint_operation_model. dbt's assert_acquisition_accounts_declared
+        / assert_disposal_accounts_declared are the backstop for anything this
+        check cannot see."""
+        periods = [row for row in frappe.get_all(
+            "Ownership Period",
+            filters={"consolidation_group": self.consolidation_group, "data_area_id": self.disposed_entity,
+                     "docstatus": ["<", 2], "consolidation_method": "proportional",
+                     "effective_date": ["<=", self.disposal_date]},
+            fields=["name", "ownership_pct", "effective_date", "end_date", "docstatus"],
+            order_by="effective_date desc",
+            limit_page_length=0,
+        )]
+        declarations = [(self.consolidation_group, self._declared_methods(root_name))]
+        for group, node in self._ancestor_group_nodes(root_name):
+            declarations.append((group, self._declared_methods(node)))
+        sentence = joint_operation_problem(self.disposed_entity, self.disposal_date, "a disposal of",
+                                           "a disposal shortly after a joint operation ended", self._step_window_start(), periods, declarations)
         if sentence:
             frappe.throw(_PREFIX + sentence)
 
