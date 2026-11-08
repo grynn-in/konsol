@@ -270,6 +270,7 @@ def _ownership_period_module(period_status, next_start=None):
     document_mod.Document = Document
     clickhouse = types.ModuleType("konsol.clickhouse")
     clickhouse.sync_doctype_after_commit = lambda *a, **k: None
+    clickhouse.after_commit_once = lambda *a, **k: None
     konsol = types.ModuleType("konsol")
     konsol.__path__ = [APP_DIR]   # the real pure konsol.fiscal_structure_model imports through the stub
     mods = {

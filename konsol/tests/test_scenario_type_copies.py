@@ -119,6 +119,7 @@ def _with_stubs(site, fn):
     konsol.__path__ = []
     ch = types.ModuleType("konsol.clickhouse")
     ch.sync_doctype_after_commit = lambda *a, **k: None
+    ch.after_commit_once = lambda *a, **k: None
     sys.modules.update({"frappe": fr, "frappe.model": model, "frappe.model.document": document,
                         "konsol": konsol, "konsol.clickhouse": ch})
     try:

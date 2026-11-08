@@ -59,6 +59,7 @@ def _controller():
     document_mod.Document = type("Document", (), {})
     clickhouse = types.ModuleType("konsol.clickhouse")
     clickhouse.sync_doctype_after_commit = lambda *a, **k: None
+    clickhouse.after_commit_once = lambda *a, **k: None
     period_status = types.ModuleType("konsol.period_status")
     period_status.assert_open_between = lambda *a, **k: None
     period_status.first_period_affected = lambda *a, **k: None

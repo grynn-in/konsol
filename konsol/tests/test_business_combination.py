@@ -106,6 +106,7 @@ def _load():
     utils.nowdate = lambda: TODAY[0]
     ch = types.ModuleType("konsol.clickhouse")
     ch.sync_doctype_after_commit = lambda *a, **k: None
+    ch.after_commit_once = lambda *a, **k: None
     ch.execute = lambda *a, **k: ""
     ps =types.ModuleType("konsol.period_status")
     ps.assert_open = lambda *a, **k: None
@@ -273,6 +274,7 @@ class _Site:
         M.frappe.msgprint = lambda msg, *a, **k: site.msgprints.append((msg, k))
         M.execute = self._execute
         M.sync_doctype_after_commit = lambda dt, table, fm: site.synced.append((dt, table, tuple(fm)))
+        M.after_commit_once = lambda *a, **k: None
         M.assert_open = lambda fy, fp, action="run": site.opened.append((fy, fp, action))
         M.assert_open_between = (lambda start, end=None, action="run", end_exclusive=False:
                                  site.spans.append((str(start), str(end), action, end_exclusive)))

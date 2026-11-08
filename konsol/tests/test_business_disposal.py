@@ -354,6 +354,7 @@ def _load():
     utils.getdate = _getdate
     ch = types.ModuleType("konsol.clickhouse")
     ch.sync_doctype_after_commit = lambda *a, **k: None
+    ch.after_commit_once = lambda *a, **k: None
     ps = types.ModuleType("konsol.period_status")
     ps.assert_open = lambda *a, **k: None
     # imported by ownership_period.py, whose owner helper the disposal shares
@@ -458,6 +459,7 @@ class _Site:
         M.frappe.get_all = self._get_all
         M.frappe.get_doc = self._get_doc
         M.sync_doctype_after_commit = lambda dt, table, fm: site.synced.append((dt, table, tuple(fm)))
+        M.after_commit_once = lambda *a, **k: None
         M.assert_open = lambda fy, fp, action="run": site.opened.append((fy, fp, action))
 
     def _sql(self, query, values=None, as_dict=False):
