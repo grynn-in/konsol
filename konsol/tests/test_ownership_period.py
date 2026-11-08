@@ -180,6 +180,7 @@ def _load(flags, next_start=None, first_period_affected=None, gate=None):
     document_mod.Document = Document
     clickhouse = types.ModuleType("konsol.clickhouse")
     clickhouse.sync_doctype_after_commit = lambda *a, **k: None
+    clickhouse.after_commit_once = lambda *a, **k: None
     period_status = types.ModuleType("konsol.period_status")
     period_status.assert_open_between = gate or (lambda *a, **k: None)
     period_status.first_period_affected = first_period_affected or (lambda *a, **k: None)
@@ -1464,3 +1465,61 @@ def test_117f_owner_refusal_names_the_callers_field_and_gives_none_when_sound():
     assert module.owner_refusal("CG-ZZG-", None, "ZZ01") is None
     assert module.owner_refusal("CG-ZZ_TYPO-", None, "ZZ01") == (
         "Owner Node CG-ZZ_TYPO- is not a Consolidation Group node.")
+
+
+# --- a link rebuilds the closure (demo-ext-simple, 8 Nov 2026) ---------------
+
+def _link_doc(module, docstatus):
+    return module.OwnershipPeriod(dict(_SAVED), doctype="Ownership Period", docstatus=docstatus, supersedes=None)
+
+
+def _capture_after_commit(module):
+    calls = []
+    module.after_commit_once = lambda key, fn: calls.append((key, fn))
+    module.OwnershipPeriod._end_predecessor = lambda self: None
+    module.OwnershipPeriod._restore_predecessor = lambda self: None
+    return calls
+
+
+def test_submit_and_cancel_queue_the_closure_rebuild():
+    """The closure (epm_staging.consolidation_ancestry) is built from the
+    LINKS (konsol#117 pair 1), but only the group's own on_update rebuilt it:
+    a link submitted after the tree existed left every path on the tree
+    parent, so an owner that is another entity (Mini Holding AG owning its
+    subsidiaries, demo-ext-simple 8 Nov 2026) resolved to 0% / method none
+    and assert_ownership_chain_complete stopped the build until
+    reconcile_all ran by hand. Submit and cancel now queue the same rebuild
+    the group queues, under the same dedupe key."""
+    module = _load({"in_install": False, "in_import": False, "in_migrate": False, "in_patch": False})
+    calls = _capture_after_commit(module)
+    _link_doc(module, 1).on_submit()
+    assert [k for k, _ in calls] == [("consolidation_hierarchy",)]
+    assert calls[0][1].__name__ == "_resync_closure"
+    calls.clear()
+    _link_doc(module, 2).on_cancel()
+    assert [k for k, _ in calls] == [("consolidation_hierarchy",)]
+
+
+def test_resync_closure_calls_the_groups_resync_staging():
+    """The callback imports the group controller only when it runs (after the
+    commit), so the link controller never imports the tree controller at load."""
+    module = _load({"in_install": False, "in_import": False, "in_migrate": False, "in_patch": False})
+    ran = []
+    fake = types.ModuleType("konsol.consolidation.doctype.consolidation_group.consolidation_group")
+    fake.ConsolidationGroup = types.SimpleNamespace(resync_staging=lambda: ran.append("resync"))
+    names = ["konsol.consolidation", "konsol.consolidation.doctype",
+             "konsol.consolidation.doctype.consolidation_group",
+             "konsol.consolidation.doctype.consolidation_group.consolidation_group"]
+    saved = {n: sys.modules.get(n) for n in names}
+    for n in names[:-1]:
+        sys.modules.setdefault(n, types.ModuleType(n))
+    sys.modules[names[-1]] = fake
+    try:
+        module._resync_closure()
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    assert ran == ["resync"]

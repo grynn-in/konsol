@@ -165,6 +165,7 @@ def _controller(**registries):
     mods["frappe"] = frappe
     mods["frappe.model.document"].Document = Document
     mods["konsol.clickhouse"].sync_doctype_after_commit = lambda *a, **k: None
+    mods["konsol.clickhouse"].after_commit_once = lambda *a, **k: None
     mods["konsol.period_status"].assert_open_between = lambda *a, **k: None
     mods["konsol.period_status"].first_period_affected = lambda *a, **k: None
     mods["konsol.epm.budget_grain"].digest_name = lambda prefix, keys: prefix
