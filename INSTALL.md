@@ -53,7 +53,7 @@ database on every request, and Frappe refuses a disabled user at login, so
 once the cache turns over. Disabling does not end sessions that already
 exist (a resumed session never re-reads `enabled`): `switch_off` ends them
 with two `end_sessions` passes, the second for a request that was in flight
-during the first. (The ext stack's `demo.sh` also sends gunicorn a HUP, which
+during the first. (The reset script in konsolidat `docker/demo/` also sends gunicorn a HUP, which
 ends in-flight requests and closes the cache window sooner.)
 `switch_off` prints `{"user", "enabled": 0, "sessions_ended"}`;
 `switch_on` prints `{"user", "enabled": 1, "key"}`. Both take an explicit

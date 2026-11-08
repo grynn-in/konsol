@@ -2,7 +2,7 @@
 //
 // It used to append a "Trigger" group to the connections panel on every refresh
 // (re-initialising the panel each time); on Frappe v16 those groups piled up
-// ("Runs / Trigger / ..." repeated, demo.konsolidat.com BAPR-00044, 5 Nov
+// ("Runs / Trigger / ..." repeated, a deployed site, BAPR-00044, 5 Nov
 // 2026). The panel now shows only the dashboard's own Runs; the trigger
 // fields stay Data (see test_doctype_connections.py for why not a link).
 frappe.ui.form.on("Build Approval", {

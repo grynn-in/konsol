@@ -181,7 +181,7 @@ def _resync_closure():
     The closure is built from the LINKS (konsol#117 pair 1), but only the
     group's own ``on_update`` queued the rebuild: a link submitted after the
     tree existed left every path on the tree parent, so an owner that is
-    another entity (Mini Holding AG owning its subsidiaries on demo-ext-simple,
+    another entity (Mini Holding AG owning its subsidiaries, Mini Group example,
     8 Nov 2026) resolved to 0% / method ``none`` and
     ``assert_ownership_chain_complete`` stopped the build until
     ``reconcile_all`` ran by hand. Same dedupe key as the group's registration

@@ -164,7 +164,7 @@ def test_regenerate_vars_writes_an_empty_dimensions_list(tmp_path):
     missing key: konsolidat's macros iterate `var('dimensions')`, and a missing
     key makes it None, so `dbt parse` dies with "'NoneType' object is not
     iterable" in stg_gl_entries (found 8 Nov 2026 on the first zero-dimension
-    site, demo-ext-simple; the repo's committed block hid it with example
+    site, Mini Group example; the repo's committed block hid it with example
     dimensions). konsol#482."""
     import yaml
     m = _load()

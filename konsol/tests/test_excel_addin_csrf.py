@@ -1,6 +1,6 @@
 """The Excel add-in must not send the browser's Desk session cookie (6 Nov 2026).
 
-Found live on demo.konsolidat.com: Snapshot and =K.EPM answered "HTTP 400".
+Found live on a deployed site: Snapshot and =K.EPM answered "HTTP 400".
 The add-in fetched with credentials "include", so once the user had opened the
 Desk in the same browser, the request carried a Desk session that holds a CSRF
 token, and Frappe refused every POST without X-Frappe-CSRF-Token

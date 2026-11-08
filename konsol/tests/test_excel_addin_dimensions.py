@@ -236,7 +236,7 @@ def test_empty_slots_past_the_signature_are_accepted():
     # Excel passes every parameter its CACHED functions.json declares, an
     # omitted one as null. An Excel that still holds the 12-argument metadata
     # from before konsol#287 calls K.EPM("DE_ECL", 2024, 12, "4000") with 12
-    # arguments, 8 of them null (found on demo.konsolidat.com, 6 Nov 2026:
+    # arguments, 8 of them null (found on a deployed site, 6 Nov 2026:
     # every cell the pane's Apply painted said "takes at most 11 arguments").
     # Nothing past the signature carries a value, so nothing is lost.
     for fn, n in SIGNATURES.items():

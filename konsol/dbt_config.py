@@ -354,7 +354,7 @@ def regenerate_vars():
     # Always written, `[]` when the site declares no Dimension: konsolidat's
     # macros iterate var('dimensions'), and a MISSING key makes that None, so
     # dbt parse dies in stg_gl_entries ("'NoneType' object is not iterable").
-    # Found on the first zero-dimension site (demo-ext-simple, 8 Nov 2026); the
+    # Found on the first zero-dimension site, Mini Group example, 8 Nov 2026; the
     # repo's committed block hid it with example dimensions. konsol#482.
     managed["dimensions"] = _build_dimensions_vars()
     measures = _build_measures_vars()

@@ -124,7 +124,7 @@ def test_build_approval_dashboard_links_runs_and_a_button_opens_the_trigger():
     """The trigger opens from a form button, not from a group the form script
     added to the connections panel on every refresh: on Frappe v16 those groups
     piled up ("Runs / Trigger / Historical Equity Rate 1" repeated, seen on
-    demo.konsolidat.com BAPR-00044, 5 Nov 2026).
+    a deployed site, BAPR-00044, 5 Nov 2026).
 
     trigger_doctype / trigger_docname stay Data, not Link / Dynamic Link: Frappe
     validates links on every save, and the build job saves the approval again

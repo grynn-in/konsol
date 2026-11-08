@@ -23,7 +23,7 @@ once the cache turns over. Disabling does not end existing sessions
 (`Session.resume` never re-reads `enabled`): those end through
 `end_sessions`, which `switch_off` runs twice, the second pass for a request
 that was in flight during the first and wrote its session row back
-(`Session.update`). The ext stack's demo.sh also reloads the gunicorn workers
+(`Session.update`). The reset script in konsolidat `docker/demo/` also reloads the gunicorn workers
 after the switch, which ends in-flight requests.
 
 When the key is unset, `/try` and `try_demo` answer 404, so a site that does

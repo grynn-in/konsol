@@ -231,7 +231,7 @@ function makeReq(entity, year, period, account, measure, scenario, dimensions, s
 //
 // An object that is not a range is Excel's invocation context, which Excel
 // Online appends after the declared parameters even without the options
-// above (seen on demo.konsolidat.com, 6 Nov 2026). It is not the formula's.
+// above (seen on a deployed site, 6 Nov 2026). It is not the formula's.
 function checkArity(args, fn, name) {
   var extra = null;
   for (var i = fn.length; i < args.length; i++) {

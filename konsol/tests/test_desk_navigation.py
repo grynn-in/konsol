@@ -536,7 +536,7 @@ def test_every_sidebar_icon_exists_in_frappe_v16():
 
 def test_sidebar_positions_follow_the_file_order():
     """Two rows with the same idx are ordered arbitrarily: Builds showed before
-    IC balances on demo.konsolidat.com (5 Nov 2026) because both were 11."""
+    IC balances on a deployed site (5 Nov 2026) because both were 11."""
     for name, (_, d) in _sidebars().items():
         idx = [i["idx"] for i in d["items"]]
         assert idx == list(range(1, len(idx) + 1)), (name, idx)

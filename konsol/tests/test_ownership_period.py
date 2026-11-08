@@ -1452,7 +1452,7 @@ def test_117f_owner_refusal_names_the_callers_field_and_gives_none_when_sound():
         "Owner Node CG-ZZ_TYPO- is not a Consolidation Group node.")
 
 
-# --- a link rebuilds the closure (demo-ext-simple, 8 Nov 2026) ---------------
+# --- a link rebuilds the closure (Mini Group example, 8 Nov 2026) ------------
 
 def _link_doc(module, docstatus):
     return module.OwnershipPeriod(dict(_SAVED), doctype="Ownership Period", docstatus=docstatus, supersedes=None)
@@ -1471,7 +1471,7 @@ def test_submit_and_cancel_queue_the_closure_rebuild():
     LINKS (konsol#117 pair 1), but only the group's own on_update rebuilt it:
     a link submitted after the tree existed left every path on the tree
     parent, so an owner that is another entity (Mini Holding AG owning its
-    subsidiaries, demo-ext-simple 8 Nov 2026) resolved to 0% / method none
+    subsidiaries, Mini Group example, 8 Nov 2026) resolved to 0% / method none
     and assert_ownership_chain_complete stopped the build until
     reconcile_all ran by hand. Submit and cancel now queue the same rebuild
     the group queues, under the same dedupe key."""
