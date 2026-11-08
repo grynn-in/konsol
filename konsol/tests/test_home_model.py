@@ -42,9 +42,10 @@ def _state(key, status="Open", end="2025-07-31", checks="Not run", signoff="Not 
 # --- window ------------------------------------------------------------------
 
 def test_window_is_the_last_n_periods_up_to_the_current_one_oldest_first():
-    states = [_state((2024, 12)), _state((2025, 1)), _state((2025, 2)), _state((2025, 3))]
-    assert M.window(states, (2025, 2), 2) == [(2025, 1), (2025, 2)]
-    assert M.window(states, (2025, 2), 6) == [(2024, 12), (2025, 1), (2025, 2)]
+    states = [_state((2024, 11)), _state((2024, 12)), _state((2025, 1)), _state((2025, 2)),
+              _state((2025, 3))]
+    assert M.window(states, (2025, 2), 3) == [(2024, 12), (2025, 1), (2025, 2)]
+    assert M.window(states, (2025, 2), 6) == [(2024, 11), (2024, 12), (2025, 1), (2025, 2)]
 
 
 def test_window_refuses_a_count_outside_the_choices():
