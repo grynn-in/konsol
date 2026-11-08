@@ -55,7 +55,6 @@ statement_model = _load_sibling("statement_model")
 #: with the raw code (W4-E6: visible, never under an entity, never dropped).
 _LAYER_LABELS = {
     "ic_elimination": "Intercompany eliminations",
-    "ic_elimination_nci": "Intercompany eliminations",
     "topside": "Top-side journals",
     "reclassification": "Top-side journals",
     "auto_reversal": "Top-side journals",

@@ -129,7 +129,6 @@ def _heading1_rows():
         _row("1110", 200.0, "entity", "ZZB"),
         _row("1120", 100.0, "entity", "ZZC"),
         _row("1110", -50.0, "ic_elimination", ""),
-        _row("1110", -20.0, "ic_elimination_nci", "ZZB"),
         _row("1110", 40.0, "topside", "ZZA"),
         _row("1110", 7.0, "zz_new_layer", "ZZA"),
     ]
@@ -142,11 +141,12 @@ _TOPSIDE_JOURNALS = [
 ]
 
 
-def test_entity_rows_exclude_ic_nci_and_topside_amounts_with_the_same_entity_d2_5():
+def test_entity_rows_exclude_topside_amounts_with_the_same_entity_d2_5():
     """Failure path (D2-5): the ZZA entity row's amount excludes the
-    unknown-layer and topside amounts that also carry data_area_id "ZZA";
-    the ZZB entity row excludes the NCI elimination amount carrying its
-    data_area_id too."""
+    unknown-layer and topside amounts that also carry data_area_id "ZZA".
+    (The NCI elimination layer that once carried ZZB's data_area_id is
+    retired: intercompany eliminations are posted in full since
+    konsolidat#204 (a), konsol#117 pair 2.)"""
     rows = _heading1_rows()
     line = _statement_line(rows, "1")
     result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
@@ -170,7 +170,7 @@ def test_cta_ic_eliminations_and_topside_are_each_one_row_with_entity_none():
     ic_rows = [r for r in result["rows"] if r["label"] == "Intercompany eliminations"]
     assert len(ic_rows) == 1
     assert ic_rows[0]["entity"] is None
-    assert ic_rows[0]["amount"] == -70.0  # -50 (group) + -20 (NCI, ZZB's data_area_id)
+    assert ic_rows[0]["amount"] == -50.0  # the one IC layer; ic_elimination_nci retired (konsolidat#204 (a), konsol#117 pair 2)
 
     topside_rows = [r for r in result["rows"] if r["label"] == "Top-side journals"]
     assert len(topside_rows) == 1
@@ -195,7 +195,7 @@ def test_drill_total_equals_the_real_statement_lines_current():
     line = _statement_line(rows, "1")
     result = M.drill(rows, _TOPSIDE_JOURNALS, _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
     assert result["total"] == line["current"]
-    assert result["total"] == 577.0  # 300+200+100-50-20+40+7
+    assert result["total"] == 597.0  # 300+200+100-50+40+7
 
 
 def test_tampering_a_row_after_the_statement_was_built_raises():
