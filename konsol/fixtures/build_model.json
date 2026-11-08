@@ -145,6 +145,12 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_nci_attribution_journal",
+  "model_name": "gold_nci_attribution_journal",
+  "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_nci_movement_schedule",
   "model_name": "gold_nci_movement_schedule",
   "build_domain": "consolidation"
