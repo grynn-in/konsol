@@ -43,6 +43,7 @@ from frappe.utils import add_months, getdate, nowdate
 
 from konsol.business_combination_model import derive_acquired_balances, problems, split_by_weights, totals
 from konsol.clickhouse import execute, sync_doctype_after_commit
+from konsol.joint_operation_model import joint_operation_problem
 from konsol.close.reject_reason import refuse_reasonless_reject
 from konsol.consolidation.doctype.business_combination_acquired_balance.business_combination_acquired_balance import (  # noqa: E501
     BusinessCombinationAcquiredBalance,
@@ -134,7 +135,7 @@ class BusinessCombination(Document):
         period = self._acquisition_period()
         root = self._root()
         self._validate_acquirer()
-        self._joint_operation_problem()
+        self._joint_operation_problem(root.get("name"))
         # konsol#205 (IFRS 3.19): each deal may elect its NCI measurement; blank
         # takes the group's. The model measures with the value in force.
         self.nci_measurement = self.get("nci_measurement_override") or root.get("goodwill_method") or ""
@@ -345,30 +346,35 @@ class BusinessCombination(Document):
         if node and node.parent_consolidation_group:
             self.acquirer_node = node.parent_consolidation_group
 
-    def _joint_operation_problem(self):
+    def _joint_operation_problem(self, root_name):
         """Refuse a deal into / out of a joint operation by name (konsol#117
-        pair 3): ``proportional`` is IFRS 11.20 proportionate consolidation, and
-        IFRS 11.21A (a business combination into, or a disposal of, an interest
-        in a joint operation) is not implemented. Any owner's submitted
-        Ownership Period of the entity in this group, effective on the deal
-        date, that is held ``proportional`` refuses the deal."""
-        rows = frappe.get_all(
+        pair 3, review finding D): IFRS 11.21A is not implemented. Reads the
+        entity's Ownership Periods in this group, draft or submitted, of any
+        owner, and the group's Consolidation Method Declarations; the rule is
+        konsol.joint_operation_model. dbt's assert_acquisition_accounts_declared
+        / assert_disposal_accounts_declared are the backstop for anything this
+        check cannot see."""
+        periods = [row for row in frappe.get_all(
             "Ownership Period",
             filters={"consolidation_group": self.consolidation_group, "data_area_id": self.acquired_entity,
-                     "docstatus": 1, "consolidation_method": "proportional",
+                     "docstatus": ["<", 2], "consolidation_method": "proportional",
                      "effective_date": ["<=", self.acquisition_date]},
-            fields=["name", "ownership_pct", "effective_date", "end_date"],
+            fields=["name", "ownership_pct", "effective_date", "end_date", "docstatus"],
+            order_by="effective_date desc",
+            limit_page_length=0,
+        )]
+        declarations = frappe.get_all(
+            "Consolidation Method Declaration",
+            filters={"parent": root_name, "parenttype": "Consolidation Group",
+                     "data_area_id": self.acquired_entity, "consolidation_method": "proportional"},
+            fields=["effective_date", "end_date"],
             order_by="effective_date desc",
             limit_page_length=0,
         )
-        for row in rows:
-            if row.end_date and getdate(row.end_date) < getdate(self.acquisition_date):
-                continue
-            frappe.throw(
-                f"{_PREFIX}{self.acquired_entity} is held as a joint operation ({row.name}, proportional, "
-                f"{float(row.ownership_pct):g}%): a business combination into a joint operation is not implemented (IFRS 11.21A). "
-                "Record the change as an Ownership Period."
-            )
+        sentence = joint_operation_problem(self.acquired_entity, self.consolidation_group, self.acquisition_date,
+                                           "a business combination into", periods, declarations)
+        if sentence:
+            frappe.throw(_PREFIX + sentence)
 
     def _validate_acquirer(self):
         """The Ownership Period's owner rule (§1 refusal 1), in this deal's
