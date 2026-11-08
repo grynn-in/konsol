@@ -37,6 +37,8 @@ the document from a hook or commits.
 """
 from decimal import Decimal
 
+import datetime
+
 import frappe
 from frappe.model.document import Document
 from frappe.utils import add_months, getdate, nowdate
@@ -346,6 +348,53 @@ class BusinessCombination(Document):
         if node and node.parent_consolidation_group:
             self.acquirer_node = node.parent_consolidation_group
 
+    def _declared_methods(self, node_name):
+        """Every method the node declares for this deal's entity (all
+        methods: the rule keeps only the latest one effective by the date)."""
+        return frappe.get_all(
+            "Consolidation Method Declaration",
+            filters={"parent": node_name, "parenttype": "Consolidation Group", "data_area_id": self.acquired_entity},
+            fields=["consolidation_method", "effective_date", "end_date"],
+            order_by="effective_date desc",
+            limit_page_length=0,
+        )
+
+    def _ancestor_group_nodes(self, root_name):
+        """(group, own node name) of every group above this one: walk
+        parent_consolidation_group from the group's root to the top. A
+        sub-group's entity is also reached through its ancestors' policy."""
+        seen, found, node = {root_name}, [], root_name
+        while node:
+            row = frappe.db.get_value("Consolidation Group", node,
+                                      ["parent_consolidation_group"], as_dict=True)
+            parent = row and row.get("parent_consolidation_group")
+            if not parent or parent in seen:
+                break
+            seen.add(parent)
+            above = frappe.db.get_value("Consolidation Group", parent, ["consolidation_group"], as_dict=True)
+            group = above and above.get("consolidation_group")
+            if group:
+                found.append((group, f"CG-{group}-"))
+            node = parent
+        return found
+
+    def _step_window_start(self):
+        """The first day of the fiscal period before the deal's period (the
+        non-Closing one ending the day before it starts); the deal's own
+        period start when none is declared; None when no period covers the
+        date (refused elsewhere)."""
+        sql = ("SELECT p.start_date, p.period_type FROM `tabEPM Fiscal Year Period` p "
+               "JOIN `tabEPM Fiscal Year` y ON y.name = p.parent "
+               "WHERE p.parentfield = 'periods' AND p.period_type <> 'Closing' "
+               "AND p.start_date <= %(d)s AND p.end_date >= %(d)s "
+               "ORDER BY (p.period_type <> 'Regular'), p.start_date LIMIT 1")
+        current = frappe.db.sql(sql, {"d": getdate(self.acquisition_date)}, as_dict=True)
+        if not current:
+            return None
+        start = getdate(current[0]["start_date"])
+        previous = frappe.db.sql(sql, {"d": start - datetime.timedelta(days=1)}, as_dict=True)
+        return getdate(previous[0]["start_date"]) if previous else start
+
     def _joint_operation_problem(self, root_name):
         """Refuse a deal into / out of a joint operation by name (konsol#117
         pair 3, review finding D): IFRS 11.21A is not implemented. Reads the
@@ -363,16 +412,11 @@ class BusinessCombination(Document):
             order_by="effective_date desc",
             limit_page_length=0,
         )]
-        declarations = frappe.get_all(
-            "Consolidation Method Declaration",
-            filters={"parent": root_name, "parenttype": "Consolidation Group",
-                     "data_area_id": self.acquired_entity, "consolidation_method": "proportional"},
-            fields=["effective_date", "end_date"],
-            order_by="effective_date desc",
-            limit_page_length=0,
-        )
-        sentence = joint_operation_problem(self.acquired_entity, self.consolidation_group, self.acquisition_date,
-                                           "a business combination into", periods, declarations)
+        declarations = [(self.consolidation_group, self._declared_methods(root_name))]
+        for group, node in self._ancestor_group_nodes(root_name):
+            declarations.append((group, self._declared_methods(node)))
+        sentence = joint_operation_problem(self.acquired_entity, self.acquisition_date, "a business combination into",
+                                           "a step from a joint operation to control", self._step_window_start(), periods, declarations)
         if sentence:
             frappe.throw(_PREFIX + sentence)
 
