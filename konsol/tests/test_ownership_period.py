@@ -132,13 +132,19 @@ class _Refused(Exception):
 
 
 def _getdate(value):
+    """frappe.utils.getdate, near enough: a date, a datetime, an ISO date or
+    datetime string, or the ``dd-mm-yyyy`` a form may post."""
     if value in (None, ""):
         return None
     if isinstance(value, datetime.datetime):
         return value.date()
     if isinstance(value, datetime.date):
         return value
-    return datetime.date.fromisoformat(str(value)[:10])
+    text = str(value)
+    try:
+        return datetime.date.fromisoformat(text[:10])
+    except ValueError:
+        return datetime.datetime.strptime(text[:10], "%d-%m-%Y").date()
 
 
 def _load(flags, next_start=None, first_period_affected=None, gate=None):
@@ -177,12 +183,14 @@ def _load(flags, next_start=None, first_period_affected=None, gate=None):
     period_status = types.ModuleType("konsol.period_status")
     period_status.assert_open_between = gate or (lambda *a, **k: None)
     period_status.first_period_affected = first_period_affected or (lambda *a, **k: None)
+    konsol = types.ModuleType("konsol")
+    konsol.__path__ = [APP_DIR]   # the real pure konsol.fiscal_structure_model imports through the stub
     mods = {
         "frappe": frappe,
         "frappe.utils": utils,
         "frappe.model": types.ModuleType("frappe.model"),
         "frappe.model.document": document_mod,
-        "konsol": types.ModuleType("konsol"),
+        "konsol": konsol,
         "konsol.clickhouse": clickhouse,
         "konsol.period_status": period_status,
     }
@@ -204,6 +212,7 @@ def _load(flags, next_start=None, first_period_affected=None, gate=None):
 
 _SAVED = dict(
     name="OP-ZZG-ZZ01-2024-01-01", consolidation_group="ZZG", data_area_id="ZZ01",
+    owner_node="CG-ZZG-", owner_label="ZZG", owner_group="ZZG", owner_data_area_id=None,
     effective_date=datetime.date(2024, 1, 1), end_date=None, ownership_pct=80.0,
     consolidation_method="full",
     acquisition_date=datetime.date(2024, 1, 1), is_first_acquisition=1,
@@ -373,9 +382,12 @@ def test_before_cancel_gates_exactly_the_cancel_span():
 _D = datetime.date
 
 
-def _row(name, effective, end=None, docstatus=1, group="ZZG", entity="ZZ01"):
+def _row(name, effective, end=None, docstatus=1, group="ZZG", entity="ZZ01",
+         owner="CG-ZZG-", owner_label="ZZG", pct=80.0, supersedes=None):
     return types.SimpleNamespace(name=name, consolidation_group=group, data_area_id=entity,
-                                 effective_date=effective, end_date=end, docstatus=docstatus)
+                                 owner_node=owner, owner_label=owner_label, ownership_pct=pct,
+                                 effective_date=effective, end_date=end, docstatus=docstatus,
+                                 supersedes=supersedes)
 
 
 class _Stored:
@@ -394,15 +406,25 @@ class _Stored:
         setattr(self, field, value)
 
 
-def _site(rows):
+def _site(rows, nodes=None):
     """``_load`` with get_all / get_doc / exists over ``rows``: get_all honours
-    the node, ``name !=`` and ``docstatus !=`` filters the controller sends."""
+    the node, the owner, ``name !=`` and ``docstatus !=`` filters the
+    controller sends. With ``nodes`` (name -> Consolidation Group row, see
+    ``_TREE``), ``frappe.db.get_value`` resolves a node by filters (the owned
+    node) or by name (the owner)."""
     module = _load(_no_flags())
     frappe = module.frappe
     log, calls = [], []
+    if nodes is not None:
+        frappe.db.get_value = _node_lookup(nodes, calls)
 
     def get_all(doctype, filters=None, fields=None, **k):
-        calls.append(("get_all", filters))
+        calls.append(("get_all", filters, doctype))
+        if doctype == "Consolidation Group":
+            # the cycle walk's one read of every node (PR #459 finding C)
+            assert nodes is not None, "a tree is needed to read the nodes"
+            assert not filters, filters
+            return [types.SimpleNamespace(**vars(n)) for n in nodes.values()]
         out = []
         for r in rows:
             ok = True
@@ -430,8 +452,24 @@ def _site(rows):
                 return _Stored(frappe, r, log)
         raise AssertionError(f"no such period {name}")
 
+    def sql(query, values=(), as_dict=False, **k):
+        """The two statements the cycle check sends: the serialising lock on
+        Ownership Period's tabDocType row, then (PR #459 finding C) ONE
+        locking read of every non-cancelled link (``docstatus != 2``,
+        optionally ``name != %s``). Anything else is a test's mistake."""
+        calls.append(("sql", query, tuple(values)))
+        if "`tabDocType`" in query:
+            return []
+        assert "`tabOwnership Period`" in query, query
+        assert as_dict, "the controller reads links as dicts"
+        assert "`docstatus` != 2" in query and "`owner_node`" in query and "`docstatus`" in query, query
+        exclude = values[-1] if "`name` != %s" in query else None
+        return [types.SimpleNamespace(**vars(r)) for r in rows
+                if r.docstatus != 2 and r.name != exclude]
+
     frappe.get_all = get_all
     frappe.get_doc = get_doc
+    frappe.db.sql = sql
     frappe.db.exists = lambda doctype, name, *a, **k: any(r.name == name for r in rows)
     return module, log, calls
 
@@ -441,6 +479,7 @@ _PRED = "OP-ZZG-ZZ01-2025-01-01"
 
 def _change(module, **over):
     fields = dict(doctype="Ownership Period", name="OP-ZZG-ZZ01-2025-10-01", consolidation_group="ZZG", data_area_id="ZZ01",
+                  owner_node="CG-ZZG-", owner_label="ZZG",
                   effective_date="2025-10-01", end_date=None, ownership_pct=80.0,
                   consolidation_method="full", supersedes=_PRED, superseded_end_date=None, docstatus=0)
     fields.update(over)
@@ -639,14 +678,17 @@ def _node_site(nodes):
 
     def get_value(doctype, filters, fields, as_dict=False):
         assert doctype == "Consolidation Group", doctype
-        assert fields == ["name", "parent_consolidation_group"] and as_dict, (fields, as_dict)
+        # PR #449 review, finding 8: the owned node is read as the
+        # ``_NODE_FIELDS`` row ``owner_refusal`` documents, through node_by_key.
+        assert fields == module._NODE_FIELDS and as_dict, (fields, as_dict)
         asked.append(filters)
         entity = filters["data_area_id"]
         entity = "" if entity == ["is", "not set"] else entity
         key = (filters["consolidation_group"], entity)
         if key not in nodes:
             return None
-        return types.SimpleNamespace(name=f"CG-{key[0]}-{key[1]}", parent_consolidation_group=nodes[key])
+        return types.SimpleNamespace(name=f"CG-{key[0]}-{key[1]}", consolidation_group=key[0],
+                                     data_area_id=entity or None, parent_consolidation_group=nodes[key])
 
     module.frappe.db = types.SimpleNamespace(get_value=get_value)
     return module, asked
@@ -684,6 +726,33 @@ def test_f8_a_root_node_takes_no_period():
         "construction and an Ownership Period on it would never be applied.")
 
 
+# --- the warehouse's Date range, by behaviour (was a source grep in
+# test_consolidation.py; PR #459 finding J) ------------------------------------
+
+def test_a_date_outside_the_warehouse_range_is_refused_by_sentence_at_both_bounds():
+    """ClickHouse Date holds 1970-01-01..2149-06-06 and clamps silently, so a
+    period dated outside it would say one thing in Frappe and another in the
+    warehouse. The range is fiscal_structure_model's, imported, never a
+    copy (PR #449 finding 7)."""
+    from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
+    module = _whole_site()
+    assert (module._CH_DATE_MIN, module._CH_DATE_MAX) == (MIN_DATE.isoformat(), MAX_DATE.isoformat())
+    for field, value in (("effective_date", "1900-01-01"), ("end_date", "2200-01-01"),
+                         ("effective_date", "1969-12-31"), ("end_date", "2149-06-07")):
+        doc = module.OwnershipPeriod(before=None, **_declared(**{"effective_date": "2024-01-01", field: value}))
+        sentence = _refusal(doc, "_validate_dates_representable")
+        assert sentence.startswith(f"{field} {value} is outside the range the warehouse can store "
+                                   f"({MIN_DATE.isoformat()} to {MAX_DATE.isoformat()})"), sentence
+        assert "silently clamped" in sentence
+    # both bounds themselves are representable
+    module.OwnershipPeriod(before=None, **_declared(effective_date=MIN_DATE.isoformat(),
+                                                    end_date=MAX_DATE.isoformat()))._validate_dates_representable()
+    # the old "open" sentinel is translated to blank, not refused
+    doc = module.OwnershipPeriod(before=None, **_declared(end_date="9999-12-31"))
+    doc._validate_dates_representable()
+    assert doc.end_date is None
+
+
 # --- #429: proportional is offered, and the warehouse computes it as full ------
 #
 # gold_consolidated_trial_balance excludes only ``equity`` and ``none`` and
@@ -695,10 +764,8 @@ def test_f8_a_root_node_takes_no_period():
 # keeps the option because #117 decides whether to implement or drop it.
 
 def _whole_site():
-    """``_site`` with one real, non-root node, so ``validate()`` runs end to end."""
-    module, _, _ = _site([])
-    module.frappe.db.get_value = lambda doctype, filters, fields, as_dict=False: types.SimpleNamespace(
-        name="CG-ZZG-ZZ01", parent_consolidation_group="CG-ZZG-")
+    """``_site`` over the ``_TREE`` nodes, so ``validate()`` runs end to end."""
+    module, _, _ = _site([], nodes=_TREE)
     return module
 
 
@@ -706,6 +773,50 @@ def _declared(**over):
     """A period declared by hand: ``_SAVED`` without the deal figures."""
     return dict({k: v for k, v in _SAVED.items() if k not in DEAL_FIELDS},
                 doctype="Ownership Period", **over)
+
+
+def _cg(name, group, entity, parent):
+    return types.SimpleNamespace(name=name, consolidation_group=group, data_area_id=entity,
+                                 parent_consolidation_group=parent)
+
+
+#: Two hierarchies: ZZG (root group node; entity nodes ZZ01, ZZ02; sub-group
+#: ZZSUB with entity node ZZ03) and ZZOTHER (another root).
+_TREE = {n.name: n for n in (
+    _cg("CG-ZZG-", "ZZG", None, None),
+    _cg("CG-ZZG-ZZ01", "ZZG", "ZZ01", "CG-ZZG-"),
+    _cg("CG-ZZG-ZZ02", "ZZG", "ZZ02", "CG-ZZG-"),
+    _cg("CG-ZZSUB-", "ZZSUB", None, "CG-ZZG-"),
+    _cg("CG-ZZSUB-ZZ03", "ZZSUB", "ZZ03", "CG-ZZSUB-"),
+    _cg("CG-ZZOTHER-", "ZZOTHER", None, None),
+    _cg("CG-ZZOTHER-ZZ09", "ZZOTHER", "ZZ09", "CG-ZZOTHER-"),
+)}
+
+
+def _node_lookup(nodes, calls):
+    """``frappe.db.get_value`` for Consolidation Group over ``nodes``: by a
+    filters dict (group + entity, a blank entity asked as ["is", "not set"])
+    or by name. Anything else answers None."""
+
+    def get_value(doctype, filters, fields=None, as_dict=False, **k):
+        calls.append(("get_value", doctype, filters, fields))
+        if doctype != "Consolidation Group":
+            return None
+        if isinstance(filters, dict):
+            entity = filters["data_area_id"]
+            entity = None if entity == ["is", "not set"] else entity
+            hits = [n for n in nodes.values()
+                    if n.consolidation_group == filters["consolidation_group"]
+                    and (n.data_area_id or None) == entity]
+            node = hits[0] if hits else None
+        else:
+            node = nodes.get(filters)
+        if node is None:
+            return None
+        assert as_dict, "the controller reads nodes as dicts"
+        return types.SimpleNamespace(**vars(node))
+
+    return get_value
 
 
 def test_429_proportional_is_refused_by_validate_naming_the_method_and_the_issue():
@@ -722,3 +833,634 @@ def test_429_full_equity_and_none_still_pass_validate():
     module = _whole_site()
     for method in ("full", "equity", "none"):
         module.OwnershipPeriod(before=None, **_declared(consolidation_method=method)).validate()
+
+
+# --- #117 option A (Deepak Pai, 7 Nov 2026), pair 1 task A: the link names its
+# owner -----------------------------------------------------------------------
+#
+# Ownership Period is the link of the ownership graph: it names the OWNED node
+# (consolidation_group, data_area_id) as before, and now the OWNER node, a Link
+# to a Consolidation Group node (an entity node or a pure group node). The
+# owner is pre-filled from the owned node's tree parent when blank: that is the
+# one default in the design, visible on the form and named in the field's
+# description. New rows are named by the owner (``owner_label``: the owner's
+# entity code, else its group code) so two owners of one node from one date do
+# not collide; existing names are not renamed. Validate refuses, by name: an
+# owner that is the owned node or sits under another root (§1 refusal 1), and
+# links into one node whose overlapping windows sum past 100% (§1 refusal 4).
+# Gaps/overlaps are per (owner, owned) edge. The cycle refusal is task B.
+
+OWNER_FIELDS = ("owner_node", "owner_label", "owner_group", "owner_data_area_id")
+
+
+def test_117_owner_node_is_a_required_visible_editable_link_naming_its_prefill():
+    fields = {f["fieldname"]: f for f in _meta()["fields"]}
+    order = [f["fieldname"] for f in _meta()["fields"]]
+    f = fields["owner_node"]
+    assert f["fieldtype"] == "Link" and f["options"] == "Consolidation Group"
+    assert f["label"] == "Owner Node"
+    assert f.get("reqd") == 1, "an owner is always required"
+    assert not f.get("read_only") and not f.get("hidden"), "visible and editable"
+    assert f.get("in_list_view") == 1
+    assert order.index("tab_ownership") < order.index("owner_node") < order.index("consolidation_group")
+    desc = f.get("description", "")
+    assert "pre-filled" in desc.lower() and "parent" in desc.lower(), desc
+
+
+def test_117_the_derived_owner_fields_are_read_only_and_system_set():
+    fields = {f["fieldname"]: f for f in _meta()["fields"]}
+    for fn in ("owner_label", "owner_group", "owner_data_area_id"):
+        assert fields[fn].get("read_only") == 1, fn
+        assert not fields[fn].get("reqd"), fn
+    assert fields["owner_label"]["fieldtype"] == "Data"
+    assert fields["owner_group"]["fieldtype"] == "Data"
+    assert fields["owner_data_area_id"]["fieldtype"] == "Link"
+    assert fields["owner_data_area_id"]["options"] == "Entity"
+
+
+def test_117_new_rows_are_named_by_the_owner_and_old_names_are_kept():
+    src = _src()
+    assert "rename_doc" not in src, "the 329 existing names are not renamed"
+    assert "_resolve_owner" in _method_body(src, "before_insert"), "owner_label is set before naming"
+    assert "_resolve_owner" in _method_body(src, "before_validate")
+
+
+def _named(module, **over):
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, **over))
+    doc.autoname()
+    return doc.name
+
+
+def test_117_a_new_row_is_named_owner_owned_date_so_two_sub_groups_of_one_owner_differ():
+    """PR #449 review, finding 3: ``format:OP-{owner_label}-{data_area_id}-
+    {effective_date}`` dropped the owned node's code, so two sub-group
+    periods (blank entity) from one owner and date collided. The controller
+    names the row ``OP-{owner}-{owned}-{date}`` with the owned label the
+    entity code, else the group code; an entity-owned row's name is what the
+    format gave (``OP-ZZG-ZZ01-2024-01-01``), so nothing else changes."""
+    module = _load(_no_flags())
+    s = _named(module, owner_label="ZZG", consolidation_group="ZZSUB", data_area_id=None,
+               effective_date="2026-01-01")
+    t = _named(module, owner_label="ZZG", consolidation_group="ZZSUB2", data_area_id=None,
+               effective_date="2026-01-01")
+    assert (s, t) == ("OP-ZZG-ZZSUB-2026-01-01", "OP-ZZG-ZZSUB2-2026-01-01")
+    assert _named(module, owner_label="ZZG", consolidation_group="ZZG", data_area_id="ZZ01",
+                  effective_date=datetime.date(2024, 1, 1)) == "OP-ZZG-ZZ01-2024-01-01"
+    assert _named(module, owner_label="ZZ01", consolidation_group="ZZSUB", data_area_id="ZZ03",
+                  effective_date="2026-07-01") == "OP-ZZ01-ZZ03-2026-07-01"
+    # the method names the row; no `format:` autoname that could drop a field
+    assert "autoname" not in _meta(), _meta().get("autoname")
+
+
+def test_117_autoname_writes_the_date_as_iso_whatever_shape_it_was_posted_in():
+    """PR #459 re-review finding F: the name took ``effective_date`` as typed,
+    so a posted ``dd-mm-yyyy`` or a value with a time component gave a
+    differently shaped name for the same link and date, and the collision
+    guard the name is compared no longer held."""
+    module = _load(_no_flags())
+    for posted in (datetime.date(2026, 7, 1), datetime.datetime(2026, 7, 1, 0, 0), "2026-07-01",
+                   "2026-07-01 00:00:00", "01-07-2026"):
+        assert _named(module, owner_label="ZZG", consolidation_group="ZZSUB", data_area_id=None,
+                      effective_date=posted) == "OP-ZZG-ZZSUB-2026-07-01", posted
+
+
+def test_117_autoname_refuses_by_sentence_when_the_owner_has_no_label():
+    """Finding F: a blank ``owner_label`` gave ``OP-None-…``. The owner is
+    resolved first; when it still has no label (the Owner Node names no node,
+    or is blank and the owned node has no tree parent) the save is refused by
+    sentence, never named after None."""
+    module = _whole_site()
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, owner_node="CG-ZZ_TYPO-",
+                                                          owner_label=None, owner_group=None))
+    assert _refusal(doc, "autoname") == (
+        "Cannot name this Ownership Period: Owner Node CG-ZZ_TYPO- is not a Consolidation Group "
+        "node, so there is no owner label to name it by. Choose the node that holds the share.")
+    assert doc.get("name") is None
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, consolidation_group="ZZ_TYPO",
+                                                          owner_node=None, owner_label=None, owner_group=None))
+    assert _refusal(doc, "autoname") == (
+        "Cannot name this Ownership Period: it has no Owner Node and `ZZ01` has no tree parent "
+        "to pre-fill one from, so there is no owner label to name it by. Choose the node that holds the share.")
+    # a label the owner resolves to on the spot is used
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, owner_node="CG-ZZG-ZZ02",
+                                                          owner_label=None, owner_group=None))
+    doc.autoname()
+    assert doc.name == "OP-ZZ02-ZZ01-2024-01-01"
+    # and no effective date is refused too, never named after today
+    doc = module.OwnershipPeriod(before=None, **_declared(name=None, effective_date=None))
+    assert "Effective Date" in _refusal(doc, "autoname")
+
+
+def test_117_the_field_map_names_the_owner_columns_after_data_area_id():
+    """The warehouse columns task C adds to epm_staging.ownership_periods
+    (fixed names: owner_group, owner_data_area_id, after data_area_id). The
+    Link and the label are Frappe's; they are not synced."""
+    module = _load(_no_flags())
+    ch = module.OwnershipPeriod.CH_FIELD_MAP
+    assert ch["owner_group"] == "owner_group"
+    assert ch["owner_data_area_id"] == "owner_data_area_id"
+    cols = list(ch)
+    assert cols[cols.index("data_area_id") + 1:cols.index("data_area_id") + 3] == ["owner_group", "owner_data_area_id"]
+    assert "owner_node" not in ch and "owner_label" not in ch
+    fields = {f["fieldname"] for f in _meta()["fields"]}
+    assert set(ch.values()) <= fields
+
+
+def test_117_a_blank_owner_is_prefilled_from_the_tree_parent_and_labelled():
+    module, _, _ = _site([], nodes=_TREE)
+    doc = module.OwnershipPeriod(before=None, **_declared(owner_node=None, owner_label=None,
+                                                          owner_group=None))
+    doc.before_insert()
+    assert doc.owner_node == "CG-ZZG-", "the owned node's tree parent"
+    assert (doc.owner_group, doc.owner_data_area_id, doc.owner_label) == ("ZZG", None, "ZZG")
+    # a group node owned by the root: the same default
+    doc = module.OwnershipPeriod(before=None, **_declared(consolidation_group="ZZSUB", data_area_id=None,
+                                                          owner_node=""))
+    doc.before_insert()
+    assert doc.owner_node == "CG-ZZG-" and doc.owner_label == "ZZG"
+    # no node: nothing to pre-fill from, and no error here (validate refuses by name)
+    doc = module.OwnershipPeriod(before=None, **_declared(consolidation_group="ZZ_TYPO", owner_node=None))
+    doc.before_insert()
+    assert not doc.owner_node
+
+
+def test_117_a_given_owner_is_kept_and_an_entity_owner_is_labelled_by_its_code():
+    module, _, _ = _site([], nodes=_TREE)
+    doc = module.OwnershipPeriod(before=None, **_declared(consolidation_group="ZZSUB", data_area_id="ZZ03",
+                                                          owner_node="CG-ZZG-ZZ01"))
+    doc.before_insert()
+    assert doc.owner_node == "CG-ZZG-ZZ01", "a chosen owner is not overwritten by the default"
+    assert (doc.owner_group, doc.owner_data_area_id, doc.owner_label) == ("ZZG", "ZZ01", "ZZ01")
+    # before_validate re-derives the three from the owner on every save, so an
+    # edited owner never leaves a stale label or warehouse column behind
+    doc.owner_node = "CG-ZZG-ZZ02"
+    doc.before_validate()
+    assert (doc.owner_group, doc.owner_data_area_id, doc.owner_label) == ("ZZG", "ZZ02", "ZZ02")
+
+
+def _refusal(doc, method="validate"):
+    try:
+        getattr(doc, method)()
+    except _Refused as e:
+        return str(e)
+    raise AssertionError("not refused")
+
+
+def test_117_an_owner_that_is_the_owned_node_is_refused_by_name():
+    module = _whole_site()
+    doc = module.OwnershipPeriod(before=None, **_declared(owner_node="CG-ZZG-ZZ01"))
+    assert _refusal(doc) == (
+        "`ZZ01` cannot own itself: Owner Node CG-ZZG-ZZ01 is the owned node. "
+        "Name the node that holds the share.")
+
+
+def test_117_an_owner_under_another_root_is_refused_by_name():
+    module = _whole_site()
+    for owner in ("CG-ZZOTHER-", "CG-ZZOTHER-ZZ09"):
+        doc = module.OwnershipPeriod(before=None, **_declared(owner_node=owner))
+        assert _refusal(doc) == (
+            f"Owner Node {owner} is under root CG-ZZOTHER-, not under CG-ZZG- like `ZZ01`: "
+            f"an owner is a node of the same hierarchy as the node it owns."), owner
+
+
+def test_117_an_owner_that_is_not_a_node_is_refused_by_name():
+    module = _whole_site()
+    doc = module.OwnershipPeriod(before=None, **_declared(owner_node="CG-ZZ_TYPO-"))
+    assert _refusal(doc) == "Owner Node CG-ZZ_TYPO- is not a Consolidation Group node."
+
+
+def test_117_the_parent_a_sibling_or_a_grandparent_may_own():
+    module = _whole_site()
+    module.OwnershipPeriod(before=None, **_declared(owner_node="CG-ZZG-")).validate()
+    module.OwnershipPeriod(before=None, **_declared(owner_node="CG-ZZG-ZZ02")).validate()
+    module.OwnershipPeriod(before=None, **_declared(consolidation_group="ZZSUB", data_area_id="ZZ03",
+                                                    owner_node="CG-ZZG-")).validate()
+    # a group node may be owned by an entity node beside it
+    module.OwnershipPeriod(before=None, **_declared(consolidation_group="ZZSUB", data_area_id=None,
+                                                    owner_node="CG-ZZG-ZZ01")).validate()
+
+
+# refusal 4: Σ of the links into one node over overlapping windows ≤ 100
+
+_EC = dict(consolidation_group="ZZSUB", data_area_id="ZZ03")   # the owned node, `ZZ03`
+
+
+def _link(name, owner, label, pct, start, end=None, **over):
+    row = _row(name, start, end=end, group="ZZSUB", entity="ZZ03", owner=owner, owner_label=label, pct=pct)
+    for k, v in over.items():
+        setattr(row, k, v)
+    return row
+
+
+def _new_link(module, owner, pct, start, end=None, **over):
+    fields = dict(_declared(**_EC, name=None, owner_node=owner, ownership_pct=pct,
+                            effective_date=start, end_date=end), **over)
+    return module.OwnershipPeriod(before=None, **fields)
+
+
+def test_117_total_issued_into_one_node_may_not_exceed_100_by_the_sentence():
+    """The design's sentence (§1 refusal 4), with the holders listed largest
+    first and the window where they all hold."""
+    module, _, _ = _site([
+        _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1)),
+        _link("OP-ZZG-ZZ03-2026-01-01", "CG-ZZG-", "ZZG", 20, _D(2026, 1, 1)),
+    ], nodes=_TREE)
+    doc = _new_link(module, "CG-ZZG-ZZ02", 30, "2026-01-01")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 80% owned in 2026-01-01..open (`ZZ01` 60%, `ZZG` 20%); "
+        "this 30% would exceed 100%.")
+    # exactly 100 is the whole node, and allowed
+    _new_link(module, "CG-ZZG-ZZ02", 20, "2026-01-01").validate()
+
+
+def test_117_the_window_named_is_where_the_overlapping_links_all_hold():
+    module, _, _ = _site([
+        _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1)),
+        _link("OP-ZZG-ZZ03-2026-07-01", "CG-ZZG-", "ZZG", 30, _D(2026, 7, 1), _D(2026, 12, 31)),
+    ], nodes=_TREE)
+    doc = _new_link(module, "CG-ZZG-ZZ02", 20, "2026-01-01")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 90% owned in 2026-07-01..2026-12-31 (`ZZ01` 60%, `ZZG` 30%); "
+        "this 20% would exceed 100%.")
+    # the new link ends before the second holder starts: only the first counts
+    _new_link(module, "CG-ZZG-ZZ02", 20, "2026-01-01", "2026-06-30").validate()
+    # a fractional share is written as typed
+    doc = _new_link(module, "CG-ZZG-ZZ02", 10.5, "2026-07-01")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 90% owned in 2026-07-01..2026-12-31 (`ZZ01` 60%, `ZZG` 30%); "
+        "this 10.5% would exceed 100%.")
+
+
+def test_117_total_issued_ignores_cancelled_links_and_the_superseded_predecessor():
+    module, _, _ = _site([
+        _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1)),
+        _link("OP-ZZG-ZZ03-2026-01-01", "CG-ZZG-", "ZZG", 60, _D(2026, 1, 1), docstatus=2),
+    ], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ02", 40, "2026-01-01").validate()
+    # a change to ZZ01's 60% supersedes it: the predecessor's 60% is not counted twice
+    module, _, _ = _site([
+        _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1)),
+        _link("OP-ZZG-ZZ03-2026-01-01", "CG-ZZG-", "ZZG", 30, _D(2026, 1, 1)),
+    ], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ01", 70, "2026-07-01", supersedes="OP-ZZ01-ZZ03-2026-01-01",
+              superseded_end_date=None).validate()
+    # but a second holder pushing past 100 with the predecessor gone is still refused
+    doc = _new_link(module, "CG-ZZG-ZZ01", 71, "2026-07-01", supersedes="OP-ZZ01-ZZ03-2026-01-01",
+                    superseded_end_date=None)
+    assert _refusal(doc) == (
+        "`ZZ03` is already 30% owned in 2026-07-01..open (`ZZG` 30%); this 71% would exceed 100%.")
+
+
+def test_117_a_strangers_draft_neither_cuts_its_predecessor_nor_counts_for_the_total():
+    """PR #459 re-review finding D (revising #449 finding 4). The sweep let
+    ANY other non-cancelled draft's ``supersedes`` end its predecessor, so a
+    third party's period was accepted past 100% on the strength of a draft
+    that may still be deleted. Only THIS document's own ``supersedes`` and
+    SUBMITTED successors cut a predecessor, and a stranger's draft is not a
+    link yet, so it is not counted either: its own approval re-runs this
+    check against whatever is submitted by then. ZZ01 holds 60% open; a
+    stranger's draft of 30% from 2027-01-01 supersedes it; ZZ02's 70% from
+    2027-01-01 is refused (60 + 70), 40% passes (60 + 40)."""
+    a = _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1))
+    stranger = _link("OP-ZZ01-ZZ03-2027-01-01", "CG-ZZG-ZZ01", "ZZ01", 30, _D(2027, 1, 1),
+                     docstatus=0, supersedes=a.name)
+    module, _, _ = _site([a, stranger], nodes=_TREE)
+    doc = _new_link(module, "CG-ZZG-ZZ02", 70, "2027-01-01")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 60% owned in 2027-01-01..open (`ZZ01` 60%); this 70% would exceed 100%.")
+    _new_link(module, "CG-ZZG-ZZ02", 40, "2027-01-01").validate()
+    # the self case: this document's own supersedes cuts its predecessor (A 60,
+    # own change 70 superseding A, another holder's 30: 30 + 70 = 100)
+    other = _link("OP-ZZG-ZZ03-2026-01-01", "CG-ZZG-", "ZZG", 30, _D(2026, 1, 1))
+    module, _, _ = _site([a, other], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ01", 70, "2027-01-01", supersedes=a.name, superseded_end_date=None).validate()
+
+
+def test_117_a_draft_change_is_checked_against_the_submitted_graph_when_it_is_approved():
+    """#449 finding 4 revised by #459 finding D: while ZZ01's change (70% from
+    2027-01-01, superseding its open 60%) is a draft, ZZ02's 30% from
+    2026-06-01 is checked against the submitted graph alone (60 + 30 = 90,
+    accepted; 41 is refused by the 60%), never against 60 + 70. The change's
+    own approval then runs this check with ZZ02's share submitted: 70 + 30 =
+    100 passes, 70 + 31 does not."""
+    a = _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1))
+    change = _link("OP-ZZ01-ZZ03-2027-01-01", "CG-ZZG-ZZ01", "ZZ01", 70, _D(2027, 1, 1),
+                   docstatus=0, supersedes=a.name)
+    module, _, _ = _site([a, change], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ02", 30, "2026-06-01").validate()
+    doc = _new_link(module, "CG-ZZG-ZZ02", 41, "2026-06-01")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 60% owned in 2026-06-01..open (`ZZ01` 60%); this 41% would exceed 100%.")
+    # approval of the change: validate runs with docstatus 1 and ZZ02's 31% submitted
+    zz02 = _link("OP-ZZ02-ZZ03-2026-06-01", "CG-ZZG-ZZ02", "ZZ02", 31, _D(2026, 6, 1))
+    module, _, _ = _site([a, zz02], nodes=_TREE)
+    doc = _new_link(module, "CG-ZZG-ZZ01", 70, "2027-01-01", name=change.name, docstatus=1,
+                    supersedes=a.name, superseded_end_date=None)
+    assert _refusal(doc) == (
+        "`ZZ03` is already 31% owned in 2027-01-01..open (`ZZ02` 31%); this 70% would exceed 100%.")
+    zz02.ownership_pct = 30
+    module, _, _ = _site([a, zz02], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ01", 70, "2027-01-01", name=change.name, docstatus=1,
+              supersedes=a.name, superseded_end_date=None).validate()
+
+
+def test_117_when_several_successors_name_one_predecessor_the_earliest_cut_wins():
+    """PR #459 re-review finding E: the cuts were a dict keyed by predecessor,
+    so with two successors naming one predecessor the last by ordering won.
+    Two SUBMITTED successors of one predecessor is a state the overlap check
+    refuses, so this models rows written before it existed, whose end dates
+    were never written: the predecessor ends the day before the EARLIEST
+    successor. ZZ01 60% open; successors 65% from 2026-07-01 and 70% from
+    2027-01-01 both name it; ZZ02's 30% over 2026-08-01..2026-12-31 meets
+    65 only (95), not 60 + 65 (155)."""
+    a = _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1))
+    early = _link("OP-ZZ01-ZZ03-2026-07-01", "CG-ZZG-ZZ01", "ZZ01", 65, _D(2026, 7, 1), supersedes=a.name)
+    late = _link("OP-ZZ01-ZZ03-2027-01-01", "CG-ZZG-ZZ01", "ZZ01", 70, _D(2027, 1, 1), supersedes=a.name)
+    module, _, _ = _site([a, early, late], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ02", 30, "2026-08-01", "2026-12-31").validate()
+    doc = _new_link(module, "CG-ZZG-ZZ02", 36, "2026-08-01", "2026-12-31")
+    assert _refusal(doc) == (
+        "`ZZ03` is already 65% owned in 2026-08-01..open (`ZZ01` 65%); this 36% would exceed 100%.")
+
+
+def test_117_gaps_and_overlaps_are_checked_per_owner_owned_edge():
+    """Two owners may hold the same node over the same dates: those are two
+    links. One owner twice over the same dates is still an overlap."""
+    module, _, calls = _site([
+        _link("OP-ZZ01-ZZ03-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2026, 1, 1)),
+    ], nodes=_TREE)
+    _new_link(module, "CG-ZZG-", 20, "2026-01-01")._check_no_gaps_or_overlaps()
+    filters = [c[1] for c in calls if c[0] == "get_all"][-1]
+    assert filters["owner_node"] == "CG-ZZG-", "the edge, not the node"
+    assert filters["consolidation_group"] == "ZZSUB" and filters["data_area_id"] == "ZZ03"
+    with pytest.raises(_Refused) as e:
+        _new_link(module, "CG-ZZG-ZZ01", 20, "2026-06-01")._check_no_gaps_or_overlaps()
+    assert str(e.value).startswith("Ownership period overlaps with OP-ZZ01-ZZ03-2026-01-01")
+
+
+def test_117_a_cancel_restores_within_the_edge_only():
+    """The later periods a restore may collide with are the same edge's; a
+    second owner's link over those dates is not in the way."""
+    other_owner = _link("OP-ZZG-ZZ03-2026-01-01", "CG-ZZG-", "ZZG", 20, _D(2026, 1, 1))
+    pred = _link("OP-ZZ01-ZZ03-2025-01-01", "CG-ZZG-ZZ01", "ZZ01", 60, _D(2025, 1, 1), _D(2025, 9, 30))
+    module, log, _ = _site([pred, other_owner], nodes=_TREE)
+    _new_link(module, "CG-ZZG-ZZ01", 70, "2025-10-01", docstatus=2, name="OP-ZZ01-ZZ03-2025-10-01",
+              supersedes=pred.name, superseded_end_date=None).on_cancel()
+    assert log == [(pred.name, "end_date", None)]
+
+
+def test_117_validate_runs_the_owner_and_total_checks_after_the_node_check():
+    body = _method_body(_src(), "validate")
+    steps = [line.strip() for line in body.splitlines() if line.strip().startswith("self._")]
+    assert steps.index("self._validate_node_exists()") < steps.index("self._validate_owner()")
+    assert steps.index("self._check_no_gaps_or_overlaps()") < steps.index("self._check_total_issued()")
+
+
+# --- #117 pair 1 task B: a link that closes a cycle is refused by name (§3) ----
+#
+# From the OWNED node, follow outgoing non-cancelled links (owner → owned,
+# docstatus != 2, undated: a dated cycle is still a cycle) and refuse when the
+# owner node is reached, naming every node on the path. Two links saved
+# concurrently could each pass that walk under REPEATABLE READ, so the check
+# first takes the serialising lock the group uses for its difference account
+# (``SELECT … FROM tabDocType WHERE name = 'Ownership Period' FOR UPDATE``,
+# consolidation_group.py:183) and reads the links FOR UPDATE, which sees the
+# latest committed rows. The self-link is refusal 1's (task A). The build-time
+# backstop (``build_rows`` raising on a repeated node) is task C's DFS.
+
+CYCLE_TAIL = " Cross-holdings are refused until a treasury-share rule is decided (konsol#117)."
+
+
+def _cycle_sentence(*labels):
+    return "This link would close a cycle: " + " → ".join(f"`{l}`" for l in labels) + "." + CYCLE_TAIL
+
+
+def _edge(name, owner, owner_label, group, entity, start=_D(2026, 1, 1), end=None, **over):
+    """An existing link ``owner`` → (group, entity)."""
+    return _row(name, start, end=end, docstatus=over.pop("docstatus", 1), group=group, entity=entity,
+                owner=owner, owner_label=owner_label, pct=over.pop("pct", 80.0))
+
+
+#: ZZ01 owns ZZ02; ZZ02 owns ZZ03 (a chain under the ZZG root).
+_ZZ01_OWNS_ZZ02 = _edge("OP-ZZ01-ZZ02-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", "ZZG", "ZZ02")
+_ZZ02_OWNS_ZZ03 = _edge("OP-ZZ02-ZZ03-2026-01-01", "CG-ZZG-ZZ02", "ZZ02", "ZZSUB", "ZZ03")
+
+
+def _closing_link(module, owner, group, entity, pct=20, **over):
+    """A new link ``owner`` → (group, entity) under validate."""
+    fields = dict(_declared(name=None, consolidation_group=group, data_area_id=entity, owner_node=owner,
+                            ownership_pct=pct, effective_date="2026-01-01", end_date=None), **over)
+    return module.OwnershipPeriod(before=None, **fields)
+
+
+def test_117b_a_link_closing_a_two_node_cycle_is_refused_by_the_sentence():
+    """Shape 6 (§4): ZZ01 holds ZZ02; ZZ02 taking a share of ZZ01 is the
+    cross-holding, named owner → owned → … → owner."""
+    module, _, _ = _site([_ZZ01_OWNS_ZZ02], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ02", "ZZG", "ZZ01")
+    assert _refusal(doc) == _cycle_sentence("ZZ02", "ZZ01", "ZZ02")
+
+
+def test_117b_a_three_node_cycle_names_every_node_on_the_path():
+    module, _, _ = _site([_ZZ01_OWNS_ZZ02, _ZZ02_OWNS_ZZ03], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZSUB-ZZ03", "ZZG", "ZZ01")
+    assert _refusal(doc) == _cycle_sentence("ZZ03", "ZZ01", "ZZ02", "ZZ03")
+    # a group node on the cycle is named by its group code
+    sub_owns_zz01 = _edge("OP-ZZSUB-ZZ01-2026-01-01", "CG-ZZSUB-", "ZZSUB", "ZZG", "ZZ01")
+    module, _, _ = _site([sub_owns_zz01], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ01")
+
+
+def test_117b_a_dated_cycle_is_still_a_cycle():
+    """The walk is undated: a link that ended years ago still closes the ring."""
+    old = _edge("OP-ZZ01-ZZ02-2019-01-01", "CG-ZZG-ZZ01", "ZZ01", "ZZG", "ZZ02",
+                start=_D(2019, 1, 1), end=_D(2019, 12, 31))
+    module, _, _ = _site([old], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ02", "ZZG", "ZZ01")
+    assert _refusal(doc) == _cycle_sentence("ZZ02", "ZZ01", "ZZ02")
+
+
+def test_117b_a_chain_and_a_direct_plus_indirect_holding_pass():
+    module, _, _ = _site([_ZZ01_OWNS_ZZ02, _ZZ02_OWNS_ZZ03], nodes=_TREE)
+    # the root takes ZZ01: the chain ZZG → ZZ01 → ZZ02 → ZZ03 has no ring
+    _closing_link(module, "CG-ZZG-", "ZZG", "ZZ01").validate()
+    # shape 1: ZZ01 also holds ZZ03 directly; two paths, no cycle
+    _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", "ZZ03").validate()
+    # a sibling with no links at all
+    _closing_link(module, "CG-ZZG-ZZ02", "ZZSUB", None).validate()
+
+
+def test_117b_a_cancelled_link_does_not_count_but_a_draft_does():
+    cancelled = _edge("OP-ZZ01-ZZ02-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", "ZZG", "ZZ02", docstatus=2)
+    module, _, _ = _site([cancelled], nodes=_TREE)
+    _closing_link(module, "CG-ZZG-ZZ02", "ZZG", "ZZ01").validate()
+    draft = _edge("OP-ZZ01-ZZ02-2026-01-01", "CG-ZZG-ZZ01", "ZZ01", "ZZG", "ZZ02", docstatus=0)
+    module, _, _ = _site([draft], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ02", "ZZG", "ZZ01")
+    assert _refusal(doc) == _cycle_sentence("ZZ02", "ZZ01", "ZZ02")
+
+
+def test_117b_a_ring_through_a_tree_edge_no_link_names_is_refused():
+    """``build_rows`` owns a node no link names by its tree parent, so that
+    implicit edge closes a ring as surely as a link does (PR #449 review,
+    finding 2). Tree ZZG > ZZSUB > ZZ03 with no period on ZZSUB or ZZ03;
+    ZZ03 holds ZZ01: a share of ZZSUB for ZZ01 would ring ZZ01 → ZZSUB →
+    ZZ03 → ZZ01 (the first edge implicit) and raise OwnershipCycle at every
+    reconcile. It is refused here instead, by the same sentence."""
+    zz03_owns_zz01 = _edge("OP-ZZ03-ZZ01-2026-01-01", "CG-ZZSUB-ZZ03", "ZZ03", "ZZG", "ZZ01")
+    module, _, _ = _site([zz03_owns_zz01], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ03", "ZZ01")
+
+
+def test_117b_a_submitted_link_into_the_tree_child_replaces_the_implicit_edge_a_draft_does_not():
+    """The implicit edge exists only while no SUBMITTED link names the child:
+    that is what ``build_rows`` reads (``_links``: docstatus 1). A draft into
+    the child is not yet a link there, so the ring through the tree stands
+    until it is submitted; refusing it now is what keeps the reconcile green."""
+    zz03_owns_zz01 = _edge("OP-ZZ03-ZZ01-2026-01-01", "CG-ZZSUB-ZZ03", "ZZ03", "ZZG", "ZZ01")
+    zz02_owns_zz03 = _edge("OP-ZZ02-ZZ03-2026-01-01", "CG-ZZG-ZZ02", "ZZ02", "ZZSUB", "ZZ03")
+    module, _, _ = _site([zz03_owns_zz01, zz02_owns_zz03], nodes=_TREE)
+    _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None).validate()
+    draft = _edge("OP-ZZ02-ZZ03-2026-01-01", "CG-ZZG-ZZ02", "ZZ02", "ZZSUB", "ZZ03", docstatus=0)
+    module, _, _ = _site([zz03_owns_zz01, draft], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ03", "ZZ01")
+
+
+def test_117b_a_submitted_link_with_no_owner_into_the_tree_child_leaves_the_tree_edge_standing():
+    """PR #459 re-review finding B. ``build_rows`` drops a node's tree edge
+    only when a submitted link names the node AND that link's owner is set
+    and exists; the validator dropped it for any submitted row naming the
+    node, so a ring through such a tree edge passed validate and raised
+    OwnershipCycle at every reconcile. Tree ZZG > ZZSUB > ZZ03, ZZG > ZZ01; a
+    submitted period into ZZ03 with a NULL owner (a row the owner patch has
+    not reached); link ZZ03 → ZZ01; then ZZ01 → ZZSUB is refused: ZZ01 →
+    ZZSUB → ZZ03 (the tree edge) → ZZ01."""
+    ownerless = _edge("OP-ZZSUB-ZZ03-2024-01-01", None, None, "ZZSUB", "ZZ03", start=_D(2024, 1, 1))
+    zz03_owns_zz01 = _edge("OP-ZZ03-ZZ01-2026-01-01", "CG-ZZSUB-ZZ03", "ZZ03", "ZZG", "ZZ01", docstatus=0)
+    module, _, _ = _site([ownerless, zz03_owns_zz01], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ03", "ZZ01")
+    # a submitted link into ZZ03 whose owner node is GONE keeps the tree edge too
+    dangling = _edge("OP-ZZGONE-ZZ03-2024-01-01", "CG-ZZG-ZZGONE", "ZZGONE", "ZZSUB", "ZZ03", start=_D(2024, 1, 1))
+    module, _, _ = _site([dangling, zz03_owns_zz01], nodes=_TREE)
+    doc = _closing_link(module, "CG-ZZG-ZZ01", "ZZSUB", None)
+    assert _refusal(doc) == _cycle_sentence("ZZ01", "ZZSUB", "ZZ03", "ZZ01")
+
+
+def test_117b_editing_a_link_does_not_see_its_own_stored_row():
+    """Reversing a link in place (ZZ02 → ZZ01 becomes ZZ01 → ZZ02): the stored
+    row is this document, not a second link, so there is no ring."""
+    stored = _edge("OP-ZZ02-ZZ01-2026-01-01", "CG-ZZG-ZZ02", "ZZ02", "ZZG", "ZZ01")
+    module, _, calls = _site([stored], nodes=_TREE)
+    _closing_link(module, "CG-ZZG-ZZ01", "ZZG", "ZZ02", name=stored.name).validate()
+    reads = [c for c in calls if c[0] == "sql" and "`tabOwnership Period`" in c[1]]
+    assert reads and all("`name` != %s" in c[1] and c[2][-1] == stored.name for c in reads), reads
+    # a NEW document (no name yet) sends no name clause: `name != NULL` matches nothing
+    module, _, calls = _site([stored], nodes=_TREE)
+    _closing_link(module, "CG-ZZG-", "ZZG", "ZZ01").validate()
+    reads = [c for c in calls if c[0] == "sql" and "`tabOwnership Period`" in c[1]]
+    assert reads and all("`name` != %s" not in c[1] and "%s" not in c[1] for c in reads), reads
+
+
+def _cycle_check_reads(rows, owner, group, entity):
+    module, _, calls = _site(rows, nodes=_TREE)
+    _closing_link(module, owner, group, entity).validate()
+    return calls
+
+
+def test_117b_the_check_locks_then_reads_the_links_once_for_update_and_the_tree_once_whatever_the_walk():
+    """PR #459 re-review finding C. Under REPEATABLE READ a plain read in a
+    transaction can miss rows committed after its first read (CLAUDE.md), so
+    the links are read with ONE locking read after the serialising lock
+    (consolidation_group.py:183 pattern) — never per visited node, and never a
+    second FOR UPDATE over the submitted rows. The tree is read once, plainly
+    (a concurrent tree edit is the group controller's to guard; the walk's
+    race is over the links). The counts do not grow with the walk: a one-edge
+    graph and a chain the walk follows through three nodes send the same
+    statements."""
+    short = _cycle_check_reads([_ZZ01_OWNS_ZZ02], "CG-ZZG-", "ZZSUB", "ZZ03")
+    long = _cycle_check_reads([_ZZ01_OWNS_ZZ02, _ZZ02_OWNS_ZZ03,
+                               _edge("OP-ZZ03-ZZSUB-2026-01-01", "CG-ZZSUB-ZZ03", "ZZ03", "ZZSUB", None)],
+                              "CG-ZZG-", "ZZG", "ZZ01")
+    for calls in (short, long):
+        sqls = [c for c in calls if c[0] == "sql"]
+        assert len(sqls) == 2, sqls
+        lock, links = sqls
+        assert lock[1] == "SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE", lock
+        assert lock[2] == ("Ownership Period",)
+        assert links[1].rstrip().endswith("FOR UPDATE"), links
+        assert "`docstatus` != 2" in links[1] and "`owner_node`" in links[1] and "`docstatus`" in links[1], links
+        assert "`owner_node` = %s" not in links[1], "no per-node read"
+        tree_reads = [c for c in calls if c[0] == "get_all" and c[2] == "Consolidation Group"]
+        assert len(tree_reads) == 1 and not tree_reads[0][1], tree_reads
+    assert [c[1] for c in short if c[0] == "sql"] == [c[1] for c in long if c[0] == "sql"]
+
+
+def test_117b_validate_checks_the_cycle_after_the_owner_and_before_the_windows():
+    body = _method_body(_src(), "validate")
+    steps = [line.strip() for line in body.splitlines() if line.strip().startswith("self._")]
+    assert steps.index("self._validate_owner()") < steps.index("self._validate_no_cycle()")
+    assert steps.index("self._validate_no_cycle()") < steps.index("self._check_no_gaps_or_overlaps()")
+    assert CYCLE_TAIL.strip() in _src()
+
+
+# --- #117 pair 1 F: the owner sentences are one helper the deals share -----------
+
+def test_117_node_by_key_is_the_one_node_by_key_read_the_deals_share():
+    """PR #449 review, finding 9: Business Combination and Business Disposal
+    each copied ``_NODE_FIELDS`` and their own node lookup. One definition:
+    they import ``node_by_key`` from here, and the name list lives here only
+    (the one structural check kept, PR #459 finding J); what the read sends
+    is asserted on the stubbed ``get_value`` call, not on source text."""
+    module, _, calls = _site([], nodes=_TREE)
+    node = module.node_by_key("ZZG", "ZZ01")
+    assert (node.name, node.consolidation_group, node.data_area_id, node.parent_consolidation_group) == (
+        "CG-ZZG-ZZ01", "ZZG", "ZZ01", "CG-ZZG-")
+    assert calls[-1] == ("get_value", "Consolidation Group",
+                         {"consolidation_group": "ZZG", "data_area_id": "ZZ01"}, module._NODE_FIELDS)
+    assert module.node_by_key("ZZSUB", None).name == "CG-ZZSUB-", "a blank entity is the group's own node"
+    assert calls[-1][2] == {"consolidation_group": "ZZSUB", "data_area_id": ["is", "not set"]}
+    assert module.node_by_key("ZZSUB", "").name == "CG-ZZSUB-"
+    assert module.node_by_key("ZZ_TYPO", "ZZ01") is None
+    # the document's own node read is that read: same doctype, filters and fields
+    calls.clear()
+    owned = module.OwnershipPeriod(before=None, **_declared())._node()
+    assert owned.name == "CG-ZZG-ZZ01"
+    assert calls == [("get_value", "Consolidation Group",
+                      {"consolidation_group": "ZZG", "data_area_id": "ZZ01"}, module._NODE_FIELDS)]
+    # one definition of the node field list across the three controllers
+    defined_in = []
+    for ctl in ("ownership_period", "business_combination", "business_disposal"):
+        with open(os.path.join(APP_DIR, "consolidation", "doctype", ctl, ctl + ".py")) as f:
+            if "\n_NODE_FIELDS = " in f.read():
+                defined_in.append(ctl)
+    assert defined_in == ["ownership_period"], defined_in
+
+
+def test_117f_owner_refusal_is_a_module_function_the_validate_uses():
+    src = _src()
+    assert "\ndef owner_refusal(" in src
+    assert "owner_refusal(" in _method_body(src, "_validate_owner")
+
+
+def test_117f_owner_refusal_names_the_callers_field_and_gives_none_when_sound():
+    module, _, _ = _site([], nodes=_TREE)
+    owned = module.OwnershipPeriod(before=None, **_declared())._node()   # CG-ZZG-ZZ01
+    assert module.owner_refusal("CG-ZZG-", owned, "ZZ01") is None
+    assert module.owner_refusal("CG-ZZG-ZZ02", owned, "ZZ01", field="Acquirer Node") is None
+    assert module.owner_refusal("CG-ZZG-ZZ01", owned, "ZZ01", field="Acquirer Node") == (
+        "`ZZ01` cannot own itself: Acquirer Node CG-ZZG-ZZ01 is the owned node. "
+        "Name the node that holds the share.")
+    assert module.owner_refusal("CG-ZZ_TYPO-", owned, "ZZ01", field="Disposer Node") == (
+        "Disposer Node CG-ZZ_TYPO- is not a Consolidation Group node.")
+    assert module.owner_refusal("CG-ZZOTHER-ZZ09", owned, "ZZ01") == (
+        "Owner Node CG-ZZOTHER-ZZ09 is under root CG-ZZOTHER-, not under CG-ZZG- like `ZZ01`: "
+        "an owner is a node of the same hierarchy as the node it owns.")
+    # the owned node not there yet (a deal drafted before the tree has it): only
+    # the owner's existence can be checked
+    assert module.owner_refusal("CG-ZZG-", None, "ZZ01") is None
+    assert module.owner_refusal("CG-ZZ_TYPO-", None, "ZZ01") == (
+        "Owner Node CG-ZZ_TYPO- is not a Consolidation Group node.")

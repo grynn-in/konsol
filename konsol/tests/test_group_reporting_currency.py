@@ -80,8 +80,10 @@ def _controller():
     nestedset.NestedSet = type("NestedSet", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
     ch = types.ModuleType("konsol.clickhouse")
     ch.after_commit_once = ch.sync_doctype_after_commit = ch.sync_table = lambda *a, **k: None
+    konsol = types.ModuleType("konsol")
+    konsol.__path__ = [APP_DIR]   # the real pure konsol.ownership_graph_model imports through the stub
     mods = {"frappe": frappe, "frappe.utils": types.ModuleType("frappe.utils"),
-            "frappe.utils.nestedset": nestedset, "konsol": types.ModuleType("konsol"),
+            "frappe.utils.nestedset": nestedset, "konsol": konsol,
             "konsol.clickhouse": ch}
     return _exec(os.path.join(CG_DIR, "consolidation_group.py"), mods, "cg_under_test")
 
@@ -151,7 +153,8 @@ def test_validate_runs_the_check():
     import ast
     with open(os.path.join(CG_DIR, "consolidation_group.py")) as f:
         tree = ast.parse(f.read())
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+    # by name: OwnershipCycle (konsol#117) is defined before the controller
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ConsolidationGroup")
     validate = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "validate")
     assert "self._validate_reporting_currency()" in ast.unparse(validate)
 

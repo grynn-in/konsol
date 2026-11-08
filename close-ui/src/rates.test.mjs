@@ -884,15 +884,29 @@ test("O59 ownershipChangeBody: exactly the save_ownership_change keys, pct as a 
     ownership_pct: 80,
     consolidation_method: "full",
   });
+  // name and owner_node are the server's two optional keys: sent only when
+  // the form has them (konsol#117 pair 1 added owner_node).
+  const OPTIONAL = ["name", "owner_node"];
   const params = saveOwnershipChangeParams();
-  assert.deepEqual(Object.keys(body).sort(), params.filter((p) => p !== "name").sort());
+  assert.deepEqual(Object.keys(body).sort(), params.filter((p) => !OPTIONAL.includes(p)).sort());
 });
 
 test("O59 ownershipChangeBody: editing a draft carries its name, and only then", () => {
   const { body } = ownershipChangeBody(PERIOD, { ...FORM, name: "OP-ZZ5B1-2025-10-01" });
   assert.equal(body.name, "OP-ZZ5B1-2025-10-01");
-  assert.deepEqual(Object.keys(body).sort(), saveOwnershipChangeParams().sort());
+  assert.deepEqual(
+    Object.keys(body).sort(),
+    saveOwnershipChangeParams().filter((p) => p !== "owner_node").sort(),
+  );
   assert.equal("name" in ownershipChangeBody(PERIOD, { ...FORM, name: "" }).body, false);
+});
+
+test("k117 ownershipChangeBody: a chosen holding carries owner_node, and only then", () => {
+  const { body } = ownershipChangeBody(PERIOD, { ...FORM, ownerNode: "CG-ZZ5-" });
+  assert.equal(body.owner_node, "CG-ZZ5-");
+  assert.ok(saveOwnershipChangeParams().includes("owner_node"), "the server does not accept owner_node");
+  assert.equal("owner_node" in ownershipChangeBody(PERIOD, { ...FORM, ownerNode: "" }).body, false);
+  assert.equal("owner_node" in ownershipChangeBody(PERIOD, FORM).body, false);
 });
 
 test("O59 ownershipChangeBody: forged keys never reach the body", () => {
@@ -1072,7 +1086,10 @@ test("O67 pendingView keeps each OP item's server `edit` as sent; an HER item ge
   const view = pendingView(PENDING);
   const byName = Object.fromEntries(view.items.map((i) => [i.name, i]));
   assert.deepEqual(byName["OP-ZZ5B1-2025-10-01"].edit, PENDING.items[1].edit);
-  assert.deepEqual(Object.keys(byName["OP-ZZ5B1-2025-10-01"].edit).sort(), [...EDIT_KEYS].sort());
+  // konsol#117 pair 1 / PR #459 finding G: the server's edit also names the
+  // draft's holding (owner_node); it is passed through, never required here,
+  // so an older backend's edit without it still loads (by entity + group).
+  assert.deepEqual(Object.keys(byName["OP-ZZ5B1-2025-10-01"].edit).sort(), [...EDIT_KEYS, "owner_node"].sort());
   assert.equal(byName["OP-ZZ5B2-2025-10-01"].edit, null, "the Desk draft is not editable here");
   assert.equal("edit" in byName["HER-ZZ5B1-1"], false);
 });

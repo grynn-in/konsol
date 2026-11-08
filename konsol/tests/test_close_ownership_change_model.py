@@ -8,6 +8,8 @@ import importlib.util
 import json
 import os
 
+import pytest
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PATH = os.path.join(APP_DIR, "close", "ownership_change_model.py")
 _spec = importlib.util.spec_from_file_location("ownership_change_model_under_test", _PATH)
@@ -466,3 +468,64 @@ def test_r52f_the_model_does_not_promise_to_list_non_regular_periods():
         src = fh.read()
     assert "O54a" not in src, "the O54a promise is still in the model"
     assert "periods_marked_from" in src, "the model must name the rule its caller filters by"
+
+
+# --- #117 pair 1 F: which holding a change is for ------------------------------
+# A node may have several owners (option A, Deepak Pai 7 Nov 2026). ``holding``
+# is the one decision: the holders covering the change's start, one per owner,
+# and the owner the request named (or not). One holder is implied; several
+# without a named owner are refused by the design's sentence (§1, "Desk
+# ownership change"); a named owner that holds nothing is refused naming who
+# does. No holder at all is None: ``problems`` rule 1 says "no ownership".
+
+def _holder(name, owner_node, owner_label, pct):
+    return {"name": name, "owner_node": owner_node, "owner_label": owner_label,
+            "ownership_pct": pct, "effective_date": "2025-01-01", "end_date": None,
+            "consolidation_method": "full"}
+
+
+US_USA = _holder("OP-US_USA-US_EC-2025-01-01", "CG-ECL_GROUP-US_USA", "US_USA", 60.0)
+ECL_GROUP = _holder("OP-ECL_GROUP-US_EC-2025-01-01", "CG-ECL_GROUP-", "ECL_GROUP", 20.0)
+
+
+def test_117f_one_holder_is_implied():
+    assert M.holding("US_EC", [US_USA]) is US_USA
+    # naming it is the same answer
+    assert M.holding("US_EC", [US_USA], owner_node="CG-ECL_GROUP-US_USA") is US_USA
+
+
+def test_117f_no_holder_is_none_whatever_was_named():
+    assert M.holding("US_EC", []) is None
+    assert M.holding("US_EC", [], owner_node="CG-ECL_GROUP-US_USA") is None
+
+
+def test_117f_several_holders_without_a_named_owner_are_refused_by_the_sentence():
+    with pytest.raises(ValueError) as e:
+        M.holding("US_EC", [ECL_GROUP, US_USA])
+    assert str(e.value) == (
+        "`US_EC` has two owners (`US_USA` 60%, `ECL_GROUP` 20%): choose the holding to change.")
+    # largest first, then by label; the count is a word up to nine
+    third = _holder("OP-X", "CG-ECL_GROUP-US_X", "US_X", 20.0)
+    with pytest.raises(ValueError) as e:
+        M.holding("US_EC", [third, US_USA, ECL_GROUP])
+    assert str(e.value) == (
+        "`US_EC` has three owners (`US_USA` 60%, `ECL_GROUP` 20%, `US_X` 20%): "
+        "choose the holding to change.")
+
+
+def test_117f_a_named_owner_picks_its_holding_among_several():
+    assert M.holding("US_EC", [US_USA, ECL_GROUP], owner_node="CG-ECL_GROUP-") is ECL_GROUP
+
+
+def test_117f_a_named_owner_that_holds_nothing_is_refused_naming_who_does():
+    with pytest.raises(ValueError) as e:
+        M.holding("US_EC", [US_USA, ECL_GROUP], owner_node="CG-ECL_GROUP-US_X")
+    assert str(e.value) == (
+        "`US_EC` is not held by CG-ECL_GROUP-US_X: its owners are `US_USA` 60%, `ECL_GROUP` 20%.")
+
+
+def test_117f_a_fractional_share_is_written_as_typed():
+    half = _holder("OP-H", "CG-ECL_GROUP-US_H", "US_H", 10.5)
+    with pytest.raises(ValueError) as e:
+        M.holding("US_EC", [US_USA, half])
+    assert "(`US_USA` 60%, `US_H` 10.5%)" in str(e.value)

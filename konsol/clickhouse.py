@@ -807,12 +807,57 @@ _REFERENCE_TABLE_DDL = {
         "ENGINE = MergeTree ORDER BY scenario_id"
     ),
     # F2: the link closure that makes consolidation multi-level. One row per
-    # (ancestor group, entity, link between them), so dbt can multiply a chain of
-    # dated ownership percentages without a recursive CTE.
+    # (ancestor group, entity, link on one PATH between them), so dbt can
+    # multiply a chain of dated ownership percentages without a recursive CTE.
+    # konsol#117 pair 1 (task C): ownership is a graph, so an entity may be
+    # reached by more than one path. path_id names the path (the node labels
+    # from the ancestor to the entity), unique per (group, entity) path, so dbt
+    # multiplies within a path_id and sums across them; link_owner_group and
+    # link_owner_data_area_id name the node each link leaves. `path` keeps its
+    # meaning (the entity's tree path from the root). ORDER BY unchanged.
+    # Identical to konsolidat's clickhouse/init-db.sql; keep them identical
+    # (tests/test_ownership_graph_ddl.py there pins it). Added to an existing
+    # table by _POSITIONED_COLUMNS below.
     "epm_staging.consolidation_ancestry": (
         "(consolidation_group String, data_area_id String, link_group String, "
-        "link_data_area_id String, link_depth UInt8, depth UInt8, path String) "
+        "link_data_area_id String, link_depth UInt8, depth UInt8, path String, "
+        "path_id String, link_owner_group String, link_owner_data_area_id String) "
         "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id, link_depth)"
+    ),
+    # konsol#117 pair 1 (task C): Ownership Period is the ownership LINK, so it
+    # names its owner (owner_group, owner_data_area_id: the owner node's group
+    # code and entity code, '' for a pure group node). Owned here from now on,
+    # like historical_equity_rates: konsolidat's init-db.sql creates it only on
+    # a fresh volume, and every running stack needs the owner in the SORTING
+    # KEY. Two links into one node from one date share the old key
+    # (consolidation_group, data_area_id, effective_date) and
+    # ReplacingMergeTree collapses them on merge. The two columns are LAST in
+    # the column list and appended LAST to the key, with no DEFAULT: ClickHouse
+    # appends to a sorting key only a column the same ALTER adds, without a
+    # default expression (konsolidat#246 measured it; konsol#374 used it), so a
+    # fresh table and one upgraded by _OWNERSHIP_PERIODS_UPGRADE agree.
+    # Identical to init-db.sql; keep them identical.
+    "epm_staging.ownership_periods": (
+        "(consolidation_group String, data_area_id String, effective_date Date, "
+        "end_date Date DEFAULT '9999-12-31', ownership_pct Decimal(5,2), "
+        "consolidation_method String DEFAULT 'full', acquisition_date Date DEFAULT '1900-01-01', "
+        "is_first_acquisition UInt8 DEFAULT 0, acquisition_price Decimal(18,2) DEFAULT 0, "
+        "fair_value_adjustment Decimal(18,2) DEFAULT 0, disposal_date Date DEFAULT '9999-12-31', "
+        "disposal_price Decimal(18,2) DEFAULT 0, is_disposal UInt8 DEFAULT 0, "
+        "updated_at DateTime DEFAULT now(), owner_group String, owner_data_area_id String) "
+        "ENGINE = ReplacingMergeTree(updated_at) "
+        "ORDER BY (consolidation_group, data_area_id, effective_date, owner_group, owner_data_area_id)"
+    ),
+    # konsol#117 pair 1 (task C; written by task D's child doctype): the method
+    # a group DECLARES for an entity its links reach by more than one path,
+    # where the links alone do not decide it (design comment section 2). Read
+    # by dbt only when that rule asks for it. Identical to init-db.sql.
+    "epm_staging.consolidation_method_declarations": (
+        "(consolidation_group String, data_area_id String, consolidation_method String, "
+        "effective_date Date, end_date Date DEFAULT '9999-12-31', reason String, "
+        "updated_at DateTime DEFAULT now()) "
+        "ENGINE = ReplacingMergeTree(updated_at) "
+        "ORDER BY (consolidation_group, data_area_id, effective_date)"
     ),
     # konsol#110: the governed entity registry, from the Entity doctype. The
     # warehouse knew entities only from ERP extraction, so one with no connector
@@ -1081,6 +1126,60 @@ _ADDED_COLUMNS = {
     ],
 }
 
+# Columns a later release added in the MIDDLE of a table that already exists on
+# older stacks: (column, type, the column it follows). _ADDED_COLUMNS puts a
+# column last; these sit where init-db.sql declares them, so `ADD COLUMN ...
+# AFTER <anchor>` gives an upgraded table the fresh table's column order. Asked
+# first from system.columns (_positioned_column_ddl), like
+# _sorting_key_upgrade_ddl: an ALTER that changes nothing still rewrites the
+# table's metadata_modification_time, so an upgraded table is never altered
+# again. The column must follow its anchor in the CREATE above
+# (test_ownership_graph_ddl.py checks each one).
+_POSITIONED_COLUMNS = {
+    # konsol#117 pair 1 (task C): the path a closure row belongs to, and the
+    # node its link leaves
+    "epm_staging.consolidation_ancestry": [
+        ("path_id", "String", "path"),
+        ("link_owner_group", "String", "path_id"),
+        ("link_owner_data_area_id", "String", "link_owner_group"),
+    ],
+}
+
+
+def _positioned_column_ddl():
+    """One ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS ... AFTER ...`` per table
+    in _POSITIONED_COLUMNS that exists and lacks a column, naming only the
+    columns it lacks, in CREATE order; else nothing.
+
+    Reads system.columns once. A table with no row there does not exist yet
+    and is left to its CREATE TABLE IF NOT EXISTS, which has the new shape; a
+    table that has every column issues nothing. Unreachable ClickHouse: []
+    (the next migrate asks again).
+    """
+    pairs = ", ".join(sorted(f"('{t.split('.', 1)[0]}', '{t.split('.', 1)[1]}')"
+                             for t in _POSITIONED_COLUMNS))
+    try:
+        answer = execute(
+            "SELECT database, table, name FROM system.columns "
+            f"WHERE (database, table) IN ({pairs}) FORMAT TabSeparated"
+        )
+    except Exception:  # noqa: BLE001 — unreachable: the next migrate asks again
+        return []
+    present = {}
+    for row in (answer or "").splitlines():
+        parts = row.split("\t")
+        if len(parts) == 3:
+            present.setdefault(f"{parts[0]}.{parts[1]}", set()).add(parts[2])
+    out = []
+    for table, cols in _POSITIONED_COLUMNS.items():
+        if table not in present:
+            continue  # not created yet: the CREATE gives it the new shape
+        missing = [(c, typ, after) for c, typ, after in cols if c not in present[table]]
+        if missing:
+            out.append(f"ALTER TABLE {table} " + ", ".join(
+                f"ADD COLUMN IF NOT EXISTS {c} {typ} AFTER {after}" for c, typ, after in missing))
+    return out
+
 
 # Columns whose type a release widened. CREATE TABLE IF NOT EXISTS never
 # changes an existing column, so an existing table gets ALTER TABLE ... MODIFY
@@ -1164,13 +1263,34 @@ _HISTORICAL_RATE_UPGRADE = (
 )
 
 
+#: konsol#117 pair 1 (task C): the ownership link's owner joins the periods
+#: table's sorting key the same way. Two links into one node from one date
+#: (P->D 20% and A->D 60%, both from 2026-01-01) share the old key and
+#: ReplacingMergeTree keeps one of them. Both columns are added and the key
+#: extended in ONE statement, through _sorting_key_upgrade_ddl, while
+#: owner_group is not yet in the key. AFTER updated_at puts them where
+#: init-db.sql declares them, LAST, so a fresh and an upgraded table read the
+#: same; no DEFAULT, or ClickHouse refuses to put them in the key.
+_OWNERSHIP_PERIODS_TABLE = "epm_staging.ownership_periods"
+_OWNERSHIP_PERIODS_UPGRADE = (
+    f"ALTER TABLE {_OWNERSHIP_PERIODS_TABLE} "
+    "ADD COLUMN IF NOT EXISTS owner_group String AFTER updated_at, "
+    "ADD COLUMN IF NOT EXISTS owner_data_area_id String AFTER owner_group, "
+    "MODIFY ORDER BY (consolidation_group, data_area_id, effective_date, owner_group, owner_data_area_id)"
+)
+
+
 #: Columns that MUST be in a table's sorting key before konsol writes it
 #: (konsol#374; PR #436 review). ensure_reference_tables issues the upgrade
 #: ALTER best-effort, so if it failed, a sync into the old key would let
 #: ReplacingMergeTree collapse the EUR and the USD rate of one tranche into
 #: one row: a wrong number, silently. sync_table asks system.tables first and
-#: refuses with SortingKeyStale instead.
-_REQUIRED_SORTING_KEY_COLUMNS = {_HISTORICAL_RATE_TABLE: "to_currency"}
+#: refuses with SortingKeyStale instead. konsol#117: the periods table's owner
+#: likewise, or two owners' links into one node collapse into one.
+_REQUIRED_SORTING_KEY_COLUMNS = {
+    _HISTORICAL_RATE_TABLE: "to_currency",
+    _OWNERSHIP_PERIODS_TABLE: "owner_group",
+}
 
 
 class SortingKeyStale(RuntimeError):
@@ -1253,10 +1373,17 @@ def ensure_reference_tables():
         *[f"CREATE TABLE IF NOT EXISTS {t} {body}"
           for t, body in _REFERENCE_TABLE_DDL.items()],
         *_added_column_ddl(_REFERENCE_TABLE_DDL),
+        # konsol#117 (task C): asked when this list is built, before the
+        # CREATEs run; an existing ancestry table gets path_id and the link
+        # owner where init-db.sql puts them, a missing one is created whole.
+        *_positioned_column_ddl(),
         # konsol#374: an existing rates table gets to_currency in its key by
         # one ALTER, after the CREATE above has given a missing one the new
         # shape, and before reconcile_all re-sends the rows with the column.
         *_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "to_currency", _HISTORICAL_RATE_UPGRADE),
+        # konsol#117 (task C): the periods table's owner joins its key the
+        # same way, before reconcile_all re-sends the links with their owner.
+        *_sorting_key_upgrade_ddl(_OWNERSHIP_PERIODS_TABLE, "owner_group", _OWNERSHIP_PERIODS_UPGRADE),
         # konsol#353: asked when this list is built, before the CREATEs run.
         # A table that does not exist yet answers nothing, and its CREATE
         # above makes it wide; an existing one is widened after its CREATE.

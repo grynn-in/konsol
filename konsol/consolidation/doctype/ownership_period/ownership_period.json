@@ -8,7 +8,6 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "track_changes": 1,
- "autoname": "format:OP-{consolidation_group}-{data_area_id}-{effective_date}",
  "fields": [
   {
    "fieldname": "tab_ownership",
@@ -16,12 +15,27 @@
    "label": "Ownership"
   },
   {
+   "fieldname": "link_section",
+   "fieldtype": "Section Break",
+   "label": "Link"
+  },
+  {
+   "fieldname": "owner_node",
+   "fieldtype": "Link",
+   "label": "Owner Node",
+   "options": "Consolidation Group",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The Consolidation Group node that holds this share: an entity node or a group node of the same hierarchy. Pre-filled with the owned node's tree parent when left blank (the one default); change it when another member holds the share."
+  },
+  {
    "fieldname": "consolidation_group",
    "fieldtype": "Data",
    "label": "Consolidation Group",
    "reqd": 1,
    "in_list_view": 1,
-   "description": "With data_area_id, names the Consolidation Group node this period describes."
+   "description": "With Entity, names the Consolidation Group node this period describes (the owned node)."
   },
   {
    "fieldname": "data_area_id",
@@ -30,20 +44,30 @@
    "reqd": 0,
    "in_list_view": 1,
    "options": "Entity",
-   "description": "Blank for a group node: an Ownership Period describes how much of THIS node its parent owns."
+   "description": "The owned node, with Consolidation Group. Blank for a group node: an Ownership Period says how much of THIS node its Owner Node holds."
   },
   {
-   "fieldname": "effective_date",
-   "fieldtype": "Date",
-   "label": "Effective Date",
-   "reqd": 1,
-   "in_list_view": 1
+   "fieldname": "owner_group",
+   "fieldtype": "Data",
+   "label": "Owner Group",
+   "read_only": 1,
+   "description": "The owner node's group code, resolved from Owner Node on every save; synced to the warehouse."
   },
   {
-   "fieldname": "end_date",
-   "fieldtype": "Date",
-   "label": "End Date",
-   "description": "Blank means the period is still open. (It used to default to 9999-12-31, which ClickHouse's Date type cannot hold and silently clamped.)"
+   "fieldname": "owner_data_area_id",
+   "fieldtype": "Link",
+   "label": "Owner Entity",
+   "options": "Entity",
+   "read_only": 1,
+   "description": "The owner node's entity, resolved from Owner Node on every save; blank when a group node holds the share. Synced to the warehouse."
+  },
+  {
+   "fieldname": "owner_label",
+   "fieldtype": "Data",
+   "label": "Owner Label",
+   "read_only": 1,
+   "hidden": 1,
+   "description": "The owner's entity code, else its group code; set before naming so a new period is named OP-{owner}-{owned}-{date} (the controller's autoname; the owned label is the entity code, else the group code)."
   },
   {
    "fieldname": "col_break_1",
@@ -82,6 +106,28 @@
    "hidden": 1,
    "no_copy": 1,
    "description": "The superseded period's end date before approval, which a cancel restores. Blank means open-ended."
+  },
+  {
+   "fieldname": "validity_section",
+   "fieldtype": "Section Break",
+   "label": "Validity"
+  },
+  {
+   "fieldname": "effective_date",
+   "fieldtype": "Date",
+   "label": "Effective Date",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "col_break_validity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "end_date",
+   "fieldtype": "Date",
+   "label": "End Date",
+   "description": "Blank means the period is still open. (It used to default to 9999-12-31, which ClickHouse's Date type cannot hold and silently clamped.)"
   },
   {
    "fieldname": "tab_acquisition",
@@ -213,5 +259,6 @@
    "export": 1,
    "email": 1
   }
- ]
+ ],
+ "search_fields": "owner_label,consolidation_group,data_area_id"
 }

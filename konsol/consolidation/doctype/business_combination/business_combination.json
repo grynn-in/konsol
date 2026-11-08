@@ -38,6 +38,16 @@
    "in_list_view": 1
   },
   {
+   "fieldname": "acquirer_node",
+   "fieldtype": "Link",
+   "label": "Acquirer Node",
+   "options": "Consolidation Group",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The group member that bought the share: a Consolidation Group node of the acquiring group (an entity node, or a group node as the notional holder). Pre-filled with the acquired node's tree parent when left blank (the one default); change it when another member is the buyer. Written as the owner of the Ownership Period the approval creates."
+  },
+  {
    "fieldname": "acquisition_date",
    "fieldtype": "Date",
    "label": "Acquisition Date",

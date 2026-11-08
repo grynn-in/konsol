@@ -362,7 +362,12 @@ def op_edit(doc, starts):
     (``rates_api._change_choices``): a group-node draft (blank
     ``data_area_id``; the form offers only nodes that name an entity), and a
     draft whose first period's status is not Open (the form offers only Open
-    Regular periods; a missing status is never read as Open)."""
+    Regular periods; a missing status is never read as Open).
+
+    ``owner_node`` (konsol#117 pair 1; PR #459 re-review, finding G) names
+    the draft's holding, since the form keys its choices per holding and two
+    holders of one entity in one group are two choices; None for a row that
+    has none, and the form then matches by entity + group."""
     if starts is None or not doc.get("supersedes"):
         return None
     if not doc.get("data_area_id"):
@@ -372,6 +377,7 @@ def op_edit(doc, starts):
         return None
     return {"consolidation_group": doc["consolidation_group"],
             "entity": doc["data_area_id"],
+            "owner_node": doc.get("owner_node") or None,
             "fiscal_year": key[0], "fiscal_period": key[1],
             "ownership_pct": float(doc["ownership_pct"]),
             "consolidation_method": doc["consolidation_method"]}

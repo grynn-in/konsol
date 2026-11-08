@@ -9,11 +9,22 @@ A group's share of a subsidiary changes on a date, and a doctype field cannot sa
 when — so ownership was in two grains with no rule about which won, and the dbt
 side invented one that read a genuine 0% as "unset".
 
-A period describes **this node**: how much of it its parent owns, from
-``effective_date`` until ``end_date``. The node is ``(consolidation_group,
-data_area_id)``, the same pair that names a Consolidation Group document, so a
-sub-group is ownable too — leave ``data_area_id`` blank for a group node. Root
-nodes are 100% by construction and take no period: nobody owns the top.
+A period is a **link** of the ownership graph (konsol#117, option A, Deepak Pai
+7 Nov 2026): how much of the **owned node** ``(consolidation_group,
+data_area_id)`` the **owner node** ``owner_node`` holds, from ``effective_date``
+until ``end_date``. The owned node is the same pair that names a Consolidation
+Group document, so a sub-group is ownable too — leave ``data_area_id`` blank for
+a group node. The owner is any node of the same hierarchy: an entity node or a
+pure group node ("the group as the notional holder"). Root nodes are 100% by
+construction and take no period: nobody owns the top.
+
+The owner is pre-filled with the owned node's tree parent when left blank. That
+is the one default in the design: it is visible on the form, named in the
+field's description, and refused when the parent is not a node. A node may
+have several owners; the links into it over any one date sum to at most 100%.
+The graph has no cycles: a link whose owned node already holds, directly or
+through other links, its owner is refused naming the ring (design §3), until
+a treasury-share rule is decided on konsol#117.
 """
 import datetime
 
@@ -22,15 +33,19 @@ from frappe.model.document import Document
 from frappe.utils import getdate
 
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
+from konsol.ownership_graph_model import ownership_edges, path_between
 from konsol.period_status import assert_open_between, first_period_affected
 
 # ClickHouse's Date type holds 1970-01-01 .. 2149-06-06 and CLAMPS anything
 # outside it without complaining, so a period dated 1900 or 9999 would say one
 # thing in Frappe and another in the warehouse. A blank end_date is the normal
 # "still open" case and is written as the column's own default; an explicit date
-# has to be representable.
-_CH_DATE_MIN = "1970-01-01"
-_CH_DATE_MAX = "2149-06-06"
+# has to be representable. The range is fiscal_structure_model's, the one
+# definition the Consolidation Method Declaration rules read too (PR #449
+# review, finding 7).
+_CH_DATE_MIN = MIN_DATE.isoformat()
+_CH_DATE_MAX = MAX_DATE.isoformat()
 _OPEN_ENDED = _CH_DATE_MAX
 
 # data_area_id is a Link, and a blank Link is stored as NULL — so {"data_area_id":
@@ -61,9 +76,102 @@ def _deal_value(field, value):
     return float(value)
 
 
+def _pct(value):
+    """A percentage as typed: 80 for 80.0, 10.5 for 10.5."""
+    return f"{float(value or 0):g}"
+
+
 def _date_or_none(value):
     """A blank end date is "open-ended", never today (``getdate(None)`` is today)."""
     return getdate(value) if value not in (None, "") else None
+
+
+def owner_fields(owner):
+    """The three columns derived from an owner node (``consolidation_group``,
+    ``data_area_id``): its group, its entity code (None for a group node) and
+    the label the autoname and the refusal sentences use, the entity code else
+    the group code. One place, pure: ``_resolve_owner`` derives them on every
+    save and the ``add_owner_to_ownership_periods`` patch derives them for
+    every period written before the owner existed (#117 pair 1, design §9).
+    ``owner`` is a row as ``frappe.db.get_value(as_dict=True)`` or
+    ``frappe.get_all`` hands it back (attribute read), or None when
+    ``owner_node`` names no node: then all three are blank."""
+    if not owner:
+        return {"owner_group": None, "owner_data_area_id": None, "owner_label": None}
+    entity = owner.data_area_id or None
+    return {
+        "owner_group": owner.consolidation_group,
+        "owner_data_area_id": entity,
+        "owner_label": entity or owner.consolidation_group,
+    }
+
+
+#: The four columns every node read below asks for.
+_NODE_FIELDS = ["name", "consolidation_group", "data_area_id", "parent_consolidation_group"]
+
+
+def node_by_name(name):
+    """The Consolidation Group node ``name`` names, as a row with
+    ``_NODE_FIELDS``, or None (a blank name is None too)."""
+    if not name:
+        return None
+    return frappe.db.get_value("Consolidation Group", name, _NODE_FIELDS, as_dict=True)
+
+
+def node_by_key(group, entity):
+    """The Consolidation Group node ``(group, entity)`` names — the entity's
+    node in that group, or the group's own node when ``entity`` is blank — as
+    a row with ``_NODE_FIELDS``, or None. The one node-by-key read: this
+    doctype's ``_node``, the cycle walk, the Business Combination's acquired
+    node and the Business Disposal's disposed node all go through it (PR #449
+    review, findings 8 and 9)."""
+    return frappe.db.get_value(
+        "Consolidation Group",
+        {"consolidation_group": group, "data_area_id": entity or _BLANK},
+        _NODE_FIELDS, as_dict=True,
+    )
+
+
+def node_root(node):
+    """The name of the root of the hierarchy ``node`` sits in, by walking
+    tree parents (a NestedSet has no cycles; the live tree is six deep at
+    most)."""
+    seen = set()
+    while node.parent_consolidation_group and node.name not in seen:
+        seen.add(node.name)
+        parent = node_by_name(node.parent_consolidation_group)
+        if parent is None:
+            break
+        node = parent
+    return node.name
+
+
+def owner_refusal(owner_node, owned, owned_label, field="Owner Node"):
+    """§1 refusal 1 (#117) as one sentence, or None when ``owner_node`` may
+    own ``owned``: the owner is a node, is not the owned node, and sits under
+    the same root. One helper for every document that names an owner of a
+    node: this doctype's ``_validate_owner`` (``field`` "Owner Node"), the
+    Business Combination's Acquirer Node and the Business Disposal's Disposer
+    Node, which throw the sentence in their own name. ``owned`` is the owned
+    node's row (``_NODE_FIELDS``) or None when it does not exist yet (a deal
+    drafted before the tree has the node): then only the owner's existence
+    can be checked; ``owned_label`` names the owned node in the sentence
+    (its entity code, else its group code). A blank owner is the mandatory
+    check's to refuse, not this helper's."""
+    owner = node_by_name(owner_node)
+    if owner is None:
+        return f"{field} {owner_node} is not a Consolidation Group node."
+    if owned is None:
+        return None
+    if owner.name == owned.name:
+        return (f"`{owned_label}` cannot own itself: {field} {owner.name} is the owned node. "
+                f"Name the node that holds the share.")
+    owner_root, owned_root = node_root(owner), node_root(owned)
+    if owner_root != owned_root:
+        return (f"{field} {owner.name} is under root {owner_root}, not under {owned_root} "
+                f"like `{owned_label}`: an owner is a node of the same hierarchy as the node "
+                f"it owns.")
+    return None
 
 
 class OwnershipPeriod(Document):
@@ -71,6 +179,12 @@ class OwnershipPeriod(Document):
     CH_FIELD_MAP = {
         "consolidation_group": "consolidation_group",
         "data_area_id": "data_area_id",
+        # #117 pair 1: the owner node's group and entity code, resolved from
+        # owner_node on every save (``_resolve_owner``). The columns are task
+        # C's DDL (fixed names, ``tasks-117-pair1.md``); until it lands a sync
+        # fails on the missing columns and the live table is left as it was.
+        "owner_group": "owner_group",
+        "owner_data_area_id": "owner_data_area_id",
         "effective_date": "effective_date",
         "end_date": "end_date",
         "ownership_pct": "ownership_pct",
@@ -84,13 +198,51 @@ class OwnershipPeriod(Document):
         "is_disposal": "is_disposal",
     }
 
+    def before_insert(self):
+        """Frappe v16 names a document after ``before_insert`` and before
+        ``validate``, so the owner (and ``owner_label``, which ``autoname``
+        reads) is resolved here first."""
+        self._resolve_owner()
+
+    def autoname(self):
+        """``OP-{owner}-{owned}-{effective_date}``: the owner's label, then the
+        owned node's (its entity code, else its group code). Run by Frappe for
+        a NEW row only; the 329 names written before the owner existed stay
+        (design §1). A ``format:`` autoname on ``data_area_id`` dropped a
+        sub-group's code, so two sub-group periods from one owner and date
+        collided (PR #449 review, finding 3).
+
+        The date is written as ISO whatever shape it was posted in (a
+        ``dd-mm-yyyy`` or a datetime gave a differently shaped name for the
+        same link and date, so the collision guard did not hold), and a
+        period whose owner has no label is refused by sentence, never named
+        ``OP-None-…`` (PR #459 re-review, finding F)."""
+        if not self.owner_label:
+            self._resolve_owner()
+        if not self.owner_label:
+            why = (f"Owner Node {self.owner_node} is not a Consolidation Group node" if self.owner_node
+                   else f"it has no Owner Node and `{self._owned_label()}` has no tree parent to pre-fill one from")
+            frappe.throw(f"Cannot name this Ownership Period: {why}, so there is no owner label to "
+                         f"name it by. Choose the node that holds the share.")
+        if not self.effective_date:
+            frappe.throw("Cannot name this Ownership Period without its Effective Date.")
+        self.name = f"OP-{self.owner_label}-{self._owned_label()}-{getdate(self.effective_date).isoformat()}"
+
+    def before_validate(self):
+        """On every save: a cleared owner is pre-filled again, and the derived
+        fields follow an edited owner."""
+        self._resolve_owner()
+
     def validate(self):
         self._validate_deal_fields_untouched()
         self._validate_node_exists()
+        self._validate_owner()
+        self._validate_no_cycle()
         self._validate_pct_range()
         self._validate_consolidation_method()
         self._validate_dates_representable()
         self._check_no_gaps_or_overlaps()
+        self._check_total_issued()
 
     def before_cancel(self):
         """Cancel only while every period this ownership covers is open (#136):
@@ -103,11 +255,11 @@ class OwnershipPeriod(Document):
         """The declared periods a cancel of this period changes, as
         ``(start, end_or_None, end_exclusive)`` for ``assert_open_between``:
         from the first period its effective date affects until its end date
-        or the next submitted period for the same group and entity, whichever
-        comes first (the warehouse takes the latest effective_date <= the
-        period, so from the first declared period on or after the next
-        period's start this one is no longer read — that bound is exclusive),
-        and open-ended with neither.
+        or the next submitted period on the same (owner, owned) edge,
+        whichever comes first (the warehouse takes the latest effective_date
+        <= the period per link, so from the first declared period on or after
+        the next period's start this one is no longer read — that bound is
+        exclusive), and open-ended with neither.
 
         One rule, computed here: a Business Combination cancelling or
         clearing the period it started gates the same span with its own
@@ -119,6 +271,7 @@ class OwnershipPeriod(Document):
         next_start = frappe.db.get_value(
             "Ownership Period",
             {"consolidation_group": self.consolidation_group, "data_area_id": self.data_area_id,
+             "owner_node": self.owner_node,
              "docstatus": 1, "effective_date": [">", self.effective_date], "name": ["!=", self.name]},
             "effective_date", order_by="effective_date asc")
         end, exclusive = getdate(self.end_date) if self.end_date else None, False
@@ -175,7 +328,8 @@ class OwnershipPeriod(Document):
             op for op in frappe.get_all(
                 self.doctype,
                 filters={"consolidation_group": self.consolidation_group,
-                         "data_area_id": self.data_area_id or _BLANK, "docstatus": 1,
+                         "data_area_id": self.data_area_id or _BLANK,
+                         "owner_node": self.owner_node, "docstatus": 1,
                          "name": ["!=", self.name]},
                 fields=["name", "effective_date"], limit_page_length=0)
             if op.name != name and start < getdate(op.effective_date) <= end
@@ -226,14 +380,9 @@ class OwnershipPeriod(Document):
             )
 
     def _node(self):
-        """The Consolidation Group node this period describes, or None."""
-        return frappe.db.get_value(
-            "Consolidation Group",
-            {"consolidation_group": self.consolidation_group,
-             "data_area_id": self.data_area_id or _BLANK},
-            ["name", "parent_consolidation_group"],
-            as_dict=True,
-        )
+        """The owned Consolidation Group node, as a ``_NODE_FIELDS`` row (the
+        row ``owner_refusal`` documents), or None."""
+        return node_by_key(self.consolidation_group, self.data_area_id)
 
     def _validate_node_exists(self):
         """A period must describe a real node, and not a root.
@@ -259,6 +408,131 @@ class OwnershipPeriod(Document):
                 f"top of a hierarchy, so it is 100% by construction and an "
                 f"Ownership Period on it would never be applied."
             )
+
+    # -- the owner (#117 pair 1) ---------------------------------------------
+
+    def _owner(self):
+        """The Consolidation Group node ``owner_node`` names, or None."""
+        return node_by_name(self.owner_node)
+
+    def _resolve_owner(self):
+        """Pre-fill a blank owner with the owned node's tree parent (the one
+        default, named on the field), then derive ``owner_group``,
+        ``owner_data_area_id`` and ``owner_label`` from the owner node.
+
+        Runs in ``before_insert`` (v16 names the document right after it, and
+        the autoname reads ``owner_label``) and in ``before_validate`` (so an
+        edited owner never leaves a stale label or warehouse column). An owner
+        that names no node leaves the three blank; ``_validate_owner`` refuses
+        it by name.
+        """
+        if not self.owner_node:
+            node = self._node()
+            if node and node.parent_consolidation_group:
+                self.owner_node = node.parent_consolidation_group
+        for field, value in owner_fields(self._owner()).items():
+            setattr(self, field, value)
+
+    def _owned_label(self):
+        """How the owned node is named in a sentence: its entity code, else
+        its group code (as ``owner_label`` does for the owner)."""
+        return self.data_area_id or self.consolidation_group
+
+    def _validate_owner(self):
+        """§1 refusal 1, by ``owner_refusal`` (one helper, shared with the
+        deals): the owner is a node, is not the owned node, and sits under
+        the same root. A blank owner is the mandatory check's to refuse
+        (after ``_resolve_owner`` found no parent to pre-fill it with)."""
+        if not self.owner_node:
+            return
+        sentence = owner_refusal(self.owner_node, self._node(), self._owned_label())
+        if sentence:
+            frappe.throw(sentence)
+
+    # -- no cycles (#117 pair 1, design §3) ------------------------------------
+
+    #: The second sentence of the cycle refusal, one place.
+    CYCLE_TAIL = "Cross-holdings are refused until a treasury-share rule is decided (konsol#117)."
+
+    def _validate_no_cycle(self):
+        """§1 refusal 3: this link may not close a ring.
+
+        From the OWNED node, follow the outgoing edges and refuse when the
+        OWNER node is reached, naming every node on the path owner → owned →
+        … → owner. The self-link is the one-node case and ``_validate_owner``
+        has already refused it.
+
+        The edges are ``ownership_graph_model.ownership_edges`` — the ONE
+        rule ``ConsolidationGroup.build_rows`` reads too (PR #459 re-review,
+        finding A), fed the submitted links plus this document's own edge, so
+        a ring the reconcile would raise OwnershipCycle on is exactly the
+        ring refused here: a node a submitted link names (owner set and a
+        node) is owned by that owner, any other node by its tree parent
+        (finding B: a submitted row with a blank or dangling owner is not a
+        link, and the tree edge stands). The other non-cancelled DRAFTS are
+        tentative edges: walked, so a ring through a draft is refused before
+        it is submitted (undated: a link that ended years ago still closes
+        the ring), but never standing in for a tree edge, since a draft may
+        still be deleted. The build-time backstop is ``build_rows`` (a
+        repeated node on a path raises) and dbt's
+        ``assert_ownership_paths_acyclic``.
+
+        Two links saved concurrently could each pass the walk under REPEATABLE
+        READ: a plain read in a transaction reads the snapshot its first read
+        established, so it can miss a link committed since (CLAUDE.md). The
+        check first takes the serialising lock the group uses for its
+        difference account (Ownership Period's ``tabDocType`` row FOR UPDATE,
+        the pattern at consolidation_group.py:183), so the second save waits
+        for the first to commit, then reads every non-cancelled link ONCE with
+        a locking read, which sees the latest committed rows — never per
+        visited node, never a second lock over the submitted rows (finding
+        C). The nodes are read once, plainly: the walk's race is over the
+        links; a concurrent tree edit is the group controller's to guard, and
+        a locking read of every node would contend with its NestedSet writes.
+        Lock order is the same everywhere a period is written (the deals
+        insert or submit a period, whose validate takes this lock, before
+        they touch another period's row), so the whole-table read cannot
+        deadlock with them.
+        """
+        if not self.owner_node:
+            return
+        owner, owned = self._owner(), self._node()
+        if owner is None or owned is None or owner.name == owned.name:
+            return   # refused by name already (``_validate_node_exists``, ``_validate_owner``)
+        frappe.db.sql("SELECT `name` FROM `tabDocType` WHERE `name` = %s FOR UPDATE",
+                      ("Ownership Period",))
+        links = self._other_links_for_update()
+        nodes = frappe.get_all("Consolidation Group", fields=_NODE_FIELDS,
+                               limit_page_length=0, order_by="name asc")
+        own = {"owner_node": owner.name, "consolidation_group": self.consolidation_group,
+               "data_area_id": self.data_area_id}
+        edges = ownership_edges(
+            nodes,
+            [link for link in links if int(link.docstatus or 0) == 1] + [own],
+            tentative=[link for link in links if int(link.docstatus or 0) != 1],
+        )
+        trail = path_between(edges, owned.name, owner.name)
+        if trail is None:
+            return
+        by_name = {node.name: node for node in nodes}
+        ring = [owner.data_area_id or owner.consolidation_group, self._owned_label()] + [
+            by_name[name].data_area_id or by_name[name].consolidation_group for name in trail]
+        frappe.throw(
+            "This link would close a cycle: " + " → ".join(f"`{label}`" for label in ring)
+            + ". " + self.CYCLE_TAIL
+        )
+
+    def _other_links_for_update(self):
+        """Every non-cancelled Ownership Period but this document's own
+        stored row, as link rows (owned node, owner, docstatus), read FOR
+        UPDATE: one statement per validate."""
+        query = ("SELECT `name`, `consolidation_group`, `data_area_id`, `owner_node`, `docstatus` "
+                 "FROM `tabOwnership Period` WHERE `docstatus` != 2")
+        values = []
+        if self.name:
+            query += " AND `name` != %s"
+            values.append(self.name)
+        return frappe.db.sql(query + " FOR UPDATE", tuple(values), as_dict=True)
 
     def _validate_pct_range(self):
         if self.ownership_pct is None or not (0 <= float(self.ownership_pct) <= 100):
@@ -319,12 +593,15 @@ class OwnershipPeriod(Document):
                 )
 
     def _check_no_gaps_or_overlaps(self):
-        """PRD-9: no two live periods may cover the same date for one node.
+        """PRD-9: no two live periods may cover the same date for one link.
 
-        Load-bearing since F2: two overlapping periods would both match the
-        ASOF lookup and fan every fact row out. Dates are normalised with
-        getdate() on both sides — frappe.get_all returns date objects while the
-        document's own field is a string, and comparing the two raises.
+        The link is the (owner, owned) edge (#117 pair 1): two owners may hold
+        one node over the same dates, those are two links; one owner twice is
+        an overlap. Load-bearing since F2: two overlapping periods of one link
+        would both match the ASOF lookup and fan every fact row out. Dates are
+        normalised with getdate() on both sides — frappe.get_all returns date
+        objects while the document's own field is a string, and comparing the
+        two raises.
         """
         if not self.effective_date:
             return
@@ -339,6 +616,7 @@ class OwnershipPeriod(Document):
             filters={
                 "consolidation_group": self.consolidation_group,
                 "data_area_id": self.data_area_id or _BLANK,
+                "owner_node": self.owner_node,
                 "name": ["!=", self.name],
                 "docstatus": ["!=", 2],
             },
@@ -348,7 +626,7 @@ class OwnershipPeriod(Document):
         )
         supersedes = self.get("supersedes")
         # #305-Q1-1: the period this change supersedes is exempt ONLY when it is
-        # submitted, belongs to this node (``others`` holds only this node's
+        # submitted, belongs to this link (``others`` holds only this edge's
         # periods), starts before this change and covers its first day — the
         # period approval ends at effective_date - 1. Anything else it names
         # is checked like any other period.
@@ -390,3 +668,84 @@ class OwnershipPeriod(Document):
                 f"A change cannot go between two existing periods: {later[0].name} starts "
                 f"{later[0].effective_date}, after {self.effective_date}. Change the latest period instead."
             )
+
+    def _check_total_issued(self):
+        """§1 refusal 4 (#117): the links into one node whose windows overlap
+        this one must not sum past 100%.
+
+        Checked at every date this period covers where the set of other
+        holders changes (its own start and each other link's start inside it):
+        the holders covering that date are summed, and the largest total is the
+        one named, with the window where those holders all hold.
+
+        The holders are the SUBMITTED links into the node, plus this document:
+        the graph the warehouse reads, as it would stand once this document is
+        submitted. A draft is not a link yet, so another party's draft is
+        neither counted nor allowed to end the period it ``supersedes`` — it
+        may still be deleted, and a share accepted on its strength would
+        stand past 100% (PR #459 re-review, finding D; #449 finding 4 let any
+        draft's ``supersedes`` cut). That draft's own approval runs this check
+        against whatever is submitted by then. A predecessor ends the day
+        before the earliest successor that names it, among this document and
+        the submitted successors (a submitted successor's approval has already
+        written exactly that end date; the earliest wins when rows written
+        before that rule carry several, finding E). Runs after
+        ``_check_no_gaps_or_overlaps``, which has already vouched for this
+        document's own predecessor.
+        """
+        if not self.effective_date:
+            return
+        start = getdate(self.effective_date)
+        end = getdate(self.end_date or _OPEN_ENDED)
+        rows = frappe.get_all(
+            self.doctype,
+            filters={
+                "consolidation_group": self.consolidation_group,
+                "data_area_id": self.data_area_id or _BLANK,
+                "name": ["!=", self.name],
+                "docstatus": 1,
+            },
+            fields=["name", "owner_label", "ownership_pct", "effective_date", "end_date", "supersedes"],
+            limit_page_length=0,
+            order_by="effective_date asc",
+        )
+        # predecessor name -> the day before its EARLIEST successor starts
+        ended_by_successor = {}
+        for successor in list(rows) + [self]:
+            predecessor = getattr(successor, "supersedes", None)
+            if predecessor:
+                cut = getdate(successor.effective_date) - datetime.timedelta(days=1)
+                earlier = ended_by_successor.get(predecessor)
+                ended_by_successor[predecessor] = cut if earlier is None else min(earlier, cut)
+
+        def ends(op):
+            own = getdate(op.end_date or _OPEN_ENDED)
+            cut = ended_by_successor.get(op.name)
+            return min(own, cut) if cut is not None else own
+
+        others = [op for op in rows
+                  if start <= ends(op) and end >= getdate(op.effective_date)]
+        if not others:
+            return
+        points = sorted({start} | {getdate(op.effective_date) for op in others
+                                   if start < getdate(op.effective_date) <= end})
+        worst, holders = None, []
+        for point in points:
+            covering = [op for op in others if getdate(op.effective_date) <= point <= ends(op)]
+            total = sum(float(op.ownership_pct or 0) for op in covering)
+            if worst is None or total > worst[1]:
+                worst, holders = (point, total), covering
+        point, total = worst
+        if round(total + float(self.ownership_pct or 0), 6) <= 100:
+            return
+        # the window where every named holder holds: from the point to the
+        # earliest end among them, open when none ends
+        closed = [ends(op) for op in holders if ends(op) < getdate(_OPEN_ENDED)]
+        until = min(closed).isoformat() if closed else "open"
+        listed = ", ".join(
+            f"`{op.owner_label}` {_pct(op.ownership_pct)}%"
+            for op in sorted(holders, key=lambda op: (-float(op.ownership_pct or 0), op.owner_label or "")))
+        frappe.throw(
+            f"`{self._owned_label()}` is already {_pct(total)}% owned in {point.isoformat()}..{until} "
+            f"({listed}); this {_pct(self.ownership_pct)}% would exceed 100%."
+        )

@@ -14,9 +14,17 @@ Three layers, kept apart on purpose (design 2a):
   (the declared period the acquisition date falls in, the period's Closing
   group rates, the chart, the entity's trial balances) and feeds them in.
 
-Lifecycle: ``validate`` computes the Result fields and throws the model's
-sentences (a Fair Value Adjustment Total the lines miss only warns on a
-Draft); ``before_submit`` re-checks the period is open and the required
+The deal names the **acquirer** (#117 option A, Deepak Pai 7 Nov 2026):
+``acquirer_node``, the Consolidation Group node that bought the share, is
+pre-filled from the acquired node's tree parent when blank (the one default,
+visible on the form and in the field's description) and becomes the owner of
+the Ownership Period the approval creates; without it a deal could not say
+which group member bought. It is refused by the Ownership Period's own owner
+sentences (``owner_refusal``), in this deal's name.
+
+Lifecycle: ``before_validate`` pre-fills the acquirer; ``validate`` computes
+the Result fields and throws the model's sentences (a Fair Value Adjustment
+Total the lines miss only warns on a Draft); ``before_submit`` re-checks the period is open and the required
 accounts are declared, and refuses that mismatch; ``on_submit`` creates (or links) the Ownership Period
 the acquisition starts and writes the approved deal to the warehouse; an
 amendment is allowed only inside the policy's 12-month measurement period.
@@ -45,6 +53,7 @@ from konsol.consolidation.doctype.business_combination_consideration.business_co
 from konsol.consolidation.doctype.business_combination_cost.business_combination_cost import (
     BusinessCombinationCost,
 )
+from konsol.consolidation.doctype.ownership_period.ownership_period import node_by_key, owner_refusal
 from konsol.consolidation_policy_model import (
     ACCOUNT_FIELDS,
     POLICY_FIELDS,
@@ -115,12 +124,16 @@ class BusinessCombination(Document):
 
     # -- lifecycle -----------------------------------------------------------
 
+    def before_validate(self):
+        self._resolve_acquirer()
+
     def validate(self):
         # konsol#310: a Reject without approval_api.reject's reason is
         # refused before anything else is computed.
         refuse_reasonless_reject(self)
         period = self._acquisition_period()
         root = self._root()
+        self._validate_acquirer()
         # konsol#205 (IFRS 3.19): each deal may elect its NCI measurement; blank
         # takes the group's. The model measures with the value in force.
         self.nci_measurement = self.get("nci_measurement_override") or root.get("goodwill_method") or ""
@@ -312,6 +325,36 @@ class BusinessCombination(Document):
             )
         return root
 
+    # -- the acquirer (#117 pair 1) -------------------------------------------
+
+    def _acquired_node(self):
+        """The Consolidation Group node of the acquired entity in this group,
+        or None while the tree does not have it yet (the Ownership Period the
+        approval creates refuses that by name)."""
+        return node_by_key(self.consolidation_group, self.acquired_entity)
+
+    def _resolve_acquirer(self):
+        """Pre-fill a blank acquirer with the acquired node's tree parent: the
+        one default, named on the field. No node, or a root without a parent:
+        left blank for the mandatory check (the form offers the same
+        pre-fill, business_combination.js)."""
+        if self.get("acquirer_node"):
+            return
+        node = self._acquired_node()
+        if node and node.parent_consolidation_group:
+            self.acquirer_node = node.parent_consolidation_group
+
+    def _validate_acquirer(self):
+        """The Ownership Period's owner rule (§1 refusal 1), in this deal's
+        name and naming this deal's field: the acquirer is a node, not the
+        acquired node, under the same root. Blank is the mandatory check's."""
+        if not self.get("acquirer_node"):
+            return
+        sentence = owner_refusal(self.acquirer_node, self._acquired_node(), self.acquired_entity,
+                                 field="Acquirer Node")
+        if sentence:
+            frappe.throw(_PREFIX + sentence)
+
     def _entity_currency(self):
         """The acquired entity's Functional Currency: the currency of the
         Acquired Balance Sheet (hand-entered or from the trial balance). Blank
@@ -418,7 +461,12 @@ class BusinessCombination(Document):
         The deal owns the period it created OR submitted (``created``): a
         Draft period the approval submits has no approval behind it but this
         one, so undoing the approval cancels it again rather than leaving a
-        submitted period standing with four blanked fields."""
+        submitted period standing with four blanked fields.
+
+        The period is the acquirer's link (#117 pair 1): ``acquirer_node`` is
+        written as its ``owner_node`` (created or Draft), and the period
+        matched by date is the one of that owner, since another owner's
+        period on the same date is another link."""
         existing = self._linked_period() or self._period_on_the_acquisition_date()
         deal_fields = {
             "acquisition_date": self.acquisition_date,
@@ -442,6 +490,7 @@ class BusinessCombination(Document):
                         **deal_fields,
                         "ownership_pct": self.share_acquired_pct,
                         "effective_date": self.acquisition_date,
+                        "owner_node": self.get("acquirer_node"),
                     })
                     period.submit()
                     created = True
@@ -453,6 +502,7 @@ class BusinessCombination(Document):
                 new_period = {
                     "doctype": "Ownership Period",
                     **node,
+                    "owner_node": self.get("acquirer_node"),
                     "effective_date": self.acquisition_date,
                     "ownership_pct": self.share_acquired_pct,
                     "consolidation_method": self._consolidation_method(),
@@ -526,13 +576,22 @@ class BusinessCombination(Document):
             as_dict=True,
         )
 
+    def _link_filters(self):
+        """The acquirer's link into the acquired node: the period filters the
+        date lookups below share. A blank acquirer (a deal saved before the
+        field existed, or in a host test) matches any owner, as before."""
+        filters = {"consolidation_group": self.consolidation_group,
+                   "data_area_id": self.acquired_entity}
+        if self.get("acquirer_node"):
+            filters["owner_node"] = self.acquirer_node
+        return filters
+
     def _period_on_the_acquisition_date(self):
-        """The entity's Ownership Period declared for the acquisition date, as
-        ``{name, docstatus}``, or None."""
+        """The acquirer's Ownership Period declared for the acquisition date,
+        as ``{name, docstatus}``, or None."""
         return frappe.db.get_value(
             "Ownership Period",
-            {"consolidation_group": self.consolidation_group, "data_area_id": self.acquired_entity,
-             "effective_date": self.acquisition_date, "docstatus": ["<", 2]},
+            {**self._link_filters(), "effective_date": self.acquisition_date, "docstatus": ["<", 2]},
             ["name", "docstatus"],
             as_dict=True,
         )
@@ -546,9 +605,7 @@ class BusinessCombination(Document):
         review 3). The newest is the last created."""
         rows = frappe.get_all(
             "Ownership Period",
-            filters={"consolidation_group": self.consolidation_group,
-                     "data_area_id": self.acquired_entity,
-                     "effective_date": self.acquisition_date, "docstatus": 2},
+            filters={**self._link_filters(), "effective_date": self.acquisition_date, "docstatus": 2},
             fields=["name"],
             order_by="creation desc",
             limit_page_length=1,

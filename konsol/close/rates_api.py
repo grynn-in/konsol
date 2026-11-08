@@ -109,6 +109,17 @@ with their node's group and the Open Regular periods; ``None`` otherwise.
 effect as data, read once through ``ownership_change`` and decided by
 ``ownership_change_model`` (C-O4). It refuses an entity the caller cannot see
 before any read, lists a non-Regular period as a problem, and writes nothing.
+
+The holding (konsol#117 pair 1, option A: a node may have several owners):
+the preview and the save take ``owner_node``, the Consolidation Group node
+whose holding is changed. With one owner it is implied and ``current`` names
+it (``owner_node``, ``owner_label``); with several the request must name it,
+else ``ownership_change.context`` raises the design's sentence ("`US_EC`
+has two owners (`US_USA` 60%, `ECL_GROUP` 20%): choose the holding to
+change."), thrown before any write. The draft the save creates carries that
+``owner_node``, so the Ownership Period's per-link supersede check finds its
+predecessor; an edit of a draft under another holding is refused by name.
+``get_ownership.change.entities`` lists one item per holding.
 """
 import importlib.util as _importlib_util
 import os as _os
@@ -438,7 +449,7 @@ HER_FIELDS = ["name", "consolidation_group", "data_area_id", "main_account", "ra
               "historical_rate", "owner", "creation"]
 OP_FIELDS = ["name", "consolidation_group", "data_area_id", "effective_date", "end_date",
              "ownership_pct", "consolidation_method", "owner", "creation", "docstatus",
-             "supersedes"]
+             "supersedes", "owner_node"]
 
 
 def _iso(value):
@@ -667,21 +678,23 @@ def _change_choices(periods, allowed):
     the ownership change form's choices, so every choice it offers has a
     server source.
 
-    - ``entities``: one item per node (``consolidation_group``,
-      ``data_area_id``) with a submitted Ownership Period that names an
-      entity, ``{"entity", "entity_name", "consolidation_group"}``, sorted by
-      entity, then group. The group is the node's own: an entity on two nodes
-      gives two items, never a guessed one. Only an entity that already has a
+    - ``entities``: one item per holding, a (``consolidation_group``,
+      ``data_area_id``, ``owner_node``) link with a submitted Ownership
+      Period that names an entity, ``{"entity", "entity_name",
+      "consolidation_group"}``, sorted by entity, then group, then owner. The
+      group is the node's own: an entity on two nodes gives two items, never
+      a guessed one; a node with two owners gives two items (#117 pair 1),
+      told apart by ``current.owner_node``. Only an entity that already has a
       submitted period can be changed (C-O3: a first ownership stays the Desk
       link). Cut to ``allowed`` without adding to ``hidden`` (the payload's
       existing rule already counts the hidden entities). Each item also
       carries ``current`` (R52j, review U4; wireframe section 1, the
-      "Currently" line): the node's latest submitted period by
+      "Currently" line): the link's latest submitted period by
       ``effective_date`` (ties, which overlapping-period validation should
       prevent, go to the higher name), in ``ownership_change._as_current``'s
-      shape (ISO dates, ``end_date`` None when open-ended). It comes from the
-      same nodes read, with more fields. Once a period is chosen, the
-      preview's ``current`` wins (R52r).
+      shape (ISO dates, ``end_date`` None when open-ended, the owner named).
+      It comes from the same nodes read, with more fields. Once a period is
+      chosen, the preview's ``current`` wins (R52r).
     - ``periods``: ``_open_regular_periods`` of the calendar
       ``get_ownership`` already read (R53e: computed once there, since
       ``can_change`` needs it too).
@@ -694,24 +707,25 @@ def _change_choices(periods, allowed):
     nodes = frappe.get_all(
         OP, filters={"docstatus": 1, "data_area_id": ["is", "set"]},
         fields=["consolidation_group", "data_area_id", "name", "effective_date", "end_date",
-                "ownership_pct", "consolidation_method"], limit_page_length=0)
+                "ownership_pct", "consolidation_method", "owner_node", "owner_label"],
+        limit_page_length=0)
     latest = {}
     for r in nodes:
-        node = (r["data_area_id"], r["consolidation_group"])
-        held = latest.get(node)
+        link = (r["data_area_id"], r["consolidation_group"], r.get("owner_node") or "")
+        held = latest.get(link)
         if held is None or (r["effective_date"], r["name"]) > (held["effective_date"],
                                                                held["name"]):
-            latest[node] = r
-    pairs = sorted(latest)
-    pairs, _hidden = _cut(pairs, allowed, key=lambda p: p[0])
+            latest[link] = r
+    links = sorted(latest)
+    links, _hidden = _cut(links, allowed, key=lambda p: p[0])
     names = {}
-    if pairs:
+    if links:
         names = {r["name"]: r.get("entity_name") for r in frappe.get_all(
-            "Entity", filters={"name": ["in", sorted({e for e, _g in pairs})]},
+            "Entity", filters={"name": ["in", sorted({e for e, _g, _o in links})]},
             fields=["name", "entity_name"], limit_page_length=0)}
     entities = [{"entity": e, "entity_name": names.get(e), "consolidation_group": g,
-                 "current": ownership_change._as_current(latest[(e, g)])}
-                for e, g in pairs]
+                 "current": ownership_change._as_current(latest[(e, g, o)])}
+                for e, g, o in links]
     return {"entities": entities, "periods": periods}
 
 
@@ -725,17 +739,20 @@ OWNERSHIP_CHANGE_REGULAR_ONLY = (
 
 
 def _ownership_preview(fiscal_year, fiscal_period, consolidation_group, entity, ownership_pct,
-                       consolidation_method, exclude=None):
+                       consolidation_method, exclude=None, owner_node=None):
     """``(ctx, problems, effect)`` of a proposed ownership change: the one
     reading the preview (O55) and the save (O56) share. The scope check comes
-    first, before any read; corrupt data (``ValueError`` from
-    ``ownership_change``) is thrown as a sentence. ``effect`` is None while
-    any problem stands: the effect of a refused change is never guessed.
+    first, before any read; corrupt data and a holding the request must name
+    (``ValueError`` from ``ownership_change``, #117 pair 1) are thrown as a
+    sentence. ``effect`` is None while any problem stands: the effect of a
+    refused change is never guessed.
 
     ``exclude`` (O56) is the exact name of the draft being edited:
-    ``ownership_change.context`` reports every draft on the node as pending,
+    ``ownership_change.context`` reports every draft on the link as pending,
     so that one draft is left out of ``pending_exists`` by name equality,
-    never by a name pattern. Every other draft on the node still refuses."""
+    never by a name pattern. Every other draft on the link still refuses.
+    ``owner_node`` is the holding the request named, or None (implied when
+    the node has one owner)."""
     allowed = allowed_entity_codes()
     if allowed is not None and entity not in allowed:
         frappe.throw(f"You cannot see entity {entity or '(blank)'}: ask an administrator for "
@@ -744,14 +761,14 @@ def _ownership_preview(fiscal_year, fiscal_period, consolidation_group, entity, 
     from konsol.close import ownership_change  # lazy (C-X1)
 
     try:
-        ctx = ownership_change.context(consolidation_group, entity, *key)
+        ctx = ownership_change.context(consolidation_group, entity, *key, owner_node=owner_node)
     except ValueError as e:
         frappe.throw(str(e))
-    # O69: the node's other drafts awaiting approval, as exact names (the
+    # O69: the link's other drafts awaiting approval, as exact names (the
     # data behind the "already awaiting approval" sentence, never parsed
     # back out of it).
-    others = sorted(r["name"] for r in ownership_change._node_periods(consolidation_group,
-                                                                      entity)
+    others = sorted(r["name"] for r in ownership_change._node_periods(
+                        consolidation_group, entity, ctx["owner_node"])
                     if int(r["docstatus"] or 0) == 0 and r["name"] != exclude)
     ctx["pending"] = others
     if exclude:
@@ -777,7 +794,7 @@ def _ownership_preview(fiscal_year, fiscal_period, consolidation_group, entity, 
 
 @frappe.whitelist(methods=["GET"])
 def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, entity,
-                             ownership_pct, consolidation_method, name=None):
+                             ownership_pct, consolidation_method, owner_node=None, name=None):
     """O55 (story 4.2; #305-4.2-1, #305-Q1-1; wireframe-4.2.md): the
     refusals and the structural effect of an ownership change starting on the
     chosen period's first day (C-O2), as data, so the form shows them as the
@@ -791,9 +808,12 @@ def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, en
     first day) is the first problem, and there is no effect. A draft of an
     entity the caller cannot see is refused without naming its entity.
 
-    O69: ``pending`` is the sorted list of the node's other drafts awaiting
+    O69: ``pending`` is the sorted list of the link's other drafts awaiting
     approval (after the ``name`` exclude), the exact names the "already
     awaiting approval … edit that draft" problem names; ``[]`` when none.
+
+    ``owner_node`` (#117 pair 1): the holding, when the node has several
+    owners; implied when it has one. ``current`` names it.
 
     Returns ``{"problems": [...], "effect": {...} | None, "current": {...} | None,
     "pending": [...]}``.
@@ -801,10 +821,11 @@ def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, en
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     ctx, problems, effect = _ownership_preview(fiscal_year, fiscal_period, consolidation_group,
                                                entity, ownership_pct, consolidation_method,
-                                               exclude=name)
+                                               exclude=name, owner_node=owner_node)
     if name:
         doc = frappe.get_doc(OP, name)
-        refusal = _name_refusal(doc, consolidation_group, entity, ctx["effective_date"])
+        refusal = _name_refusal(doc, consolidation_group, entity, ctx["effective_date"],
+                                ctx["owner_node"], ctx["owner_label"])
         if refusal:
             problems = [refusal] + problems
             effect = None
@@ -812,11 +833,15 @@ def preview_ownership_change(fiscal_year, fiscal_period, consolidation_group, en
             "pending": ctx["pending"]}
 
 
-def _edit_refusal(doc, consolidation_group, entity, effective_date):
+def _edit_refusal(doc, consolidation_group, entity, effective_date, owner_node=None,
+                  owner_label=None):
     """The sentence refusing an edit of ``doc`` through
-    ``save_ownership_change``, or None. Only a draft of the same node and the
-    same first day is edited: the name carries the effective date (autoname),
-    so another period is a new draft, never a silent move."""
+    ``save_ownership_change``, or None. Only a draft of the same node, the
+    same first day and the same holding is edited: the name carries the
+    effective date (autoname), so another period is a new draft, never a
+    silent move; a draft under another owner's link is another change (#117
+    pair 1). The holding is compared only when both sides name one: a draft
+    with no owner (written before the owner existed) is edited by node."""
     status = int(doc.get("docstatus") or 0)
     if status != 0:
         return "%s is %s: record a new change instead." % (
@@ -829,10 +854,17 @@ def _edit_refusal(doc, consolidation_group, entity, effective_date):
                 "under its own entity and period." % (
                     doc.name, theirs[1] or "the group node", theirs[0], theirs[2],
                     asked[1] or "the group node", asked[0], asked[2]))
+    held_by = doc.get("owner_node")
+    if owner_node and held_by and held_by != owner_node:
+        return ("%s is the change for %s's holding by `%s`, not by `%s`: edit a draft under "
+                "its own holding." % (doc.name, entity or "the group node",
+                                      doc.get("owner_label") or held_by,
+                                      owner_label or owner_node))
     return None
 
 
-def _name_refusal(doc, consolidation_group, entity, effective_date):
+def _name_refusal(doc, consolidation_group, entity, effective_date, owner_node=None,
+                  owner_label=None):
     """The one sentence refusing ``doc`` as the draft named for editing, shared
     by the preview (O66) and the save (O68), or None. A draft of an entity the
     caller cannot see (W2-10, fail closed) is refused first, naming only what
@@ -842,12 +874,12 @@ def _name_refusal(doc, consolidation_group, entity, effective_date):
     if allowed is not None and doc.get("data_area_id") not in allowed:
         return ("%s is not a draft you can edit here: pick a draft of %s in %s from %s."
                 % (doc.name, entity or "the group node", consolidation_group, effective_date))
-    return _edit_refusal(doc, consolidation_group, entity, effective_date)
+    return _edit_refusal(doc, consolidation_group, entity, effective_date, owner_node, owner_label)
 
 
 @frappe.whitelist(methods=["POST"])
 def save_ownership_change(fiscal_year, fiscal_period, consolidation_group, entity,
-                          ownership_pct, consolidation_method, name=None):
+                          ownership_pct, consolidation_method, owner_node=None, name=None):
     """O56 (story 4.2; R2: the Analyst drafts, the Close Lead approves;
     #305-4.2-1, #305-Q1-1; wireframe-4.2.md as drawn): save an ownership
     change as a draft Ownership Period starting on the chosen period's first
@@ -855,24 +887,29 @@ def save_ownership_change(fiscal_year, fiscal_period, consolidation_group, entit
     ``superseded_end_date`` its end date). The draft ends where the current
     period ends, as the preview's effect says (``after.to``).
 
-    With ``name``, edits that draft instead (same node, same first day); the
-    draft being edited is left out of the "already awaiting approval" check.
-    Every refusal is thrown before the write. ``insert()`` / ``save()`` carry
-    no ignore flag, so the Ownership Period controller (O53) and Frappe's
-    permissions decide the rest; nothing here submits or commits (the request
-    commits). The signature names no ``docstatus``, ``supersedes``,
-    ``end_date`` or deal field, so a forged key never reaches the document.
+    With ``name``, edits that draft instead (same node, same first day, same
+    holding); the draft being edited is left out of the "already awaiting
+    approval" check. ``owner_node`` (#117 pair 1) names the holding when the
+    node has several owners; implied when it has one. The draft carries the
+    holding's owner, so the controller's per-link supersede check finds the
+    predecessor. Every refusal is thrown before the write. ``insert()`` /
+    ``save()`` carry no ignore flag, so the Ownership Period controller (O53)
+    and Frappe's permissions decide the rest; nothing here submits or commits
+    (the request commits). The signature names no ``docstatus``,
+    ``supersedes``, ``end_date`` or deal field, so a forged key never reaches
+    the document.
 
     Returns ``{"name", "docstatus": 0}``.
     """
     frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
     ctx, problems, _effect = _ownership_preview(
         fiscal_year, fiscal_period, consolidation_group, entity, ownership_pct,
-        consolidation_method, exclude=name)
+        consolidation_method, exclude=name, owner_node=owner_node)
     doc = None
     if name:
         doc = frappe.get_doc(OP, name)
-        refusal = _name_refusal(doc, consolidation_group, entity, ctx["effective_date"])
+        refusal = _name_refusal(doc, consolidation_group, entity, ctx["effective_date"],
+                                ctx["owner_node"], ctx["owner_label"])
         if refusal:
             frappe.throw(refusal)
     if problems:
@@ -882,7 +919,8 @@ def save_ownership_change(fiscal_year, fiscal_period, consolidation_group, entit
     values = {"ownership_pct": float(ownership_pct),
               "consolidation_method": consolidation_method,
               "supersedes": current["name"],
-              "superseded_end_date": current["end_date"]}
+              "superseded_end_date": current["end_date"],
+              "owner_node": ctx["owner_node"]}
     if doc is None:
         doc = frappe.get_doc(dict(values, doctype=OP, consolidation_group=consolidation_group,
                                   data_area_id=entity or None,

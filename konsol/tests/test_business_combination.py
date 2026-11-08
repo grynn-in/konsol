@@ -110,6 +110,7 @@ def _load():
     ps =types.ModuleType("konsol.period_status")
     ps.assert_open = lambda *a, **k: None
     ps.assert_open_between = lambda *a, **k: None
+    ps.first_period_affected = lambda *a, **k: None   # imported by ownership_period.py
     ps.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
     gr = types.ModuleType("konsol.group_rates")
     gr.true_rate = lambda quote, per: float(Decimal(str(quote or 0)) / int(per or 1))
@@ -126,7 +127,9 @@ def _load():
         stubs["konsol"].__path__ = [APP_DIR]
     saved = {k: sys.modules.get(k) for k in stubs}
     # The child controllers must bind to this Document stub.
-    for name in [n for n in sys.modules if n.startswith("konsol.consolidation.doctype.business_combination")]:
+    for name in [n for n in sys.modules
+                 if n.startswith(("konsol.consolidation.doctype.business_combination",
+                                  "konsol.consolidation.doctype.ownership_period"))]:
         del sys.modules[name]
     sys.modules.update(stubs)
     try:
@@ -220,7 +223,10 @@ class _Site:
 
     def __init__(self, *, periods=None, root=None, rates=None, accounts=None, tbs=(), ownership=(),
                  disposals=(), disposal_table=True, deals=(), retained_earnings=(), tb_tsv="",
-                 profiles=None, entities=None, charts=None):
+                 profiles=None, entities=None, charts=None, nodes=None):
+        #: Consolidation Group nodes by name (#117 pair 1 F): {name, consolidation_group,
+        #: data_area_id, parent_consolidation_group}; the root row above is the group node.
+        self.nodes = {n["name"]: dict(n) for n in (nodes or ())}
         #: Main Account name -> chart_of_accounts; any account not listed is in ZZCOA.
         #: None: no such Main Account; "": a Main Account with no chart.
         self.charts = dict(charts or {})
@@ -295,6 +301,14 @@ class _Site:
             assert fieldname == "functional_currency", fieldname
             return self.entities.get(filters)
         if doctype == "Consolidation Group":
+            if isinstance(filters, str):           # a node by name (the owner helper)
+                node = self.nodes.get(filters)
+                return _Row(node) if node else None
+            if filters.get("data_area_id") not in (None, "", ["is", "not set"]):
+                node = next((n for n in self.nodes.values()
+                             if n["consolidation_group"] == filters["consolidation_group"]
+                             and n["data_area_id"] == filters["data_area_id"]), None)
+                return _Row(node) if node else None
             if filters.get("consolidation_group") != self.root["consolidation_group"]:
                 return None
             return _Row(self.root) if as_dict else self.root.get(fieldname)
@@ -389,7 +403,13 @@ class _Site:
                     else:
                         doc.name = f"{amended_from}-1"
                 else:
-                    doc.name = f"OP-{doc.consolidation_group}-{doc.data_area_id}-{doc.effective_date}"
+                    # the real autoname names the owner (owner_label: its entity
+                    # code, else its group code; #117 pair 1 A), so two owners'
+                    # periods on one date do not collide; no owner known → the group
+                    owner = site.nodes.get(doc.get("owner_node") or "")
+                    label = ((owner["data_area_id"] or owner["consolidation_group"]) if owner
+                             else doc.consolidation_group)
+                    doc.name = f"OP-{label}-{doc.data_area_id}-{doc.effective_date}"
                 if any(r["name"] == doc.name for r in site.ownership):
                     raise Refused(f"Duplicate entry '{doc.name}' for key 'PRIMARY'")
                 # Created after every row already on the site (creation is
@@ -1599,3 +1619,97 @@ def test_source_sets_the_flag_around_the_ownership_period_and_syncs_four_tables(
     assert HEADER_TABLE in src
     for doctype in CHILD_TABLES:
         assert f'"{doctype}"' in src, doctype
+
+
+# -- #117 pair 1 F: the deal names the acquirer -------------------------------------
+# Option A (Deepak Pai, 7 Nov 2026): an Ownership Period is a link owner → owned.
+# A Business Combination names which group member bought (``acquirer_node``,
+# a Consolidation Group node), pre-filled from the acquired node's tree parent
+# when blank (the one default, visible on the form), and writes it as the
+# owner of the Ownership Period the approval creates. The refusals are the
+# Ownership Period's own owner sentences, through one shared helper, in this
+# deal's name and naming this deal's field.
+
+def _cg(name, group, entity, parent):
+    return {"name": name, "consolidation_group": group, "data_area_id": entity,
+            "parent_consolidation_group": parent}
+
+
+#: ZZG: root group node; entity nodes ZZE (the acquired) and ZZB (a sibling that may
+#: buy); ZZOTHER another root.
+TREE_117 = [_cg("CG-ZZG-", "ZZG", None, None), _cg("CG-ZZG-ZZE", "ZZG", "ZZE", "CG-ZZG-"),
+            _cg("CG-ZZG-ZZB", "ZZG", "ZZB", "CG-ZZG-"), _cg("CG-ZZOTHER-", "ZZOTHER", None, None)]
+
+
+def test_117f_a_blank_acquirer_is_prefilled_from_the_acquired_nodes_tree_parent():
+    _Site(nodes=TREE_117)
+    deal = _deal()
+    deal.before_validate()
+    assert deal.acquirer_node == "CG-ZZG-", "the acquired node's tree parent"
+    # a chosen acquirer is kept
+    deal = _deal(acquirer_node="CG-ZZG-ZZB")
+    deal.before_validate()
+    assert deal.acquirer_node == "CG-ZZG-ZZB"
+    # the acquired node does not exist yet: nothing to pre-fill from, no error here
+    _Site(nodes=[n for n in TREE_117 if n["name"] != "CG-ZZG-ZZE"])
+    deal = _deal()
+    deal.before_validate()
+    assert not deal.get("acquirer_node")
+
+
+def test_117f_the_acquirer_is_refused_by_the_ownership_periods_sentences_in_the_deals_name():
+    _Site(nodes=TREE_117)
+    assert _refused(_deal(acquirer_node="CG-ZZG-ZZE").validate) == (
+        "Business Combination: `ZZE` cannot own itself: Acquirer Node CG-ZZG-ZZE is the owned "
+        "node. Name the node that holds the share.")
+    assert _refused(_deal(acquirer_node="CG-ZZ_TYPO-").validate) == (
+        "Business Combination: Acquirer Node CG-ZZ_TYPO- is not a Consolidation Group node.")
+    assert _refused(_deal(acquirer_node="CG-ZZOTHER-").validate) == (
+        "Business Combination: Acquirer Node CG-ZZOTHER- is under root CG-ZZOTHER-, not under "
+        "CG-ZZG- like `ZZE`: an owner is a node of the same hierarchy as the node it owns.")
+    # the root and a sibling may buy
+    _deal(acquirer_node="CG-ZZG-").validate()
+    _deal(acquirer_node="CG-ZZG-ZZB").validate()
+
+
+def test_117f_on_submit_writes_the_acquirer_as_the_created_periods_owner():
+    site = _Site(nodes=TREE_117)
+    deal = _deal(share_acquired_pct=80, acquirer_node="CG-ZZG-ZZB")
+    deal.validate()
+    deal.on_submit()
+    [period] = site.inserted
+    assert period.owner_node == "CG-ZZG-ZZB"
+    assert period.consolidation_group == "ZZG" and period.data_area_id == "ZZE"
+
+
+def test_117f_the_period_on_the_acquisition_date_is_the_acquirers_link():
+    """Another owner's period on the same date is another link: the deal
+    creates its own rather than taking that one over; the acquirer's own is
+    linked as before."""
+    others = {"name": "OP-ZZG-ZZE-2025-12-31", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+              "owner_node": "CG-ZZG-", "effective_date": "2025-12-31", "end_date": None,
+              "ownership_pct": 20, "consolidation_method": "equity", "docstatus": 1}
+    site = _Site(nodes=TREE_117, ownership=[others])
+    deal = _deal(share_acquired_pct=80, acquirer_node="CG-ZZG-ZZB")
+    deal.validate()
+    deal.on_submit()
+    assert len(site.inserted) == 1 and site.inserted[0].owner_node == "CG-ZZG-ZZB"
+    assert not hasattr(site, "loaded")
+    site = _Site(nodes=TREE_117, ownership=[dict(others, ownership_pct=80)])
+    deal = _deal(share_acquired_pct=80, acquirer_node="CG-ZZG-")
+    deal.validate()
+    deal.on_submit()
+    assert site.inserted == [] and site.loaded.name == "OP-ZZG-ZZE-2025-12-31"
+
+
+def test_117f_a_linked_draft_period_takes_the_deals_acquirer():
+    linked = {"name": "OP-ZZG-ZZE-2025-12-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+              "owner_node": "CG-ZZG-", "effective_date": "2025-12-01", "end_date": None,
+              "ownership_pct": 80, "consolidation_method": "full", "docstatus": 0}
+    site = _Site(nodes=TREE_117, ownership=[linked])
+    deal = _deal(share_acquired_pct=80, acquirer_node="CG-ZZG-ZZB",
+                 ownership_period="OP-ZZG-ZZE-2025-12-01")
+    deal.validate()
+    deal.on_submit()
+    assert site.loaded.submitted is True
+    assert site.loaded.owner_node == "CG-ZZG-ZZB", "the approved deal is the source of the link"

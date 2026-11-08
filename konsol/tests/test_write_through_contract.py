@@ -196,6 +196,12 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # now the only thing that creates it.
         "epm_gold.consolidation_groups",
         "epm_staging.consolidation_ancestry",
+        # konsol#117 pair 1 (task C): the ownership link's owner, and the method
+        # a group declares for an entity reached by more than one path; owned
+        # here so an existing stack gets the owner/path columns by ALTER
+        # (test_ownership_graph_ddl.py)
+        "epm_staging.ownership_periods",
+        "epm_staging.consolidation_method_declarations",
         # konsol#374: owned here so an existing stack gets to_currency in the
         # sort key (test_her_table_upgrade.py)
         "epm_staging.historical_equity_rates",

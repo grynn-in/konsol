@@ -32,6 +32,9 @@ REFERRING_DOCTYPES = {
     # konsol#292/#305-D2-12: the entity moves to each line of the journal
     # (the header carries no data_area_id).
     "Consolidation Journal Line",
+    # konsol#117 pair 1 (task D): the entity a group declares a method for,
+    # on the group node's child table.
+    "Consolidation Method Declaration",
 }
 
 
