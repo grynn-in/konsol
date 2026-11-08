@@ -469,6 +469,8 @@ class _Site:
         date = _getdate(values["d"] if isinstance(values, dict) else values[0])
         rows = [_Row(p) for p in self.periods if _getdate(p["start_date"]) <= date <= _getdate(p["end_date"])]
         if "<> 'Closing'" in query:
+            # the step-window lookup: assert the clauses it sends, then apply them
+            assert "AND p.period_type <> 'Closing' AND p.start_date <= %(d)s AND p.end_date >= %(d)s" in query, query
             rows = [r for r in rows if r["period_type"] != "Closing"]
         rows.sort(key=lambda p: (p["period_type"] != "Regular", _getdate(p["start_date"])))
         return rows[:1]
@@ -484,7 +486,12 @@ class _Site:
                              and n["data_area_id"] == filters["data_area_id"]), None)
                 return _Row(node) if node else None
             if filters.get("consolidation_group") != self.root["consolidation_group"]:
-                return None
+                # another group's own node (no entity): the project's lookup by group + blank entity
+                assert filters.get("data_area_id") == ["is", "not set"], filters
+                node = next((n for n in self.nodes.values()
+                             if n["consolidation_group"] == filters["consolidation_group"]
+                             and not n["data_area_id"]), None)
+                return node["name"] if node else None
             return _Row(self.root) if as_dict else self.root.get(fieldname)
         if doctype == "Main Account":
             row = self.accounts.get(filters)
@@ -640,10 +647,10 @@ def test_a_later_full_declaration_over_an_older_open_proportional_one_does_not_r
 
 def test_a_proportional_declaration_on_an_ancestor_group_refuses_the_disposal_naming_that_group():
     _Site(nodes=[{"name": "ZZG", "consolidation_group": "ZZG", "data_area_id": "",
-                  "parent_consolidation_group": "CG-ZZP-"},
-                 {"name": "CG-ZZP-", "consolidation_group": "ZZP", "data_area_id": "",
+                  "parent_consolidation_group": "IMPORTED-ZZP"},
+                 {"name": "IMPORTED-ZZP", "consolidation_group": "ZZP", "data_area_id": "",
                   "parent_consolidation_group": None}],
-           declarations=[dict(DECLARATION, parent="CG-ZZP-")])
+           declarations=[dict(DECLARATION, parent="IMPORTED-ZZP")])
     message = _refused(_deal().validate)
     assert "ZZE is declared a joint operation of ZZP (Method Declaration, proportional, from 2020-01-01)" in message
 
@@ -1111,3 +1118,17 @@ def test_117f_the_holding_sold_is_the_disposers_link():
     deal.validate()
     deal.on_submit()
     assert [p.name for p in site.loaded] == ["OP-ZZG-ZZE-2020-01-01"]
+
+def test_a_proportional_declaration_ending_on_the_deal_date_still_refuses_via_the_window_start():
+    _Site(declarations=[dict(DECLARATION, end_date="2025-12-31")])
+    assert "is declared a joint operation of ZZG" in _refused(_deal().validate)
+
+
+def test_a_proportional_declaration_superseded_by_a_full_one_before_the_window_starts_does_not_refuse():
+    _Site(declarations=[DECLARATION, dict(DECLARATION, consolidation_method="full", effective_date="2025-11-15")])
+    _deal().validate()
+
+
+def test_a_proportional_declaration_superseded_inside_the_window_still_refuses():
+    _Site(declarations=[DECLARATION, dict(DECLARATION, consolidation_method="full", effective_date="2025-12-10")])
+    assert "is declared a joint operation of ZZG" in _refused(_deal().validate)
