@@ -198,6 +198,30 @@ def test_an_end_before_the_start_and_an_unknown_method_are_refused():
     assert problems == ["Row 1 (ZZD): 'pooling' is not a consolidation method (full, proportional, equity, none)."]
 
 
+def test_dates_outside_the_warehouse_range_are_refused_at_both_bounds():
+    """PR #449 review, finding 7: the rows sync to ClickHouse Date columns,
+    which hold 1970-01-01..2149-06-06 and clamp silently outside it, the way
+    OwnershipPeriod._validate_dates_representable already refuses. One range,
+    fiscal_structure_model's, read by both; never a second copy."""
+    import konsol.fiscal_structure_model as FSM
+    assert (MD.MIN_DATE, MD.MAX_DATE) == (FSM.MIN_DATE, FSM.MAX_DATE)
+    assert MD.MIN_DATE is FSM.MIN_DATE and MD.MAX_DATE is FSM.MAX_DATE, "imported, not copied"
+    src = open(os.path.join(APP_DIR, "method_declaration_model.py")).read()
+    assert "2149" not in src and "1970" not in src, "the range is imported, not spelled here"
+    outside = ("is outside the range the warehouse can store (1970-01-01 to 2149-06-06); "
+               "it would be silently clamped. Use a date inside that range.")
+    assert MD.declaration_problems("ZZGRP", None, [_row(1, start="1969-12-31")]) == [
+        f"Row 1 (ZZD): Effective Date 1969-12-31 {outside}"]
+    assert MD.declaration_problems("ZZGRP", None, [_row(1, start="2024-01-01", end="2149-06-07")]) == [
+        f"Row 1 (ZZD): End Date 2149-06-07 {outside}"]
+    assert MD.declaration_problems("ZZGRP", None, [_row(1, start="2150-01-01", end="1900-01-01")]) == [
+        f"Row 1 (ZZD): Effective Date 2150-01-01 {outside}",
+        f"Row 1 (ZZD): End Date 1900-01-01 {outside}",
+        "Row 1 (ZZD): End Date 1900-01-01 is before Effective Date 2150-01-01."]
+    # the bounds themselves are representable
+    assert MD.declaration_problems("ZZGRP", None, [_row(1, start="1970-01-01", end="2149-06-06")]) == []
+
+
 def test_dates_may_arrive_as_dates_or_iso_strings():
     rows = [_row(1, start=datetime.date(2024, 1, 1), end=datetime.date(2024, 12, 31)),
             _row(2, start="2024-06-01")]

@@ -449,7 +449,7 @@ HER_FIELDS = ["name", "consolidation_group", "data_area_id", "main_account", "ra
               "historical_rate", "owner", "creation"]
 OP_FIELDS = ["name", "consolidation_group", "data_area_id", "effective_date", "end_date",
              "ownership_pct", "consolidation_method", "owner", "creation", "docstatus",
-             "supersedes"]
+             "supersedes", "owner_node"]
 
 
 def _iso(value):

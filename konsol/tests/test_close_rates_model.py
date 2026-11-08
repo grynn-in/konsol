@@ -533,9 +533,21 @@ def test_o69_failure_path_two_regular_periods_on_one_day_give_neither():
 
 def test_o69_op_edit_is_the_drafts_node_period_pct_and_method():
     edit = M.op_edit(_o69_draft(), M.regular_period_by_start(_o69_calendar()))
-    assert edit == {"consolidation_group": "G1", "entity": "ZZENT", "fiscal_year": 2025,
-                    "fiscal_period": 10, "ownership_pct": 80.0,
+    assert edit == {"consolidation_group": "G1", "entity": "ZZENT", "owner_node": None,
+                    "fiscal_year": 2025, "fiscal_period": 10, "ownership_pct": 80.0,
                     "consolidation_method": "full"}
+
+
+def test_o69_op_edit_carries_the_drafts_owner_node_so_the_form_finds_the_right_holding():
+    """PR #459 re-review finding G: the form matched a draft's choice by
+    entity + group while choices are keyed per holding (owner), so with two
+    holders in one group an Edit loaded the first holding. The edit names the
+    draft's ``owner_node``; None when the draft has none (an old row), and
+    the form then falls back to entity + group."""
+    starts = M.regular_period_by_start(_o69_calendar())
+    assert M.op_edit(_o69_draft(owner_node="CG-G1-US"), starts)["owner_node"] == "CG-G1-US"
+    assert M.op_edit(_o69_draft(owner_node=None), starts)["owner_node"] is None
+    assert M.op_edit(_o69_draft(), starts)["owner_node"] is None, "a row without the key sends None, never raises"
 
 
 def test_o69_failure_path_a_desk_draft_without_supersedes_has_no_edit():
@@ -635,8 +647,8 @@ def test_r52h_any_status_but_open_gives_no_edit_and_a_missing_one_is_never_open(
 
 def test_r52h_an_open_entity_draft_is_unchanged():
     edit = M.op_edit(_o69_draft(), M.regular_period_by_start(_r52h_calendar(closed=(9, 11))))
-    assert edit == {"consolidation_group": "G1", "entity": "ZZENT", "fiscal_year": 2025,
-                    "fiscal_period": 10, "ownership_pct": 80.0,
+    assert edit == {"consolidation_group": "G1", "entity": "ZZENT", "owner_node": None,
+                    "fiscal_year": 2025, "fiscal_period": 10, "ownership_pct": 80.0,
                     "consolidation_method": "full"}
 
 

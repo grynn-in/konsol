@@ -83,26 +83,59 @@ function need(obj, keys, where) {
 	}
 }
 
-/** `change.entities` -> one option per node, `{key, entity, group, label,
- * current}`. `current` is the node's latest submitted period (R52j); an
- * entity choice without it throws. */
+/** The owner a holding's current period names, `{node, label}`, or null
+ * when the server's row lacks the keys (an older backend during a rolling
+ * update): the choice then degrades on its own (PR #459 re-review, finding
+ * H) instead of the whole list throwing. */
+function ownerOf(current) {
+	if (!current || typeof current !== "object") return null;
+	if (!("owner_node" in current) || !("owner_label" in current) || !current.owner_node) return null;
+	return { node: current.owner_node, label: current.owner_label };
+}
+
+/** `change.entities` -> one option per HOLDING (konsol#117 pair 1: the
+ * server lists one item per (entity, group, owner_node) link), `{key, entity,
+ * group, owner_node, label, current}`. `current` is the holding's latest
+ * submitted period (R52j) and names its owner; a choice without `current`
+ * throws. The key carries the owner, so two holdings of one entity in one
+ * group are two <option>s (PR #449 review, finding 5); the label then adds
+ * the holder. `owner_node` is set only on a choice that must name its
+ * holding (several owners in the group): previewParams sends it; a sole
+ * owner is implied by the server (design §1) and nothing is sent. A holding
+ * whose current period cannot name its owner is labelled "owner unknown",
+ * carries no owner_node and sends none (finding H). */
 function entityOptions(entities) {
 	if (!Array.isArray(entities)) {
 		throw new Error("OwnershipChange: get_ownership's change has no entities list");
 	}
-	const nodes = {};
+	const groupsOf = {};
+	const holdings = {};
 	for (const e of entities) {
 		need(e, ["entity", "entity_name", "consolidation_group", "current"], "an entity choice");
-		nodes[e.entity] = (nodes[e.entity] || 0) + 1;
+		if (!e.current || typeof e.current !== "object") {
+			throw new Error("OwnershipChange: an entity choice's current period is not an object");
+		}
+		(groupsOf[e.entity] = groupsOf[e.entity] || new Set()).add(e.consolidation_group);
+		const node = `${e.entity}|${e.consolidation_group}`;
+		holdings[node] = (holdings[node] || 0) + 1;
 	}
-	return entities.map((e) => ({
-		key: `${e.entity}|${e.consolidation_group}`,
-		entity: e.entity,
-		group: e.consolidation_group,
-		owner_node: e.owner_node || null,
-		label: `${e.entity} — ${e.entity_name}${nodes[e.entity] > 1 ? ` (in ${e.consolidation_group})` : ""}`,
-		current: e.current,
-	}));
+	return entities.map((e) => {
+		const node = `${e.entity}|${e.consolidation_group}`;
+		const owner = ownerOf(e.current);
+		const several = holdings[node] > 1;
+		const inGroup = groupsOf[e.entity].size > 1 ? ` (in ${e.consolidation_group})` : "";
+		let heldBy = "";
+		if (!owner) heldBy = " — owner unknown";
+		else if (several) heldBy = ` — held by ${owner.label}`;
+		return {
+			key: `${node}|${owner ? owner.node : ""}`,
+			entity: e.entity,
+			group: e.consolidation_group,
+			owner_node: several && owner ? owner.node : null,
+			label: `${e.entity} — ${e.entity_name}${inGroup}${heldBy}`,
+			current: e.current,
+		};
+	});
 }
 
 /** `change.periods` (calendar order) -> `[{year, label, options}]`, newest
@@ -152,15 +185,24 @@ function previewParams(entity, period, pct, method, name) {
 	return params;
 }
 
-/** O67: a draft's server `edit` -> the form's values. The node and the
+/** O67: a draft's server `edit` -> the form's values. The holding and the
  * period must be choices this form offers; otherwise it throws naming the
- * draft (never a guessed node or period). */
+ * draft (never a guessed holding or period). The holding is the choice
+ * whose current period names the edit's `owner_node` (PR #459 re-review,
+ * finding G: choices are keyed per holding, and matching by entity + group
+ * loaded the first holding in the group); entity + group alone only when
+ * the server sends no owner. */
 function editForm(name, edit, entities, groups) {
 	need(edit, ["consolidation_group", "entity", "fiscal_year", "fiscal_period", "ownership_pct", "consolidation_method"], `${name}'s edit`);
-	const entity = entities.find((o) => o.entity === edit.entity && o.group === edit.consolidation_group);
+	const sameNode = (o) => o.entity === edit.entity && o.group === edit.consolidation_group;
+	const owner = edit.owner_node || null;
+	const entity = owner
+		? entities.find((o) => sameNode(o) && ownerOf(o.current) !== null && ownerOf(o.current).node === owner)
+		: entities.find(sameNode);
 	if (!entity) {
 		const node = edit.entity === null ? "the group node" : edit.entity;
-		throw new Error(`${name} is for ${node} in ${edit.consolidation_group}, which is not an entity this form offers.`);
+		const held = owner ? ` held by ${owner}` : "";
+		throw new Error(`${name} is for ${node} in ${edit.consolidation_group}${held}, which is not a holding this form offers.`);
 	}
 	let period = null;
 	for (const g of groups) {

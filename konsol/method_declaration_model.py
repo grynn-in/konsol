@@ -13,6 +13,11 @@ applies to an entity on any date.
 """
 import datetime
 
+# The range a ClickHouse Date holds; it clamps silently outside it. One
+# definition (fiscal_structure_model), read here and by OwnershipPeriod's
+# _validate_dates_representable (PR #449 review, finding 7).
+from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
+
 #: The Select's options, in order. ``proportional`` is offered and refused
 #: (PROPORTIONAL_REFUSAL) until konsol#117 pair 3 decides it.
 METHODS = ("full", "proportional", "equity", "none")
@@ -73,6 +78,12 @@ def declaration_problems(group, node_entity, rows):
         elif row.consolidation_method == "proportional":
             problems.append(f"{where}: {PROPORTIONAL_REFUSAL}")
         start, end = _date(row.effective_date), _date(row.end_date)
+        for label, value in (("Effective Date", start), ("End Date", end)):
+            if value and not (MIN_DATE <= value <= MAX_DATE):
+                problems.append(
+                    f"{where}: {label} {value} is outside the range the warehouse can store "
+                    f"({MIN_DATE} to {MAX_DATE}); it would be silently clamped. "
+                    f"Use a date inside that range.")
         if start and end and end < start:
             problems.append(f"{where}: End Date {end} is before Effective Date {start}.")
         if start:

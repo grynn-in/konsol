@@ -8,7 +8,6 @@
  "editable_grid": 1,
  "engine": "InnoDB",
  "track_changes": 1,
- "autoname": "format:OP-{owner_label}-{data_area_id}-{effective_date}",
  "fields": [
   {
    "fieldname": "tab_ownership",
@@ -68,7 +67,7 @@
    "label": "Owner Label",
    "read_only": 1,
    "hidden": 1,
-   "description": "The owner's entity code, else its group code; set before naming so a new period is named OP-{owner}-{entity}-{date}."
+   "description": "The owner's entity code, else its group code; set before naming so a new period is named OP-{owner}-{owned}-{date} (the controller's autoname; the owned label is the entity code, else the group code)."
   },
   {
    "fieldname": "col_break_1",

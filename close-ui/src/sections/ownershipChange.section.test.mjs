@@ -174,23 +174,83 @@ test("The method choices are ownership_change_model.METHODS, in its order (no se
 // ---------------------------------------------------------------------------
 
 function helpers() {
-  return load(["need", "entityOptions", "periodGroups", "previewParams", "currentText", "effectPanel", "saveBlocked", "savedLine", "makePreviewer"], {
+  return load(["need", "ownerOf", "entityOptions", "periodGroups", "previewParams", "currentText", "effectPanel", "saveBlocked", "savedLine", "makePreviewer"], {
     ownershipEffectView,
     dueDateText,
   });
 }
 
-test("Entity choices: one per node from the golden; an entity on two nodes names its group, never a guessed one", () => {
+test("Entity choices: one per holding from the golden, keyed by node AND owner; an entity on two nodes names its group, never a guessed one", () => {
   const { entityOptions } = helpers();
   const opts = entityOptions(OWNERSHIP.change.entities);
   assert.deepEqual(
     opts.map((o) => [o.key, o.entity, o.group, o.label]),
     [
-      ["ZZ5B1|ECL_GROUP", "ZZ5B1", "ECL_GROUP", "ZZ5B1 — ZZ Five B One (in ECL_GROUP)"],
-      ["ZZ5B1|ZZ_SUBGROUP", "ZZ5B1", "ZZ_SUBGROUP", "ZZ5B1 — ZZ Five B One (in ZZ_SUBGROUP)"],
-      ["ZZ5B3|ECL_GROUP", "ZZ5B3", "ECL_GROUP", "ZZ5B3 — ZZ Five B Three"],
+      ["ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", "ZZ5B1", "ECL_GROUP", "ZZ5B1 — ZZ Five B One (in ECL_GROUP)"],
+      ["ZZ5B1|ZZ_SUBGROUP|CG-ZZ_SUBGROUP-", "ZZ5B1", "ZZ_SUBGROUP", "ZZ5B1 — ZZ Five B One (in ZZ_SUBGROUP)"],
+      ["ZZ5B3|ECL_GROUP|CG-ECL_GROUP-", "ZZ5B3", "ECL_GROUP", "ZZ5B3 — ZZ Five B Three"],
     ],
   );
+  // a sole owner is implied by the server (design §1): the choice names none
+  assert.deepEqual(opts.map((o) => o.owner_node), [null, null, null]);
+});
+
+test("k117 finding 5: two holdings of one entity in one group are two choices, told apart by the holder", () => {
+  // konsol#117 pair 1: the server lists one choice per (entity, group, owner_node).
+  // Keyed by entity|group alone the two collapsed into one <option>, and the
+  // label could not say whose holding was being changed (PR #449 review).
+  const { entityOptions, previewParams, periodGroups } = helpers();
+  const held = (owner_node, owner_label, pct) => ({
+    entity: "ZZ5EC", entity_name: "ZZ Five EC", consolidation_group: "ECL_GROUP",
+    current: { name: `OP-${owner_label}-ZZ5EC-2025-01-01`, effective_date: "2025-01-01", end_date: null,
+      ownership_pct: pct, consolidation_method: "full", owner_node, owner_label },
+  });
+  const opts = entityOptions([held("CG-ECL_GROUP-US_USA", "US_USA", 60), held("CG-ECL_GROUP-", "ECL_GROUP", 20)]);
+  assert.deepEqual(
+    opts.map((o) => [o.key, o.label, o.owner_node]),
+    [
+      ["ZZ5EC|ECL_GROUP|CG-ECL_GROUP-US_USA", "ZZ5EC — ZZ Five EC — held by US_USA", "CG-ECL_GROUP-US_USA"],
+      ["ZZ5EC|ECL_GROUP|CG-ECL_GROUP-", "ZZ5EC — ZZ Five EC — held by ECL_GROUP", "CG-ECL_GROUP-"],
+    ],
+    "one group, so no '(in GROUP)'; two holders, so each names its holder",
+  );
+  assert.equal(new Set(opts.map((o) => o.key)).size, 2, "distinct keys, one <option> each");
+  // a choice that names its holding sends owner_node to the preview and the save
+  const period = periodGroups(OWNERSHIP.change.periods)[1].options[0];
+  assert.equal(previewParams(opts[0], period, "70", "full", null).owner_node, "CG-ECL_GROUP-US_USA");
+  assert.equal(previewParams(opts[1], period, "25", "full", null).owner_node, "CG-ECL_GROUP-");
+});
+
+test("k117 finding H: a holding whose current period cannot name its owner is one choice labelled 'owner unknown', never the whole list thrown away", () => {
+  // PR #459 re-review: need(e.current, ["owner_node", "owner_label"]) threw for
+  // the whole section when any holding lacked the keys (an older backend during
+  // a rolling update). The choice degrades on its own: labelled "owner
+  // unknown", no owner_node sent; the other choices are unchanged.
+  const { entityOptions, previewParams, periodGroups } = helpers();
+  const held = (owner_node, owner_label, pct) => ({
+    entity: "ZZ5EC", entity_name: "ZZ Five EC", consolidation_group: "ECL_GROUP",
+    current: { name: `OP-${owner_label}-ZZ5EC-2025-01-01`, effective_date: "2025-01-01", end_date: null,
+      ownership_pct: pct, consolidation_method: "full", owner_node, owner_label },
+  });
+  const nameless = held("CG-ECL_GROUP-US_USA", "US_USA", 60);
+  delete nameless.current.owner_label;
+  delete nameless.current.owner_node;
+  const opts = entityOptions([nameless, held("CG-ECL_GROUP-", "ECL_GROUP", 20)]);
+  assert.deepEqual(
+    opts.map((o) => [o.key, o.label, o.owner_node]),
+    [
+      ["ZZ5EC|ECL_GROUP|", "ZZ5EC — ZZ Five EC — owner unknown", null],
+      ["ZZ5EC|ECL_GROUP|CG-ECL_GROUP-", "ZZ5EC — ZZ Five EC — held by ECL_GROUP", "CG-ECL_GROUP-"],
+    ],
+  );
+  const period = periodGroups(OWNERSHIP.change.periods)[1].options[0];
+  assert.equal("owner_node" in previewParams(opts[0], period, "70", "full", null), false, "nothing guessed is sent");
+  // a lone holding without an owner (the whole list from an old backend) is still offered, and says so
+  const alone = entityOptions([nameless]);
+  assert.equal(alone[0].label, "ZZ5EC — ZZ Five EC — owner unknown");
+  assert.equal(alone[0].owner_node, null);
+  // a current period that is not an object at all is still the list's refusal
+  assert.throws(() => entityOptions([{ ...nameless, current: null }]), /current/);
 });
 
 test("Failure path: an entity choice without its group, or no entities list, throws", () => {
@@ -466,7 +526,7 @@ test("A request error for the newest input is shown as its message; cancel drops
 const EDITABLE = () => ratesModule.ownershipDraftEdits(pendingView(PENDING).items);
 
 function editHelpers() {
-  return load(["need", "entityOptions", "periodGroups", "previewParams", "effectPanel", "editForm", "pendingEdits"], {
+  return load(["need", "ownerOf", "entityOptions", "periodGroups", "previewParams", "effectPanel", "editForm", "pendingEdits"], {
     ownershipEffectView,
     dueDateText,
     periodName,
@@ -481,7 +541,7 @@ test("O67 editForm: the golden pending draft's server edit loads its node, first
   const edit = EDITABLE()[name];
   assert.ok(edit, "the golden draft is editable");
   const loaded = editForm(name, edit, entities, groups);
-  assert.deepEqual(loaded, { entityKey: "ZZ5B1|ECL_GROUP", periodKey: "2025/10", pct: "80", method: "full" });
+  assert.deepEqual(loaded, { entityKey: "ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", periodKey: "2025/10", pct: "80", method: "full" });
   const entity = entities.find((o) => o.key === loaded.entityKey);
   const period = groups.flatMap((g) => g.options).find((o) => o.key === loaded.periodKey);
   assert.deepEqual(previewParams(entity, period, loaded.pct, loaded.method, name), {
@@ -493,6 +553,31 @@ test("O67 editForm: the golden pending draft's server edit loads its node, first
     consolidation_method: "full",
     name,
   });
+});
+
+test("k117 finding G: an edit that names its owner_node loads THAT holding, not the first of the entity's choices in the group", () => {
+  // PR #459 re-review: choices are keyed per holding (entity|group|owner) since
+  // finding 5, but editForm matched by entity + group alone, so with two
+  // holders in one group an Edit loaded the first holding and the server
+  // refused the edit. The server's op_edit now carries owner_node; the form
+  // matches the choice whose current.owner_node equals it, and falls back to
+  // entity + group only when the server sends no owner.
+  const { entityOptions, periodGroups, editForm } = editHelpers();
+  const held = (owner_node, owner_label, pct) => ({
+    entity: "ZZ5EC", entity_name: "ZZ Five EC", consolidation_group: "ECL_GROUP",
+    current: { name: `OP-${owner_label}-ZZ5EC-2025-01-01`, effective_date: "2025-01-01", end_date: null,
+      ownership_pct: pct, consolidation_method: "full", owner_node, owner_label },
+  });
+  const entities = entityOptions([held("CG-ECL_GROUP-US_USA", "US_USA", 60), held("CG-ECL_GROUP-", "ECL_GROUP", 20)]);
+  const groups = periodGroups(OWNERSHIP.change.periods);
+  const base = { consolidation_group: "ECL_GROUP", entity: "ZZ5EC", fiscal_year: 2025, fiscal_period: 10, ownership_pct: 25, consolidation_method: "full" };
+  assert.equal(editForm("OP-ECL_GROUP-ZZ5EC-2025-10-01", { ...base, owner_node: "CG-ECL_GROUP-" }, entities, groups).entityKey, "ZZ5EC|ECL_GROUP|CG-ECL_GROUP-");
+  assert.equal(editForm("OP-US_USA-ZZ5EC-2025-10-01", { ...base, owner_node: "CG-ECL_GROUP-US_USA" }, entities, groups).entityKey, "ZZ5EC|ECL_GROUP|CG-ECL_GROUP-US_USA");
+  // an owner this form does not offer: refused naming the draft, never the first holding
+  assert.throws(() => editForm("OP-X-ZZ5EC-2025-10-01", { ...base, owner_node: "CG-ECL_GROUP-NOPE" }, entities, groups), /OP-X-ZZ5EC-2025-10-01[\s\S]*CG-ECL_GROUP-NOPE/);
+  // no owner from the server (an older backend, or a row without one): entity + group, as before
+  assert.equal(editForm("OP-ZZ5EC-2025-10-01", { ...base, owner_node: null }, entities, groups).entityKey, "ZZ5EC|ECL_GROUP|CG-ECL_GROUP-US_USA");
+  assert.equal(editForm("OP-ZZ5EC-2025-10-01", base, entities, groups).entityKey, "ZZ5EC|ECL_GROUP|CG-ECL_GROUP-US_USA");
 });
 
 test("O67 failure path: an edit whose node or period is not a choice here, or that lacks a key, throws naming the draft", () => {
@@ -545,7 +630,7 @@ function saveHarness(editingName) {
     saving: { value: false },
     selectedPeriod: { value: { fiscal_year: 2025, fiscal_period: 10 } },
     selectedEntity: { value: { group: "ECL_GROUP", entity: "ZZ5B1" } },
-    form: { entityKey: "ZZ5B1|ECL_GROUP", periodKey: "2025/10", pct: "75", method: "full" },
+    form: { entityKey: "ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", periodKey: "2025/10", pct: "75", method: "full" },
     editing: { value: editingName },
     saveError: { value: null },
     saved: { value: null },
@@ -616,7 +701,7 @@ function openHarness(editable) {
 test("O67 openDraft: loads the server's edit into the form and marks the draft being edited", () => {
   const h = openHarness(EDITABLE());
   h.openDraft("OP-ZZ5B1-2025-10-01");
-  assert.deepEqual({ ...h.refs.form }, { entityKey: "ZZ5B1|ECL_GROUP", periodKey: "2025/10", pct: "80", method: "full" });
+  assert.deepEqual({ ...h.refs.form }, { entityKey: "ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", periodKey: "2025/10", pct: "80", method: "full" });
   assert.equal(h.refs.editing.value, "OP-ZZ5B1-2025-10-01");
   assert.equal(h.refs.editError.value, null);
   assert.equal(h.refs.saved.value, null, "an older saved line is cleared");
@@ -656,7 +741,7 @@ test("O67 wiring: props editable + openEdit, opened once on mount, the preview w
 // ---------------------------------------------------------------------------
 
 function currentHelpers() {
-  return load(["need", "entityOptions", "periodGroups", "currentText", "effectPanel", "shownCurrent"], {
+  return load(["need", "ownerOf", "entityOptions", "periodGroups", "currentText", "effectPanel", "shownCurrent"], {
     ownershipEffectView,
     dueDateText,
   });
@@ -668,9 +753,9 @@ test("R52r: picking an entity carries its node's current period from the golden 
   assert.deepEqual(
     opts.map((o) => [o.key, o.current.name]),
     [
-      ["ZZ5B1|ECL_GROUP", "OP-ZZ5B1-1"],
-      ["ZZ5B1|ZZ_SUBGROUP", "OP-ZZ5B1-SUB"],
-      ["ZZ5B3|ECL_GROUP", "OP-ZZ5B3-1"],
+      ["ZZ5B1|ECL_GROUP|CG-ECL_GROUP-", "OP-ZZ5B1-1"],
+      ["ZZ5B1|ZZ_SUBGROUP|CG-ZZ_SUBGROUP-", "OP-ZZ5B1-SUB"],
+      ["ZZ5B3|ECL_GROUP|CG-ECL_GROUP-", "OP-ZZ5B3-1"],
     ],
   );
 });

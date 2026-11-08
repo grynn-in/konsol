@@ -80,8 +80,10 @@ def _controller():
     nestedset.NestedSet = type("NestedSet", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
     ch = types.ModuleType("konsol.clickhouse")
     ch.after_commit_once = ch.sync_doctype_after_commit = ch.sync_table = lambda *a, **k: None
+    konsol = types.ModuleType("konsol")
+    konsol.__path__ = [APP_DIR]   # the real pure konsol.ownership_graph_model imports through the stub
     mods = {"frappe": frappe, "frappe.utils": types.ModuleType("frappe.utils"),
-            "frappe.utils.nestedset": nestedset, "konsol": types.ModuleType("konsol"),
+            "frappe.utils.nestedset": nestedset, "konsol": konsol,
             "konsol.clickhouse": ch}
     return _exec(os.path.join(CG_DIR, "consolidation_group.py"), mods, "cg_under_test")
 

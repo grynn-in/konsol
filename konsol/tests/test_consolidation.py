@@ -247,13 +247,15 @@ def test_ownership_period_allows_a_group_node():
 # not catch a behaviour change.
 
 
-def test_ownership_period_rejects_dates_clickhouse_would_clamp():
-    """ClickHouse Date holds 1970-01-01..2149-06-06 and clamps silently, so the
-    document and the warehouse would disagree about when a period starts."""
+def test_ownership_period_does_not_copy_the_warehouse_date_range():
+    """ClickHouse Date holds 1970-01-01..2149-06-06 and clamps silently. The
+    refusal is tested by behaviour in test_ownership_period.py
+    (test_a_date_outside_the_warehouse_range_is_refused_by_sentence_at_both_bounds,
+    which also pins the range to fiscal_structure_model's); this keeps only
+    the one structural check: no second copy of the literals (PR #449 finding
+    7; PR #459 finding J)."""
     src = _ownership_period_src()
-    assert "_validate_dates_representable" in src
-    assert '_CH_DATE_MIN = "1970-01-01"' in src
-    assert '_CH_DATE_MAX = "2149-06-06"' in src
+    assert '"1970-01-01"' not in src and '"2149-06-06"' not in src
 
 
 def test_ownership_period_zero_is_a_real_percentage():
