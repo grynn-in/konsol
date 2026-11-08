@@ -545,9 +545,11 @@ class OwnershipPeriod(Document):
         """Refuse a method the warehouse does not compute (konsol#429).
 
         gold_consolidated_trial_balance excludes only ``equity`` and ``none``
-        and computes group_amount = translated x pct and nci_amount =
-        translated x (1 - pct) with no method branch, so a period declared
-        ``proportional`` consolidates as a full subsidiary with NCI. Proportional
+        and, since konsolidat#204 (a) (konsol#117 pair 2), carries every other
+        row at 100% (group_amount = translated) with the minority as one NCI
+        line (nci_amount = translated x (1 - pct), posted by the attribution
+        layer) and no method branch, so a period declared ``proportional``
+        consolidates as a full subsidiary with NCI. Proportional
         consolidation is the venturer's share of each line with no NCI: the
         number would be wrong and nothing would say so. The Select keeps the
         option (#117 decides whether to implement it for IFRS 11 joint

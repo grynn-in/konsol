@@ -59,6 +59,7 @@ _LAYER_LABELS = {
     "reclassification": "Top-side journals",
     "auto_reversal": "Top-side journals",
     "equity_method": "Equity method",
+    "nci_attribution": "Non-controlling interests",
     "acquisition": "Acquisitions and disposals",
     "pnl_proration": "Acquisitions and disposals",
     "goodwill_amortisation": "Acquisitions and disposals",
