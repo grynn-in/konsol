@@ -1,0 +1,55 @@
+{
+ "app": "konsol",
+ "creation": "2026-11-07 23:30:00.000000",
+ "docstatus": 0,
+ "doctype": "Dock",
+ "idx": 0,
+ "items": [
+  {
+   "added": 0,
+   "hidden": 0,
+   "icon": "calendar-check",
+   "link_to": "Close",
+   "link_type": "Sidebar",
+   "title": "Close"
+  },
+  {
+   "added": 0,
+   "hidden": 0,
+   "icon": "wallet",
+   "link_to": "Planning",
+   "link_type": "Sidebar",
+   "title": "Planning"
+  },
+  {
+   "added": 0,
+   "hidden": 0,
+   "icon": "network",
+   "link_to": "Structure",
+   "link_type": "Sidebar",
+   "title": "Structure"
+  },
+  {
+   "added": 0,
+   "hidden": 0,
+   "icon": "database",
+   "link_to": "Pipeline",
+   "link_type": "Sidebar",
+   "title": "Data"
+  },
+  {
+   "added": 0,
+   "hidden": 0,
+   "icon": "library",
+   "link_to": "Konsol Handbook",
+   "link_type": "Workspace",
+   "title": "Info"
+  }
+ ],
+ "modified": "2026-11-08 02:00:00.000000",
+ "modified_by": "Administrator",
+ "name": "konsol",
+ "owner": "Administrator",
+ "standard": 1,
+ "user": ""
+}

@@ -4,6 +4,47 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (8 Nov 2026, small hours): rail, Planning and Desk look, #454–#463.** Every item below was decided by Deepak Pai on 7 Nov 2026 (record: #443 comments; memory `decision-desk-ia-rail`) and checked live on konsolidat.local.
+- **Rail:** Close · Planning · Structure · Data · Info. "Handbook" is titled Info (#454).
+- **Planning (#460, option B; rejected A two rail entries, C Forecast doctypes, D unfiltered duplicates):**
+  - Budget is replaced by one Planning entry: Budget and Forecast sections filtered by a fetched read-only `scenario_type` on Budget Cycle, Sheet and Annual Input, plus a Shared section (Scenarios, Spread Profiles, All Cycles / Sheets / Annual Inputs).
+  - `Scenario.validate` refuses a type change while it is referenced, using locking reads; the copy is taken under `LOCK IN SHARE MODE`.
+  - `Budget Cycle.scenario_id` is `set_only_once`.
+  - Accepted risk, documented in `scenario.py`: a cycle save and a concurrent type change can deadlock (1213, nothing stale).
+  - Patches: `backfill_planning_scenario_type`, `delete_budget_rail`.
+- **Sidebar look (#455, #456, #458, #461, #463):**
+  - Section headings are a band in `--konsol-brand-strong` with white text and a white chevron (the `<use>` stroke too), 24px tall with 2px gaps.
+  - `keep_closed` on every section; a user's own open/close state in localStorage wins.
+  - Scoped by `.body-sidebar[data-title]` to the shipped titles (`test_konsol_sidebar_look.py`).
+- **Whole Desk (#461):** `konsol_theme.bundle.css` sets Frappe's radius variables to 2px. `--radius-full` stays, so avatars and pills stay round. Rejected: konsol pages only.
+- **My Work (#457):** each card is a `<details>` showing only its heading; Expand all / Collapse all in the top bar; 2px corners. This applies to all three columns.
+- **CSS bundles (#462):** the three stylesheets are `konsol_*.bundle.css`, named bare in `app_include_css`, so each build gets a hashed URL and no hard refresh is needed. The image builds them in `bench get-app`.
+  - Live hot-patch: `docker cp` the `.bundle.css`, then `bench build --app konsol` in `konsolidat_backend` (it also rebuilds close-ui), then `frappe.clear_cache()`. Frappe's manifest entries were checked unchanged.
+- **Upgrade:** `bench migrate` (both patches, the sidebars, workspaces and Dock). Deploy rebuilds the image for the bundles.
+- **Live stack note:** konsolidat.local's code is behind main. These changes were installed by targeted import, not a full migrate.
+
+**Update (7 Nov 2026, late night): Desk IA (konsol#443) merged as #451 (5ec72b7d).** The rail no longer shows module names (Konsol / EPM / Pipeline, two of them computed sidebars), plus a stray Konsolidat workspace.
+- **Decisions (Deepak Pai, 7 Nov, on #443):**
+  - Rail Close / Budget / Structure / Data / Handbook. Rejected: Setup, Integration.
+  - Ownership Periods under Structure. Handbook is its own rail entry.
+  - The Dock returns, superseding the 5 Nov no-dock test.
+  - Waiting shortcuts take the one doctype label, with no "waiting" suffix, up to 23 characters. This replaces #439's short nouns.
+  - Mechanism from the Fable 5.1 review: a shipped Dock plus sidebars per module, not navigation-only modules with `code_only_modules`.
+- **What ships:**
+  - `konsol/dock/konsol/konsol.json`.
+  - Sidebars Close (Consolidation), Budget (EPM), Structure (new module **Structure**, `konsol/structure/`, sidebar and page only) and Pipeline (rail row titled "Data", because Frappe owns the module name Data).
+  - Landing workspaces Budget, Structure and Data.
+  - `konsol/desk_labels.py`, one label per doctype, pinned by `test_desk_navigation.py` (each non-child doctype on exactly one sidebar; one sidebar per workspace module; `modules.txt` matches).
+  - Patch `delete_konsolidat_workspace`. `after_migrate` no longer rebuilds Konsolidat; `dashboard.py` stays only for `retire_allocation`.
+- **Why Structure is its own module:** the review found that a sidebar lists every workspace of its module, so with Close and Structure both in Consolidation the Structure page opened under Close.
+- **Live (konsolidat.local):** I imported the navigation records only, because that stack's code is behind main. `get_bootinfo` shows the five-row dock, each doctype in its shell, and each sidebar claiming only its own pages.
+  - I deleted a site Custom Sidebar on that site only, at Deepak's choice. It reordered the old computed Pipeline list.
+  - The site's Module Def "Structure" was created by hand for the check; migrate creates it elsewhere.
+- **Upgrade:** `bench migrate`. It creates the Module Def, imports the Dock, sidebars and workspaces, and runs the patch. A site's own Custom Sidebar on the old Pipeline or EPM sidebar still applies on top of the shipped one; delete it if the order looks wrong.
+- **Not verified:** `/desk/data` in a browser (the review traced `router.js` and found no misroute), and the install.py change under a real migrate.
+
+**Update (7 Nov 2026, night): Konsol home look and feel, #438, merged as #439 (6dc91190).** Deepak Pai asked to "improve the look and feel of the home page". Presentation only, no data contract or policy change: `konsol/public/css/konsol_desk.css` (hooked by `app_include_css`, every rule scoped to `body[data-route="Workspaces/Konsol"]`, Frappe variables only) turns the six band pills into stat values and gives section headers a Brand Colour rule; the checklist block gets a progress bar and two columns above 720 px with its order unchanged; the workspace reads band → checklist → Waiting for approval → Monthly close → Close trends, the eight waiting shortcuts carry noun labels at three per row; three charts set `axisOptions` so x labels read "FY2025 P01" in full. `test_konsol_home_look.py` pins the scope, the order and the labels. Measured live after (1456 px): cards 104 px with a 17 px value, checklist 441 px (was ~600), no truncated shortcut title. Left as filed on #438: the page repeats the sidebar's Approvals and Monthly close lists (a content decision for Deepak Pai), and frappe-charts clips a legend of six or more series (no option). Upgrade: `bench migrate` re-imports the workspace, the charts and the block; nothing else.
+
 **Update (7 Nov 2026, night): #424 wave 2 merged: #374 (b) and the Cube removal; #117 design posted.**
 - **#374 (b):** konsolidat#287 (replaces #285) + konsol#436 (8d3d77bc). Historical Equity Rate stores a required `to_currency`; its name carries it; the warehouse joins a rate on (owning group, entity, account, `to_currency` = the consolidating group's reporting currency); `assert_declared_historical_has_a_rate` names the missing (group, currency) pair. Review round: seven findings fixed (a stale ClickHouse sorting key now refuses the sync by name, `SortingKeyStale`, visible in `check_health`). Live: 37/37 rates filled and renamed; `gold_consolidated_trial_balance` identical before and after (4471 rows, EXCEPT empty both ways).
   - **Upgrade, in this order:** deploy both repos together; `bench migrate` (patch `fill_historical_rate_to_currency` → `after_migrate` reconcile → `ensure_reference_tables` issues the one `ALTER TABLE … ADD COLUMN to_currency, MODIFY ORDER BY (…, to_currency)` → re-sync) **before** the next `dbt build`. A build before the migrate fails loudly with `Unknown identifier to_currency`. If the ALTER did not land, the rates table is refused by name at every sync until fixed by hand.

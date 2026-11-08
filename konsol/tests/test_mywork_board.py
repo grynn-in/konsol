@@ -33,7 +33,7 @@ MW = _load("test_mywork_board_mywork_model", os.path.join("close", "mywork_model
 HANDBOOK_PAGES = os.path.join(APP_DIR, "handbook_pages")
 BLOCK_DIR = os.path.join(APP_DIR, "consolidation", "custom_html_block", "konsol_my_work_board")
 WORKSPACE = os.path.join(APP_DIR, "consolidation", "workspace", "my_work", "my_work.json")
-SIDEBAR = os.path.join(APP_DIR, "consolidation", "sidebar", "konsol", "konsol.json")
+SIDEBAR = os.path.join(APP_DIR, "consolidation", "sidebar", "close", "close.json")
 API = os.path.join(APP_DIR, "close", "mywork_board_api.py")
 MYWORK_API = os.path.join(APP_DIR, "close", "mywork_api.py")
 HANDBOOK_JS = os.path.join(APP_DIR, "consolidation", "custom_html_block", "konsol_handbook",
@@ -422,3 +422,30 @@ def test_the_handbook_opens_the_page_a_link_names():
     js = _read(HANDBOOK_JS)
     assert 'URLSearchParams(window.location.search).get("page")' in js
     assert "openPage(" in js
+
+
+def test_cards_show_only_their_heading_until_opened():
+    """Deepak Pai, 7 Nov 2026: "on the my work -> to do -> just show the
+    headings with a collapsible link and collapse all /expand all toggle
+    button on the top bar". Each card is a <details> whose <summary> is the
+    heading (title and period); everything else sits inside, closed on load.
+    One top-bar button opens or closes every card and names what it will do."""
+    js = _read(os.path.join(BLOCK_DIR, "konsol_my_work_board.js"))
+    assert 'el("details", "kmw-card kmw-" + card.kind)' in js
+    assert 'el("summary", "kmw-card-head")' in js
+    assert ".open = true" not in js.split("function cardNode", 1)[1].split("function columnNode", 1)[0], \
+        "a card starts closed"
+    for needle in ('"Expand all"', '"Collapse all"', 'querySelectorAll("details.kmw-card")'):
+        assert needle in js, needle
+    css = _read(os.path.join(BLOCK_DIR, "konsol_my_work_board.css"))
+    assert "summary.kmw-card-head" in css and "cursor: pointer" in css
+
+
+def test_corners_are_nearly_square():
+    """Deepak Pai, 7 Nov 2026: "reduce rounded edges...looks too appy...like it
+    less rounded". Every radius on the board is 2px at most."""
+    css = _read(os.path.join(BLOCK_DIR, "konsol_my_work_board.css"))
+    radii = re.findall(r"border-radius:\s*([^;]+);", css)
+    assert radii, "no radius found"
+    for value in radii:
+        assert re.fullmatch(r"[0-2]px", value.strip()), value

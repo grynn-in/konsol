@@ -60,6 +60,11 @@ class BudgetAnnualInput(Document):
     CH_FIELD_MAP = _FieldMap()
 
     def validate(self):
+        # The copy the Planning sidebar filters on, taken under a share lock
+        # so it cannot race a Scenario type change (review of #460).
+        from konsol.epm.doctype.scenario.scenario import locked_scenario_type
+
+        self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
         self._guard_cycle_locked()
         self._validate_unique_grain()

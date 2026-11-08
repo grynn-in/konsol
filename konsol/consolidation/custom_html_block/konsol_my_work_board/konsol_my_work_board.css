@@ -33,7 +33,7 @@
 .kmw-column {
 	background: var(--subtle-fg);
 	border: 1px solid var(--border-color);
-	border-radius: var(--border-radius-md);
+	border-radius: 2px;
 	padding: var(--padding-sm);
 	display: flex;
 	flex-direction: column;
@@ -55,7 +55,7 @@
 	padding: 2px 4px;
 }
 .kmw-count {
-	border-radius: 999px;
+	border-radius: 2px;
 	background: var(--control-bg);
 	color: var(--text-muted);
 	padding: 0 8px;
@@ -65,7 +65,7 @@
 	background: var(--card-bg);
 	border: 1px solid var(--border-color);
 	border-left: 3px solid var(--gray-400);
-	border-radius: var(--border-radius-md);
+	border-radius: 2px;
 	padding: var(--padding-sm) var(--padding-md);
 	box-shadow: var(--shadow-xs);
 }
@@ -148,4 +148,25 @@
 }
 .kmw-message {
 	color: var(--text-muted);
+}
+
+/* A card is a <details>: its summary is the heading, the rest opens on click
+ * (Deepak Pai, 7 Nov 2026). The marker is drawn here so it follows the theme. */
+summary.kmw-card-head {
+	cursor: pointer;
+	list-style: none;
+}
+summary.kmw-card-head::-webkit-details-marker {
+	display: none;
+}
+summary.kmw-card-head::before {
+	content: "\25B8";
+	color: var(--text-muted);
+	margin-right: var(--margin-xs);
+}
+details.kmw-card[open] > summary.kmw-card-head::before {
+	content: "\25BE";
+}
+details.kmw-card:not([open]) {
+	padding-bottom: var(--padding-xs);
 }

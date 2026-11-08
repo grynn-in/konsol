@@ -8,9 +8,14 @@ and picks Approve or Reject from its Actions menu. konsol now works the same:
 - every approval doctype loads ``public/js/approval_actions.js`` on its form,
   which puts Approve and Reject in the Actions menu and asks the server
   (``approval_api.approve_mode``) whether a reason is needed;
-- the sidebar's Approvals section and the home page's "Waiting for approval"
-  shortcuts open each list filtered to what is waiting: a workflow doctype by
-  its "Pending Approval" state, any other by ``docstatus`` 0;
+- the home page's "Waiting for approval" shortcuts open each list filtered to
+  what is waiting: a workflow doctype by its "Pending Approval" state, any
+  other by ``docstatus`` 0. The sidebars carry no "waiting" lists (Desk IA,
+  7 Nov 2026: each doctype on exactly one sidebar, filtered links on
+  workspaces), so the sidebar's old Approvals section is gone. The one
+  exception is Planning's budget and forecast links, filtered on
+  ``scenario_type`` (Deepak Pai, 7 Nov 2026, option B on #443), pinned to
+  their declared pairs by test_desk_navigation;
 - the Approvals report is gone, and a patch removes its Report record.
 
 Rejected (same day): adding Frappe Workflows to the rate doctypes. Code
@@ -113,23 +118,18 @@ def test_the_workflow_doctypes_named_in_the_script_are_the_installed_ones():
     assert named == _workflow_doctypes(), named
 
 
-def test_the_sidebar_approvals_section_lists_what_is_waiting():
-    items = _load("consolidation/sidebar/konsol/konsol.json")["items"]
-    assert not any(i.get("link_type") == "Report" and i.get("link_to") == "Approvals" for i in items)
-    start = next(n for n, i in enumerate(items)
-                 if i["type"] == "Section Break" and i["label"] == "Approvals")
-    section = []
-    for item in items[start + 1:]:
-        if item["type"] == "Section Break":
-            break
-        section.append(item)
-    by_doctype = {i["link_to"]: i for i in section}
-    assert set(by_doctype) == _listed(), sorted(by_doctype)
-    for doctype, item in by_doctype.items():
-        assert item["link_type"] == "DocType" and item["child"] == 1
-        # The doctype's own unfiltered link (Monthly close, Deals) claims it.
-        assert item["is_default_module"] == 0, doctype
-        assert json.loads(item["filters"]) == [_pending_filter(doctype)], doctype
+def test_no_sidebar_lists_the_approvals_report_or_a_filtered_list():
+    """Desk IA (7 Nov 2026): what is waiting is on the Close home page; no
+    sidebar link filters on anything but a scenario type (#443)."""
+    for path in glob.glob(os.path.join(APP_DIR, "*", "sidebar", "*", "*.json")):
+        items = _load(os.path.relpath(path, APP_DIR))["items"]
+        assert not any(i.get("link_type") == "Report" and i.get("link_to") == "Approvals"
+                       for i in items), path
+        assert not any(i["type"] == "Section Break" and i["label"] == "Approvals"
+                       for i in items), path
+        assert not any(i.get("filters")
+                       and {f[1] for f in json.loads(i["filters"])} != {"scenario_type"}
+                       for i in items), path
 
 
 def test_home_shows_a_waiting_count_per_approval_doctype():

@@ -1,0 +1,27 @@
+/*
+ * Konsol Desk theme: nearly square corners on every page (Deepak Pai, 7 Nov
+ * 2026: "less rounded boxes everywhere"; asked how far, "Whole Desk"; the
+ * alternative, konsol pages only, was rejected).
+ *
+ * Frappe v16 defines its radii as variables on :root
+ * (frappe/public/css/espresso/radius.css). This file is loaded by
+ * app_include_css after desk.bundle.css; html:root outranks :root, so the
+ * order does not matter. --radius-full and --radius-9 are left alone, so
+ * avatars, status pills and toggles stay round. test_konsol_theme.py pins it.
+ */
+html:root {
+	--radius: 2px;
+	--radius-sm: 2px;
+	--radius-md: 2px;
+	--radius-lg: 2px;
+	--radius-xl: 2px;
+	--radius-2xl: 2px;
+	--radius-1: 2px;
+	--radius-2: 2px;
+	--radius-3: 2px;
+	--radius-4: 2px;
+	--radius-5: 2px;
+	--radius-6: 2px;
+	--radius-7: 2px;
+	--radius-8: 2px;
+}

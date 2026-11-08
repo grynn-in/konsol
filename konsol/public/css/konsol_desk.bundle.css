@@ -1,0 +1,84 @@
+/*
+ * Konsol home: look and feel (konsol#407 follow-up; Deepak Pai, 7 Nov 2026:
+ * "improve the look and feel of the home page").
+ *
+ * Every rule is scoped to the Konsol workspace: on that page document.body
+ * carries data-route="Workspaces/Konsol", so nothing else in the Desk
+ * changes (test_konsol_home_look.py pins the scope). Colours are Frappe
+ * variables only, so the dark theme and the per-site Brand Colour
+ * (konsol_brand.js sets --konsol-brand) come through; no colour is named here.
+ *
+ * Measured before (1456 px window, light theme, Frappe 16.55.2): each close
+ * band card was 79 px tall and showed a 20 px indicator pill as its whole
+ * value; section headers were muted grey.
+ */
+
+/* --- Close band: six Custom number cards read as stat tiles ---------------- */
+
+/* An even 3 x 2 grid: a one-line value and a wrapped one get the same height. */
+body[data-route="Workspaces/Konsol"] .widget.number-widget-box {
+	min-height: 6.5rem;
+}
+
+/* overview_model.card writes an indicator pill into .number (optionally in
+ * an <a>). Drop the pill's chip and show it as the card's value; the tone
+ * class keeps the coloured dot its ::before draws. */
+body[data-route="Workspaces/Konsol"] .widget.number-widget-box .widget-content .number .indicator-pill {
+	display: inline-flex;
+	align-items: flex-start;
+	height: auto;
+	padding: 0;
+	background: none;
+	border-radius: 0;
+	font-size: var(--text-xl);
+	font-weight: 600;
+	letter-spacing: 0;
+	line-height: 1.35;
+	color: var(--heading-color);
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+body[data-route="Workspaces/Konsol"] .widget.number-widget-box .widget-content .number .indicator-pill::before {
+	display: block;
+	width: 8px;
+	height: 8px;
+	margin-top: 0.55em;
+	margin-right: 8px;
+}
+
+body[data-route="Workspaces/Konsol"] .widget.number-widget-box .widget-content .number a,
+body[data-route="Workspaces/Konsol"] .widget.number-widget-box .widget-content .number a:hover {
+	color: inherit;
+	text-decoration: none;
+}
+
+/* --- Section headers ------------------------------------------------------- */
+
+/* Frappe's rule is [data-page-route=Workspaces] .codex-editor
+ * .codex-editor__redactor .ce-block .ce-block__content .ce-header .h4
+ * (colour var(--text-light)); the same chain under body[data-route] outranks
+ * it without !important. */
+/* Space between sections, not above the first block on the page. */
+body[data-route="Workspaces/Konsol"] .codex-editor .codex-editor__redactor .ce-block:not(:first-child) .ce-block__content .ce-header {
+	margin-top: var(--margin-lg);
+}
+
+body[data-route="Workspaces/Konsol"] .codex-editor .codex-editor__redactor .ce-block .ce-block__content .ce-header .h4 {
+	display: inline-block;
+	color: var(--heading-color);
+}
+
+/* A short rule in the Brand Colour under the header text. --konsol-brand is set
+ * by konsol_brand.js only when the site has a Brand Colour; the fallback is the
+ * heading colour, visible on both themes (--primary alone is Bootstrap's
+ * #171717 on an unbranded site: invisible on dark). */
+body[data-route="Workspaces/Konsol"] .codex-editor .codex-editor__redactor .ce-block .ce-block__content .ce-header .h4::after {
+	content: "";
+	display: block;
+	width: 2rem;
+	height: 2px;
+	margin-top: 0.25rem;
+	border-radius: 1px;
+	background: var(--konsol-brand, var(--heading-color));
+}

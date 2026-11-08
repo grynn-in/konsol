@@ -1,0 +1,69 @@
+{
+ "charts": [],
+ "content": "[{\"id\": \"h0\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Warehouse and pipelines</b></span>\", \"col\": 12}}, {\"id\": \"c0\", \"type\": \"number_card\", \"data\": {\"number_card_name\": \"Warehouse Freshness\", \"col\": 4}}, {\"id\": \"s0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Connector Health\", \"col\": 4}}, {\"id\": \"s1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Build Approvals\", \"col\": 4}}, {\"id\": \"s2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Pipeline Runs\", \"col\": 4}}, {\"id\": \"s4\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Connectors\", \"col\": 4}}]",
+ "creation": "2026-11-07 23:30:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "Data",
+ "links": [],
+ "modified": "2026-11-07 23:55:00.000000",
+ "modified_by": "Administrator",
+ "module": "Pipeline",
+ "name": "Data",
+ "number_cards": [
+  {
+   "label": "Warehouse Freshness",
+   "number_card_name": "Warehouse Freshness"
+  }
+ ],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "restrict_to_domain": "",
+ "roles": [],
+ "sequence_id": 6.0,
+ "shortcuts": [
+  {
+   "color": "Orange",
+   "doc_view": "List",
+   "label": "Connector Health",
+   "link_to": "Connector Health",
+   "type": "DocType",
+   "stats_filter": "[[\"Connector Health\", \"last_sync_status\", \"in\", [\"Failed\", \"Stale\"]]]",
+   "format": "{} failing"
+  },
+  {
+   "color": "Orange",
+   "doc_view": "List",
+   "label": "Build Approvals",
+   "link_to": "Build Approval",
+   "type": "DocType",
+   "stats_filter": "[[\"Build Approval\", \"workflow_state\", \"=\", \"Pending Review\"]]",
+   "format": "{} waiting"
+  },
+  {
+   "color": "Blue",
+   "doc_view": "List",
+   "label": "Pipeline Runs",
+   "link_to": "Pipeline Run",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Connectors",
+   "link_to": "Connector",
+   "type": "DocType"
+  }
+ ],
+ "standard": 1,
+ "title": "Data",
+ "type": "Workspace"
+}

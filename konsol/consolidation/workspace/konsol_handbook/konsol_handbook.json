@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\": \"hbk\", \"type\": \"custom_block\", \"data\": {\"custom_block_name\": \"Konsol Handbook\", \"col\": 12}}]",
+ "content": "[{\"id\": \"hbk\", \"type\": \"custom_block\", \"data\": {\"custom_block_name\": \"Konsol Handbook\", \"col\": 12}}, {\"id\": \"hbg\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Konsol Guide Pages\", \"col\": 4}}]",
  "creation": "2026-11-07 18:00:00.000000",
  "custom_blocks": [
   {
@@ -17,7 +17,7 @@
  "is_hidden": 0,
  "label": "Konsol Handbook",
  "links": [],
- "modified": "2026-11-07 18:00:00.000000",
+ "modified": "2026-11-07 23:30:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Konsol Handbook",
@@ -29,7 +29,15 @@
  "restrict_to_domain": "",
  "roles": [],
  "sequence_id": 2.0,
- "shortcuts": [],
+ "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Konsol Guide Pages",
+   "link_to": "Konsol Guide Page",
+   "type": "DocType"
+  }
+ ],
  "standard": 1,
  "title": "Konsol Handbook",
  "type": "Workspace"

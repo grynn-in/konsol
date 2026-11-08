@@ -22,7 +22,23 @@ function deskRoute(route) {
 function render(data) {
 	const head = el("div", "kc-head");
 	head.append(el("span", "kc-title", "Period close · " + data.title));
-	if (data.total) head.append(el("span", "kc-count", `${data.done} of ${data.total} done`));
+	if (data.total) {
+		// One clamped value drives the text, the bar and its aria state.
+		const done = Math.min(data.total, Math.max(0, data.done));
+		const count = el("span", "kc-count", `${done} of ${data.total} done`);
+		count.id = "kc-count";
+		head.append(count);
+		const bar = el("div", "kc-progress");
+		bar.setAttribute("role", "progressbar");
+		bar.setAttribute("aria-labelledby", count.id);
+		bar.setAttribute("aria-valuemin", "0");
+		bar.setAttribute("aria-valuemax", String(data.total));
+		bar.setAttribute("aria-valuenow", String(done));
+		const fill = el("div", "kc-progress-fill");
+		fill.style.width = Math.round((100 * done) / data.total) + "%";
+		bar.append(fill);
+		head.append(bar);
+	}
 	const nodes = [head];
 	if (data.reason) nodes.push(el("p", "kc-reason", data.reason));
 	const list = el("ul", "kc-list");
