@@ -224,7 +224,9 @@ class _Site:
 
     def __init__(self, *, periods=None, root=None, rates=None, accounts=None, tbs=(), ownership=(),
                  disposals=(), disposal_table=True, deals=(), retained_earnings=(), tb_tsv="",
-                 profiles=None, entities=None, charts=None, nodes=None):
+                 profiles=None, entities=None, charts=None, nodes=None, declarations=()):
+        #: Consolidation Method Declaration child rows of the root (konsol#117 pair 3 D)
+        self.declarations = [dict(d) for d in declarations]
         #: Consolidation Group nodes by name (#117 pair 1 F): {name, consolidation_group,
         #: data_area_id, parent_consolidation_group}; the root row above is the group node.
         self.nodes = {n["name"]: dict(n) for n in (nodes or ())}
@@ -353,6 +355,8 @@ class _Site:
                 field, _, direction = order_by.partition(" ")
                 rows.sort(key=lambda r: str(r.get(field) or ""), reverse=direction.lower() == "desc")
             return rows[:limit_page_length] if limit_page_length else rows
+        if doctype == "Consolidation Method Declaration":
+            return [_Row(r) for r in self.declarations if _match(r, filters or {})]
         if doctype == "Main Account":
             filters = filters or {}
             if "is_retained_earnings" in filters:
@@ -539,6 +543,52 @@ def test_a_deal_into_a_fully_held_entity_is_not_refused_as_a_joint_operation():
 
 def test_a_joint_operation_period_that_ended_before_the_deal_does_not_refuse_it():
     _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-06-30")])
+    _deal().validate()
+
+
+# -- review finding D/H: drafts, declarations, a step into control -------------
+
+DECLARATION = {"parent": "ZZG", "parenttype": "Consolidation Group", "data_area_id": "ZZE",
+               "consolidation_method": "proportional", "effective_date": "2020-01-01", "end_date": None}
+REFUSE_TAIL = "is not implemented (IFRS 11.21A). Record the change as an Ownership Period."
+
+
+def test_a_draft_proportional_period_refuses_the_deal_and_says_it_is_a_draft():
+    _Site(ownership=[dict(JOINT_OPERATION, docstatus=0)])
+    message = _refused(_deal().validate)
+    assert ("ZZE is held as a joint operation (OP-ZZG-ZZE-2020-01-01, proportional, 50%, Draft period): "
+            "a business combination into a joint operation " + REFUSE_TAIL) in message
+
+
+def test_a_cancelled_proportional_period_does_not_refuse_the_deal():
+    _Site(ownership=[dict(JOINT_OPERATION, docstatus=2)])
+    _deal().validate()
+
+
+def test_a_proportional_declaration_refuses_the_deal():
+    _Site(declarations=[DECLARATION])
+    message = _refused(_deal().validate)
+    assert ("ZZE is declared a joint operation of ZZG (Method Declaration, proportional, from 2020-01-01): "
+            "a business combination into a joint operation " + REFUSE_TAIL) in message
+
+
+def test_a_none_declaration_and_an_ended_proportional_declaration_do_not_refuse_the_deal():
+    _Site(declarations=[dict(DECLARATION, consolidation_method="none"),
+                        dict(DECLARATION, end_date="2025-06-30")])
+    _deal().validate()
+
+
+def test_a_joint_operation_that_ended_within_31_days_before_the_deal_is_a_refused_step():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-12-30")])
+    message = _refused(_deal().validate)
+    assert ("ZZE was a joint operation until 2025-12-30 (OP-ZZG-ZZE-2020-01-01, proportional): a step from a "
+            "joint operation to control " + REFUSE_TAIL) in message
+
+
+def test_a_joint_operation_that_ended_31_days_before_the_deal_is_still_a_step_and_32_is_not():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-11-30")])
+    assert "a step from a joint operation to control" in _refused(_deal().validate)
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-11-29")])
     _deal().validate()
 
 

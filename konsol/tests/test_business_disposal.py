@@ -442,7 +442,9 @@ class _OwnershipPeriodDoc(_Doc):
 
 class _Site:
     def __init__(self, *, periods=None, root=None, rates=None, accounts=None, ownership=None,
-                 disposals=None, nodes=None):
+                 disposals=None, nodes=None, declarations=()):
+        #: Consolidation Method Declaration child rows of the root (konsol#117 pair 3 D)
+        self.declarations = [dict(d) for d in declarations]
         #: Consolidation Group nodes by name (#117 pair 1 F); the root row is the group node.
         self.nodes = {n["name"]: dict(n) for n in (nodes or ())}
         self.periods = [dict(p) for p in (periods if periods is not None else [PERIOD_DEC_2025])]
@@ -505,6 +507,8 @@ class _Site:
                 return []
             quote, per = self.rates[key]
             return [_Row(quote=quote, quoted_per=per)]
+        if doctype == "Consolidation Method Declaration":
+            return [_Row(r) for r in self.declarations if _match(r, filters or {})]
         if doctype == "Ownership Period":
             rows = [_Row(r) for r in self.ownership if _match(r, filters or {})]
             if order_by:
@@ -578,6 +582,42 @@ def test_a_disposal_of_a_joint_operation_is_refused_by_name():
 def test_a_disposal_of_a_fully_held_entity_is_not_refused_as_a_joint_operation():
     _Site()
     _deal().validate()
+
+
+DECLARATION = {"parent": "ZZG", "parenttype": "Consolidation Group", "data_area_id": "ZZE",
+               "consolidation_method": "proportional", "effective_date": "2020-01-01", "end_date": None}
+REFUSE_TAIL = "is not implemented (IFRS 11.21A). Record the change as an Ownership Period."
+
+
+def test_a_draft_proportional_period_refuses_the_disposal_and_says_it_is_a_draft():
+    _Site(ownership=[dict(JOINT_OPERATION, docstatus=0)])
+    message = _refused(_deal(share_disposed_pct=50).validate)
+    assert ("ZZE is held as a joint operation (OP-ZZG-ZZE-2020-01-01, proportional, 50%, Draft period): "
+            "a disposal of a joint operation " + REFUSE_TAIL) in message
+
+
+def test_a_proportional_declaration_refuses_the_disposal():
+    _Site(declarations=[DECLARATION])
+    message = _refused(_deal().validate)
+    assert ("ZZE is declared a joint operation of ZZG (Method Declaration, proportional, from 2020-01-01): "
+            "a disposal of a joint operation " + REFUSE_TAIL) in message
+
+
+def test_a_none_declaration_does_not_refuse_the_disposal():
+    _Site(declarations=[dict(DECLARATION, consolidation_method="none")])
+    _deal().validate()
+
+
+def test_a_joint_operation_period_that_ended_before_the_disposal_does_not_refuse_it():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-06-30"), dict(HOLDING_80, name="OP-ZZG-ZZE-2025-07-01", effective_date="2025-07-01")])
+    _deal().validate()
+
+
+def test_a_joint_operation_that_ended_within_31_days_before_the_disposal_is_a_refused_step():
+    _Site(ownership=[dict(JOINT_OPERATION, end_date="2025-12-30"), dict(HOLDING_80, name="OP-ZZG-ZZE-2025-12-31", effective_date="2025-12-31")])
+    message = _refused(_deal().validate)
+    assert ("ZZE was a joint operation until 2025-12-30 (OP-ZZG-ZZE-2020-01-01, proportional): a step from a "
+            "joint operation to control " + REFUSE_TAIL) in message
 
 
 def test_validate_translates_a_deferred_line_at_the_periods_closing_rate():
