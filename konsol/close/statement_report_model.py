@@ -176,6 +176,16 @@ def _prior_values(prior):
     return values
 
 
+def has_rows_through(tb_rows, fiscal_year, fiscal_period):
+    """True when ``tb_rows`` holds a row of ``fiscal_year`` at or before
+    ``fiscal_period``. The ONE no_rows rule: the entity statement and the
+    prior-year column both use it. A row of an earlier year does not count,
+    since a statement of that year would be all zeros (konsol#495 V2)."""
+    return any(int(r["fiscal_year"]) == int(fiscal_year)
+               and int(r["fiscal_period"]) <= int(fiscal_period)
+               for r in tb_rows or [])
+
+
 def prior_with_rows(prior, tb_rows):
     """``prior`` unchanged, unless it is ok but the warehouse holds no row
     for its year up to its period (``tb_rows``: ``statement_api``'s TB
@@ -186,9 +196,8 @@ def prior_with_rows(prior, tb_rows):
         return prior
     fiscal_year = int(prior["period"]["fiscal_year"])
     fiscal_period = int(prior["period"]["fiscal_period"])
-    for row in tb_rows or []:
-        if int(row["fiscal_year"]) == fiscal_year and int(row["fiscal_period"]) <= fiscal_period:
-            return prior
+    if has_rows_through(tb_rows, fiscal_year, fiscal_period):
+        return prior
     return {"state": "no_rows", "statement": None,
             "message": "No rows in the warehouse for FY%d up to P%02d." % (fiscal_year, fiscal_period)}
 

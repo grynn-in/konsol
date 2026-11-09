@@ -95,6 +95,19 @@ def _load_period_name():
 
 period_name = _load_period_name()
 
+
+def _load_has_rows_through():
+    """The one no_rows rule, from statement_report_model.py loaded by path
+    (the Prior year column uses the same function)."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "statement_report_model.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_statement_report_model_rows", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.has_rows_through
+
+
+has_rows_through = _load_has_rows_through()
+
 #: Who reads the Numbers screen (Close Lead, Group Accountant, Viewer;
 #: the Entity Accountant never gets the `numbers` slug, W4-E20).
 STATEMENT_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
@@ -509,8 +522,8 @@ def _build_statement(key, period_rows, declared, accounts_map, currency, currenc
     for ``currency``: ``currency_gap(currency)`` is the sentence, no
     ClickHouse read; or a BS heading's side undeclared), ``not_built`` /
     ``error`` (the warehouse read failed, or a NULL amount), or ``no_rows``
-    (only when ``no_rows_message`` is given and no row is at or before
-    ``key``). ``read()`` returns ``{"tb_rows": [...], ...}``; every key it
+    (only when ``no_rows_message`` is given and no row is in ``key``'s year
+    at or before its period). ``read()`` returns ``{"tb_rows": [...], ...}``; every key it
     returns is carried into the result."""
     out = {"state": "ok", "message": None, "statement": None}
     if not accounts_map:
@@ -530,8 +543,7 @@ def _build_statement(key, period_rows, declared, accounts_map, currency, currenc
         return out
     tb_rows = reads["tb_rows"]
 
-    if no_rows_message is not None and not any(
-            (r["fiscal_year"], r["fiscal_period"]) <= key for r in tb_rows):
+    if no_rows_message is not None and not has_rows_through(tb_rows, key[0], key[1]):
         out.update(state="no_rows", message=no_rows_message)
         return out
 
