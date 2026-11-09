@@ -366,4 +366,5 @@ const tabs = new frappe.ui.Tabs({
 		saveTab(i);
 	},
 });
-box.appendChild(tabs.$el);
+// frappe.ui.Tabs keeps the DOM node on .el; .$el is a jQuery wrapper (tabs.js:146).
+box.appendChild(tabs.el);
