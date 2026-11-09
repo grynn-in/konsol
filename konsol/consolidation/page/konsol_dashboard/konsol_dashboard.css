@@ -1,0 +1,320 @@
+/* Konsol Dashboard page (trial, 8 Nov 2026). Page-level CSS, as konsol_setup.css:
+ * Frappe keeps this <style> in the document after the page is left, so every rule
+ * is scoped to .konsol-dashboard (the page root, konsol_dashboard.js). Frappe variables only: no
+ * colour of its own, so the dark theme comes through. Actions use
+ * var(--primary); status uses Frappe's green/orange/red/gray. Desk radius 2px.
+ * Columns follow the page's own width (container queries). */
+/* Frappe v16 gives .page-body no padding (frappe page.scss) and its own pages pad
+ * themselves (data_import_wizard.scss), so the page root carries the margin. */
+.konsol-dashboard {
+	container-type: inline-size;
+	box-sizing: border-box;
+	padding: var(--padding-lg) var(--padding-xl);
+	color: var(--text-color);
+	display: flex;
+	flex-direction: column;
+	gap: var(--margin-md);
+}
+.konsol-dashboard .kd-card {
+	border: 1px solid var(--border-color);
+	border-radius: 2px;
+	background: var(--card-bg);
+	padding: var(--padding-md);
+	min-width: 0;
+}
+.konsol-dashboard .kd-muted,
+.konsol-dashboard .kd-loading {
+	color: var(--text-muted);
+}
+.konsol-dashboard .kd-small {
+	font-size: var(--text-sm);
+}
+.konsol-dashboard .kd-unavailable {
+	margin: 0;
+	color: var(--text-muted);
+	font-size: var(--text-sm);
+}
+.konsol-dashboard .kd-plain {
+	color: var(--text-color);
+}
+.konsol-dashboard a.kd-plain:hover,
+.konsol-dashboard a.kd-tile-title:hover,
+.konsol-dashboard a.kd-tile-value:hover {
+	text-decoration: underline;
+}
+
+/* header */
+.konsol-dashboard .kd-header {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	align-items: flex-end;
+	gap: var(--margin-sm) var(--margin-md);
+}
+.konsol-dashboard .kd-subtitle {
+	color: var(--text-muted);
+}
+
+/* headline */
+.konsol-dashboard .kd-headline {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: var(--margin-md);
+	border-left: 3px solid var(--primary);
+}
+.konsol-dashboard .kd-headline-text {
+	display: flex;
+	flex-direction: column;
+}
+.konsol-dashboard .kd-headline-count {
+	font-size: var(--text-xl);
+	font-weight: 600;
+	color: var(--heading-color);
+}
+.konsol-dashboard .kd-start {
+	border-radius: 2px;
+}
+
+/* banners */
+.konsol-dashboard .kd-banner {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--margin-md);
+	padding: var(--padding-sm) var(--padding-md);
+	border-radius: 2px;
+	border: 1px solid var(--border-color);
+	background: var(--subtle-fg);
+	font-size: var(--text-sm);
+}
+.konsol-dashboard .kd-banner-build {
+	border-left: 3px solid var(--blue-500);
+}
+.konsol-dashboard .kd-banner-setup {
+	border-left: 3px solid var(--orange-500);
+}
+.konsol-dashboard .kd-banner-action {
+	font-weight: 500;
+	color: var(--primary);
+}
+
+/* tiles */
+.konsol-dashboard .kd-section-label {
+	margin-top: var(--margin-sm);
+	font-size: var(--text-xs);
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--text-muted);
+}
+.konsol-dashboard .kd-tiles {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: var(--margin-md);
+}
+@container (max-width: 900px) {
+	.konsol-dashboard .kd-tiles {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}
+@container (max-width: 480px) {
+	.konsol-dashboard .kd-tiles {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+.konsol-dashboard .kd-tile {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.konsol-dashboard .kd-tile-title {
+	font-size: var(--text-sm);
+	color: var(--text-muted);
+}
+.konsol-dashboard .kd-tile-body {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-end;
+	gap: var(--margin-sm);
+}
+.konsol-dashboard .kd-tile-main {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+.konsol-dashboard .kd-tile-value {
+	font-size: var(--text-2xl);
+	font-weight: 600;
+	line-height: 1.2;
+	color: var(--heading-color);
+	white-space: nowrap;
+}
+.konsol-dashboard .kd-delta {
+	font-size: var(--text-xs);
+}
+.konsol-dashboard .kd-delta-good {
+	color: var(--green-600);
+}
+.konsol-dashboard .kd-delta-bad {
+	color: var(--red-600);
+}
+.konsol-dashboard .kd-delta-flat {
+	color: var(--text-muted);
+}
+.konsol-dashboard .kd-spark {
+	flex: 0 0 60px;
+	width: 60px;
+	height: 22px;
+	overflow: visible;
+}
+.konsol-dashboard .kd-spark polyline {
+	fill: none;
+	stroke: var(--primary);
+	stroke-width: 1.5;
+	stroke-linejoin: round;
+	stroke-linecap: round;
+}
+.konsol-dashboard .kd-spark circle {
+	fill: var(--primary);
+}
+.konsol-dashboard .kd-empty {
+	color: var(--text-muted);
+}
+.konsol-dashboard .kd-empty-action {
+	color: var(--primary);
+	font-weight: 500;
+}
+
+/* period status and entities */
+.konsol-dashboard .kd-lower {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+	gap: var(--margin-md);
+	align-items: start;
+}
+@container (max-width: 720px) {
+	.konsol-dashboard .kd-lower {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+.konsol-dashboard .kd-card-title {
+	font-weight: 600;
+	color: var(--heading-color);
+}
+.konsol-dashboard .kd-period-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin: var(--margin-sm) 0;
+}
+.konsol-dashboard .kd-period-name {
+	font-size: var(--text-lg);
+	font-weight: 600;
+}
+.konsol-dashboard .kd-facts {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 4px var(--margin-sm);
+	margin: 0 0 var(--margin-sm);
+	font-size: var(--text-sm);
+}
+.konsol-dashboard .kd-facts dt {
+	font-weight: 400;
+	color: var(--text-muted);
+}
+.konsol-dashboard .kd-facts dd {
+	margin: 0;
+}
+.konsol-dashboard .kd-manage,
+.konsol-dashboard .kd-toggle .btn {
+	border-radius: 2px;
+}
+.konsol-dashboard .kd-entities-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+.konsol-dashboard .kd-legend {
+	margin: 4px 0;
+}
+.konsol-dashboard .kd-entity-list {
+	list-style: none;
+	margin: 0 0 var(--margin-sm);
+	padding: 0;
+	max-height: 360px;
+	overflow-y: auto;
+}
+.konsol-dashboard .kd-entity {
+	border-top: 1px solid var(--border-color);
+}
+.konsol-dashboard .kd-entity-link {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: var(--margin-sm);
+	padding: 6px 2px;
+	color: var(--text-color);
+}
+.konsol-dashboard .kd-entity-link:hover {
+	background: var(--subtle-fg);
+}
+.konsol-dashboard .kd-entity-name {
+	display: flex;
+	gap: var(--margin-sm);
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.konsol-dashboard .kd-entity-code {
+	font-weight: 500;
+}
+.konsol-dashboard .kd-dots {
+	display: flex;
+	gap: 6px;
+}
+.konsol-dashboard .kd-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	background: var(--gray-400);
+}
+.konsol-dashboard .kd-dot-green {
+	background: var(--green-500);
+}
+.konsol-dashboard .kd-dot-orange {
+	background: var(--orange-500);
+}
+.konsol-dashboard .kd-dot-red {
+	background: var(--red-500);
+}
+
+/* setup pill */
+.konsol-dashboard .kd-setup-pill {
+	position: fixed;
+	right: var(--margin-lg);
+	bottom: var(--margin-lg);
+	z-index: 10;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 140px;
+	padding: var(--padding-sm) var(--padding-md);
+	border: 1px solid var(--border-color);
+	border-radius: 2px;
+	background: var(--card-bg);
+	box-shadow: var(--shadow-md);
+	color: var(--text-color);
+}
+.konsol-dashboard .kd-setup-bar {
+	display: block;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--control-bg);
+	overflow: hidden;
+}
+.konsol-dashboard .kd-setup-fill {
+	display: block;
+	height: 100%;
+	background: var(--primary);
+}

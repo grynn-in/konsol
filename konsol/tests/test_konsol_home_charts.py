@@ -18,7 +18,7 @@ Three layers, no site:
   the card: its xcall is ``silent``) rather than a 500;
 - the shipped files: seven Custom charts with a source each, the dashboard
   in ``consolidation_dashboard/`` (the only folder Frappe syncs a Dashboard
-  from), the workspace listing all seven below the checklist, ``modified``
+  from; the Close home no longer shows them), ``modified``
   bumped so migrate re-imports them.
 """
 import ast
@@ -580,19 +580,16 @@ def test_the_dashboard_lists_all_seven():
     assert doc["modified"] >= "2026-11-07"
 
 
-def test_the_workspace_lists_all_seven_below_the_checklist():
+def test_the_close_home_shows_no_chart_and_the_dashboard_keeps_all_seven():
+    """The Close home dashboard (trial, 8 Nov 2026) replaced the seven charts
+    on the Konsol workspace with its own sparklines; the charts and their
+    sources stay, on the "Konsol Overview" dashboard."""
     ws = json.loads(_read(WORKSPACE))
-    assert [c["chart_name"] for c in ws["charts"]] == list(CHARTS)
+    assert ws["charts"] == []
     content = json.loads(ws["content"])
-    charts = [b["data"]["chart_name"] for b in content if b["type"] == "chart"]
-    assert charts == list(CHARTS)
-    ids = [b["id"] for b in content]
-    checklist = next(i for i, b in enumerate(content) if b["type"] == "custom_block"
-                     and b["data"]["custom_block_name"] == "Konsol Close Checklist")
-    first_chart = next(i for i, b in enumerate(content) if b["type"] == "chart")
-    assert first_chart > checklist
-    assert len(ids) == len(set(ids))
-    assert ws["modified"] >= "2026-11-07 12:00"
+    assert not [b for b in content if b["type"] == "chart"]
+    assert [c["chart"] for c in json.loads(_read(DASHBOARD))["charts"]] == list(CHARTS)
+    assert ws["modified"] >= "2026-11-08 12:00"
 
 
 def test_charts_api_never_bypasses_permissions():

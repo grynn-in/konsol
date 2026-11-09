@@ -77,6 +77,8 @@ LABELS = {
     "ISO Currency": "ISO Currencies",
     "Close Settings": "Close Settings",
     "konsol-setup": "Konsol Setup",
+    # --- Close: the dashboard page (first row, above Home) ----------------
+    "konsol-dashboard": "Dashboard",
     # --- Data: sources ---------------------------------------------------
     "Connector": "Connectors",
     "Connector Health": "Connector Health",
