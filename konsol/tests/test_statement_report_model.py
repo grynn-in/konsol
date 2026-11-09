@@ -472,3 +472,36 @@ def test_heading_rows_carry_the_drill_group_and_the_group_code():
     for row in headings:
         assert row["drill_group"] == "CG-ZZ_GROUP-"
         assert row["consolidation_group"] == "ZZ_GROUP"
+
+
+# --- Basis: Entity (konsol#495 row 2) ---------------------------------------
+
+def _entity_payload(**overrides):
+    base = dict(basis="Entity", entity="ZZA", entity_name="Zz Entity",
+                consolidation_group=None, reporting_currency="EUR")
+    base.update(overrides)
+    return _payload(**base)
+
+
+def test_entity_message_header_names_basis_entity_name_and_currency():
+    first = R.message(_entity_payload()).split("<br>")[0]
+    assert first == "Numbers · FY2025 P07 · Basis: Entity · ZZA Zz Entity · EUR"
+
+
+def test_group_message_header_is_unchanged_without_basis():
+    first = R.message(_payload()).split("<br>")[0]
+    assert first == "Numbers · FY2025 P07 · ZZ_GROUP · USD"
+
+
+def test_entity_heading_rows_carry_drill_entity():
+    headings = [row for row in R.rows(_entity_payload()) if row.get("code")]
+    assert headings
+    for row in headings:
+        assert row["drill_entity"] == "ZZA"
+
+
+def test_group_heading_rows_have_no_drill_entity():
+    headings = [row for row in R.rows(_payload()) if row.get("code")]
+    assert headings
+    for row in headings:
+        assert row["drill_entity"] is None
