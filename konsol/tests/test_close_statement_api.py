@@ -279,6 +279,10 @@ class _Site:
         self.commentary_threshold = (0, 0, "")
         #: konsol#354: ISO Currency.minor_unit by code (a missing code has no row)
         self.minor_units = {"USD": 2}
+        #: konsol#495: Entity rows (name == entity_code == data_area_id) and
+        #: the entity basis's one read, gold_trial_balance (``amt`` alias).
+        self.entities = {}
+        self.entity_tb_rows = []
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -333,6 +337,12 @@ def _frappe(site):
         return [{f: r.get(f) for f in fields} for r in rows]
 
     def get_value(doctype, name, fieldname, **k):
+        if doctype == "Entity":
+            assert sorted(fieldname) == ["entity_name", "functional_currency", "is_group"], fieldname
+            assert k.get("as_dict"), k
+            site.reads.append(("get_value", "Entity"))
+            row = site.entities.get(name)
+            return None if row is None else {f: row.get(f) for f in fieldname}
         assert (doctype, fieldname) == ("ISO Currency", "minor_unit"), (doctype, fieldname)
         return site.minor_units.get(name)
 
@@ -364,6 +374,8 @@ def _ch_read(site):
             return [dict(r) for r in site.journal_rows]
         if "DISTINCT data_area_id" in sql:
             return [dict(r) for r in site.entity_rows]
+        if "gold_trial_balance" in sql:  # konsol#495: the entity basis's one read
+            return [dict(r) for r in site.entity_tb_rows]
         if "data_area_id" in sql:  # N52: the entity-grain drill read
             return [dict(r) for r in site.drill_tb_rows]
         return [dict(r) for r in site.tb_rows]
@@ -408,6 +420,12 @@ def _invoke(site, run):
     fiscal_calendar.fiscal_period_rows = lambda: [dict(r) for r in site.periods]
     entity_permissions = types.ModuleType("konsol.entity_permissions")
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
+
+    def assert_entity_access(code, user=None):
+        if site.allowed is not None and code not in site.allowed:
+            raise frappe.PermissionError("Not permitted to access entity '%s'" % code)
+
+    entity_permissions.assert_entity_access = assert_entity_access
     consolidation = types.ModuleType("konsol.consolidation")
     doctype_pkg = types.ModuleType("konsol.consolidation.doctype")
     assertion_run_pkg = types.ModuleType("konsol.consolidation.doctype.assertion_run")
@@ -546,7 +564,7 @@ def test_no_sql_constant_has_an_alias_column_collision():
     constants = _sql_constants()
     assert set(constants) == {
         "_TB_SQL", "_ENTITY_SQL", "_DRILL_SQL", "_DRILL_SQL_WITH_CTA",
-        "_DRILL_JOURNALS_SQL",
+        "_DRILL_JOURNALS_SQL", "_ENTITY_TB_SQL",
     }, "a *_SQL constant was added or removed: update this test's expected set"
     for name, sql in constants.items():
         collision = _alias_collision(sql)
@@ -1214,3 +1232,213 @@ def test_golden_signoff_commentary_matches_the_committed_fixture():
     with open(FIXTURE_COMMENTARY_REQUIRED) as fh:
         expected = json.load(fh)
     assert result == expected
+
+
+# --- konsol#495 row 1: the entity basis (one entity's own trial balance) ---
+#
+# ``get_entity_statement`` reads ``gold_trial_balance`` (the entity's own TB,
+# functional currency, group-chart codes), never the translated entity layer
+# of ``gold_fully_consolidated_tb``. One ClickHouse read; the statement is
+# ``statement_model.statement`` itself, rounded to the functional currency.
+
+ENTITY_PAYLOAD_KEYS = {
+    "basis", "entity", "entity_name", "consolidation_group", "groups", "group_note",
+    "reporting_currency", "state", "message", "period", "signoff", "statement", "gap",
+    "not_included", "commentary", "can_comment",
+}
+
+
+def _entity_site():
+    """ZZA, a JPY entity (minor unit 0), with P&L in two periods so YTD
+    differs from the period, and ZZ9999, a code outside the chart."""
+    site = _Site()
+    site.minor_units = {"USD": 2, "JPY": 0}
+    site.entities = {
+        "ZZA": {"entity_name": "Zz Entity A", "functional_currency": "JPY", "is_group": 0},
+        "ZZG": {"entity_name": "Zz Group", "functional_currency": "JPY", "is_group": 1},
+    }
+    site.entity_tb_rows = [
+        _drill_tb_row("1110", 1000, "entity", "ZZA", fp=6),
+        _drill_tb_row("4100", -1000, "entity", "ZZA", fp=6),
+        _drill_tb_row("1110", 500, "entity", "ZZA", fp=7),
+        _drill_tb_row("4100", -400, "entity", "ZZA", fp=7),
+        _drill_tb_row("ZZ9999", -100, "entity", "ZZA", fp=7),
+    ]
+    return site
+
+
+def _call_entity(site, fy=2025, fp=7, entity="ZZA"):
+    result = _invoke(site, lambda api: api.get_entity_statement(fy, fp, entity))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def _call_entity_raises(site, fy=2025, fp=7, entity="ZZA"):
+    with pytest.raises(Exception) as info:
+        _call_entity(site, fy, fp, entity)
+    return info.value
+
+
+def _line(result, section, key, value):
+    sections = {s["section"]: s for s in result["statement"]["sections"]}
+    for line in sections[section]["lines"]:
+        if line.get(key) == value:
+            return line
+    raise AssertionError("no %s line with %s=%r" % (section, key, value))
+
+
+def test_entity_statement_is_the_entitys_own_tb_in_its_functional_currency():
+    site = _entity_site()
+    result = _call_entity(site)
+    assert result["state"] == "ok", result["message"]
+    assert set(result) == ENTITY_PAYLOAD_KEYS
+    assert result["basis"] == "Entity"
+    assert result["entity"] == "ZZA"
+    assert result["entity_name"] == "Zz Entity A"
+    assert result["reporting_currency"] == "JPY"
+    assert result["statement"]["minor_unit"] == 0
+    assert result["consolidation_group"] is None
+    assert result["groups"] == []
+    assert result["group_note"] is None
+    assert result["not_included"] is None
+    assert result["commentary"] == {}
+    assert result["can_comment"] is False
+    assert result["signoff"] == {"state": "provisional", "run": None}
+    assert result["period"]["fiscal_year"] == 2025 and result["period"]["fiscal_period"] == 7
+
+
+def test_entity_statement_pl_carries_year_to_date_beside_the_period():
+    result = _call_entity(_entity_site())
+    line = _line(result, "Profit and Loss", "heading", "4")
+    assert line["current"] == 400
+    assert line["ytd"] == 1400
+    assert line["ytd"] != line["current"]
+
+
+def test_entity_statement_puts_a_code_outside_the_chart_on_its_own_line():
+    result = _call_entity(_entity_site())
+    line = _line(result, "Balance Sheet", "kind", "not_in_chart")
+    assert line["label"] == "Not in the group chart"
+    assert line["codes"] == ["ZZ9999"]
+    assert line["current"] == -100
+
+
+def test_entity_statement_reads_clickhouse_once_from_gold_trial_balance_only():
+    site = _entity_site()
+    _call_entity(site)
+    assert len(site.ch_calls) == 1
+    sql, params = site.ch_calls[0]
+    assert "gold_trial_balance" in sql
+    assert "gold_fully_consolidated_tb" not in sql
+    assert "dim_" not in sql
+    assert params == {"entity": "ZZA", "fy": 2025}
+
+
+def test_entity_statement_returns_its_reads_with_the_tb_rows():
+    site = _entity_site()
+    payload, reads = _invoke(site, lambda api: api._entity_statement(2025, 7, "ZZA"))
+    assert payload["state"] == "ok"
+    assert reads["key"] == (2025, 7)
+    assert {r["main_account"] for r in reads["tb_rows"]} == {"1110", "4100", "ZZ9999"}
+    assert all("amount" in r and "amt" not in r for r in reads["tb_rows"])
+    assert all(r["data_area_id"] == "ZZA" for r in reads["tb_rows"])
+    assert set(reads) >= {"key", "period_rows", "accounts", "declared", "tb_rows"}
+
+
+def test_entity_statement_blank_entity_is_refused():
+    site = _entity_site()
+    error = _call_entity_raises(site, entity="")
+    assert "Choose an entity." in str(error)
+    assert site.ch_calls == []
+
+
+def test_entity_statement_unknown_entity_is_refused_by_name():
+    site = _entity_site()
+    error = _call_entity_raises(site, entity="ZZNOPE")
+    assert "ZZNOPE" in str(error)
+    assert site.ch_calls == []
+
+
+def test_entity_statement_group_entity_is_refused():
+    site = _entity_site()
+    error = _call_entity_raises(site, entity="ZZG")
+    assert "ZZG" in str(error)
+    assert site.ch_calls == []
+
+
+def test_entity_statement_out_of_scope_is_refused():
+    site = _entity_site()
+    site.allowed = {"ZZB"}
+    error = _call_entity_raises(site)
+    assert type(error).__name__ == "PermissionError"
+    assert site.ch_calls == []
+
+
+def test_entity_statement_entity_accountant_is_refused_by_only_for():
+    site = _entity_site()
+    site.user, site.roles = ENTITY_ACC, {"Entity Accountant"}
+    error = _call_entity_raises(site)
+    assert type(error).__name__ == "PermissionError"
+
+
+def test_entity_statement_blank_functional_currency_is_a_setup_gap():
+    site = _entity_site()
+    site.entities["ZZA"]["functional_currency"] = None
+    result = _call_entity(site)
+    assert result["state"] == "setup_gap"
+    assert "ZZA" in result["message"] and "Functional Currency" in result["message"]
+    assert result["statement"] is None
+    assert site.ch_calls == []
+
+
+def test_entity_statement_currency_with_no_iso_currency_is_a_setup_gap():
+    site = _entity_site()
+    site.minor_units = {"USD": 2}
+    result = _call_entity(site)
+    assert result["state"] == "setup_gap"
+    assert "JPY" in result["message"] and "ISO Currency" in result["message"]
+    assert result["message"].startswith("statement_currency_precision_undeclared")
+    assert result["statement"] is None
+    assert site.ch_calls == []
+
+
+def test_entity_statement_warehouse_down_is_an_error_state():
+    site = _entity_site()
+    site.ch_error = RuntimeError("boom")
+    result = _call_entity(site)
+    assert result["state"] == "error"
+    assert "RuntimeError" in result["message"]
+    assert result["statement"] is None
+
+
+def test_entity_statement_unbuilt_relation_is_not_built():
+    site = _entity_site()
+    site.ch_error = RuntimeError("Code: 60. DB::Exception: Table (UNKNOWN_TABLE)")
+    result = _call_entity(site)
+    assert result["state"] == "not_built"
+    assert result["statement"] is None
+
+
+def test_entity_statement_no_rows_up_to_the_period_is_its_own_state():
+    site = _entity_site()
+    site.entity_tb_rows = [_drill_tb_row("1110", 1000, "entity", "ZZA", fp=8)]
+    result = _call_entity(site)
+    assert result["state"] == "no_rows"
+    assert result["message"] == "No trial balance for ZZA up to FY2025 P07."
+    assert result["statement"] is None
+
+
+def test_entity_statement_empty_chart_is_no_chart_with_no_clickhouse_read():
+    site = _entity_site()
+    site.accounts = {}
+    result = _call_entity(site)
+    assert result["state"] == "no_chart"
+    assert site.ch_calls == []
+
+
+def test_group_statement_still_reads_clickhouse_twice_and_has_no_basis_key():
+    site = _entity_site()
+    result = _call(site)
+    assert "basis" not in result
+    assert len(site.ch_calls) == 2
+    assert all("gold_trial_balance" not in sql for sql, _p in site.ch_calls)
