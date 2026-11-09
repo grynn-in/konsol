@@ -272,16 +272,24 @@ def test_layout_of_a_scoped_dimensioned_sheet_never_names_a_hidden_value():
     assert "ZZA" not in text
 
 
-# -- #494 PR review V2: the message rounds as the Total row does ----------------
+# -- #494 PR review V2: the message rounds the exact total as every cell is rounded ----------------
 
-def test_message_agrees_with_the_total_row_when_the_exact_total_is_half_a_cent():
+def test_message_rounds_an_exact_half_cent_total_half_even_to_nothing():
     ws = _exact_sheet([_row("topside", "", "1000", 0.005)])
     assert ws["total"]["cells"]["layer:topside"] == 0.0
     assert "not zero" not in M.message(ws, PAYLOAD).lower()
 
 
-def test_message_prints_the_value_the_total_row_shows_for_0_015():
+def test_message_prints_an_exact_0_015_total_rounded_half_even_to_0_02():
     ws = _exact_sheet([_row("topside", "", "1000", 0.015)])
     assert ws["total"]["cells"]["layer:topside"] == 0.02
     msg = M.message(ws, PAYLOAD)
     assert "0.02" in msg and "0.01" not in msg
+
+
+def test_message_may_differ_from_the_total_row_by_accumulated_rounding():
+    # Two 0.004 lines: the Total row sums displayed 0.00 + 0.00; the exact
+    # column sum 0.008 rounds to 0.01 (by design, #494 row 10b).
+    ws = _exact_sheet([_row("topside", "", "1000", 0.004), _row("topside", "", "4000", 0.004)])
+    assert ws["total"]["cells"]["layer:topside"] == 0.0
+    assert "0.01" in M.message(ws, PAYLOAD)
