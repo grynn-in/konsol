@@ -96,8 +96,8 @@ def test_tabs_are_close_approvals_trends_numbers_with_close_active():
 def test_content_is_lazy_and_panels_start_empty():
     out = _run()
     assert out["content_is_function"] == [True, True, True, True]
-    # Close holds its four sections (headline, cards, checklist, Monthly close); the rest are empty.
-    assert out["panel_children"] == [4, 0, 0, 0]
+    # Close holds its four sections (headline, cards, checklist, Monthly close); Numbers its four links; Approvals and Trends fill after the definitions call.
+    assert out["panel_children"] == [4, 0, 0, 4]
 
 
 def test_construction_makes_no_server_call():
@@ -757,7 +757,7 @@ const handlers = {};
 const events = [];
 function node(tag) {
   const n = { tag, className: "", children: [], textContent: "", style: {}, attrs: {}, dataset: {},
-    setAttribute(k, v) { this.attrs[k] = v; },
+    setAttribute(k, v) { this.attrs[k] = v; if (k === "data-route-options") this.dataset.routeOptions = v; },
     getAttribute(k) { return k === "href" ? this.href : this.attrs[k]; },
     replaceChildren(...c) { this.children = c; },
     appendChild(c) { this.children.push(c); return c; },
@@ -774,7 +774,7 @@ var frappe_ = {
   xcall: (...a) => { calls.push(a); return Promise.resolve({}); },
   call: (...a) => { calls.push(a); return Promise.resolve({}); },
   route_options: null,
-  set_route: (...a) => events.push({ route: a, options: JSON.parse(JSON.stringify(frappe_.route_options)) }),
+  set_route: (...a) => { events.push({ route: a, options: JSON.parse(JSON.stringify(frappe_.route_options)) }); frappe_.route_options = null; },
   widget: { WidgetGroup: function () {} },
   ui: { Tabs: function (opts) { created.push(opts); this.$el = node("tabs"); } },
 };

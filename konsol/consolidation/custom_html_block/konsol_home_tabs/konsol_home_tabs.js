@@ -303,6 +303,28 @@ function fillTrends(div) {
 	});
 }
 
+// Numbers panel: four report links, no server call. All go through the
+// delegated click handler below. The entity statement carries route options in
+// data-route-options (a plain href cannot), which the handler sets on
+// frappe.route_options just before set_route (konsol#495 Basis filter).
+const NUMBERS = [
+	["Consolidated Statement", "Consolidated Statement", "The group statement of financial position and performance.", null],
+	["Entity statement", "Consolidated Statement", "The same statement for one entity, before consolidation.", { basis: "Entity" }],
+	["Statement Drill", "Statement Drill", "Trace a statement line back to its accounts and entries.", null],
+	["Consolidation Worksheet", "Consolidation Worksheet", "How entity balances become the group figures.", null],
+];
+
+function fillNumbers(div) {
+	for (const [label, report, description, routeOptions] of NUMBERS) {
+		const row = el("div", "khp-number");
+		const link = el("a", "khp-number-link", label);
+		link.href = "/desk/query-report/" + encodeURIComponent(report);
+		if (routeOptions) link.setAttribute("data-route-options", JSON.stringify(routeOptions));
+		row.append(link, el("span", "khp-number-detail", description));
+		div.appendChild(row);
+	}
+}
+
 // Links inside the shadow root are invisible to Frappe's router, so an <a href>
 // does a full page load (#484 failure 3). Route in-app links ourselves.
 root_element.addEventListener("click", (e) => {
@@ -321,6 +343,14 @@ root_element.addEventListener("click", (e) => {
 	const m = url.pathname.match(/^\/(?:desk|app)\/(.+)$/);
 	if (!m) return;
 	e.preventDefault();
+	// Options ride on the link (data-route-options) and are set just before routing.
+	let options = null;
+	try {
+		options = a.dataset && a.dataset.routeOptions ? JSON.parse(a.dataset.routeOptions) : null;
+	} catch (err) {
+		options = null;
+	}
+	if (options && typeof options === "object") frappe.route_options = options;
 	frappe.set_route(...m[1].split("/").filter(Boolean).map(decodeURIComponent));
 });
 
@@ -329,7 +359,7 @@ const tabs = new frappe.ui.Tabs({
 		{ label: "Close", content: panel("close", fillClose) },
 		{ label: "Approvals", content: panel("approvals", fillApprovals) },
 		{ label: "Trends", content: panel("trends", fillTrends) },
-		{ label: "Numbers", content: panel("numbers") },
+		{ label: "Numbers", content: panel("numbers", fillNumbers) },
 	],
 	active: loadTab(),
 	on_change(i) {
