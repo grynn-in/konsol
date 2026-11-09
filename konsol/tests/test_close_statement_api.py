@@ -1489,7 +1489,9 @@ def test_entity_export_drill_has_one_entity_layer_per_heading_footing_to_the_hea
     for r in rows:
         if r[1] in expected and r[3] not in ("Total", None):
             layers.setdefault(r[1], set()).add(r[3])
-    assert layers and all(v == {"Entity"} for v in layers.values()), layers
+    # headings with entity accounts carry the one Entity layer; the equity
+    # heading's computed result lines are the engine's, not extra sources
+    assert layers["1"] == {"Entity"} and layers["4"] == {"Entity"}, layers
 
 
 def test_entity_export_reads_clickhouse_exactly_once():
