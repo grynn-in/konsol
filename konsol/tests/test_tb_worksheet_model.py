@@ -464,3 +464,26 @@ def test_total_exact_is_the_unrounded_column_sum_and_survives_to_ids():
     ids = M.to_ids(sheet)
     assert ids["total_exact"] == {M._id(k): v for k, v in exact.items()}
     assert "entity:" + EA in ids["total_exact"] and "consolidated" in ids["total_exact"]
+
+
+# -- #494 PR review V2: the exact totals come back rounded the model's way -------
+
+def _topside_sheet(amount, minor_unit=2):
+    rows = [wrow("topside", "", "1000", 2025, 3, amount)]
+    return M.worksheet(rows, ACCOUNTS, PERIODS, (2025, 3), {"cta_account": "3100"},
+                       minor_unit, None, None)
+
+
+def test_total_rounded_exact_uses_the_models_half_even_decimal_rounding():
+    for amount, shown in ((0.005, 0.0), (0.015, 0.02), (0.025, 0.02)):
+        ws = _topside_sheet(amount)
+        assert ws["total"]["cells"][("layer", "topside")] == shown
+        assert ws["total_rounded_exact"][("layer", "topside")] == shown
+        assert ws["total_rounded_exact"][M.CONSOLIDATED] == shown
+
+
+def test_total_rounded_exact_has_no_rounding_column_and_survives_to_ids():
+    ws = _topside_sheet(0.015)
+    assert M.ROUNDING not in ws["total_rounded_exact"]
+    ids = M.to_ids(ws)
+    assert ids["total_rounded_exact"] == {M._id(k): v for k, v in ws["total_rounded_exact"].items()}
