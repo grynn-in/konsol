@@ -386,3 +386,62 @@ def test_null_amount_refused_naming_account_and_layer():
             assert "2000" in str(e) and "topside" in str(e)
         else:
             raise AssertionError("NULL amount was read as 0")
+
+
+# -- row 6b: one key form (string ids) ---------------------------------------
+
+def test_to_ids_turns_every_key_into_a_string_id_and_keeps_the_shape():
+    out = M.to_ids(ws())
+    assert [c["key"] for c in out["columns"]] == [
+        M._id(c["key"]) for c in ws()["columns"]]
+    assert out["columns"][0]["key"] == "entity:E-ALPHA"
+    assert out["columns"][-1] == {"key": "consolidated", "label": "Consolidated"}
+    assert set(out) == set(ws())
+    for line in out["lines"]:
+        assert isinstance(line["key"], str)
+        assert all(isinstance(k, str) for k in line["cells"])
+    assert all(isinstance(k, str) for k in out["total"]["cells"])
+    assert out["total"]["consolidated"] == ws()["total"]["consolidated"]
+    assert out["outside_count"] == ws()["outside_count"]
+    assert out["minor_unit"] == ws()["minor_unit"]
+
+
+def test_to_ids_line_ids_and_cell_values():
+    out = M.to_ids(ws())
+    ids = [line["key"] for line in out["lines"]]
+    assert "account:1000" in ids and "not_in_chart:9999" in ids
+    src = {line["account"]: line for line in ws()["lines"]}
+    for line in out["lines"]:
+        assert line["consolidated"] == src[line["account"]]["consolidated"]
+        assert line["cells"]["entity:E-ALPHA"] == src[line["account"]]["cells"][("entity", EA)]
+
+
+def test_to_ids_cta_undeclared_and_rounding_ids():
+    out = M.to_ids(ws(declared={}))
+    assert "cta_undeclared" in [line["key"] for line in out["lines"]]
+    assert "rounding" in [c["key"] for c in out["columns"]]
+
+
+def test_to_ids_entity_code_with_a_colon_is_not_split():
+    rows = [wrow("entity", "A:1", "1000", 2025, 3, 5.0)]
+    out = M.to_ids(ws(rows))
+    assert out["columns"][0]["key"] == "entity:A:1"
+    assert out["lines"][0]["cells"]["entity:A:1"] == 5.0
+
+
+def test_to_ids_ids_of_different_kinds_never_collide():
+    rows = [wrow("entity", "topside", "1000", 2025, 3, 1.0),
+            wrow("topside", EA, "1000", 2025, 3, 2.0)]
+    ids = [c["key"] for c in M.to_ids(ws(rows))["columns"]]
+    assert len(ids) == len(set(ids))
+    assert "entity:topside" in ids and "layer:topside" in ids
+
+
+def test_to_ids_dimensioned_lines_get_distinct_ids():
+    rows = [dict(wrow("entity", EA, "4000", 2025, 3, -1.0), dimension_value="N"),
+            dict(wrow("entity", EA, "4000", 2025, 3, -2.0), dimension_value="S")]
+    out = M.to_ids(M.worksheet(rows, WS_ACCOUNTS, WS_PERIODS, WS_KEY, WS_DECLARED, 2,
+                               None, None, dimension="dim_x"))
+    ids = [line["key"] for line in out["lines"]]
+    assert len(ids) == len(set(ids)) == 2
+    assert [line["dimension_value"] for line in out["lines"]] == ["N", "S"]

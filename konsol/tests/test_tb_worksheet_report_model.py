@@ -39,8 +39,8 @@ def sheet(entities=("A-1", "A_1"), extra=(), shown=None, allowed=None, minor_uni
     rows += [_row("entity", e, "1000", 10.0049 * (i + 1)) for i, e in enumerate(entities)]
     rows += [_row("ic_elimination", "", "4000", 3.3333), _row("ic_elimination", "", "1000", -3.3333)]
     rows += list(extra)
-    return WM.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "3100"},
-                        minor_unit, shown, allowed)
+    return WM.to_ids(WM.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "3100"},
+                                  minor_unit, shown, allowed))
 
 
 def cols(ws, currency="USD", minor_unit=2, dimension=None):
@@ -58,8 +58,8 @@ def test_fieldnames_are_unique_and_frappe_safe():
 def test_entity_codes_a_dash_1_and_a_underscore_1_differ():
     ws = sheet()
     fm = M.fieldnames(ws)
-    assert fm[("entity", "A-1")] != fm[("entity", "A_1")]
-    assert fm[("entity", "A-1")].startswith("e_") and fm[("entity", "A_1")].startswith("e_")
+    assert fm["entity:A-1"] != fm["entity:A_1"]
+    assert fm["entity:A-1"].startswith("e_") and fm["entity:A_1"].startswith("e_")
 
 
 def test_entity_named_like_a_layer_or_bucket_keeps_its_own_column():
@@ -69,7 +69,7 @@ def test_entity_named_like_a_layer_or_bucket_keeps_its_own_column():
     names = [c["fieldname"] for c in cols(ws)]
     assert len(names) == len(set(names))
     fm = M.fieldnames(ws)
-    assert fm[("entity", "consolidated")] != fm[WM.CONSOLIDATED]
+    assert fm["entity:consolidated"] != fm["consolidated"]
 
 
 def test_fieldnames_are_deterministic_and_fixed_for_non_entities():
@@ -77,8 +77,8 @@ def test_fieldnames_are_deterministic_and_fixed_for_non_entities():
                       _row("entity", "ic_elimination", "1000", 1.0)])
     fm = M.fieldnames(ws)
     assert fm == M.fieldnames(ws)
-    assert fm[WM.CONSOLIDATED] == "consolidated"
-    assert fm[("layer", "ic_elimination")] != fm[("entity", "ic_elimination")]
+    assert fm["consolidated"] == "consolidated"
+    assert fm["layer:ic_elimination"] != fm["entity:ic_elimination"]
 
 
 def test_column_order_and_leading_columns():
@@ -136,7 +136,7 @@ def test_rows_carry_every_cell_and_consolidated_under_the_fieldnames():
     for line, row in zip(ws["lines"], out):
         assert row["account"] == line["account"] and row["name"] == line["name"]
         assert row["consolidated"] == line["consolidated"]
-        for key in (c["key"] for c in ws["columns"] if c["key"] != WM.CONSOLIDATED):
+        for key in (c["key"] for c in ws["columns"] if c["key"] != "consolidated"):
             assert row[fm[key]] == line["cells"][key]
     total = out[-1]
     assert total["consolidated"] == ws["total"]["consolidated"]
@@ -148,7 +148,7 @@ def test_rows_cross_foot_on_what_is_displayed():
     from decimal import Decimal
     for row in M.rows(ws, "USD"):
         parts = sum((Decimal(str(row[fm[c["key"]]])) for c in ws["columns"]
-                     if c["key"] != WM.CONSOLIDATED), Decimal("0"))
+                     if c["key"] != "consolidated"), Decimal("0"))
         assert parts == Decimal(str(row["consolidated"]))
 
 
@@ -212,8 +212,17 @@ def test_rows_read_the_dimension_value_the_real_worksheet_writes():
     rows = [dict(_row("entity", "A-1", "4000", -10.0), dimension_value="CC1"),
             dict(_row("entity", "A-1", "4000", -5.0), dimension_value="CC2"),
             dict(_row("ic_elimination", "", "4000", 3.0), dimension_value="")]
-    ws = WM.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "3100"},
-                      2, None, None, dimension="dim_cost_center")
+    ws = WM.to_ids(WM.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "3100"},
+                                2, None, None, dimension="dim_cost_center"))
     out = M.rows(ws, "USD", dimension="dim_cost_center")
     values = [r["dimension"] for r in out if r.get("account") != "Total"]
     assert values == ["CC1", "CC2", WM.NO_DIMENSION_VALUE]
+
+
+def test_entity_code_with_a_colon_keeps_its_own_column():
+    ws = sheet(entities=("A:1", "A-1"))
+    fm = M.fieldnames(ws)
+    assert "entity:A:1" in fm and fm["entity:A:1"].startswith("e_")
+    assert fm["entity:A:1"] != fm["entity:A-1"]
+    out = M.rows(ws, "USD")
+    assert out[0][fm["entity:A:1"]] == ws["lines"][0]["cells"]["entity:A:1"]
