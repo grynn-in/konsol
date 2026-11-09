@@ -105,12 +105,99 @@ function panel(name, fill) {
 	};
 }
 
+// The period close checklist (copied from konsol_close_checklist.js: a block
+// cannot be nested inside this shadow root, spike Q6). Every server string is
+// set as textContent; a line links only to a /desk/ route, and in-app clicks
+// go through the delegated handler below.
+const CHECKLIST_METHOD = "konsol.close.overview_api.get_checklist";
+const GLYPH = { ok: "\u2713", warn: "!", blocked: "\u2715", unknown: "?" };
+const TONE = { ok: "green", warn: "orange", blocked: "red", unknown: "gray" };
+
+function el(tag, cls, text) {
+	const node = document.createElement(tag);
+	if (cls) node.className = cls;
+	if (text !== undefined && text !== null) node.textContent = String(text);
+	return node;
+}
+
+function deskRoute(route) {
+	return typeof route === "string" && route.startsWith("/desk/") ? route : null;
+}
+
+function renderChecklist(target, data) {
+	const head = el("div", "kc-head");
+	head.append(el("span", "kc-title", "Period close \u00b7 " + data.title));
+	if (data.total) {
+		// One clamped value drives the text, the bar and its aria state.
+		const done = Math.min(data.total, Math.max(0, data.done));
+		const count = el("span", "kc-count", `${done} of ${data.total} done`);
+		count.id = "kc-count";
+		head.append(count);
+		const bar = el("div", "kc-progress");
+		bar.setAttribute("role", "progressbar");
+		bar.setAttribute("aria-labelledby", count.id);
+		bar.setAttribute("aria-valuemin", "0");
+		bar.setAttribute("aria-valuemax", String(data.total));
+		bar.setAttribute("aria-valuenow", String(done));
+		const fill = el("div", "kc-progress-fill");
+		fill.style.width = Math.round((100 * done) / data.total) + "%";
+		bar.append(fill);
+		head.append(bar);
+	}
+	const nodes = [head];
+	if (data.reason) nodes.push(el("p", "kc-reason", data.reason));
+	const list = el("ul", "kc-list");
+	for (const line of data.lines || []) {
+		if (!Object.prototype.hasOwnProperty.call(TONE, line.state)) {
+			throw new Error(`unknown checklist state: ${line.state}`);
+		}
+		const item = el("li", "kc-line");
+		item.append(el("span", `indicator-pill ${TONE[line.state]} kc-glyph`, GLYPH[line.state]));
+		const body = el("span", "kc-body");
+		const route = deskRoute(line.route);
+		const label = el(route ? "a" : "span", "kc-label", line.label);
+		if (route) label.href = route;
+		body.append(label, el("span", "kc-detail", line.detail));
+		item.append(body);
+		list.append(item);
+	}
+	nodes.push(list);
+	target.replaceChildren(...nodes);
+}
+
+function checklistFailed(target, message) {
+	target.replaceChildren(
+		el("p", "kc-error", "The period close checklist could not be read: " + (message || "no reason given"))
+	);
+}
+
+// One GET per Close activation (the content fn runs once), never at construction.
+function fillChecklist(target) {
+	target.appendChild(el("p", "kc-loading", "Loading the period close checklist\u2026"));
+	frappe
+		.xcall(CHECKLIST_METHOD, {}, "GET")
+		.then((data) => {
+			try {
+				renderChecklist(target, data);
+			} catch (e) {
+				checklistFailed(target, e.message);
+			}
+		})
+		.catch((e) => checklistFailed(target, typeof e === "string" ? e : e && e.message));
+}
+
+// Close panel order, as the old workspace had it: cards, checklist, Monthly close.
 function fillClose(div) {
+	const cards = el("div", "khp-cards");
+	const checklist = el("section", "khp-checklist konsol-checklist");
+	const monthly = el("div", "khp-monthly");
+	div.append(cards, checklist, monthly);
+	fillChecklist(checklist);
 	widgets(div, (defs) => {
-		group(div, "number_card", items(defs.number_cards));
+		group(cards, "number_card", items(defs.number_cards));
 		const have = items(defs.shortcuts);
-		const monthly = MONTHLY_CLOSE.map((l) => have.find((s) => s.label === l)).filter(Boolean);
-		group(div, "shortcut", monthly);
+		const list = MONTHLY_CLOSE.map((l) => have.find((s) => s.label === l)).filter(Boolean);
+		group(monthly, "shortcut", list);
 	});
 }
 

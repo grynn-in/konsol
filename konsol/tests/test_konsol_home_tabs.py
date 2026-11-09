@@ -23,7 +23,8 @@ if ("stored" in cfg) store["konsol-home-tab:me@example.com"] = cfg.stored;
 const storeCalls = { get: 0, set: [], other: 0 };
 const listeners = [];
 function node(tag) {
-  return { tag, className: "", children: [], textContent: "",
+  return { tag, className: "", children: [], textContent: "", style: {},
+    setAttribute() {}, replaceChildren(...c) { this.children = c; },
     appendChild(c) { this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
     addEventListener(t) { listeners.push(t); },
@@ -95,7 +96,8 @@ def test_tabs_are_close_approvals_trends_numbers_with_close_active():
 def test_content_is_lazy_and_panels_start_empty():
     out = _run()
     assert out["content_is_function"] == [True, True, True, True]
-    assert out["panel_children"] == [0, 0, 0, 0]
+    # Close holds its three sections (cards, checklist, Monthly close); the rest are empty.
+    assert out["panel_children"] == [3, 0, 0, 0]
 
 
 def test_construction_makes_no_server_call():
