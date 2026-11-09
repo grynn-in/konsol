@@ -36,7 +36,8 @@
 	font-size: var(--text-sm);
 	color: var(--text-muted);
 }
-.konsol-home-tabs .khp-headline a {
+.konsol-home-tabs .khp-headline a,
+.konsol-home-tabs .khp-start {
 	font-size: var(--text-sm);
 	font-weight: var(--weight-medium);
 	color: var(--konsol-brand, var(--heading-color));
@@ -193,3 +194,25 @@
 .konsol-home-tabs a.kc-label:hover {
 	text-decoration: underline;
 }
+
+/* Trends (row 8): TB Submission Progress alone at full width, the rest two up. */
+.konsol-home-tabs .khp-chart-full,
+.konsol-home-tabs .khp-chart-grid {
+	margin-bottom: var(--margin-lg);
+}
+
+/* Numbers (row 9): one link per report with a one-line description. */
+.konsol-home-tabs .khp-number {
+	padding: var(--padding-sm) 0;
+	border-bottom: 1px solid var(--border-color);
+}
+.konsol-home-tabs .khp-number-link {
+	font-weight: var(--weight-medium);
+	color: var(--konsol-brand, var(--heading-color));
+}
+.konsol-home-tabs .khp-number-detail {
+	display: block;
+	font-size: var(--text-sm);
+	color: var(--text-muted);
+}
+
