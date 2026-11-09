@@ -20,6 +20,27 @@
 .konsol-home-tabs .khp-monthly {
 	margin-bottom: var(--margin-lg);
 }
+.konsol-home-tabs .khp-headline {
+	display: flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: var(--margin-sm);
+	margin-bottom: var(--margin-lg);
+}
+.konsol-home-tabs .khp-headline-text {
+	font-size: var(--text-xl);
+	font-weight: var(--weight-semibold);
+	color: var(--heading-color);
+}
+.konsol-home-tabs .khp-headline-detail {
+	font-size: var(--text-sm);
+	color: var(--text-muted);
+}
+.konsol-home-tabs .khp-headline a {
+	font-size: var(--text-sm);
+	font-weight: var(--weight-medium);
+	color: var(--konsol-brand, var(--heading-color));
+}
 .konsol-home-tabs .khp-error {
 	color: var(--red-600);
 	font-size: var(--text-sm);
