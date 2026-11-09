@@ -1,4 +1,4 @@
-"""Consolidation worksheet endpoint (konsol#494 row 6, no dimension).
+"""Consolidation worksheet endpoint (konsol#494 rows 6-7).
 
 ``get_worksheet(fiscal_year, fiscal_period, consolidation_group=None,
 entities=None)`` (GET) returns one root consolidation group's trial balance
@@ -25,6 +25,12 @@ States, never a silent empty worksheet:
   ``"account:1110"``, ``"not_in_chart:9999"``, ``"cta_undeclared"``), so the
   payload is JSON-safe.
 
+``dimension`` (optional ``dim_*`` column name) groups lines by that
+dimension's value. It is interpolated only after three checks (legal name,
+declared Published and ticked ``in_trial_balance``, built in the warehouse:
+one ``system.columns`` read); a refusal is a ``frappe.throw`` before the
+worksheet read. Without it there is no ``system.columns`` read.
+
 ``entities`` (a list, or its JSON text) narrows the entity columns; an
 entity the caller may not see, or that is not an Entity, is refused before
 any read (scope first, so existence is never revealed). ClickHouse is
@@ -39,6 +45,7 @@ from konsol.close import ch_read, signoff_gate, statement_model, tb_worksheet_mo
 from konsol.close.statement_api import (
     _chart, _error_message, _find_period, _minor_unit, _period_key, choose_group, root_groups)
 from konsol.entity_permissions import allowed_entity_codes
+from konsol.tb_dimension import declared_dimensions
 
 #: The one warehouse read. ``reporting_currency`` is read and checked in
 #: Python, never filtered on. The sum is aliased ``amt`` (N53: ``AS
@@ -52,11 +59,21 @@ _WORKSHEET_SQL = (
     "reporting_currency"
 )
 
+#: The dimension variant is built from the constant above, never typed twice:
+#: the checked column name (``dimension_column``) goes in once as
+#: ``<name> AS dimension_value`` and once in GROUP BY.
+_DIMENSION_COLUMNS_READ = (
+    "SELECT name FROM system.columns "
+    "WHERE database = 'epm_gold' AND table = 'gold_fully_consolidated_tb' "
+    "AND name LIKE 'dim\\_%'"
+)
+
 _NO_CHART_MESSAGE = "Publish the group chart (Main Account) first."
 
 
 @frappe.whitelist(methods=["GET"])
-def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities=None):
+def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities=None,
+                  dimension=None):
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     key = _period_key(fiscal_year, fiscal_period)
     period_rows = fiscal_calendar.fiscal_period_rows()
@@ -76,6 +93,11 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
             frappe.throw("%s %s not an entity." % (
                 ", ".join(unknown), "is" if len(unknown) == 1 else "are"))
 
+    dimension = dimension or None
+    dimension_sql = None
+    if dimension is not None:
+        dimension_sql = _dimension_sql(dimension)
+
     groups = root_groups()
     chosen, group_note, state, message = choose_group(groups, consolidation_group)
     currency = ({g["consolidation_group"]: g for g in groups}[chosen].get("reporting_currency")
@@ -90,6 +112,7 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
         "reporting_currency": currency,
         "minor_unit": None,
         "entities": sorted(shown) if shown is not None else None,
+        "dimension": dimension,
         "state": state,
         "message": message,
         "gap": None,
@@ -114,7 +137,8 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
     result["gap"] = declared.get("gap")
 
     try:
-        rows = [_row(r) for r in ch_read.rows(_WORKSHEET_SQL, {"group": chosen, "fy": key[0]})]
+        rows = [_row(r) for r in ch_read.rows(dimension_sql or _WORKSHEET_SQL,
+                                              {"group": chosen, "fy": key[0]})]
     except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
         result.update(state="not_built" if ch_read.not_built(e) else "error",
                       message=_error_message(e))
@@ -127,7 +151,8 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
 
     try:
         ws = tb_worksheet_model.worksheet(rows, accounts, period_rows, key, declared,
-                                          minor_unit, shown, allowed)
+                                          minor_unit, shown, allowed,
+                                          dimension=dimension)
     except ValueError as e:
         message = str(e)
         gap = message.startswith(statement_model.STATEMENT_CURRENCY_PRECISION_UNDECLARED)
@@ -136,6 +161,25 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
 
     result["worksheet"] = tb_worksheet_model.to_ids(ws)
     return result
+
+
+def _dimension_sql(name):
+    """``_WORKSHEET_SQL`` grouped by the dimension column ``name``. The name
+    is interpolated only after ``dimension_column``'s three checks (legal,
+    declared Published and ticked, built); one ``system.columns`` read, and a
+    refusal is a ``frappe.throw`` before any worksheet read."""
+    try:
+        present = [r["name"] for r in ch_read.rows(_DIMENSION_COLUMNS_READ)]
+    except Exception as e:  # noqa: BLE001 — can't say what is built
+        frappe.throw(_error_message(e))
+    try:
+        column = tb_worksheet_model.dimension_column(name, declared_dimensions(), present)
+    except ValueError as e:
+        frappe.throw(str(e))
+    sql = _WORKSHEET_SQL.replace(
+        "reporting_currency, sum(amount)", "reporting_currency, %s AS dimension_value, "
+        "sum(amount)" % column, 1)
+    return sql + ", " + column
 
 
 def _entities(value):
