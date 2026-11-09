@@ -62,6 +62,18 @@ const MONTHLY_CLOSE = [
 	"Close Assertions",
 ];
 
+// The waiting shortcuts, in the workspace's order (konsol.json, "{} waiting").
+const WAITING = [
+	"Consolidation Journals",
+	"Business Combinations",
+	"Business Disposals",
+	"Group Exchange Rates",
+	"Ownership Periods",
+	"Historical Equity Rates",
+	"IC Balances",
+	"Build Approvals",
+];
+
 function errorLine(div, e) {
 	const line = document.createElement("div");
 	line.className = "khp-error text-muted";
@@ -246,6 +258,15 @@ function fillClose(div) {
 	});
 }
 
+// Approvals panel: the waiting shortcuts, with their counts. A shortcut the
+// user may not open is absent from get_desktop_page and is skipped.
+function fillApprovals(div) {
+	widgets(div, (defs) => {
+		const have = items(defs.shortcuts);
+		group(div, "shortcut", WAITING.map((l) => have.find((s) => s.label === l)).filter(Boolean));
+	});
+}
+
 // Links inside the shadow root are invisible to Frappe's router, so an <a href>
 // does a full page load (#484 failure 3). Route in-app links ourselves.
 root_element.addEventListener("click", (e) => {
@@ -270,7 +291,7 @@ root_element.addEventListener("click", (e) => {
 const tabs = new frappe.ui.Tabs({
 	tabs: [
 		{ label: "Close", content: panel("close", fillClose) },
-		{ label: "Approvals", content: panel("approvals") },
+		{ label: "Approvals", content: panel("approvals", fillApprovals) },
 		{ label: "Trends", content: panel("trends") },
 		{ label: "Numbers", content: panel("numbers") },
 	],
