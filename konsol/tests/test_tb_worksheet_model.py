@@ -449,21 +449,22 @@ def test_to_ids_dimensioned_lines_get_distinct_ids():
 
 # -- #494 row 10b: each column's exact total -----------------------------------
 
-def test_total_exact_is_the_unrounded_column_sum_and_survives_to_ids():
+def test_total_rounded_exact_is_the_rounded_column_sum_and_survives_to_ids():
     rows = [wrow("entity", EA, "4000", 2025, 3, 0.004),
             wrow("entity", EA, "1000", 2025, 3, 0.004),
             wrow("entity", EA, "3100", 2025, 3, -0.008),
             wrow("topside", EA, "1000", 2025, 3, 0.0004)]
     sheet = ws(rows)
-    exact = sheet["total_exact"]
+    exact = sheet["total_rounded_exact"]
+    assert "total_exact" not in sheet and "total_exact" not in M.to_ids(sheet)
     assert set(exact) == {c["key"] for c in sheet["columns"]} - {M.ROUNDING}
-    assert abs(exact[("entity", EA)] - 0.0) < 1e-12          # exact 0, cells sum to -0.01
+    assert exact[("entity", EA)] == 0.0                      # exact 0, cells sum to -0.01
     assert sheet["total"]["cells"][("entity", EA)] == -0.01
-    assert abs(exact[("layer", "topside")] - 0.0004) < 1e-12
-    assert abs(exact[M.CONSOLIDATED] - 0.0004) < 1e-12
+    assert exact[("layer", "topside")] == 0.0                # 0.0004 rounds to 0.00
+    assert exact[M.CONSOLIDATED] == 0.0
     ids = M.to_ids(sheet)
-    assert ids["total_exact"] == {M._id(k): v for k, v in exact.items()}
-    assert "entity:" + EA in ids["total_exact"] and "consolidated" in ids["total_exact"]
+    assert ids["total_rounded_exact"] == {M._id(k): v for k, v in exact.items()}
+    assert "entity:" + EA in ids["total_rounded_exact"] and "consolidated" in ids["total_rounded_exact"]
 
 
 # -- #494 PR review V2: the exact totals come back rounded the model's way -------

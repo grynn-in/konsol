@@ -175,7 +175,7 @@ def test_message_says_nothing_about_totals_when_all_zero():
     for k in ws["total"]["cells"]:
         ws["total"]["cells"][k] = 0.0
     ws["total"]["consolidated"] = 0.0
-    ws["total_exact"] = {k: 0.0 for k in ws["total_exact"]}
+    ws["total_rounded_exact"] = {k: 0.0 for k in ws["total_rounded_exact"]}
     assert "not zero" not in M.message(ws, PAYLOAD).lower()
 
 
