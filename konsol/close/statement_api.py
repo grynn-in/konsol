@@ -862,6 +862,43 @@ def _entity_drills(payload, reads):
 
 
 @frappe.whitelist(methods=["GET"])
+def get_entity_drill(fiscal_year, fiscal_period, entity, heading):
+    """One statement heading's drill on the entity basis (konsol#495): the
+    entity's own trial-balance rows (one ClickHouse read, shared with the
+    statement) through ``drill_model.drill`` with no journals. Same heading
+    check as ``get_drill``. A statement that is not ``ok`` comes back as its
+    own state and message with ``drill`` None; a drill/statement mismatch is
+    ``state "error"``."""
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    payload, reads = _entity_statement(fiscal_year, fiscal_period, entity)
+    result = {
+        "period": payload["period"],
+        "basis": "Entity",
+        "entity": payload["entity"],
+        "entity_name": payload["entity_name"],
+        "consolidation_group": None,
+        "heading": heading,
+        "state": payload["state"],
+        "message": payload["message"],
+        "drill": None,
+    }
+    if payload["state"] != "ok":
+        return result
+    entry = reads["accounts"].get(heading)
+    if entry is None or not entry.get("is_group"):
+        frappe.throw(f"{heading} is not a statement heading of the group chart.")
+    try:
+        drills = _entity_drills(payload, reads)
+    except ValueError as e:
+        result["state"], result["message"] = "error", str(e)
+        return result
+    if heading not in drills:
+        frappe.throw(f"{heading} is not a heading on this statement.")
+    result["drill"] = drills[heading]
+    return result
+
+
+@frappe.whitelist(methods=["GET"])
 def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis=None, entity=None):
     """The Numbers statement as a downloaded .xlsx (konsol#305 story 8.5,
     decision #305-W5-3): ``get_statement``'s payload and every heading's
