@@ -45,6 +45,14 @@ function getDefs() {
 				{ page: JSON.stringify({ name: "Konsol", title: "Konsol", public: 1 }) },
 				"GET"
 			)
+			.then((defs) => {
+				// No payload, or none of the widget lists: an error, not empty panels.
+				const known = ["number_cards", "shortcuts", "charts"];
+				if (!defs || typeof defs !== "object" || Array.isArray(defs) || !known.some((k) => k in defs)) {
+					throw new Error("the workspace definitions came back empty");
+				}
+				return defs;
+			})
 			.catch((e) => {
 				defsPromise = null;
 				throw e;
@@ -54,27 +62,35 @@ function getDefs() {
 }
 const items = (x) => (Array.isArray(x) ? x : (x && x.items) || []);
 
+// Shortcuts are found by what they open (type + link_to, konsol.json's shortcut
+// rows), never by label: a translation or a site relabel changes the label only.
+function pickShortcuts(have, wanted) {
+	return wanted
+		.map(([type, link]) => have.find((s) => s && s.type === type && s.link_to === link))
+		.filter(Boolean);
+}
+
 // The Monthly close shortcuts, in the order the Close panel shows them. A
 // shortcut the user may not open is absent from get_desktop_page and is skipped.
 const MONTHLY_CLOSE = [
-	"My Work",
-	"Period Close",
-	"Consolidated Statement",
-	"Trial Balance Uploads",
-	"Trial Balance Submissions",
-	"Close Assertions",
+	["Report", "My Work"],
+	["Report", "Period Close"],
+	["Report", "Consolidated Statement"],
+	["DocType", "Trial Balance Upload"],
+	["DocType", "Trial Balance Submission"],
+	["Report", "Close Assertions"],
 ];
 
 // The waiting shortcuts, in the workspace's order (konsol.json, "{} waiting").
 const WAITING = [
-	"Consolidation Journals",
-	"Business Combinations",
-	"Business Disposals",
-	"Group Exchange Rates",
-	"Ownership Periods",
-	"Historical Equity Rates",
-	"IC Balances",
-	"Build Approvals",
+	["DocType", "Consolidation Journal"],
+	["DocType", "Business Combination"],
+	["DocType", "Business Disposal"],
+	["DocType", "Group Exchange Rate"],
+	["DocType", "Ownership Period"],
+	["DocType", "Historical Equity Rate"],
+	["DocType", "IC Balance"],
+	["DocType", "Build Approval"],
 ];
 
 // The Trends charts, in the workspace's order (konsol.json). TB Submission
@@ -289,9 +305,7 @@ function fillClose(div) {
 	fillHeadline(headline);
 	widgets(div, (defs) => {
 		group(cards, "number_card", items(defs.number_cards));
-		const have = items(defs.shortcuts);
-		const list = MONTHLY_CLOSE.map((l) => have.find((s) => s.label === l)).filter(Boolean);
-		group(monthly, "shortcut", list);
+		group(monthly, "shortcut", pickShortcuts(items(defs.shortcuts), MONTHLY_CLOSE));
 	});
 }
 
@@ -299,8 +313,7 @@ function fillClose(div) {
 // user may not open is absent from get_desktop_page and is skipped.
 function fillApprovals(div) {
 	widgets(div, (defs) => {
-		const have = items(defs.shortcuts);
-		group(div, "shortcut", WAITING.map((l) => have.find((s) => s.label === l)).filter(Boolean));
+		group(div, "shortcut", pickShortcuts(items(defs.shortcuts), WAITING));
 	});
 }
 

@@ -188,15 +188,16 @@ def test_no_two_shortcut_labels_differ_only_by_case():
 
 def test_every_shortcut_the_tabs_block_names_has_its_row():
     """The block reads the shortcut child table through get_desktop_page, so a
-    label in its WAITING or MONTHLY_CLOSE list with no row would vanish
-    silently; the content no longer carries shortcut blocks."""
+    target in its WAITING or MONTHLY_CLOSE list with no row would vanish
+    silently; the content no longer carries shortcut blocks. The block names
+    each shortcut by [type, link_to], not label (#497 review R4)."""
     ws = _ws()
-    rows = [s["label"] for s in ws["shortcuts"]]
+    rows = [(s["type"], s["link_to"]) for s in ws["shortcuts"]]
     js = _read(TABS_JS)
     named = []
     for const in ("MONTHLY_CLOSE", "WAITING"):
-        body = re.search(r"const %s = \[(.*?)\];" % const, js, re.S).group(1)
-        named += re.findall(r'"([^"]+)"', body)
+        body = re.search(r"const %s = \[(.*?)\n\];" % const, js, re.S).group(1)
+        named += re.findall(r'\["([^"]+)", "([^"]+)"\]', body)
     assert sorted(named) == sorted(rows), sorted(set(named) ^ set(rows))
     assert len(named) == len(set(named))
     assert not [b for b in json.loads(ws["content"]) if b["type"] == "shortcut"]
