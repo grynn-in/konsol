@@ -232,7 +232,10 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
         present.add(column)
         line_key = row_key(row, accounts, declared)
         if dimension:
-            line_key = (line_key, row.get("dimension_value") or NO_DIMENSION_VALUE)
+            # An out-of-scope entity's own value never labels a line (V1).
+            value = (OUTSIDE_SCOPE_VALUE if column == OUTSIDE_SCOPE
+                     else row.get("dimension_value") or NO_DIMENSION_VALUE)
+            line_key = (line_key, value)
         cells = exact.setdefault(line_key, {})
         amount = statement_model._dec(row["amount"])
         cells[column] = cells.get(column, _ZERO) + amount
@@ -248,7 +251,8 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
         if not dimension:
             return _line_order(k, accounts)
         value = k[1]
-        return (_line_order(k[0], accounts), value == NO_DIMENSION_VALUE, value)
+        return (_line_order(k[0], accounts), value == NO_DIMENSION_VALUE,
+                value == OUTSIDE_SCOPE_VALUE, value)
 
     for line_key in sorted(exact, key=order):
         line_exact = exact[line_key]
@@ -287,6 +291,9 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
 # -- row 4: dimension group-by -----------------------------------------------
 
 NO_DIMENSION_VALUE = "(no value)"
+#: Value of every line fed by out-of-scope entities: their own values are
+#: never shown to a scoped caller.
+OUTSIDE_SCOPE_VALUE = "(outside your scope)"
 _tb_dimension_model = importlib.util.spec_from_file_location(
     "konsol_close_tb_worksheet_model_tb_dimension",
     os.path.join(os.path.dirname(_HERE), "tb_dimension_model.py"))
