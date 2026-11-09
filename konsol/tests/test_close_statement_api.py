@@ -1533,3 +1533,64 @@ def test_export_basis_group_or_blank_is_the_unchanged_group_export():
         assert site.response["filename"] == base["filename"] == "numbers-FY2025P07-G1.xlsx"
         assert len(site.ch_calls) == 4
         assert site.response["filecontent"] is not None
+
+
+# =============================================================================
+# konsol#495 row 6: get_entity_drill, one heading's drill on the entity basis.
+# =============================================================================
+
+def _call_entity_drill(site, fy=2025, fp=7, entity="ZZA", heading="1"):
+    result = _invoke(site, lambda api: api.get_entity_drill(fy, fp, entity, heading))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def test_entity_drill_is_one_entity_row_footing_to_the_statement_line():
+    site = _entity_site()
+    statement = _call_entity(site)
+    line = _bs_line(statement, "1")
+    result = _call_entity_drill(site)
+    assert result["state"] == "ok"
+    assert result["basis"] == "Entity"
+    assert result["entity"] == "ZZA"
+    assert result["entity_name"] == "Zz Entity A"
+    assert result["consolidation_group"] is None
+    assert result["heading"] == "1"
+    assert result["period"]["fiscal_year"] == 2025 and result["period"]["fiscal_period"] == 7
+    drill = result["drill"]
+    assert drill["total"] == line["current"]
+    entity_rows = [r for r in drill["rows"] if r["layer"] == "entity" and r["entity"]]
+    assert [r["entity"] for r in entity_rows] == ["ZZA"]
+    assert sum(a["amount"] for a in entity_rows[0]["accounts"]) == drill["total"]
+
+
+def test_entity_drill_reads_clickhouse_once_from_the_entity_trial_balance():
+    site = _entity_site()
+    _call_entity_drill(site)
+    assert len(site.ch_calls) == 1
+    assert "gold_trial_balance" in site.ch_calls[0][0]
+
+
+def test_entity_drill_unknown_or_leaf_heading_is_refused():
+    for heading in ("ZZNOPE", "1110", ""):
+        site = _entity_site()
+        with pytest.raises(Exception) as info:
+            _call_entity_drill(site, heading=heading)
+        assert type(info.value).__name__ == "ValidationError", repr(info.value)
+
+
+def test_entity_drill_refuses_a_blank_unknown_or_group_entity():
+    for entity in ("", "ZZNOPE", "ZZG"):
+        site = _entity_site()
+        with pytest.raises(Exception) as info:
+            _call_entity_drill(site, entity=entity)
+        assert type(info.value).__name__ == "ValidationError", repr(info.value)
+
+
+def test_entity_drill_non_ok_statement_is_a_state_with_no_drill():
+    site = _entity_site()
+    site.entities["ZZA"]["functional_currency"] = ""
+    result = _call_entity_drill(site)
+    assert result["state"] == "setup_gap"
+    assert "Functional Currency" in result["message"]
+    assert result["drill"] is None
