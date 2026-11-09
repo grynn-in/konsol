@@ -175,6 +175,7 @@ def test_message_says_nothing_about_totals_when_all_zero():
     for k in ws["total"]["cells"]:
         ws["total"]["cells"][k] = 0.0
     ws["total"]["consolidated"] = 0.0
+    ws["total_exact"] = {k: 0.0 for k in ws["total_exact"]}
     assert "not zero" not in M.message(ws, PAYLOAD).lower()
 
 
@@ -226,3 +227,32 @@ def test_entity_code_with_a_colon_keeps_its_own_column():
     assert fm["entity:A:1"] != fm["entity:A-1"]
     out = M.rows(ws, "USD")
     assert out[0][fm["entity:A:1"]] == ws["lines"][0]["cells"]["entity:A:1"]
+
+
+# -- #494 row 10b: totals are judged on exact sums, not on rounded lines --------
+
+def _exact_sheet(rows, minor_unit=2):
+    return WM.to_ids(WM.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "3100"},
+                                  minor_unit, None, None))
+
+
+def test_message_ignores_a_column_whose_rounded_lines_sum_to_a_cent_but_exact_is_zero():
+    ws = _exact_sheet([_row("entity", "ZA", "4000", 0.004), _row("entity", "ZA", "1000", 0.004),
+                       _row("entity", "ZA", "3100", -0.008)])
+    assert ws["total"]["cells"]["entity:ZA"] == -0.01       # displayed total is off by a cent
+    assert "not zero" not in M.message(ws, PAYLOAD).lower()
+
+
+def test_message_still_lists_a_genuinely_unbalanced_column():
+    ws = _exact_sheet([_row("entity", "ZA", "4000", 0.004), _row("entity", "ZA", "1000", 0.004),
+                       _row("entity", "ZA", "3100", -0.008), _row("topside", "ZA", "1000", 0.05)])
+    msg = M.message(ws, PAYLOAD)
+    assert "not zero" in msg.lower() and "0.05" in msg
+
+
+def test_message_never_lists_rounding_as_an_unbalanced_column():
+    ws = _exact_sheet([_row("entity", "ZA", "4000", 0.004), _row("topside", "ZA", "4000", 0.004),
+                       _row("entity", "ZA", "1000", -0.008)])
+    assert ws["total"]["cells"]["rounding"] == 0.01
+    msg = M.message(ws, PAYLOAD)
+    assert "Rounding" not in msg and "not zero" not in msg.lower()

@@ -445,3 +445,22 @@ def test_to_ids_dimensioned_lines_get_distinct_ids():
     ids = [line["key"] for line in out["lines"]]
     assert len(ids) == len(set(ids)) == 2
     assert [line["dimension_value"] for line in out["lines"]] == ["N", "S"]
+
+
+# -- #494 row 10b: each column's exact total -----------------------------------
+
+def test_total_exact_is_the_unrounded_column_sum_and_survives_to_ids():
+    rows = [wrow("entity", EA, "4000", 2025, 3, 0.004),
+            wrow("entity", EA, "1000", 2025, 3, 0.004),
+            wrow("entity", EA, "3100", 2025, 3, -0.008),
+            wrow("topside", EA, "1000", 2025, 3, 0.0004)]
+    sheet = ws(rows)
+    exact = sheet["total_exact"]
+    assert set(exact) == {c["key"] for c in sheet["columns"]} - {M.ROUNDING}
+    assert abs(exact[("entity", EA)] - 0.0) < 1e-12          # exact 0, cells sum to -0.01
+    assert sheet["total"]["cells"][("entity", EA)] == -0.01
+    assert abs(exact[("layer", "topside")] - 0.0004) < 1e-12
+    assert abs(exact[M.CONSOLIDATED] - 0.0004) < 1e-12
+    ids = M.to_ids(sheet)
+    assert ids["total_exact"] == {M._id(k): v for k, v in exact.items()}
+    assert "entity:" + EA in ids["total_exact"] and "consolidated" in ids["total_exact"]
