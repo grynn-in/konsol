@@ -131,16 +131,36 @@ function dispositionFilename(header) {
 }
 
 /**
- * GET a file from `konsol.close.<...>` (konsol#305 8.5): `{blob, filename}`.
+ * GET (or, with `{method: "POST"}`, POST) a file from `konsol.close.<...>`
+ * (konsol#305 8.5): `{blob, filename}`.
  * A refusal (a non-2xx reply) throws the server's own sentence, read from
  * its JSON body like `get`'s — never a file. A reply with no file name
  * throws too: the name is the server's, never made up here.
  */
-export async function download(method, params, { fetchImpl = fetch } = {}) {
-	const url = methodUrl(method, params);
+export async function download(method, params, { fetchImpl = fetch, method: verb = "GET" } = {}) {
+	let url;
+	let opts;
+	if (verb === "POST") {
+		// A download that records an event (konsol#496 10A-2) is a POST:
+		// form-encoded params, the CSRF token in the body and the header.
+		url = `/api/method/${method}`;
+		const form = new URLSearchParams();
+		for (const [k, v] of Object.entries(params || {})) {
+			if (v !== null && v !== undefined && v !== "") form.append(k, String(v));
+		}
+		const headers = { "Content-Type": "application/x-www-form-urlencoded" };
+		if (typeof window !== "undefined" && window.csrf_token) {
+			form.append("csrf_token", window.csrf_token);
+			headers["X-Frappe-CSRF-Token"] = window.csrf_token;
+		}
+		opts = { method: "POST", credentials: "include", headers, body: form.toString() };
+	} else {
+		url = methodUrl(method, params);
+		opts = { method: "GET", credentials: "include" };
+	}
 	let res;
 	try {
-		res = await fetchImpl(url, { method: "GET", credentials: "include" });
+		res = await fetchImpl(url, opts);
 	} catch (err) {
 		throw new Error(`Network error: ${err.message}`);
 	}

@@ -73,6 +73,8 @@ const KIND_LABEL = {
 	reminder_sent: { label: "Reminder", tone: "mute" },
 	// konsol#283: a submitted TB's warehouse rows re-landed from its file.
 	tb_relanded: { label: "Re-landed", tone: "warn" },
+	// konsol#496 row 10A-3: a Numbers statement downloaded.
+	statement_exported: { label: "Downloaded", tone: "mute" },
 };
 
 const SIGNOFF_LABEL = {
@@ -149,6 +151,14 @@ function itemText(event, periodFiscalYear) {
 		}
 		return `Commentary · ${heading_name} (${heading})`;
 	}
+	if (event.kind === "statement_exported") {
+		const { basis, consolidation_group: group, entity } = event.detail || {};
+		const scope = group || entity;
+		if (!basis || !scope) {
+			return "Statement download (scope not recorded)";
+		}
+		return `Statement · ${basis} · ${scope}`;
+	}
 	if (event.kind === "reminder_sent") {
 		const topicLabel = REMINDER_TOPIC_LABEL[(event.detail || {}).topic];
 		if (!topicLabel || !event.entity) {
@@ -217,6 +227,12 @@ function detailText(event) {
 			throw new Error("Audit trail: commentary_saved event has no detail.text.");
 		}
 		parts.push(detail.text ? `Text: "${detail.text}"` : "Commentary cleared");
+	}
+	if (event.kind === "statement_exported") {
+		if (!detail.filename) {
+			throw new Error("Audit trail: statement_exported event has no detail.filename.");
+		}
+		parts.push(`File: ${detail.filename}`);
 	}
 	if (event.kind === "reminder_sent") {
 		// Y54 always writes `detail.recipients` (the sorted user ids it
