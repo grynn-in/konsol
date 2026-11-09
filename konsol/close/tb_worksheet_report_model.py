@@ -1,7 +1,8 @@
 """Consolidation Worksheet Desk layout, pure: the worksheet as report
 columns, rows and message (konsol#494 row 5).
 
-Maps ``tb_worksheet_model.worksheet``'s result to the Desk Script Report
+Maps ``tb_worksheet_model.to_ids(worksheet(...))`` (string ids, the API's
+payload form) to the Desk Script Report
 "Consolidation Worksheet". Nothing here recomputes, re-signs or rounds a
 number: every cell is the worksheet's own displayed value.
 
@@ -25,8 +26,7 @@ number: every cell is the worksheet's own displayed value.
   It is built from the worksheet's column labels only, so an out-of-scope
   entity is never named.
 
-Pure: no frappe, no konsol imports; ``tb_worksheet_model`` and
-``period_name`` are siblings loaded by path.
+Pure: no frappe, no konsol imports; ``period_name`` is a sibling loaded by path.
 """
 import html as _html
 import importlib.util
@@ -44,13 +44,12 @@ def _load_sibling(name):
     return module
 
 
-_wm = _load_sibling("tb_worksheet_model")
 period_name = _load_sibling("period_name").period_name
 
 TOTAL_LABEL = "Total"
 _RESERVED = ("account", "name", "dimension", "currency")
 _PREFIX = {"entity": "e_", "layer": "l_", "bucket": "b_"}
-_FIXED = {_wm.ROUNDING: "rounding", _wm.CONSOLIDATED: "consolidated"}
+_FIXED = ("rounding", "consolidated")
 
 
 def _slug(text):
@@ -63,7 +62,11 @@ def fieldnames(ws):
     out = {}
     for column in ws["columns"]:
         key = column["key"]
-        wanted = _FIXED.get(key) or _PREFIX[key[0]] + _slug(key[1])
+        if key in _FIXED:
+            wanted = key
+        else:
+            tag, _, rest = key.partition(":")  # split at the first ":" only
+            wanted = _PREFIX[tag] + _slug(rest)
         name, n = wanted, 1
         while name in used:
             n += 1
@@ -99,7 +102,7 @@ def columns(ws, currency, minor_unit, dimension=None):
 def rows(ws, currency, dimension=None):
     """One row per line, then the bold Total."""
     names = fieldnames(ws)
-    keys = [c["key"] for c in ws["columns"] if c["key"] != _wm.CONSOLIDATED]
+    keys = [c["key"] for c in ws["columns"] if c["key"] != "consolidated"]
 
     def build(head, cells, consolidated, **flags):
         row = dict(head)
@@ -136,7 +139,7 @@ def _nonzero_totals_text(ws):
     labels = {c["key"]: c["label"] for c in ws["columns"]}
     found = []
     for key, label in labels.items():
-        value = ws["total"]["consolidated"] if key == _wm.CONSOLIDATED else ws["total"]["cells"].get(key, 0)
+        value = ws["total"]["consolidated"] if key == "consolidated" else ws["total"]["cells"].get(key, 0)
         if value:
             found.append("%s %.*f" % (label, places, value))
     if not found:

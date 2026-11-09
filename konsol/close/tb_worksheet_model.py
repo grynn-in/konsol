@@ -303,3 +303,37 @@ def dimension_column(name, declared_rows, present_columns):
         raise ValueError(f"dimension {name!r} is not built in the warehouse yet "
                          "(no such column in gold_fully_consolidated_tb)")
     return name
+
+
+# -- row 6b: string ids, the one key form outside the model -------------------
+
+def _id(key):
+    """A model key (a tuple of strings) as a string id. The tag is always the
+    first part and the rest is kept whole, so an id is split at its FIRST
+    ``:`` only (an entity code may contain ``:``) and ids of different kinds
+    never collide."""
+    return ":".join(key)
+
+
+def _line_id(key):
+    # A dimensioned line key is (account_key, value).
+    if key and isinstance(key[0], tuple):
+        return _id(key[0]) + "|" + key[1]
+    return _id(key)
+
+
+def to_ids(ws):
+    """``worksheet``'s result with every key a string id: ``entity:ZZA``,
+    ``layer:topside``, ``bucket:other_entities``, ``rounding``,
+    ``consolidated``; line keys ``account:1110``, ``not_in_chart:9999``,
+    ``cta_undeclared`` (``<account id>|<value>`` when dimensioned). Same shape
+    otherwise, JSON-safe; the API payload and the Desk layout both use it."""
+    def cells(values):
+        return {_id(k): v for k, v in values.items()}
+
+    out = {k: v for k, v in ws.items() if k not in ("columns", "lines", "total")}
+    out["columns"] = [dict(c, key=_id(c["key"])) for c in ws["columns"]]
+    out["lines"] = [dict(line, key=_line_id(line["key"]), cells=cells(line["cells"]))
+                    for line in ws["lines"]]
+    out["total"] = dict(ws["total"], cells=cells(ws["total"]["cells"]))
+    return out

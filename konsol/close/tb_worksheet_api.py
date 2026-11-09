@@ -126,7 +126,7 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
         result.update(state="setup_gap" if gap else "error", message=message)
         return result
 
-    result["worksheet"] = _json_safe(ws)
+    result["worksheet"] = tb_worksheet_model.to_ids(ws)
     return result
 
 
@@ -171,24 +171,3 @@ def _wrong_currency(rows, currency):
     return (f"The warehouse holds rows not in the group's reporting currency {currency}: "
             f"{listed}. Rebuild the consolidation, or check the group's reporting currency.")
 
-
-def _id(key):
-    """A model key (a tuple of strings) as a string id; the tag is always
-    the first part, so ids of different kinds never collide."""
-    return ":".join(key)
-
-
-def _json_safe(ws):
-    def cells(values):
-        return {_id(k): v for k, v in values.items()}
-
-    return {
-        "columns": [{"key": _id(c["key"]), "label": c["label"]} for c in ws["columns"]],
-        "lines": [{"key": _id(line["key"]), "account": line["account"], "name": line["name"],
-                   "cells": cells(line["cells"]), "consolidated": line["consolidated"]}
-                  for line in ws["lines"]],
-        "total": {"cells": cells(ws["total"]["cells"]),
-                  "consolidated": ws["total"]["consolidated"]},
-        "outside_count": ws["outside_count"],
-        "minor_unit": ws["minor_unit"],
-    }
