@@ -206,8 +206,9 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
 
     ``dimension`` (a name ``dimension_column`` accepted, or None) groups the
     lines on (account, value): each row's ``dimension_value`` is its value,
-    blank or absent (every non-entity layer) is the ``BLANK_VALUE`` marker and an
-    out-of-scope row's is ``OUTSIDE_SCOPE_VALUE`` (markers are tuples; ``to_ids``
+    blank or absent is the ``BLANK_VALUE`` marker, and the value of any row
+    whose ``data_area_id`` is outside ``allowed`` (on every layer, topside and
+    eliminations included) is ``OUTSIDE_SCOPE_VALUE`` (markers are tuples; ``to_ids``
     turns them into the "(no value)" / "(outside your scope)" labels). A line
     key is then ``(account_key, value)`` and the line carries
     ``dimension_value``; each still cross-foots on its own. None leaves the
@@ -235,8 +236,13 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
         present.add(column)
         line_key = row_key(row, accounts, declared)
         if dimension:
-            # An out-of-scope entity's own value never labels a line (V1).
-            value = (OUTSIDE_SCOPE_VALUE if column == OUTSIDE_SCOPE
+            # An out-of-scope entity's own value never labels a line, on any
+            # layer: a row whose data_area_id is hidden is outside scope even
+            # when its layer has no entity column (V1, W1).
+            area = row.get("data_area_id")
+            hidden = (column == OUTSIDE_SCOPE
+                      or (allowed is not None and area and area not in allowed))
+            value = (OUTSIDE_SCOPE_VALUE if hidden
                      else row.get("dimension_value") or BLANK_VALUE)
             line_key = (line_key, value)
         cells = exact.setdefault(line_key, {})
