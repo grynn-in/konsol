@@ -136,9 +136,16 @@ def _header_text(payload):
     period, never the bare ``period_code`` (live it is "P07" alone, measured
     6 Oct; konsol#305 U1 / review-w5 S4), the same as the screen's header."""
     period = payload["period"]
-    parts = [period_name(period["fiscal_year"], period["fiscal_period"]),
-             payload.get("consolidation_group"),
-             payload.get("reporting_currency")]
+    if payload.get("basis") == "Entity":
+        # Entity basis (konsol#495): ``Numbers · FY2025 P07 · Basis: Entity ·
+        # ZZA Zz Entity · EUR``; a missing basis is the group statement.
+        who = " ".join(p for p in (payload.get("entity"), payload.get("entity_name")) if p)
+        parts = [period_name(period["fiscal_year"], period["fiscal_period"]),
+                 "Basis: Entity", who, payload.get("reporting_currency")]
+    else:
+        parts = [period_name(period["fiscal_year"], period["fiscal_period"]),
+                 payload.get("consolidation_group"),
+                 payload.get("reporting_currency")]
     return " · ".join(["Numbers"] + [p for p in parts if p not in (None, "")])
 
 
