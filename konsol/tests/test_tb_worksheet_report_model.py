@@ -73,7 +73,8 @@ def test_entity_named_like_a_layer_or_bucket_keeps_its_own_column():
 
 
 def test_fieldnames_are_deterministic_and_fixed_for_non_entities():
-    ws = sheet(extra=[_row("topside", "A-1", "1000", 1.0)])
+    ws = sheet(extra=[_row("topside", "A-1", "1000", 1.0),
+                      _row("entity", "ic_elimination", "1000", 1.0)])
     fm = M.fieldnames(ws)
     assert fm == M.fieldnames(ws)
     assert fm[WM.CONSOLIDATED] == "consolidated"
@@ -84,7 +85,7 @@ def test_column_order_and_leading_columns():
     ws = sheet()
     c = cols(ws)
     assert [x["fieldname"] for x in c[:2]] == ["account", "name"]
-    assert c[-2]["fieldname"] == "consolidated" or c[-1]["fieldname"] == "currency"
+    assert c[-2]["fieldname"] == "consolidated" and c[-1]["fieldname"] == "currency"
     keys = [x["key"] for x in ws["columns"]]
     amount_names = [M.fieldnames(ws)[k] for k in keys]
     assert [x["fieldname"] for x in c if x["fieldname"] in amount_names] == amount_names
