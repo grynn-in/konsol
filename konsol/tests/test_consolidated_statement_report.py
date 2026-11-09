@@ -279,8 +279,9 @@ def test_js_export_button_posts_all_five_filters():
     body = _export_body()
     assert "open_url_post(frappe.request.url" in body
     assert 'cmd: "konsol.close.statement_api.export_statement"' in body
+    assert "get_filter_value(name)" in body
     for name in ("fiscal_year", "fiscal_period", "basis", "consolidation_group", "entity"):
-        assert 'get_filter_value("%s")' % name in body, name
+        assert '%s: value("%s")' % (name, name) in body, name
 
 
 def test_js_export_button_is_added_and_removed_in_after_datatable_render():

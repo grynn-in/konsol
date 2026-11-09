@@ -1,9 +1,12 @@
 // Consolidated Statement — the Numbers statement (P&L and Balance Sheet) in Desk.
 // A heading opens Statement Drill for that heading with the same filters;
+// "Export to Excel" downloads the statement through
+// statement_api.export_statement (a form POST: open_url_post);
 // "Add commentary" saves a heading's commentary through
 // commentary_api.save_commentary (the Close app's own call).
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
 const ADD_COMMENTARY = __("Add commentary");
+const EXPORT_TO_EXCEL = __("Export to Excel");
 
 function drill_url(data) {
 	// The heading row carries the group the statement was built for
@@ -28,6 +31,29 @@ function commentable_headings() {
 	// The rows' can_comment is get_statement's own (role and Open period);
 	// the report never re-decides it.
 	return (frappe.query_report.data || []).filter((row) => row.code && row.can_comment);
+}
+
+function has_statement() {
+	// An ok statement has heading rows carrying the group (or entity) the
+	// statement was built for (statement_report_model: drill_group /
+	// drill_entity); a refusal or a not-built state has none, so no export.
+	return (frappe.query_report.data || []).some(
+		(row) => row.code && (row.drill_group || row.drill_entity),
+	);
+}
+
+function export_to_excel() {
+	// A form POST (open_url_post adds the CSRF token); values are sent as
+	// strings, as a blank filter is "", never "null" or "undefined".
+	const value = (name) => frappe.query_report.get_filter_value(name) || "";
+	open_url_post(frappe.request.url, {
+		cmd: "konsol.close.statement_api.export_statement",
+		fiscal_year: value("fiscal_year"),
+		fiscal_period: value("fiscal_period"),
+		basis: value("basis"),
+		consolidation_group: value("consolidation_group"),
+		entity: value("entity"),
+	});
 }
 
 function add_commentary() {
@@ -164,6 +190,10 @@ frappe.query_reports["Consolidated Statement"] = {
 		// Shown only when get_statement's can_comment allows it (on the rows).
 		const page = frappe.query_report.page;
 		page.remove_inner_button(ADD_COMMENTARY);
+		page.remove_inner_button(EXPORT_TO_EXCEL);
+		if (has_statement()) {
+			page.add_inner_button(EXPORT_TO_EXCEL, export_to_excel);
+		}
 		if (commentable_headings().length) {
 			page.add_inner_button(ADD_COMMENTARY, add_commentary);
 		}
