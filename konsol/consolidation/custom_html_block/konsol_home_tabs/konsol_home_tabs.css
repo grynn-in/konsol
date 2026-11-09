@@ -218,7 +218,8 @@
 	color: var(--text-muted);
 }
 
-/* The chart filter button's icon is in the page sprite, unreachable here. */
-.konsol-home-tabs .filter-chart {
+/* The chart filter button's icon is in the page sprite, unreachable here.
+   One class more than Frappe's .widget.dashboard-widget-box .filter-chart. */
+.konsol-home-tabs .widget.dashboard-widget-box .filter-chart {
 	display: none;
 }
