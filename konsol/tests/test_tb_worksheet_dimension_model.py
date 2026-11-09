@@ -329,3 +329,14 @@ def test_a_layer_row_with_no_entity_area_keeps_its_value():
     rows = [wrow("ic_elimination", "", "4000", 3, 2.5, "Group-V")]
     s = _layered(rows, {"B"})
     assert [l["dimension_value"] for l in s["lines"]] == ["Group-V"]
+
+
+def test_line_order_is_real_values_then_blank_then_outside_scope():
+    rows = [wrow("entity", "A", "4000", 3, -1.0, HIDDEN),
+            wrow("entity", "B", "4000", 3, -2.0, ""),
+            wrow("entity", "B", "4000", 3, -3.0, "Zulu"),
+            wrow("entity", "B", "4000", 3, -4.0, "Alpha")]
+    s = M.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                    None, {"B"}, dimension="dim_region")
+    assert [l["dimension_value"] for l in s["lines"]] == [
+        "Alpha", "Zulu", M.BLANK_VALUE, M.OUTSIDE_SCOPE_VALUE]

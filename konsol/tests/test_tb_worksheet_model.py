@@ -170,6 +170,21 @@ def test_cta_is_cumulative_like_bs():
     assert win(r, (2025, 3))
 
 
+def test_cta_row_on_a_pl_section_account_is_still_cumulative():
+    # The layer decides, not the account's section (#494 W4, mutation M5).
+    r = arow("4000", 2024, 12, "cta")
+    assert win(r, (2025, 3))
+    assert not win(arow("4000", 2024, 12, "entity"), (2025, 3))
+
+
+def test_a_group_account_row_is_cumulative_not_pl_ytd():
+    # A group account in the P&L section is not a P&L leaf (#494 W4, mutation M8).
+    accounts = dict(ACCOUNTS, **{"40": {"account_name": "Revenue",
+                                        "statement_section": "Profit and Loss", "is_group": 1}})
+    r = arow("40", 2024, 12)
+    assert M.in_window(r, accounts, PERIODS, (2025, 3))
+
+
 def test_unknown_code_is_cumulative_like_statement_not_in_chart():
     assert win(arow("9999", 2024, 12), (2025, 3))
 
