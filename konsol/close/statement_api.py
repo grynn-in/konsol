@@ -898,7 +898,7 @@ def get_entity_drill(fiscal_year, fiscal_period, entity, heading):
     return result
 
 
-@frappe.whitelist(methods=["GET"])
+@frappe.whitelist(methods=["POST"])
 def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis=None, entity=None):
     """The Numbers statement as a downloaded .xlsx (konsol#305 story 8.5,
     decision #305-W5-3): ``get_statement``'s payload and every heading's
@@ -914,7 +914,12 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
     (``_entity_statement``, ``entity`` required): the drills come from the
     statement's own trial-balance rows, so ClickHouse is read ONCE in total.
     A blank basis or ``"Group"`` is the group export above, unchanged; any
-    other basis is refused."""
+    other basis is refused.
+
+    Every download is recorded (konsol#496, Q1 = A, Deepak Pai 9 Nov 2026):
+    one Close Event ``statement_exported`` per file, written after the
+    workbook is built, in the request's own transaction (no commit here; a
+    GET would roll it back, hence POST). A refusal records nothing."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     if basis not in (None, "", "Group", "Entity"):
         frappe.throw(f"Basis {basis} is not one of Group, Entity.")
@@ -926,10 +931,8 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
             drills = _entity_drills(payload, reads)
         except ValueError as e:
             frappe.throw(str(e))
-        content = statement_export_model.workbook(payload, drills)
-        frappe.response["type"] = "binary"
-        frappe.response["filename"] = _filename(payload["period"], None, entity=entity)
-        frappe.response["filecontent"] = content
+        _send_workbook(payload, drills, _filename(payload["period"], None, entity=entity),
+                       basis="Entity", consolidation_group=None, entity=payload["entity"])
         return
     payload, reads = _statement(fiscal_year, fiscal_period, consolidation_group)
     if payload["state"] != "ok":
@@ -942,7 +945,32 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
         drills = _all_drills(payload, reads, drill_rows, journal_rows)
     except ValueError as e:
         frappe.throw(str(e))
+    _send_workbook(payload, drills,
+                   _filename(payload["period"], payload["consolidation_group"]),
+                   basis="Group", consolidation_group=payload["consolidation_group"],
+                   entity=None)
+
+
+def _send_workbook(payload, drills, filename, basis, consolidation_group, entity):
+    """Build the workbook, record the download, then hand the file back
+    (konsol#496 row 10A-2). The workbook is built first, so a build failure
+    records nothing; the event is inserted in the caller's transaction by
+    ``close_event.record`` (never committed here)."""
+    from konsol.close import close_event  # lazy: the remind_api precedent
+
     content = statement_export_model.workbook(payload, drills)
+    period = payload["period"]
+    close_event.record(
+        "statement_exported", int(period["fiscal_year"]), int(period["fiscal_period"]),
+        detail={
+            "basis": basis,
+            "consolidation_group": consolidation_group,
+            "entity": entity,
+            "filename": filename,
+            "label": statement_export_model._label(payload.get("signoff")),
+        },
+        entity=entity,
+    )
     frappe.response["type"] = "binary"
-    frappe.response["filename"] = _filename(payload["period"], payload["consolidation_group"])
+    frappe.response["filename"] = filename
     frappe.response["filecontent"] = content
