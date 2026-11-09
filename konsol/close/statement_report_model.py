@@ -115,6 +115,8 @@ def _with_commentary(row, payload, heading, drill_group):
     row["can_comment"] = 1 if payload["can_comment"] is True else 0
     row["drill_group"] = drill_group
     row["consolidation_group"] = payload.get("consolidation_group")
+    # Entity basis (konsol#495): the entity the Statement Drill opens for.
+    row["drill_entity"] = payload.get("entity") if payload.get("basis") == "Entity" else None
     return row
 
 
@@ -305,10 +307,15 @@ def message(payload, prior=None):
     _refuse_unless_ok(payload)
     period = payload["period"]
     stmt = payload["statement"]
+    if payload.get("basis") == "Entity":
+        # konsol#495: ``Numbers · FY2025 P07 · Basis: Entity · ZZA <name> · EUR``.
+        who = " ".join(p for p in (payload.get("entity"), payload.get("entity_name")) if p)
+        middle = ["Basis: Entity", who, payload.get("reporting_currency")]
+    else:
+        middle = [payload.get("consolidation_group"), payload.get("reporting_currency")]
     header = " · ".join(
         ["Numbers", period_name(period["fiscal_year"], period["fiscal_period"])]
-        + [p for p in (payload.get("consolidation_group"), payload.get("reporting_currency"))
-           if p not in (None, "")]
+        + [p for p in middle if p not in (None, "")]
     )
     lines = [header, stmt.get("legend")]
     comparison_note = (stmt.get("periods") or {}).get("comparison_note")
