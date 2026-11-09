@@ -208,6 +208,11 @@ class _Site:
         self.minor_units = {"USD": 2, "JPY": 0}
         self.entity_codes = {"ZZA", "ZZB"}
         self.entity_queries = []
+        # Dimension (row 7): what the site declares, and what the warehouse built.
+        self.declared_dims = [{"dimension_name": "dim_cost_center", "status": "Published",
+                               "in_trial_balance": 1}]
+        self.built_dims = ["dim_cost_center"]
+        self.columns_calls = []
 
 
 def _match_value(value, cond):
@@ -274,6 +279,9 @@ def _ch_read(site):
     error_name = re.compile(r"\(([A-Z][A-Z0-9_]+)\)")
 
     def rows(sql, params=None):
+        if "system.columns" in sql:
+            site.columns_calls.append((sql, dict(params or {})))
+            return [{"name": n} for n in site.built_dims]
         site.ch_calls.append((sql, dict(params or {})))
         if site.ch_error is not None:
             raise site.ch_error
@@ -307,6 +315,9 @@ def _invoke(site, run):
     fiscal_calendar.fiscal_period_rows = lambda: [dict(r) for r in site.periods]
     entity_permissions = types.ModuleType("konsol.entity_permissions")
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
+    tb_dimension = types.ModuleType("konsol.tb_dimension")
+    tb_dimension.declared_dimensions = lambda: [dict(r) for r in site.declared_dims]
+    konsol.tb_dimension = tb_dimension
     konsol.close = close
     konsol.fiscal_calendar = fiscal_calendar
     konsol.entity_permissions = entity_permissions
@@ -315,12 +326,12 @@ def _invoke(site, run):
 
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
-             "tb_worksheet_api_under_test"] + ["konsol.close." + n for n in _CLOSE_SIBLINGS]
+             "konsol.tb_dimension", "tb_worksheet_api_under_test"] + ["konsol.close." + n for n in _CLOSE_SIBLINGS]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({
         "frappe": frappe, "konsol": konsol, "konsol.close": close,
         "konsol.fiscal_calendar": fiscal_calendar,
-        "konsol.entity_permissions": entity_permissions,
+        "konsol.entity_permissions": entity_permissions, "konsol.tb_dimension": tb_dimension,
         "konsol.close.ch_read": close.ch_read, "konsol.close.signoff_gate": close.signoff_gate,
     })
     try:
@@ -337,20 +348,22 @@ def _invoke(site, run):
                 sys.modules[n] = old
 
 
-def _call(site, fy=2025, fp=7, group=None, entities=None):
-    result = _invoke(site, lambda api, _f: api.get_worksheet(fy, fp, group, entities))
+def _call(site, fy=2025, fp=7, group=None, entities=None, dimension=None):
+    extra = {} if dimension is None else {"dimension": dimension}
+    result = _invoke(site, lambda api, _f: api.get_worksheet(fy, fp, group, entities, **extra))
     json.dumps(result)  # a GET payload must be JSON-safe
     return result
 
 
-def _call_raises(site, fy=2025, fp=7, group=None, entities=None):
+def _call_raises(site, fy=2025, fp=7, group=None, entities=None, dimension=None):
     """``(exception, frappe stub)`` so a test can check the exception class."""
     box = {}
 
     def run(api, frappe):
         box["frappe"] = frappe
         with pytest.raises(Exception) as info:
-            api.get_worksheet(fy, fp, group, entities)
+            api.get_worksheet(fy, fp, group, entities,
+                              **({} if dimension is None else {"dimension": dimension}))
         return info.value
 
     exc = _invoke(site, run)
@@ -638,6 +651,80 @@ def test_a_role_outside_the_four_is_refused_before_any_read():
     exc, frappe = _call_raises(site)
     assert isinstance(exc, frappe.PermissionError)
     assert site.reads == [] and site.ch_calls == []
+
+
+# --- dimension (konsol#494 row 7) ----------------------------------------------------
+
+def _dimensioned(site):
+    for row in site.rows:
+        row["dimension_value"] = "CC1" if row["data_area_id"] == "ZZA" else ""
+
+
+def test_no_dimension_means_no_system_columns_read_and_the_same_sql():
+    site = _Site()
+    result = _call(site)
+    assert result["state"] == "ok"
+    assert site.columns_calls == []
+    assert result["dimension"] is None
+    assert "dimension_value" not in site.ch_calls[0][0]
+    assert site.ch_calls[0][0] == _sql_constants()["_WORKSHEET_SQL"]
+
+
+def test_a_valid_dimension_is_interpolated_once_in_select_and_once_in_group_by():
+    site = _Site()
+    _dimensioned(site)
+    result = _call(site, dimension="dim_cost_center")
+    assert result["state"] == "ok", result["message"]
+    assert result["dimension"] == "dim_cost_center"
+    assert len(site.columns_calls) == 1 and len(site.ch_calls) == 1
+    cols_sql = site.columns_calls[0][0]
+    assert "epm_gold" in cols_sql and "gold_fully_consolidated_tb" in cols_sql
+    assert "system.columns" in cols_sql and "dim\\_%" in cols_sql
+    sql = site.ch_calls[0][0]
+    assert sql.count("dim_cost_center AS dimension_value") == 1
+    select, group_by = sql.split(" GROUP BY ")
+    assert select.count("dim_cost_center") == 1
+    assert group_by.count("dim_cost_center") == 1
+    assert sql.count("dim_cost_center") == 2
+
+
+def test_a_dimensioned_payload_has_line_ids_with_a_pipe():
+    site = _Site()
+    _dimensioned(site)
+    result = _call(site, dimension="dim_cost_center")
+    keys = [line["key"] for line in result["worksheet"]["lines"]]
+    assert keys and all("|" in k for k in keys)
+    assert any(k.endswith("|CC1") for k in keys)
+
+
+def test_undeclared_unbuilt_and_illegal_dimensions_are_refused_with_no_worksheet_read():
+    for name, tweak in (
+        ("dim_other", None),                                    # not declared
+        ("dim_cost_center", lambda s: setattr(s, "built_dims", [])),   # not built
+        ("dim_cost_center", lambda s: setattr(s, "declared_dims", [
+            {"dimension_name": "dim_cost_center", "status": "Draft",
+             "in_trial_balance": 1}])),                         # declared, not Published
+        ("dim_x; drop table t", None),                          # illegal name
+    ):
+        site = _Site()
+        if tweak:
+            tweak(site)
+        exc, _f = _call_raises(site, dimension=name)
+        assert name.split(";")[0] in str(exc) or "dimension" in str(exc)
+        assert site.ch_calls == [], name
+
+
+def test_refusal_messages_name_the_failed_check():
+    site = _Site()
+    exc, _f = _call_raises(site, dimension="dim_x; drop table t")
+    assert "legal dimension name" in str(exc)
+    site = _Site()
+    exc, _f = _call_raises(site, dimension="dim_other")
+    assert "not declared" in str(exc)
+    site = _Site()
+    site.built_dims = []
+    exc, _f = _call_raises(site, dimension="dim_cost_center")
+    assert "not built" in str(exc)
 
 
 # --- static -------------------------------------------------------------------------
