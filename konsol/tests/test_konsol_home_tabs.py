@@ -745,3 +745,114 @@ def test_trends_rejected_definitions_show_the_error_line():
     assert out["groups"] == []
     lines = [t for t in out["panel_text"][0] if t]
     assert len(lines) == 1 and "Cannot read: boom" in lines[0]
+
+
+# ---- row 9: Numbers panel, four report links ----
+
+HARNESS_9 = r"""
+const fs = require("fs");
+const [script, cfgJson] = process.argv.slice(1);
+const cfg = JSON.parse(cfgJson || "{}");
+const handlers = {};
+const events = [];
+function node(tag) {
+  const n = { tag, className: "", children: [], textContent: "", style: {}, attrs: {}, dataset: {},
+    setAttribute(k, v) { this.attrs[k] = v; },
+    getAttribute(k) { return k === "href" ? this.href : this.attrs[k]; },
+    replaceChildren(...c) { this.children = c; },
+    appendChild(c) { this.children.push(c); return c; },
+    append(...c) { c.forEach((x) => this.children.push(x)); },
+    addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
+    querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
+  return n;
+}
+const box = node("section");
+const calls = [];
+const created = [];
+var frappe_ = {
+  session: { user: "me@example.com" },
+  xcall: (...a) => { calls.push(a); return Promise.resolve({}); },
+  call: (...a) => { calls.push(a); return Promise.resolve({}); },
+  route_options: null,
+  set_route: (...a) => events.push({ route: a, options: JSON.parse(JSON.stringify(frappe_.route_options)) }),
+  widget: { WidgetGroup: function () {} },
+  ui: { Tabs: function (opts) { created.push(opts); this.$el = node("tabs"); } },
+};
+global.frappe = frappe_;
+global.document = { createElement: (t) => node(t), addEventListener() {} };
+global.localStorage = { getItem() { return null; }, setItem() {} };
+global.location = { href: "https://site.test/desk/konsol", origin: "https://site.test" };
+global.requestAnimationFrame = () => 0;
+global.$ = (x) => x;
+global.root_element = node("root");
+eval(fs.readFileSync(script, "utf8"));
+const topts = created[0];
+const atConstruct = calls.length;
+const numbersPanel = topts.tabs[3].content();
+const flat = (n) => [n].concat(...(n.children || []).map(flat));
+const anchors = flat(numbersPanel).filter((n) => n.tag === "a");
+const click = (a) => {
+  let prevented = 0;
+  const ev = { button: 0, preventDefault() { prevented++; }, target: { closest: () => a } };
+  (handlers.click || []).forEach((h) => h(ev));
+  return prevented;
+};
+const out = {
+  at_construct: atConstruct, calls: calls.length,
+  links: anchors.map((a) => ({ text: a.textContent, href: a.href, opts: a.dataset.routeOptions || null })),
+  rows: numbersPanel.children.map((r) => flat(r).map((n) => n.textContent).filter(Boolean)),
+  clicks: anchors.map((a) => { events.length = 0; const p = click(a); return { prevented: p, events: events.slice() }; }),
+  calls_after_clicks: calls.length,
+  html_sets: 0,
+};
+console.log(JSON.stringify(out));
+"""
+
+NUMBERS = ["Consolidated Statement", "Entity statement", "Statement Drill", "Consolidation Worksheet"]
+
+
+def _run9():
+    node = shutil.which("node")
+    assert node
+    result = subprocess.run([node, "-e", HARNESS_9, SCRIPT, "{}"], capture_output=True, text=True,
+                            timeout=60)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_numbers_panel_lists_the_four_links_in_order():
+    out = _run9()
+    assert [l["text"] for l in out["links"]] == NUMBERS
+
+
+def test_numbers_links_route_to_their_reports():
+    out = _run9()
+    want = [["query-report", "Consolidated Statement"], ["query-report", "Consolidated Statement"],
+            ["query-report", "Statement Drill"], ["query-report", "Consolidation Worksheet"]]
+    assert len(out["links"]) == 4
+    for link, click, route in zip(out["links"], out["clicks"], want):
+        assert click["prevented"] == 1, link["text"]
+        assert [e["route"] for e in click["events"]] == [route], link["text"]
+
+
+def test_entity_statement_sets_route_options_basis_entity_before_routing():
+    out = _run9()
+    entity = out["clicks"][1]["events"][0]
+    assert entity["options"] == {"basis": "Entity"}
+    # The other three route with no options set.
+    for i in (0, 2, 3):
+        assert out["clicks"][i]["events"][0]["options"] is None, out["links"][i]["text"]
+
+
+def test_each_numbers_link_has_a_one_line_plain_description():
+    out = _run9()
+    assert len(out["rows"]) == 4
+    for row, label in zip(out["rows"], NUMBERS):
+        assert row[0] == label
+        assert len(row) == 2 and row[1].strip() and "\n" not in row[1]
+
+
+def test_numbers_panel_makes_no_server_call_on_activation_or_click():
+    out = _run9()
+    assert out["at_construct"] == 0
+    assert out["calls"] == 0 and out["calls_after_clicks"] == 0
