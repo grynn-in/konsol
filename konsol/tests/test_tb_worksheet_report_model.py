@@ -1,0 +1,205 @@
+"""Consolidation worksheet Desk layout, pure: konsol/close/tb_worksheet_report_model.py
+(konsol#494 row 5). Fixtures come from the real tb_worksheet_model.worksheet,
+loaded by path; no frappe."""
+import importlib.util
+import os
+import re
+
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load(name, label):
+    spec = importlib.util.spec_from_file_location(
+        label, os.path.join(APP_DIR, "close", name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+WM = _load("tb_worksheet_model", "tb_worksheet_model_for_report")
+M = _load("tb_worksheet_report_model", "tb_worksheet_report_model_under_test")
+
+ACCOUNTS = {
+    "4000": {"account_name": "Sales", "statement_section": "Profit and Loss", "is_group": 0, "lft": 1},
+    "1000": {"account_name": "Cash", "statement_section": "Balance Sheet", "is_group": 0, "lft": 2},
+    "3100": {"account_name": "Translation reserve", "statement_section": "Balance Sheet",
+             "is_group": 0, "lft": 3},
+}
+PERIODS = [{"fiscal_year": 2025, "fiscal_period": p, "period_type": "Regular"} for p in range(1, 13)]
+KEY = (2025, 3)
+
+
+def _row(layer, area, account, amount):
+    return {"adjustment_type": layer, "data_area_id": area, "main_account": account,
+            "fiscal_year": 2025, "fiscal_period": 3, "amount": amount, "null_rows": 0}
+
+
+def sheet(entities=("A-1", "A_1"), extra=(), shown=None, allowed=None, minor_unit=2):
+    rows = [_row("entity", e, "4000", -10.0049 * (i + 1)) for i, e in enumerate(entities)]
+    rows += [_row("entity", e, "1000", 10.0049 * (i + 1)) for i, e in enumerate(entities)]
+    rows += [_row("ic_elimination", "", "4000", 3.3333), _row("ic_elimination", "", "1000", -3.3333)]
+    rows += list(extra)
+    return WM.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "3100"},
+                        minor_unit, shown, allowed)
+
+
+def cols(ws, currency="USD", minor_unit=2, dimension=None):
+    return M.columns(ws, currency, minor_unit, dimension)
+
+
+def test_fieldnames_are_unique_and_frappe_safe():
+    ws = sheet(extra=[_row("topside", "A-1", "1000", 1.0), _row("zz_new_type", "", "1000", 1.0),
+                      _row("entity", "topside", "1000", 1.0), _row("entity", "a-1", "1000", 1.0)])
+    names = [c["fieldname"] for c in cols(ws)]
+    assert len(names) == len(set(names))
+    assert all(re.fullmatch(r"[a-z][a-z0-9_]*", n) for n in names)
+
+
+def test_entity_codes_a_dash_1_and_a_underscore_1_differ():
+    ws = sheet()
+    fm = M.fieldnames(ws)
+    assert fm[("entity", "A-1")] != fm[("entity", "A_1")]
+    assert fm[("entity", "A-1")].startswith("e_") and fm[("entity", "A_1")].startswith("e_")
+
+
+def test_entity_named_like_a_layer_or_bucket_keeps_its_own_column():
+    ws = sheet(extra=[_row("entity", "ic_elimination", "1000", 1.0),
+                      _row("entity", "consolidated", "1000", 1.0),
+                      _row("entity", "rounding", "1000", 1.0)])
+    names = [c["fieldname"] for c in cols(ws)]
+    assert len(names) == len(set(names))
+    fm = M.fieldnames(ws)
+    assert fm[("entity", "consolidated")] != fm[WM.CONSOLIDATED]
+
+
+def test_fieldnames_are_deterministic_and_fixed_for_non_entities():
+    ws = sheet(extra=[_row("topside", "A-1", "1000", 1.0)])
+    fm = M.fieldnames(ws)
+    assert fm == M.fieldnames(ws)
+    assert fm[WM.CONSOLIDATED] == "consolidated"
+    assert fm[("layer", "ic_elimination")] != fm[("entity", "ic_elimination")]
+
+
+def test_column_order_and_leading_columns():
+    ws = sheet()
+    c = cols(ws)
+    assert [x["fieldname"] for x in c[:2]] == ["account", "name"]
+    assert c[-2]["fieldname"] == "consolidated" or c[-1]["fieldname"] == "currency"
+    keys = [x["key"] for x in ws["columns"]]
+    amount_names = [M.fieldnames(ws)[k] for k in keys]
+    assert [x["fieldname"] for x in c if x["fieldname"] in amount_names] == amount_names
+
+
+def test_amount_columns_are_currency_with_minor_unit_precision():
+    ws = sheet()
+    amount = [x for x in cols(ws, minor_unit=3) if x.get("fieldtype") == "Currency"]
+    assert len(amount) == len(ws["columns"])
+    assert all(x["options"] == "currency" and x["precision"] == 3 for x in amount)
+
+
+def test_no_minor_unit_sets_no_precision():
+    ws = sheet()
+    amount = [x for x in cols(ws, minor_unit=None) if x.get("fieldtype") == "Currency"]
+    assert amount and all("precision" not in x for x in amount)
+
+
+def test_labels_carry_the_currency():
+    ws = sheet()
+    amount = [x for x in cols(ws, currency="EUR") if x.get("fieldtype") == "Currency"]
+    assert all("EUR" in x["label"] for x in amount)
+    assert any(x["label"].startswith("A-1") for x in amount)
+    assert any(x["label"].startswith("Consolidated") for x in amount)
+
+
+def test_dimension_column_after_name_only_when_given():
+    ws = sheet()
+    assert "dimension" not in [x["fieldname"] for x in cols(ws)]
+    c = cols(ws, dimension="Cost centre")
+    assert [x["fieldname"] for x in c[:3]] == ["account", "name", "dimension"]
+    assert c[2]["label"] == "Cost centre"
+
+
+def test_rows_one_per_line_then_bold_total():
+    ws = sheet()
+    out = M.rows(ws, "USD")
+    assert len(out) == len(ws["lines"]) + 1
+    assert out[-1]["account"] == "Total" and out[-1]["bold"] == 1
+    assert not any(r.get("bold") for r in out[:-1])
+    assert all(r["currency"] == "USD" for r in out)
+
+
+def test_rows_carry_every_cell_and_consolidated_under_the_fieldnames():
+    ws = sheet()
+    fm = M.fieldnames(ws)
+    out = M.rows(ws, "USD")
+    for line, row in zip(ws["lines"], out):
+        assert row["account"] == line["account"] and row["name"] == line["name"]
+        assert row["consolidated"] == line["consolidated"]
+        for key in (c["key"] for c in ws["columns"] if c["key"] != WM.CONSOLIDATED):
+            assert row[fm[key]] == line["cells"][key]
+    total = out[-1]
+    assert total["consolidated"] == ws["total"]["consolidated"]
+
+
+def test_rows_cross_foot_on_what_is_displayed():
+    ws = sheet()
+    fm = M.fieldnames(ws)
+    from decimal import Decimal
+    for row in M.rows(ws, "USD"):
+        parts = sum((Decimal(str(row[fm[c["key"]]])) for c in ws["columns"]
+                     if c["key"] != WM.CONSOLIDATED), Decimal("0"))
+        assert parts == Decimal(str(row["consolidated"]))
+
+
+def test_rows_dimension_value_filled_when_given():
+    ws = sheet()
+    ws["lines"][0]["dimension"] = "CC1"
+    out = M.rows(ws, "USD", dimension="Cost centre")
+    assert out[0]["dimension"] == "CC1"
+
+
+PAYLOAD = {"consolidation_group": "GRP", "period": {"fiscal_year": 2025, "fiscal_period": 3},
+           "reporting_currency": "USD"}
+
+
+def test_message_names_period_group_currency_sign_and_window():
+    msg = M.message(sheet(), PAYLOAD)
+    assert "FY2025 P03" in msg and "GRP" in msg and "USD" in msg
+    assert "net debit" in msg.lower()
+    assert "year to date" in msg.lower() and "cumulative" in msg.lower()
+
+
+def test_message_says_nothing_about_totals_when_all_zero():
+    ws = sheet()
+    for k in ws["total"]["cells"]:
+        ws["total"]["cells"][k] = 0.0
+    ws["total"]["consolidated"] = 0.0
+    assert "not zero" not in M.message(ws, PAYLOAD).lower()
+
+
+def test_message_lists_non_zero_column_totals():
+    ws = sheet(extra=[_row("topside", "A-1", "1000", 5.5)])
+    msg = M.message(ws, PAYLOAD)
+    assert "not zero" in msg.lower()
+    assert "5.5" in msg
+
+
+def test_message_counts_outside_scope_without_naming():
+    ws = sheet(entities=("A-1", "SECRET-X", "SECRET-Y"), allowed={"A-1"})
+    assert ws["outside_count"] == 2
+    msg = M.message(ws, PAYLOAD)
+    assert "2 entities outside your scope" in msg
+    assert "SECRET" not in msg
+    assert "SECRET" not in repr(M.columns(ws, "USD", 2, None))
+    assert "SECRET" not in repr(M.rows(ws, "USD"))
+
+
+def test_message_singular_and_absent_outside_scope():
+    one = M.message(sheet(entities=("A-1", "SECRET-X"), allowed={"A-1"}), PAYLOAD)
+    assert "1 entity outside your scope" in one
+    assert "outside your scope" not in M.message(sheet(), PAYLOAD).replace("Outside your scope", "")
+
+
+def test_message_is_html_escaped():
+    msg = M.message(sheet(), dict(PAYLOAD, consolidation_group="<b>G</b>"))
+    assert "<b>" not in msg and "&lt;b&gt;" in msg
