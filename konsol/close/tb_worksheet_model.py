@@ -29,6 +29,7 @@ def _load_sibling(name):
 
 
 drill_model = _load_sibling("drill_model")
+statement_model = _load_sibling("statement_model")
 
 OTHER_ENTITIES = ("bucket", "other_entities")
 OUTSIDE_SCOPE = ("bucket", "outside_scope")
@@ -59,3 +60,45 @@ def column_of(adjustment_type, data_area_id, shown, allowed):
     if shown is not None and data_area_id not in shown:
         return OTHER_ENTITIES
     return ("entity", data_area_id)
+
+
+# -- row 2: account placement and window ------------------------------------
+
+CTA_UNDECLARED = ("cta_undeclared",)
+CTA_UNDECLARED_LABEL = "CTA (no CTA account declared)"
+NOT_IN_CHART_LABEL = "not in the published chart"
+_CTA_CODE = "CTA"
+
+
+def row_key(row, accounts, declared):
+    """Line key for one row: ``("account", code)``, ``CTA_UNDECLARED`` or
+    ``("not_in_chart", code)``.
+
+    A cta-layer row (``main_account`` is the literal ``CTA``) is placed under
+    ``declared["cta_account"]``; undeclared, it keeps a visible row of its own.
+    A code missing from the Published chart is never dropped.
+    """
+    code = row["main_account"]
+    if row.get("adjustment_type") == "cta" or code == _CTA_CODE:
+        cta_account = (declared or {}).get("cta_account")
+        return ("account", cta_account) if cta_account else CTA_UNDECLARED
+    if code not in accounts:
+        return ("not_in_chart", code)
+    return ("account", code)
+
+
+def in_window(row, accounts, period_rows, key):
+    """True when the row's period counts at ``key`` (fiscal_year, fiscal_period).
+
+    statement_model's rule: a chart account in the Profit and Loss section is
+    year-to-date (``period_keys(...)["ytd"]``); everything else (Balance Sheet,
+    CTA, not-in-chart) is cumulative (``_keys_up_to``).
+    """
+    period = (row["fiscal_year"], row["fiscal_period"])
+    entry = accounts.get(row["main_account"])
+    is_pl = (row.get("adjustment_type") != "cta" and entry is not None
+             and not entry.get("is_group")
+             and entry.get("statement_section") == statement_model.PL)
+    if is_pl:
+        return period in set(statement_model.period_keys(period_rows, key)["ytd"])
+    return period in statement_model._keys_up_to(period_rows, key)
