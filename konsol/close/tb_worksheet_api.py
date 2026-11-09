@@ -28,13 +28,17 @@ States, never a silent empty worksheet:
 ``dimension`` (optional ``dim_*`` column name) groups lines by that
 dimension's value. It is interpolated only after three checks (legal name,
 declared Published and ticked ``in_trial_balance``, built in the warehouse:
-one ``system.columns`` read); a refusal is a ``frappe.throw`` before the
-worksheet read. Without it there is no ``system.columns`` read.
+one ``system.columns`` read), made just before the worksheet read, so
+``choose_group``, ``no_chart`` and ``setup_gap`` (with or without a
+dimension) read nothing. A refusal is a ``frappe.throw`` before the
+worksheet read; a failed ``system.columns`` read is ``not_built`` / ``error``
+like the worksheet read. Without it there is no ``system.columns`` read.
 
 ``entities`` (a list, or its JSON text) narrows the entity columns; an
 entity the caller may not see, or that is not an Entity, is refused before
-any read (scope first, so existence is never revealed). ClickHouse is
-read exactly once, and only on the way to ``ok``.
+any read (scope first, so existence is never revealed). Without a dimension ClickHouse is
+read exactly once, and only on the way to ``ok``; with one, a second read
+(``system.columns``) precedes it on that same path.
 """
 import json
 
@@ -94,9 +98,6 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
                 ", ".join(unknown), "is" if len(unknown) == 1 else "are"))
 
     dimension = dimension or None
-    dimension_sql = None
-    if dimension is not None:
-        dimension_sql = _dimension_sql(dimension)
 
     groups = root_groups()
     chosen, group_note, state, message = choose_group(groups, consolidation_group)
@@ -137,8 +138,13 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
     result["gap"] = declared.get("gap")
 
     try:
+        # The dimension check (one system.columns read) sits here, after
+        # every no-read state; its failure is a state like the worksheet's.
+        dimension_sql = _dimension_sql(dimension) if dimension is not None else None
         rows = [_row(r) for r in ch_read.rows(dimension_sql or _WORKSHEET_SQL,
                                               {"group": chosen, "fy": key[0]})]
+    except _DimensionRefused as e:
+        frappe.throw(str(e))
     except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
         result.update(state="not_built" if ch_read.not_built(e) else "error",
                       message=_error_message(e))
@@ -163,19 +169,22 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
     return result
 
 
+class _DimensionRefused(Exception):
+    """The dimension failed a check (legal, declared, built)."""
+
+
 def _dimension_sql(name):
     """``_WORKSHEET_SQL`` grouped by the dimension column ``name``. The name
     is interpolated only after ``dimension_column``'s three checks (legal,
-    declared Published and ticked, built); one ``system.columns`` read, and a
-    refusal is a ``frappe.throw`` before any worksheet read."""
-    try:
-        present = [r["name"] for r in ch_read.rows(_DIMENSION_COLUMNS_READ)]
-    except Exception as e:  # noqa: BLE001 — can't say what is built
-        frappe.throw(_error_message(e))
+    declared Published and ticked, built); one ``system.columns`` read. A
+    failed read propagates to the caller's read handler (``not_built`` /
+    ``error``); a refusal raises ``_DimensionRefused``, which the caller
+    turns into a ``frappe.throw`` before any worksheet read."""
+    present = [r["name"] for r in ch_read.rows(_DIMENSION_COLUMNS_READ)]
     try:
         column = tb_worksheet_model.dimension_column(name, declared_dimensions(), present)
     except ValueError as e:
-        frappe.throw(str(e))
+        raise _DimensionRefused(str(e)) from e
     sql = _WORKSHEET_SQL.replace(
         "reporting_currency, sum(amount)", "reporting_currency, %s AS dimension_value, "
         "sum(amount)" % column, 1)
