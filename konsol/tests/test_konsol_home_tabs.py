@@ -613,3 +613,65 @@ def test_start_link_opens_my_work_through_the_existing_click_handler():
     assert out["starts"][0]["href"] == "/desk/query-report/My%20Work"
     assert out["click"]["prevented"] == 1
     assert out["click"]["routes"] == [["query-report", "My Work"]]
+
+
+# ---- row 7: Approvals panel, the waiting shortcuts ----
+
+WAITING = ["Consolidation Journals", "Business Combinations", "Business Disposals",
+           "Group Exchange Rates", "Ownership Periods", "Historical Equity Rates",
+           "IC Balances", "Build Approvals"]
+
+
+def _defs7(labels):
+    return {"number_cards": {"items": []},
+            "shortcuts": {"items": [{"label": n} for n in labels]}}
+
+
+def test_approvals_panel_shows_the_eight_waiting_shortcuts_in_workspace_order():
+    # Definitions arrive in a scrambled order, with Monthly close shortcuts mixed in.
+    scrambled = list(reversed(WAITING)) + ["Period Close", "My Work"]
+    out = _run4a({"defs": _defs7(scrambled), "activate": [1]})
+    shortcuts = [g for g in out["groups"] if g["type"] == "shortcut"]
+    assert len(shortcuts) == 1 and shortcuts[0]["labels"] == WAITING
+
+
+def test_waiting_labels_match_the_workspace_file():
+    path = os.path.join(APP_DIR, "consolidation", "workspace", "konsol", "konsol.json")
+    with open(path) as f:
+        ws = json.load(f)
+    declared = [s["label"] for s in ws["shortcuts"] if "waiting" in (s.get("format") or "")]
+    assert declared == WAITING
+
+
+def test_waiting_shortcuts_the_user_may_not_see_are_absent():
+    have = ["Build Approvals", "Business Disposals", "Group Exchange Rates"]
+    out = _run4a({"defs": _defs7(have), "activate": [1]})
+    shortcuts = [g for g in out["groups"] if g["type"] == "shortcut"]
+    assert shortcuts[0]["labels"] == ["Business Disposals", "Group Exchange Rates", "Build Approvals"]
+
+
+def test_approvals_does_not_repeat_the_close_panel_shortcuts():
+    out = _run4a({"defs": _defs7(WAITING + MONTHLY), "activate": [0, 1]})
+    shortcuts = [g["labels"] for g in out["groups"] if g["type"] == "shortcut"]
+    assert sorted(map(tuple, shortcuts)) == sorted([tuple(MONTHLY), tuple(WAITING)])
+
+
+def test_one_definitions_call_when_close_and_approvals_both_activate():
+    out = _run4a({"defs": _defs7(WAITING + MONTHLY), "activate": [0, 1]})
+    assert out["calls"] == 1
+
+
+def test_approvals_makes_nothing_before_activation_or_before_the_frame():
+    out = _run4a({"defs": _defs7(WAITING), "activate": []})
+    assert out["calls"] == 0 and out["groups"] == []
+    out = _run4a({"defs": _defs7(WAITING), "activate": [1]})
+    assert out["calls"] == 1
+    assert out["before_raf"]["groups"] == 0 and out["before_raf"]["raf"] >= 1
+    assert len(out["groups"]) == 1
+
+
+def test_approvals_rejected_definitions_show_the_error_line():
+    out = _run4a({"reject": "boom", "activate": [1]})
+    assert out["groups"] == []
+    lines = [t for t in out["panel_text"][0] if t]
+    assert len(lines) == 1 and "Cannot read: boom" in lines[0]
