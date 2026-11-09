@@ -226,3 +226,44 @@ def test_entity_basis_prior_year_refusal_does_not_fail_the_report():
     execute, seen = _execute_with(lambda *a: _ok(2024, []), entity_statement)
     execute({"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"})
     assert seen["rows"]["state"] == "error"
+
+
+def _js():
+    return open(PATH.replace(".py", ".js")).read()
+
+
+def _filter(fieldname):
+    source = _js()
+    start = source.index('fieldname: "%s"' % fieldname)
+    return source[start:source.index("\t\t},", start)]
+
+
+def test_js_basis_and_entity_filters():
+    basis = _filter("basis")
+    assert "Group\\nEntity" in basis and 'default: "Group"' in basis
+    entity = _filter("entity")
+    assert 'options: "Entity"' in entity
+    assert 'depends_on: \'eval:doc.basis=="Entity"\'' in entity
+    assert 'mandatory_depends_on: \'eval:doc.basis=="Entity"\'' in entity
+    assert "is_group: 0" in entity
+
+
+def test_js_consolidation_group_is_hidden_on_the_entity_basis():
+    group = _filter("consolidation_group")
+    assert 'depends_on: \'eval:doc.basis!="Entity"\'' in group
+
+
+def test_js_drill_url_uses_the_entity_when_the_row_carries_one():
+    source = _js()
+    start = source.index("function drill_url")
+    body = source[start:source.index("\n}\n", start)]
+    assert "data.drill_entity" in body
+    assert 'basis: "Entity"' in body
+    assert "entity: data.drill_entity" in body
+    assert "consolidation_group: data.drill_group" in body
+    assert "heading: data.code" in body
+
+
+def test_js_heading_link_shows_for_an_entity_row_too():
+    source = _js()
+    assert "data.code && (data.drill_group || data.drill_entity)" in source
