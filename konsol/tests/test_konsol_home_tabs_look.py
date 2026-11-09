@@ -109,3 +109,10 @@ def test_chart_actions_hidden():
 def test_radii_are_2px_or_round():
 	for m in re.finditer(r"border-radius:\s*([^;]+);", _code()):
 		assert m.group(1).strip() in ("0", "2px", "50%", "inherit"), m.group(1)
+
+
+def test_headline_is_styled():
+	# #497 row 10b: row 6's headline (text, detail, Start) has rules of its own.
+	for cls in (".khp-headline", ".khp-headline-text", ".khp-headline-detail"):
+		assert _has(cls), cls
+	assert "var(--konsol-brand" in _body_of(".khp-headline a")
