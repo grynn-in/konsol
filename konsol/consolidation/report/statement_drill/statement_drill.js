@@ -19,11 +19,31 @@ frappe.query_reports["Statement Drill"] = {
 			default: new Date().getMonth() + 1,
 		},
 		{
+			fieldname: "basis",
+			label: __("Basis"),
+			fieldtype: "Select",
+			options: "Group\nEntity",
+			default: "Group",
+			description: __("Entity: one entity's own trial balance in its functional currency."),
+		},
+		{
+			fieldname: "entity",
+			label: __("Entity"),
+			fieldtype: "Link",
+			options: "Entity",
+			depends_on: 'eval:doc.basis=="Entity"',
+			mandatory_depends_on: 'eval:doc.basis=="Entity"',
+			get_query() {
+				return { filters: { is_group: 0 } };
+			},
+		},
+		{
 			fieldname: "consolidation_group",
 			label: __("Consolidation Group"),
 			fieldtype: "Link",
 			options: "Consolidation Group",
-			reqd: 1,
+			depends_on: 'eval:doc.basis!="Entity"',
+			mandatory_depends_on: 'eval:doc.basis!="Entity"',
 			description: __("A root group."),
 			// Root groups only (statement_api._ROOT_FILTER: no data_area_id).
 			get_query() {
