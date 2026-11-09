@@ -172,3 +172,217 @@ def test_cta_is_cumulative_like_bs():
 
 def test_unknown_code_is_cumulative_like_statement_not_in_chart():
     assert win(arow("9999", 2024, 12), (2025, 3))
+
+
+# -- row 3: worksheet + cross-foot ------------------------------------------
+from decimal import Decimal  # noqa: E402
+
+SM = M.statement_model
+
+WS_ACCOUNTS = {
+    "40": {"account_name": "Revenue", "statement_section": "Profit and Loss", "is_group": 1, "lft": 1},
+    "4000": {"account_name": "Sales", "statement_section": "Profit and Loss", "is_group": 0,
+             "parent_account": "40", "lft": 2},
+    "50": {"account_name": "Expenses", "statement_section": "Profit and Loss", "is_group": 1, "lft": 3},
+    "5000": {"account_name": "Costs", "statement_section": "Profit and Loss", "is_group": 0,
+             "parent_account": "50", "lft": 4},
+    "10": {"account_name": "Assets", "statement_section": "Balance Sheet", "is_group": 1, "lft": 5},
+    "1000": {"account_name": "Cash", "statement_section": "Balance Sheet", "is_group": 0,
+             "parent_account": "10", "lft": 6},
+    "20": {"account_name": "Liabilities", "statement_section": "Balance Sheet", "is_group": 1, "lft": 7},
+    "2000": {"account_name": "Payables", "statement_section": "Balance Sheet", "is_group": 0,
+             "parent_account": "20", "lft": 8},
+    "31": {"account_name": "Reserves", "statement_section": "Balance Sheet", "is_group": 1, "lft": 9},
+    "3100": {"account_name": "Translation reserve", "statement_section": "Balance Sheet",
+             "is_group": 0, "parent_account": "31", "lft": 10},
+}
+WS_PERIODS = (
+    [{"fiscal_year": 2024, "fiscal_period": p, "period_type": "Regular"} for p in range(1, 13)]
+    + [{"fiscal_year": 2025, "fiscal_period": p, "period_type": "Regular"} for p in range(1, 13)]
+)
+WS_KEY = (2025, 3)
+WS_DECLARED = {"cta_account": "3100"}
+EA, EB, EC = "E-ALPHA", "E-BETA", "E-GAMMA"
+
+
+def wrow(adjustment_type, area, account, fy, fp, amount, null_rows=0):
+    return {"adjustment_type": adjustment_type, "data_area_id": area, "main_account": account,
+            "fiscal_year": fy, "fiscal_period": fp, "amount": amount, "null_rows": null_rows}
+
+
+# 4-decimal amounts chosen so cells rounded one by one miss the line total
+# rounded once (Sales: -100.00 + -50.00 + -10.00 + ... vs -160.01...).
+WS_ROWS = [
+    wrow("entity", EA, "4000", 2025, 1, -100.0049),
+    wrow("entity", EB, "4000", 2025, 2, -50.0049),
+    wrow("entity", EC, "4000", 2025, 3, -10.0012),
+    wrow("entity", EA, "4000", 2024, 12, -999.0),          # P&L last FY: out
+    wrow("entity", EA, "5000", 2025, 3, 60.0035),
+    wrow("entity", EB, "5000", 2025, 3, 40.0035),
+    wrow("entity", EA, "1000", 2024, 12, 500.1251),         # BS last FY: in
+    wrow("entity", EB, "1000", 2025, 3, 200.1251),
+    wrow("entity", EC, "1000", 2025, 2, 300.0001),
+    wrow("entity", EA, "2000", 2025, 3, -400.0025),
+    wrow("entity", EB, "2000", 2025, 3, -200.0025),
+    wrow("cta", EA, "CTA", 2025, 3, -3.3333),
+    wrow("cta", EB, "CTA", 2024, 6, -1.3333),
+    wrow("ic_elimination", "", "4000", 2025, 3, 20.0049),
+    wrow("ic_elimination", "", "5000", 2025, 3, -20.0049),
+    wrow("topside", EA, "1000", 2025, 3, 5.0051),
+    wrow("topside", EA, "2000", 2025, 3, -5.0051),
+    wrow("topside", EA, "1000", 2025, 4, 99.0),             # after the key: out
+    wrow("acquisition", EB, "1000", 2025, 2, 7.1234),
+    wrow("acquisition", EB, "2000", 2025, 2, -7.1234),
+    wrow("equity_method", EC, "1000", 2025, 3, 2.2222),
+    wrow("equity_method", EC, "4000", 2025, 3, -2.2222),
+    wrow("zz_new_type", "", "9999", 2025, 3, 0.4444),
+    wrow("nci_attribution", EA, "2000", 2025, 5, 1.0),      # only outside the window
+]
+
+
+def ws(rows=None, minor_unit=2, shown=None, allowed=None, declared=None):
+    return M.worksheet(rows if rows is not None else WS_ROWS, WS_ACCOUNTS, WS_PERIODS, WS_KEY,
+                       WS_DECLARED if declared is None else declared, minor_unit, shown, allowed)
+
+
+def _d(x):
+    return Decimal(str(x))
+
+
+def _foot(cells):
+    return sum((_d(v) for v in cells.values()), Decimal("0"))
+
+
+def test_cross_foot_every_line_and_total_on_displayed_values():
+    sheet = ws()
+    keys = [c["key"] for c in sheet["columns"]]
+    assert sheet["lines"]
+    for line in sheet["lines"]:
+        assert set(line["cells"]) == set(keys) - {M.CONSOLIDATED}
+        assert _foot(line["cells"]) == _d(line["consolidated"]), line
+    assert _foot(sheet["total"]["cells"]) == _d(sheet["total"]["consolidated"])
+    # The total foots down as well as across, on displayed values.
+    for key in set(keys) - {M.CONSOLIDATED}:
+        assert sum((_d(l["cells"][key]) for l in sheet["lines"]), Decimal("0")) == _d(sheet["total"]["cells"][key])
+    assert sum((_d(l["consolidated"]) for l in sheet["lines"]), Decimal("0")) == _d(sheet["total"]["consolidated"])
+    # Not vacuous: the fixture forces a rounding difference.
+    assert M.ROUNDING in keys
+    assert any(line["cells"][M.ROUNDING] != 0 for line in sheet["lines"])
+
+
+def test_consolidated_is_the_line_total_rounded_once():
+    sheet = ws()
+    sales = next(l for l in sheet["lines"] if l["key"] == ("account", "4000"))
+    # -100.0049 - 50.0049 - 10.0012 + 20.0049 - 2.2222 = -142.2283
+    assert sales["consolidated"] == -142.23
+    assert sales["cells"][("entity", EA)] == -100.0
+    assert sales["cells"][M.ROUNDING] == -0.01
+
+
+def test_column_order():
+    keys = [c["key"] for c in ws()["columns"]]
+    assert keys == [
+        ("entity", EA), ("entity", EB), ("entity", EC),
+        ("layer", "ic_elimination"),
+        ("layer", "topside"), ("layer", "equity_method"), ("layer", "acquisitions_and_disposals"),
+        ("layer", "zz_new_type"),
+        M.ROUNDING, M.CONSOLIDATED,
+    ]
+
+
+def test_adjustment_column_only_when_present_in_window():
+    keys = [c["key"] for c in ws()["columns"]]
+    assert ("layer", "nci_attribution") not in keys
+    rows = WS_ROWS + [wrow("nci_attribution", EA, "2000", 2025, 3, 1.0)]
+    keys = [c["key"] for c in ws(rows)["columns"]]
+    assert keys.index(("layer", "equity_method")) < keys.index(("layer", "nci_attribution")) \
+        < keys.index(("layer", "acquisitions_and_disposals"))
+
+
+def test_rounding_column_absent_when_nothing_to_round():
+    keys = [c["key"] for c in ws(minor_unit=4)["columns"]]
+    assert M.ROUNDING not in keys
+    assert keys[-1] == M.CONSOLIDATED
+
+
+def test_lines_in_chart_order_then_not_in_chart_with_names():
+    lines = ws()["lines"]
+    assert [l["key"] for l in lines] == [
+        ("account", "4000"), ("account", "5000"), ("account", "1000"),
+        ("account", "2000"), ("account", "3100"), ("not_in_chart", "9999")]
+    assert lines[0]["name"] == "Sales"
+    assert lines[-1]["account"] == "9999"
+    assert lines[-1]["name"] == M.NOT_IN_CHART_LABEL
+
+
+def test_cta_without_declared_account_is_its_own_line():
+    sheet = ws(declared={})
+    line = next(l for l in sheet["lines"] if l["key"] == M.CTA_UNDECLARED)
+    assert line["name"] == M.CTA_UNDECLARED_LABEL
+    assert line["consolidated"] == -4.67
+    for l in sheet["lines"]:
+        assert _foot(l["cells"]) == _d(l["consolidated"])
+
+
+def test_consolidated_per_heading_ties_to_statement_model_heading_amounts():
+    sheet = ws()
+    by_heading = {}
+    not_in_chart = {}
+    for line in sheet["lines"]:
+        if line["key"][0] == "not_in_chart":
+            not_in_chart[line["account"]] = _d(line["consolidated"])
+            continue
+        heading = WS_ACCOUNTS[line["account"]]["parent_account"]
+        by_heading[heading] = by_heading.get(heading, Decimal("0")) + _d(line["consolidated"])
+
+    ytd = SM.period_keys(WS_PERIODS, WS_KEY)["ytd"]
+    cum = SM._keys_up_to(WS_PERIODS, WS_KEY)
+    ha_pl = SM.heading_amounts(WS_ROWS, WS_ACCOUNTS, ytd, 2)
+    ha_bs = SM.heading_amounts(WS_ROWS, WS_ACCOUNTS, cum, 2)
+    for heading in ("40", "50"):
+        assert by_heading[heading] == _d(ha_pl["headings"][heading]), heading
+    for heading in ("10", "20"):
+        assert by_heading[heading] == _d(ha_bs["headings"][heading]), heading
+    # The CTA sits under its declared account: heading + CTA, rounded once
+    # (statement_model's _heading_exact convention).
+    exact = ha_bs["exact"]
+    assert by_heading["31"] == _d(SM._round(exact["headings"].get("31", Decimal("0")) + exact["cta"], 2))
+    assert not_in_chart == {k: _d(v) for k, v in ha_bs["not_in_chart"].items()}
+
+
+def test_narrowing_shown_moves_entities_to_other_without_changing_consolidated():
+    full = ws()
+    narrow = ws(shown={EA})
+    keys = [c["key"] for c in narrow["columns"]]
+    assert ("entity", EB) not in keys and ("entity", EC) not in keys
+    assert keys[:2] == [("entity", EA), M.OTHER_ENTITIES]
+    assert [l["consolidated"] for l in narrow["lines"]] == [l["consolidated"] for l in full["lines"]]
+    assert narrow["total"]["consolidated"] == full["total"]["consolidated"]
+    cash = next(l for l in narrow["lines"] if l["key"] == ("account", "1000"))
+    assert cash["cells"][M.OTHER_ENTITIES] == 500.13  # 200.1251 + 300.0001
+    for line in narrow["lines"]:
+        assert _foot(line["cells"]) == _d(line["consolidated"])
+
+
+def test_scoped_caller_never_sees_an_out_of_scope_code():
+    full = ws()
+    sheet = ws(allowed={EA}, shown={EA, EB})  # EB asked for, but outside scope
+    text = repr(sheet)
+    assert EB not in text and EC not in text
+    keys = [c["key"] for c in sheet["columns"]]
+    assert keys[:2] == [("entity", EA), M.OUTSIDE_SCOPE]
+    assert sheet["outside_count"] == 2
+    assert [l["consolidated"] for l in sheet["lines"]] == [l["consolidated"] for l in full["lines"]]
+    for line in sheet["lines"]:
+        assert _foot(line["cells"]) == _d(line["consolidated"])
+
+
+def test_null_amount_refused_naming_account_and_layer():
+    for bad in (wrow("topside", EA, "2000", 2025, 3, 1.0, null_rows=2),
+                wrow("topside", EA, "2000", 2025, 3, None)):
+        try:
+            ws(WS_ROWS + [bad])
+        except ValueError as e:
+            assert "2000" in str(e) and "topside" in str(e)
+        else:
+            raise AssertionError("NULL amount was read as 0")
