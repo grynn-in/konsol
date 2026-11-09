@@ -274,3 +274,38 @@ test("a download calls exactly the URL methodUrl builds for the same params", as
   await download("konsol.close.audit_api.export_trail_csv", params, { fetchImpl });
   assert.equal(calledUrl, methodUrl("konsol.close.audit_api.export_trail_csv", params));
 });
+
+// --- konsol#496 row 10A-3: export_statement is a POST (it records an event) ---
+
+test("a POST download sends form-encoded params with the CSRF token and returns blob and filename", async () => {
+  const originalWindow = globalThis.window;
+  globalThis.window = { csrf_token: "zz-csrf-456" };
+  try {
+    let calledUrl;
+    let calledOpts;
+    const fetchImpl = async (url, opts) => {
+      calledUrl = url;
+      calledOpts = opts;
+      return fileResponse(200, "PK..", 'attachment; filename="numbers-FY2025P07-G1.xlsx"');
+    };
+    const result = await download(
+      "konsol.close.statement_api.export_statement",
+      { fiscal_year: 2025, fiscal_period: 7, consolidation_group: "G1" },
+      { fetchImpl, method: "POST" },
+    );
+    assert.equal(calledUrl, "/api/method/konsol.close.statement_api.export_statement");
+    assert.equal(calledOpts.method, "POST");
+    assert.equal(calledOpts.credentials, "include");
+    assert.equal(calledOpts.headers["Content-Type"], "application/x-www-form-urlencoded");
+    assert.equal(calledOpts.headers["X-Frappe-CSRF-Token"], "zz-csrf-456");
+    const form = new URLSearchParams(calledOpts.body);
+    assert.equal(form.get("fiscal_year"), "2025");
+    assert.equal(form.get("fiscal_period"), "7");
+    assert.equal(form.get("consolidation_group"), "G1");
+    assert.equal(form.get("csrf_token"), "zz-csrf-456");
+    assert.equal(result.filename, "numbers-FY2025P07-G1.xlsx");
+    assert.equal(result.blob.size, 4);
+  } finally {
+    globalThis.window = originalWindow;
+  }
+});
