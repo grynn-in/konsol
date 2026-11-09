@@ -72,3 +72,24 @@ def test_allowed_none_is_unrestricted():
 def test_non_entity_layers_ignore_shown_and_allowed():
     assert col("topside", "Z", shown={"A"}, allowed={"A"}) == "topside"
     assert col("ic_elimination", "", shown=set(), allowed=set()) == "ic_elimination"
+
+
+def test_entity_coded_like_a_layer_or_bucket_never_collides():
+    # An entity may legitimately be coded "topside", "ic_elimination",
+    # "other_entities" or "outside_scope"; its column must differ from the
+    # layer/bucket of the same name.
+    for code in ("topside", "ic_elimination", "other_entities", "outside_scope"):
+        shown = {code}
+        entity_col = col("entity", code, shown=shown)
+        assert entity_col == ("entity", code)
+        assert entity_col != col("topside", "A", shown=shown)
+        assert entity_col != col("ic_elimination", "", shown=shown)
+        assert entity_col != col("entity", "ZZ", shown=shown)  # other_entities
+        assert entity_col != col("entity", "ZZ", shown=shown, allowed={code})  # outside_scope
+
+
+def test_tagged_keys_for_layers_and_buckets():
+    assert col("topside", "A") == ("layer", "topside")
+    assert col("zz_new_type", "A") == ("layer", "zz_new_type")
+    assert M.OTHER_ENTITIES == ("bucket", "other_entities")
+    assert M.OUTSIDE_SCOPE == ("bucket", "outside_scope")
