@@ -73,8 +73,8 @@ def test_lines_are_keyed_on_account_and_value():
     s = sheet("dim_region")
     values = {(l["account"], l["dimension_value"]) for l in s["lines"]}
     assert ("4000", "North") in values and ("4000", "South") in values
-    assert ("4000", NO_VALUE) in values
-    assert NO_VALUE == "(no value)"
+    assert ("4000", M.BLANK_VALUE) in values
+    assert NO_VALUE == "(no value)"  # the display label; the key holds M.BLANK_VALUE
 
 
 def test_per_account_dimension_sum_equals_undimensioned():
@@ -92,17 +92,17 @@ def test_eliminations_and_other_layers_sit_on_no_value():
     s = sheet("dim_region")
     elim = ("layer", "ic_elimination")
     for l in s["lines"]:
-        if l["dimension_value"] != NO_VALUE:
+        if l["dimension_value"] != M.BLANK_VALUE:
             assert l["cells"][elim] == 0, l
-    sales_nv = next(l for l in s["lines"] if l["key"] == (("account", "4000"), NO_VALUE))
+    sales_nv = next(l for l in s["lines"] if l["key"] == (("account", "4000"), M.BLANK_VALUE))
     assert sales_nv["cells"][elim] == 20.10
-    cash_nv = next(l for l in s["lines"] if l["key"] == (("account", "1000"), NO_VALUE))
+    cash_nv = next(l for l in s["lines"] if l["key"] == (("account", "1000"), M.BLANK_VALUE))
     assert cash_nv["cells"][("layer", "topside")] == 5.05
 
 
 def test_blank_entity_value_is_no_value_too():
     s = sheet("dim_region")
-    sales_nv = next(l for l in s["lines"] if l["key"] == (("account", "4000"), NO_VALUE))
+    sales_nv = next(l for l in s["lines"] if l["key"] == (("account", "4000"), M.BLANK_VALUE))
     assert sales_nv["cells"][("entity", "B")] == -4.40
 
 
@@ -137,7 +137,7 @@ def test_undimensioned_lines_carry_no_dimension_value():
 
 def test_dimension_ignores_a_row_without_value_as_no_value():
     s = sheet("dim_region", rows=[wrow("entity", "A", "4000", 1, -5.0)])
-    assert [l["dimension_value"] for l in s["lines"]] == [NO_VALUE]
+    assert [l["dimension_value"] for l in s["lines"]] == [M.BLANK_VALUE]
 
 
 # -- dimension_column --------------------------------------------------------
@@ -270,3 +270,10 @@ def test_the_markers_are_not_strings():
     assert not isinstance(M.BLANK_VALUE, str)
     assert not isinstance(M.OUTSIDE_SCOPE_VALUE, str)
     assert M.BLANK_VALUE != M.OUTSIDE_SCOPE_VALUE
+
+
+def test_a_real_value_starting_with_a_tilde_never_equals_a_marker_id():
+    rows = [wrow("entity", "A", "4000", 3, -1.0, "~blank"),
+            wrow("entity", "A", "4000", 3, -2.0, "")]
+    ids = [l["key"] for l in M.to_ids(sheet_ids_rows(rows))["lines"]]
+    assert len(ids) == len(set(ids)) == 2

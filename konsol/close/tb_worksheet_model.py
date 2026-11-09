@@ -205,7 +205,9 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
 
     ``dimension`` (a name ``dimension_column`` accepted, or None) groups the
     lines on (account, value): each row's ``dimension_value`` is its value,
-    blank or absent (every non-entity layer) is ``NO_DIMENSION_VALUE``. A line
+    blank or absent (every non-entity layer) is the ``BLANK_VALUE`` marker and an
+    out-of-scope row's is ``OUTSIDE_SCOPE_VALUE`` (markers are tuples; ``to_ids``
+    turns them into the "(no value)" / "(outside your scope)" labels). A line
     key is then ``(account_key, value)`` and the line carries
     ``dimension_value``; each still cross-foots on its own. None leaves the
     result exactly as before.
@@ -234,7 +236,7 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
         if dimension:
             # An out-of-scope entity's own value never labels a line (V1).
             value = (OUTSIDE_SCOPE_VALUE if column == OUTSIDE_SCOPE
-                     else row.get("dimension_value") or NO_DIMENSION_VALUE)
+                     else row.get("dimension_value") or BLANK_VALUE)
             line_key = (line_key, value)
         cells = exact.setdefault(line_key, {})
         amount = statement_model._dec(row["amount"])
@@ -251,8 +253,8 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
         if not dimension:
             return _line_order(k, accounts)
         value = k[1]
-        return (_line_order(k[0], accounts), value == NO_DIMENSION_VALUE,
-                value == OUTSIDE_SCOPE_VALUE, value)
+        rank = {BLANK_VALUE: 1, OUTSIDE_SCOPE_VALUE: 2}.get(value, 0)
+        return (_line_order(k[0], accounts), rank, value if rank == 0 else "")
 
     for line_key in sorted(exact, key=order):
         line_exact = exact[line_key]
@@ -290,10 +292,15 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
 
 # -- row 4: dimension group-by -----------------------------------------------
 
+#: Display labels, applied only by ``to_ids`` / the layout.
 NO_DIMENSION_VALUE = "(no value)"
-#: Value of every line fed by out-of-scope entities: their own values are
-#: never shown to a scoped caller.
-OUTSIDE_SCOPE_VALUE = "(outside your scope)"
+OUTSIDE_SCOPE_LABEL_VALUE = "(outside your scope)"
+#: Line-value markers. Tuples, so no real dimension value (a string) can equal
+#: them. ``OUTSIDE_SCOPE_VALUE`` is the value of every line fed by out-of-scope
+#: entities: their own values are never shown to a scoped caller.
+BLANK_VALUE = ("blank",)
+OUTSIDE_SCOPE_VALUE = ("outside",)
+_VALUE_LABELS = {BLANK_VALUE: NO_DIMENSION_VALUE, OUTSIDE_SCOPE_VALUE: OUTSIDE_SCOPE_LABEL_VALUE}
 _tb_dimension_model = importlib.util.spec_from_file_location(
     "konsol_close_tb_worksheet_model_tb_dimension",
     os.path.join(os.path.dirname(_HERE), "tb_dimension_model.py"))
@@ -333,7 +340,12 @@ def _id(key):
 def _line_id(key):
     # A dimensioned line key is (account_key, value).
     if key and isinstance(key[0], tuple):
-        return _id(key[0]) + "|" + key[1]
+        value = key[1]
+        # Markers are "~blank" / "~outside"; a real value starting with "~"
+        # gets one more "~", so no real value can equal a marker id.
+        if isinstance(value, tuple):
+            return _id(key[0]) + "|~" + value[0]
+        return _id(key[0]) + "|" + ("~" + value if value.startswith("~") else value)
     return _id(key)
 
 
@@ -349,7 +361,10 @@ def to_ids(ws):
     out = {k: v for k, v in ws.items() if k not in ("columns", "lines", "total", "total_exact")}
     out["total_exact"] = cells(ws["total_exact"])
     out["columns"] = [dict(c, key=_id(c["key"])) for c in ws["columns"]]
-    out["lines"] = [dict(line, key=_line_id(line["key"]), cells=cells(line["cells"]))
+    out["lines"] = [dict(line, key=_line_id(line["key"]), cells=cells(line["cells"]),
+                         **({"dimension_value": _VALUE_LABELS.get(line["dimension_value"],
+                                                                  line["dimension_value"])}
+                            if "dimension_value" in line else {}))
                     for line in ws["lines"]]
     out["total"] = dict(ws["total"], cells=cells(ws["total"]["cells"]))
     return out
