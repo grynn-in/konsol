@@ -460,3 +460,153 @@ def test_no_new_click_listener_is_added_for_the_checklist():
         src = f.read()
     assert src.count("addEventListener(") == 1
     assert "innerHTML" not in src
+
+
+# ---- row 6: Close panel, #484 headline ----
+
+HARNESS_6 = r"""
+const fs = require("fs");
+const [script, cfgJson] = process.argv.slice(1);
+const cfg = JSON.parse(cfgJson || "{}");
+const handlers = {};
+function node(tag) {
+  return { tag, className: "", children: [], textContent: "", style: {}, attrs: {}, href: "",
+    setAttribute(k, v) { this.attrs[k] = v; },
+    replaceChildren(...c) { this.children = c; },
+    appendChild(c) { this.children.push(c); return c; },
+    append(...c) { c.forEach((x) => this.children.push(x)); },
+    addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
+    querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
+}
+const box = node("section");
+const calls = [];
+const routes = [];
+const rafQueue = [];
+const created = [];
+global.document = { createElement: (t) => node(t), addEventListener() {} };
+global.localStorage = { getItem() { return null; }, setItem() {} };
+global.location = { href: "https://site.test/desk/konsol", origin: "https://site.test" };
+global.requestAnimationFrame = (fn) => { rafQueue.push(fn); return 1; };
+global.$ = (x) => x;
+global.root_element = node("root");
+const MW = "konsol.close.mywork_api.get_my_work";
+global.frappe = {
+  session: { user: "me@example.com" },
+  xcall: (...a) => {
+    calls.push(a);
+    if (a[0] === MW) {
+      return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(cfg.work);
+    }
+    if (a[0] === "konsol.close.overview_api.get_checklist") {
+      return Promise.resolve({ title: "x", done: 0, total: 0, lines: [] });
+    }
+    return Promise.resolve({ number_cards: { items: [] }, shortcuts: { items: [] } });
+  },
+  set_route: (...a) => routes.push(a),
+  widget: { WidgetGroup: function () {} },
+  ui: { Tabs: function (opts) { created.push(opts); this.$el = node("tabs"); } },
+};
+eval(fs.readFileSync(script, "utf8"));
+const opts = created[0];
+const isMW = (c) => c[0] === MW;
+const atConstruct = calls.filter(isMW).length;
+const tick = () => new Promise((r) => setImmediate(r));
+function walk(n, f) { f(n); (n.children || []).forEach((c) => walk(c, f)); }
+const cls = (x, c) => (x.className || "").split(" ").includes(c);
+(async () => {
+  const closes = [];
+  for (let i = 0; i < (cfg.activations || 1); i++) closes.push(opts.tabs[0].content());
+  if (cfg.other) opts.tabs[1].content();
+  await tick(); await tick();
+  rafQueue.splice(0).forEach((f) => f());
+  await tick(); await tick();
+  const panel = closes[0];
+  let head = null;
+  walk(panel, (x) => { if (cls(x, "khp-headline")) head = x; });
+  const info = { at_construct: atConstruct, mw_calls: calls.filter(isMW).length,
+    call: calls.find(isMW) || null, first_class: (panel.children[0] || {}).className || "",
+    found: !!head };
+  if (head) {
+    const text = [], detail = [], errors = [], starts = [];
+    walk(head, (x) => {
+      if (cls(x, "khp-headline-text")) text.push(x.textContent);
+      if (cls(x, "khp-headline-detail")) detail.push(x.textContent);
+      if (cls(x, "khp-error")) errors.push(x.textContent);
+      if (cls(x, "khp-start")) starts.push({ text: x.textContent, href: x.href });
+    });
+    let all = "";
+    walk(head, (x) => { all += " " + x.textContent; });
+    Object.assign(info, { text, detail, errors, starts, all });
+    if (starts[0]) {
+      let prevented = 0;
+      const a = { getAttribute: () => starts[0].href, href: new URL(starts[0].href, location.href).href };
+      const ev = { button: 0, preventDefault() { prevented++; }, target: { closest: () => a } };
+      (handlers.click || []).forEach((h) => h(ev));
+      info.click = { prevented, routes };
+    }
+  }
+  console.log(JSON.stringify(info));
+})();
+"""
+
+
+def _work(blocking=None, todo=2, waiting=3, counts=True):
+    c = {"todo": todo, "waiting": waiting}
+    if blocking is not None:
+        c["blocking"] = blocking
+    return {"items": [], "counts": c} if counts else {"items": []}
+
+
+def _run6(cfg=None):
+    node = shutil.which("node")
+    assert node
+    result = subprocess.run([node, "-e", HARNESS_6, SCRIPT, json.dumps(cfg or {})],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_headline_text_for_zero_one_and_many_blocking_items():
+    assert _run6({"work": _work(0)})["text"] == ["Nothing needs you"]
+    assert _run6({"work": _work(1)})["text"] == ["1 item needs you"]
+    assert _run6({"work": _work(5)})["text"] == ["5 items need you"]
+
+
+def test_headline_detail_counts_todo_and_waiting():
+    out = _run6({"work": _work(2, todo=4, waiting=7)})
+    assert out["detail"] == ["4 to do · 7 waiting"]
+
+
+def test_headline_is_the_first_section_of_the_close_panel():
+    out = _run6({"work": _work(1)})
+    assert out["found"] and out["first_class"].split()[0] == "khp-headline"
+
+
+def test_missing_counts_or_blocking_gives_an_error_line_never_zero():
+    for work in (_work(counts=False), _work(blocking=None), {"items": [], "counts": None}):
+        out = _run6({"work": work})
+        assert len(out["errors"]) == 1 and out["errors"][0].startswith("Cannot read"), work
+        assert out["text"] == [] and out["starts"] == [], work
+        assert "Nothing needs you" not in out["all"] and "0" not in out["all"], work
+
+
+def test_rejected_my_work_call_shows_an_error_line():
+    out = _run6({"reject": "boom"})
+    assert len(out["errors"]) == 1 and "boom" in out["errors"][0]
+    assert out["text"] == []
+
+
+def test_my_work_is_not_called_at_construction_and_once_per_close_activation():
+    out = _run6({"work": _work(1)})
+    assert out["at_construct"] == 0
+    assert out["mw_calls"] == 1
+    assert out["call"][1] == {} and out["call"][2] == "GET"
+    assert _run6({"work": _work(1), "other": True})["mw_calls"] == 1
+
+
+def test_start_link_opens_my_work_through_the_existing_click_handler():
+    out = _run6({"work": _work(3)})
+    assert [s["text"] for s in out["starts"]] == ["Start"]
+    assert out["starts"][0]["href"] == "/desk/query-report/My%20Work"
+    assert out["click"]["prevented"] == 1
+    assert out["click"]["routes"] == [["query-report", "My Work"]]
