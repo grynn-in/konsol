@@ -221,8 +221,9 @@ global.requestAnimationFrame = (fn) => { rafQueue.push(fn); return rafQueue.leng
 global.root_element = node("root");
 root_element.addEventListener = (t, fn) => { (handlers[t] = handlers[t] || []).push(fn); };
 const card = (n) => ({ label: n, name: n });
-const sc = (n) => ({ label: n });
-const defs = cfg.defs || {
+// A shortcut as get_desktop_page gives it: the workspace row's label, type, link_to.
+const sc = (n) => Object.assign({ label: n }, (cfg.rows || {})[n] || {});
+const defs = "defs" in cfg ? cfg.defs : {
   number_cards: { items: ["Close Status", "Trial Balances In", "Waiting for My Approval",
     "IC Pairs over Tolerance", "TB Exceptions Declared", "Warehouse Freshness"].map(card) },
   shortcuts: { items: ["Consolidation Journals", "Close Assertions", "My Work", "Build Approvals",
@@ -285,10 +286,27 @@ CARDS = ["Close Status", "Trial Balances In", "Waiting for My Approval",
          "IC Pairs over Tolerance", "TB Exceptions Declared", "Warehouse Freshness"]
 
 
+def _shortcut_rows():
+    """label -> {type, link_to} for every shortcut row in konsol.json."""
+    path = os.path.join(APP_DIR, "consolidation", "workspace", "konsol", "konsol.json")
+    with open(path) as f:
+        ws = json.load(f)
+    return {s["label"]: {"type": s["type"], "link_to": s["link_to"]} for s in ws["shortcuts"]}
+
+
+ROWS = _shortcut_rows()
+
+
+def _sc(label, shown=None):
+    """A shortcut item as get_desktop_page returns it; ``shown`` relabels it."""
+    return dict(ROWS[label], label=shown or label)
+
+
 def _run4a(cfg=None):
     node = shutil.which("node")
     assert node
-    result = subprocess.run([node, "-e", HARNESS_4A, SCRIPT, json.dumps(cfg or {}), REAL_TABS_JS],
+    cfg = dict(cfg or {}, rows=ROWS)
+    result = subprocess.run([node, "-e", HARNESS_4A, SCRIPT, json.dumps(cfg), REAL_TABS_JS],
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -308,7 +326,7 @@ def test_close_panel_shows_the_monthly_close_shortcuts_in_order():
 
 def test_shortcuts_the_user_may_not_see_are_simply_absent():
     defs = {"number_cards": {"items": []},
-            "shortcuts": {"items": [{"label": "Period Close"}, {"label": "My Work"}]}}
+            "shortcuts": {"items": [_sc("Period Close"), _sc("My Work")]}}
     out = _run4a({"defs": defs})
     shortcuts = [g for g in out["groups"] if g["type"] == "shortcut"]
     assert shortcuts[0]["labels"] == ["My Work", "Period Close"]
@@ -728,7 +746,7 @@ WAITING = ["Consolidation Journals", "Business Combinations", "Business Disposal
 
 def _defs7(labels):
     return {"number_cards": {"items": []},
-            "shortcuts": {"items": [{"label": n} for n in labels]}}
+            "shortcuts": {"items": [_sc(n) for n in labels]}}
 
 
 def test_approvals_panel_shows_the_eight_waiting_shortcuts_in_workspace_order():
@@ -978,7 +996,7 @@ def test_entity_accountant_close_has_headline_and_shortcuts_and_no_checklist_cal
     head = _run6({"work": _work(2), "roles": EA})
     assert head["text"] == ["2 items need you"] and head["errors"] == []
     out = _run4a({"roles": EA, "defs": {"number_cards": {"items": []},
-                                       "shortcuts": {"items": [{"label": n} for n in EA_SHORTCUTS]}}})
+                                       "shortcuts": {"items": [_sc(n) for n in EA_SHORTCUTS]}}})
     shortcuts = [g for g in out["groups"] if g["type"] == "shortcut"]
     assert shortcuts[0]["labels"] == ["My Work", "Consolidated Statement", "Trial Balance Submissions"]
 
@@ -1027,3 +1045,33 @@ def test_my_work_rejected_with_undefined_shows_a_fixed_reason():
 def test_checklist_rejected_with_undefined_shows_no_undefined():
     out = _run5({"rejectUndefined": True})
     assert len(out["errors"]) == 1 and "undefined" not in out["errors"][0]
+
+
+# ---- review R4: shortcuts matched by link_to + type; empty definitions ----
+
+
+def test_a_relabelled_shortcut_is_still_found_in_its_place():
+    # A translation or a site relabel changes the label, never link_to + type.
+    items = [_sc("Period Close", "Periodenabschluss"), _sc("My Work", "Meine Arbeit"),
+             _sc("Build Approvals", "Freigaben")]
+    defs = {"number_cards": {"items": []}, "shortcuts": {"items": items}}
+    out = _run4a({"defs": defs, "activate": [0, 1]})
+    shortcuts = [g["labels"] for g in out["groups"] if g["type"] == "shortcut"]
+    assert shortcuts == [["Meine Arbeit", "Periodenabschluss"], ["Freigaben"]]
+
+
+def test_a_shortcut_with_a_known_label_but_another_target_is_not_taken():
+    items = [{"label": "My Work", "type": "DocType", "link_to": "ToDo"}, _sc("Period Close")]
+    defs = {"number_cards": {"items": []}, "shortcuts": {"items": items}}
+    out = _run4a({"defs": defs})
+    shortcuts = [g["labels"] for g in out["groups"] if g["type"] == "shortcut"]
+    assert shortcuts == [["Period Close"]]
+
+
+def test_an_empty_or_missing_definitions_payload_shows_one_error_line():
+    for defs in (None, {}, [], "x"):
+        for tab in (0, 1, 2):
+            out = _run4a({"defs": defs, "activate": [tab]})
+            assert out["groups"] == [], (defs, tab)
+            lines = [t for t in out["panel_text"][0] if t]
+            assert len(lines) == 1 and lines[0].startswith("Cannot read"), (defs, tab, lines)
