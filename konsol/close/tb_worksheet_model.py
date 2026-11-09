@@ -7,6 +7,10 @@ worksheet column a ``gold_fully_consolidated_tb`` row lands in. Only the
 is one column whatever ``data_area_id`` it carries (D2-5). The layer grouping
 is ``drill_model``'s, loaded by path (no copy of the label table).
 
+Keys are tagged tuples so an entity code can never equal a layer or bucket
+key: ``("entity", code)``, ``("bucket", "other_entities" | "outside_scope")``,
+``("layer", key)`` (raw type for an unknown one).
+
 Pure: no frappe, no konsol imports. ``drill_model`` is a sibling loaded by
 path, as ``drill_model`` loads ``statement_model``.
 """
@@ -26,8 +30,8 @@ def _load_sibling(name):
 
 drill_model = _load_sibling("drill_model")
 
-OTHER_ENTITIES = "other_entities"
-OUTSIDE_SCOPE = "outside_scope"
+OTHER_ENTITIES = ("bucket", "other_entities")
+OUTSIDE_SCOPE = ("bucket", "outside_scope")
 
 _ENTITY_LAYERS = ("entity", "cta")
 
@@ -41,7 +45,7 @@ def _layer_key(adjustment_type):
 
 
 def column_of(adjustment_type, data_area_id, shown, allowed):
-    """Column key for one row.
+    """Tagged column key for one row.
 
     ``shown``: entity codes with their own column (None = all).
     ``allowed``: entity codes the caller may see (None = unrestricted).
@@ -49,9 +53,9 @@ def column_of(adjustment_type, data_area_id, shown, allowed):
     ``outside_scope`` and never named.
     """
     if adjustment_type not in _ENTITY_LAYERS:
-        return _layer_key(adjustment_type)
+        return ("layer", _layer_key(adjustment_type))
     if allowed is not None and data_area_id not in allowed:
         return OUTSIDE_SCOPE
     if shown is not None and data_area_id not in shown:
         return OTHER_ENTITIES
-    return data_area_id
+    return ("entity", data_area_id)
