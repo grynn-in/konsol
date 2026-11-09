@@ -159,6 +159,7 @@ const calls = [];
 const groups = [];
 const rafQueue = [];
 const routes = [];
+const seenOptions = [];
 const created = [];
 global.document = { createElement: (t) => node(t), addEventListener() {} };
 global.localStorage = { getItem() { return null; }, setItem() {} };
@@ -186,7 +187,8 @@ global.frappe = {
     calls.push(a);
     return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(defs);
   },
-  set_route: (...a) => routes.push(a),
+  route_options: null,
+  set_route: (...a) => { routes.push(a); seenOptions.push(frappe.route_options === null ? null : JSON.parse(JSON.stringify(frappe.route_options))); frappe.route_options = null; },
   widget: { WidgetGroup: function (o) { groups.push(o); } },
   ui: { Tabs: function (opts) { created.push(opts); this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
@@ -210,11 +212,12 @@ const tick = () => new Promise((r) => setImmediate(r));
   };
   if (cfg.link) {
     let prevented = 0;
-    const a = { getAttribute: () => cfg.link, href: new URL(cfg.link, location.href).href };
+    const a = { getAttribute: () => cfg.link, href: new URL(cfg.link, location.href).href,
+      dataset: cfg.dataOptions ? { routeOptions: JSON.stringify(cfg.dataOptions) } : {} };
     const ev = Object.assign({ button: 0, preventDefault() { prevented++; },
       target: { closest: () => a } }, cfg.mods || {});
     (handlers.click || []).forEach((h) => h(ev));
-    out.click = { handlers: (handlers.click || []).length, prevented, routes };
+    out.click = { handlers: (handlers.click || []).length, prevented, routes, options: seenOptions };
   }
   console.log(JSON.stringify(out));
 })();
@@ -283,6 +286,38 @@ def test_in_app_anchor_click_routes_through_frappe_and_is_prevented():
         assert out["click"]["handlers"] == 1, href
         assert out["click"]["prevented"] == 1, href
         assert out["click"]["routes"] == [route], href
+
+
+def test_query_string_becomes_route_options_before_routing():
+    for href, route, opts in (
+        ("/desk/trial-balance-submission?fiscal_year=2024&fiscal_period=12",
+         ["trial-balance-submission"], {"fiscal_year": "2024", "fiscal_period": "12"}),
+        ("/desk/consolidation-journal?fiscal_year=FY2025&fiscal_period=P07",
+         ["consolidation-journal"], {"fiscal_year": "FY2025", "fiscal_period": "P07"}),
+        ("/desk/historical-equity-rate?docstatus=0", ["historical-equity-rate"], {"docstatus": "0"}),
+    ):
+        out = _run4a({"link": href})["click"]
+        assert out["routes"] == [route], href
+        assert out["options"] == [opts], href
+
+
+def test_link_without_a_query_sets_no_route_options():
+    out = _run4a({"link": "/desk/build-approval"})["click"]
+    assert out["routes"] == [["build-approval"]]
+    assert out["options"] == [None]
+
+
+def test_data_route_options_win_over_a_same_named_query_param():
+    out = _run4a({"link": "/desk/consolidated-statement?basis=Group&fiscal_year=2024",
+                  "dataOptions": {"basis": "Entity"}})["click"]
+    assert out["options"] == [{"basis": "Entity", "fiscal_year": "2024"}]
+    out = _run4a({"link": "/desk/consolidated-statement", "dataOptions": {"basis": "Entity"}})["click"]
+    assert out["options"] == [{"basis": "Entity"}]
+
+
+def test_query_decoding_handles_plus_percent_20_and_repeated_params():
+    out = _run4a({"link": "/desk/x?a=b+c&d=e%20f&g=1&g=2&h=%26"})["click"]
+    assert out["options"] == [{"a": "b c", "d": "e f", "g": ["1", "2"], "h": "&"}]
 
 
 def test_external_and_non_desk_links_are_left_alone():
