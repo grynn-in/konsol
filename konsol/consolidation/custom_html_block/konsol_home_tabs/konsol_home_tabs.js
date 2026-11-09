@@ -350,7 +350,21 @@ root_element.addEventListener("click", (e) => {
 	} catch (err) {
 		options = null;
 	}
-	if (options && typeof options === "object") frappe.route_options = options;
+	// The href's own query string (cards, checklist: fiscal_year, fiscal_period...)
+	// becomes route options too; data-route-options is explicit and wins.
+	const fromQuery = {};
+	let hasQuery = false;
+	url.searchParams.forEach((value, key) => {
+		hasQuery = true;
+		if (!(key in fromQuery)) fromQuery[key] = value;
+		else if (Array.isArray(fromQuery[key])) fromQuery[key].push(value);
+		else fromQuery[key] = [fromQuery[key], value];
+	});
+	if (options && typeof options === "object") {
+		frappe.route_options = Object.assign({}, fromQuery, options);
+	} else if (hasQuery) {
+		frappe.route_options = fromQuery;
+	}
 	frappe.set_route(...m[1].split("/").filter(Boolean).map(decodeURIComponent));
 });
 
