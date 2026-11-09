@@ -118,11 +118,14 @@ def test_the_app_ships_the_checklist_and_the_handbook():
                                           "Konsol My Work Board", "Konsol Home Tabs"]
 
 
-def test_home_tabs_block_has_the_checklist_roles():
+def test_home_tabs_block_has_the_checklist_roles_and_entity_accountant():
+    # Review R1: an Entity Accountant sees the Konsol workspace, so the home tabs
+    # admit them too (headline and shortcuts; the block skips the checklist).
     mod = _blocks(_BlockSite())
     blocks = {b[0]: b for b in mod.BLOCKS}
-    assert blocks["Konsol Home Tabs"][1:] == ("konsol_home_tabs",
-                                              blocks["Konsol Close Checklist"][2])
+    assert blocks["Konsol Home Tabs"][1] == "konsol_home_tabs"
+    assert sorted(blocks["Konsol Home Tabs"][2]) == sorted(
+        blocks["Konsol Close Checklist"][2] + ("Entity Accountant",))
 
 
 def test_install_creates_a_missing_block():

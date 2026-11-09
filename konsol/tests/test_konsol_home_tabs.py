@@ -68,6 +68,7 @@ global.localStorage = {
 global.root_element = node("root");
 global.frappe = {
   session: { user: "me@example.com" },
+  user_roles: cfg.roles || ["EPM User"],
   xcall: (...a) => { calls.push(["xcall", a]); return Promise.resolve({}); },
   call: (...a) => { calls.push(["call", a]); return Promise.resolve({}); },
 };
@@ -229,6 +230,7 @@ const defs = cfg.defs || {
 };
 global.frappe = {
   session: { user: "me@example.com" },
+  user_roles: cfg.roles || ["EPM User"],
   xcall: (...a) => {
     if (a[0] === "konsol.close.overview_api.get_checklist") {
       return Promise.resolve({ title: "x", done: 0, total: 0, lines: [] });
@@ -435,6 +437,7 @@ const payload = cfg.payload || {
 };
 global.frappe = {
   session: { user: "me@example.com" },
+  user_roles: cfg.roles || ["EPM User"],
   xcall: (...a) => {
     calls.push(a);
     if (a[0] === "konsol.close.overview_api.get_checklist") {
@@ -588,6 +591,7 @@ root_element.addEventListener = (t, fn) => { (handlers[t] = handlers[t] || []).p
 const MW = "konsol.close.mywork_api.get_my_work";
 global.frappe = {
   session: { user: "me@example.com" },
+  user_roles: cfg.roles || ["EPM User"],
   xcall: (...a) => {
     calls.push(a);
     if (a[0] === MW) {
@@ -866,6 +870,7 @@ const calls = [];
 const created = [];
 var frappe_ = {
   session: { user: "me@example.com" },
+  user_roles: cfg.roles || ["EPM User"],
   xcall: (...a) => { calls.push(a); return Promise.resolve({}); },
   call: (...a) => { calls.push(a); return Promise.resolve({}); },
   route_options: null,
@@ -952,3 +957,32 @@ def test_numbers_panel_makes_no_server_call_on_activation_or_click():
     out = _run9()
     assert out["at_construct"] == 0
     assert out["calls"] == 0 and out["calls_after_clicks"] == 0
+
+
+# ---- review R1: an Entity Accountant gets a non-blank home ----
+
+EA = ["Entity Accountant"]
+EA_SHORTCUTS = ["My Work", "Consolidated Statement", "Trial Balance Submissions", "Build Approvals"]
+
+
+def test_entity_accountant_close_has_headline_and_shortcuts_and_no_checklist_call():
+    out = _run({"roles": EA})
+    # Close renders the headline and their shortcuts; the checklist section is
+    # omitted, and its method (EPM roles only) is never called.
+    assert out["after_construct"]["methods"] == sorted(["konsol.close.mywork_api.get_my_work",
+                                                        "frappe.desk.desktop.get_desktop_page"])
+    assert out["panel_children"][0] == 3
+    head = _run6({"work": _work(2), "roles": EA})
+    assert head["text"] == ["2 items need you"] and head["errors"] == []
+    out = _run4a({"roles": EA, "defs": {"number_cards": {"items": []},
+                                       "shortcuts": {"items": [{"label": n} for n in EA_SHORTCUTS]}}})
+    shortcuts = [g for g in out["groups"] if g["type"] == "shortcut"]
+    assert shortcuts[0]["labels"] == ["My Work", "Consolidated Statement", "Trial Balance Submissions"]
+
+
+def test_entity_accountant_sees_no_checklist_error_noise():
+    out = _run5({"roles": EA})
+    assert out["checklist_calls"] == 0
+    assert out["found"] is False
+    for roles in (["EPM User"], ["System Manager"], ["Administrator"], ["Entity Accountant", "EPM Analyst"]):
+        assert _run5({"roles": roles})["checklist_calls"] == 1, roles
