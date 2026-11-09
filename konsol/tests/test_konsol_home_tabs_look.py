@@ -128,3 +128,18 @@ def test_every_block_class_the_script_creates_is_styled():
 	assert used, "no khp-* classes found in the script"
 	missing = [c for c in used if not re.search(r"\." + re.escape(c) + r"(?![a-z-])", _code())]
 	assert not missing, missing
+
+
+def test_links_stay_readable_in_both_themes():
+	# #497 row 12d: the brand teal alone is 3.28:1 on the dark theme (live). The
+	# shadow root cannot see [data-theme], so links mix the brand with the
+	# theme's own text colour, which is dark on light and light on dark.
+	for sel in (".khp-number-link", ".khp-start"):
+		body = _body_of(sel)
+		assert "color-mix(" in body and "var(--text-color)" in body, (sel, body)
+
+
+def test_chart_filter_button_is_hidden():
+	# Its icon references the page's sprite, unreachable from the shadow root:
+	# it rendered as an empty square (live, row 12).
+	assert re.search(r"display:\s*none", _body_of(".filter-chart"))
