@@ -25,6 +25,12 @@ Numbers screen has already chosen one) and ``heading`` must be a
 Published heading (``is_group``) of the chart; either failing throws, as
 does an unknown group.
 
+``get_entity_statement(fiscal_year, fiscal_period, entity)`` (GET,
+konsol#495) is the same statement on the entity basis: one entity's own
+trial balance (``gold_trial_balance``, its functional currency, the group
+chart's codes), never the translated entity layer of the consolidated TB.
+One ClickHouse read; no group, commentary or "not included" chip.
+
 ``export_statement(fiscal_year, fiscal_period, consolidation_group=None)``
 (GET, story 8.5, decision #305-W5-3) sends the same statement and every
 heading's drill as a downloaded .xlsx (``statement_export_model``). A
@@ -70,7 +76,7 @@ from konsol.close import (
     ch_read, commentary_model, drill_model, signoff_gate, statement_export_model,
     statement_model)
 from konsol.close.timefmt import zoned_iso
-from konsol.entity_permissions import allowed_entity_codes
+from konsol.entity_permissions import allowed_entity_codes, assert_entity_access
 
 import importlib.util as _importlib_util
 import os as _os
@@ -124,6 +130,19 @@ _TB_SQL = (
     "FROM epm_gold.gold_fully_consolidated_tb "
     "WHERE consolidation_group = {group:String} AND fiscal_year <= {fy:UInt32} "
     "GROUP BY fiscal_year, fiscal_period, main_account, adjustment_type"
+)
+#: konsol#495: the entity basis's ONE read — the entity's own trial balance
+#: in its functional currency, group-chart ``main_account``, dimensions
+#: summed. ``adjustment_type`` is the literal ``'entity'`` so the rows are
+#: ``drill_model.drill``'s entity layer as they stand. ``period_net_amount``
+#: is non-nullable, so ``null_rows`` is always 0; it is kept so the rows
+#: have the shape ``statement_model`` checks. Aliased ``amt`` (N53).
+_ENTITY_TB_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, 'entity' AS adjustment_type, "
+    "sum(period_net_amount) AS amt, countIf(period_net_amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_trial_balance "
+    "WHERE data_area_id = {entity:String} AND fiscal_year <= {fy:UInt32} "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account"
 )
 _ENTITY_SQL = (
     "SELECT DISTINCT data_area_id FROM epm_gold.gold_fully_consolidated_tb "
@@ -463,39 +482,38 @@ def _minor_unit(currency):
     return frappe.db.get_value("ISO Currency", currency, "minor_unit")
 
 
-def _group_statement(key, period_rows, group, declared, accounts_map, reporting_currency):
-    """One group's statement for ``key``: ``{"state", "message",
-    "statement", "entity_rows", "tb_rows"}``. ``state`` is ``ok``,
-    ``no_chart`` (no ClickHouse read), ``not_built`` / ``error`` (the
-    warehouse read failed, or a NULL amount), or ``setup_gap`` (a BS
-    heading's side undeclared, or the reporting currency has no ISO
-    Currency, so no minor unit to round to: konsol#354). The ONE statement build: ``_statement``
-    (``get_statement``, ``export_statement``) and ``signoff_commentary``
-    both call it, so the sign-off and the export check the statement the
-    Numbers screen shows."""
-    out = {"state": "ok", "message": None, "statement": None, "entity_rows": None,
-           "tb_rows": None}
+def _build_statement(key, period_rows, declared, accounts_map, currency, currency_gap, read,
+                     no_rows_message=None):
+    """The ONE "minor unit -> read -> statement -> state" build, for either
+    basis: ``{"state", "message", "statement", **reads}``. ``state`` is
+    ``ok``, ``no_chart`` (no ClickHouse read), ``setup_gap`` (no minor unit
+    for ``currency``: ``currency_gap(currency)`` is the sentence, no
+    ClickHouse read; or a BS heading's side undeclared), ``not_built`` /
+    ``error`` (the warehouse read failed, or a NULL amount), or ``no_rows``
+    (only when ``no_rows_message`` is given and no row is at or before
+    ``key``). ``read()`` returns ``{"tb_rows": [...], ...}``; every key it
+    returns is carried into the result."""
+    out = {"state": "ok", "message": None, "statement": None}
     if not accounts_map:
         out.update(state="no_chart", message=_NO_CHART_MESSAGE)
         return out
-    minor_unit = _minor_unit(reporting_currency)
+    minor_unit = _minor_unit(currency)
     if minor_unit is None:
         # Refused, never rounded to a guessed 2 places (konsol#354).
-        out.update(state="setup_gap", message=(
-            f"{statement_model.STATEMENT_CURRENCY_PRECISION_UNDECLARED}: the reporting currency "
-            f"{reporting_currency or '(none)'} of {group} has no ISO Currency, so its minor unit "
-            "is undeclared. Add it to ISO Currency, or set the group's reporting currency."))
+        out.update(state="setup_gap", message=currency_gap(currency))
         return out
 
     try:
-        tb_rows = [
-            _tb_row(r) for r in ch_read.rows(_TB_SQL, {"group": group, "fy": key[0]})
-        ]
-        entity_rows = ch_read.rows(
-            _ENTITY_SQL, {"group": group, "fy": key[0], "fp": key[1]})
+        reads = read()
     except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
         out.update(state="not_built" if ch_read.not_built(e) else "error",
                    message=_error_message(e))
+        return out
+    tb_rows = reads["tb_rows"]
+
+    if no_rows_message is not None and not any(
+            (r["fiscal_year"], r["fiscal_period"]) <= key for r in tb_rows):
+        out.update(state="no_rows", message=no_rows_message)
         return out
 
     try:
@@ -512,8 +530,124 @@ def _group_statement(key, period_rows, group, declared, accounts_map, reporting_
         out.update(state="setup_gap" if is_setup_gap else "error", message=message)
         return out
 
-    out.update(statement=stmt, entity_rows=entity_rows, tb_rows=tb_rows)
+    out.update(reads)
+    out["statement"] = stmt
     return out
+
+
+def _group_statement(key, period_rows, group, declared, accounts_map, reporting_currency):
+    """One group's statement for ``key``: ``{"state", "message",
+    "statement", "entity_rows", "tb_rows"}`` (``_build_statement``'s states;
+    a reporting currency with no ISO Currency is a ``setup_gap``,
+    konsol#354). The ONE group statement: ``_statement``
+    (``get_statement``, ``export_statement``) and ``signoff_commentary``
+    both call it, so the sign-off and the export check the statement the
+    Numbers screen shows. ClickHouse is read twice (none without a chart)."""
+    def currency_gap(currency):
+        return (
+            f"{statement_model.STATEMENT_CURRENCY_PRECISION_UNDECLARED}: the reporting currency "
+            f"{currency or '(none)'} of {group} has no ISO Currency, so its minor unit "
+            "is undeclared. Add it to ISO Currency, or set the group's reporting currency.")
+
+    def read():
+        tb_rows = [
+            _tb_row(r) for r in ch_read.rows(_TB_SQL, {"group": group, "fy": key[0]})
+        ]
+        entity_rows = ch_read.rows(
+            _ENTITY_SQL, {"group": group, "fy": key[0], "fp": key[1]})
+        return {"tb_rows": tb_rows, "entity_rows": entity_rows}
+
+    out = {"entity_rows": None, "tb_rows": None}
+    out.update(_build_statement(key, period_rows, declared, accounts_map, reporting_currency,
+                                currency_gap, read))
+    return out
+
+
+@frappe.whitelist(methods=["GET"])
+def get_entity_statement(fiscal_year, fiscal_period, entity):
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    return _entity_statement(fiscal_year, fiscal_period, entity)[0]
+
+
+def _entity_statement(fiscal_year, fiscal_period, entity):
+    """``(payload, reads)`` on the entity basis (konsol#495): one entity's
+    own trial balance (``_ENTITY_TB_SQL``, ``gold_trial_balance``) through
+    ``_build_statement``, rounded to the entity's functional currency.
+    ``reads`` is ``None`` unless ``ok``; on ``ok`` it carries ``key``,
+    ``period_rows``, ``accounts``, ``declared`` and ``tb_rows`` (the
+    entity-grain rows, ``drill_model.drill``'s entity layer as they stand).
+
+    Refused (throws): a blank entity, an unknown one (named), a group
+    entity, one outside the caller's entity scope (``PermissionError``),
+    an undeclared period. A blank functional currency, or one with no ISO
+    Currency, is ``state "setup_gap"`` naming the fix; no row up to the
+    period is ``state "no_rows"``. The caller has already run
+    ``frappe.only_for``."""
+    key = _period_key(fiscal_year, fiscal_period)
+    if not entity:
+        frappe.throw("Choose an entity.")
+    row = frappe.db.get_value(
+        "Entity", entity, ["entity_name", "functional_currency", "is_group"], as_dict=True)
+    if not row:
+        frappe.throw(f"{entity} is not an entity.")
+    if row.get("is_group"):
+        frappe.throw(f"{entity} is a group entity: choose a legal entity, or use the Group basis.")
+    assert_entity_access(entity)
+
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    period_row = _find_period(key, period_rows)
+    declared = signoff_gate.statement_accounts()
+    currency = row.get("functional_currency")
+
+    result = {
+        "basis": "Entity",
+        "entity": entity,
+        "entity_name": row.get("entity_name"),
+        "period": {
+            "fiscal_year": key[0], "fiscal_period": key[1],
+            "code": period_row.get("period_code"), "status": period_row.get("status"),
+            "period_type": period_row.get("period_type"),
+        },
+        "groups": [],
+        "consolidation_group": None,
+        "group_note": None,
+        "reporting_currency": currency,
+        "state": "ok",
+        "message": None,
+        "signoff": _signoff_state(key),
+        "statement": None,
+        "gap": declared.get("gap"),
+        "not_included": None,
+        "commentary": {},
+        "can_comment": False,
+    }
+
+    def currency_gap(currency):
+        if not currency:
+            return (f"{entity} has no Functional Currency: set it on the Entity before "
+                    "its statement can be shown.")
+        return (
+            f"{statement_model.STATEMENT_CURRENCY_PRECISION_UNDECLARED}: the functional currency "
+            f"{currency} of {entity} has no ISO Currency, so its minor unit is undeclared. "
+            "Add it to ISO Currency, or set the entity's Functional Currency.")
+
+    def read():
+        return {"tb_rows": [
+            _drill_row(r) for r in ch_read.rows(_ENTITY_TB_SQL, {"entity": entity, "fy": key[0]})
+        ]}
+
+    accounts_map = _chart()
+    built = _build_statement(
+        key, period_rows, declared, accounts_map, currency, currency_gap, read,
+        no_rows_message=f"No trial balance for {entity} up to {period_name(*key)}.")
+    if built["state"] != "ok":
+        result["state"], result["message"] = built["state"], built["message"]
+        return result, None
+
+    result["statement"] = built["statement"]
+    reads = {"key": key, "period_rows": period_rows, "accounts": accounts_map,
+             "declared": declared, "tb_rows": built["tb_rows"]}
+    return result, reads
 
 
 def signoff_commentary(fiscal_year, fiscal_period):
