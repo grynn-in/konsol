@@ -277,3 +277,55 @@ def test_a_real_value_starting_with_a_tilde_never_equals_a_marker_id():
             wrow("entity", "A", "4000", 3, -2.0, "")]
     ids = [l["key"] for l in M.to_ids(sheet_ids_rows(rows))["lines"]]
     assert len(ids) == len(set(ids)) == 2
+
+
+# -- #494 PR #500 re-review W1: a hidden entity's value hides on every layer ----
+
+def _layer_rows(area, value):
+    return [wrow("entity", "B", "4000", 3, -4.0, "North"),
+            wrow("topside", area, "4000", 3, 1.5, value),
+            wrow("ic_elimination", area, "4000", 3, 2.5, value),
+            wrow("equity_method", area, "4000", 3, 3.5, value),
+            wrow("cta", area, "CTA", 3, 4.5, value)]
+
+
+def _layered(rows, allowed):
+    return M.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                       None, allowed, dimension="dim_region")
+
+
+def test_a_hidden_entitys_layer_rows_never_show_their_dimension_value():
+    import json
+    s = _layered(_layer_rows("A", HIDDEN), {"B"})
+    assert HIDDEN not in json.dumps(M.to_ids(s))
+    values = {l["dimension_value"] for l in s["lines"]}
+    assert HIDDEN not in values
+    assert M.OUTSIDE_SCOPE_VALUE in values
+
+
+def test_hidden_entity_layer_rows_change_no_consolidated_or_cross_foot():
+    scoped = _layered(_layer_rows("A", HIDDEN), {"B"})
+    open_ = _layered(_layer_rows("A", HIDDEN), None)
+
+    def per_account(ws):
+        out = {}
+        for l in ws["lines"]:
+            out[l["account"]] = out.get(l["account"], _d(0)) + _d(l["consolidated"])
+        return out
+    assert per_account(scoped) == per_account(open_)
+    assert _d(scoped["total"]["consolidated"]) == _d(open_["total"]["consolidated"])
+    for l in scoped["lines"] + [scoped["total"]]:
+        assert _foot(l["cells"]) == _d(l["consolidated"])
+
+
+def test_a_visible_entitys_layer_row_value_still_shows():
+    s = _layered(_layer_rows("B", "Visible-V"), {"B"})
+    topside = [l for l in s["lines"] if l["dimension_value"] == "Visible-V"]
+    assert topside and all(M.OUTSIDE_SCOPE_VALUE != l["dimension_value"] for l in topside)
+    assert M.OUTSIDE_SCOPE_VALUE not in {l["dimension_value"] for l in s["lines"]}
+
+
+def test_a_layer_row_with_no_entity_area_keeps_its_value():
+    rows = [wrow("ic_elimination", "", "4000", 3, 2.5, "Group-V")]
+    s = _layered(rows, {"B"})
+    assert [l["dimension_value"] for l in s["lines"]] == ["Group-V"]
