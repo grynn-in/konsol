@@ -139,6 +139,15 @@ function panel(name, fill) {
 // set as textContent; a line links only to a /desk/ route, and in-app clicks
 // go through the delegated handler below.
 const CHECKLIST_METHOD = "konsol.close.overview_api.get_checklist";
+// The roles get_checklist admits (overview_api, frappe.only_for; Administrator
+// passes only_for). Anyone else (an Entity Accountant) gets no checklist section
+// and no call: a refused call would pop Frappe's "Not permitted" dialog and
+// reject with no reason (request.js 403 handler), so the block asks first.
+const CHECKLIST_ROLES = ["EPM Admin", "EPM Analyst", "EPM User", "System Manager", "Administrator"];
+function mayReadChecklist() {
+	const roles = Array.isArray(frappe.user_roles) ? frappe.user_roles : [];
+	return CHECKLIST_ROLES.some((r) => roles.includes(r));
+}
 const GLYPH = { ok: "\u2713", warn: "!", blocked: "\u2715", unknown: "?" };
 const TONE = { ok: "green", warn: "orange", blocked: "red", unknown: "gray" };
 
@@ -259,15 +268,20 @@ function fillHeadline(target) {
 		});
 }
 
-// Close panel order, as the old workspace had it: headline, cards, checklist, Monthly close.
+// Close panel order, as the old workspace had it: headline, cards, checklist,
+// Monthly close. The checklist is left out for a user who may not read it.
 function fillClose(div) {
 	const headline = el("div", "khp-headline");
 	const cards = el("div", "khp-cards");
-	const checklist = el("section", "khp-checklist konsol-checklist");
 	const monthly = el("div", "khp-monthly");
-	div.append(headline, cards, checklist, monthly);
+	if (mayReadChecklist()) {
+		const checklist = el("section", "khp-checklist konsol-checklist");
+		div.append(headline, cards, checklist, monthly);
+		fillChecklist(checklist);
+	} else {
+		div.append(headline, cards, monthly);
+	}
 	fillHeadline(headline);
-	fillChecklist(checklist);
 	widgets(div, (defs) => {
 		group(cards, "number_card", items(defs.number_cards));
 		const have = items(defs.shortcuts);

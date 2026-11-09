@@ -986,3 +986,18 @@ def test_entity_accountant_sees_no_checklist_error_noise():
     assert out["found"] is False
     for roles in (["EPM User"], ["System Manager"], ["Administrator"], ["Entity Accountant", "EPM Analyst"]):
         assert _run5({"roles": roles})["checklist_calls"] == 1, roles
+
+
+def test_block_checklist_roles_match_what_get_checklist_admits():
+    import ast
+    import re
+    with open(os.path.join(APP_DIR, "close", "overview_api.py")) as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "get_checklist")
+    call = next(n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                and getattr(n.func, "attr", "") == "only_for")
+    admitted = set(ast.literal_eval(call.args[0]))
+    with open(SCRIPT) as f:
+        m = re.search(r"const CHECKLIST_ROLES = (\[[^\]]*\]);", f.read())
+    # Administrator passes frappe.only_for without the roles.
+    assert set(json.loads(m.group(1))) == admitted | {"Administrator"}
