@@ -179,7 +179,8 @@ def _line_head(key, accounts):
     return key[1], (accounts.get(key[1]) or {}).get("account_name")
 
 
-def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, allowed):
+def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, allowed,
+              dimension=None):
     """The consolidation worksheet at ``key``: one line per account, one
     column per layer/entity, net debit (konsol#494).
 
@@ -201,6 +202,13 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
     present only when some line needs it. The Total line sums the displayed
     line values per column, so it foots both down and across.
 
+    ``dimension`` (a name ``dimension_column`` accepted, or None) groups the
+    lines on (account, value): each row's ``dimension_value`` is its value,
+    blank or absent (every non-entity layer) is ``NO_DIMENSION_VALUE``. A line
+    key is then ``(account_key, value)`` and the line carries
+    ``dimension_value``; each still cross-foots on its own. None leaves the
+    result exactly as before.
+
     A row in the window with NULL amounts raises ``ValueError`` naming its
     account and layer; it is never read as 0.
     """
@@ -220,7 +228,10 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
         if column == OUTSIDE_SCOPE:
             outside.add(row.get("data_area_id"))
         present.add(column)
-        cells = exact.setdefault(row_key(row, accounts, declared), {})
+        line_key = row_key(row, accounts, declared)
+        if dimension:
+            line_key = (line_key, row.get("dimension_value") or NO_DIMENSION_VALUE)
+        cells = exact.setdefault(line_key, {})
         cells[column] = cells.get(column, _ZERO) + statement_model._dec(row["amount"])
 
     keys = _columns(present, shown, allowed)
@@ -229,15 +240,24 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
         return statement_model._round(amount, minor_unit)
 
     lines = []
-    for line_key in sorted(exact, key=lambda k: _line_order(k, accounts)):
+    def order(k):
+        if not dimension:
+            return _line_order(k, accounts)
+        value = k[1]
+        return (_line_order(k[0], accounts), value == NO_DIMENSION_VALUE, value)
+
+    for line_key in sorted(exact, key=order):
         line_exact = exact[line_key]
         cells = {k: rnd(line_exact.get(k, _ZERO)) for k in keys}
         consolidated = rnd(sum(line_exact.values(), _ZERO))
         shown_sum = sum((statement_model._dec(v) for v in cells.values()), _ZERO)
         cells[ROUNDING] = rnd(statement_model._dec(consolidated) - shown_sum)
-        account, name = _line_head(line_key, accounts)
-        lines.append({"key": line_key, "account": account, "name": name,
-                      "cells": cells, "consolidated": consolidated})
+        account, name = _line_head(line_key[0] if dimension else line_key, accounts)
+        line = {"key": line_key, "account": account, "name": name,
+                "cells": cells, "consolidated": consolidated}
+        if dimension:
+            line["dimension_value"] = line_key[1]
+        lines.append(line)
 
     if any(line["cells"][ROUNDING] for line in lines):
         keys.append(ROUNDING)
@@ -254,3 +274,32 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
     columns.append({"key": CONSOLIDATED, "label": CONSOLIDATED_LABEL})
     return {"columns": columns, "lines": lines, "total": total,
             "outside_count": len(outside), "minor_unit": minor_unit}
+
+
+# -- row 4: dimension group-by -----------------------------------------------
+
+NO_DIMENSION_VALUE = "(no value)"
+_tb_dimension_model = importlib.util.spec_from_file_location(
+    "konsol_close_tb_worksheet_model_tb_dimension",
+    os.path.join(os.path.dirname(_HERE), "tb_dimension_model.py"))
+tb_dimension_model = importlib.util.module_from_spec(_tb_dimension_model)
+_tb_dimension_model.loader.exec_module(tb_dimension_model)
+
+
+def dimension_column(name, declared_rows, present_columns):
+    """``name`` if it may be interpolated as a gold column, else ValueError
+    naming the check it failed. Three checks, in order: a legal ``dim_*`` name
+    (``tb_dimension_model``'s rule), declared Published and ticked
+    ``in_trial_balance`` (``accepted_dimension_columns``), and actually built
+    in the warehouse (``present_columns``, from ``system.columns``).
+    """
+    if not tb_dimension_model.is_legal_dimension_name(name):
+        raise ValueError(f"dimension {name!r} is not a legal dimension name "
+                         "(dim_ then lower-case letters, digits, underscores)")
+    if name not in tb_dimension_model.accepted_dimension_columns(declared_rows):
+        raise ValueError(f"dimension {name!r} is not declared as a Published "
+                         "Dimension ticked in_trial_balance")
+    if name not in set(present_columns):
+        raise ValueError(f"dimension {name!r} is not built in the warehouse yet "
+                         "(no such column in gold_fully_consolidated_tb)")
+    return name
