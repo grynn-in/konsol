@@ -22,7 +22,7 @@ number: every cell is the worksheet's own displayed value.
 - ``rows(ws, currency, dimension)``: one row per line, then a bold Total.
   A line's dimension value is its ``dimension_value`` key (row 4).
 - ``message(ws, payload)``: period, group, currency, sign, window, any
-  non-zero column total, and ``N entities outside your scope`` as a count.
+  column whose exact total is non-zero at the minor unit (Rounding never), and ``N entities outside your scope`` as a count.
   It is built from the worksheet's column labels only, so an out-of-scope
   entity is never named.
 
@@ -139,8 +139,10 @@ def _nonzero_totals_text(ws):
     labels = {c["key"]: c["label"] for c in ws["columns"]}
     found = []
     for key, label in labels.items():
-        value = ws["total"]["consolidated"] if key == "consolidated" else ws["total"]["cells"].get(key, 0)
-        if value:
+        if key == "rounding":
+            continue  # the plug is never an unbalanced column
+        value = ws["total_exact"][key]
+        if round(value, places):
             found.append("%s %.*f" % (label, places, value))
     if not found:
         return None
