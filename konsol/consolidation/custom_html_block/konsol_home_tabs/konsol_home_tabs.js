@@ -74,6 +74,20 @@ const WAITING = [
 	"Build Approvals",
 ];
 
+// The Trends charts, in the workspace's order (konsol.json). TB Submission
+// Progress is full width; every chart in one WidgetGroup has the same width
+// (spike Q3), so it gets its own one-column group and the rest share a two-column one.
+const FULL_WIDTH_CHART = "TB Submission Progress";
+const CHARTS = [
+	"TB Submission Progress",
+	"Net Sales and Net Result",
+	"Top IC Differences",
+	"Approvals Backlog",
+	"Closing vs Average Rate",
+	"Entities by Status",
+	"Days to Close",
+];
+
 function errorLine(div, e) {
 	const line = document.createElement("div");
 	line.className = "khp-error text-muted";
@@ -98,11 +112,11 @@ function widgets(div, build) {
 		.catch((e) => errorLine(div, e));
 }
 
-function group(div, type, list) {
+function group(div, type, list, columns) {
 	new frappe.widget.WidgetGroup({
 		container: $(div),
 		type,
-		columns: 3,
+		columns: columns || 3,
 		widgets: list,
 		options: {},
 	});
@@ -267,6 +281,28 @@ function fillApprovals(div) {
 	});
 }
 
+// Trends panel: the charts the user may see, created after the panel is
+// attached (rAF in widgets). The chart "..." menu is hidden by CSS already.
+function fillTrends(div) {
+	widgets(div, (defs) => {
+		const have = items(defs.charts);
+		const nameOf = (c) => c.chart_name || c.label;
+		const pick = (n) => have.find((c) => nameOf(c) === n);
+		const full = pick(FULL_WIDTH_CHART);
+		if (full) {
+			const one = el("div", "khp-chart-full");
+			div.appendChild(one);
+			group(one, "chart", [full], 1);
+		}
+		const rest = CHARTS.filter((n) => n !== FULL_WIDTH_CHART).map(pick).filter(Boolean);
+		if (rest.length) {
+			const two = el("div", "khp-chart-grid");
+			div.appendChild(two);
+			group(two, "chart", rest, 2);
+		}
+	});
+}
+
 // Links inside the shadow root are invisible to Frappe's router, so an <a href>
 // does a full page load (#484 failure 3). Route in-app links ourselves.
 root_element.addEventListener("click", (e) => {
@@ -292,7 +328,7 @@ const tabs = new frappe.ui.Tabs({
 	tabs: [
 		{ label: "Close", content: panel("close", fillClose) },
 		{ label: "Approvals", content: panel("approvals", fillApprovals) },
-		{ label: "Trends", content: panel("trends") },
+		{ label: "Trends", content: panel("trends", fillTrends) },
 		{ label: "Numbers", content: panel("numbers") },
 	],
 	active: loadTab(),
