@@ -116,3 +116,15 @@ def test_headline_is_styled():
 	for cls in (".khp-headline", ".khp-headline-text", ".khp-headline-detail"):
 		assert _has(cls), cls
 	assert "var(--konsol-brand" in _body_of(".khp-headline a")
+
+
+def test_every_block_class_the_script_creates_is_styled():
+	# #497 row 10c: a khp-* class the script builds (rows 6, 8, 9 added some
+	# after row 10) must have a rule, or it renders unstyled.
+	import pathlib
+	js = (pathlib.Path(__file__).resolve().parents[1] / "consolidation" / "custom_html_block"
+	      / "konsol_home_tabs" / "konsol_home_tabs.js").read_text()
+	used = sorted(set(re.findall(r'"(khp-[a-z-]+)"', js)))
+	assert used, "no khp-* classes found in the script"
+	missing = [c for c in used if not re.search(r"\." + re.escape(c) + r"(?![a-z-])", _code())]
+	assert not missing, missing
