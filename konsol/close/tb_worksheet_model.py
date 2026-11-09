@@ -193,7 +193,8 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
     Returns ``{"columns": [{"key", "label"}], "lines": [{"key", "account",
     "name", "cells", "consolidated"}], "total": {"cells", "consolidated"},
     "total_exact" ({column key: float}, each column's unrounded sum, Rounding
-    absent), "outside_count", "minor_unit"}``. ``cells`` maps every column key but
+    absent), "total_rounded_exact" (the same sums rounded once, half-even like
+    every cell), "outside_count", "minor_unit"}``. ``cells`` maps every column key but
     Consolidated to a float.
 
     Sums are Decimal; each cell is rounded once from its exact sum, and
@@ -284,10 +285,14 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
     # the balance test reads these, not the displayed totals (#494 row 10b).
     total_exact = {k: float(column_exact.get(k, _ZERO)) for k in keys if k != ROUNDING}
     total_exact[CONSOLIDATED] = float(sum(column_exact.values(), _ZERO))
+    # The same totals rounded as every cell is (Decimal, half-even): the
+    # message tests and prints these, so it agrees with the Total row (V2).
+    total_rounded_exact = {k: rnd(column_exact.get(k, _ZERO)) for k in keys if k != ROUNDING}
+    total_rounded_exact[CONSOLIDATED] = rnd(sum(column_exact.values(), _ZERO))
     columns = [{"key": k, "label": ROUNDING_LABEL if k == ROUNDING else _label(k)} for k in keys]
     columns.append({"key": CONSOLIDATED, "label": CONSOLIDATED_LABEL})
     return {"columns": columns, "lines": lines, "total": total, "total_exact": total_exact,
-            "outside_count": len(outside), "minor_unit": minor_unit}
+            "total_rounded_exact": total_rounded_exact, "outside_count": len(outside), "minor_unit": minor_unit}
 
 
 # -- row 4: dimension group-by -----------------------------------------------
@@ -358,8 +363,10 @@ def to_ids(ws):
     def cells(values):
         return {_id(k): v for k, v in values.items()}
 
-    out = {k: v for k, v in ws.items() if k not in ("columns", "lines", "total", "total_exact")}
+    out = {k: v for k, v in ws.items() if k not in ("columns", "lines", "total", "total_exact",
+                                                "total_rounded_exact")}
     out["total_exact"] = cells(ws["total_exact"])
+    out["total_rounded_exact"] = cells(ws["total_rounded_exact"])
     out["columns"] = [dict(c, key=_id(c["key"])) for c in ws["columns"]]
     out["lines"] = [dict(line, key=_line_id(line["key"]), cells=cells(line["cells"]),
                          **({"dimension_value": _VALUE_LABELS.get(line["dimension_value"],
