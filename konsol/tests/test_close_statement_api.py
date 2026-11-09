@@ -283,6 +283,8 @@ class _Site:
         #: the entity basis's one read, gold_trial_balance (``amt`` alias).
         self.entities = {}
         self.entity_tb_rows = []
+        #: konsol#496 row 10A-2: close_event.record calls, as kwargs dicts.
+        self.events = []
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -397,6 +399,25 @@ def _signoff_gate(site):
     return sg
 
 
+def _close_event(site):
+    """Stub of the close audit trail's one writer (konsol#496 row 10A-2):
+    ``record`` appends its call to ``site.events``, with whether the
+    workbook bytes were already in the response at that moment."""
+    ce = types.ModuleType("konsol.close.close_event")
+
+    def record(kind, fiscal_year, fiscal_period, reference_doctype=None, reference_name=None,
+               reason=None, detail=None, entity=None):
+        site.events.append({
+            "kind": kind, "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+            "reference_doctype": reference_doctype, "reference_name": reference_name,
+            "reason": reason, "detail": detail, "entity": entity,
+        })
+        return "CE-%d" % len(site.events)
+
+    ce.record = record
+    return ce
+
+
 def _assertion_run(site):
     mod = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     mod.SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
@@ -437,12 +458,13 @@ def _invoke(site, run):
     konsol.consolidation = consolidation
     close.ch_read = _ch_read(site)
     close.signoff_gate = _signoff_gate(site)
+    close.close_event = _close_event(site)
 
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
              "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
              "konsol.close.statement_export_model",
-             "konsol.close.commentary_model",
+             "konsol.close.commentary_model", "konsol.close.close_event",
              "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run",
              "konsol.consolidation.doctype.assertion_run.assertion_run",
@@ -453,6 +475,7 @@ def _invoke(site, run):
         "konsol.fiscal_calendar": fiscal_calendar,
         "konsol.entity_permissions": entity_permissions,
         "konsol.close.ch_read": close.ch_read, "konsol.close.signoff_gate": close.signoff_gate,
+        "konsol.close.close_event": close.close_event,
         "konsol.consolidation": consolidation, "konsol.consolidation.doctype": doctype_pkg,
         "konsol.consolidation.doctype.assertion_run": assertion_run_pkg,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run_mod,
@@ -1594,3 +1617,154 @@ def test_entity_drill_non_ok_statement_is_a_state_with_no_drill():
     assert result["state"] == "setup_gap"
     assert "Functional Currency" in result["message"]
     assert result["drill"] is None
+
+
+# =============================================================================
+# konsol#496 row 10A-2 (Q1 = A, Deepak Pai 9 Nov 2026): every download is
+# recorded as a Close Event ``statement_exported``, in the request's own
+# transaction, after the workbook is built; a refusal records nothing. The
+# endpoint is POST (a GET rolls back, and the event with it).
+# =============================================================================
+
+def _export_function_node():
+    tree = ast.parse(open(API_PY).read())
+    return next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "export_statement")
+
+
+def test_export_statement_is_whitelisted_post_only():
+    fn = _export_function_node()
+    methods = None
+    for dec in fn.decorator_list:
+        if isinstance(dec, ast.Call) and getattr(dec.func, "attr", None) == "whitelist":
+            for kw in dec.keywords:
+                if kw.arg == "methods":
+                    methods = ast.literal_eval(kw.value)
+    assert methods == ["POST"], methods
+
+
+def test_statement_api_never_commits():
+    source = open(API_PY).read()
+    assert "db.commit" not in source
+    assert "commit()" not in source
+
+
+def test_group_export_records_one_statement_exported_event():
+    site = _export_site()
+    response = _call_export(site, group="G1")
+    assert site.events == [{
+        "kind": "statement_exported", "fiscal_year": 2025, "fiscal_period": 7,
+        "reference_doctype": None, "reference_name": None, "reason": None,
+        "entity": None,
+        "detail": {
+            "basis": "Group", "consolidation_group": "G1", "entity": None,
+            "filename": response["filename"], "label": "Provisional",
+        },
+    }]
+    assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
+
+
+def test_group_export_without_a_named_group_records_the_resolved_group():
+    site = _export_site()
+    _call_export(site)
+    assert len(site.events) == 1
+    assert site.events[0]["detail"]["consolidation_group"] == "G1"
+    assert site.events[0]["detail"]["basis"] == "Group"
+
+
+def test_entity_export_records_one_statement_exported_event_scoped_to_the_entity():
+    site = _entity_site()
+    response = _call_entity_export(site)
+    assert site.events == [{
+        "kind": "statement_exported", "fiscal_year": 2025, "fiscal_period": 7,
+        "reference_doctype": None, "reference_name": None, "reason": None,
+        "entity": "ZZA",
+        "detail": {
+            "basis": "Entity", "consolidation_group": None, "entity": "ZZA",
+            "filename": "numbers-FY2025P07-entity-ZZA.xlsx", "label": "Provisional",
+        },
+    }]
+    assert response["filename"] == "numbers-FY2025P07-entity-ZZA.xlsx"
+
+
+def test_export_records_with_the_integer_period_even_from_string_filters():
+    site = _export_site()
+    _invoke(site, lambda api: api.export_statement("2025", "7", "G1"))
+    assert (site.events[0]["fiscal_year"], site.events[0]["fiscal_period"]) == (2025, 7)
+
+
+def test_export_records_only_after_the_workbook_is_built():
+    """A workbook that fails to build records nothing: the event is written
+    after the bytes exist."""
+    for make_site, call in (
+            (_export_site, lambda api: api.export_statement(2025, 7, "G1")),
+            (_entity_site, lambda api: api.export_statement(
+                2025, 7, None, basis="Entity", entity="ZZA"))):
+        site = make_site()
+
+        def run(api, call=call):
+            def boom(payload, drills):
+                raise RuntimeError("workbook failed")
+            api.statement_export_model = types.SimpleNamespace(workbook=boom)
+            return call(api)
+
+        with pytest.raises(RuntimeError):
+            _invoke(site, run)
+        assert site.events == []
+
+
+def test_group_export_refusals_record_nothing():
+    cases = []
+    s = _export_site()
+    s.groups.append({"consolidation_group": "G2", "reporting_currency": "EUR"})
+    cases.append((s, "ValidationError"))  # choose_group
+    s = _export_site()
+    s.accounts = {}
+    cases.append((s, "ValidationError"))  # no_chart
+    s = _export_site()
+    s.ch_error = RuntimeError("boom")
+    cases.append((s, "ValidationError"))  # error
+    s = _export_site()
+    s.drill_tb_rows[0] = _drill_tb_row("1110", 1.0, "entity", "ZZA")
+    cases.append((s, "ValidationError"))  # drill ValueError
+    s = _export_site()
+    s.roles = {"EPM Entity Accountant"}
+    cases.append((s, "PermissionError"))  # only_for
+    for site, kind in cases:
+        _export_refusal(site, kind=kind)
+        assert site.events == [], kind
+
+
+def test_entity_export_refusals_record_nothing():
+    kwargs_list = [{"entity": ""}, {"entity": "ZZNOPE"}, {"entity": "ZZG"}, {"basis": "Bogus"}]
+    for kwargs in kwargs_list:
+        site = _entity_site()
+        with pytest.raises(Exception):
+            _call_entity_export(site, **kwargs)
+        assert site.events == [], kwargs
+    site = _entity_site()
+    site.entities["ZZA"]["functional_currency"] = ""
+    with pytest.raises(Exception):
+        _call_entity_export(site)
+    assert site.events == []
+    site = _entity_site()
+    site.allowed = ["ZZB"]
+    with pytest.raises(Exception) as info:
+        _call_entity_export(site)
+    assert type(info.value).__name__ == "PermissionError", repr(info.value)
+    assert site.events == []
+    site = _entity_site()
+    site.roles = {"EPM Entity Accountant"}
+    with pytest.raises(Exception):
+        _call_entity_export(site)
+    assert site.events == []
+
+
+def test_reads_never_record_an_event():
+    site = _export_site()
+    _call(site)
+    _call_drill(site)
+    esite = _entity_site()
+    _call_entity(esite)
+    _call_entity_drill(esite)
+    assert site.events == [] and esite.events == []
