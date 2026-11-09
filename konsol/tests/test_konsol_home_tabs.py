@@ -983,7 +983,9 @@ def test_numbers_panel_makes_no_server_call_on_activation_or_click():
 # ---- review R1: an Entity Accountant gets a non-blank home ----
 
 EA = ["Entity Accountant"]
-EA_SHORTCUTS = ["My Work", "Consolidated Statement", "Trial Balance Submissions", "Build Approvals"]
+# Measured live: an Entity Accountant-only user's get_desktop_page returns exactly these
+# four shortcuts (rows as konsol.json defines them: type, link_to, label).
+EA_SHORTCUTS = ["My Work", "Period Close", "Trial Balance Submissions", "Group Exchange Rates"]
 
 
 def test_entity_accountant_close_has_headline_and_shortcuts_and_no_checklist_call():
@@ -998,7 +1000,13 @@ def test_entity_accountant_close_has_headline_and_shortcuts_and_no_checklist_cal
     out = _run4a({"roles": EA, "defs": {"number_cards": {"items": []},
                                        "shortcuts": {"items": [_sc(n) for n in EA_SHORTCUTS]}}})
     shortcuts = [g for g in out["groups"] if g["type"] == "shortcut"]
-    assert shortcuts[0]["labels"] == ["My Work", "Consolidated Statement", "Trial Balance Submissions"]
+    # Close shows those of the four that are Monthly close shortcuts.
+    assert shortcuts[0]["labels"] == ["My Work", "Period Close", "Trial Balance Submissions"]
+    # Approvals shows those that are waiting shortcuts.
+    out = _run4a({"roles": EA, "activate": [1], "defs": {"number_cards": {"items": []},
+                                                        "shortcuts": {"items": [_sc(n) for n in EA_SHORTCUTS]}}})
+    shortcuts = [g for g in out["groups"] if g["type"] == "shortcut"]
+    assert [g["labels"] for g in shortcuts] == [["Group Exchange Rates"]]
 
 
 def test_entity_accountant_sees_no_checklist_error_noise():

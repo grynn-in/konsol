@@ -1,9 +1,8 @@
-// Konsol Home Tabs (konsol#497, row 2: skeleton). Four tabs on the Konsol
-// home: Close, Approvals, Trends, Numbers. Close is the default. frappe.ui.Tabs
+// Konsol Home Tabs (konsol#497). Four tabs on the Konsol home: Close, Approvals, Trends, Numbers. Close is the default. frappe.ui.Tabs
 // builds each panel once, on first activation; the initial tab's panel is built
 // inside the Tabs constructor (tabs.js set_active(initial, {silent: true})), so
-// construction makes that tab's calls: Close get_my_work, get_checklist and
-// get_desktop_page; Approvals or Trends get_desktop_page; Numbers none.
+// construction makes that tab's calls: Close get_my_work, get_checklist (skipped
+// for users without the checklist roles) and get_desktop_page; Approvals or Trends get_desktop_page; Numbers none.
 // Frappe runs this inside the block's shadow root (root_element).
 const box = root_element.querySelector(".konsol-home-tabs");
 
