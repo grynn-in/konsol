@@ -91,10 +91,15 @@ const CHARTS = [
 	"Days to Close",
 ];
 
+// frappe.xcall rejects with the response's message, which is undefined on most
+// failures (request.js: the status handlers call error_callback() with no
+// argument), so a missing reason gets a fixed one, never "undefined".
+const NO_REASON = "the server refused or failed";
 function errorLine(div, e) {
 	const line = document.createElement("div");
 	line.className = "khp-error text-muted";
-	const why = (e && (e.message || e.statusText)) || String(e);
+	let why = typeof e === "string" ? e : e && (e.message || e.statusText);
+	if (typeof why !== "string" || !why.trim()) why = NO_REASON;
 	line.textContent = "Cannot read: " + why;
 	div.appendChild(line);
 }
