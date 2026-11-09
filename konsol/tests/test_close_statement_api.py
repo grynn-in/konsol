@@ -285,6 +285,9 @@ class _Site:
         self.entity_tb_rows = []
         #: konsol#496 row 10A-2: close_event.record calls, as kwargs dicts.
         self.events = []
+        #: konsol#495 row 11b: Consolidation Group document rows by name (the
+        #: Desk Link value ``CG-<code>-``): {"consolidation_group", "data_area_id"}.
+        self.group_docs = {}
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -339,6 +342,10 @@ def _frappe(site):
         return [{f: r.get(f) for f in fields} for r in rows]
 
     def get_value(doctype, name, fieldname, **k):
+        if doctype == "Consolidation Group":
+            assert sorted(fieldname) == ["consolidation_group", "data_area_id"], fieldname
+            row = site.group_docs.get(name)
+            return None if row is None else types.SimpleNamespace(**row)
         if doctype == "Entity":
             assert sorted(fieldname) == ["entity_name", "functional_currency", "is_group"], fieldname
             assert k.get("as_dict"), k
@@ -1662,6 +1669,43 @@ def test_group_export_records_one_statement_exported_event():
         },
     }]
     assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
+
+
+def _doc_name_site():
+    site = _export_site()
+    site.groups = [{"consolidation_group": "ZZG", "reporting_currency": "USD"}]
+    site.group_docs = {
+        "CG-ZZG-": {"consolidation_group": "ZZG", "data_area_id": None},
+        "CG-ZZG-ZZA": {"consolidation_group": "ZZG", "data_area_id": "ZZA"},
+    }
+    return site
+
+
+def test_export_accepts_the_consolidation_group_document_name_row_11b():
+    site = _doc_name_site()
+    response = _call_export(site, group="CG-ZZG-")
+    assert response["filename"] == "numbers-FY2025P07-ZZG.xlsx"
+    assert [e["detail"]["consolidation_group"] for e in site.events] == ["ZZG"]
+
+
+def test_export_refuses_a_member_row_document_name_and_records_nothing_row_11b():
+    site = _doc_name_site()
+    error = _export_refusal(site, group="CG-ZZG-ZZA")
+    assert "member of ZZG" in str(error) and "root" in str(error)
+    assert site.events == []
+
+
+def test_export_still_accepts_a_plain_group_code_row_11b():
+    site = _doc_name_site()
+    _call_export(site, group="ZZG")
+    assert [e["detail"]["consolidation_group"] for e in site.events] == ["ZZG"]
+
+
+def test_export_blank_group_still_resolves_the_only_root_group_row_11b():
+    for blank in (None, ""):
+        site = _doc_name_site()
+        _call_export(site, group=blank)
+        assert [e["detail"]["consolidation_group"] for e in site.events] == ["ZZG"]
 
 
 def test_group_export_without_a_named_group_records_the_resolved_group():

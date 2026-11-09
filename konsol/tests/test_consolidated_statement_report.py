@@ -12,6 +12,8 @@ import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATH = os.path.join(APP_DIR, "consolidation", "report", "consolidated_statement", "consolidated_statement.py")
+#: The one doc-name -> code resolution lives in statement_api (konsol#495 row 11b).
+API_PATH = os.path.join(APP_DIR, "close", "statement_api.py")
 
 
 class Refused(Exception):
@@ -19,9 +21,9 @@ class Refused(Exception):
 
 
 def _group_code_with(rows):
-    """Exec only _group_code against a stub frappe whose get_value reads ``rows``."""
-    tree = ast.parse(open(PATH).read())
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_group_code")
+    """Exec only statement_api.group_code against a stub frappe whose get_value reads ``rows``."""
+    tree = ast.parse(open(API_PATH).read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "group_code")
 
     def get_value(doctype, name, fields, as_dict=False):
         row = rows.get(name)
@@ -36,8 +38,17 @@ def _group_code_with(rows):
 
     frappe = types.SimpleNamespace(db=types.SimpleNamespace(get_value=get_value), throw=throw, _=lambda s: s)
     env = {"frappe": frappe}
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), PATH, "exec"), env)
-    return env["_group_code"]
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), API_PATH, "exec"), env)
+    return env["group_code"]
+
+
+def test_the_report_imports_the_one_resolution_and_keeps_its_name_importable():
+    tree = ast.parse(open(PATH).read())
+    assert not any(isinstance(n, ast.FunctionDef) and n.name == "_group_code" for n in tree.body)
+    assert any(
+        isinstance(n, ast.ImportFrom) and any(a.name == "group_code" and a.asname == "_group_code" for a in n.names)
+        for n in tree.body
+    )
 
 
 ROWS = {
