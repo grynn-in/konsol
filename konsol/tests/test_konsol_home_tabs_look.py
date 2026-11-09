@@ -143,3 +143,13 @@ def test_chart_filter_button_is_hidden():
 	# Its icon references the page's sprite, unreachable from the shadow root:
 	# it rendered as an empty square (live, row 12).
 	assert re.search(r"display:\s*none", _body_of(".filter-chart"))
+
+
+def test_chart_filter_hide_rule_outranks_frappes():
+	# #497 row 12e: live, `.konsol-home-tabs .filter-chart` (2 classes) lost to
+	# Frappe's `.widget.dashboard-widget-box .filter-chart` (3 classes) and the
+	# empty button stayed visible. The hide rule needs at least 4 classes.
+	sels = [s for s, b in ((s.strip(), b) for sel, b in _rules() for s in sel.split(","))
+	        if s.endswith(".filter-chart") and re.search(r"display:\s*none", b)]
+	assert sels, "no rule hides .filter-chart"
+	assert max(s.count(".") for s in sels) >= 4, sels
