@@ -239,6 +239,7 @@ global.frappe = {
       return Promise.resolve({ items: [], counts: { blocking: 0, todo: 0, waiting: 0 } });
     }
     calls.push(a);
+    if (cfg.rejectUndefined) return Promise.reject(undefined);
     return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(defs);
   },
   route_options: null,
@@ -441,6 +442,7 @@ global.frappe = {
   xcall: (...a) => {
     calls.push(a);
     if (a[0] === "konsol.close.overview_api.get_checklist") {
+      if (cfg.rejectUndefined) return Promise.reject(undefined);
       return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(payload);
     }
     return Promise.resolve({ number_cards: { items: [] }, shortcuts: { items: [] } });
@@ -595,6 +597,7 @@ global.frappe = {
   xcall: (...a) => {
     calls.push(a);
     if (a[0] === MW) {
+      if (cfg.rejectUndefined) return Promise.reject(undefined);
       return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(cfg.work);
     }
     if (a[0] === "konsol.close.overview_api.get_checklist") {
@@ -1001,3 +1004,26 @@ def test_block_checklist_roles_match_what_get_checklist_admits():
         m = re.search(r"const CHECKLIST_ROLES = (\[[^\]]*\]);", f.read())
     # Administrator passes frappe.only_for without the roles.
     assert set(json.loads(m.group(1))) == admitted | {"Administrator"}
+
+
+# ---- review R3: frappe.xcall rejects with undefined on most failures ----
+
+NO_REASON = "Cannot read: the server refused or failed"
+
+
+def test_definitions_rejected_with_undefined_show_a_fixed_reason():
+    for tab in (0, 1, 2):
+        out = _run4a({"rejectUndefined": True, "activate": [tab]})
+        lines = [t for t in out["panel_text"][0] if t]
+        assert lines == [NO_REASON], tab
+
+
+def test_my_work_rejected_with_undefined_shows_a_fixed_reason():
+    out = _run6({"rejectUndefined": True})
+    assert out["errors"] == [NO_REASON]
+    assert "undefined" not in out["all"]
+
+
+def test_checklist_rejected_with_undefined_shows_no_undefined():
+    out = _run5({"rejectUndefined": True})
+    assert len(out["errors"]) == 1 and "undefined" not in out["errors"][0]
