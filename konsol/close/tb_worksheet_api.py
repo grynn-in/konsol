@@ -26,7 +26,8 @@ States, never a silent empty worksheet:
   payload is JSON-safe.
 
 ``entities`` (a list, or its JSON text) narrows the entity columns; an
-entity the caller may not see is refused before any read. ClickHouse is
+entity the caller may not see, or that is not an Entity, is refused before
+any read (scope first, so existence is never revealed). ClickHouse is
 read exactly once, and only on the way to ``ok``.
 """
 import json
@@ -67,6 +68,13 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
         if hidden:
             frappe.throw("You may not see entity %s." % ", ".join(hidden),
                          frappe.PermissionError)
+    if shown:
+        known = set(frappe.get_all("Entity", filters={"name": ["in", sorted(shown)]},
+                                   pluck="name"))
+        unknown = sorted(code for code in shown if code not in known)
+        if unknown:
+            frappe.throw("%s %s not an entity." % (
+                ", ".join(unknown), "is" if len(unknown) == 1 else "are"))
 
     groups = root_groups()
     chosen, group_note, state, message = choose_group(groups, consolidation_group)
