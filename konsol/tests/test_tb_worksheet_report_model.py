@@ -204,3 +204,16 @@ def test_message_singular_and_absent_outside_scope():
 def test_message_is_html_escaped():
     msg = M.message(sheet(), dict(PAYLOAD, consolidation_group="<b>G</b>"))
     assert "<b>" not in msg and "&lt;b&gt;" in msg
+
+
+def test_rows_read_the_dimension_value_the_real_worksheet_writes():
+    # #494 row 5b: row 4's worksheet(dimension=...) puts the value on
+    # line["dimension_value"]; the layout must show that, not a guessed key.
+    rows = [dict(_row("entity", "A-1", "4000", -10.0), dimension_value="CC1"),
+            dict(_row("entity", "A-1", "4000", -5.0), dimension_value="CC2"),
+            dict(_row("ic_elimination", "", "4000", 3.0), dimension_value="")]
+    ws = WM.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "3100"},
+                      2, None, None, dimension="dim_cost_center")
+    out = M.rows(ws, "USD", dimension="dim_cost_center")
+    values = [r["dimension"] for r in out if r.get("account") != "Total"]
+    assert values == ["CC1", "CC2", WM.NO_DIMENSION_VALUE]
