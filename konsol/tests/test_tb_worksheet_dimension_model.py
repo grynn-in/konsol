@@ -178,3 +178,52 @@ def test_dimension_column_refuses_naming_the_failed_check(name, fragment):
 def test_dimension_column_none_is_refused():
     with pytest.raises(ValueError):
         M.dimension_column(None, DECLARED_ROWS, PRESENT)
+
+
+# -- #494 PR review V1: an out-of-scope entity's dimension value never shows --
+
+HIDDEN = "ZZA-ONLY-PROJECT"
+
+
+def _scoped_rows():
+    return [wrow("entity", "A", "4000", 3, -10.0, HIDDEN),
+            wrow("entity", "A", "1000", 3, 10.0, HIDDEN),
+            wrow("entity", "B", "4000", 3, -4.0, "North"),
+            wrow("entity", "B", "1000", 3, 4.0, "")]
+
+
+def _scoped(dimension="dim_region"):
+    return M.worksheet(_scoped_rows(), ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                       None, {"B"}, dimension=dimension)
+
+
+def test_a_hidden_entitys_dimension_value_appears_nowhere_in_the_payload():
+    import json
+    out = M.to_ids(_scoped())
+    assert HIDDEN not in json.dumps(out)
+
+
+def test_hidden_entity_lines_use_the_fixed_outside_scope_marker():
+    s = _scoped()
+    values = {(l["account"], l["dimension_value"]) for l in s["lines"]}
+    assert ("4000", M.OUTSIDE_SCOPE_VALUE) in values
+    assert ("1000", M.OUTSIDE_SCOPE_VALUE) in values
+    assert M.OUTSIDE_SCOPE_VALUE != HIDDEN
+
+
+def test_scoping_changes_no_consolidated_amount_per_account():
+    scoped, open_ = _scoped(), sheet_all_scopes()
+
+    def per_account(ws):
+        out = {}
+        for l in ws["lines"]:
+            out[l["account"]] = out.get(l["account"], _d(0)) + _d(l["consolidated"])
+        return out
+    assert per_account(scoped) == per_account(open_)
+    for l in scoped["lines"] + [scoped["total"]]:
+        assert _foot({k: v for k, v in l["cells"].items()}) == _d(l["consolidated"])
+
+
+def sheet_all_scopes():
+    return M.worksheet(_scoped_rows(), ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                       None, None, dimension="dim_region")

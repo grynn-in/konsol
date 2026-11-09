@@ -256,3 +256,17 @@ def test_message_never_lists_rounding_as_an_unbalanced_column():
     assert ws["total"]["cells"]["rounding"] == 0.01
     msg = M.message(ws, PAYLOAD)
     assert "Rounding" not in msg and "not zero" not in msg.lower()
+
+
+# -- #494 PR review V1: layout of a scoped, dimensioned worksheet ---------------
+
+def test_layout_of_a_scoped_dimensioned_sheet_never_names_a_hidden_value():
+    hidden = "ZZA-ONLY-PROJECT"
+    rows = [dict(_row("entity", "ZZA", "4000", -10.0), dimension_value=hidden),
+            dict(_row("entity", "ZZB", "4000", -4.0), dimension_value="CC1")]
+    ws = WM.to_ids(WM.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "3100"},
+                                2, None, {"ZZB"}, dimension="dim_cost_center"))
+    text = repr((M.columns(ws, "USD", 2, "dim_cost_center"),
+                 M.rows(ws, "USD", dimension="dim_cost_center"), M.message(ws, PAYLOAD)))
+    assert hidden not in text
+    assert "ZZA" not in text
