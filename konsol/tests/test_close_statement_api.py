@@ -1812,3 +1812,14 @@ def test_reads_never_record_an_event():
     _call_entity(esite)
     _call_entity_drill(esite)
     assert site.events == [] and esite.events == []
+
+
+def test_entity_with_a_tb_only_in_an_earlier_year_is_no_rows_not_a_zero_statement():
+    """#495 V2: ZZA's only TB is FY2024 P12; FY2025 has none. It must not
+    read as an ok statement of zeros."""
+    site = _entity_site()
+    site.entity_tb_rows = [_drill_tb_row("1110", 1000, "entity", "ZZA", fy=2024, fp=12),
+                           _drill_tb_row("4100", -1000, "entity", "ZZA", fy=2024, fp=12)]
+    result = _call_entity(site)
+    assert result["state"] == "no_rows", result["state"]
+    assert result["statement"] is None

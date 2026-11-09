@@ -505,3 +505,13 @@ def test_group_heading_rows_have_no_drill_entity():
     assert headings
     for row in headings:
         assert row["drill_entity"] is None
+
+
+def test_has_rows_through_is_one_year_and_up_to_the_period():
+    """#495 V2: the one no_rows rule, shared with the entity statement."""
+    assert R.has_rows_through([_tb(2024, 3)], 2024, 7) is True
+    assert R.has_rows_through([_tb(2024, 7)], 2024, 7) is True
+    assert R.has_rows_through([_tb(2023, 12)], 2024, 7) is False
+    assert R.has_rows_through([_tb(2024, 8)], 2024, 7) is False
+    assert R.has_rows_through([], 2024, 7) is False
+    assert R.has_rows_through(None, 2024, 7) is False
