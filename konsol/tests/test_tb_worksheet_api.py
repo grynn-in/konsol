@@ -213,6 +213,7 @@ class _Site:
                                "in_trial_balance": 1}]
         self.built_dims = ["dim_cost_center"]
         self.columns_calls = []
+        self.columns_error = None
 
 
 def _match_value(value, cond):
@@ -281,6 +282,8 @@ def _ch_read(site):
     def rows(sql, params=None):
         if "system.columns" in sql:
             site.columns_calls.append((sql, dict(params or {})))
+            if site.columns_error is not None:
+                raise site.columns_error
             return [{"name": n} for n in site.built_dims]
         site.ch_calls.append((sql, dict(params or {})))
         if site.ch_error is not None:
@@ -712,6 +715,48 @@ def test_undeclared_unbuilt_and_illegal_dimensions_are_refused_with_no_worksheet
         exc, _f = _call_raises(site, dimension=name)
         assert name.split(";")[0] in str(exc) or "dimension" in str(exc)
         assert site.ch_calls == [], name
+
+
+def test_no_read_states_with_a_dimension_make_no_clickhouse_read_at_all():
+    """choose_group, no_chart and setup_gap return before any read, the
+    dimension's system.columns read included (module docstring)."""
+    def two_groups(s):
+        s.groups = [{"consolidation_group": "G1", "reporting_currency": "USD"},
+                    {"consolidation_group": "G2", "reporting_currency": "USD"}]
+
+    def no_groups(s):
+        s.groups = []
+
+    def no_chart(s):
+        s.accounts = {}
+
+    def setup_gap(s):
+        s.minor_units = {}
+
+    for state, tweak in (("choose_group", two_groups), ("choose_group", no_groups),
+                         ("no_chart", no_chart), ("setup_gap", setup_gap)):
+        site = _Site()
+        tweak(site)
+        result = _call(site, dimension="dim_cost_center")
+        assert result["state"] == state, (state, result["message"])
+        assert result["dimension"] == "dim_cost_center"
+        assert site.columns_calls == [] and site.ch_calls == [], state
+
+
+def test_a_failed_system_columns_read_is_an_error_state_not_a_throw():
+    site = _Site()
+    site.columns_error = RuntimeError("connection refused")
+    result = _call(site, dimension="dim_cost_center")
+    assert result["state"] == "error" and result["worksheet"] is None
+    assert result["message"] and site.ch_calls == []
+
+
+def test_a_system_columns_read_on_a_missing_database_is_not_built():
+    site = _Site()
+    site.columns_error = RuntimeError("Code: 81 (UNKNOWN_DATABASE) epm_gold")
+    result = _call(site, dimension="dim_cost_center")
+    assert result["state"] == "not_built" and result["worksheet"] is None
+    assert site.ch_calls == []
 
 
 def test_refusal_messages_name_the_failed_check():
