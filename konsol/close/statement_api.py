@@ -781,15 +781,19 @@ def get_drill(fiscal_year, fiscal_period, consolidation_group, heading):
     return result
 
 
-def _filename(period, group):
+def _filename(period, group, entity=None):
     """``numbers-FY2025P07-G1.xlsx``: the fiscal year and period (never the
     ``period_code``, which live is "P07" alone, measured 6 Oct) and the
     group, any character outside ``[A-Za-z0-9_-]`` replaced by ``_`` (a
     group name is free text; a header value must not carry quotes or
-    separators)."""
+    separators). On the entity basis (konsol#495) ``entity`` names the file
+    ``numbers-FY2025P07-entity-ZZA.xlsx``, sanitised the same way."""
     import re
 
-    group = re.sub(r"[^A-Za-z0-9_-]", "_", str(group))
+    if entity:
+        group = "entity-" + re.sub(r"[^A-Za-z0-9_-]", "_", str(entity))
+    else:
+        group = re.sub(r"[^A-Za-z0-9_-]", "_", str(group))
     return "numbers-FY%dP%02d-%s.xlsx" % (period["fiscal_year"], period["fiscal_period"], group)
 
 
@@ -840,8 +844,25 @@ def _all_drills(payload, reads, drill_rows, journal_rows):
     return drills
 
 
+def _entity_drills(payload, reads):
+    """``{heading: drill_model.drill(...)}`` on the entity basis (konsol#495):
+    the statement's own ``reads["tb_rows"]`` (entity grain, one entity, no
+    journals), so no second ClickHouse read. Raises ``ValueError`` on a
+    drill/statement mismatch or a NULL amount."""
+    key, accounts, declared = reads["key"], reads["accounts"], reads["declared"]
+    stmt = payload["statement"]
+    allowed = allowed_entity_codes()
+    drills = {}
+    for heading in _statement_headings(stmt):
+        keys = _drill_keys(reads["period_rows"], key, accounts[heading].get("statement_section"))
+        drills[heading] = drill_model.drill(
+            reads["tb_rows"], [], accounts, heading, keys, declared, allowed,
+            _line_for_heading(stmt, heading), stmt["minor_unit"])
+    return drills
+
+
 @frappe.whitelist(methods=["GET"])
-def export_statement(fiscal_year, fiscal_period, consolidation_group=None):
+def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis=None, entity=None):
     """The Numbers statement as a downloaded .xlsx (konsol#305 story 8.5,
     decision #305-W5-3): ``get_statement``'s payload and every heading's
     drill, written by ``statement_export_model.workbook``. Same roles and
@@ -850,8 +871,29 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None):
     ``setup_gap``) or a failed drill is refused with the server's own
     sentence — never an empty file. ClickHouse is read four times
     (``get_statement``'s two, one drill read, one journals read), whatever
-    the number of headings."""
+    the number of headings.
+
+    ``basis="Entity"`` (konsol#495) exports one entity's own statement
+    (``_entity_statement``, ``entity`` required): the drills come from the
+    statement's own trial-balance rows, so ClickHouse is read ONCE in total.
+    A blank basis or ``"Group"`` is the group export above, unchanged; any
+    other basis is refused."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    if basis not in (None, "", "Group", "Entity"):
+        frappe.throw(f"Basis {basis} is not one of Group, Entity.")
+    if basis == "Entity":
+        payload, reads = _entity_statement(fiscal_year, fiscal_period, entity)
+        if payload["state"] != "ok":
+            frappe.throw(payload["message"])
+        try:
+            drills = _entity_drills(payload, reads)
+        except ValueError as e:
+            frappe.throw(str(e))
+        content = statement_export_model.workbook(payload, drills)
+        frappe.response["type"] = "binary"
+        frappe.response["filename"] = _filename(payload["period"], None, entity=entity)
+        frappe.response["filecontent"] = content
+        return
     payload, reads = _statement(fiscal_year, fiscal_period, consolidation_group)
     if payload["state"] != "ok":
         frappe.throw(payload["message"])

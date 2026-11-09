@@ -1442,3 +1442,94 @@ def test_group_statement_still_reads_clickhouse_twice_and_has_no_basis_key():
     assert "basis" not in result
     assert len(site.ch_calls) == 2
     assert all("gold_trial_balance" not in sql for sql, _p in site.ch_calls)
+
+
+# =============================================================================
+# konsol#495 row 5: export_statement on the entity basis. The drills come from
+# the statement's own gold_trial_balance rows (no second ClickHouse read).
+# =============================================================================
+
+def _call_entity_export(site, fy=2025, fp=7, entity="ZZA", basis="Entity", group=None):
+    _invoke(site, lambda api: api.export_statement(
+        fy, fp, group, basis=basis, entity=entity))
+    return site.response
+
+
+def _entity_book(site):
+    import io
+    from openpyxl import load_workbook
+
+    return load_workbook(io.BytesIO(_call_entity_export(site)["filecontent"]))
+
+
+def test_entity_export_is_an_xlsx_named_for_the_period_and_entity():
+    response = _call_entity_export(_entity_site())
+    assert response["type"] == "binary"
+    assert response["filename"] == "numbers-FY2025P07-entity-ZZA.xlsx"
+    assert response["filecontent"][:2] == b"PK"
+
+
+def test_entity_export_statement_sheet_names_the_entity_in_a1():
+    book = _entity_book(_entity_site())
+    assert book["Statement"].cell(1, 1).value == (
+        "Numbers · FY2025 P07 · Basis: Entity · ZZA Zz Entity A · JPY")
+
+
+def test_entity_export_drill_has_one_entity_layer_per_heading_footing_to_the_heading():
+    site = _entity_site()
+    payload = _call_entity(site)
+    book = _entity_book(site)
+    rows = [list(r) for r in book["Drill"].iter_rows(values_only=True)]
+    expected = {line["heading"]: line["current"]
+                for section in payload["statement"]["sections"]
+                for line in section["lines"] if line.get("kind") == "heading"}
+    totals = {r[1]: r[7] for r in rows if r[3] == "Total"}
+    assert totals == expected
+    layers = {}
+    for r in rows:
+        if r[1] in expected and r[3] not in ("Total", None):
+            layers.setdefault(r[1], set()).add(r[3])
+    # headings with entity accounts carry the one Entity layer; the equity
+    # heading's computed result lines are the engine's, not extra sources
+    assert layers["1"] == {"Entity"} and layers["4"] == {"Entity"}, layers
+
+
+def test_entity_export_reads_clickhouse_exactly_once():
+    site = _entity_site()
+    _call_entity_export(site)
+    assert len(site.ch_calls) == 1
+    assert "gold_trial_balance" in site.ch_calls[0][0]
+
+
+def test_entity_export_refusals_never_give_a_file():
+    for kwargs in ({"entity": ""}, {"entity": "ZZNOPE"}, {"entity": "ZZG"}):
+        site = _entity_site()
+        with pytest.raises(Exception) as info:
+            _call_entity_export(site, **kwargs)
+        assert type(info.value).__name__ == "ValidationError", repr(info.value)
+        assert "filecontent" not in site.response
+    site = _entity_site()
+    site.entities["ZZA"]["functional_currency"] = ""
+    with pytest.raises(Exception) as info:
+        _call_entity_export(site)
+    assert type(info.value).__name__ == "ValidationError", repr(info.value)
+    assert "filecontent" not in site.response
+
+
+def test_export_basis_must_be_group_or_entity():
+    site = _entity_site()
+    with pytest.raises(Exception) as info:
+        _call_entity_export(site, basis="Bogus")
+    assert type(info.value).__name__ == "ValidationError", repr(info.value)
+    assert "Bogus" in str(info.value)
+    assert "filecontent" not in site.response
+
+
+def test_export_basis_group_or_blank_is_the_unchanged_group_export():
+    base = _call_export(_export_site())
+    for basis in (None, "", "Group"):
+        site = _export_site()
+        _invoke(site, lambda api: api.export_statement(2025, 7, None, basis=basis))
+        assert site.response["filename"] == base["filename"] == "numbers-FY2025P07-G1.xlsx"
+        assert len(site.ch_calls) == 4
+        assert site.response["filecontent"] is not None
