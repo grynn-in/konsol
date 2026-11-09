@@ -23,9 +23,9 @@ if ("stored" in cfg) store["konsol-home-tab:me@example.com"] = cfg.stored;
 const storeCalls = { get: 0, set: [], other: 0 };
 const listeners = [];
 function node(tag) {
-  return { tag, className: "", children: [], textContent: "", style: {},
+  return { __node: true, tag, className: "", children: [], textContent: "", style: {},
     setAttribute() {}, replaceChildren(...c) { this.children = c; },
-    appendChild(c) { this.children.push(c); return c; },
+    appendChild(c) { if (!c || !c.__node) throw new TypeError("appendChild: parameter 1 is not of type 'Node'"); this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
     addEventListener(t) { listeners.push(t); },
     querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
@@ -43,7 +43,7 @@ global.frappe = {
   session: { user: "me@example.com" },
   xcall: (...a) => { calls.push(["xcall", a]); return Promise.resolve({}); },
   call: (...a) => { calls.push(["call", a]); return Promise.resolve({}); },
-  ui: { Tabs: function (opts) { created.push(opts); this.opts = opts; this.$el = node("tabs"); } },
+  ui: { Tabs: function (opts) { created.push(opts); this.opts = opts; this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
 eval(fs.readFileSync(script, "utf8"));
 const opts = created[0];
@@ -147,9 +147,9 @@ const [script, cfgJson] = process.argv.slice(1);
 const cfg = JSON.parse(cfgJson || "{}");
 const handlers = {};
 function node(tag) {
-  return { tag, className: "", children: [], textContent: "", style: {},
+  return { __node: true, tag, className: "", children: [], textContent: "", style: {},
     setAttribute() {}, replaceChildren(...c) { this.children = c; },
-    appendChild(c) { this.children.push(c); return c; },
+    appendChild(c) { if (!c || !c.__node) throw new TypeError("appendChild: parameter 1 is not of type 'Node'"); this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
     addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
     querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
@@ -188,7 +188,7 @@ global.frappe = {
   },
   set_route: (...a) => routes.push(a),
   widget: { WidgetGroup: function (o) { groups.push(o); } },
-  ui: { Tabs: function (opts) { created.push(opts); this.$el = node("tabs"); } },
+  ui: { Tabs: function (opts) { created.push(opts); this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
 eval(fs.readFileSync(script, "utf8"));
 const opts = created[0];
@@ -312,10 +312,10 @@ const [script, cfgJson] = process.argv.slice(1);
 const cfg = JSON.parse(cfgJson || "{}");
 const htmlSets = [];
 function node(tag) {
-  const n = { tag, className: "", children: [], textContent: "", style: {}, attrs: {}, id: "",
+  const n = { __node: true, tag, className: "", children: [], textContent: "", style: {}, attrs: {}, id: "",
     setAttribute(k, v) { this.attrs[k] = v; },
     replaceChildren(...c) { this.children = c; },
-    appendChild(c) { this.children.push(c); return c; },
+    appendChild(c) { if (!c || !c.__node) throw new TypeError("appendChild: parameter 1 is not of type 'Node'"); this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
     addEventListener() {},
     querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
@@ -354,7 +354,7 @@ global.frappe = {
   },
   set_route() {},
   widget: { WidgetGroup: function () {} },
-  ui: { Tabs: function (opts) { created.push(opts); this.$el = node("tabs"); } },
+  ui: { Tabs: function (opts) { created.push(opts); this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
 eval(fs.readFileSync(script, "utf8"));
 const opts = created[0];
@@ -473,10 +473,10 @@ const [script, cfgJson] = process.argv.slice(1);
 const cfg = JSON.parse(cfgJson || "{}");
 const handlers = {};
 function node(tag) {
-  return { tag, className: "", children: [], textContent: "", style: {}, attrs: {}, href: "",
+  return { __node: true, tag, className: "", children: [], textContent: "", style: {}, attrs: {}, href: "",
     setAttribute(k, v) { this.attrs[k] = v; },
     replaceChildren(...c) { this.children = c; },
-    appendChild(c) { this.children.push(c); return c; },
+    appendChild(c) { if (!c || !c.__node) throw new TypeError("appendChild: parameter 1 is not of type 'Node'"); this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
     addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
     querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
@@ -507,7 +507,7 @@ global.frappe = {
   },
   set_route: (...a) => routes.push(a),
   widget: { WidgetGroup: function () {} },
-  ui: { Tabs: function (opts) { created.push(opts); this.$el = node("tabs"); } },
+  ui: { Tabs: function (opts) { created.push(opts); this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
 eval(fs.readFileSync(script, "utf8"));
 const opts = created[0];
@@ -754,11 +754,11 @@ const cfg = JSON.parse(cfgJson || "{}");
 const handlers = {};
 const events = [];
 function node(tag) {
-  const n = { tag, className: "", children: [], textContent: "", style: {}, attrs: {}, dataset: {},
+  const n = { __node: true, tag, className: "", children: [], textContent: "", style: {}, attrs: {}, dataset: {},
     setAttribute(k, v) { this.attrs[k] = v; if (k === "data-route-options") this.dataset.routeOptions = v; },
     getAttribute(k) { return k === "href" ? this.href : this.attrs[k]; },
     replaceChildren(...c) { this.children = c; },
-    appendChild(c) { this.children.push(c); return c; },
+    appendChild(c) { if (!c || !c.__node) throw new TypeError("appendChild: parameter 1 is not of type 'Node'"); this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
     addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
     querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
@@ -774,7 +774,7 @@ var frappe_ = {
   route_options: null,
   set_route: (...a) => { events.push({ route: a, options: JSON.parse(JSON.stringify(frappe_.route_options)) }); frappe_.route_options = null; },
   widget: { WidgetGroup: function () {} },
-  ui: { Tabs: function (opts) { created.push(opts); this.$el = node("tabs"); } },
+  ui: { Tabs: function (opts) { created.push(opts); this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
 global.frappe = frappe_;
 global.document = { createElement: (t) => node(t), addEventListener() {} };
