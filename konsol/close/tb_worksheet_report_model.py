@@ -141,8 +141,8 @@ def _nonzero_totals_text(ws):
     for key, label in labels.items():
         if key == "rounding":
             continue  # the plug is never an unbalanced column
-        value = ws["total_exact"][key]
-        if round(value, places):
+        value = ws["total_rounded_exact"][key]  # rounded by the model, as the Total row is
+        if value:
             found.append("%s %.*f" % (label, places, value))
     if not found:
         return None

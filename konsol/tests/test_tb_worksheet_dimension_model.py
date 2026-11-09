@@ -73,8 +73,8 @@ def test_lines_are_keyed_on_account_and_value():
     s = sheet("dim_region")
     values = {(l["account"], l["dimension_value"]) for l in s["lines"]}
     assert ("4000", "North") in values and ("4000", "South") in values
-    assert ("4000", NO_VALUE) in values
-    assert NO_VALUE == "(no value)"
+    assert ("4000", M.BLANK_VALUE) in values
+    assert NO_VALUE == "(no value)"  # the display label; the key holds M.BLANK_VALUE
 
 
 def test_per_account_dimension_sum_equals_undimensioned():
@@ -92,17 +92,17 @@ def test_eliminations_and_other_layers_sit_on_no_value():
     s = sheet("dim_region")
     elim = ("layer", "ic_elimination")
     for l in s["lines"]:
-        if l["dimension_value"] != NO_VALUE:
+        if l["dimension_value"] != M.BLANK_VALUE:
             assert l["cells"][elim] == 0, l
-    sales_nv = next(l for l in s["lines"] if l["key"] == (("account", "4000"), NO_VALUE))
+    sales_nv = next(l for l in s["lines"] if l["key"] == (("account", "4000"), M.BLANK_VALUE))
     assert sales_nv["cells"][elim] == 20.10
-    cash_nv = next(l for l in s["lines"] if l["key"] == (("account", "1000"), NO_VALUE))
+    cash_nv = next(l for l in s["lines"] if l["key"] == (("account", "1000"), M.BLANK_VALUE))
     assert cash_nv["cells"][("layer", "topside")] == 5.05
 
 
 def test_blank_entity_value_is_no_value_too():
     s = sheet("dim_region")
-    sales_nv = next(l for l in s["lines"] if l["key"] == (("account", "4000"), NO_VALUE))
+    sales_nv = next(l for l in s["lines"] if l["key"] == (("account", "4000"), M.BLANK_VALUE))
     assert sales_nv["cells"][("entity", "B")] == -4.40
 
 
@@ -137,7 +137,7 @@ def test_undimensioned_lines_carry_no_dimension_value():
 
 def test_dimension_ignores_a_row_without_value_as_no_value():
     s = sheet("dim_region", rows=[wrow("entity", "A", "4000", 1, -5.0)])
-    assert [l["dimension_value"] for l in s["lines"]] == [NO_VALUE]
+    assert [l["dimension_value"] for l in s["lines"]] == [M.BLANK_VALUE]
 
 
 # -- dimension_column --------------------------------------------------------
@@ -178,3 +178,102 @@ def test_dimension_column_refuses_naming_the_failed_check(name, fragment):
 def test_dimension_column_none_is_refused():
     with pytest.raises(ValueError):
         M.dimension_column(None, DECLARED_ROWS, PRESENT)
+
+
+# -- #494 PR review V1: an out-of-scope entity's dimension value never shows --
+
+HIDDEN = "ZZA-ONLY-PROJECT"
+
+
+def _scoped_rows():
+    return [wrow("entity", "A", "4000", 3, -10.0, HIDDEN),
+            wrow("entity", "A", "1000", 3, 10.0, HIDDEN),
+            wrow("entity", "B", "4000", 3, -4.0, "North"),
+            wrow("entity", "B", "1000", 3, 4.0, "")]
+
+
+def _scoped(dimension="dim_region"):
+    return M.worksheet(_scoped_rows(), ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                       None, {"B"}, dimension=dimension)
+
+
+def test_a_hidden_entitys_dimension_value_appears_nowhere_in_the_payload():
+    import json
+    out = M.to_ids(_scoped())
+    assert HIDDEN not in json.dumps(out)
+
+
+def test_hidden_entity_lines_use_the_fixed_outside_scope_marker():
+    s = _scoped()
+    values = {(l["account"], l["dimension_value"]) for l in s["lines"]}
+    assert ("4000", M.OUTSIDE_SCOPE_VALUE) in values
+    assert ("1000", M.OUTSIDE_SCOPE_VALUE) in values
+    assert M.OUTSIDE_SCOPE_VALUE != HIDDEN
+
+
+def test_scoping_changes_no_consolidated_amount_per_account():
+    scoped, open_ = _scoped(), sheet_all_scopes()
+
+    def per_account(ws):
+        out = {}
+        for l in ws["lines"]:
+            out[l["account"]] = out.get(l["account"], _d(0)) + _d(l["consolidated"])
+        return out
+    assert per_account(scoped) == per_account(open_)
+    for l in scoped["lines"] + [scoped["total"]]:
+        assert _foot({k: v for k, v in l["cells"].items()}) == _d(l["consolidated"])
+
+
+def sheet_all_scopes():
+    return M.worksheet(_scoped_rows(), ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                       None, None, dimension="dim_region")
+
+
+# -- #494 PR review V4: markers are not in the value space ---------------------
+
+def test_a_real_value_spelled_no_value_stays_apart_from_blank():
+    rows = [wrow("entity", "A", "4000", 3, -1.0, "(no value)"),
+            wrow("entity", "B", "4000", 3, -2.0, ""),
+            wrow("ic_elimination", "", "4000", 3, 3.0, "")]
+    s = sheet("dim_region", rows=rows)
+    assert len(s["lines"]) == 2
+    by_value = {l["dimension_value"]: l for l in s["lines"]}
+    assert by_value["(no value)"]["consolidated"] == -1.0
+    assert by_value[M.BLANK_VALUE]["consolidated"] == 1.0
+
+
+def test_a_real_value_spelled_like_the_outside_label_stays_apart_from_the_marker():
+    rows = [wrow("entity", "A", "4000", 3, -1.0, "x"),
+            wrow("entity", "B", "4000", 3, -2.0, "(outside your scope)")]
+    s = M.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                    None, {"B"}, dimension="dim_region")
+    assert len(s["lines"]) == 2
+    assert sorted(l["consolidated"] for l in s["lines"]) == [-2.0, -1.0]
+    ids = [l["key"] for l in M.to_ids(s)["lines"]]
+    assert len(ids) == len(set(ids))
+
+
+def sheet_ids_rows(rows):
+    return M.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                       None, None, dimension="dim_region")
+
+
+def test_blank_and_a_real_no_value_get_distinct_line_ids_and_one_label():
+    rows = [wrow("entity", "A", "4000", 3, -1.0, "(no value)"),
+            wrow("entity", "A", "4000", 3, -2.0, "")]
+    out = M.to_ids(sheet_ids_rows(rows))
+    assert len({l["key"] for l in out["lines"]}) == 2
+    assert [l["dimension_value"] for l in out["lines"]] == ["(no value)", "(no value)"]
+
+
+def test_the_markers_are_not_strings():
+    assert not isinstance(M.BLANK_VALUE, str)
+    assert not isinstance(M.OUTSIDE_SCOPE_VALUE, str)
+    assert M.BLANK_VALUE != M.OUTSIDE_SCOPE_VALUE
+
+
+def test_a_real_value_starting_with_a_tilde_never_equals_a_marker_id():
+    rows = [wrow("entity", "A", "4000", 3, -1.0, "~blank"),
+            wrow("entity", "A", "4000", 3, -2.0, "")]
+    ids = [l["key"] for l in M.to_ids(sheet_ids_rows(rows))["lines"]]
+    assert len(ids) == len(set(ids)) == 2
