@@ -13,8 +13,35 @@ import subprocess
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FOLDER = os.path.join(APP_DIR, "consolidation", "custom_html_block", "konsol_home_tabs")
 SCRIPT = os.path.join(FOLDER, "konsol_home_tabs.js")
+#: Frappe 16.55.2's own tabs.js, vendored (review R2): the harnesses run the block
+#: against the real frappe.ui.Tabs, which renders the initial tab inside its
+#: constructor. A hand-written stub that never ran it hid every construction call.
+REAL_TABS_JS = os.path.join(APP_DIR, "tests", "fixtures", "frappe_ui_tabs_16.js")
 
-HARNESS = r"""
+# Shared by every harness: load the real frappe.ui.Tabs with a tiny DOM shim.
+# Each harness defines node(tag), document and frappe first, then calls this.
+REAL_TABS = r"""
+function installRealTabs(created, instances) {
+  const src = require("fs").readFileSync(process.argv[3], "utf8")
+    .replace(/^import .*$/m, "").replace(/^export default .*$/m, "");
+  global.window = global.window || { addEventListener() {} };
+  if (!document.createTextNode) {
+    document.createTextNode = (t) => Object.assign(node("#text"), { textContent: String(t) });
+  }
+  // jQuery-like: not a Node, indexable (tabs.js render_panel reads $(content)[0]).
+  global.$ = (x) => (x && x.jquery ? x : Object.assign([x], { jquery: "3" }));
+  frappe.provide = frappe.provide || (() => {});
+  frappe.utils = frappe.utils || { is_rtl: () => false, icon: () => "" };
+  frappe.ui = {};
+  eval(src);
+  const Real = frappe.ui.Tabs;
+  frappe.ui.Tabs = class extends Real {
+    constructor(o) { created.push(o); super(o); instances.push(this); }
+  };
+}
+"""
+
+HARNESS = REAL_TABS + r"""
 const fs = require("fs");
 const [script, cfgJson] = process.argv.slice(1);
 const cfg = JSON.parse(cfgJson || "{}");
@@ -43,11 +70,14 @@ global.frappe = {
   session: { user: "me@example.com" },
   xcall: (...a) => { calls.push(["xcall", a]); return Promise.resolve({}); },
   call: (...a) => { calls.push(["call", a]); return Promise.resolve({}); },
-  ui: { Tabs: function (opts) { created.push(opts); this.opts = opts; this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
+const instances = [];
+installRealTabs(created, instances);
 eval(fs.readFileSync(script, "utf8"));
 const opts = created[0];
-const afterConstruct = { gets: storeCalls.get, sets: storeCalls.set.length, calls: calls.length };
+const afterConstruct = { gets: storeCalls.get, sets: storeCalls.set.length, calls: calls.length,
+  methods: calls.map((c) => c[1][0]).sort() };
+const rendered = instances[0].tabs.map((e) => e.rendered);
 if ("click" in cfg) opts.on_change(cfg.click, opts.tabs[cfg.click]);
 const callsAfterClick = calls.length;
 const panels = opts.tabs.map((t) => (typeof t.content === "function" ? t.content() : t.content));
@@ -64,6 +94,7 @@ console.log(JSON.stringify({
   sets: storeCalls.set,
   calls_after_click: callsAfterClick,
   listeners,
+  rendered,
 }));
 """
 
@@ -72,7 +103,7 @@ def _run(cfg=None):
     node = shutil.which("node")
     assert node, "node is required to run the Konsol Home Tabs script"
     assert os.path.exists(SCRIPT), "konsol_home_tabs.js (the home tabs block) is missing"
-    result = subprocess.run([node, "-e", HARNESS, SCRIPT, json.dumps(cfg or {})], capture_output=True,
+    result = subprocess.run([node, "-e", HARNESS, SCRIPT, json.dumps(cfg or {}), REAL_TABS_JS], capture_output=True,
                             text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -141,7 +172,7 @@ def test_no_change_or_input_listeners_are_registered():
 
 # ---- row 4A: Close panel, cards and Monthly close shortcuts ----
 
-HARNESS_4A = r"""
+HARNESS_4A = REAL_TABS + r"""
 const fs = require("fs");
 const [script, cfgJson] = process.argv.slice(1);
 const cfg = JSON.parse(cfgJson || "{}");
@@ -151,22 +182,26 @@ function node(tag) {
     setAttribute() {}, replaceChildren(...c) { this.children = c; },
     appendChild(c) { if (!c || !c.__node) throw new TypeError("appendChild: parameter 1 is not of type 'Node'"); this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
-    addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
+    addEventListener() {},
     querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
 }
 const box = node("section");
 const calls = [];
 const groups = [];
+// The first panel in cfg.activate is the initial tab (stored), so the real Tabs
+// renders it inside its constructor; with nothing to activate, Numbers (no calls).
+const activate = cfg.activate || [0];
+const initial = activate.length ? activate[0] : 3;
 const rafQueue = [];
 const routes = [];
 const seenOptions = [];
 const created = [];
 global.document = { createElement: (t) => node(t), addEventListener() {} };
-global.localStorage = { getItem() { return null; }, setItem() {} };
+global.localStorage = { getItem() { return String(initial); }, setItem() {} };
 global.location = { href: "https://site.test/desk/konsol", origin: "https://site.test" };
 global.requestAnimationFrame = (fn) => { rafQueue.push(fn); return rafQueue.length; };
-global.$ = (x) => x;
 global.root_element = node("root");
+root_element.addEventListener = (t, fn) => { (handlers[t] = handlers[t] || []).push(fn); };
 const card = (n) => ({ label: n, name: n });
 const sc = (n) => ({ label: n });
 const defs = cfg.defs || {
@@ -190,15 +225,16 @@ global.frappe = {
   route_options: null,
   set_route: (...a) => { routes.push(a); seenOptions.push(frappe.route_options === null ? null : JSON.parse(JSON.stringify(frappe.route_options))); frappe.route_options = null; },
   widget: { WidgetGroup: function (o) { groups.push(o); } },
-  ui: { Tabs: function (opts) { created.push(opts); this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
+const instances = [];
+installRealTabs(created, instances);
 eval(fs.readFileSync(script, "utf8"));
-const opts = created[0];
+const inst = instances[0];
 const atConstruct = calls.length;
 const tick = () => new Promise((r) => setImmediate(r));
 (async () => {
   const panels = [];
-  for (const i of (cfg.activate || [0])) panels.push(opts.tabs[i].content());
+  for (const i of activate) { inst.set_active(i); panels.push(inst.tabs[i].panel.children[0]); }
   await tick(); await tick();
   const beforeRaf = { groups: groups.length, raf: rafQueue.length };
   rafQueue.splice(0).forEach((f) => f());
@@ -232,7 +268,7 @@ CARDS = ["Close Status", "Trial Balances In", "Waiting for My Approval",
 def _run4a(cfg=None):
     node = shutil.which("node")
     assert node
-    result = subprocess.run([node, "-e", HARNESS_4A, SCRIPT, json.dumps(cfg or {})],
+    result = subprocess.run([node, "-e", HARNESS_4A, SCRIPT, json.dumps(cfg or {}), REAL_TABS_JS],
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -341,7 +377,7 @@ def test_rejected_definitions_call_shows_an_error_line_not_an_empty_panel():
 
 # ---- row 5: Close panel, checklist ----
 
-HARNESS_5 = r"""
+HARNESS_5 = REAL_TABS + r"""
 const fs = require("fs");
 const [script, cfgJson] = process.argv.slice(1);
 const cfg = JSON.parse(cfgJson || "{}");
@@ -364,10 +400,9 @@ const calls = [];
 const rafQueue = [];
 const created = [];
 global.document = { createElement: (t) => node(t), addEventListener() {} };
-global.localStorage = { getItem() { return null; }, setItem() {} };
+global.localStorage = { getItem() { return "stored" in cfg ? cfg.stored : null; }, setItem() {} };
 global.location = { href: "https://site.test/desk/konsol", origin: "https://site.test" };
 global.requestAnimationFrame = (fn) => { rafQueue.push(fn); return 1; };
-global.$ = (x) => x;
 global.root_element = node("root");
 const payload = cfg.payload || {
   title: "FY2025 P07", done: 2, total: 4, reason: "",
@@ -389,23 +424,22 @@ global.frappe = {
   },
   set_route() {},
   widget: { WidgetGroup: function () {} },
-  ui: { Tabs: function (opts) { created.push(opts); this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
+const instances = [];
+installRealTabs(created, instances);
 eval(fs.readFileSync(script, "utf8"));
-const opts = created[0];
+const inst = instances[0];
 const isCl = (c) => c[0] === "konsol.close.overview_api.get_checklist";
 const atConstruct = calls.filter(isCl).length;
 const tick = () => new Promise((r) => setImmediate(r));
 function walk(n, f) { f(n); (n.children || []).forEach((c) => walk(c, f)); }
 (async () => {
-  const closes = [];
-  const n = cfg.activations || 1;
-  for (let i = 0; i < n; i++) closes.push(opts.tabs[0].content());
-  if (cfg.other) opts.tabs[1].content();
+  inst.set_active(0);
+  if (cfg.other) { inst.set_active(1); inst.set_active(0); }
   await tick(); await tick();
   rafQueue.splice(0).forEach((f) => f());
   await tick(); await tick();
-  const panel = closes[0];
+  const panel = inst.tabs[0].panel.children[0];
   const order = panel.children.map((c) => c.className);
   let boxNode = null;
   walk(panel, (x) => { if ((x.className || "").split(" ").includes("khp-checklist")) boxNode = x; });
@@ -438,7 +472,7 @@ function walk(n, f) { f(n); (n.children || []).forEach((c) => walk(c, f)); }
 def _run5(cfg=None):
     node = shutil.which("node")
     assert node
-    result = subprocess.run([node, "-e", HARNESS_5, SCRIPT, json.dumps(cfg or {})],
+    result = subprocess.run([node, "-e", HARNESS_5, SCRIPT, json.dumps(cfg or {}), REAL_TABS_JS],
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -502,7 +536,7 @@ def test_no_new_click_listener_is_added_for_the_checklist():
 
 # ---- row 6: Close panel, #484 headline ----
 
-HARNESS_6 = r"""
+HARNESS_6 = REAL_TABS + r"""
 const fs = require("fs");
 const [script, cfgJson] = process.argv.slice(1);
 const cfg = JSON.parse(cfgJson || "{}");
@@ -513,7 +547,7 @@ function node(tag) {
     replaceChildren(...c) { this.children = c; },
     appendChild(c) { if (!c || !c.__node) throw new TypeError("appendChild: parameter 1 is not of type 'Node'"); this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
-    addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
+    addEventListener() {},
     querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
 }
 const box = node("section");
@@ -522,11 +556,11 @@ const routes = [];
 const rafQueue = [];
 const created = [];
 global.document = { createElement: (t) => node(t), addEventListener() {} };
-global.localStorage = { getItem() { return null; }, setItem() {} };
+global.localStorage = { getItem() { return "stored" in cfg ? cfg.stored : null; }, setItem() {} };
 global.location = { href: "https://site.test/desk/konsol", origin: "https://site.test" };
 global.requestAnimationFrame = (fn) => { rafQueue.push(fn); return 1; };
-global.$ = (x) => x;
 global.root_element = node("root");
+root_element.addEventListener = (t, fn) => { (handlers[t] = handlers[t] || []).push(fn); };
 const MW = "konsol.close.mywork_api.get_my_work";
 global.frappe = {
   session: { user: "me@example.com" },
@@ -542,23 +576,23 @@ global.frappe = {
   },
   set_route: (...a) => routes.push(a),
   widget: { WidgetGroup: function () {} },
-  ui: { Tabs: function (opts) { created.push(opts); this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
+const instances = [];
+installRealTabs(created, instances);
 eval(fs.readFileSync(script, "utf8"));
-const opts = created[0];
+const inst = instances[0];
 const isMW = (c) => c[0] === MW;
 const atConstruct = calls.filter(isMW).length;
 const tick = () => new Promise((r) => setImmediate(r));
 function walk(n, f) { f(n); (n.children || []).forEach((c) => walk(c, f)); }
 const cls = (x, c) => (x.className || "").split(" ").includes(c);
 (async () => {
-  const closes = [];
-  for (let i = 0; i < (cfg.activations || 1); i++) closes.push(opts.tabs[0].content());
-  if (cfg.other) opts.tabs[1].content();
+  inst.set_active(0);
+  if (cfg.other) { inst.set_active(1); inst.set_active(0); }
   await tick(); await tick();
   rafQueue.splice(0).forEach((f) => f());
   await tick(); await tick();
-  const panel = closes[0];
+  const panel = inst.tabs[0].panel.children[0];
   let head = null;
   walk(panel, (x) => { if (cls(x, "khp-headline")) head = x; });
   const info = { at_construct: atConstruct, mw_calls: calls.filter(isMW).length,
@@ -598,7 +632,7 @@ def _work(blocking=None, todo=2, waiting=3, counts=True):
 def _run6(cfg=None):
     node = shutil.which("node")
     assert node
-    result = subprocess.run([node, "-e", HARNESS_6, SCRIPT, json.dumps(cfg or {})],
+    result = subprocess.run([node, "-e", HARNESS_6, SCRIPT, json.dumps(cfg or {}), REAL_TABS_JS],
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -782,7 +816,7 @@ def test_trends_rejected_definitions_show_the_error_line():
 
 # ---- row 9: Numbers panel, four report links ----
 
-HARNESS_9 = r"""
+HARNESS_9 = REAL_TABS + r"""
 const fs = require("fs");
 const [script, cfgJson] = process.argv.slice(1);
 const cfg = JSON.parse(cfgJson || "{}");
@@ -795,7 +829,7 @@ function node(tag) {
     replaceChildren(...c) { this.children = c; },
     appendChild(c) { if (!c || !c.__node) throw new TypeError("appendChild: parameter 1 is not of type 'Node'"); this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
-    addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
+    addEventListener() {},
     querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
   return n;
 }
@@ -809,19 +843,20 @@ var frappe_ = {
   route_options: null,
   set_route: (...a) => { events.push({ route: a, options: JSON.parse(JSON.stringify(frappe_.route_options)) }); frappe_.route_options = null; },
   widget: { WidgetGroup: function () {} },
-  ui: { Tabs: function (opts) { created.push(opts); this.el = node("tabs"); this.$el = { jquery: "3", length: 1, 0: this.el }; } },
 };
 global.frappe = frappe_;
 global.document = { createElement: (t) => node(t), addEventListener() {} };
-global.localStorage = { getItem() { return null; }, setItem() {} };
+// Numbers is the stored tab, so the real Tabs renders it inside its constructor.
+global.localStorage = { getItem() { return "3"; }, setItem() {} };
 global.location = { href: "https://site.test/desk/konsol", origin: "https://site.test" };
 global.requestAnimationFrame = () => 0;
-global.$ = (x) => x;
 global.root_element = node("root");
+root_element.addEventListener = (t, fn) => { (handlers[t] = handlers[t] || []).push(fn); };
+const instances = [];
+installRealTabs(created, instances);
 eval(fs.readFileSync(script, "utf8"));
-const topts = created[0];
 const atConstruct = calls.length;
-const numbersPanel = topts.tabs[3].content();
+const numbersPanel = instances[0].tabs[3].panel.children[0];
 const flat = (n) => [n].concat(...(n.children || []).map(flat));
 const anchors = flat(numbersPanel).filter((n) => n.tag === "a");
 const click = (a) => {
@@ -847,7 +882,7 @@ NUMBERS = ["Consolidated Statement", "Entity statement", "Statement Drill", "Con
 def _run9():
     node = shutil.which("node")
     assert node
-    result = subprocess.run([node, "-e", HARNESS_9, SCRIPT, "{}"], capture_output=True, text=True,
+    result = subprocess.run([node, "-e", HARNESS_9, SCRIPT, "{}", REAL_TABS_JS], capture_output=True, text=True,
                             timeout=60)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
