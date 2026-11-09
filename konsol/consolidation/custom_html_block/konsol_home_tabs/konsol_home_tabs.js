@@ -186,12 +186,57 @@ function fillChecklist(target) {
 		.catch((e) => checklistFailed(target, typeof e === "string" ? e : e && e.message));
 }
 
-// Close panel order, as the old workspace had it: cards, checklist, Monthly close.
+// The #484 headline: "N items need you", from get_my_work counts. A missing
+// count is an error line, never "0" or "Nothing needs you". Start opens My Work
+// through the delegated click handler below. One GET per Close activation.
+const MY_WORK_METHOD = "konsol.close.mywork_api.get_my_work";
+const MY_WORK_ROUTE = "/desk/query-report/My%20Work";
+
+function headlineText(n) {
+	if (n === 0) return "Nothing needs you";
+	return n === 1 ? "1 item needs you" : n + " items need you";
+}
+
+function renderHeadline(target, work) {
+	const counts = work && work.counts;
+	const isCount = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+	if (!counts || !isCount(counts.blocking)) throw new Error("My Work gave no blocking count");
+	const todo = isCount(counts.todo) ? counts.todo : 0;
+	const waiting = isCount(counts.waiting) ? counts.waiting : 0;
+	const start = el("a", "khp-start", "Start");
+	start.href = MY_WORK_ROUTE;
+	target.replaceChildren(
+		el("span", "khp-headline-text", headlineText(counts.blocking)),
+		el("span", "khp-headline-detail", `${todo} to do \u00b7 ${waiting} waiting`),
+		start
+	);
+}
+
+function fillHeadline(target) {
+	frappe
+		.xcall(MY_WORK_METHOD, {}, "GET")
+		.then((work) => {
+			try {
+				renderHeadline(target, work);
+			} catch (e) {
+				target.replaceChildren();
+				errorLine(target, e);
+			}
+		})
+		.catch((e) => {
+			target.replaceChildren();
+			errorLine(target, e);
+		});
+}
+
+// Close panel order, as the old workspace had it: headline, cards, checklist, Monthly close.
 function fillClose(div) {
+	const headline = el("div", "khp-headline");
 	const cards = el("div", "khp-cards");
 	const checklist = el("section", "khp-checklist konsol-checklist");
 	const monthly = el("div", "khp-monthly");
-	div.append(cards, checklist, monthly);
+	div.append(headline, cards, checklist, monthly);
+	fillHeadline(headline);
 	fillChecklist(checklist);
 	widgets(div, (defs) => {
 		group(cards, "number_card", items(defs.number_cards));

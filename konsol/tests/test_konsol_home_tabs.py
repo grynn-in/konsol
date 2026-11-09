@@ -96,8 +96,8 @@ def test_tabs_are_close_approvals_trends_numbers_with_close_active():
 def test_content_is_lazy_and_panels_start_empty():
     out = _run()
     assert out["content_is_function"] == [True, True, True, True]
-    # Close holds its three sections (cards, checklist, Monthly close); the rest are empty.
-    assert out["panel_children"] == [3, 0, 0, 0]
+    # Close holds its four sections (headline, cards, checklist, Monthly close); the rest are empty.
+    assert out["panel_children"] == [4, 0, 0, 0]
 
 
 def test_construction_makes_no_server_call():
@@ -179,6 +179,9 @@ global.frappe = {
   xcall: (...a) => {
     if (a[0] === "konsol.close.overview_api.get_checklist") {
       return Promise.resolve({ title: "x", done: 0, total: 0, lines: [] });
+    }
+    if (a[0] === "konsol.close.mywork_api.get_my_work") {
+      return Promise.resolve({ items: [], counts: { blocking: 0, todo: 0, waiting: 0 } });
     }
     calls.push(a);
     return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(defs);
