@@ -4,6 +4,8 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Pick up here (9 Nov 2026, evening):** everything of 9 Nov is recorded: #117 pairs 1–3 on all three example sites (entries below), #117 Q1 B / Q2 A recorded not built, the public-text rule applied to files, PR bodies and comments, konsolidat#340 filed. One operational item is held in private notes, not here. Next build per #424: #428.
+
 **Update (9 Nov 2026): open items closed out, and decided one by one.** Deepak Pai, 9 Nov, item by item:
 - **Both local test stacks: upgraded to main** (konsol 828b9389, konsolidat a90626f). The older one's code had been behind its database since the #484 rollback (60 main files missing). Each stack: site backup and an app tarball first, then main's konsol tree copied in, migrate (clean), dbt `PASS=347 WARN=1 ERROR=0`, `reconcile_all`. Backend, worker and scheduler: 980/980 files identical to main.
 - **konsolidat#321 (Mini Group example): reviewed and merged** (282d354). The loader's `acquirer_entity` / `disposer_entity` resolve to `acquirer_node` / `disposer_node` (konsol main has both). Unknown codes are named and not posted. No findings. Main merged in; the binary template was regenerated, not picked. Onboarding suite: 61 OK. The calendar now passes konsol's fiscal-structure validators (Activity ends on the year end; Closing is that one day).
