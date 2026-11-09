@@ -258,9 +258,9 @@ def test_js_drill_url_uses_the_entity_when_the_row_carries_one():
     start = source.index("function drill_url")
     body = source[start:source.index("\n}\n", start)]
     assert "data.drill_entity" in body
-    assert 'basis: "Entity"' in body
-    assert "entity: data.drill_entity" in body
-    assert "consolidation_group: data.drill_group" in body
+    assert 'params.set("basis", "Entity")' in body
+    assert 'params.set("entity", data.drill_entity)' in body
+    assert 'params.set("consolidation_group", data.drill_group || "")' in body
     assert "heading: data.code" in body
 
 

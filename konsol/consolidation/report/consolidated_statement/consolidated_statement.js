@@ -8,13 +8,19 @@ const ADD_COMMENTARY = __("Add commentary");
 function drill_url(data) {
 	// The heading row carries the group the statement was built for
 	// (statement_report_model: drill_group), so a blank group filter (the
-	// only group) still opens the right drill.
+	// only group) still opens the right drill. On the entity basis the row
+	// carries drill_entity instead: open the entity drill.
 	const params = new URLSearchParams({
 		fiscal_year: frappe.query_report.get_filter_value("fiscal_year"),
 		fiscal_period: frappe.query_report.get_filter_value("fiscal_period"),
-		consolidation_group: data.drill_group || "",
 		heading: data.code,
 	});
+	if (data.drill_entity) {
+		params.set("basis", "Entity");
+		params.set("entity", data.drill_entity);
+	} else {
+		params.set("consolidation_group", data.drill_group || "");
+	}
 	return `${frappe.router.make_url(["query-report", "Statement Drill"])}?${params}`;
 }
 
@@ -99,10 +105,30 @@ frappe.query_reports["Consolidated Statement"] = {
 			default: new Date().getMonth() + 1,
 		},
 		{
+			fieldname: "basis",
+			label: __("Basis"),
+			fieldtype: "Select",
+			options: "Group\nEntity",
+			default: "Group",
+			description: __("Entity: one entity's own trial balance in its functional currency."),
+		},
+		{
+			fieldname: "entity",
+			label: __("Entity"),
+			fieldtype: "Link",
+			options: "Entity",
+			depends_on: 'eval:doc.basis=="Entity"',
+			mandatory_depends_on: 'eval:doc.basis=="Entity"',
+			get_query() {
+				return { filters: { is_group: 0 } };
+			},
+		},
+		{
 			fieldname: "consolidation_group",
 			label: __("Consolidation Group"),
 			fieldtype: "Link",
 			options: "Consolidation Group",
+			depends_on: 'eval:doc.basis!="Entity"',
 			description: __("A root group. Leave blank when there is only one."),
 			// Root groups only (statement_api._ROOT_FILTER: no data_area_id).
 			get_query() {
@@ -122,7 +148,7 @@ frappe.query_reports["Consolidated Statement"] = {
 		if (!data) {
 			return value;
 		}
-		if (column.fieldname === "label" && data.code && data.drill_group) {
+		if (column.fieldname === "label" && data.code && (data.drill_group || data.drill_entity)) {
 			value = `<a href="${drill_url(data)}" title="${__("Open the drill for this heading")}">${value}</a>`;
 		}
 		if (column.fieldname === "label" && data.indent) {
