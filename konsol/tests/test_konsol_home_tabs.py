@@ -675,3 +675,73 @@ def test_approvals_rejected_definitions_show_the_error_line():
     assert out["groups"] == []
     lines = [t for t in out["panel_text"][0] if t]
     assert len(lines) == 1 and "Cannot read: boom" in lines[0]
+
+
+# ---- row 8: Trends panel, the seven charts ----
+
+
+def _workspace_charts():
+    """(label, columns) per chart in konsol.json, in order: a content col of 12 is
+    full width (columns 1), 6 is half (columns 2)."""
+    path = os.path.join(APP_DIR, "consolidation", "workspace", "konsol", "konsol.json")
+    with open(path) as f:
+        ws = json.load(f)
+    out = []
+    for block in json.loads(ws["content"]) if isinstance(ws["content"], str) else ws["content"]:
+        if block["type"] == "chart":
+            out.append((block["data"]["chart_name"], {12: 1, 6: 2}[block["data"]["col"]]))
+    return out
+
+
+def _defs8(labels):
+    return {"number_cards": {"items": []}, "shortcuts": {"items": []},
+            "charts": {"items": [{"chart_name": n, "label": n} for n in labels]}}
+
+
+def test_trends_panel_shows_the_charts_in_workspace_order_and_widths():
+    declared = _workspace_charts()
+    assert len(declared) == 7 and declared[0] == ("TB Submission Progress", 1)
+    names = [n for n, _ in declared]
+    scrambled = list(reversed(names))
+    out = _run4a({"defs": _defs8(scrambled), "activate": [2]})
+    charts = [g for g in out["groups"] if g["type"] == "chart"]
+    # TB Submission Progress alone in a one-column group, first; the other six in a two-column group.
+    assert [(g["columns"], g["labels"]) for g in charts] == [
+        (1, [names[0]]),
+        (2, names[1:]),
+    ]
+    for (n, cols), g in zip(declared, [charts[0]] + [charts[1]] * 6):
+        assert g["columns"] == cols, n
+
+
+def test_charts_the_user_may_not_see_are_absent():
+    names = [n for n, _ in _workspace_charts()]
+    out = _run4a({"defs": _defs8([names[3], names[1]]), "activate": [2]})
+    charts = [g for g in out["groups"] if g["type"] == "chart"]
+    assert [(g["columns"], g["labels"]) for g in charts] == [(2, [names[1], names[3]])]
+    out = _run4a({"defs": _defs8([names[0], names[5]]), "activate": [2]})
+    charts = [g for g in out["groups"] if g["type"] == "chart"]
+    assert [(g["columns"], g["labels"]) for g in charts] == [(1, [names[0]]), (2, [names[5]])]
+
+
+def test_one_definitions_call_when_close_approvals_and_trends_activate():
+    names = [n for n, _ in _workspace_charts()]
+    out = _run4a({"defs": _defs8(names), "activate": [0, 1, 2]})
+    assert out["calls"] == 1
+
+
+def test_trends_makes_nothing_before_activation_or_before_the_frame():
+    names = [n for n, _ in _workspace_charts()]
+    out = _run4a({"defs": _defs8(names), "activate": []})
+    assert out["calls"] == 0 and out["groups"] == []
+    out = _run4a({"defs": _defs8(names), "activate": [2]})
+    assert out["calls"] == 1
+    assert out["before_raf"]["groups"] == 0 and out["before_raf"]["raf"] >= 1
+    assert len([g for g in out["groups"] if g["type"] == "chart"]) == 2
+
+
+def test_trends_rejected_definitions_show_the_error_line():
+    out = _run4a({"reject": "boom", "activate": [2]})
+    assert out["groups"] == []
+    lines = [t for t in out["panel_text"][0] if t]
+    assert len(lines) == 1 and "Cannot read: boom" in lines[0]
