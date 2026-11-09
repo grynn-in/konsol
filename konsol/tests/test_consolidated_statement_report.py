@@ -155,7 +155,8 @@ def _execute_with(statement, entity_statement=None):
     api = types.SimpleNamespace(
         get_statement=get_statement, _statement=_statement,
         get_entity_statement=lambda *a: _entity_statement(*a)[0], _entity_statement=_entity_statement)
-    env = {"frappe": frappe, "statement_api": api, "statement_report_model": Model}
+    env = {"frappe": frappe, "statement_api": api, "statement_report_model": Model,
+           "_group_code": lambda value: value or None}  # imported from statement_api (row 11b)
     exec(compile(ast.Module(body=fns, type_ignores=[]), PATH, "exec"), env)
     return env["execute"], seen
 

@@ -14,6 +14,9 @@ message says why — it never fails the report.
 import frappe
 
 from konsol.close import statement_api, statement_report_model
+# One doc-name -> code resolution (konsol#495 row 11b); the old name stays
+# importable for the other reports that import it from here.
+from konsol.close.statement_api import group_code as _group_code
 
 
 def execute(filters=None):
@@ -76,21 +79,3 @@ def _prior_year(fiscal_year, fiscal_period, group, entity=None):
         # The refusal is shown in the report message, not as a dialog too.
         frappe.clear_last_message()
         return {"state": "error", "message": str(e), "statement": None}
-
-
-def _group_code(value):
-    """The Link filter holds the Consolidation Group document name
-    (``CG-<group>-``); ``get_statement`` takes the group code. A value that
-    is not a document name is passed on as a code (``get_statement`` refuses
-    one that is not a root group)."""
-    if not value:
-        return None
-    row = frappe.db.get_value("Consolidation Group", value, ["consolidation_group", "data_area_id"], as_dict=True)
-    if row is None:
-        return value
-    # Every member row carries its root's code: resolving one would show the
-    # whole root group's statement as if it were the member's (review of #362).
-    if row.data_area_id:
-        frappe.throw(f"{value} is a member of {row.consolidation_group}, not a root consolidation group. "
-                     "Choose the root group.")
-    return row.consolidation_group

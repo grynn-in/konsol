@@ -383,6 +383,25 @@ def root_groups():
     )
 
 
+def group_code(value):
+    """The Link filter holds the Consolidation Group document name
+    (``CG-<group>-``); ``get_statement`` takes the group code. A value that
+    is not a document name is passed on as a code (``get_statement`` refuses
+    one that is not a root group). The one place this mapping lives: the
+    Desk report and ``export_statement`` both call it (konsol#495 row 11b)."""
+    if not value:
+        return None
+    row = frappe.db.get_value("Consolidation Group", value, ["consolidation_group", "data_area_id"], as_dict=True)
+    if row is None:
+        return value
+    # Every member row carries its root's code: resolving one would show the
+    # whole root group's statement as if it were the member's (review of #362).
+    if row.data_area_id:
+        frappe.throw(f"{value} is a member of {row.consolidation_group}, not a root consolidation group. "
+                     "Choose the root group.")
+    return row.consolidation_group
+
+
 def choose_group(groups, consolidation_group=None):
     """``(chosen, group_note, state, message)``: the one rule for which root
     group a statement shows (W4-E8). A named group must be one of
@@ -934,7 +953,7 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
         _send_workbook(payload, drills, _filename(payload["period"], None, entity=entity),
                        basis="Entity", consolidation_group=None, entity=payload["entity"])
         return
-    payload, reads = _statement(fiscal_year, fiscal_period, consolidation_group)
+    payload, reads = _statement(fiscal_year, fiscal_period, group_code(consolidation_group))
     if payload["state"] != "ok":
         frappe.throw(payload["message"])
     try:
