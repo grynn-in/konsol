@@ -267,3 +267,27 @@ def test_message_is_html_escaped():
     payload["consolidation_group"] = "ZZ<b>G</b>"
     text = D.message(payload)
     assert "<b>" not in text and "ZZ&lt;b&gt;G&lt;/b&gt;" in text
+
+
+def _entity_payload():
+    payload = _payload(F._heading1_rows(), "1")
+    payload.update({"basis": "Entity", "entity": "ZZA", "entity_name": "Zz Entity",
+                    "consolidation_group": None})
+    return payload
+
+
+def test_entity_basis_message_names_basis_and_entity_not_a_group():
+    first = D.message(_entity_payload()).split("<br>")[0]
+    assert first.startswith("Statement drill · FY2025 P07 · Basis: Entity · ZZA Zz Entity · 1 ")
+
+
+def test_entity_basis_message_without_entity_name_shows_the_code_alone():
+    payload = _entity_payload()
+    payload["entity_name"] = None
+    assert "Basis: Entity · ZZA · 1 " in D.message(payload)
+
+
+def test_group_message_header_is_unchanged_and_has_no_basis():
+    first = D.message(_payload(F._heading1_rows(), "1")).split("<br>")[0]
+    assert first.startswith("Statement drill · FY2025 P07 · ZZ_GROUP · 1 ")
+    assert "Basis" not in first
