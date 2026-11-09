@@ -170,4 +170,3 @@ def _wrong_currency(rows, currency):
     listed = "; ".join(f"{acc} ({layer}) in {cur}" for acc, layer, cur in bad)
     return (f"The warehouse holds rows not in the group's reporting currency {currency}: "
             f"{listed}. Rebuild the consolidation, or check the group's reporting currency.")
-
