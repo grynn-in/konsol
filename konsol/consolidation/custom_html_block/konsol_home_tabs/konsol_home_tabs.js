@@ -135,6 +135,12 @@ function widgets(div, build) {
 		.catch((e) => errorLine(div, e));
 }
 
+// A tab whose permitted widget list is empty says so, in plain muted text.
+const NOTHING_HERE = "Nothing here for your role.";
+function nothingHere(div) {
+	div.appendChild(el("div", "text-muted", NOTHING_HERE));
+}
+
 function group(div, type, list, columns) {
 	new frappe.widget.WidgetGroup({
 		container: $(div),
@@ -312,7 +318,9 @@ function fillClose(div) {
 // user may not open is absent from get_desktop_page and is skipped.
 function fillApprovals(div) {
 	widgets(div, (defs) => {
-		group(div, "shortcut", pickShortcuts(items(defs.shortcuts), WAITING));
+		const list = pickShortcuts(items(defs.shortcuts), WAITING);
+		if (!list.length) return nothingHere(div);
+		group(div, "shortcut", list);
 	});
 }
 
@@ -330,6 +338,7 @@ function fillTrends(div) {
 			group(one, "chart", [full], 1);
 		}
 		const rest = CHARTS.filter((n) => n !== FULL_WIDTH_CHART).map(pick).filter(Boolean);
+		if (!full && !rest.length) return nothingHere(div);
 		if (rest.length) {
 			const two = el("div", "khp-chart-grid");
 			div.appendChild(two);
