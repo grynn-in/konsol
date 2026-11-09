@@ -267,3 +267,25 @@ def test_js_drill_url_uses_the_entity_when_the_row_carries_one():
 def test_js_heading_link_shows_for_an_entity_row_too():
     source = _js()
     assert "data.code && (data.drill_group || data.drill_entity)" in source
+
+
+def _export_body():
+    source = _js()
+    start = source.index("function export_to_excel")
+    return source[start:source.index("\n}\n", start)]
+
+
+def test_js_export_button_posts_all_five_filters():
+    body = _export_body()
+    assert "open_url_post(frappe.request.url" in body
+    assert 'cmd: "konsol.close.statement_api.export_statement"' in body
+    for name in ("fiscal_year", "fiscal_period", "basis", "consolidation_group", "entity"):
+        assert 'get_filter_value("%s")' % name in body, name
+
+
+def test_js_export_button_is_added_and_removed_in_after_datatable_render():
+    source = _js()
+    hook = source[source.index("after_datatable_render"):]
+    assert "page.remove_inner_button(EXPORT_TO_EXCEL)" in hook
+    assert "page.add_inner_button(EXPORT_TO_EXCEL, export_to_excel)" in hook
+    assert "has_statement()" in hook
