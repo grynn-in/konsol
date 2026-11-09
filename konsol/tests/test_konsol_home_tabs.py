@@ -681,16 +681,14 @@ def test_approvals_rejected_definitions_show_the_error_line():
 
 
 def _workspace_charts():
-    """(label, columns) per chart in konsol.json, in order: a content col of 12 is
-    full width (columns 1), 6 is half (columns 2)."""
+    """(label, columns) per chart row in konsol.json, in order. The content holds
+    only the tabs block (#497 row 11); TB Submission Progress is the full-width
+    chart (columns 1), the rest are half (columns 2)."""
     path = os.path.join(APP_DIR, "consolidation", "workspace", "konsol", "konsol.json")
     with open(path) as f:
         ws = json.load(f)
-    out = []
-    for block in json.loads(ws["content"]) if isinstance(ws["content"], str) else ws["content"]:
-        if block["type"] == "chart":
-            out.append((block["data"]["chart_name"], {12: 1, 6: 2}[block["data"]["col"]]))
-    return out
+    return [(c["chart_name"], 1 if c["chart_name"] == "TB Submission Progress" else 2)
+            for c in ws["charts"]]
 
 
 def _defs8(labels):

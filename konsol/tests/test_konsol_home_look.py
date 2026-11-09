@@ -138,18 +138,22 @@ def test_the_section_header_margin_skips_the_first_block():
 # --- C. workspace layout -------------------------------------------------------
 
 
-def test_the_home_page_reads_band_checklist_actions_then_trends():
-    content = json.loads(_ws()["content"])
-    kinds = [b["type"] for b in content]
-    first = {k: kinds.index(k) for k in ("number_card", "custom_block", "shortcut", "chart")}
-    last_shortcut = len(kinds) - 1 - kinds[::-1].index("shortcut")
-    assert first["number_card"] < first["custom_block"] < first["shortcut"], first
-    assert first["chart"] > last_shortcut, (first["chart"], last_shortcut)
-    headers = [re.sub(r"<[^>]+>", "", b["data"]["text"]) for b in content if b["type"] == "header"]
-    assert headers == ["Where the close stands", "Waiting for approval", "Monthly close",
-                       "Close trends"], headers
-    ids = [b["id"] for b in content]
-    assert len(ids) == len(set(ids))
+TABS_BLOCK = "Konsol Home Tabs"
+TABS_JS = os.path.join(MODULE_DIR, "custom_html_block", "konsol_home_tabs", "konsol_home_tabs.js")
+
+
+def test_the_home_page_is_the_one_tabs_block():
+    """#497 row 11: the page body is a single full-width custom block. The old
+    band -> checklist -> actions -> trends order and the four section headers
+    now live in the block (tabs Close, Approvals, Trends, Numbers)."""
+    ws = _ws()
+    content = json.loads(ws["content"])
+    assert content == [{"id": "kht", "type": "custom_block",
+                        "data": {"custom_block_name": TABS_BLOCK, "col": 12}}], content
+    assert TABS_BLOCK in [b["custom_block_name"] for b in ws["custom_blocks"]]
+    js = _read(TABS_JS)
+    labels = re.findall(r'\{ label: "(\w+)", content: panel\(', js)
+    assert labels == ["Close", "Approvals", "Trends", "Numbers"], labels
 
 
 def test_waiting_shortcuts_carry_a_short_noun_label():
@@ -182,13 +186,20 @@ def test_no_two_shortcut_labels_differ_only_by_case():
     assert ws["modified"] >= SINCE, ws["modified"]
 
 
-def test_every_content_shortcut_has_its_row_and_every_row_is_on_the_page():
+def test_every_shortcut_the_tabs_block_names_has_its_row():
+    """The block reads the shortcut child table through get_desktop_page, so a
+    label in its WAITING or MONTHLY_CLOSE list with no row would vanish
+    silently; the content no longer carries shortcut blocks."""
     ws = _ws()
-    rows = {s["label"] for s in ws["shortcuts"]}
-    on_page = [b["data"]["shortcut_name"] for b in json.loads(ws["content"])
-               if b["type"] == "shortcut"]
-    assert set(on_page) == rows, sorted(set(on_page) ^ rows)
-    assert len(on_page) == len(set(on_page))
+    rows = [s["label"] for s in ws["shortcuts"]]
+    js = _read(TABS_JS)
+    named = []
+    for const in ("MONTHLY_CLOSE", "WAITING"):
+        body = re.search(r"const %s = \[(.*?)\];" % const, js, re.S).group(1)
+        named += re.findall(r'"([^"]+)"', body)
+    assert sorted(named) == sorted(rows), sorted(set(named) ^ set(rows))
+    assert len(named) == len(set(named))
+    assert not [b for b in json.loads(ws["content"]) if b["type"] == "shortcut"]
 
 
 # --- B. checklist block --------------------------------------------------------
