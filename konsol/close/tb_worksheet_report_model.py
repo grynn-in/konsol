@@ -19,7 +19,7 @@ number: every cell is the worksheet's own displayed value.
   when ``minor_unit`` is None), then a Currency link. Amount labels carry
   the currency: ``E-ALPHA (USD)``.
 - ``rows(ws, currency, dimension)``: one row per line, then a bold Total.
-  A line's dimension value is its ``dimension`` key (row 4 supplies it).
+  A line's dimension value is its ``dimension_value`` key (row 4).
 - ``message(ws, payload)``: period, group, currency, sign, window, any
   non-zero column total, and ``N entities outside your scope`` as a count.
   It is built from the worksheet's column labels only, so an out-of-scope
@@ -114,7 +114,7 @@ def rows(ws, currency, dimension=None):
     for line in ws["lines"]:
         head = {"account": line["account"], "name": line["name"]}
         if dimension:
-            head["dimension"] = line.get("dimension")
+            head["dimension"] = line.get("dimension_value")
         out.append(build(head, line["cells"], line["consolidated"]))
     head = {"account": TOTAL_LABEL, "name": None}
     if dimension:

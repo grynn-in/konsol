@@ -154,7 +154,7 @@ def test_rows_cross_foot_on_what_is_displayed():
 
 def test_rows_dimension_value_filled_when_given():
     ws = sheet()
-    ws["lines"][0]["dimension"] = "CC1"
+    ws["lines"][0]["dimension_value"] = "CC1"
     out = M.rows(ws, "USD", dimension="Cost centre")
     assert out[0]["dimension"] == "CC1"
 
