@@ -1,0 +1,7 @@
+.konsol-home-tabs {
+	display: block;
+	min-height: 2rem;
+}
+.konsol-home-tabs .khp-panel {
+	padding-top: var(--padding-md);
+}

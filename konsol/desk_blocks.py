@@ -30,6 +30,10 @@ BLOCKS = (
     # konsol#419: the roles mywork_api.get_my_work admits (frappe.only_for).
     ("Konsol My Work Board", "konsol_my_work_board",
      ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")),
+    # konsol#497: the home tabs show the close checklist's cards, so they
+    # admit the same roles.
+    ("Konsol Home Tabs", "konsol_home_tabs",
+     ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")),
 )
 
 
