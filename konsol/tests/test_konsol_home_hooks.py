@@ -115,7 +115,14 @@ def _all_current(mod):
 def test_the_app_ships_the_checklist_and_the_handbook():
     mod = _blocks(_BlockSite())
     assert [b[0] for b in mod.BLOCKS] == ["Konsol Close Checklist", "Konsol Handbook",
-                                          "Konsol My Work Board"]
+                                          "Konsol My Work Board", "Konsol Home Tabs"]
+
+
+def test_home_tabs_block_has_the_checklist_roles():
+    mod = _blocks(_BlockSite())
+    blocks = {b[0]: b for b in mod.BLOCKS}
+    assert blocks["Konsol Home Tabs"][1:] == ("konsol_home_tabs",
+                                              blocks["Konsol Close Checklist"][2])
 
 
 def test_install_creates_a_missing_block():
