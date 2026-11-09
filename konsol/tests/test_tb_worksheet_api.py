@@ -206,6 +206,8 @@ class _Site:
         self.ch_calls = []
         self.reads = []
         self.minor_units = {"USD": 2, "JPY": 0}
+        self.entity_codes = {"ZZA", "ZZB"}
+        self.entity_queries = []
 
 
 def _match_value(value, cond):
@@ -240,6 +242,10 @@ def _frappe(site):
         site.reads.append(("get_all", doctype))
         if doctype == "Consolidation Group":
             rows = [r for r in site.groups if _match(r, filters)]
+        elif doctype == "Entity":
+            site.entity_queries.append((filters, k.get("pluck")))
+            assert k.get("pluck") == "name"
+            return [c for c in sorted(site.entity_codes) if c in filters["name"][1]]
         elif doctype == "Main Account":
             rows = [r for r in site.accounts.values() if _match(r, filters)]
         else:
@@ -591,6 +597,39 @@ def test_a_scoped_caller_asking_for_a_hidden_entity_is_refused_before_any_read()
     assert isinstance(exc, frappe.PermissionError)
     assert "ZZB" in str(exc)
     assert site.ch_calls == []
+
+
+def test_an_unknown_entity_is_refused_by_name_before_any_read():
+    site = _Site()
+    exc, frappe = _call_raises(site, entities=["ZZNOPE"])
+    assert "ZZNOPE is not an entity." in str(exc)
+    assert site.ch_calls == []
+
+
+def test_mixed_known_and_unknown_entities_name_only_the_unknown():
+    site = _Site()
+    exc, _f = _call_raises(site, entities=["ZZA", "ZZNOPE", "ZZB"])
+    assert "ZZNOPE" in str(exc)
+    assert "ZZA" not in str(exc) and "ZZB" not in str(exc)
+    assert site.ch_calls == []
+    assert len(site.entity_queries) == 1
+
+
+def test_a_scoped_caller_asking_for_a_hidden_unknown_code_gets_the_scope_refusal():
+    site = _Site()
+    site.allowed = {"ZZA"}
+    exc, frappe = _call_raises(site, entities=["ZZA", "ZZNOPE"])
+    assert isinstance(exc, frappe.PermissionError)
+    assert "You may not see entity ZZNOPE." in str(exc)
+    assert "is not an entity" not in str(exc)
+    assert site.entity_queries == [] and site.ch_calls == []
+
+
+def test_no_entity_query_when_entities_is_none_or_empty():
+    for value in (None, "", "[]", []):
+        site = _Site()
+        assert _call(site, entities=value)["state"] == "ok"
+        assert site.entity_queries == []
 
 
 def test_a_role_outside_the_four_is_refused_before_any_read():
