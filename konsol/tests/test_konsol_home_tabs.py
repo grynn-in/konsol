@@ -131,8 +131,24 @@ def test_content_is_lazy_and_panels_start_empty():
     assert out["panel_children"] == [4, 0, 0, 4]
 
 
-def test_construction_makes_no_server_call():
-    assert _run()["after_construct"]["calls"] == 0
+# The real frappe.ui.Tabs renders the initial tab inside its constructor (review
+# R2), so construction makes exactly the initial tab's calls and no other tab's.
+CONSTRUCTION_CALLS = {
+    None: sorted(["konsol.close.mywork_api.get_my_work", "konsol.close.overview_api.get_checklist",
+                  "frappe.desk.desktop.get_desktop_page"]),  # Close, the default
+    "1": ["frappe.desk.desktop.get_desktop_page"],  # Approvals
+    "2": ["frappe.desk.desktop.get_desktop_page"],  # Trends
+    "3": [],  # Numbers
+}
+
+
+def test_construction_makes_only_the_initial_tabs_calls():
+    for stored, want in CONSTRUCTION_CALLS.items():
+        out = _run({} if stored is None else {"stored": stored})
+        assert out["after_construct"]["methods"] == want, stored
+        active = 0 if stored is None else int(stored)
+        # Inactive tabs render nothing.
+        assert out["rendered"] == [i == active for i in range(4)], stored
 
 
 KEY = "konsol-home-tab:me@example.com"
@@ -152,13 +168,14 @@ def test_garbage_out_of_range_or_missing_falls_back_to_close():
 def test_one_change_makes_exactly_one_store():
     out = _run({"click": 2})
     assert out["sets"] == [[KEY, "2"]]
-    assert out["calls_after_click"] == 0
+    # on_change only stores: no server call beyond the construction ones.
+    assert out["calls_after_click"] == out["after_construct"]["calls"]
 
 
-def test_construction_makes_no_store_write_and_no_server_call():
+def test_construction_makes_no_store_write_and_only_the_initial_tabs_calls():
     out = _run({"stored": "2"})
     assert out["after_construct"]["sets"] == 0
-    assert out["after_construct"]["calls"] == 0
+    assert out["after_construct"]["methods"] == CONSTRUCTION_CALLS["2"]
 
 
 def test_no_change_or_input_listeners_are_registered():
@@ -303,8 +320,11 @@ def test_one_definitions_call_even_when_two_panels_run():
     assert out["call_args"][2] == "GET"
 
 
-def test_no_definitions_call_at_construction():
-    assert _run4a()["at_construct"] == 0
+def test_definitions_call_at_construction_only_when_the_initial_tab_needs_it():
+    # Close is the initial tab: the real Tabs renders it in the constructor.
+    assert _run4a()["at_construct"] == 1
+    # Numbers is the initial tab: no definitions call until a widget tab opens.
+    assert _run4a({"activate": [3]})["at_construct"] == 0
 
 
 def test_widgets_are_not_created_before_the_animation_frame():
@@ -519,12 +539,16 @@ def test_unknown_checklist_state_shows_an_error_line():
     assert len(out["errors"]) == 1 and "weird" in out["errors"][0]
 
 
-def test_checklist_is_not_called_at_construction_and_once_per_close_activation():
+def test_checklist_is_called_once_when_close_first_renders():
+    # Close is the initial tab: its one checklist call happens in the constructor.
     out = _run5()
-    assert out["at_construct"] == 0
+    assert out["at_construct"] == 1
     assert out["checklist_calls"] == 1
     assert out["call"][1] == {} and out["call"][2] == "GET"
     assert _run5({"other": True})["checklist_calls"] == 1
+    # Another initial tab: no checklist call until Close is opened, then one.
+    out = _run5({"stored": "3"})
+    assert out["at_construct"] == 0 and out["checklist_calls"] == 1
 
 
 def test_no_new_click_listener_is_added_for_the_checklist():
@@ -668,12 +692,16 @@ def test_rejected_my_work_call_shows_an_error_line():
     assert out["text"] == []
 
 
-def test_my_work_is_not_called_at_construction_and_once_per_close_activation():
+def test_my_work_is_called_once_when_close_first_renders():
+    # Close is the initial tab: its one My Work call happens in the constructor.
     out = _run6({"work": _work(1)})
-    assert out["at_construct"] == 0
+    assert out["at_construct"] == 1
     assert out["mw_calls"] == 1
     assert out["call"][1] == {} and out["call"][2] == "GET"
     assert _run6({"work": _work(1), "other": True})["mw_calls"] == 1
+    # Another initial tab: no My Work call until Close is opened, then one.
+    out = _run6({"work": _work(1), "stored": "2"})
+    assert out["at_construct"] == 0 and out["mw_calls"] == 1
 
 
 def test_start_link_opens_my_work_through_the_existing_click_handler():

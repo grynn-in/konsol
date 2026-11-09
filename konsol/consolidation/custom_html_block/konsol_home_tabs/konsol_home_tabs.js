@@ -1,7 +1,9 @@
 // Konsol Home Tabs (konsol#497, row 2: skeleton). Four tabs on the Konsol
-// home: Close, Approvals, Trends, Numbers. Close is the default. Each panel is
-// built lazily by frappe.ui.Tabs on first activation and starts empty; later
-// rows fill them. Nothing here calls the server at construction.
+// home: Close, Approvals, Trends, Numbers. Close is the default. frappe.ui.Tabs
+// builds each panel once, on first activation; the initial tab's panel is built
+// inside the Tabs constructor (tabs.js set_active(initial, {silent: true})), so
+// construction makes that tab's calls: Close get_my_work, get_checklist and
+// get_desktop_page; Approvals or Trends get_desktop_page; Numbers none.
 // Frappe runs this inside the block's shadow root (root_element).
 const box = root_element.querySelector(".konsol-home-tabs");
 
@@ -31,8 +33,9 @@ function saveTab(i) {
 }
 
 // One definitions call for the whole block, shared by every panel (konsol#497
-// spike Q5). It starts on the first panel activation, never at construction.
-// A failed call is forgotten so the next activation can try again.
+// spike Q5). It starts when the first panel that needs it renders, which is
+// during construction when that panel is the initial tab. A failed call is
+// forgotten so the next activation can try again.
 let defsPromise = null;
 function getDefs() {
 	if (!defsPromise) {
@@ -197,7 +200,8 @@ function checklistFailed(target, message) {
 	);
 }
 
-// One GET per Close activation (the content fn runs once), never at construction.
+// One GET when Close first renders (the content fn runs once), which is during
+// construction when Close is the initial tab.
 function fillChecklist(target) {
 	target.appendChild(el("p", "kc-loading", "Loading the period close checklist\u2026"));
 	frappe
@@ -214,7 +218,7 @@ function fillChecklist(target) {
 
 // The #484 headline: "N items need you", from get_my_work counts. A missing
 // count is an error line, never "0" or "Nothing needs you". Start opens My Work
-// through the delegated click handler below. One GET per Close activation.
+// through the delegated click handler below. One GET when Close first renders.
 const MY_WORK_METHOD = "konsol.close.mywork_api.get_my_work";
 const MY_WORK_ROUTE = "/desk/query-report/My%20Work";
 
