@@ -99,7 +99,7 @@ def test_content_is_lazy_and_panels_start_empty():
 
 
 def test_construction_makes_no_server_call():
-    assert _run()["calls"] == 0
+    assert _run()["after_construct"]["calls"] == 0
 
 
 KEY = "konsol-home-tab:me@example.com"
