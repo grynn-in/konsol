@@ -227,3 +227,46 @@ def test_scoping_changes_no_consolidated_amount_per_account():
 def sheet_all_scopes():
     return M.worksheet(_scoped_rows(), ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
                        None, None, dimension="dim_region")
+
+
+# -- #494 PR review V4: markers are not in the value space ---------------------
+
+def test_a_real_value_spelled_no_value_stays_apart_from_blank():
+    rows = [wrow("entity", "A", "4000", 3, -1.0, "(no value)"),
+            wrow("entity", "B", "4000", 3, -2.0, ""),
+            wrow("ic_elimination", "", "4000", 3, 3.0, "")]
+    s = sheet("dim_region", rows=rows)
+    assert len(s["lines"]) == 2
+    by_value = {l["dimension_value"]: l for l in s["lines"]}
+    assert by_value["(no value)"]["consolidated"] == -1.0
+    assert by_value[M.BLANK_VALUE]["consolidated"] == 1.0
+
+
+def test_a_real_value_spelled_like_the_outside_label_stays_apart_from_the_marker():
+    rows = [wrow("entity", "A", "4000", 3, -1.0, "x"),
+            wrow("entity", "B", "4000", 3, -2.0, "(outside your scope)")]
+    s = M.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                    None, {"B"}, dimension="dim_region")
+    assert len(s["lines"]) == 2
+    assert sorted(l["consolidated"] for l in s["lines"]) == [-2.0, -1.0]
+    ids = [l["key"] for l in M.to_ids(s)["lines"]]
+    assert len(ids) == len(set(ids))
+
+
+def sheet_ids_rows(rows):
+    return M.worksheet(rows, ACCOUNTS, PERIODS, KEY, {"cta_account": "1000"}, 2,
+                       None, None, dimension="dim_region")
+
+
+def test_blank_and_a_real_no_value_get_distinct_line_ids_and_one_label():
+    rows = [wrow("entity", "A", "4000", 3, -1.0, "(no value)"),
+            wrow("entity", "A", "4000", 3, -2.0, "")]
+    out = M.to_ids(sheet_ids_rows(rows))
+    assert len({l["key"] for l in out["lines"]}) == 2
+    assert [l["dimension_value"] for l in out["lines"]] == ["(no value)", "(no value)"]
+
+
+def test_the_markers_are_not_strings():
+    assert not isinstance(M.BLANK_VALUE, str)
+    assert not isinstance(M.OUTSIDE_SCOPE_VALUE, str)
+    assert M.BLANK_VALUE != M.OUTSIDE_SCOPE_VALUE
