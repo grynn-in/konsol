@@ -145,7 +145,8 @@ const [script, cfgJson] = process.argv.slice(1);
 const cfg = JSON.parse(cfgJson || "{}");
 const handlers = {};
 function node(tag) {
-  return { tag, className: "", children: [], textContent: "",
+  return { tag, className: "", children: [], textContent: "", style: {},
+    setAttribute() {}, replaceChildren(...c) { this.children = c; },
     appendChild(c) { this.children.push(c); return c; },
     append(...c) { c.forEach((x) => this.children.push(x)); },
     addEventListener(t, fn) { (handlers[t] = handlers[t] || []).push(fn); },
@@ -174,6 +175,9 @@ const defs = cfg.defs || {
 global.frappe = {
   session: { user: "me@example.com" },
   xcall: (...a) => {
+    if (a[0] === "konsol.close.overview_api.get_checklist") {
+      return Promise.resolve({ title: "x", done: 0, total: 0, lines: [] });
+    }
     calls.push(a);
     return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(defs);
   },
@@ -291,5 +295,166 @@ def test_modified_clicks_are_left_to_the_browser():
 def test_rejected_definitions_call_shows_an_error_line_not_an_empty_panel():
     out = _run4a({"reject": "boom"})
     assert out["groups"] == []
-    lines = out["panel_text"][0]
+    lines = [t for t in out["panel_text"][0] if t]
     assert len(lines) == 1 and "boom" in lines[0] and "Cannot read" in lines[0]
+
+
+# ---- row 5: Close panel, checklist ----
+
+HARNESS_5 = r"""
+const fs = require("fs");
+const [script, cfgJson] = process.argv.slice(1);
+const cfg = JSON.parse(cfgJson || "{}");
+const htmlSets = [];
+function node(tag) {
+  const n = { tag, className: "", children: [], textContent: "", style: {}, attrs: {}, id: "",
+    setAttribute(k, v) { this.attrs[k] = v; },
+    replaceChildren(...c) { this.children = c; },
+    appendChild(c) { this.children.push(c); return c; },
+    append(...c) { c.forEach((x) => this.children.push(x)); },
+    addEventListener() {},
+    querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
+  for (const k of ["innerHTML", "outerHTML"]) {
+    Object.defineProperty(n, k, { set(v) { htmlSets.push(k); }, get() { return ""; } });
+  }
+  return n;
+}
+const box = node("section");
+const calls = [];
+const rafQueue = [];
+const created = [];
+global.document = { createElement: (t) => node(t), addEventListener() {} };
+global.localStorage = { getItem() { return null; }, setItem() {} };
+global.location = { href: "https://site.test/desk/konsol", origin: "https://site.test" };
+global.requestAnimationFrame = (fn) => { rafQueue.push(fn); return 1; };
+global.$ = (x) => x;
+global.root_element = node("root");
+const payload = cfg.payload || {
+  title: "FY2025 P07", done: 2, total: 4, reason: "",
+  lines: [
+    { state: "ok", label: "TBs in", detail: "41 of 41", route: "/desk/trial-balance-submission" },
+    { state: "warn", label: "IC", detail: "3 over", route: "https://evil.example/x" },
+    { state: "blocked", label: "Approvals", detail: "2 waiting", route: null },
+    { state: "unknown", label: "Freshness", detail: "?", route: "/desk/build-approval" },
+  ],
+};
+global.frappe = {
+  session: { user: "me@example.com" },
+  xcall: (...a) => {
+    calls.push(a);
+    if (a[0] === "konsol.close.overview_api.get_checklist") {
+      return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(payload);
+    }
+    return Promise.resolve({ number_cards: { items: [] }, shortcuts: { items: [] } });
+  },
+  set_route() {},
+  widget: { WidgetGroup: function () {} },
+  ui: { Tabs: function (opts) { created.push(opts); this.$el = node("tabs"); } },
+};
+eval(fs.readFileSync(script, "utf8"));
+const opts = created[0];
+const isCl = (c) => c[0] === "konsol.close.overview_api.get_checklist";
+const atConstruct = calls.filter(isCl).length;
+const tick = () => new Promise((r) => setImmediate(r));
+function walk(n, f) { f(n); (n.children || []).forEach((c) => walk(c, f)); }
+(async () => {
+  const closes = [];
+  const n = cfg.activations || 1;
+  for (let i = 0; i < n; i++) closes.push(opts.tabs[0].content());
+  if (cfg.other) opts.tabs[1].content();
+  await tick(); await tick();
+  rafQueue.splice(0).forEach((f) => f());
+  await tick(); await tick();
+  const panel = closes[0];
+  const order = panel.children.map((c) => c.className);
+  let boxNode = null;
+  walk(panel, (x) => { if ((x.className || "").split(" ").includes("khp-checklist")) boxNode = x; });
+  const info = { at_construct: atConstruct, checklist_calls: calls.filter(isCl).length,
+    call: calls.find(isCl) || null, order, html_sets: htmlSets, found: !!boxNode };
+  if (boxNode) {
+    const cls = (x, c) => (x.className || "").split(" ").includes(c);
+    const texts = [], lines = [], hrefs = [], errors = [];
+    let bar = null, fill = null, count = null;
+    walk(boxNode, (x) => {
+      if (cls(x, "kc-error")) errors.push(x.textContent);
+      if (cls(x, "kc-count")) count = x.textContent;
+      if (cls(x, "kc-progress")) bar = x.attrs;
+      if (cls(x, "kc-progress-fill")) fill = x.style.width;
+      if (cls(x, "kc-title")) texts.push(x.textContent);
+      if (cls(x, "kc-line")) {
+        const parts = [];
+        walk(x, (y) => { if (y !== x && y.textContent) parts.push(y.textContent); });
+        lines.push(parts.join(" | "));
+      }
+      if (cls(x, "kc-label") && x.href) hrefs.push(x.href);
+    });
+    Object.assign(info, { title: texts[0] || null, count, bar, fill, lines, hrefs, errors });
+  }
+  console.log(JSON.stringify(info));
+})();
+"""
+
+
+def _run5(cfg=None):
+    node = shutil.which("node")
+    assert node
+    result = subprocess.run([node, "-e", HARNESS_5, SCRIPT, json.dumps(cfg or {})],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_checklist_sits_between_the_cards_and_the_monthly_close_shortcuts():
+    out = _run5()
+    assert out["found"]
+    cls = [c.split()[0] if c else "" for c in out["order"]]
+    assert cls.index("khp-cards") < cls.index("khp-checklist") < cls.index("khp-monthly")
+
+
+def test_checklist_renders_title_lines_and_progress_from_the_payload():
+    out = _run5()
+    assert out["title"] == "Period close \u00b7 FY2025 P07"
+    assert out["count"] == "2 of 4 done"
+    assert out["fill"] == "50%"
+    assert out["bar"]["aria-valuenow"] == "2" and out["bar"]["aria-valuemax"] == "4"
+    assert out["lines"] == ["\u2713 | TBs in | 41 of 41", "! | IC | 3 over",
+                            "\u2715 | Approvals | 2 waiting", "? | Freshness | ?"]
+
+
+def test_checklist_links_only_to_desk_routes():
+    out = _run5()
+    assert out["hrefs"] == ["/desk/trial-balance-submission", "/desk/build-approval"]
+
+
+def test_checklist_progress_is_clamped():
+    payload = {"title": "P", "done": 9, "total": 4, "reason": "", "lines": []}
+    out = _run5({"payload": payload})
+    assert out["count"] == "4 of 4 done" and out["fill"] == "100%"
+
+
+def test_rejected_checklist_call_shows_an_error_line_and_sets_no_html():
+    out = _run5({"reject": "<b>boom</b>"})
+    assert out["errors"] == ["The period close checklist could not be read: <b>boom</b>"]
+    assert out["html_sets"] == []
+
+
+def test_unknown_checklist_state_shows_an_error_line():
+    payload = {"title": "P", "done": 0, "total": 1, "reason": "",
+               "lines": [{"state": "weird", "label": "x", "detail": "y", "route": None}]}
+    out = _run5({"payload": payload})
+    assert len(out["errors"]) == 1 and "weird" in out["errors"][0]
+
+
+def test_checklist_is_not_called_at_construction_and_once_per_close_activation():
+    out = _run5()
+    assert out["at_construct"] == 0
+    assert out["checklist_calls"] == 1
+    assert out["call"][1] == {} and out["call"][2] == "GET"
+    assert _run5({"other": True})["checklist_calls"] == 1
+
+
+def test_no_new_click_listener_is_added_for_the_checklist():
+    with open(SCRIPT) as f:
+        src = f.read()
+    assert src.count("addEventListener(") == 1
+    assert "innerHTML" not in src
