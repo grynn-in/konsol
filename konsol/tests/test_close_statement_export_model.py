@@ -101,6 +101,16 @@ def test_header_label_and_legend_come_from_the_payload():
     assert rows[2][0] == payload["statement"]["legend"]
 
 
+def test_entity_basis_header_names_basis_entity_and_currency():
+    payload = _payload()
+    payload.update({"basis": "Entity", "entity": "ZZA", "entity_name": "Zz Entity",
+                    "consolidation_group": None, "reporting_currency": "EUR"})
+    rows = _rows(_book(payload)["Statement"])
+    assert rows[0][0] == "Numbers · FY2025 P07 · Basis: Entity · ZZA Zz Entity · EUR"
+    assert rows[1][0] == "Provisional"
+    assert rows[2][0] == payload["statement"]["legend"]
+
+
 @pytest.mark.parametrize("state,text", [
     ("signed", "Signed"),
     ("provisional", "Provisional"),
