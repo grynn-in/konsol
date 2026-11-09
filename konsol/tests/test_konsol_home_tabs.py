@@ -1083,3 +1083,27 @@ def test_an_empty_or_missing_definitions_payload_shows_one_error_line():
             assert out["groups"] == [], (defs, tab)
             lines = [t for t in out["panel_text"][0] if t]
             assert len(lines) == 1 and lines[0].startswith("Cannot read"), (defs, tab, lines)
+
+
+# ---- #497 N3: a tab with nothing permitted says so, never renders blank ----
+
+NOTHING = "Nothing here for your role."
+
+
+def test_trends_with_no_permitted_charts_shows_one_plain_line_not_an_error():
+    out = _run4a({"defs": _defs8([]), "activate": [2]})
+    assert out["groups"] == []
+    assert out["panel_text"][0] == [NOTHING]
+
+
+def test_approvals_with_no_waiting_shortcuts_shows_the_same_line():
+    defs = {"number_cards": {"items": []}, "shortcuts": {"items": [_sc("My Work"), _sc("Period Close")]},
+            "charts": {"items": []}}
+    out = _run4a({"defs": defs, "activate": [1]})
+    assert [g for g in out["groups"] if g["type"] == "shortcut"] == []
+    assert out["panel_text"][0] == [NOTHING]
+
+
+def test_a_tab_with_widgets_does_not_show_the_line():
+    out = _run4a({"defs": _defs8(["Days to Close"]), "activate": [2]})
+    assert NOTHING not in out["panel_text"][0]
