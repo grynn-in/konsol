@@ -416,7 +416,8 @@ def test_the_group_root_carries_its_policy_and_declared_accounts():
         "accounting_framework String DEFAULT '', framework_note String DEFAULT '', "
         "goodwill_treatment String DEFAULT '', goodwill_amortisation_years UInt16 DEFAULT 0, "
         "acquisition_costs_treatment String DEFAULT '', measurement_period String DEFAULT '', "
-        "bargain_purchase String DEFAULT '', goodwill_account String DEFAULT '', "
+        "bargain_purchase String DEFAULT '', partial_period_treatment String DEFAULT '', "
+        "goodwill_account String DEFAULT '', "
         "fair_value_adjustment_account String DEFAULT '', investment_account String DEFAULT '', "
         "nci_account String DEFAULT '', bargain_purchase_gain_account String DEFAULT '', "
         "disposal_gain_loss_account String DEFAULT '', disposal_proceeds_account String DEFAULT '', "
@@ -434,6 +435,7 @@ def test_the_group_root_carries_its_policy_and_declared_accounts():
         ("acquisition_costs_treatment", "String DEFAULT ''"),
         ("measurement_period", "String DEFAULT ''"),
         ("bargain_purchase", "String DEFAULT ''"),
+        ("partial_period_treatment", "String DEFAULT ''"),
         ("goodwill_account", "String DEFAULT ''"),
         ("fair_value_adjustment_account", "String DEFAULT ''"),
         ("investment_account", "String DEFAULT ''"),

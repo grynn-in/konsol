@@ -31,7 +31,7 @@ ROOT_ONLY = "eval:doc.is_group"
 NEW_COLUMNS = (
     "nci_measurement", "accounting_framework", "framework_note", "goodwill_treatment",
     "goodwill_amortisation_years", "acquisition_costs_treatment", "measurement_period",
-    "bargain_purchase",
+    "bargain_purchase", "partial_period_treatment",
 ) + P.ACCOUNT_FIELDS
 
 SELECT_OPTIONS = {
@@ -41,6 +41,7 @@ SELECT_OPTIONS = {
     "acquisition_costs_treatment": "Expense\nCapitalise",
     "measurement_period": "Off\n12 months",
     "bargain_purchase": "Recognise gain\nRefuse",
+    "partial_period_treatment": "Whole period\nPro-rate by days\nStub trial balance",
 }
 
 
@@ -99,7 +100,7 @@ def test_the_policy_lives_in_its_own_tab_in_four_labelled_sections():
     # each field sits in its section, after the tab
     assert framework_at < order.index("accounting_framework") < order.index("framework_note") < costs_at
     for fn in ("goodwill_treatment", "goodwill_amortisation_years", "acquisition_costs_treatment",
-               "measurement_period", "bargain_purchase"):
+               "measurement_period", "bargain_purchase", "partial_period_treatment"):
         assert costs_at < order.index(fn) < accounts_at, fn
     for fn in P.ACCOUNT_FIELDS:
         assert accounts_at < order.index(fn) < declarations_at, fn
@@ -121,7 +122,7 @@ def test_framework_fields():
 
 def test_goodwill_and_costs_fields():
     fields = _fields()
-    for fn in ("goodwill_treatment", "acquisition_costs_treatment", "measurement_period", "bargain_purchase"):
+    for fn in ("goodwill_treatment", "acquisition_costs_treatment", "measurement_period", "bargain_purchase", "partial_period_treatment"):
         assert fields[fn]["fieldtype"] == "Select", fn
         assert fields[fn]["options"] == SELECT_OPTIONS[fn], fn
         assert fields[fn]["depends_on"] == ROOT_ONLY, fn
@@ -139,6 +140,7 @@ def test_select_options_are_exactly_the_rule_modules():
         "accounting_framework": P.FRAMEWORKS, "goodwill_method": P.NCI,
         "goodwill_treatment": P.GOODWILL_TREATMENTS, "acquisition_costs_treatment": P.COST_TREATMENTS,
         "measurement_period": P.MEASUREMENT_PERIODS, "bargain_purchase": P.BARGAIN,
+        "partial_period_treatment": P.PARTIAL_PERIOD_TREATMENTS,
     }
     for fn, options in allowed.items():
         assert fields[fn]["options"].split("\n") == list(options), fn
@@ -324,6 +326,7 @@ IFRS_PARTIAL = {
     "acquisition_costs_treatment": "Expense",
     "measurement_period": "Off",
     "bargain_purchase": "Recognise gain",
+    "partial_period_treatment": "Whole period",
 }
 
 
@@ -540,3 +543,20 @@ def test_f8_a_new_node_an_unchanged_node_and_an_unnamed_rekey_pass():
         assert asked == []
     with _ownership({}):
         _node(group="ZZNEW", before=_saved()).validate()   # nobody names the old pair
+
+
+def test_partial_period_treatment_has_no_default_and_says_what_each_value_does():
+    """konsolidat#171: declared by the group, never chosen by konsol. No default,
+    no mandatory flag (it is required once a Business Combination exists, by
+    validate()), and the help text names each value and the even-accrual assumption."""
+    f = _fields()["partial_period_treatment"]
+    assert f["label"] == P.LABELS["partial_period_treatment"] == "Partial Period Treatment"
+    assert "default" not in f and not f.get("reqd")
+    desc = f["description"]
+    for text in ("Whole period", "Pro-rate by days", "Stub trial balance", "even accrual", "acquisition date"):
+        assert text in desc, text
+
+
+def test_partial_period_treatment_syncs_to_the_warehouse_next_to_bargain_purchase():
+    assert "partial_period_treatment" in NEW_COLUMNS
+    assert _source().count('"partial_period_treatment": "partial_period_treatment"') == 1

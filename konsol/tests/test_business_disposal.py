@@ -211,7 +211,7 @@ ROOT_IFRS = {
     "accounting_framework": "IFRS", "framework_note": "", "goodwill_method": "partial",
     "goodwill_treatment": "Impairment only", "goodwill_amortisation_years": 0,
     "acquisition_costs_treatment": "Expense", "measurement_period": "Off",
-    "bargain_purchase": "Recognise gain",
+    "bargain_purchase": "Recognise gain", "partial_period_treatment": "Whole period",
     "goodwill_account": "ZZ1800", "fair_value_adjustment_account": "ZZ1810",
     "investment_account": "ZZ1500", "nci_account": "ZZ3900",
     "bargain_purchase_gain_account": "ZZ4900", "disposal_gain_loss_account": "ZZ4950",

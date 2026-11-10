@@ -11,6 +11,7 @@ IFRS_PARTIAL = {
     "acquisition_costs_treatment": "Expense",
     "measurement_period": "12 months",
     "bargain_purchase": "Recognise gain",
+    "partial_period_treatment": "Whole period",
 }
 US_GAAP_FULL = dict(IFRS_PARTIAL, accounting_framework="US GAAP", goodwill_method="full")
 LOCAL_AMORTISE = dict(
@@ -42,10 +43,11 @@ def test_options_and_field_lists_are_the_design_s():
     assert M.COST_TREATMENTS == ("Expense", "Capitalise")
     assert M.MEASUREMENT_PERIODS == ("Off", "12 months")
     assert M.BARGAIN == ("Recognise gain", "Refuse")
+    assert M.PARTIAL_PERIOD_TREATMENTS == ("Whole period", "Pro-rate by days", "Stub trial balance")
     assert M.POLICY_FIELDS == (
         "accounting_framework", "framework_note", "goodwill_method", "goodwill_treatment",
         "goodwill_amortisation_years", "acquisition_costs_treatment", "measurement_period",
-        "bargain_purchase")
+        "bargain_purchase", "partial_period_treatment")
     assert M.ACCOUNT_FIELDS == (
         "goodwill_account", "fair_value_adjustment_account", "investment_account", "nci_account",
         "bargain_purchase_gain_account", "disposal_gain_loss_account", "disposal_proceeds_account",
@@ -249,3 +251,34 @@ def test_account_problems_only_look_at_the_required_accounts():
     assert M.account_problems(group, required, lambda acct: True) == []
     problems = M.account_problems(group, M.ACCOUNT_FIELDS, lambda acct: True)
     assert len(problems) == len(M.ACCOUNT_FIELDS) - 3
+
+
+# --- partial_period_treatment (konsolidat#171, decided 18 Sep 2026) -------------
+
+def test_partial_period_treatment_is_required_once_the_group_has_a_business_combination():
+    group = {k: v for k, v in IFRS_PARTIAL.items() if k != "partial_period_treatment"}
+    assert M.policy_problems(group, has_deals=True) == [
+        "Consolidation Policy: Partial Period Treatment is required once the group has a Business Combination"]
+    assert M.policy_problems(group, has_deals=False) == []
+    assert M.policy_problems(dict(group, partial_period_treatment=""), has_deals=True) == [
+        "Consolidation Policy: Partial Period Treatment is required once the group has a Business Combination"]
+
+
+def test_each_partial_period_treatment_is_accepted():
+    for value in ("Whole period", "Pro-rate by days", "Stub trial balance"):
+        assert M.policy_problems(dict(IFRS_PARTIAL, partial_period_treatment=value), has_deals=True) == [], value
+
+
+def test_a_partial_period_treatment_outside_the_three_is_refused():
+    problems = M.policy_problems(dict(IFRS_PARTIAL, partial_period_treatment="Daily"), has_deals=False)
+    assert len(problems) == 1
+    assert "Partial Period Treatment" in problems[0] and '"Daily"' in problems[0]
+    for value in ("Whole period", "Pro-rate by days", "Stub trial balance"):
+        assert f'"{value}"' in problems[0]
+
+
+def test_partial_period_treatment_is_independent_of_the_framework():
+    """It is a declared choice, not a framework rule: all three values pass under every framework."""
+    for base in (IFRS_PARTIAL, US_GAAP_FULL, LOCAL_AMORTISE):
+        for value in M.PARTIAL_PERIOD_TREATMENTS:
+            assert M.policy_problems(dict(base, partial_period_treatment=value), has_deals=True) == []
