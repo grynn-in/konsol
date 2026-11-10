@@ -26,7 +26,24 @@ class _NotFound(Exception):
     pass
 
 
-def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, periods=None, **kwargs):
+_CS_MODULE = "konsol.consolidation.report.consolidated_statement.consolidated_statement"
+
+
+def _real_group_code(frappe):
+    """The report's own ``_group_code``, extracted from its source (the module
+    imports the whole statement stack) and run against the stub frappe."""
+    import ast
+    path = os.path.join(APP_DIR, "consolidation", "report", "consolidated_statement",
+                        "consolidated_statement.py")
+    fn = next(n for n in ast.parse(open(path).read()).body
+              if isinstance(n, ast.FunctionDef) and n.name == "_group_code")
+    env = {"frappe": frappe}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), path, "exec"), env)
+    return env["_group_code"]
+
+
+def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, periods=None,
+            group_names=None, **kwargs):
     """``readable``: the reports whose Report.is_permitted() is True; the rest
     are denied. ``doctype_ok``: frappe.has_permission(ref_doctype, "report")."""
     calls = {"sql": [], "params": [], "kwargs": [], "has_permission": [], "only_for": 0}
@@ -53,6 +70,17 @@ def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, peri
         return doctype_ok
 
     frappe.get_doc = get_doc
+    names = group_names or {}
+
+    def get_value(doctype, name, fields, as_dict=False):
+        assert doctype == "Consolidation Group"
+        if name not in names:
+            return None
+        return types.SimpleNamespace(consolidation_group=names[name], data_area_id=None)
+
+    frappe.db = types.SimpleNamespace(get_value=get_value)
+    cs = types.ModuleType(_CS_MODULE)
+    cs._group_code = _real_group_code(frappe)
     frappe.has_permission = has_permission
     konsol = types.ModuleType("konsol")
     konsol.__path__ = []
@@ -75,10 +103,10 @@ def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, peri
     konsol.close = close
     close.ch_read = ch
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
-             "konsol.close.ch_read", "konsol.close.period_strip_model"]
+             "konsol.close.ch_read", "konsol.close.period_strip_model", _CS_MODULE]
     saved = {n: sys.modules.get(n) for n in names}
     sys.modules.update({"frappe": frappe, "konsol": konsol, "konsol.close": close,
-                        "konsol.fiscal_calendar": cal, "konsol.close.ch_read": ch})
+                        "konsol.fiscal_calendar": cal, "konsol.close.ch_read": ch, _CS_MODULE: cs})
     try:
         close.period_strip_model = _load(
             "konsol.close.period_strip_model", os.path.join(CLOSE_DIR, "period_strip_model.py"))
@@ -185,3 +213,25 @@ def test_data_years_come_from_a_distinct_year_read():
 def test_data_years_empty_when_the_read_fails():
     info, _ = _invoke(ch_error=RuntimeError("UNKNOWN_TABLE"))
     assert info["data_years"] == []
+
+
+def test_a_group_document_name_is_resolved_to_the_warehouse_code():
+    # The Link filter holds the document name (CG-<code>-); the warehouse
+    # column holds the code.
+    _, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}],
+                       consolidation_group="CG-X-", group_names={"CG-X-": "X"})
+    assert calls["params"] == [{"group": "X"}] * 2
+
+
+def test_a_bare_code_is_bound_unchanged():
+    _, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}],
+                       consolidation_group="X", group_names={"CG-X-": "X"})
+    assert calls["params"] == [{"group": "X"}] * 2
+
+
+def test_group_code_is_imported_from_the_report_not_copied():
+    import ast
+    tree = ast.parse(open(os.path.join(CLOSE_DIR, "period_strip_api.py")).read())
+    assert any(isinstance(n, ast.ImportFrom) and n.module == _CS_MODULE
+               and any(a.name == "_group_code" for a in n.names) for n in tree.body)
+    assert not any(isinstance(n, ast.FunctionDef) and n.name == "_group_code" for n in tree.body)
