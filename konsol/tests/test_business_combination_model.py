@@ -22,6 +22,7 @@ IFRS_PARTIAL = {
     "acquisition_costs_treatment": "Expense",
     "measurement_period": "12 months",
     "bargain_purchase": "Recognise gain",
+    "partial_period_treatment": "Whole period",
     "goodwill_account": "ZZ-1",
     "fair_value_adjustment_account": "ZZ-2",
     "investment_account": "ZZ-3",
@@ -573,7 +574,8 @@ def test_a_closed_year_netting_to_zero_leaves_retained_earnings_unchanged():
 
 
 def test_derive_drops_lines_that_round_to_zero():
-    rows = [tb("ZZ-CASH", 100), tb("ZZ-LOAN", -100), tb("ZZ-EMPTY", 0.004), tb("ZZ-EMPTY", -0.008)]
+    # 4 places (#271 K1): dust below 0.00005 rounds to zero and is dropped
+    rows = [tb("ZZ-CASH", 100), tb("ZZ-LOAN", -100), tb("ZZ-EMPTY", 0.00004), tb("ZZ-EMPTY", -0.00008)]
     lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
     assert problems == []
     assert [l["main_account"] for l in lines] == ["ZZ-CASH", "ZZ-LOAN"]
@@ -592,6 +594,36 @@ def test_derive_merges_fair_value_adjustments_onto_existing_and_new_accounts():
     assert got["ZZ-BRAND"]["book_amount"] == Decimal("0.00")
     assert got["ZZ-BRAND"]["fair_value_adjustment"] == Decimal("75.00")
     assert got["ZZ-BRAND"]["note"] == "Fair value adjustment"
+
+
+def test_derive_keeps_three_decimal_currencies_exact_and_balanced():
+    # BHD / KWD / OMR (#271 K1, #353 option C): 4 places, not the cent
+    rows = [tb("ZZ-CASH", "150.125"), tb("ZZ-FEE", "0.005"), tb("ZZ-EQUITY", "-150.130")]
+    lines, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == []
+    got = by_account(lines)
+    assert got["ZZ-CASH"]["book_amount"] == Decimal("150.125")
+    assert got["ZZ-FEE"]["book_amount"] == Decimal("0.005")
+    assert got["ZZ-EQUITY"]["book_amount"] == Decimal("-150.130")
+    assert sum(l["book_amount"] for l in lines) == 0
+
+
+def test_derive_rounds_beyond_four_places_half_up():
+    rows = [tb("ZZ-CASH", "1.00005"), tb("ZZ-LOAN", "-1.00004"), tb("ZZ-NEG", "-0.00005")]
+    lines, _ = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    got = by_account(lines)
+    assert got["ZZ-CASH"]["book_amount"] == Decimal("1.0001")
+    assert got["ZZ-LOAN"]["book_amount"] == Decimal("-1.0000")
+    assert got["ZZ-NEG"]["book_amount"] == Decimal("-0.0001")   # half-up, away from zero
+
+
+def test_an_imbalance_is_reported_with_four_places_when_it_needs_them():
+    rows = [tb("ZZ-CASH", "100.0075"), tb("ZZ-LOAN", "-100")]
+    _, problems = M.derive_acquired_balances(rows, RE_ACCOUNT, [], PERIOD)
+    assert problems == [
+        "Business Combination: the trial balance through FY2026 P3 does not balance: "
+        "it is off by 0.0075."
+    ]
 
 
 def test_an_unbalanced_trial_balance_is_refused_with_the_difference():

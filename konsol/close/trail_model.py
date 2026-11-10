@@ -86,6 +86,17 @@ def ordered(events):
     return sorted(events, key=lambda e: (e["at"], e["name"]), reverse=True)
 
 
+def in_period_trail(events, fiscal_period):
+    """The events that belong in ``fiscal_period``'s trail, from a read of
+    that period plus the year's period-0 rows: an event at ``fiscal_period``
+    always; an event at period 0 only when its kind is a year kind
+    (``close_event_model.YEAR_KINDS``, which concern every period). A
+    period-0 download (``statement_exported``) belongs to period 0 alone."""
+    return [e for e in events
+            if e["fiscal_period"] == fiscal_period
+            or e["kind"] in close_event_model.YEAR_KINDS]
+
+
 def visible(events, allowed):
     """Scope ``events`` to ``allowed`` entities. ``allowed is None`` keeps
     everything, with ``hidden`` 0. Otherwise an event is kept when its

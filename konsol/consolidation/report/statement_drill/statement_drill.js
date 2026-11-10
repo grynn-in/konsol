@@ -2,6 +2,31 @@
 // eliminations, CTA, top-side journals, deal rows), its accounts and its
 // source documents. Opened from a Consolidated Statement heading.
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
+// The Frappe query report checks only `reqd` before a run (conditional-mandatory
+// settings are ignored), so `reqd` is set on the filter the basis needs: a blank
+// one shows Frappe's inline "Please set filters", never a server error dialog.
+// Two entry points: onload (a report opened from a link: Frappe sets the route
+// filters, calls onload, then refreshes, so onload must not refresh) and the Basis
+// filter's on_change (Frappe calls it INSTEAD of its own refresh, so it refreshes).
+// A link carrying basis=Entity runs that on_change while Frappe is still setting
+// the route filters (query_report.js refresh_report, with _no_refresh set): a
+// refresh then would throw "Filter missing" (entity not set yet) and abort the
+// rest of the route, so on_change refreshes only when _no_refresh is unset,
+// the same gate Frappe applies to its own refresh.
+function sync_required(report) {
+	const entity_basis = report.get_filter_value("basis") === "Entity";
+	for (const [fieldname, required] of [["entity", entity_basis], ["consolidation_group", !entity_basis]]) {
+		const filter = report.get_filter(fieldname);
+		filter.df.reqd = required ? 1 : 0;
+		filter.refresh();
+	}
+}
+
+function on_basis_change(report) {
+	sync_required(report);
+	if (!report._no_refresh) report.refresh();
+}
+
 frappe.query_reports["Statement Drill"] = {
 	onload: (report) => konsol.period_reports.setup(report, { keys: ["fiscal_year", "fiscal_period", "consolidation_group", "heading"] }),
 	filters: [
@@ -20,11 +45,30 @@ frappe.query_reports["Statement Drill"] = {
 			default: new Date().getMonth() + 1,
 		},
 		{
+			fieldname: "basis",
+			label: __("Basis"),
+			fieldtype: "Select",
+			options: "Group\nEntity",
+			default: "Group",
+			description: __("Entity: one entity's own trial balance in its functional currency."),
+			on_change: on_basis_change,
+		},
+		{
+			fieldname: "entity",
+			label: __("Entity"),
+			fieldtype: "Link",
+			options: "Entity",
+			depends_on: 'eval:doc.basis=="Entity"',
+			get_query() {
+				return { filters: { is_group: 0 } };
+			},
+		},
+		{
 			fieldname: "consolidation_group",
 			label: __("Consolidation Group"),
 			fieldtype: "Link",
 			options: "Consolidation Group",
-			reqd: 1,
+			depends_on: 'eval:doc.basis!="Entity"',
 			description: __("A root group."),
 			// Root groups only (statement_api._ROOT_FILTER: no data_area_id).
 			get_query() {
@@ -46,6 +90,8 @@ frappe.query_reports["Statement Drill"] = {
 			},
 		},
 	],
+
+	onload: sync_required,
 
 	// Layers open; accounts and journals one click away.
 	initial_depth: 0,

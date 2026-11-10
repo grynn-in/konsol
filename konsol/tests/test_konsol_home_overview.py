@@ -70,9 +70,8 @@ def test_the_band_is_six_custom_cards_on_the_workspace():
     ws = _ws()
     names = [c["number_card_name"] for c in ws["number_cards"]]
     assert names == list(BAND), names
-    blocks = [b["data"]["number_card_name"] for b in json.loads(ws["content"])
-              if b["type"] == "number_card"]
-    assert blocks == list(BAND), blocks
+    # the cards are the child table the tabs block reads; content holds no card block
+    assert not [b for b in json.loads(ws["content"]) if b["type"] == "number_card"]
 
 
 def test_each_band_card_calls_a_gated_overview_method():
@@ -125,17 +124,19 @@ def test_the_retired_cards_reports_stay_reachable_through_shortcuts():
 
 def test_the_workspace_was_bumped():
     """A shipped Workspace re-imports on migrate only when its ``modified``
-    changes; this edit is dated 7 Nov 2026."""
-    assert _ws()["modified"] >= "2026-11-07", _ws()["modified"]
+    changes; the tabs edit (#497 row 11) is dated after 7 Nov 2026 23:55."""
+    assert _ws()["modified"] > "2026-11-07 23:55:00.000000", _ws()["modified"]
     for name in BAND:
         assert _card(name)["modified"] >= "2026-11-07", name
 
 
-def test_the_checklist_block_is_on_the_workspace_and_installed():
+def test_the_checklist_block_is_a_row_on_the_workspace_and_installed():
     ws = _ws()
     assert BLOCK in [b["custom_block_name"] for b in ws["custom_blocks"]]
-    blocks = [b for b in json.loads(ws["content"]) if b["type"] == "custom_block"]
-    assert BLOCK in [b["data"]["custom_block_name"] for b in blocks]
+    # the checklist row stays a child table (open question 4: retire later); the
+    # page body is the tabs block, which has its own checklist renderer
+    content = json.loads(ws["content"])
+    assert [b["data"]["custom_block_name"] for b in content] == ["Konsol Home Tabs"]
     for ext in ("html", "js", "css"):
         assert os.path.isfile(os.path.join(BLOCK_DIR, "konsol_close_checklist." + ext)), ext
     install = _read(os.path.join(APP_DIR, "install.py"))

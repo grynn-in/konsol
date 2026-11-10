@@ -87,21 +87,31 @@ def row_key(row, accounts, declared):
     return ("account", code)
 
 
-def in_window(row, accounts, period_rows, key):
+def in_window(row, accounts, period_rows, key, windows=None):
     """True when the row's period counts at ``key`` (fiscal_year, fiscal_period).
 
     statement_model's rule: a chart account in the Profit and Loss section is
     year-to-date (``period_keys(...)["ytd"]``); everything else (Balance Sheet,
     CTA, not-in-chart) is cumulative (``_keys_up_to``).
+
+    ``windows`` is an optional dict the caller reuses across rows: the YTD and
+    cumulative key sets are computed lazily, once, and stored in it under
+    ``"ytd"`` / ``"cumulative"``. None recomputes per call (same result).
     """
+    if windows is None:
+        windows = {}
     period = (row["fiscal_year"], row["fiscal_period"])
     entry = accounts.get(row["main_account"])
     is_pl = (row.get("adjustment_type") != "cta" and entry is not None
              and not entry.get("is_group")
              and entry.get("statement_section") == statement_model.PL)
     if is_pl:
-        return period in set(statement_model.period_keys(period_rows, key)["ytd"])
-    return period in statement_model._keys_up_to(period_rows, key)
+        if "ytd" not in windows:
+            windows["ytd"] = set(statement_model.period_keys(period_rows, key)["ytd"])
+        return period in windows["ytd"]
+    if "cumulative" not in windows:
+        windows["cumulative"] = statement_model._keys_up_to(period_rows, key)
+    return period in windows["cumulative"]
 
 
 # -- row 3: the worksheet and its cross-foot ---------------------------------
@@ -221,8 +231,9 @@ def worksheet(rows, accounts, period_rows, key, declared, minor_unit, shown, all
     column_exact = {}
     present = set()
     outside = set()
+    windows = {}  # YTD / cumulative key sets, built lazily once for the run
     for row in rows:
-        if not in_window(row, accounts, period_rows, key):
+        if not in_window(row, accounts, period_rows, key, windows):
             continue
         code, layer = row["main_account"], row.get("adjustment_type")
         if row.get("null_rows") or row.get("amount") is None:

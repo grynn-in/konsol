@@ -15,21 +15,30 @@ from konsol.close import statement_api, statement_drill_report_model
 from konsol.consolidation.report.consolidated_statement.consolidated_statement import _group_code
 
 _REQUIRED = (("fiscal_year", "a fiscal year"), ("fiscal_period", "a fiscal period"),
-             ("consolidation_group", "a consolidation group"), ("heading", "a statement heading"))
+             ("heading", "a statement heading"))
 
 
 def execute(filters=None):
     filters = frappe._dict(filters or {})
-    for fieldname, what in _REQUIRED:
+    entity_basis = filters.get("basis") == "Entity"
+    # Basis: Entity (konsol#495) names an entity, never a group.
+    required = _REQUIRED + ((("entity", "an entity"),) if entity_basis
+                            else (("consolidation_group", "a consolidation group"),))
+    for fieldname, what in required:
         if not filters.get(fieldname):
             frappe.throw(f"Choose {what}.")
 
-    group = _group_code(filters.consolidation_group)
-    payload = statement_api.get_drill(filters.fiscal_year, filters.fiscal_period, group,
-                                      filters.heading)
-    currency = frappe.db.get_value(
-        "Consolidation Group", {"consolidation_group": group, "data_area_id": ["is", "not set"]},
-        "reporting_currency")
+    if entity_basis:
+        payload = statement_api.get_entity_drill(filters.fiscal_year, filters.fiscal_period,
+                                                 filters.entity, filters.heading)
+        currency = frappe.db.get_value("Entity", filters.entity, "functional_currency")
+    else:
+        group = _group_code(filters.consolidation_group)
+        payload = statement_api.get_drill(filters.fiscal_year, filters.fiscal_period, group,
+                                          filters.heading)
+        currency = frappe.db.get_value(
+            "Consolidation Group", {"consolidation_group": group, "data_area_id": ["is", "not set"]},
+            "reporting_currency")
     submissions = _submissions(payload)
     try:
         data = statement_drill_report_model.rows(payload, currency, submissions)

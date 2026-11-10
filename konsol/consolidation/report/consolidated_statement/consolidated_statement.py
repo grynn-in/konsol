@@ -14,6 +14,9 @@ message says why — it never fails the report.
 import frappe
 
 from konsol.close import statement_api, statement_report_model
+# One doc-name -> code resolution (konsol#495 row 11b); the old name stays
+# importable for the other reports that import it from here.
+from konsol.close.statement_api import group_code as _group_code
 
 
 def execute(filters=None):
@@ -21,12 +24,22 @@ def execute(filters=None):
     if not filters.get("fiscal_year") or not filters.get("fiscal_period"):
         frappe.throw("Choose a fiscal year and a fiscal period.")
 
-    group = _group_code(filters.get("consolidation_group"))
-    payload = statement_api.get_statement(filters.fiscal_year, filters.fiscal_period, group)
-    prior = _prior_year(filters.fiscal_year, filters.fiscal_period, group)
+    if filters.get("basis") == "Entity":
+        # Basis: Entity (konsol#495): one entity's own trial balance in its
+        # functional currency. No group, so no group drill link.
+        entity = filters.get("entity")
+        if not entity:
+            frappe.throw("Choose an entity.")
+        payload = statement_api.get_entity_statement(filters.fiscal_year, filters.fiscal_period, entity)
+        prior = _prior_year(filters.fiscal_year, filters.fiscal_period, None, entity=entity)
+        drill_group = None
+    else:
+        group = _group_code(filters.get("consolidation_group"))
+        payload = statement_api.get_statement(filters.fiscal_year, filters.fiscal_period, group)
+        prior = _prior_year(filters.fiscal_year, filters.fiscal_period, group)
+        drill_group = _drill_group(filters.get("consolidation_group"), payload)
     try:
-        data = statement_report_model.rows(
-            payload, prior, drill_group=_drill_group(filters.get("consolidation_group"), payload))
+        data = statement_report_model.rows(payload, prior, drill_group=drill_group)
         message = statement_report_model.message(payload, prior)
     except ValueError as e:
         frappe.throw(str(e))
@@ -46,7 +59,7 @@ def _drill_group(value, payload):
         "Consolidation Group", {"consolidation_group": code, "data_area_id": ["is", "not set"]}, "name")
 
 
-def _prior_year(fiscal_year, fiscal_period, group):
+def _prior_year(fiscal_year, fiscal_period, group, entity=None):
     """The same period and group a year earlier, for the Prior year column.
     A refused read (e.g. the prior year is not a declared period) becomes
     a non-ok payload carrying the refusal, and an ok one with no warehouse
@@ -57,27 +70,12 @@ def _prior_year(fiscal_year, fiscal_period, group):
     current-year ``get_statement`` call above has already passed; it also
     returns the TB rows the no-rows check needs."""
     try:
-        prior, reads = statement_api._statement(int(fiscal_year) - 1, fiscal_period, group)
+        if entity:
+            prior, reads = statement_api._entity_statement(int(fiscal_year) - 1, fiscal_period, entity)
+        else:
+            prior, reads = statement_api._statement(int(fiscal_year) - 1, fiscal_period, group)
         return statement_report_model.prior_with_rows(prior, (reads or {}).get("tb_rows"))
     except frappe.ValidationError as e:
         # The refusal is shown in the report message, not as a dialog too.
         frappe.clear_last_message()
         return {"state": "error", "message": str(e), "statement": None}
-
-
-def _group_code(value):
-    """The Link filter holds the Consolidation Group document name
-    (``CG-<group>-``); ``get_statement`` takes the group code. A value that
-    is not a document name is passed on as a code (``get_statement`` refuses
-    one that is not a root group)."""
-    if not value:
-        return None
-    row = frappe.db.get_value("Consolidation Group", value, ["consolidation_group", "data_area_id"], as_dict=True)
-    if row is None:
-        return value
-    # Every member row carries its root's code: resolving one would show the
-    # whole root group's statement as if it were the member's (review of #362).
-    if row.data_area_id:
-        frappe.throw(f"{value} is a member of {row.consolidation_group}, not a root consolidation group. "
-                     "Choose the root group.")
-    return row.consolidation_group

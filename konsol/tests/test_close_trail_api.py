@@ -636,3 +636,38 @@ def test_the_correction_trail_golden_fixture_is_the_producers_output():
     by_name = {e["name"]: e["detail"] for e in golden["events"]}
     assert by_name["CE-11"]["supersedes"] == "GER-1", by_name
     assert by_name["CE-12"]["superseded_by"] == "GER-3", by_name
+
+
+# --- #495 V1: a period-0 event is shown in another period's trail only when
+# it is a year kind. A Numbers download at P00 (opening balances) is that
+# period's event, not FY2026 P09's. ----------------------------------------
+
+def _p0_download():
+    return _event("CE-9", "statement_exported", _dt(1), fiscal_period=0,
+                  detail=json.dumps({"basis": "Group", "consolidation_group": "G1",
+                                     "entity": None, "filename": "numbers-FY2026P00-G1.xlsx",
+                                     "label": "Provisional"}))
+
+
+def test_a_period_zero_download_is_not_in_another_periods_trail():
+    site = _Site()
+    site.events = [_p0_download()]
+    out = _call(site, 2026, 9)
+    assert [e["name"] for e in out["events"]] == []
+
+
+def test_a_period_zero_download_is_in_the_period_zero_trail():
+    site = _Site()
+    site.periods[(2026, 0)] = {"fiscal_year": 2026, "fiscal_period": 0,
+                               "code": "P00", "status": "Open"}
+    site.events = [_p0_download()]
+    out = _call(site, 2026, 0)
+    assert [e["name"] for e in out["events"]] == ["CE-9"]
+
+
+def test_a_year_event_at_period_zero_is_still_in_every_periods_trail():
+    site = _Site()
+    site.events = [_event("CE-4", "year_closed", _dt(1), fiscal_period=0),
+                   _p0_download()]
+    out = _call(site, 2026, 9)
+    assert [e["name"] for e in out["events"]] == ["CE-4"]

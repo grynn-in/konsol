@@ -184,7 +184,8 @@ def _ambiguous_text(payload, submissions):
 
 def message(payload, submissions=()):
     """The report message: ``Statement drill · FY2025 P07 · <group> ·
-    <heading> <name> (<section>)``, the dimensions note, and any ambiguous
+    <heading> <name> (<section>)`` (entity basis: ``Basis: Entity · <code>
+    <name>`` in place of the group), the dimensions note, and any ambiguous
     trial balance, each escaped, joined by ``<br>`` (Desk renders the
     message as HTML)."""
     _refuse_unless_ok(payload)
@@ -194,8 +195,14 @@ def message(payload, submissions=()):
                                    drill.get("heading_name")) if p)
     if drill.get("section"):
         heading += f" ({drill['section']})"
+    if payload.get("basis") == "Entity":
+        # #495: the entity basis names the entity, never a group.
+        who = " ".join(p for p in (payload.get("entity"), payload.get("entity_name")) if p)
+        scope = ["Basis: Entity", who]
+    else:
+        scope = [payload.get("consolidation_group")]
     header = " · ".join(
         ["Statement drill", period_name(period["fiscal_year"], period["fiscal_period"])]
-        + [p for p in (payload.get("consolidation_group"), heading) if p])
+        + [p for p in scope + [heading] if p])
     lines = [header, drill.get("dimensions_note")] + _ambiguous_text(payload, submissions)
     return "<br>".join(_html.escape(line) for line in lines if line)

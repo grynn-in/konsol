@@ -169,6 +169,14 @@
    "description": "What happens when the consideration is below the group's share of the fair-value net assets. Recognise gain: Cr Bargain Purchase Gain (P&L). Refuse: the deal is refused and named."
   },
   {
+   "fieldname": "partial_period_treatment",
+   "fieldtype": "Select",
+   "label": "Partial Period Treatment",
+   "options": "Whole period\nPro-rate by days\nStub trial balance",
+   "depends_on": "eval:doc.is_group",
+   "description": "How an acquiree's P&L enters the consolidation when control passes mid-period (P&L flow accounts only). Whole period: the acquiree's full period P&L. Pro-rate by days: period P&L x days held / days in period; assumes even accrual. Stub trial balance: the acquiree uploads a trial balance for the stub from the acquisition date. Required once the group has a Business Combination; no default. Applies to every period (not effective-dated)."
+  },
+  {
    "fieldname": "acquisition_accounts_section",
    "fieldtype": "Section Break",
    "label": "Acquisition Accounts",
