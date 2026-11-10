@@ -617,13 +617,16 @@ def _entity_statement(fiscal_year, fiscal_period, entity):
     key = _period_key(fiscal_year, fiscal_period)
     if not entity:
         frappe.throw("Choose an entity.")
+    # Scope first (konsol#495 V4a): a scoped caller gets the same refusal for
+    # an unknown code and an out-of-scope one, so the refusal cannot say
+    # whether a code exists or is a group. An unrestricted caller passes.
+    assert_entity_access(entity)
     row = frappe.db.get_value(
         "Entity", entity, ["entity_name", "functional_currency", "is_group"], as_dict=True)
     if not row:
         frappe.throw(f"{entity} is not an entity.")
     if row.get("is_group"):
         frappe.throw(f"{entity} is a group entity: choose a legal entity, or use the Group basis.")
-    assert_entity_access(entity)
 
     period_rows = fiscal_calendar.fiscal_period_rows()
     period_row = _find_period(key, period_rows)
