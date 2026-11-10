@@ -618,7 +618,7 @@ def test_close_settings_declares_the_net_sales_heading():
     assert not field.get("reqd") and field.get("description")
     order = doc["field_order"]
     assert order.index("statement_net_sales_heading") > order.index("statements_section")
-    assert order.index("statement_net_sales_heading") < order.index("commentary_section")
+    assert order.index("statement_net_sales_heading") < order.index("deadlines_tab")  # konsol#510
 
 
 def test_net_sales_heading_problem():
