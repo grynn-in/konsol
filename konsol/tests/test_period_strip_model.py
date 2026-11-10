@@ -34,26 +34,31 @@ def test_years_sorted_unique():
 
 def test_latest_with_data_wins_when_declared():
     rows = [_p(2024, p) for p in range(1, 13)] + [_p(2025, p) for p in range(1, 13)]
-    info = M.strip_info(rows, (2024, 7))
+    info = M.strip_info(rows, [(2024, 7), (2024, 3)])
     assert info["latest"] == {"fiscal_year": 2024, "fiscal_period": 7}
 
 
-def test_latest_with_data_undeclared_falls_back_to_latest_regular():
+def test_data_periods_undeclared_fall_back_to_latest_regular():
     rows = [_p(2025, 1), _p(2025, 2), _p(2025, 13, "Adjustment")]
-    info = M.strip_info(rows, (2030, 1))
+    info = M.strip_info(rows, [(2030, 1)])
     assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 2}
 
 
 def test_no_data_uses_latest_regular_skipping_non_regular():
     rows = [_p(2024, 12), _p(2025, 13, "Adjustment")]
     assert M.strip_info(rows, None)["latest"] == {"fiscal_year": 2024, "fiscal_period": 12}
+    assert M.strip_info(rows, [])["latest"] == {"fiscal_year": 2024, "fiscal_period": 12}
 
 
-def test_latest_with_data_may_be_a_non_regular_declared_period():
-    rows = [_p(2025, 12), _p(2025, 13, "Adjustment")]
-    assert M.strip_info(rows, (2025, 13))["latest"] == {"fiscal_year": 2025, "fiscal_period": 13}
+def test_only_regular_periods_with_data_count():
+    rows = [_p(2025, 12), _p(2025, 13, "Adjustment"), _p(2025, 0, "Opening")]
+    info = M.strip_info(rows, [(2025, 13), (2025, 0), (2025, 6), (2025, 3)])
+    assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 6}
+    # data only in a non-Regular period: fall back as with no data
+    info = M.strip_info(rows, [(2025, 13)])
+    assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 12}
 
 
 def test_no_declared_periods_means_none():
-    assert M.strip_info([], (2025, 1))["latest"] is None
+    assert M.strip_info([], [(2025, 1)])["latest"] is None
     assert M.strip_info([_p(2025, 13, "Adjustment")], None)["latest"] is None
