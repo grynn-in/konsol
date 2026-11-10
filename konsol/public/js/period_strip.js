@@ -115,10 +115,17 @@
 		function layout() {
 			const style = container.style;
 			try {
+				// The visible input box, not the control wrapper: Frappe's wrapper
+				// carries a gutter (16px live), so its right edge overshoots the box.
+				const box = (el) => {
+					const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+					return r && r.right > r.left ? r : null;
+				};
 				const rect = (field) => {
 					const f = report.get_filter(field, false);
-					const w = f && f.$wrapper && (f.$wrapper[0] || f.$wrapper);
-					return w && w.getBoundingClientRect ? w.getBoundingClientRect() : null;
+					if (!f) return null;
+					return box(f.$input && (f.$input[0] || f.$input))
+						|| box(f.$wrapper && (f.$wrapper[0] || f.$wrapper));
 				};
 				const first = rect("fiscal_year");
 				const last = rect("consolidation_group") || rect("fiscal_period");
