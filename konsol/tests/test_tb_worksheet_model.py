@@ -503,3 +503,28 @@ def test_total_rounded_exact_has_no_rounding_column_and_survives_to_ids():
     assert M.ROUNDING not in ws["total_rounded_exact"]
     ids = M.to_ids(ws)
     assert ids["total_rounded_exact"] == {M._id(k): v for k, v in ws["total_rounded_exact"].items()}
+
+
+def test_period_windows_are_computed_once_per_run(monkeypatch):
+    """Row count must not drive window recomputation (47k rows took 8.6 s)."""
+    sm = M.statement_model
+    calls = {"period_keys": 0, "keys_up_to": 0}
+    real_pk, real_ku = sm.period_keys, sm._keys_up_to
+
+    def pk(*a, **k):
+        calls["period_keys"] += 1
+        return real_pk(*a, **k)
+
+    def ku(*a, **k):
+        calls["keys_up_to"] += 1
+        return real_ku(*a, **k)
+
+    monkeypatch.setattr(sm, "period_keys", pk)
+    monkeypatch.setattr(sm, "_keys_up_to", ku)
+    rows = [wrow("entity", EA, account, fy, fp, 1.0)
+            for account in ("4000", "1000") for fy in (2024, 2025)
+            for fp in range(1, 13) for _ in range(10)]
+    assert len(rows) >= 400
+    M.worksheet(rows, ACCOUNTS, PERIODS, (2025, 3), {"cta_account": "3100"}, 2, None, None)
+    assert calls["period_keys"] <= 2
+    assert calls["keys_up_to"] <= 2
