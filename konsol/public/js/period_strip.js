@@ -76,15 +76,9 @@
 			range.setAttribute("step", 1);
 			range.setAttribute("aria-label", `Fiscal ${r.key}`);
 			track.appendChild(range);
+			let ticks = null;
 			if (r.key === "year") {
-				const ticks = el(doc, "div", "konsol-strip-ticks");
-				for (const m of model.year_marks(info.data_years, min, max)) {
-					const t = el(doc, "span", "konsol-strip-tick");
-					t.setAttribute("data-year", m.year);
-					t.setAttribute("title", String(m.year));
-					t.style.left = `${m.percent}%`;
-					ticks.appendChild(t);
-				}
+				ticks = el(doc, "div", "konsol-strip-ticks");
 				track.appendChild(ticks);
 				track.setAttribute("title", "Marks: years with data");
 			}
@@ -101,8 +95,26 @@
 			row.appendChild(label);
 			container.appendChild(row);
 			const text = (v) => (r.key === "period" ? model.period_label(v) : String(v));
-			return { ...r, min: min, max: max, range, label, prev, next, text };
+			return { ...r, min: min, max: max, range, label, prev, next, text, ticks, marks: [] };
 		});
+
+		// The year marks (years with data) for the group in `data`; also the
+		// first draw. A group change brings new data_years.
+		function draw_ticks(data) {
+			for (const r of rows) {
+				if (!r.ticks) continue;
+				r.marks.forEach((c) => r.ticks.removeChild(c));
+				r.marks = [];
+				for (const m of model.year_marks(data.data_years, r.min, r.max)) {
+					const t = el(doc, "span", "konsol-strip-tick");
+					t.setAttribute("data-year", m.year);
+					t.setAttribute("title", String(m.year));
+					t.style.left = `${m.percent}%`;
+					r.ticks.appendChild(t);
+					r.marks.push(t);
+				}
+			}
+		}
 
 		function real(r) {
 			return report.get_filter_value(r.field, false);
@@ -184,15 +196,26 @@
 		}
 
 		form_el.parentNode.insertBefore(container, form_el);
+		draw_ticks(info);
 		refresh();
 		let resize_timer = null;
+		const on_resize = () => {
+			clearTimeout(resize_timer);
+			resize_timer = setTimeout(() => { if (container.parentNode) layout(); }, 80);
+		};
 		if (typeof window !== "undefined" && window.addEventListener) {
-			window.addEventListener("resize", () => {
-				clearTimeout(resize_timer);
-				resize_timer = setTimeout(() => { if (container.parentNode) layout(); }, 80);
-			});
+			window.addEventListener("resize", on_resize);
 		}
-		const handle = { container, refresh };
+		// The strips go: the container, the window listener, the report's handle.
+		function detach() {
+			clearTimeout(resize_timer);
+			if (typeof window !== "undefined" && window.removeEventListener) {
+				window.removeEventListener("resize", on_resize);
+			}
+			if (container.parentNode) container.parentNode.removeChild(container);
+			if (report.__konsol_period_strips === handle) delete report.__konsol_period_strips;
+		}
+		const handle = { container, refresh, detach, update_info: draw_ticks };
 		report.__konsol_period_strips = handle;
 		return handle;
 	}
