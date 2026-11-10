@@ -25,6 +25,7 @@ class El {
 		this.children.splice(i < 0 ? this.children.length : i, 0, c); return c; }
 	addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
 	fire(t) { (this.listeners[t] || []).forEach((f) => f({ type: t, target: this })); }
+	getBoundingClientRect() { return { left: scenario.container_left || 0 }; }
 	walk(out = []) { out.push(this); this.children.forEach((c) => c.walk(out)); return out; }
 }
 const doc = { createElement: (t) => new El(t), head: new El("head"), getElementById: () => null };
@@ -35,10 +36,16 @@ body.appendChild(page_form);
 const vals = { ...scenario.filters };
 const inputs = { fiscal_year: new El("input"), fiscal_period: new El("input") };
 const calls = [];
+const rects = { ...(scenario.rects || {}) };
+const win = { listeners: {}, addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
+	fire(t) { (this.listeners[t] || []).forEach((f) => f({ type: t })); } };
+global.window = win;
 const report = {
 	page: { page_form: [page_form] },
 	get_filter_value: (k) => vals[k],
-	get_filter: (k) => ({ $input: { 0: inputs[k], on: (t, f) => inputs[k].addEventListener(t, f) } }),
+	get_filter: (k) => (k in inputs || rects[k]) ? {
+		$input: inputs[k] && { 0: inputs[k], on: (t, f) => inputs[k].addEventListener(t, f) },
+		$wrapper: rects[k] && { 0: { getBoundingClientRect: () => rects[k] } } } : undefined,
 	set_filter_value: (o) => { calls.push(o); Object.assign(vals, o); },
 };
 global.document = doc;
@@ -59,6 +66,7 @@ const act = {
 	drag: (row, v) => { const r = one(`konsol-strip-${row}-range`); r.value = String(v); r.fire("input"); },
 	release: (row, v) => { const r = one(`konsol-strip-${row}-range`); r.value = String(v); r.fire("change"); },
 	click: (row, which) => one(`konsol-strip-${row}-${which}`).fire("click"),
+	resize: (new_rects) => { Object.assign(rects, new_rects); win.fire("resize"); },
 	type: (k, v) => { vals[k] = v; inputs[k].fire("change"); },
 };
 const log = [];
@@ -66,7 +74,9 @@ for (const [name, ...args] of scenario.steps || []) {
 	act[name](...args);
 	log.push({ calls: calls.length, last: calls[calls.length - 1], state: state(), disabled: disabled() });
 }
-console.log(JSON.stringify({
+const container = one("konsol-period-strips");
+setTimeout(() => console.log(JSON.stringify({
+	layout: { marginLeft: container.style.marginLeft, width: container.style.width },
 	containers: by("konsol-period-strips").length,
 	above_form: body.children.indexOf(one("konsol-period-strips")) < body.children.indexOf(page_form),
 	ticks: by("konsol-strip-tick").map((e) => e.attrs["data-year"]),
@@ -79,7 +89,7 @@ console.log(JSON.stringify({
 		.map((c) => [c, one(`konsol-strip-${c}`).attrs["aria-label"]])),
 	label_titles: ["year", "period"].map((r) => one(`konsol-strip-${r}-label`).attrs.title || ""),
 	initial: state(), initial_disabled: disabled(), log,
-}));
+})), 250);
 """
 
 
@@ -196,3 +206,41 @@ def test_out_of_range_label_explains_itself_and_is_not_red():
     css = open(SCRIPT).read()
     rule = [line for line in css.splitlines() if "out-of-range" in line and "{" in line][0]
     assert "red" not in rule
+
+
+FY = {"left": 120, "right": 300}
+GROUP = {"left": 520, "right": 700}
+PERIOD = {"left": 320, "right": 440}
+
+
+def test_strips_span_fiscal_year_left_to_consolidation_group_right():
+    out = _run({**BASE, "rects": {"fiscal_year": FY, "fiscal_period": PERIOD, "consolidation_group": GROUP}})
+    assert out["layout"] == {"marginLeft": "120px", "width": "580px"}
+
+
+def test_the_container_own_left_is_subtracted():
+    out = _run({**BASE, "container_left": 20,
+                "rects": {"fiscal_year": FY, "fiscal_period": PERIOD, "consolidation_group": GROUP}})
+    assert out["layout"] == {"marginLeft": "100px", "width": "580px"}
+
+
+def test_without_a_group_filter_the_span_ends_at_fiscal_period():
+    out = _run({**BASE, "rects": {"fiscal_year": FY, "fiscal_period": PERIOD}})
+    assert out["layout"] == {"marginLeft": "120px", "width": "320px"}
+
+
+def test_resize_remeasures():
+    out = _run({**BASE, "rects": {"fiscal_year": FY, "fiscal_period": PERIOD, "consolidation_group": GROUP},
+                "steps": [["resize", {"fiscal_year": {"left": 80, "right": 260},
+                                      "consolidation_group": {"left": 400, "right": 500}}]]})
+    assert out["layout"] == {"marginLeft": "80px", "width": "420px"}
+
+
+def test_unmeasurable_filters_fall_back_to_the_plain_layout():
+    out = _run(BASE)  # no rects: fake filters have no wrapper
+    assert out["layout"] == {"marginLeft": "", "width": ""}
+
+
+def test_spacing_between_the_strips_and_before_the_filter_row():
+    css = open(SCRIPT).read()
+    assert "margin:0 0 10px" in css and "margin-bottom:8px" in css
