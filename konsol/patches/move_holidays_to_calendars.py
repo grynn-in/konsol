@@ -11,11 +11,12 @@ declared has no due dates. This patch keeps what a site had declared:
   missing. A date already in that year's calendar is not added twice; an
   existing calendar is never ticked or cleared.
 - A year whose calendar already ticks No Holidays This Year is left alone:
-  its rows stay on Close Settings, the year is printed, and a rerun after the
-  site resolves it places them (review of #512). Nothing stops the migrate.
+  its rows stay on Close Settings (not visible in Desk), the year is printed
+  with the command that reruns this patch once the year is unticked, and the
+  rerun places them (review of #512). Nothing stops the migrate.
 - A site without the Close Holiday table has nothing to move.
-- The old rows are deleted only after every row has been placed. Nothing is
-  lost: placed + already-present = rows found, and the counts print.
+- A year's old rows are deleted only after its calendar saved. Nothing is
+  lost: placed + already-present + kept = rows found, and the counts print.
 - Idempotent: a second run finds no Close Settings rows and does nothing.
 
 A year is declared only by the holidays it already had. A year with no row
@@ -55,8 +56,9 @@ def execute():
             if calendar.no_holidays:
                 kept += by_year[year]
                 print("move_holidays_to_calendars: %d declares No Holidays This Year, so its %d "
-                      "Close Settings holiday row(s) stay; untick it or delete the rows, then "
-                      "run this patch again" % (year, len(by_year[year])))
+                      "Close Settings holiday row(s) stay; untick it, then run: bench --site <site> "
+                      "execute konsol.patches.move_holidays_to_calendars.execute"
+                      % (year, len(by_year[year])))
                 continue
         else:
             calendar = frappe.get_doc({"doctype": CALENDAR, "year": year, "no_holidays": 0})
