@@ -31,14 +31,14 @@ _REPORTS = ("Consolidation Worksheet", "Consolidated Statement", "Statement Dril
 def _may_open_a_period_report():
     """True when the user may open at least one of the three reports, by the
     check Frappe makes when it runs a query report (desk/query_report.py
-    get_report_doc): ``Report.is_permitted()`` (Has Role / Custom Role) and
+    get_report_doc): the report is not disabled, ``Report.is_permitted()`` (Has Role / Custom Role) and
     the ``report`` right on the report's reference doctype."""
     for name in _REPORTS:
         try:
             doc = frappe.get_doc("Report", name)
         except frappe.DoesNotExistError:
             continue
-        if doc.is_permitted() and frappe.has_permission(doc.ref_doctype, "report"):
+        if not doc.disabled and doc.is_permitted() and frappe.has_permission(doc.ref_doctype, "report"):
             return True
     return False
 
