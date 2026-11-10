@@ -22,7 +22,7 @@ const script = process.argv[1];
 const sc = JSON.parse(process.argv[2]);
 const lib = require(script);
 
-const calls = { server: [], set: [], update: [], attach: 0, removed: 0, strip_refresh: 0 };
+const calls = { server: [], set: [], update: [], infos: [], attach: 0, removed: 0, strip_refresh: 0 };
 const store = {};
 if (sc.saved) store["konsol report filters - " + sc.report] = { filters: sc.saved };
 const frappe = {
@@ -54,13 +54,16 @@ const strip = { attach: (report, info) => {
   if (report.__konsol_period_strips) return report.__konsol_period_strips;
   calls.attach += 1;
   const container = { parentNode: { removeChild: () => { calls.removed += 1; container.parentNode = null; } } };
-  const h = { container, refresh: () => { calls.strip_refresh += 1; } };
+  const h = { container, refresh: () => { calls.strip_refresh += 1; },
+    update_info: (i) => { calls.infos.push(i); } };
   report.__konsol_period_strips = h; return h; } };
 
 const fetch = (url) => { const [path, query] = url.split("?");
   calls.server.push([path.replace("/api/method/", ""), "GET", query || ""]);
+  const group = new URLSearchParams(query || "").get("consolidation_group") || "";
+  const message = sc.info_by_group && group in sc.info_by_group ? sc.info_by_group[group] : sc.info;
   return sc.info_fails ? Promise.reject(new Error("boom"))
-    : Promise.resolve({ ok: true, json: () => Promise.resolve({ message: sc.info }) }); };
+    : Promise.resolve({ ok: true, json: () => Promise.resolve({ message }) }); };
 const pr = lib.create({ frappe, fetch, strip, search: () => sc.search || "" });
 const keys = sc.keys;
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -75,6 +78,14 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
     Object.assign(vals, sc.run);
     await report.refresh();
     await tick();
+  }
+  if (sc.then_run) {
+    for (const run of sc.then_run) {
+      Object.assign(vals, run);
+      await report.refresh();
+      await tick();
+      await tick();
+    }
   }
   if (sc.reload) { out.refresh_report = report.refresh_report(); }
   out.calls = calls;
@@ -200,3 +211,44 @@ def test_a_failed_info_call_is_not_retried_on_the_next_setup():
     out = _run({**BASE, "info_fails": True, "second_setup": True})
     assert len(out["calls"]["server"]) == 1
     assert out["calls"]["attach"] == 0
+
+
+def _years(*ys):
+    return {**INFO, "data_years": list(ys)}
+
+
+def _groups(out):
+    return [c[2] for c in out["calls"]["server"]]
+
+
+def test_info_is_fetched_for_the_saved_group_not_the_onload_one():
+    out = _run({**BASE, "saved": {"consolidation_group": "CG-B-"},
+                "info_by_group": {"CG-B-": _years(2025)}})
+    assert _groups(out) == ["consolidation_group=CG-B-"]
+
+
+def test_info_for_a_linked_group_is_fetched_for_that_group():
+    out = _run({**BASE, "current": {**TODAY, "consolidation_group": "CG-L-"},
+                "saved": {"consolidation_group": "CG-B-"},
+                "search": "?consolidation_group=CG-L-"})
+    assert _groups(out) == ["consolidation_group=CG-L-"]
+
+
+def test_a_group_change_after_a_run_updates_the_ticks_from_that_groups_data():
+    out = _run({**BASE, "info_by_group": {"": _years(2023), "CG-B-": _years(2025)},
+                "then_run": [{"consolidation_group": "CG-B-"}]})
+    assert _groups(out) == ["", "consolidation_group=CG-B-"]
+    assert [i["data_years"] for i in out["calls"]["infos"]] == [[2025]]
+
+
+def test_info_is_fetched_once_per_group():
+    out = _run({**BASE, "info_by_group": {"": _years(2023), "CG-B-": _years(2025)},
+                "then_run": [{"consolidation_group": "CG-B-"}, {"consolidation_group": ""},
+                             {"consolidation_group": "CG-B-"}]})
+    assert _groups(out) == ["", "consolidation_group=CG-B-"]
+    assert [i["data_years"] for i in out["calls"]["infos"]] == [[2025], [2023], [2025]]
+
+
+def test_an_unchanged_group_does_not_touch_the_ticks():
+    out = _run({**BASE, "then_run": [{"fiscal_period": 3}]})
+    assert out["calls"]["infos"] == []
