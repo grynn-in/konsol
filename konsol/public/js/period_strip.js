@@ -21,8 +21,10 @@
 	color:var(--text-color);border-radius:var(--border-radius,2px);line-height:1;padding:1px 7px;cursor:pointer}
 .konsol-strip-btn:disabled{opacity:.4;cursor:default}
 .konsol-strip-label{min-width:40px;font-weight:600;color:var(--text-color)}
-.konsol-strip-label.out-of-range{color:var(--red-500,var(--text-muted))}
+.konsol-strip-label.out-of-range{color:var(--primary,var(--text-muted))}
 `;
+
+	const OUT_OF_RANGE_TITLE = "Outside the strip: type it in the box";
 
 	const ROWS = [
 		{ key: "year", field: "fiscal_year", name: "Year", min: "year_min", max: "year_max" },
@@ -61,14 +63,17 @@
 			row.appendChild(el(doc, "span", "konsol-strip-name", r.name));
 			const prev = el(doc, "button", `konsol-strip-btn konsol-strip-${r.key}-prev`, "‹");
 			prev.setAttribute("type", "button");
+			prev.setAttribute("aria-label", `Previous ${r.key}`);
 			const next = el(doc, "button", `konsol-strip-btn konsol-strip-${r.key}-next`, "›");
 			next.setAttribute("type", "button");
+			next.setAttribute("aria-label", `Next ${r.key}`);
 			const track = el(doc, "div", "konsol-strip-track");
 			const range = el(doc, "input", `konsol-strip-${r.key}-range`);
 			range.setAttribute("type", "range");
 			range.setAttribute("min", min);
 			range.setAttribute("max", max);
 			range.setAttribute("step", 1);
+			range.setAttribute("aria-label", `Fiscal ${r.key}`);
 			track.appendChild(range);
 			if (r.key === "year") {
 				const ticks = el(doc, "div", "konsol-strip-ticks");
@@ -104,6 +109,7 @@
 				const known = !(v === undefined || v === null || v === "") && Number.isFinite(n);
 				r.prev.disabled = known && n <= r.min;
 				r.next.disabled = known && n >= r.max;
+				r.label.setAttribute("title", pos.out_of_range ? OUT_OF_RANGE_TITLE : "");
 				r.label.className = `konsol-strip-label konsol-strip-${r.key}-label` +
 					(pos.out_of_range ? " out-of-range" : "");
 			}
