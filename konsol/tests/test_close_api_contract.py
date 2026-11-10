@@ -195,8 +195,30 @@ def test_report_permission_gated_endpoints_open_with_the_raise():
             tree = ast.parse(f.read())
         fn = next(n for n in _whitelisted_functions(tree) if n.name == function)
         stmt = _first_statement(fn)
-        assert isinstance(stmt, ast.If) and isinstance(stmt.body[0], ast.Raise), (filename, function)
-        assert "PermissionError" in ast.unparse(stmt.body[0]), (filename, function)
+        assert _opens_with_the_report_check(stmt), (filename, function)
+
+
+def _opens_with_the_report_check(stmt):
+    """``if not _may_open_a_period_report(): raise frappe.PermissionError``."""
+    if not (isinstance(stmt, ast.If) and isinstance(stmt.body[0], ast.Raise)):
+        return False
+    test = stmt.test
+    named = (isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not)
+             and isinstance(test.operand, ast.Call) and isinstance(test.operand.func, ast.Name)
+             and test.operand.func.id == "_may_open_a_period_report")
+    return named and "PermissionError" in ast.unparse(stmt.body[0])
+
+
+def test_the_exemption_check_rejects_a_gate_that_cannot_fire():
+    def first(src):
+        return ast.parse(src).body[0].body[0]
+    good = "def f():\n    if not _may_open_a_period_report():\n        raise frappe.PermissionError\n"
+    assert _opens_with_the_report_check(first(good))
+    for bad in (good.replace("not _may_open_a_period_report()", "False"),
+                good.replace("not _may_open_a_period_report()", "_may_open_a_period_report()"),
+                good.replace("_may_open_a_period_report", "_other_check"),
+                good.replace("PermissionError", "ValueError")):
+        assert not _opens_with_the_report_check(first(bad)), bad
 
 
 def test_the_close_package_exists():

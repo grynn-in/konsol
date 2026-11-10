@@ -43,7 +43,7 @@ def _real_group_code(frappe):
 
 
 def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, periods=None,
-            group_names=None, **kwargs):
+            group_names=None, disabled=(), **kwargs):
     """``readable``: the reports whose Report.is_permitted() is True; the rest
     are denied. ``doctype_ok``: frappe.has_permission(ref_doctype, "report")."""
     calls = {"sql": [], "params": [], "kwargs": [], "has_permission": [], "only_for": 0}
@@ -62,7 +62,7 @@ def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, peri
         if name == "Statement Drill" and "missing-drill" in kwargs:
             raise _NotFound(name)
         return types.SimpleNamespace(
-            name=name, ref_doctype="Trial Balance Submission",
+            name=name, disabled=name in disabled, ref_doctype="Trial Balance Submission",
             is_permitted=lambda: name in readable)
 
     def has_permission(doctype, ptype="read", *a, **kw):
@@ -235,3 +235,11 @@ def test_group_code_is_imported_from_the_report_not_copied():
     assert any(isinstance(n, ast.ImportFrom) and n.module == _CS_MODULE
                and any(a.name == "_group_code" for a in n.names) for n in tree.body)
     assert not any(isinstance(n, ast.FunctionDef) and n.name == "_group_code" for n in tree.body)
+
+
+def test_a_disabled_report_does_not_grant_the_strips():
+    # Frappe's get_report_doc refuses a disabled report.
+    with pytest.raises(PermissionError):
+        _invoke(disabled=REPORTS)
+    info, _ = _invoke(disabled=REPORTS[:2])  # the third still opens
+    assert info["years"] == [2024, 2025]
