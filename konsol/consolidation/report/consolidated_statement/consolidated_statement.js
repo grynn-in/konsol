@@ -42,6 +42,22 @@ function has_statement() {
 	);
 }
 
+// The Frappe query report checks only `reqd` before a run (conditional-mandatory
+// settings are ignored), so the Basis filter's on_change sets `reqd` on the filter the
+// basis needs, then refreshes: a blank one shows Frappe's inline "Please set
+// filters", never a server error dialog. Frappe calls on_change INSTEAD of
+// its own refresh, so this refreshes itself.
+function require_filter(fieldname, required) {
+	const filter = frappe.query_report.get_filter(fieldname);
+	filter.df.reqd = required ? 1 : 0;
+	filter.refresh();
+}
+
+function on_basis_change() {
+	require_filter("entity", frappe.query_report.get_filter_value("basis") === "Entity");
+	frappe.query_report.refresh();
+}
+
 function export_to_excel() {
 	// A form POST (open_url_post adds the CSRF token); values are sent as
 	// strings, as a blank filter is "", never "null" or "undefined".
@@ -143,6 +159,7 @@ frappe.query_reports["Consolidated Statement"] = {
 			options: "Group\nEntity",
 			default: "Group",
 			description: __("Entity: one entity's own trial balance in its functional currency."),
+			on_change: on_basis_change,
 		},
 		{
 			fieldname: "entity",
@@ -150,7 +167,6 @@ frappe.query_reports["Consolidated Statement"] = {
 			fieldtype: "Link",
 			options: "Entity",
 			depends_on: 'eval:doc.basis=="Entity"',
-			mandatory_depends_on: 'eval:doc.basis=="Entity"',
 			get_query() {
 				return { filters: { is_group: 0 } };
 			},

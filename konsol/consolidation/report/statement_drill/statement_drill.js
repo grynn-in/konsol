@@ -2,6 +2,21 @@
 // eliminations, CTA, top-side journals, deal rows), its accounts and its
 // source documents. Opened from a Consolidated Statement heading.
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
+// The Frappe query report checks only `reqd` before a run (conditional-mandatory
+// settings are ignored), so the Basis filter's on_change sets `reqd` on the filter the
+// basis needs, then refreshes: a blank one shows Frappe's inline "Please set
+// filters", never a server error dialog. Frappe calls on_change INSTEAD of
+// its own refresh, so this refreshes itself.
+function on_basis_change() {
+	const entity_basis = frappe.query_report.get_filter_value("basis") === "Entity";
+	for (const [fieldname, required] of [["entity", entity_basis], ["consolidation_group", !entity_basis]]) {
+		const filter = frappe.query_report.get_filter(fieldname);
+		filter.df.reqd = required ? 1 : 0;
+		filter.refresh();
+	}
+	frappe.query_report.refresh();
+}
+
 frappe.query_reports["Statement Drill"] = {
 	filters: [
 		{
@@ -25,6 +40,7 @@ frappe.query_reports["Statement Drill"] = {
 			options: "Group\nEntity",
 			default: "Group",
 			description: __("Entity: one entity's own trial balance in its functional currency."),
+			on_change: on_basis_change,
 		},
 		{
 			fieldname: "entity",
@@ -32,7 +48,6 @@ frappe.query_reports["Statement Drill"] = {
 			fieldtype: "Link",
 			options: "Entity",
 			depends_on: 'eval:doc.basis=="Entity"',
-			mandatory_depends_on: 'eval:doc.basis=="Entity"',
 			get_query() {
 				return { filters: { is_group: 0 } };
 			},
@@ -43,7 +58,7 @@ frappe.query_reports["Statement Drill"] = {
 			fieldtype: "Link",
 			options: "Consolidation Group",
 			depends_on: 'eval:doc.basis!="Entity"',
-			mandatory_depends_on: 'eval:doc.basis!="Entity"',
+			reqd: 1, // the default basis is Group; on_basis_change swaps it
 			description: __("A root group."),
 			// Root groups only (statement_api._ROOT_FILTER: no data_area_id).
 			get_query() {
