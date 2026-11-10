@@ -12,8 +12,8 @@ period, else None.
 
 YEAR_MIN = 1980
 YEAR_MAX = 2045
-PERIOD_MIN = 1
-PERIOD_MAX = 12
+PERIOD_MIN = 0   # Open (opening balances)
+PERIOD_MAX = 13  # Close (closing adjustments)
 
 
 def strip_info(period_rows, periods_with_data):

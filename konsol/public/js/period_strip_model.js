@@ -21,6 +21,15 @@
 		return clamp(n + delta, min, max);
 	}
 
+	// Period 0 reads "Open" and 13 "Close"; any other value reads as itself.
+	function period_label(value) {
+		if (is_empty(value)) return "";
+		const n = Number(value);
+		if (n === 0) return "Open";
+		if (n === 13) return "Close";
+		return String(value);
+	}
+
 	function strip_position(value, min, max) {
 		const n = Number(value);
 		const shown = clamp(Number.isFinite(n) ? n : min, min, max);
@@ -74,7 +83,7 @@
 		return out;
 	}
 
-	const api = { clamp, step, strip_position, year_marks, initial_filters, to_save };
+	const api = { clamp, step, period_label, strip_position, year_marks, initial_filters, to_save };
 	if (typeof window !== "undefined") {
 		window.konsol = window.konsol || {};
 		window.konsol.period_strip_model = api;

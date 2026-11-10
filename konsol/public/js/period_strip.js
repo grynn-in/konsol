@@ -20,6 +20,7 @@
 .konsol-strip-btn{border:1px solid var(--border-color);background:var(--control-bg,transparent);
 	color:var(--text-color);border-radius:var(--border-radius,2px);line-height:1;padding:1px 7px;cursor:pointer}
 .konsol-strip-btn:disabled{opacity:.4;cursor:default}
+.konsol-strip-caps{display:flex;justify-content:space-between;font-size:10px;line-height:1.2}
 .konsol-strip-label{min-width:40px;font-weight:600;color:var(--text-color)}
 .konsol-strip-label.out-of-range{color:var(--primary,var(--text-muted))}
 `;
@@ -86,13 +87,20 @@
 				}
 				track.appendChild(ticks);
 			}
+			if (r.key === "period") {
+				const caps = el(doc, "div", "konsol-strip-caps");
+				caps.appendChild(el(doc, "span", "konsol-strip-cap-open", "Open"));
+				caps.appendChild(el(doc, "span", "konsol-strip-cap-close", "Close"));
+				track.appendChild(caps);
+			}
 			const label = el(doc, "span", `konsol-strip-label konsol-strip-${r.key}-label`);
 			row.appendChild(prev);
 			row.appendChild(track);
 			row.appendChild(next);
 			row.appendChild(label);
 			container.appendChild(row);
-			return { ...r, min: min, max: max, range, label, prev, next };
+			const text = (v) => (r.key === "period" ? model.period_label(v) : String(v));
+			return { ...r, min: min, max: max, range, label, prev, next, text };
 		});
 
 		function real(r) {
@@ -132,7 +140,7 @@
 				const v = real(r);
 				const pos = model.strip_position(v, r.min, r.max);
 				r.range.value = String(pos.value);
-				r.label.textContent = v === undefined || v === null || v === "" ? "" : String(v);
+				r.label.textContent = v === undefined || v === null || v === "" ? "" : r.text(v);
 				const n = Number(v);
 				const known = !(v === undefined || v === null || v === "") && Number.isFinite(n);
 				r.prev.disabled = known && n <= r.min;
@@ -159,7 +167,7 @@
 
 		for (const r of rows) {
 			// Dragging: label only. Release (change): the one filter change.
-			r.range.addEventListener("input", () => { r.label.textContent = r.range.value; });
+			r.range.addEventListener("input", () => { r.label.textContent = r.text(r.range.value); });
 			r.range.addEventListener("change", () => commit(r, Number(r.range.value)));
 			r.prev.addEventListener("click", () => step_to(r, -1));
 			r.next.addEventListener("click", () => step_to(r, 1));

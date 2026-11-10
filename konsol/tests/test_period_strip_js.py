@@ -251,7 +251,8 @@ def test_period_zero_and_thirteen_are_in_range_and_read_open_and_close():
     out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 0}, "years": [],
                 "steps": [["type", "fiscal_period", 13], ["drag", "period", 0], ["drag", "period", 13],
                           ["drag", "period", 7]]})
-    assert out["initial"]["period"] == {"thumb": "0", "label": "Open"}
+    first = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 0}, "years": []})
+    assert first["initial"]["period"] == {"thumb": "0", "label": "Open"}
     labels = [s["state"]["period"]["label"] for s in out["log"]]
     assert labels == ["Close", "Open", "Close", "7"]
     assert out["log"][0]["state"]["period"]["thumb"] == "13"
