@@ -78,7 +78,7 @@
 			track.appendChild(range);
 			if (r.key === "year") {
 				const ticks = el(doc, "div", "konsol-strip-ticks");
-				for (const m of model.year_marks(info.years, min, max)) {
+				for (const m of model.year_marks(info.data_years, min, max)) {
 					const t = el(doc, "span", "konsol-strip-tick");
 					t.setAttribute("data-year", m.year);
 					t.setAttribute("title", String(m.year));
@@ -86,6 +86,7 @@
 					ticks.appendChild(t);
 				}
 				track.appendChild(ticks);
+				track.setAttribute("title", "Marks: years with data");
 			}
 			if (r.key === "period") {
 				const caps = el(doc, "div", "konsol-strip-caps");

@@ -7,7 +7,8 @@ of ``(fiscal_year, fiscal_period)`` pairs that have data (or None).
 
 ``latest`` is the newest period with data that is declared Regular (P0, P13
 and other non-Regular periods never count), else the latest declared Regular
-period, else None.
+period, else None. ``data_years`` are the fiscal years with data (the Year
+strip's marks); ``years`` are the declared ones.
 """
 
 YEAR_MIN = 1980
@@ -16,7 +17,7 @@ PERIOD_MIN = 0   # Open (opening balances)
 PERIOD_MAX = 13  # Close (closing adjustments)
 
 
-def strip_info(period_rows, periods_with_data):
+def strip_info(period_rows, periods_with_data, data_years=None):
     declared = {(int(r["fiscal_year"]), int(r["fiscal_period"])) for r in period_rows}
     years = sorted({fy for fy, _ in declared})
     regular = {(int(r["fiscal_year"]), int(r["fiscal_period"])) for r in period_rows
@@ -26,6 +27,7 @@ def strip_info(period_rows, periods_with_data):
     latest = max(candidates) if candidates else (max(regular) if regular else None)
     return {
         "years": years,
+        "data_years": sorted({int(y) for y in (data_years or [])}),
         "latest": ({"fiscal_year": latest[0], "fiscal_period": latest[1]}
                    if latest else None),
         "year_min": YEAR_MIN,

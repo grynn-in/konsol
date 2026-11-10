@@ -17,6 +17,10 @@ _PERIODS_SQL = (
     "SELECT DISTINCT fiscal_year, fiscal_period FROM epm_gold.gold_fully_consolidated_tb "
     "{where}ORDER BY fiscal_year DESC, fiscal_period DESC LIMIT 200"
 )
+_YEARS_SQL = (
+    "SELECT DISTINCT fiscal_year FROM epm_gold.gold_fully_consolidated_tb "
+    "{where}ORDER BY fiscal_year"
+)
 _GROUP_WHERE = "WHERE consolidation_group = {group:String} "
 
 #: The three Desk reports that show the strips.
@@ -43,13 +47,18 @@ def period_strip_info(consolidation_group=None):
     if not _may_open_a_period_report():
         raise frappe.PermissionError
     period_rows = fiscal_calendar.fiscal_period_rows()
-    with_data = None
-    try:
-        group = consolidation_group or None
-        sql = _PERIODS_SQL.format(where=_GROUP_WHERE if group else "")
-        data = ch_read.rows(sql, {"group": group} if group else None,
-                            timeout=3, settings={"max_execution_time": 2})
-        with_data = [(int(r["fiscal_year"]), int(r["fiscal_period"])) for r in data]
-    except Exception:  # noqa: BLE001 — "can't say" means no data period, never an error
-        with_data = None
-    return period_strip_model.strip_info(period_rows, with_data)
+    group = consolidation_group or None
+    where = _GROUP_WHERE if group else ""
+    params = {"group": group} if group else None
+
+    def read(sql, pick):
+        try:
+            data = ch_read.rows(sql.format(where=where), params,
+                                timeout=3, settings={"max_execution_time": 2})
+            return [pick(r) for r in data]
+        except Exception:  # noqa: BLE001 — "can't say" means no data, never an error
+            return None
+
+    with_data = read(_PERIODS_SQL, lambda r: (int(r["fiscal_year"]), int(r["fiscal_period"])))
+    data_years = read(_YEARS_SQL, lambda r: int(r["fiscal_year"])) or []
+    return period_strip_model.strip_info(period_rows, with_data, data_years)
