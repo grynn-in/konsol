@@ -22,6 +22,7 @@ IFRS_PARTIAL = {
     "acquisition_costs_treatment": "Expense",
     "measurement_period": "12 months",
     "bargain_purchase": "Recognise gain",
+    "partial_period_treatment": "Whole period",
     "goodwill_account": "ZZ-1",
     "fair_value_adjustment_account": "ZZ-2",
     "investment_account": "ZZ-3",

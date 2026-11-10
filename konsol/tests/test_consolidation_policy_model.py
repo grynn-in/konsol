@@ -88,7 +88,7 @@ def test_an_empty_policy_is_fine_until_the_group_has_a_deal():
 def test_every_required_policy_field_is_named_once_the_group_has_a_deal():
     problems = M.policy_problems({}, has_deals=True)
     labels = ("Accounting Framework", "NCI Measurement", "Goodwill Treatment",
-              "Acquisition Costs Treatment", "Measurement Period", "Bargain Purchase")
+              "Acquisition Costs Treatment", "Measurement Period", "Bargain Purchase", "Partial Period Treatment")
     assert len(problems) == len(labels)
     for label, sentence in zip(labels, problems):
         assert sentence == (

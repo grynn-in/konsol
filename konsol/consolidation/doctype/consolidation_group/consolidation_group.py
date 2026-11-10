@@ -78,6 +78,7 @@ class ConsolidationGroup(NestedSet):
         "acquisition_costs_treatment": "acquisition_costs_treatment",
         "measurement_period": "measurement_period",
         "bargain_purchase": "bargain_purchase",
+        "partial_period_treatment": "partial_period_treatment",
         # konsolidat#198 (design 1): the declared accounts the consolidation
         # journals post to. dbt never assumes a code.
         "goodwill_account": "goodwill_account",
