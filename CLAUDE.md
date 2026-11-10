@@ -2,7 +2,8 @@
 
 konsol is the Frappe v16 app for Konsolidat (EPM: consolidation, budgets,
 allocation). The warehouse (ClickHouse + dbt + Cube) lives in the konsolidat repo.
-Read `HANDOFF.md` first each session; project memory is in `.claude/memory/`
+Read `HANDOFF.md` and `.handoff.md` (private, git-ignored: server and
+stack detail) first each session; project memory is in `.claude/memory/`
 (Engram: `bash .claude/scripts/engram-start "<topic>"`).
 
 ## Where things are
@@ -186,7 +187,8 @@ konsol#292 rather than brought in line).
 ## Delivery
 
 Standing loop (pre-authorized): build → PR → review → fix all findings →
-live-verify → squash-merge → verify main CI → record in Engram and HANDOFF.
+live-verify → squash-merge → verify main CI → record in Engram and HANDOFF
+(public facts in `HANDOFF.md`, server and stack detail in `.handoff.md`).
 Re-review fix commits: fixes here have introduced bugs repeatedly. Report
 findings with the issue format in `.claude/memory` (What happened / Root cause
 with file:line / Suggested fix / Repro for issues).
