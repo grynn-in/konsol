@@ -100,6 +100,10 @@
 				const pos = model.strip_position(v, r.min, r.max);
 				r.range.value = String(pos.value);
 				r.label.textContent = v === undefined || v === null || v === "" ? "" : String(v);
+				const n = Number(v);
+				const known = !(v === undefined || v === null || v === "") && Number.isFinite(n);
+				r.prev.disabled = known && n <= r.min;
+				r.next.disabled = known && n >= r.max;
 				r.label.className = `konsol-strip-label konsol-strip-${r.key}-label` +
 					(pos.out_of_range ? " out-of-range" : "");
 			}
@@ -112,12 +116,19 @@
 			refresh();
 		}
 
+		function step_to(r, delta) {
+			const current = real(r);
+			const target = model.step(current, delta, r.min, r.max);
+			if (Number(current) === target) return; // nothing changes: no filter, no refresh
+			commit(r, target);
+		}
+
 		for (const r of rows) {
 			// Dragging: label only. Release (change): the one filter change.
 			r.range.addEventListener("input", () => { r.label.textContent = r.range.value; });
 			r.range.addEventListener("change", () => commit(r, Number(r.range.value)));
-			r.prev.addEventListener("click", () => commit(r, model.step(real(r), -1, r.min, r.max)));
-			r.next.addEventListener("click", () => commit(r, model.step(real(r), 1, r.min, r.max)));
+			r.prev.addEventListener("click", () => step_to(r, -1));
+			r.next.addEventListener("click", () => step_to(r, 1));
 			const filter = report.get_filter(r.field, false);
 			if (filter && filter.$input) filter.$input.on("change", refresh);
 		}

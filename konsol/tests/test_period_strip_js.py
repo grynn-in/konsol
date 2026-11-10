@@ -119,7 +119,7 @@ def test_buttons_step_by_one_and_clamp_at_the_ends():
     out = _run({"filters": {"fiscal_year": 2045, "fiscal_period": 12}, "years": [],
                 "steps": [["click", "period", "next"], ["click", "year", "next"],
                           ["click", "period", "prev"], ["click", "year", "prev"]]})
-    lasts = [s["last"] for s in out["log"]]
+    lasts = [s.get("last") for s in out["log"]]
     # a step that changes nothing sets no filter (no refresh)
     assert lasts[2:] == [{"fiscal_year": 2045, "fiscal_period": 11},
                          {"fiscal_year": 2044, "fiscal_period": 11}]

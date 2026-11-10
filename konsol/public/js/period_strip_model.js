@@ -14,6 +14,10 @@
 	function step(value, delta, min, max) {
 		const n = is_empty(value) ? NaN : Math.round(Number(value));
 		if (!Number.isFinite(n)) return min; // empty box: a step lands on the first value
+		// Outside the range: never further out, never "back" across the strip.
+		// Moving inward lands on the nearest end; moving outward changes nothing.
+		if (n < min) return delta > 0 ? min : n;
+		if (n > max) return delta < 0 ? max : n;
 		return clamp(n + delta, min, max);
 	}
 
