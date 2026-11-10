@@ -27,8 +27,7 @@ const store = {};
 if (sc.saved) store["konsol report filters - " + sc.report] = { filters: sc.saved };
 const frappe = {
   route_options: sc.frappe_route_options || null,
-  call: (opts) => { calls.server.push([opts.method, opts.type]);
-    return sc.info_fails ? Promise.reject(new Error("boom")) : Promise.resolve({ message: sc.info }); },
+  call: () => { throw new Error("frappe.call would show a dialog on 403"); },
   after_ajax: () => Promise.resolve(),
   model: { user_settings: {
     get: (dt) => Promise.resolve(store[dt] || {}),
@@ -58,7 +57,11 @@ const strip = { attach: (report, info) => {
   const h = { container, refresh: () => { calls.strip_refresh += 1; } };
   report.__konsol_period_strips = h; return h; } };
 
-const pr = lib.create({ frappe, strip, search: () => sc.search || "" });
+const fetch = (url) => { const [path, query] = url.split("?");
+  calls.server.push([path.replace("/api/method/", ""), "GET", query || ""]);
+  return sc.info_fails ? Promise.reject(new Error("boom"))
+    : Promise.resolve({ ok: true, json: () => Promise.resolve({ message: sc.info }) }); };
+const pr = lib.create({ frappe, fetch, strip, search: () => sc.search || "" });
 const keys = sc.keys;
 const tick = () => new Promise((r) => setTimeout(r, 0));
 (async () => {
@@ -135,11 +138,15 @@ def test_a_route_with_a_remembered_filter_ignores_saved_and_sets_nothing():
     saved = {"fiscal_year": 2023, "fiscal_period": 6, "consolidation_group": "G1"}
     out = _run({**BASE, "saved": saved, "search": "?fiscal_year=2025&fiscal_period=2"})
     assert out["calls"]["set"] == []
-    out = _run({**BASE, "saved": saved, "search": "?consolidation_group=G2"})
-    assert out["calls"]["set"] == []
-    # frappe.route_options, when still set, counts as a route too
-    out = _run({**BASE, "saved": saved, "frappe_route_options": {"entities": "[\"X\"]"}})
-    assert out["calls"]["set"] == []
+
+def test_a_route_without_a_period_still_opens_on_the_latest_period_not_saved():
+    saved = {"fiscal_year": 2023, "fiscal_period": 6, "consolidation_group": "G1"}
+    for extra in ({"search": "?consolidation_group=G2"},
+                  # frappe.route_options, when still set, counts as a route too
+                  {"frappe_route_options": {"entities": "[\"X\"]"}}):
+        out = _run({**BASE, "saved": saved, **extra})
+        assert [c["values"] for c in out["calls"]["set"]] == [
+            {"fiscal_year": 2024, "fiscal_period": 12}], extra
 
 
 def test_a_route_without_a_remembered_filter_still_applies_saved():
@@ -163,7 +170,7 @@ def test_filters_are_saved_after_each_run_listed_keys_only():
 
 def test_strip_info_is_fetched_once_with_get_across_setups():
     out = _run({**BASE, "second_setup": True})
-    assert out["calls"]["server"] == [["konsol.close.period_strip_api.period_strip_info", "GET"]]
+    assert out["calls"]["server"] == [["konsol.close.period_strip_api.period_strip_info", "GET", ""]]
     assert out["calls"]["attach"] == 2  # one per report object
     assert out["strips_attached"]
 
@@ -181,3 +188,15 @@ def test_reloading_the_report_removes_the_strips_until_setup_runs_again():
     assert out["refresh_report"] == "refreshed"
     assert out["calls"]["removed"] == 1
     assert not out["strips_attached"]
+
+
+def test_the_reports_consolidation_group_is_sent_to_the_endpoint():
+    out = _run({**BASE, "current": {**TODAY, "consolidation_group": "G 9"}})
+    assert out["calls"]["server"] == [["konsol.close.period_strip_api.period_strip_info", "GET",
+                                       "consolidation_group=G+9"]]
+
+
+def test_a_failed_info_call_is_not_retried_on_the_next_setup():
+    out = _run({**BASE, "info_fails": True, "second_setup": True})
+    assert len(out["calls"]["server"]) == 1
+    assert out["calls"]["attach"] == 0
