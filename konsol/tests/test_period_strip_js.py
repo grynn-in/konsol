@@ -55,7 +55,7 @@ const report = {
 };
 global.document = doc;
 const strip = require(script);
-const info = { years: scenario.years, data_years: scenario.data_years || [], year_min: 1980, year_max: 2045, period_min: scenario.period_min ?? 0, period_max: scenario.period_max ?? 13 };
+const info = { years: scenario.years, data_years: scenario.data_years || [], year_min: 1980, year_max: 2045, period_min: scenario.period_min ?? 1, period_max: scenario.period_max ?? 13 };
 let handle = strip.attach(report, info);
 if (scenario.attach_twice) strip.attach(report, info);
 if (scenario.detach_attach) { handle.detach(); handle = strip.attach(report, info); }
@@ -98,6 +98,8 @@ setTimeout(() => console.log(JSON.stringify({
 	aria: Object.fromEntries(["year-prev", "year-next", "period-prev", "period-next", "year-range", "period-range"]
 		.map((c) => [c, one(`konsol-strip-${c}`).attrs["aria-label"]])),
 	label_titles: ["year", "period"].map((r) => one(`konsol-strip-${r}-label`).attrs.title || ""),
+	cap_open: (() => { const e = one('konsol-strip-cap-open'); return { cls: e.className, attrs: e.attrs }; })(),
+	cap_close: (() => { const e = one('konsol-strip-cap-close'); return { cls: e.className, attrs: e.attrs }; })(),
 	captions: ['open', 'close'].map((c) => by('konsol-strip-cap-' + c).map((e) => e.textContent)[0]),
 	initial: state(), initial_disabled: disabled(), log,
 })), 250);
@@ -120,7 +122,7 @@ BASE = {"filters": {"fiscal_year": 2024, "fiscal_period": 6}, "years": [2023, 20
 def test_strip_renders_above_the_filter_row_with_both_rows():
     out = _run(BASE)
     assert out["containers"] == 1 and out["above_form"]
-    assert out["range_attrs"] == [["range", "1980", "2045", "1"], ["range", "0", "13", "1"]]
+    assert out["range_attrs"] == [["range", "1980", "2045", "1"], ["range", "1", "13", "1"]]
     assert out["initial"] == {"year": {"thumb": "2024", "label": "2024"},
                               "period": {"thumb": "6", "label": "6"}}
 
@@ -156,7 +158,7 @@ def test_buttons_are_disabled_at_and_beyond_the_ends():
         return _run({"filters": {"fiscal_year": year, "fiscal_period": period},
                      "years": []})["initial_disabled"]
     assert disabled(2024, 6) == [False, False, False, False]
-    assert disabled(1980, 0) == [True, False, True, False]
+    assert disabled(1980, 1) == [True, False, True, False]
     assert disabled(2045, 13) == [False, True, False, True]
     assert disabled(1975, 14) == [True, False, False, True]
     assert disabled(2050, -1) == [False, True, True, False]
@@ -180,7 +182,7 @@ def test_out_of_range_typed_value_puts_thumb_at_end_and_label_shows_real_value()
                               "period": {"thumb": "13", "label": "14"}}
     out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 6}, "years": [],
                 "steps": [["type", "fiscal_period", -1]]})
-    assert out["log"][0]["state"]["period"] == {"thumb": "0", "label": "-1"}
+    assert out["log"][0]["state"]["period"] == {"thumb": "1", "label": "-1"}
     assert out["log"][0]["calls"] == 0  # following the typed box never sets a filter
 
 
@@ -270,16 +272,53 @@ def test_spacing_between_the_strips_and_before_the_filter_row():
     assert "margin:0 0 10px" in css and "margin-bottom:8px" in css
 
 
-def test_period_zero_and_thirteen_are_in_range_and_read_open_and_close():
-    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 0}, "years": [],
-                "steps": [["type", "fiscal_period", 13], ["drag", "period", 0], ["drag", "period", 13],
+def test_period_one_and_thirteen_are_in_range_and_13_reads_close():
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 1}, "years": [],
+                "steps": [["type", "fiscal_period", 13], ["drag", "period", 1], ["drag", "period", 13],
                           ["drag", "period", 7]]})
-    first = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 0}, "years": []})
-    assert first["initial"]["period"] == {"thumb": "0", "label": "Open"}
+    first = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 1}, "years": []})
+    assert first["initial"]["period"] == {"thumb": "1", "label": "1"}
     labels = [s["state"]["period"]["label"] for s in out["log"]]
-    assert labels == ["Close", "Open", "Close", "7"]
+    assert labels == ["Close", "1", "Close", "7"]
     assert out["log"][0]["state"]["period"]["thumb"] == "13"
     assert out["label_titles"][1] == ""  # not out of range
+
+
+def test_period_min_is_one():
+    assert _run(BASE)["range_attrs"][1][1] == "1"
+
+
+def test_prev_is_disabled_at_period_one():
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 1}, "years": []})
+    assert out["initial_disabled"][2] is True and out["initial_disabled"][3] is False
+
+
+def test_open_caption_is_greyed_and_aria_disabled_close_is_normal():
+    out = _run(BASE)
+    assert out["cap_open"]["attrs"]["aria-disabled"] == "true"
+    assert "konsol-strip-cap-disabled" in out["cap_open"]["cls"].split(" ")
+    assert out["cap_open"]["attrs"]["title"] == "Opening period: reports can't run on it yet"
+    assert "aria-disabled" not in out["cap_close"]["attrs"]
+    assert "konsol-strip-cap-disabled" not in out["cap_close"]["cls"].split(" ")
+    css = open(SCRIPT).read()
+    rule = [l for l in css.splitlines() if ".konsol-strip-cap-disabled" in l][0]
+    assert "var(--text-light)" in rule
+
+
+def test_typed_zero_sits_at_the_left_end_reads_open_and_sets_no_filter():
+    out = _run({**BASE, "steps": [["type", "fiscal_period", 0]]})
+    s = out["log"][0]
+    assert s["state"]["period"] == {"thumb": "1", "label": "Open"}
+    assert s["calls"] == 0
+    assert "Outside the strip" in out["label_titles"][1]
+
+
+def test_next_from_an_empty_period_box_moves_to_one_and_prev_does_nothing():
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": ""}, "years": [],
+                "steps": [["click", "period", "prev"], ["click", "period", "next"]]})
+    assert out["log"][0]["calls"] == 0
+    assert out["log"][1]["calls"] == 1
+    assert out["log"][1]["last"] == {"fiscal_year": 2024, "fiscal_period": 1}
 
 
 def test_the_year_label_is_always_the_number():
