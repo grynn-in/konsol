@@ -201,3 +201,115 @@ def run_onload(script, report, basis, entity=""):
     out = subprocess.run(["node", "-", path, report, "", basis], input=_ONLOAD_HARNESS,
                          capture_output=True, text=True, check=True).stdout
     return json.loads(out)
+
+
+# Opening a report from a link, modelled on Frappe v16 query_report.js
+# refresh_report: _no_refresh = true; set_route_filters sets each route value
+# in filter order, and a changed value runs the filter's onchange, which calls
+# the filter's on_change (if any) instead of Frappe's own refresh; then
+# onload; _no_refresh = false; refresh. The steps run in frappe.run_serially,
+# so a throw (refresh() throws "Filter missing" when a reqd filter is blank,
+# get_filter_values(true)) skips every later step: the later route values
+# are never set.
+_ROUTE_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+const [, , script, report, routeJson] = process.argv;
+const route = JSON.parse(routeJson);
+const values = {};
+const dfs = {};
+const runs = [];
+global.__ = (s) => s;
+global.frappe = {
+  query_reports: {},
+  router: { make_url: () => "" },
+  utils: { escape_html: (s) => s },
+  ui: {},
+};
+const qr = {
+  data: [],
+  _no_refresh: false,
+  get_filter_value: (name) => values[name] || "",
+  get_filter: (name) => ({ df: dfs[name], refresh: () => {} }),
+  refresh: () => {
+    const missing = Object.values(dfs).filter((df) => df.reqd && !values[df.fieldname])
+      .map((df) => df.fieldname);
+    runs.push(missing.length ? { missing } : { ran: { ...values } });
+    if (missing.length) throw "Filter missing";
+  },
+};
+frappe.query_report = qr;
+vm.runInThisContext(fs.readFileSync(script, "utf8"));
+const def = frappe.query_reports[report];
+for (const df of def.filters) {
+  dfs[df.fieldname] = df;
+  if (df.default !== undefined) values[df.fieldname] = df.default;
+}
+let error = null;
+try {
+  qr._no_refresh = true;
+  for (const df of def.filters) {
+    if (!(df.fieldname in route) || values[df.fieldname] === route[df.fieldname]) continue;
+    values[df.fieldname] = route[df.fieldname];
+    if (df.on_change) df.on_change(qr);
+  }
+  if (def.onload) def.onload(qr);
+  qr._no_refresh = false;
+  qr.refresh();
+} catch (e) {
+  error = String(e);
+}
+console.log(JSON.stringify({ values, runs, error }));
+"""
+
+
+def run_route(script, report, route):
+    """Open a report script in node from a link carrying ``route`` (filter
+    name -> value), as Frappe's refresh_report does. Returns the final filter
+    values, every refresh (``{"ran": values}`` or ``{"missing": [names]}``)
+    and the error that stopped the sequence, if any."""
+    assert shutil.which("node"), "node is needed to run the report scripts"
+    path = os.path.join(REPORT_DIR, script)
+    out = subprocess.run(["node", "-", path, report, json.dumps(route)], input=_ROUTE_HARNESS,
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+_DRILL = ("statement_drill/statement_drill.js", "Statement Drill")
+_STATEMENT = ("consolidated_statement/consolidated_statement.js", "Consolidated Statement")
+
+
+def test_drill_link_on_the_entity_basis_sets_every_filter_then_runs_once():
+    # Consolidated Statement's entity heading link. A refresh from the Basis
+    # on_change during route application threw "Filter missing" (entity not
+    # set yet) and aborted it: entity and heading were never set.
+    route = {"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity",
+             "entity": "ZZOP", "heading": "4"}
+    got = run_route(*_DRILL, route)
+    assert got["error"] is None, got
+    assert got["values"]["entity"] == "ZZOP" and got["values"]["heading"] == "4", got
+    assert got["runs"] == [{"ran": got["values"]}], got
+
+
+def test_drill_link_on_the_group_basis_runs_once():
+    route = {"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "CG-ZZ",
+             "heading": "4"}
+    got = run_route(*_DRILL, route)
+    assert got["error"] is None, got
+    assert got["values"]["consolidation_group"] == "CG-ZZ", got
+    assert got["runs"] == [{"ran": got["values"]}], got
+
+
+def test_statement_link_on_the_entity_basis_without_an_entity_asks_for_it():
+    # Frappe's inline "Please set filters" (the final refresh finds entity
+    # blank), reached at the end of the sequence, not in the middle of it.
+    got = run_route(*_STATEMENT, {"basis": "Entity"})
+    assert got["runs"] == [{"missing": ["entity"]}], got
+    assert got["error"] == "Filter missing", got
+
+
+def test_statement_link_on_the_entity_basis_with_an_entity_runs_once():
+    got = run_route(*_STATEMENT, {"basis": "Entity", "entity": "ZZOP"})
+    assert got["error"] is None, got
+    assert got["values"]["entity"] == "ZZOP", got
+    assert got["runs"] == [{"ran": got["values"]}], got
