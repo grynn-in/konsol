@@ -3,7 +3,8 @@
 //     onload: (report) => konsol.period_reports.setup(report, { keys: [...] }),
 // and setup does the rest (Deepak Pai, 10 Nov 2026):
 //   1. start values: a link (route options) carrying any of `keys` is shown
-//      as given; otherwise the user's saved filters, else the latest period
+//      as given (a link without a year or period still opens on the latest
+//      period); otherwise the user's saved filters, else the latest period
 //      with data, applied in ONE set_filter_value, only the values that differ;
 //   2. the Year and Period strips above the filters;
 //   3. the filters saved after each report run (`keys` only).
@@ -17,6 +18,7 @@
 // the report's first run already has the start values.
 (function () {
 	const node = typeof module !== "undefined" && module.exports;
+	const FISCAL = ["fiscal_year", "fiscal_period"];
 	const INFO_METHOD = "konsol.close.period_strip_api.period_strip_info";
 
 	function is_empty(v) {
@@ -31,6 +33,7 @@
 	function create(deps = {}) {
 		const get_frappe = () => deps.frappe || (typeof window !== "undefined" ? window.frappe : undefined);
 		const strip = () => deps.strip || (node ? require("./period_strip.js") : window.konsol.period_strip);
+		const do_fetch = deps.fetch || ((...a) => window.fetch(...a));
 		const search = deps.search || (() => (typeof window !== "undefined" ? window.location.search : ""));
 		let memory_lib = null;
 		const memory = () => {
@@ -41,16 +44,27 @@
 			return memory_lib;
 		};
 		const registry = {}; // report name -> keys it remembers
-		let info_promise = null;
+		const info_cache = {}; // consolidation group -> promise of the strip info
 
-		function strip_info() {
-			if (!info_promise) {
-				// GET: the endpoint only reads (whitelisted methods=["GET"]).
-				info_promise = Promise.resolve(get_frappe().call({ method: INFO_METHOD, type: "GET" }))
+		function strip_info(group) {
+			// Plain fetch, not frappe.call: Frappe's request layer opens a
+			// "Not permitted" dialog on every 403, and a user who may not open
+			// the period reports must simply get no strips. GET: the endpoint
+			// only reads. The outcome, a failure too, is kept per group for the
+			// page load: no retry on every setup.
+			const key = group || "";
+			if (!(key in info_cache)) {
+				const query = key ? "?" + new URLSearchParams({ consolidation_group: key }).toString() : "";
+				info_cache[key] = Promise.resolve()
+					.then(() => do_fetch(`/api/method/${INFO_METHOD}${query}`, {
+						credentials: "same-origin", headers: { Accept: "application/json" } }))
+					.then((res) => {
+						if (!res.ok) throw new Error(`period strip info: HTTP ${res.status}`);
+						return res.json();
+					})
 					.then((r) => (r && r.message) || null);
-				info_promise.catch(() => { info_promise = null; }); // retry on the next setup
 			}
-			return info_promise;
+			return info_cache[key];
 		}
 
 		function route_options() {
@@ -131,7 +145,7 @@
 
 			let info = null;
 			try {
-				info = await strip_info();
+				info = await strip_info(report.get_filter_value("consolidation_group", false));
 			} catch (e) {
 				console.warn("period reports: strip info failed", e);
 			}
@@ -141,9 +155,15 @@
 					report_name: name, route_options: route,
 					latest: info && info.latest, defaults: current, keys,
 				});
-				if (!has_route && report.report_name === name) {
+				if (report.report_name === name) {
+					// A link that carries any remembered filter is shown as given,
+					// but a link with no period still opens on the latest period
+					// (never the saved one: start_values consulted no saved filters).
+					const route_period = FISCAL.some((k) => !is_empty(route[k]));
+					const apply_keys = !has_route ? keys
+						: route_period ? [] : keys.filter((k) => FISCAL.includes(k));
 					const changed = {};
-					for (const k of keys) {
+					for (const k of apply_keys) {
 						if (k in values && !same(values[k], current[k])) changed[k] = values[k];
 					}
 					if (Object.keys(changed).length) await apply(report, changed);
