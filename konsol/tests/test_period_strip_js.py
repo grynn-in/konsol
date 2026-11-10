@@ -54,6 +54,7 @@ const state = () => ({
 	year: { thumb: one("konsol-strip-year-range").value, label: one("konsol-strip-year-label").textContent },
 	period: { thumb: one("konsol-strip-period-range").value, label: one("konsol-strip-period-label").textContent },
 });
+const disabled = () => ["year-prev", "year-next", "period-prev", "period-next"].map((c) => one(`konsol-strip-${c}`).disabled);
 const act = {
 	drag: (row, v) => { const r = one(`konsol-strip-${row}-range`); r.value = String(v); r.fire("input"); },
 	release: (row, v) => { const r = one(`konsol-strip-${row}-range`); r.value = String(v); r.fire("change"); },
@@ -63,7 +64,7 @@ const act = {
 const log = [];
 for (const [name, ...args] of scenario.steps || []) {
 	act[name](...args);
-	log.push({ calls: calls.length, last: calls[calls.length - 1], state: state() });
+	log.push({ calls: calls.length, last: calls[calls.length - 1], state: state(), disabled: disabled() });
 }
 console.log(JSON.stringify({
 	containers: by("konsol-period-strips").length,
@@ -74,7 +75,7 @@ console.log(JSON.stringify({
 		const e = one(`konsol-strip-${r}-range`);
 		return [e.attrs.type, e.attrs.min, e.attrs.max, e.attrs.step];
 	}),
-	initial: state(), log,
+	initial: state(), initial_disabled: disabled(), log,
 }));
 """
 
@@ -119,11 +120,34 @@ def test_buttons_step_by_one_and_clamp_at_the_ends():
                 "steps": [["click", "period", "next"], ["click", "year", "next"],
                           ["click", "period", "prev"], ["click", "year", "prev"]]})
     lasts = [s["last"] for s in out["log"]]
-    assert lasts == [{"fiscal_year": 2045, "fiscal_period": 12},
-                     {"fiscal_year": 2045, "fiscal_period": 12},
-                     {"fiscal_year": 2045, "fiscal_period": 11},
-                     {"fiscal_year": 2044, "fiscal_period": 11}]
-    assert [s["calls"] for s in out["log"]] == [1, 2, 3, 4]
+    # a step that changes nothing sets no filter (no refresh)
+    assert lasts[2:] == [{"fiscal_year": 2045, "fiscal_period": 11},
+                         {"fiscal_year": 2044, "fiscal_period": 11}]
+    assert [s["calls"] for s in out["log"]] == [0, 0, 1, 2]
+
+
+def test_buttons_are_disabled_at_and_beyond_the_ends():
+    # order: year-prev, year-next, period-prev, period-next
+    def disabled(year, period):
+        return _run({"filters": {"fiscal_year": year, "fiscal_period": period},
+                     "years": []})["initial_disabled"]
+    assert disabled(2024, 6) == [False, False, False, False]
+    assert disabled(1980, 1) == [True, False, True, False]
+    assert disabled(2045, 12) == [False, True, False, True]
+    assert disabled(1975, 13) == [True, False, False, True]
+    assert disabled(2050, 0) == [False, True, True, False]
+
+
+def test_typing_a_value_updates_the_disabled_buttons():
+    out = _run({**BASE, "steps": [["type", "fiscal_period", 12], ["type", "fiscal_period", 5]]})
+    assert [s["disabled"][2:] for s in out["log"]] == [[False, True], [False, False]]
+
+
+def test_stepping_from_an_out_of_range_value_does_not_move_it_backwards():
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 13}, "years": [],
+                "steps": [["click", "period", "next"], ["click", "period", "prev"]]})
+    assert [s["calls"] for s in out["log"]] == [0, 1]
+    assert out["log"][1]["last"] == {"fiscal_year": 2024, "fiscal_period": 12}
 
 
 def test_out_of_range_typed_value_puts_thumb_at_end_and_label_shows_real_value():

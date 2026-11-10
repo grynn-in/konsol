@@ -45,6 +45,16 @@ def test_step_from_an_empty_value_lands_on_the_range():
     assert _run(["step", [None, 1, 1, 12]], ["step", ["", -1, 1, 12]]) == [1, 1]
 
 
+def test_step_from_outside_the_range_never_moves_further_out_or_backwards():
+    # typed P13 then next stays 13 (not 12); P0 then prev stays 0 (not 1);
+    # moving inward lands on the nearest end.
+    out = _run(["step", [13, 1, 1, 12]], ["step", [13, -1, 1, 12]],
+               ["step", [0, -1, 1, 12]], ["step", [0, 1, 1, 12]],
+               ["step", [-5, 1, 1, 12]], ["step", [2050, 1, 1980, 2045]],
+               ["step", [2050, -1, 1980, 2045]], ["step", [1975, -1, 1980, 2045]])
+    assert out == [13, 12, 0, 1, 1, 2050, 2045, 1975]
+
+
 def test_strip_position_shows_the_value_or_the_nearest_end_and_flags_out_of_range():
     out = _run(["strip_position", [7, 1, 12]], ["strip_position", [13, 1, 12]],
                ["strip_position", [0, 1, 12]], ["strip_position", [1975, 1980, 2045]],
