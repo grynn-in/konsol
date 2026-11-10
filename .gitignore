@@ -21,3 +21,7 @@ node_modules/
 # this repo — the platform traps, the testing rules, the doctype standard and
 # the delivery loop — and it is worth nothing on one laptop.
 .claude/
+
+# Private handoff: server names, paths, ports, incident detail. Never pushed.
+# The public HANDOFF.md names examples, commits, checks and results only.
+.handoff.md
