@@ -11,21 +11,45 @@ import frappe
 from konsol import fiscal_calendar
 from konsol.close import ch_read, period_strip_model
 
-_LATEST_SQL = (
-    "SELECT fiscal_year, fiscal_period FROM epm_gold.gold_fully_consolidated_tb "
-    "ORDER BY fiscal_year DESC, fiscal_period DESC LIMIT 1"
+#: Distinct periods with data, newest first. Non-Regular periods (P0, P13) are
+#: filtered by the model against the declared calendar; LIMIT leaves room for them.
+_PERIODS_SQL = (
+    "SELECT DISTINCT fiscal_year, fiscal_period FROM epm_gold.gold_fully_consolidated_tb "
+    "{where}ORDER BY fiscal_year DESC, fiscal_period DESC LIMIT 200"
 )
+_GROUP_WHERE = "WHERE consolidation_group = {group:String} "
+
+#: The three Desk reports that show the strips.
+_REPORTS = ("Consolidation Worksheet", "Consolidated Statement", "Statement Drill")
+
+
+def _may_open_a_period_report():
+    """True when the user may open at least one of the three reports, by the
+    check Frappe makes when it runs a query report (desk/query_report.py
+    get_report_doc): ``Report.is_permitted()`` (Has Role / Custom Role) and
+    the ``report`` right on the report's reference doctype."""
+    for name in _REPORTS:
+        try:
+            doc = frappe.get_doc("Report", name)
+        except frappe.DoesNotExistError:
+            continue
+        if doc.is_permitted() and frappe.has_permission(doc.ref_doctype, "report"):
+            return True
+    return False
 
 
 @frappe.whitelist(methods=["GET"])
-def period_strip_info():
-    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+def period_strip_info(consolidation_group=None):
+    if not _may_open_a_period_report():
+        raise frappe.PermissionError
     period_rows = fiscal_calendar.fiscal_period_rows()
-    latest = None
+    with_data = None
     try:
-        data = ch_read.rows(_LATEST_SQL)
-        if data:
-            latest = (int(data[0]["fiscal_year"]), int(data[0]["fiscal_period"]))
+        group = consolidation_group or None
+        sql = _PERIODS_SQL.format(where=_GROUP_WHERE if group else "")
+        data = ch_read.rows(sql, {"group": group} if group else None,
+                            timeout=3, settings={"max_execution_time": 2})
+        with_data = [(int(r["fiscal_year"]), int(r["fiscal_period"])) for r in data]
     except Exception:  # noqa: BLE001 — "can't say" means no data period, never an error
-        latest = None
-    return period_strip_model.strip_info(period_rows, latest)
+        with_data = None
+    return period_strip_model.strip_info(period_rows, with_data)

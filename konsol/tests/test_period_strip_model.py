@@ -51,7 +51,7 @@ def test_no_data_uses_latest_regular_skipping_non_regular():
 
 
 def test_only_regular_periods_with_data_count():
-    rows = [_p(2025, 12), _p(2025, 13, "Adjustment"), _p(2025, 0, "Opening")]
+    rows = [_p(2025, 12), _p(2025, 6), _p(2025, 3), _p(2025, 13, "Adjustment"), _p(2025, 0, "Opening")]
     info = M.strip_info(rows, [(2025, 13), (2025, 0), (2025, 6), (2025, 3)])
     assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 6}
     # data only in a non-Regular period: fall back as with no data
