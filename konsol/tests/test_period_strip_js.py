@@ -37,6 +37,8 @@ const vals = { ...scenario.filters };
 const inputs = { fiscal_year: new El("input"), fiscal_period: new El("input") };
 const calls = [];
 const rects = { ...(scenario.rects || {}) };
+const irects = { ...(scenario.input_rects || {}) };
+for (const k of Object.keys(irects)) if (inputs[k]) inputs[k].getBoundingClientRect = () => irects[k];
 const win = { listeners: {}, addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
 	fire(t) { (this.listeners[t] || []).forEach((f) => f({ type: t })); } };
 global.window = win;
@@ -44,7 +46,8 @@ const report = {
 	page: { page_form: [page_form] },
 	get_filter_value: (k) => vals[k],
 	get_filter: (k) => (k in inputs || rects[k]) ? {
-		$input: inputs[k] && { 0: inputs[k], on: (t, f) => inputs[k].addEventListener(t, f) },
+		$input: inputs[k] ? { 0: inputs[k], on: (t, f) => inputs[k].addEventListener(t, f) }
+			: irects[k] && { 0: { getBoundingClientRect: () => irects[k] }, on: () => {} },
 		$wrapper: rects[k] && { 0: { getBoundingClientRect: () => rects[k] } } } : undefined,
 	set_filter_value: (o) => { calls.push(o); Object.assign(vals, o); },
 };
@@ -244,6 +247,16 @@ def test_resize_remeasures():
 def test_unmeasurable_filters_fall_back_to_the_plain_layout():
     out = _run(BASE)  # no rects: fake filters have no wrapper
     assert out["layout"] == {"marginLeft": "", "width": ""}
+
+
+def test_edges_follow_the_visible_boxes_not_the_wrappers_gutter():
+    # Live (10 Nov): Frappe's control wrapper is 16px wider than the input box,
+    # so the strips overshot the Consolidation Group box on the right.
+    out = _run({**BASE,
+                "rects": {"fiscal_year": FY, "fiscal_period": PERIOD, "consolidation_group": GROUP},
+                "input_rects": {"fiscal_year": {"left": 120, "right": 284},
+                                "consolidation_group": {"left": 520, "right": 684}}})
+    assert out["layout"] == {"marginLeft": "120px", "width": "564px"}
 
 
 def test_spacing_between_the_strips_and_before_the_filter_row():
