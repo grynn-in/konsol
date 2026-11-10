@@ -232,7 +232,7 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0, m
          intercompany_declaration="", published=0, sql_log=None,
          statement_cta_account="", statement_result_account="", get_all_log=None,
          commentary_threshold_amount=0, commentary_threshold_percent=0,
-         commentary_threshold_combine="", deadline_rules=(), close_holidays=(),
+         commentary_threshold_combine="", deadline_rules=(),
          statement_net_sales_heading="", main_account_row=None):
     """``published`` is what the stubbed locking count of Published
     Intercompany Accounts answers; every ``frappe.db.sql`` call is appended
@@ -287,7 +287,6 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0, m
         doc.commentary_threshold_percent = commentary_threshold_percent
         doc.commentary_threshold_combine = commentary_threshold_combine
         doc.deadline_rules = [_Row(r) for r in deadline_rules]
-        doc.close_holidays = [_Row(r) for r in close_holidays]
         doc.validate()
     finally:
         _m.frappe.throw = saved_throw
@@ -761,7 +760,8 @@ def test_commentary_section_has_the_three_fields_with_no_default():
     order = [f["fieldname"] for f in _doc()["fields"]]
     assert by_name["commentary_section"]["fieldtype"] == "Section Break"
     assert by_name["commentary_section"]["label"] == "Commentary"
-    assert order.index("commentary_section") > order.index("statement_result_account")
+    # konsol#510: Commentary is a policy, on the Policies tab.
+    assert order.index("policies_tab") < order.index("commentary_section") < order.index("starting_point_tab")
     expected = {"commentary_threshold_amount": "Float",
                 "commentary_threshold_percent": "Percent",
                 "commentary_threshold_combine": "Select"}
@@ -818,48 +818,49 @@ _dm_spec = importlib.util.spec_from_file_location("deadline_model_for_settings_t
 _dm = importlib.util.module_from_spec(_dm_spec)
 _dm_spec.loader.exec_module(_dm)
 
-_EXISTING_ORDER = [
-    "close_order_section",
-    "first_close_fiscal_year",
-    "first_close_fiscal_period",
-    "approvals_section",
-    "self_approval",
-    "rates_section",
-    "rate_move_threshold",
-    "magnitude_warning_factor",
-    "intercompany_section",
-    "intercompany_declaration",
-    "statements_section",
-    "statement_cta_account",
-    "statement_result_account",
-    "statement_net_sales_heading",  # konsol#407 phase 2
-    "commentary_section",
-    "commentary_threshold_amount",
-    "commentary_threshold_percent",
-    "commentary_threshold_combine",
+# konsol#510: the first tab holds policies only. The starting point (first
+# close, intercompany declaration) and the statement accounts get their own
+# tabs. Layout and labels only: no fieldname changes.
+_TAB_LAYOUT = [
+    ("policies_tab", "Policies", [
+        "approvals_section", "self_approval",
+        "rates_section", "rate_move_threshold", "magnitude_warning_factor",
+        "commentary_section", "commentary_threshold_amount",
+        "commentary_threshold_percent", "commentary_threshold_combine"]),
+    ("starting_point_tab", "Starting Point", [
+        "close_order_section", "first_close_fiscal_year", "first_close_fiscal_period",
+        "intercompany_section", "intercompany_declaration"]),
+    ("statement_accounts_tab", "Statement Accounts", [
+        "statements_section", "statement_cta_account", "statement_result_account",
+        "statement_net_sales_heading"]),
+    ("deadlines_tab", "Deadlines", [
+        "deadline_rules_section", "deadline_rules", "holidays_section", "holidays_note"]),
+    ("appearance_tab", "Appearance", ["brand_section", "brand_colour"]),
 ]
 
 
-def test_policies_tab_is_first_and_keeps_existing_fields_in_order():
-    fields = _doc()["fields"]
-    first = fields[0]
-    assert first["fieldname"] == "policies_tab", first["fieldname"]
-    assert first["fieldtype"] == "Tab Break"
-    assert first["label"] == "Policies"
-    order = [f["fieldname"] for f in fields]
-    assert order[1:1 + len(_EXISTING_ORDER)] == _EXISTING_ORDER, order
+def test_tabs_group_policies_starting_point_statement_accounts_deadlines_appearance():
+    doc = _doc()
+    order = [f["fieldname"] for f in doc["fields"]]
+    by_name = {f["fieldname"]: f for f in doc["fields"]}
+    expected = []
+    for tab, label, fields in _TAB_LAYOUT:
+        assert by_name[tab]["fieldtype"] == "Tab Break", tab
+        assert by_name[tab]["label"] == label, (tab, by_name[tab]["label"])
+        expected += [tab, *fields]
+    assert order == expected, order
+    assert doc["field_order"] == expected, doc["field_order"]
 
 
-def test_deadlines_tab_follows_commentary_with_the_two_tables():
-    fields = _doc()["fields"]
-    order = [f["fieldname"] for f in fields]
-    by_name = {f["fieldname"]: f for f in fields}
-    # The Appearance tab (konsol#415) follows Deadlines.
-    assert order[order.index("commentary_threshold_combine") + 1:order.index("appearance_tab")] == [
-        "deadlines_tab", "deadline_rules_section", "deadline_rules",
-        "holidays_section", "close_holidays"], order
-    assert by_name["deadlines_tab"]["fieldtype"] == "Tab Break"
-    assert by_name["deadlines_tab"]["label"] == "Deadlines"
+def test_labels_are_title_case_and_not_repeated():
+    by_name = {f["fieldname"]: f for f in _doc()["fields"]}
+    assert by_name["statement_cta_account"]["label"] == "CTA Account"
+    assert by_name["statement_result_account"]["label"] == "Current-Year Result Account"
+    assert by_name["intercompany_declaration"]["label"] == "Intercompany Declaration"
+
+
+def test_deadlines_tab_holds_the_rules_and_a_pointer_to_the_calendars():
+    by_name = {f["fieldname"]: f for f in _doc()["fields"]}
     assert by_name["deadline_rules_section"]["fieldtype"] == "Section Break"
     assert by_name["deadline_rules_section"]["label"] == "Deadline Rules"
     assert by_name["holidays_section"]["fieldtype"] == "Section Break"
@@ -870,10 +871,11 @@ def test_deadlines_tab_follows_commentary_with_the_two_tables():
     assert rules["description"] == (
         "A rule applies to every period that ends on or after its Valid From, until the "
         "next rule. No rule = no due dates (shown as 'No due date declared'); nothing is assumed.")
-    holidays = by_name["close_holidays"]
-    assert holidays["fieldtype"] == "Table"
-    assert holidays["options"] == "Close Holiday"
-    assert holidays["description"] == "Days that are not counted as working days, group-wide."
+    assert "close_holidays" not in by_name
+    note = by_name["holidays_note"]
+    assert note["fieldtype"] == "HTML"
+    assert "/desk/close-holiday-calendar" in note["options"]
+    assert "declared per year" in note["options"]
 
 
 def test_no_field_is_reqd_or_defaulted():
@@ -901,18 +903,16 @@ def _refusal(**kw):
 
 def test_empty_deadlines_tab_saves():
     """Failure path: nothing declared is not a problem, and nothing is invented."""
-    _run(None, None, _default_period_row, deadline_rules=[], close_holidays=[])
+    _run(None, None, _default_period_row, deadline_rules=[])
 
 
-def test_one_rule_and_a_holiday_save():
-    _run(None, None, _default_period_row,
-         deadline_rules=[_rule(_dt.date(2025, 1, 1))],
-         close_holidays=[{"holiday_date": _dt.date(2025, 8, 4), "description": "ZZ"}])
+def test_one_rule_saves():
+    _run(None, None, _default_period_row, deadline_rules=[_rule(_dt.date(2025, 1, 1))])
 
 
 def test_duplicate_valid_from_throws_the_model_sentence():
     rules = [_rule(_dt.date(2025, 1, 1)), _rule(_dt.date(2025, 1, 1))]
-    expected = _dm.rule_problems(rules, [])
+    expected = _dm.rule_problems(rules)
     assert expected == ["Two deadline rules start on 2025-01-01: keep one."], expected
     assert _refusal(deadline_rules=rules) == expected[0]
 
@@ -924,16 +924,9 @@ def test_duplicate_valid_from_as_stored_date_and_typed_string_throws():
     assert msg == "Two deadline rules start on 2025-01-01: keep one.", msg
 
 
-def test_duplicate_holiday_as_date_and_string_throws():
-    msg = _refusal(close_holidays=[{"holiday_date": _dt.date(2025, 8, 4)},
-                                   {"holiday_date": "2025-08-04"}])
-    assert msg == "2025-08-04 is listed twice as a holiday.", msg
-
-
 def test_several_problems_are_joined_with_br():
     rules = [_rule(_dt.date(2025, 1, 1), monday=0, tuesday=0, wednesday=0, thursday=0, friday=0,
                    tb_due_days=-1)]
-    holidays = [{"holiday_date": _dt.date(2025, 8, 4)}, {"holiday_date": _dt.date(2025, 8, 4)}]
-    expected = _dm.rule_problems(rules, holidays)
-    assert len(expected) == 3, expected
-    assert _refusal(deadline_rules=rules, close_holidays=holidays) == "<br>".join(expected)
+    expected = _dm.rule_problems(rules)
+    assert len(expected) == 2, expected
+    assert _refusal(deadline_rules=rules) == "<br>".join(expected)

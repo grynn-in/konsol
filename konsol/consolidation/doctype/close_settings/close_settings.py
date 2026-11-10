@@ -267,8 +267,9 @@ class CloseSettings(Document):
         """konsol#305 D54 (#305-2.4-1, Deepak Pai 6 Oct; C-D1, C-D3): the
         Deadlines tab. Empty tables are undeclared and save (no due dates,
         nothing assumed). Two rules on one Valid From, a rule with no working
-        day, a negative offset or a holiday listed twice is refused with
-        deadline_model.rule_problems' sentences. Not locked after a signed
+        day or a negative offset is refused with deadline_model.rule_problems'
+        sentences. Holidays are declared per year in Close Holiday Calendar
+        (konsol#509), not here. Not locked after a signed
         period: a deadline is shown, never a gate (C-D5), and the Single's
         track_changes keeps the child rows' history (C-D7)."""
         rules = []
@@ -276,11 +277,6 @@ class CloseSettings(Document):
             values = row.as_dict()
             values["valid_from"] = _as_date(values.get("valid_from"))
             rules.append(values)
-        holidays = []
-        for row in self.close_holidays or []:
-            values = row.as_dict()
-            values["holiday_date"] = _as_date(values.get("holiday_date"))
-            holidays.append(values)
-        problems = deadline_model.rule_problems(rules, holidays)
+        problems = deadline_model.rule_problems(rules)
         if problems:
             frappe.throw("<br>".join(problems))

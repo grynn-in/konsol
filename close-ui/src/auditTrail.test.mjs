@@ -921,3 +921,32 @@ test("FR11: the keys are read only on their own kinds", () => {
 	);
 	assert.deepEqual(v.rows.map((r) => r.detail), ["", "Prepared by o@example.com"]);
 });
+
+// --- statement_exported (konsol#496 row 10A-3) --------------------------------
+
+test("statement_exported -> Downloaded, mute, basis and group in item, file name in detail", () => {
+	const v = trailView(
+		payload([
+			event({
+				kind: "statement_exported",
+				entity: null,
+				reference_doctype: null,
+				reference_name: null,
+				detail: {
+					basis: "Consolidated",
+					consolidation_group: "ZZG1",
+					entity: "",
+					filename: "numbers-FY2025P07-ZZG1.xlsx",
+					label: "Numbers",
+				},
+			}),
+		]),
+		NOW,
+		TZ
+	);
+	assert.equal(v.rows[0].label, "Downloaded");
+	assert.equal(v.rows[0].tone, "mute");
+	assert.ok(v.rows[0].item.includes("Consolidated"), v.rows[0].item);
+	assert.ok(v.rows[0].item.includes("ZZG1"), v.rows[0].item);
+	assert.ok(v.rows[0].detail.includes("numbers-FY2025P07-ZZG1.xlsx"), v.rows[0].detail);
+});

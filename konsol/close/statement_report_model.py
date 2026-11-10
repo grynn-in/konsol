@@ -115,6 +115,8 @@ def _with_commentary(row, payload, heading, drill_group):
     row["can_comment"] = 1 if payload["can_comment"] is True else 0
     row["drill_group"] = drill_group
     row["consolidation_group"] = payload.get("consolidation_group")
+    # Entity basis (konsol#495): the entity the Statement Drill opens for.
+    row["drill_entity"] = payload.get("entity") if payload.get("basis") == "Entity" else None
     return row
 
 
@@ -174,6 +176,16 @@ def _prior_values(prior):
     return values
 
 
+def has_rows_through(tb_rows, fiscal_year, fiscal_period):
+    """True when ``tb_rows`` holds a row of ``fiscal_year`` at or before
+    ``fiscal_period``. The ONE no_rows rule: the entity statement and the
+    prior-year column both use it. A row of an earlier year does not count,
+    since a statement of that year would be all zeros (konsol#495 V2)."""
+    return any(int(r["fiscal_year"]) == int(fiscal_year)
+               and int(r["fiscal_period"]) <= int(fiscal_period)
+               for r in tb_rows or [])
+
+
 def prior_with_rows(prior, tb_rows):
     """``prior`` unchanged, unless it is ok but the warehouse holds no row
     for its year up to its period (``tb_rows``: ``statement_api``'s TB
@@ -184,9 +196,8 @@ def prior_with_rows(prior, tb_rows):
         return prior
     fiscal_year = int(prior["period"]["fiscal_year"])
     fiscal_period = int(prior["period"]["fiscal_period"])
-    for row in tb_rows or []:
-        if int(row["fiscal_year"]) == fiscal_year and int(row["fiscal_period"]) <= fiscal_period:
-            return prior
+    if has_rows_through(tb_rows, fiscal_year, fiscal_period):
+        return prior
     return {"state": "no_rows", "statement": None,
             "message": "No rows in the warehouse for FY%d up to P%02d." % (fiscal_year, fiscal_period)}
 
@@ -305,10 +316,15 @@ def message(payload, prior=None):
     _refuse_unless_ok(payload)
     period = payload["period"]
     stmt = payload["statement"]
+    if payload.get("basis") == "Entity":
+        # konsol#495: ``Numbers · FY2025 P07 · Basis: Entity · ZZA <name> · EUR``.
+        who = " ".join(p for p in (payload.get("entity"), payload.get("entity_name")) if p)
+        middle = ["Basis: Entity", who, payload.get("reporting_currency")]
+    else:
+        middle = [payload.get("consolidation_group"), payload.get("reporting_currency")]
     header = " · ".join(
         ["Numbers", period_name(period["fiscal_year"], period["fiscal_period"])]
-        + [p for p in (payload.get("consolidation_group"), payload.get("reporting_currency"))
-           if p not in (None, "")]
+        + [p for p in middle if p not in (None, "")]
     )
     lines = [header, stmt.get("legend")]
     comparison_note = (stmt.get("periods") or {}).get("comparison_note")

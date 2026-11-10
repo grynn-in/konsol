@@ -279,6 +279,15 @@ class _Site:
         self.commentary_threshold = (0, 0, "")
         #: konsol#354: ISO Currency.minor_unit by code (a missing code has no row)
         self.minor_units = {"USD": 2}
+        #: konsol#495: Entity rows (name == entity_code == data_area_id) and
+        #: the entity basis's one read, gold_trial_balance (``amt`` alias).
+        self.entities = {}
+        self.entity_tb_rows = []
+        #: konsol#496 row 10A-2: close_event.record calls, as kwargs dicts.
+        self.events = []
+        #: konsol#495 row 11b: Consolidation Group document rows by name (the
+        #: Desk Link value ``CG-<code>-``): {"consolidation_group", "data_area_id"}.
+        self.group_docs = {}
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -333,6 +342,16 @@ def _frappe(site):
         return [{f: r.get(f) for f in fields} for r in rows]
 
     def get_value(doctype, name, fieldname, **k):
+        if doctype == "Consolidation Group":
+            assert sorted(fieldname) == ["consolidation_group", "data_area_id"], fieldname
+            row = site.group_docs.get(name)
+            return None if row is None else types.SimpleNamespace(**row)
+        if doctype == "Entity":
+            assert sorted(fieldname) == ["entity_name", "functional_currency", "is_group"], fieldname
+            assert k.get("as_dict"), k
+            site.reads.append(("get_value", "Entity"))
+            row = site.entities.get(name)
+            return None if row is None else {f: row.get(f) for f in fieldname}
         assert (doctype, fieldname) == ("ISO Currency", "minor_unit"), (doctype, fieldname)
         return site.minor_units.get(name)
 
@@ -364,6 +383,8 @@ def _ch_read(site):
             return [dict(r) for r in site.journal_rows]
         if "DISTINCT data_area_id" in sql:
             return [dict(r) for r in site.entity_rows]
+        if "gold_trial_balance" in sql:  # konsol#495: the entity basis's one read
+            return [dict(r) for r in site.entity_tb_rows]
         if "data_area_id" in sql:  # N52: the entity-grain drill read
             return [dict(r) for r in site.drill_tb_rows]
         return [dict(r) for r in site.tb_rows]
@@ -383,6 +404,46 @@ def _signoff_gate(site):
     #: Close Settings values, so the threshold/gap is never hand-typed.
     sg.commentary_threshold = lambda: CPM.commentary_threshold(*site.commentary_threshold)
     return sg
+
+
+CLOSE_EVENT_MODEL = _load_path("close_event_model_for_statement_api_test",
+                               os.path.join(CLOSE_DIR, "close_event_model.py"))
+sys.modules.pop("close_event_model_for_statement_api_test", None)
+
+
+def _close_event(site):
+    """Stub of ``konsol.close.close_event.record`` (konsol#496 row 10A-2).
+    It builds the event the way the real ``record`` does (actor, ``at``,
+    ``source`` live, ``detail`` plus ``actor_persona``) and runs the REAL
+    ``close_event_model.event_problems`` on it, refusing with the problems
+    like the real one, so a malformed recorded event fails here. A valid
+    call appends to ``site.events`` (the caller's fields as given, not the
+    added ones)."""
+    ce = types.ModuleType("konsol.close.close_event")
+
+    def record(kind, fiscal_year, fiscal_period, reference_doctype=None, reference_name=None,
+               reason=None, detail=None, entity=None):
+        event = {
+            "kind": kind, "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+            "entity": entity, "reference_doctype": reference_doctype,
+            "reference_name": reference_name, "actor": site.user,
+            "at": datetime(2026, 11, 9, 9, 0, 0),
+            "reason": (reason or "").strip() or None,
+            "detail": dict(detail or {}, actor_persona="close_lead"),
+            "source": CLOSE_EVENT_MODEL.LIVE,
+        }
+        problems = CLOSE_EVENT_MODEL.event_problems(event)
+        if problems:
+            raise AssertionError("close_event.record would refuse: " + "; ".join(problems))
+        site.events.append({
+            "kind": kind, "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+            "reference_doctype": reference_doctype, "reference_name": reference_name,
+            "reason": reason, "detail": detail, "entity": entity,
+        })
+        return "CE-%d" % len(site.events)
+
+    ce.record = record
+    return ce
 
 
 def _assertion_run(site):
@@ -408,6 +469,12 @@ def _invoke(site, run):
     fiscal_calendar.fiscal_period_rows = lambda: [dict(r) for r in site.periods]
     entity_permissions = types.ModuleType("konsol.entity_permissions")
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
+
+    def assert_entity_access(code, user=None):
+        if site.allowed is not None and code not in site.allowed:
+            raise frappe.PermissionError("Not permitted to access entity '%s'" % code)
+
+    entity_permissions.assert_entity_access = assert_entity_access
     consolidation = types.ModuleType("konsol.consolidation")
     doctype_pkg = types.ModuleType("konsol.consolidation.doctype")
     assertion_run_pkg = types.ModuleType("konsol.consolidation.doctype.assertion_run")
@@ -419,12 +486,13 @@ def _invoke(site, run):
     konsol.consolidation = consolidation
     close.ch_read = _ch_read(site)
     close.signoff_gate = _signoff_gate(site)
+    close.close_event = _close_event(site)
 
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
              "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
              "konsol.close.statement_export_model",
-             "konsol.close.commentary_model",
+             "konsol.close.commentary_model", "konsol.close.close_event",
              "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run",
              "konsol.consolidation.doctype.assertion_run.assertion_run",
@@ -435,6 +503,7 @@ def _invoke(site, run):
         "konsol.fiscal_calendar": fiscal_calendar,
         "konsol.entity_permissions": entity_permissions,
         "konsol.close.ch_read": close.ch_read, "konsol.close.signoff_gate": close.signoff_gate,
+        "konsol.close.close_event": close.close_event,
         "konsol.consolidation": consolidation, "konsol.consolidation.doctype": doctype_pkg,
         "konsol.consolidation.doctype.assertion_run": assertion_run_pkg,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run_mod,
@@ -546,7 +615,7 @@ def test_no_sql_constant_has_an_alias_column_collision():
     constants = _sql_constants()
     assert set(constants) == {
         "_TB_SQL", "_ENTITY_SQL", "_DRILL_SQL", "_DRILL_SQL_WITH_CTA",
-        "_DRILL_JOURNALS_SQL",
+        "_DRILL_JOURNALS_SQL", "_ENTITY_TB_SQL",
     }, "a *_SQL constant was added or removed: update this test's expected set"
     for name, sql in constants.items():
         collision = _alias_collision(sql)
@@ -1214,3 +1283,579 @@ def test_golden_signoff_commentary_matches_the_committed_fixture():
     with open(FIXTURE_COMMENTARY_REQUIRED) as fh:
         expected = json.load(fh)
     assert result == expected
+
+
+# --- konsol#495 row 1: the entity basis (one entity's own trial balance) ---
+#
+# ``get_entity_statement`` reads ``gold_trial_balance`` (the entity's own TB,
+# functional currency, group-chart codes), never the translated entity layer
+# of ``gold_fully_consolidated_tb``. One ClickHouse read; the statement is
+# ``statement_model.statement`` itself, rounded to the functional currency.
+
+ENTITY_PAYLOAD_KEYS = {
+    "basis", "entity", "entity_name", "consolidation_group", "groups", "group_note",
+    "reporting_currency", "state", "message", "period", "signoff", "statement", "gap",
+    "not_included", "commentary", "can_comment",
+}
+
+
+def _entity_site():
+    """ZZA, a JPY entity (minor unit 0), with P&L in two periods so YTD
+    differs from the period, and ZZ9999, a code outside the chart."""
+    site = _Site()
+    site.minor_units = {"USD": 2, "JPY": 0}
+    site.entities = {
+        "ZZA": {"entity_name": "Zz Entity A", "functional_currency": "JPY", "is_group": 0},
+        "ZZG": {"entity_name": "Zz Group", "functional_currency": "JPY", "is_group": 1},
+    }
+    site.entity_tb_rows = [
+        _drill_tb_row("1110", 1000, "entity", "ZZA", fp=6),
+        _drill_tb_row("4100", -1000, "entity", "ZZA", fp=6),
+        _drill_tb_row("1110", 500, "entity", "ZZA", fp=7),
+        _drill_tb_row("4100", -400, "entity", "ZZA", fp=7),
+        _drill_tb_row("ZZ9999", -100, "entity", "ZZA", fp=7),
+    ]
+    return site
+
+
+def _call_entity(site, fy=2025, fp=7, entity="ZZA"):
+    result = _invoke(site, lambda api: api.get_entity_statement(fy, fp, entity))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def _call_entity_raises(site, fy=2025, fp=7, entity="ZZA"):
+    with pytest.raises(Exception) as info:
+        _call_entity(site, fy, fp, entity)
+    return info.value
+
+
+def _line(result, section, key, value):
+    sections = {s["section"]: s for s in result["statement"]["sections"]}
+    for line in sections[section]["lines"]:
+        if line.get(key) == value:
+            return line
+    raise AssertionError("no %s line with %s=%r" % (section, key, value))
+
+
+def test_entity_statement_is_the_entitys_own_tb_in_its_functional_currency():
+    site = _entity_site()
+    result = _call_entity(site)
+    assert result["state"] == "ok", result["message"]
+    assert set(result) == ENTITY_PAYLOAD_KEYS
+    assert result["basis"] == "Entity"
+    assert result["entity"] == "ZZA"
+    assert result["entity_name"] == "Zz Entity A"
+    assert result["reporting_currency"] == "JPY"
+    assert result["statement"]["minor_unit"] == 0
+    assert result["consolidation_group"] is None
+    assert result["groups"] == []
+    assert result["group_note"] is None
+    assert result["not_included"] is None
+    assert result["commentary"] == {}
+    assert result["can_comment"] is False
+    assert result["signoff"] == {"state": "provisional", "run": None}
+    assert result["period"]["fiscal_year"] == 2025 and result["period"]["fiscal_period"] == 7
+
+
+def test_entity_statement_pl_carries_year_to_date_beside_the_period():
+    result = _call_entity(_entity_site())
+    line = _line(result, "Profit and Loss", "heading", "4")
+    assert line["current"] == 400
+    assert line["ytd"] == 1400
+    assert line["ytd"] != line["current"]
+
+
+def test_entity_statement_puts_a_code_outside_the_chart_on_its_own_line():
+    result = _call_entity(_entity_site())
+    line = _line(result, "Balance Sheet", "kind", "not_in_chart")
+    assert line["label"] == "Not in the group chart"
+    assert line["codes"] == ["ZZ9999"]
+    assert line["current"] == -100
+
+
+def test_entity_statement_reads_clickhouse_once_from_gold_trial_balance_only():
+    site = _entity_site()
+    _call_entity(site)
+    assert len(site.ch_calls) == 1
+    sql, params = site.ch_calls[0]
+    assert "gold_trial_balance" in sql
+    assert "gold_fully_consolidated_tb" not in sql
+    assert "dim_" not in sql
+    assert params == {"entity": "ZZA", "fy": 2025}
+
+
+def test_entity_statement_returns_its_reads_with_the_tb_rows():
+    site = _entity_site()
+    payload, reads = _invoke(site, lambda api: api._entity_statement(2025, 7, "ZZA"))
+    assert payload["state"] == "ok"
+    assert reads["key"] == (2025, 7)
+    assert {r["main_account"] for r in reads["tb_rows"]} == {"1110", "4100", "ZZ9999"}
+    assert all("amount" in r and "amt" not in r for r in reads["tb_rows"])
+    assert all(r["data_area_id"] == "ZZA" for r in reads["tb_rows"])
+    assert set(reads) >= {"key", "period_rows", "accounts", "declared", "tb_rows"}
+
+
+def test_entity_statement_blank_entity_is_refused():
+    site = _entity_site()
+    error = _call_entity_raises(site, entity="")
+    assert "Choose an entity." in str(error)
+    assert site.ch_calls == []
+
+
+def test_entity_statement_unknown_entity_is_refused_by_name():
+    site = _entity_site()
+    error = _call_entity_raises(site, entity="ZZNOPE")
+    assert "ZZNOPE" in str(error)
+    assert site.ch_calls == []
+
+
+def test_entity_statement_group_entity_is_refused():
+    site = _entity_site()
+    error = _call_entity_raises(site, entity="ZZG")
+    assert "ZZG" in str(error)
+    assert site.ch_calls == []
+
+
+def test_entity_statement_out_of_scope_is_refused():
+    site = _entity_site()
+    site.allowed = {"ZZB"}
+    error = _call_entity_raises(site)
+    assert type(error).__name__ == "PermissionError"
+    assert site.ch_calls == []
+
+
+def test_scoped_caller_gets_one_refusal_for_unknown_and_out_of_scope_codes():
+    """#495 V4a: scope is checked before existence, so a scoped caller cannot
+    learn whether a code exists or is a group."""
+    site = _entity_site()
+    site.allowed = {"ZZB"}
+    texts = set()
+    for code in ("ZZNOPE", "ZZA", "ZZG"):  # unknown, real out of scope, group out of scope
+        error = _call_entity_raises(site, entity=code)
+        assert type(error).__name__ == "PermissionError", (code, repr(error))
+        texts.add(str(error).replace(code, "<code>"))
+    assert len(texts) == 1, texts
+    assert "not an entity" not in next(iter(texts)) and "group entity" not in next(iter(texts))
+    assert site.ch_calls == []
+
+
+def test_entity_statement_entity_accountant_is_refused_by_only_for():
+    site = _entity_site()
+    site.user, site.roles = ENTITY_ACC, {"Entity Accountant"}
+    error = _call_entity_raises(site)
+    assert type(error).__name__ == "PermissionError"
+
+
+def test_entity_statement_blank_functional_currency_is_a_setup_gap():
+    site = _entity_site()
+    site.entities["ZZA"]["functional_currency"] = None
+    result = _call_entity(site)
+    assert result["state"] == "setup_gap"
+    assert "ZZA" in result["message"] and "Functional Currency" in result["message"]
+    assert result["statement"] is None
+    assert site.ch_calls == []
+
+
+def test_entity_statement_currency_with_no_iso_currency_is_a_setup_gap():
+    site = _entity_site()
+    site.minor_units = {"USD": 2}
+    result = _call_entity(site)
+    assert result["state"] == "setup_gap"
+    assert "JPY" in result["message"] and "ISO Currency" in result["message"]
+    assert result["message"].startswith("statement_currency_precision_undeclared")
+    assert result["statement"] is None
+    assert site.ch_calls == []
+
+
+def test_entity_statement_warehouse_down_is_an_error_state():
+    site = _entity_site()
+    site.ch_error = RuntimeError("boom")
+    result = _call_entity(site)
+    assert result["state"] == "error"
+    assert "RuntimeError" in result["message"]
+    assert result["statement"] is None
+
+
+def test_entity_statement_unbuilt_relation_is_not_built():
+    site = _entity_site()
+    site.ch_error = RuntimeError("Code: 60. DB::Exception: Table (UNKNOWN_TABLE)")
+    result = _call_entity(site)
+    assert result["state"] == "not_built"
+    assert result["statement"] is None
+
+
+def test_entity_statement_no_rows_up_to_the_period_is_its_own_state():
+    site = _entity_site()
+    site.entity_tb_rows = [_drill_tb_row("1110", 1000, "entity", "ZZA", fp=8)]
+    result = _call_entity(site)
+    assert result["state"] == "no_rows"
+    assert result["message"] == "No trial balance for ZZA up to FY2025 P07."
+    assert result["statement"] is None
+
+
+def test_entity_statement_empty_chart_is_no_chart_with_no_clickhouse_read():
+    site = _entity_site()
+    site.accounts = {}
+    result = _call_entity(site)
+    assert result["state"] == "no_chart"
+    assert site.ch_calls == []
+
+
+def test_group_statement_still_reads_clickhouse_twice_and_has_no_basis_key():
+    site = _entity_site()
+    result = _call(site)
+    assert "basis" not in result
+    assert len(site.ch_calls) == 2
+    assert all("gold_trial_balance" not in sql for sql, _p in site.ch_calls)
+
+
+# =============================================================================
+# konsol#495 row 5: export_statement on the entity basis. The drills come from
+# the statement's own gold_trial_balance rows (no second ClickHouse read).
+# =============================================================================
+
+def _call_entity_export(site, fy=2025, fp=7, entity="ZZA", basis="Entity", group=None):
+    _invoke(site, lambda api: api.export_statement(
+        fy, fp, group, basis=basis, entity=entity))
+    return site.response
+
+
+def _entity_book(site):
+    import io
+    from openpyxl import load_workbook
+
+    return load_workbook(io.BytesIO(_call_entity_export(site)["filecontent"]))
+
+
+def test_entity_export_is_an_xlsx_named_for_the_period_and_entity():
+    response = _call_entity_export(_entity_site())
+    assert response["type"] == "binary"
+    assert response["filename"] == "numbers-FY2025P07-entity-ZZA.xlsx"
+    assert response["filecontent"][:2] == b"PK"
+
+
+def test_entity_export_statement_sheet_names_the_entity_in_a1():
+    book = _entity_book(_entity_site())
+    assert book["Statement"].cell(1, 1).value == (
+        "Numbers · FY2025 P07 · Basis: Entity · ZZA Zz Entity A · JPY")
+
+
+def test_entity_export_drill_has_one_entity_layer_per_heading_footing_to_the_heading():
+    site = _entity_site()
+    payload = _call_entity(site)
+    book = _entity_book(site)
+    rows = [list(r) for r in book["Drill"].iter_rows(values_only=True)]
+    expected = {line["heading"]: line["current"]
+                for section in payload["statement"]["sections"]
+                for line in section["lines"] if line.get("kind") == "heading"}
+    totals = {r[1]: r[7] for r in rows if r[3] == "Total"}
+    assert totals == expected
+    layers = {}
+    for r in rows:
+        if r[1] in expected and r[3] not in ("Total", None):
+            layers.setdefault(r[1], set()).add(r[3])
+    # headings with entity accounts carry the one Entity layer; the equity
+    # heading's computed result lines are the engine's, not extra sources
+    assert layers["1"] == {"Entity"} and layers["4"] == {"Entity"}, layers
+
+
+def test_entity_export_reads_clickhouse_exactly_once():
+    site = _entity_site()
+    _call_entity_export(site)
+    assert len(site.ch_calls) == 1
+    assert "gold_trial_balance" in site.ch_calls[0][0]
+
+
+def test_entity_export_refusals_never_give_a_file():
+    for kwargs in ({"entity": ""}, {"entity": "ZZNOPE"}, {"entity": "ZZG"}):
+        site = _entity_site()
+        with pytest.raises(Exception) as info:
+            _call_entity_export(site, **kwargs)
+        assert type(info.value).__name__ == "ValidationError", repr(info.value)
+        assert "filecontent" not in site.response
+    site = _entity_site()
+    site.entities["ZZA"]["functional_currency"] = ""
+    with pytest.raises(Exception) as info:
+        _call_entity_export(site)
+    assert type(info.value).__name__ == "ValidationError", repr(info.value)
+    assert "filecontent" not in site.response
+
+
+def test_export_basis_must_be_group_or_entity():
+    site = _entity_site()
+    with pytest.raises(Exception) as info:
+        _call_entity_export(site, basis="Bogus")
+    assert type(info.value).__name__ == "ValidationError", repr(info.value)
+    assert "Bogus" in str(info.value)
+    assert "filecontent" not in site.response
+
+
+def test_export_basis_group_or_blank_is_the_unchanged_group_export():
+    base = _call_export(_export_site())
+    for basis in (None, "", "Group"):
+        site = _export_site()
+        _invoke(site, lambda api: api.export_statement(2025, 7, None, basis=basis))
+        assert site.response["filename"] == base["filename"] == "numbers-FY2025P07-G1.xlsx"
+        assert len(site.ch_calls) == 4
+        assert site.response["filecontent"] is not None
+
+
+# =============================================================================
+# konsol#495 row 6: get_entity_drill, one heading's drill on the entity basis.
+# =============================================================================
+
+def _call_entity_drill(site, fy=2025, fp=7, entity="ZZA", heading="1"):
+    result = _invoke(site, lambda api: api.get_entity_drill(fy, fp, entity, heading))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def test_entity_drill_is_one_entity_row_footing_to_the_statement_line():
+    site = _entity_site()
+    statement = _call_entity(site)
+    line = _bs_line(statement, "1")
+    result = _call_entity_drill(site)
+    assert result["state"] == "ok"
+    assert result["basis"] == "Entity"
+    assert result["entity"] == "ZZA"
+    assert result["entity_name"] == "Zz Entity A"
+    assert result["consolidation_group"] is None
+    assert result["heading"] == "1"
+    assert result["period"]["fiscal_year"] == 2025 and result["period"]["fiscal_period"] == 7
+    drill = result["drill"]
+    assert drill["total"] == line["current"]
+    entity_rows = [r for r in drill["rows"] if r["layer"] == "entity" and r["entity"]]
+    assert [r["entity"] for r in entity_rows] == ["ZZA"]
+    assert sum(a["amount"] for a in entity_rows[0]["accounts"]) == drill["total"]
+
+
+def test_entity_drill_reads_clickhouse_once_from_the_entity_trial_balance():
+    site = _entity_site()
+    _call_entity_drill(site)
+    assert len(site.ch_calls) == 1
+    assert "gold_trial_balance" in site.ch_calls[0][0]
+
+
+def test_entity_drill_unknown_or_leaf_heading_is_refused():
+    for heading in ("ZZNOPE", "1110", ""):
+        site = _entity_site()
+        with pytest.raises(Exception) as info:
+            _call_entity_drill(site, heading=heading)
+        assert type(info.value).__name__ == "ValidationError", repr(info.value)
+
+
+def test_entity_drill_refuses_a_blank_unknown_or_group_entity():
+    for entity in ("", "ZZNOPE", "ZZG"):
+        site = _entity_site()
+        with pytest.raises(Exception) as info:
+            _call_entity_drill(site, entity=entity)
+        assert type(info.value).__name__ == "ValidationError", repr(info.value)
+
+
+def test_entity_drill_non_ok_statement_is_a_state_with_no_drill():
+    site = _entity_site()
+    site.entities["ZZA"]["functional_currency"] = ""
+    result = _call_entity_drill(site)
+    assert result["state"] == "setup_gap"
+    assert "Functional Currency" in result["message"]
+    assert result["drill"] is None
+
+
+# =============================================================================
+# konsol#496 row 10A-2 (Q1 = A, Deepak Pai 9 Nov 2026): every download is
+# recorded as a Close Event ``statement_exported``, in the request's own
+# transaction, after the workbook is built; a refusal records nothing. The
+# endpoint is POST (a GET rolls back, and the event with it).
+# =============================================================================
+
+def _export_function_node():
+    tree = ast.parse(open(API_PY).read())
+    return next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "export_statement")
+
+
+def test_export_statement_is_whitelisted_post_only():
+    fn = _export_function_node()
+    methods = None
+    for dec in fn.decorator_list:
+        if isinstance(dec, ast.Call) and getattr(dec.func, "attr", None) == "whitelist":
+            for kw in dec.keywords:
+                if kw.arg == "methods":
+                    methods = ast.literal_eval(kw.value)
+    assert methods == ["POST"], methods
+
+
+def test_statement_api_never_commits():
+    source = open(API_PY).read()
+    assert "db.commit" not in source
+    assert "commit()" not in source
+
+
+def test_group_export_records_one_statement_exported_event():
+    site = _export_site()
+    response = _call_export(site, group="G1")
+    assert site.events == [{
+        "kind": "statement_exported", "fiscal_year": 2025, "fiscal_period": 7,
+        "reference_doctype": None, "reference_name": None, "reason": None,
+        "entity": None,
+        "detail": {
+            "basis": "Group", "consolidation_group": "G1", "entity": None,
+            "filename": response["filename"], "label": "Provisional",
+        },
+    }]
+    assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
+
+
+def _doc_name_site():
+    site = _export_site()
+    site.groups = [{"consolidation_group": "ZZG", "reporting_currency": "USD"}]
+    site.group_docs = {
+        "CG-ZZG-": {"consolidation_group": "ZZG", "data_area_id": None},
+        "CG-ZZG-ZZA": {"consolidation_group": "ZZG", "data_area_id": "ZZA"},
+    }
+    return site
+
+
+def test_export_accepts_the_consolidation_group_document_name_row_11b():
+    site = _doc_name_site()
+    response = _call_export(site, group="CG-ZZG-")
+    assert response["filename"] == "numbers-FY2025P07-ZZG.xlsx"
+    assert [e["detail"]["consolidation_group"] for e in site.events] == ["ZZG"]
+
+
+def test_export_refuses_a_member_row_document_name_and_records_nothing_row_11b():
+    site = _doc_name_site()
+    error = _export_refusal(site, group="CG-ZZG-ZZA")
+    assert "member of ZZG" in str(error) and "root" in str(error)
+    assert site.events == []
+
+
+def test_export_still_accepts_a_plain_group_code_row_11b():
+    site = _doc_name_site()
+    _call_export(site, group="ZZG")
+    assert [e["detail"]["consolidation_group"] for e in site.events] == ["ZZG"]
+
+
+def test_export_blank_group_still_resolves_the_only_root_group_row_11b():
+    for blank in (None, ""):
+        site = _doc_name_site()
+        _call_export(site, group=blank)
+        assert [e["detail"]["consolidation_group"] for e in site.events] == ["ZZG"]
+
+
+def test_group_export_without_a_named_group_records_the_resolved_group():
+    site = _export_site()
+    _call_export(site)
+    assert len(site.events) == 1
+    assert site.events[0]["detail"]["consolidation_group"] == "G1"
+    assert site.events[0]["detail"]["basis"] == "Group"
+
+
+def test_entity_export_records_one_statement_exported_event_scoped_to_the_entity():
+    site = _entity_site()
+    response = _call_entity_export(site)
+    assert site.events == [{
+        "kind": "statement_exported", "fiscal_year": 2025, "fiscal_period": 7,
+        "reference_doctype": None, "reference_name": None, "reason": None,
+        "entity": "ZZA",
+        "detail": {
+            "basis": "Entity", "consolidation_group": None, "entity": "ZZA",
+            "filename": "numbers-FY2025P07-entity-ZZA.xlsx", "label": "Provisional",
+        },
+    }]
+    assert response["filename"] == "numbers-FY2025P07-entity-ZZA.xlsx"
+
+
+def test_export_records_with_the_integer_period_even_from_string_filters():
+    site = _export_site()
+    _invoke(site, lambda api: api.export_statement("2025", "7", "G1"))
+    assert (site.events[0]["fiscal_year"], site.events[0]["fiscal_period"]) == (2025, 7)
+
+
+def test_export_records_only_after_the_workbook_is_built():
+    """A workbook that fails to build records nothing: the event is written
+    after the bytes exist."""
+    for make_site, call in (
+            (_export_site, lambda api: api.export_statement(2025, 7, "G1")),
+            (_entity_site, lambda api: api.export_statement(
+                2025, 7, None, basis="Entity", entity="ZZA"))):
+        site = make_site()
+
+        def run(api, call=call):
+            def boom(payload, drills):
+                raise RuntimeError("workbook failed")
+            api.statement_export_model = types.SimpleNamespace(workbook=boom)
+            return call(api)
+
+        with pytest.raises(RuntimeError):
+            _invoke(site, run)
+        assert site.events == []
+
+
+def test_group_export_refusals_record_nothing():
+    cases = []
+    s = _export_site()
+    s.groups.append({"consolidation_group": "G2", "reporting_currency": "EUR"})
+    cases.append((s, "ValidationError"))  # choose_group
+    s = _export_site()
+    s.accounts = {}
+    cases.append((s, "ValidationError"))  # no_chart
+    s = _export_site()
+    s.ch_error = RuntimeError("boom")
+    cases.append((s, "ValidationError"))  # error
+    s = _export_site()
+    s.drill_tb_rows[0] = _drill_tb_row("1110", 1.0, "entity", "ZZA")
+    cases.append((s, "ValidationError"))  # drill ValueError
+    s = _export_site()
+    s.roles = {"EPM Entity Accountant"}
+    cases.append((s, "PermissionError"))  # only_for
+    for site, kind in cases:
+        _export_refusal(site, kind=kind)
+        assert site.events == [], kind
+
+
+def test_entity_export_refusals_record_nothing():
+    kwargs_list = [{"entity": ""}, {"entity": "ZZNOPE"}, {"entity": "ZZG"}, {"basis": "Bogus"}]
+    for kwargs in kwargs_list:
+        site = _entity_site()
+        with pytest.raises(Exception):
+            _call_entity_export(site, **kwargs)
+        assert site.events == [], kwargs
+    site = _entity_site()
+    site.entities["ZZA"]["functional_currency"] = ""
+    with pytest.raises(Exception):
+        _call_entity_export(site)
+    assert site.events == []
+    site = _entity_site()
+    site.allowed = ["ZZB"]
+    with pytest.raises(Exception) as info:
+        _call_entity_export(site)
+    assert type(info.value).__name__ == "PermissionError", repr(info.value)
+    assert site.events == []
+    site = _entity_site()
+    site.roles = {"EPM Entity Accountant"}
+    with pytest.raises(Exception):
+        _call_entity_export(site)
+    assert site.events == []
+
+
+def test_reads_never_record_an_event():
+    site = _export_site()
+    _call(site)
+    _call_drill(site)
+    esite = _entity_site()
+    _call_entity(esite)
+    _call_entity_drill(esite)
+    assert site.events == [] and esite.events == []
+
+
+def test_entity_with_a_tb_only_in_an_earlier_year_is_no_rows_not_a_zero_statement():
+    """#495 V2: ZZA's only TB is FY2024 P12; FY2025 has none. It must not
+    read as an ok statement of zeros."""
+    site = _entity_site()
+    site.entity_tb_rows = [_drill_tb_row("1110", 1000, "entity", "ZZA", fy=2024, fp=12),
+                           _drill_tb_row("4100", -1000, "entity", "ZZA", fy=2024, fp=12)]
+    result = _call_entity(site)
+    assert result["state"] == "no_rows", result["state"]
+    assert result["statement"] is None

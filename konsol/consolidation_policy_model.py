@@ -8,7 +8,8 @@ Consolidation has three layers, and this module is the middle one:
 * **Policy** is configured on the group root, in the Consolidation Policy
   tab, with no defaults: the accounting framework, how NCI is measured, how
   goodwill is treated afterwards, where acquisition costs go, whether a
-  measurement period applies, and what happens to a bargain purchase. Every
+  measurement period applies, and what happens to a bargain purchase, and how an acquiree's P&L enters
+  when control passes mid-period. Every
   choice is required once the group has a Business Combination. The framework
   constrains the choices (US GAAP measures NCI at fair value; IFRS does not
   amortise goodwill; IFRS and US GAAP expense acquisition-related costs; a
@@ -27,6 +28,13 @@ GOODWILL_TREATMENTS = ("Impairment only", "Amortise")
 COST_TREATMENTS = ("Expense", "Capitalise")
 MEASUREMENT_PERIODS = ("Off", "12 months")
 BARGAIN = ("Recognise gain", "Refuse")
+#: How an acquiree's P&L enters the consolidation when control passes
+#: mid-period (konsolidat#171, decided 18 Sep 2026, Deepak Pai). Declared by
+#: the group; konsol does not choose. Only P&L flow accounts are affected.
+#: Pro-rating for everyone was rejected: it assumes revenue accrues evenly.
+#: Known debt: like the other policy fields it is not effective-dated, so a
+#: change applies to every period; a validity window is a later decision.
+PARTIAL_PERIOD_TREATMENTS = ("Whole period", "Pro-rate by days", "Stub trial balance")
 
 #: The policy fieldnames on the Consolidation Group root (design 1a).
 #: ``goodwill_method`` keeps its name and is the NCI measurement.
@@ -39,6 +47,7 @@ POLICY_FIELDS = (
     "acquisition_costs_treatment",
     "measurement_period",
     "bargain_purchase",
+    "partial_period_treatment",
 )
 
 #: The declared-account fieldnames on the root (design 1 and 1a), in the
@@ -64,6 +73,7 @@ LABELS = {
     "acquisition_costs_treatment": "Acquisition Costs Treatment",
     "measurement_period": "Measurement Period",
     "bargain_purchase": "Bargain Purchase",
+    "partial_period_treatment": "Partial Period Treatment",
     "goodwill_account": "Goodwill Account",
     "fair_value_adjustment_account": "Fair Value Adjustment Account",
     "investment_account": "Investment in Subsidiaries Account",
@@ -87,6 +97,7 @@ _OPTIONS = {
     "acquisition_costs_treatment": COST_TREATMENTS,
     "measurement_period": MEASUREMENT_PERIODS,
     "bargain_purchase": BARGAIN,
+    "partial_period_treatment": PARTIAL_PERIOD_TREATMENTS,
 }
 
 #: Required once the group has a deal; the conditional two are not listed.

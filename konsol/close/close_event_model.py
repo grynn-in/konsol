@@ -33,8 +33,14 @@ KINDS = (
     # konsol#283 (PR #381 review): a submitted TB's warehouse rows re-landed
     # from its file; a period kind, no reason. Detail {batch_id, row_count, why}.
     "tb_relanded",
+    # konsol#496 row 10A-1: a Numbers statement downloaded; a period kind, no
+    # reason. Detail {basis, consolidation_group, entity, filename, label}.
+    "statement_exported",
 )
 YEAR_KINDS = ("year_closed", "year_locked", "year_reopened")
+#: Non-year kinds that may sit at fiscal_period 0 (opening balances). Decided
+#: 9 Nov 2026, Deepak Pai (#496 Q1): P0 downloads are recorded.
+PERIOD_ZERO_KINDS = ("statement_exported",)
 REASON_REQUIRED = (
     "self_approved", "rejected", "period_reopened", "year_reopened",
     "tb_exception_declared", "signoff_voided", "ic_sent_back",
@@ -76,7 +82,7 @@ def event_problems(event):
             problems.append(
                 "fiscal_period must be 0 for a year_* kind (it covers the whole year)."
             )
-    elif kind in KINDS and fiscal_period == 0:
+    elif kind in KINDS and fiscal_period == 0 and kind not in PERIOD_ZERO_KINDS:
         problems.append("fiscal_period must not be 0 for a non-year kind.")
 
     if not event.get("actor"):

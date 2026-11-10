@@ -30,6 +30,13 @@ BLOCKS = (
     # konsol#419: the roles mywork_api.get_my_work admits (frappe.only_for).
     ("Konsol My Work Board", "konsol_my_work_board",
      ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")),
+    # konsol#497: the home tabs admit the checklist's roles and Entity
+    # Accountant, who sees the Konsol workspace (review R1). The block reads
+    # frappe.user_roles and skips the checklist for a user get_checklist
+    # refuses; cards, shortcuts and charts come permission-filtered from
+    # get_desktop_page, and get_my_work admits all five roles.
+    ("Konsol Home Tabs", "konsol_home_tabs",
+     ("EPM Admin", "EPM Analyst", "EPM User", "Entity Accountant", "System Manager")),
 )
 
 

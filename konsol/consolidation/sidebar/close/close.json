@@ -66,9 +66,9 @@
    "indent": 0,
    "is_default_module": 0,
    "keep_closed": 1,
+   "label": "Trial Balances",
    "open_in_new_tab": 0,
    "show_arrow": 0,
-   "label": "Trial Balances",
    "type": "Section Break"
   },
   {
@@ -131,9 +131,9 @@
    "indent": 0,
    "is_default_module": 0,
    "keep_closed": 1,
+   "label": "Rates",
    "open_in_new_tab": 0,
    "show_arrow": 0,
-   "label": "Rates",
    "type": "Section Break"
   },
   {
@@ -179,9 +179,9 @@
    "indent": 0,
    "is_default_module": 0,
    "keep_closed": 1,
+   "label": "Intercompany",
    "open_in_new_tab": 0,
    "show_arrow": 0,
-   "label": "Intercompany",
    "type": "Section Break"
   },
   {
@@ -210,9 +210,9 @@
    "indent": 0,
    "is_default_module": 0,
    "keep_closed": 1,
+   "label": "Adjustments",
    "open_in_new_tab": 0,
    "show_arrow": 0,
-   "label": "Adjustments",
    "type": "Section Break"
   },
   {
@@ -275,9 +275,9 @@
    "indent": 0,
    "is_default_module": 0,
    "keep_closed": 1,
+   "label": "Review",
    "open_in_new_tab": 0,
    "show_arrow": 0,
-   "label": "Review",
    "type": "Section Break"
   },
   {
@@ -336,8 +336,25 @@
    "child": 1,
    "collapsible": 0,
    "hidden": 0,
-   "icon": "file-spreadsheet",
+   "icon": "table",
    "idx": 21,
+   "indent": 0,
+   "is_default_module": 0,
+   "keep_closed": 0,
+   "label": "Consolidation Worksheet",
+   "link_to": "Consolidation Worksheet",
+   "link_type": "Report",
+   "open_in_new_tab": 0,
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "added": 0,
+   "child": 1,
+   "collapsible": 0,
+   "hidden": 0,
+   "icon": "file-spreadsheet",
+   "idx": 22,
    "indent": 0,
    "is_default_module": 0,
    "keep_closed": 0,
@@ -354,7 +371,7 @@
    "collapsible": 0,
    "hidden": 0,
    "icon": "message-square",
-   "idx": 22,
+   "idx": 23,
    "indent": 0,
    "is_default_module": 1,
    "keep_closed": 0,
@@ -371,7 +388,7 @@
    "collapsible": 0,
    "hidden": 0,
    "icon": "activity",
-   "idx": 23,
+   "idx": 24,
    "indent": 0,
    "is_default_module": 1,
    "keep_closed": 0,
@@ -388,7 +405,7 @@
    "collapsible": 0,
    "hidden": 0,
    "icon": "calendar-range",
-   "idx": 24,
+   "idx": 25,
    "indent": 0,
    "is_default_module": 1,
    "keep_closed": 0,
@@ -405,7 +422,7 @@
    "collapsible": 0,
    "hidden": 0,
    "icon": "list",
-   "idx": 25,
+   "idx": 26,
    "indent": 0,
    "is_default_module": 1,
    "keep_closed": 0,
@@ -417,7 +434,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-11-08 00:40:00.000000",
+ "modified": "2026-11-09 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Close",

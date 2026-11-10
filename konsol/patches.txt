@@ -55,3 +55,4 @@ konsol.patches.delete_konsolidat_workspace
 konsol.patches.backfill_planning_scenario_type
 konsol.patches.delete_budget_rail
 konsol.patches.add_owner_to_ownership_periods
+konsol.patches.move_holidays_to_calendars

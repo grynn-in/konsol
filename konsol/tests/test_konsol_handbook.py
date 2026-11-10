@@ -314,7 +314,7 @@ def test_the_home_page_does_not_show_the_handbook():
     assert "Konsol Handbook" not in [b["custom_block_name"] for b in ws["custom_blocks"]]
     content = json.loads(ws["content"])
     assert "Konsol Handbook" not in [b["data"].get("custom_block_name") for b in content]
-    assert "Konsol Close Checklist" in [b["data"].get("custom_block_name") for b in content]
+    assert "Konsol Home Tabs" in [b["data"].get("custom_block_name") for b in content]  # #497 row 11
     assert ws["modified"] >= "2026-11-07 20:00:00", ws["modified"]
 
 

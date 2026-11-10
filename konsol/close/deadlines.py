@@ -1,21 +1,27 @@
 """konsol#305 story 2.4: the one deadline reader (D55). Not whitelisted.
 
-``period_deadlines(keys, today)`` reads the Close Settings deadline rules and
-holidays ONCE (two ``get_all`` reads of the child tables) and the fiscal
-calendar once, however many periods are asked for, and returns
+``period_deadlines(keys, today)`` reads the Close Settings deadline rules, the
+Close Holiday Calendars (year, no_holidays) and their holiday rows ONCE (three
+``get_all`` reads) and the fiscal calendar once, however many periods are
+asked for, and returns
 ``{(fiscal_year, fiscal_period): deadline_model.period_deadlines(...)}``.
 
 - Only Regular periods carry deadlines (C-D4): a non-Regular key is absent,
   as is a key the calendar does not hold.
 - No rule declared → every step reads "No due date declared" (deadline_model);
   nothing is guessed.
+- Holidays come only from the Close Holiday Calendars (konsol#509). A step
+  whose count reaches a year with no calendar has no due date and reads
+  "Holidays not declared for <year>" (deadline_model.HOLIDAYS_UNDECLARED);
+  a year declared "No Holidays This Year" counts every working day.
 - A period asked for with no end date throws, naming it (the mywork_api A53
   precedent): a configuration problem, never today's date.
 - Stored data the save would have refused (two rules on one Valid From), or a
   due date that cannot be computed, throws deadline_model's sentence.
 - ``as_payload(steps)`` is the JSON-safe form of one period's steps: ``due``
   as an ISO string or None, plus ``past`` and ``text`` (the "No due date
-  declared" sentence when ``due`` is None, else None: F3, the SPA words a
+  declared" or "Holidays not declared for <year>" sentence when ``due`` is
+  None, else None: F3, the SPA words a
   dated step from ``due``).
 
 "Overdue" (past AND the step still open) is decided by each caller (C-D4).
@@ -47,6 +53,7 @@ period_name = _load_sibling("period_name").period_name
 REGULAR = "Regular"
 SETTINGS = "Close Settings"
 RULE_DOCTYPE = "Close Deadline Rule"
+CALENDAR_DOCTYPE = "Close Holiday Calendar"
 HOLIDAY_DOCTYPE = "Close Holiday"
 RULE_FIELDS = ["valid_from", *deadline_model.WEEKDAYS,
                *(deadline_model.OFFSET_FIELD[step] for step in deadline_model.STEPS)]
@@ -75,7 +82,7 @@ def _child_rows(doctype, parentfield, fields):
 
 def period_deadlines(keys, today):
     """``{(fy, fp): {step: {"due": date|None, "past": bool, "text": str|None}}}``
-    for the Regular periods among ``keys``. Three reads in all."""
+    for the Regular periods among ``keys``. Four reads in all (rules, calendars, holiday rows, fiscal calendar)."""
     wanted = {(int(fy), int(fp)) for fy, fp in keys}
     if not wanted:
         return {}
@@ -85,8 +92,13 @@ def period_deadlines(keys, today):
         rule = dict(row)
         rule["valid_from"] = _as_date(rule.get("valid_from"))
         rules.append(rule)
-    holidays = {_as_date(row.get("holiday_date"))
-                for row in _child_rows(HOLIDAY_DOCTYPE, "close_holidays", ["holiday_date"])}
+    declared_years = {int(row["year"]) for row in frappe.get_all(
+        CALENDAR_DOCTYPE, fields=["year", "no_holidays"], order_by="year asc",
+        limit_page_length=0)}
+    holidays = {_as_date(row.get("holiday_date")) for row in frappe.get_all(
+        HOLIDAY_DOCTYPE,
+        filters={"parenttype": CALENDAR_DOCTYPE, "parentfield": "holidays"},
+        fields=["holiday_date"], order_by="holiday_date asc", limit_page_length=0)}
 
     out = {}
     for row in fiscal_calendar.fiscal_period_rows():
@@ -97,7 +109,7 @@ def period_deadlines(keys, today):
         if not end_date:
             frappe.throw("%s has no end date: fix its row in EPM Fiscal Year." % period_name(*key))
         try:
-            out[key] = deadline_model.period_deadlines(rules, holidays, end_date, today)
+            out[key] = deadline_model.period_deadlines(rules, holidays, end_date, today, declared_years)
         except ValueError as err:
             frappe.throw(str(err))
     return out

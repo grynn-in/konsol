@@ -421,7 +421,7 @@ def test_the_group_root_carries_its_policy_and_declared_accounts():
         "nci_account String DEFAULT '', bargain_purchase_gain_account String DEFAULT '', "
         "disposal_gain_loss_account String DEFAULT '', disposal_proceeds_account String DEFAULT '', "
         "goodwill_amortisation_expense_account String DEFAULT '', "
-        "acquisition_costs_account String DEFAULT '') "
+        "acquisition_costs_account String DEFAULT '', partial_period_treatment String DEFAULT '') "
         "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id)")
     assert m._ADDED_COLUMNS[table] == [
         ("ic_difference_account", "String DEFAULT ''"),
@@ -443,6 +443,7 @@ def test_the_group_root_carries_its_policy_and_declared_accounts():
         ("disposal_proceeds_account", "String DEFAULT ''"),
         ("goodwill_amortisation_expense_account", "String DEFAULT ''"),
         ("acquisition_costs_account", "String DEFAULT ''"),
+        ("partial_period_treatment", "String DEFAULT ''"),
     ]
 
 

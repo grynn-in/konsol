@@ -2,7 +2,8 @@
 C-D2, C-D4).
 
 ``period_deadlines(keys, today)`` reads the Close Settings deadline rules and
-holidays ONCE (two ``get_all`` reads) and the fiscal calendar once, and
+Close Holiday Calendars and their holiday rows ONCE (three ``get_all`` reads;
+konsol#509) and the fiscal calendar once, and
 returns ``{(fy, fp): deadline_model.period_deadlines(...)}`` for the Regular
 keys asked for. A non-Regular key is absent (C-D4). ``as_payload`` is the
 JSON-safe form of one period's steps.
@@ -60,6 +61,7 @@ class _Site:
     def __init__(self):
         self.rules = []
         self.holidays = []
+        self.calendars = None    # None: declare the year of every holiday
         self.periods = [
             _period(2025, 6, date(2025, 6, 30)),
             _period(2025, 7, date(2025, 7, 31)),
@@ -76,6 +78,11 @@ def _load(site):
     def get_all(doctype, filters=None, fields=None, limit_page_length=None, **kw):
         site.reads.append(("get_all", doctype, {"filters": filters, "fields": fields,
                                                 "limit_page_length": limit_page_length, **kw}))
+        if doctype == "Close Holiday Calendar":
+            years = site.calendars
+            if years is None:
+                years = [2025]
+            return [{"year": y, "no_holidays": 0} for y in years]
         source = {"Close Deadline Rule": site.rules, "Close Holiday": site.holidays}[doctype]
         return [{f: row.get(f) for f in fields} for row in source]
 
@@ -129,16 +136,16 @@ def test_three_keys_read_settings_twice_and_calendar_once():
     reader = _load(site)
     out = reader.period_deadlines([(2025, 7), (2025, 8), (2025, 13)], TODAY)
 
-    assert [r[0] for r in site.reads].count("get_all") == 2
+    assert [r[0] for r in site.reads].count("get_all") == 3
     assert [r[0] for r in site.reads].count("calendar") == 1
-    assert len(site.reads) == 3
+    assert len(site.reads) == 4
 
     # A Closing key is absent (C-D4); a period not asked for is absent.
     assert sorted(out) == [(2025, 7), (2025, 8)]
 
     holidays = {date(2025, 8, 4)}
     for key, end in (((2025, 7), date(2025, 7, 31)), ((2025, 8), date(2025, 8, 31))):
-        assert out[key] == MODEL.period_deadlines(site.rules, holidays, end, TODAY)
+        assert out[key] == MODEL.period_deadlines(site.rules, holidays, end, TODAY, {2025})
     # The real producer's numbers: P07 under the first rule, past the holiday.
     assert out[(2025, 7)]["tb"] == {"due": date(2025, 8, 8), "past": True, "text": None}
     # P08 under the second rule: ic 0 and journals blank are undeclared.
@@ -147,14 +154,47 @@ def test_three_keys_read_settings_twice_and_calendar_once():
     assert out[(2025, 8)]["tb"]["due"] == date(2025, 9, 3)
 
 
-def test_reads_are_the_close_settings_child_tables_unpaged():
+def test_read_count_is_fixed_whatever_the_number_of_periods():
+    site = _declared_site()
+    reader = _load(site)
+    reader.period_deadlines([(2025, 6)], TODAY)
+    one = len(site.reads)
+    site.reads.clear()
+    reader.period_deadlines([(2025, 6), (2025, 7), (2025, 8)], TODAY)
+    assert len(site.reads) == one == 4
+
+
+def test_an_undeclared_year_reads_the_sentence_and_no_date():
+    site = _declared_site()
+    site.calendars = [2025]
+    site.periods.append(_period(2025, 12, date(2025, 12, 31)))
+    reader = _load(site)
+    out = reader.period_deadlines([(2025, 12)], TODAY)
+    assert out[(2025, 12)]["tb"] == {"due": None, "past": False,
+                                     "text": "Holidays not declared for 2026: add a Close Holiday Calendar for 2026."}
+    # 2025 is declared, so P07 still has its date.
+    assert reader.period_deadlines([(2025, 7)], TODAY)[(2025, 7)]["tb"]["due"] == date(2025, 8, 8)
+
+
+def test_no_calendar_at_all_leaves_every_dated_rule_undeclared_by_year():
+    site = _declared_site()
+    site.calendars = []
+    reader = _load(site)
+    out = reader.period_deadlines([(2025, 7)], TODAY)
+    assert out[(2025, 7)]["tb"] == {"due": None, "past": False,
+                                    "text": "Holidays not declared for 2025: add a Close Holiday Calendar for 2025."}
+
+
+def test_reads_are_the_close_settings_rules_and_the_calendars_unpaged():
     site = _declared_site()
     reader = _load(site)
     reader.period_deadlines([(2025, 7)], TODAY)
     reads = {r[1]: r[2] for r in site.reads if r[0] == "get_all"}
-    assert set(reads) == {"Close Deadline Rule", "Close Holiday"}
+    assert set(reads) == {"Close Deadline Rule", "Close Holiday", "Close Holiday Calendar"}
     assert reads["Close Deadline Rule"]["filters"] == dict(PARENT_FILTERS, parentfield="deadline_rules")
-    assert reads["Close Holiday"]["filters"] == dict(PARENT_FILTERS, parentfield="close_holidays")
+    assert reads["Close Holiday"]["filters"] == {"parenttype": "Close Holiday Calendar",
+                                                 "parentfield": "holidays"}
+    assert {"year", "no_holidays"} <= set(reads["Close Holiday Calendar"]["fields"])
     for kwargs in reads.values():
         assert kwargs["limit_page_length"] == 0
     rule_fields = set(reads["Close Deadline Rule"]["fields"])

@@ -364,3 +364,40 @@ def test_tb_relanded_is_a_declared_period_kind_and_a_select_option():
     event = _event(kind="tb_relanded", entity="ZZ01",
                    detail={"batch_id": "b1", "row_count": 2, "why": "no claim in the warehouse"})
     assert M.event_problems(event) == []
+
+
+# --- statement_exported (konsol#496 row 10A-1) ---------------------------------
+
+def test_statement_exported_is_a_declared_kind_and_a_select_option_in_order():
+    """A Numbers download is audited. No reason; not a year kind."""
+    import json
+    import os
+
+    assert "statement_exported" in M.KINDS
+    assert "statement_exported" not in M.REASON_REQUIRED
+    assert "statement_exported" not in M.YEAR_KINDS
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "consolidation",
+                        "doctype", "close_event", "close_event.json")
+    with open(path) as f:
+        kind = next(fd for fd in json.load(f)["fields"] if fd["fieldname"] == "kind")
+    assert kind["options"].split("\n") == list(M.KINDS)
+
+
+def test_statement_exported_is_accepted_at_a_regular_period_without_a_reason():
+    event = _event(kind="statement_exported", fiscal_period=7,
+                   detail={"basis": "group", "filename": "numbers-FY2025P07-G.xlsx"})
+    assert M.event_problems(event) == []
+
+
+def test_statement_exported_is_accepted_at_fiscal_period_zero():
+    """P0 (opening balances) downloads are recorded (Q1, 9 Nov 2026)."""
+    assert M.event_problems(_event(kind="statement_exported", fiscal_period=0)) == []
+
+
+def test_period_zero_stays_refused_for_every_other_non_year_kind():
+    for kind in M.KINDS:
+        if kind in M.YEAR_KINDS or kind in M.PERIOD_ZERO_KINDS:
+            continue
+        problems = M.event_problems(_event(kind=kind, fiscal_period=0, reason="r"))
+        assert any("must not be 0" in p for p in problems), (kind, problems)
+    assert M.PERIOD_ZERO_KINDS == ("statement_exported",)

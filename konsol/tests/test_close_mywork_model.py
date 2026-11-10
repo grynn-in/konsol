@@ -1304,7 +1304,7 @@ _END = {P07: date(2025, 7, 31), P08: date(2025, 8, 31)}
 
 
 def _deadlines(key, today, rules=None):
-    return DM.period_deadlines(_RULES if rules is None else rules, set(), _END[key], today)
+    return DM.period_deadlines(_RULES if rules is None else rules, set(), _END[key], today, set(range(1970, 2150)))
 
 
 def _due_period(code, key, today, rules=None, **over):
@@ -1521,13 +1521,13 @@ _R52A_SLUG = {"Signed Off": "close", "Re-sign Needed": "resign", "Not Signed Off
 
 
 def _r52a_items(signoff):
-    deadlines = DM.period_deadlines(_R52A_RULES, set(), _END[P07], _R52A_TODAY)
+    deadlines = DM.period_deadlines(_R52A_RULES, set(), _END[P07], _R52A_TODAY, set(range(1970, 2150)))
     per = {P07: dict(_period("FY2025 P07", signoff=signoff), deadlines=deadlines)}
     return deadlines, {i["id"]: i for i in M.period_items("close_lead", per, FIRST)}
 
 
 def test_r52a_the_real_producer_puts_signoff_on_working_day_8_and_past():
-    d = DM.period_deadlines(_R52A_RULES, set(), _END[P07], _R52A_TODAY)
+    d = DM.period_deadlines(_R52A_RULES, set(), _END[P07], _R52A_TODAY, set(range(1970, 2150)))
     assert d["signoff"] == {"due": date(2025, 8, 12), "past": True, "text": None}
 
 

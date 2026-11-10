@@ -17,7 +17,7 @@ The Entity Accountant is not admitted: the trail holds every entity's
 events (E10-P8), the boundary #305-P21 draws for the journal too.
 
 Entity scope (#305-W2-9): the events (the period's own, plus that year's
-``fiscal_period == 0`` events) are scoped to
+``fiscal_period == 0`` year events; a period-0 download is period 0's alone) are scoped to
 ``entity_permissions.allowed_entity_codes()`` through ``trail_model.visible``
 before the summary is computed, the same cut ``period_grid`` and
 ``get_my_work`` apply. A group-level event (blank ``entity``: rates,
@@ -180,7 +180,7 @@ def _scoped_trail(fiscal_year, fiscal_period, kinds, actors, entities, date_from
         order_by="at desc, name desc",
         limit_page_length=0,
     )
-    events = [dict(r, detail=_detail(r)) for r in rows]
+    events = [dict(r, detail=_detail(r)) for r in trail_model.in_period_trail(rows, fp)]
 
     allowed = allowed_entity_codes()
     events, hidden = trail_model.visible(events, allowed)

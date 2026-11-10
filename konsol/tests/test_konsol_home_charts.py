@@ -580,19 +580,15 @@ def test_the_dashboard_lists_all_seven():
     assert doc["modified"] >= "2026-11-07"
 
 
-def test_the_workspace_lists_all_seven_below_the_checklist():
+def test_the_workspace_lists_all_seven_for_the_tabs_block():
     ws = json.loads(_read(WORKSPACE))
     assert [c["chart_name"] for c in ws["charts"]] == list(CHARTS)
     content = json.loads(ws["content"])
-    charts = [b["data"]["chart_name"] for b in content if b["type"] == "chart"]
-    assert charts == list(CHARTS)
+    assert not [b for b in content if b["type"] == "chart"]  # the Trends tab reads the child table
+    assert [b["data"]["custom_block_name"] for b in content] == ["Konsol Home Tabs"]
     ids = [b["id"] for b in content]
-    checklist = next(i for i, b in enumerate(content) if b["type"] == "custom_block"
-                     and b["data"]["custom_block_name"] == "Konsol Close Checklist")
-    first_chart = next(i for i, b in enumerate(content) if b["type"] == "chart")
-    assert first_chart > checklist
     assert len(ids) == len(set(ids))
-    assert ws["modified"] >= "2026-11-07 12:00"
+    assert ws["modified"] > "2026-11-07 23:55:00.000000"
 
 
 def test_charts_api_never_bypasses_permissions():
@@ -618,7 +614,7 @@ def test_close_settings_declares_the_net_sales_heading():
     assert not field.get("reqd") and field.get("description")
     order = doc["field_order"]
     assert order.index("statement_net_sales_heading") > order.index("statements_section")
-    assert order.index("statement_net_sales_heading") < order.index("commentary_section")
+    assert order.index("statement_net_sales_heading") < order.index("deadlines_tab")  # konsol#510
 
 
 def test_net_sales_heading_problem():

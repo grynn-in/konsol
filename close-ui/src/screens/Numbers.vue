@@ -305,7 +305,7 @@ async function exportExcel() {
 				fiscal_year: period.value.year,
 				fiscal_period: period.value.period,
 				consolidation_group: view.value.consolidationGroup,
-			}),
+			}, { method: "POST" }),
 		);
 		if (result.stale) return;
 		saveFile(result.value.blob, result.value.filename);

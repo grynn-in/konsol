@@ -230,7 +230,7 @@ def _load(site):
         model = _by_path("test_close_tb_read_api_deadline_model", DEADLINE_MODEL_PY)
         wanted = {(int(fy), int(fp)) for fy, fp in keys}
         return {(r["fiscal_year"], r["fiscal_period"]): model.period_deadlines(
-                    site.deadline_rules, site.holidays, r["end_date"], today)
+                    site.deadline_rules, site.holidays, r["end_date"], today, set(range(1970, 2150)))
                 for r in site.rows if (r["fiscal_year"], r["fiscal_period"]) in wanted
                 and r["period_type"] == "Regular"}
 
@@ -1113,7 +1113,7 @@ def _deadline_site(today):
 def test_the_stub_deadlines_are_the_real_model_output():
     site = _deadline_site(date(2025, 10, 8))
     got = DEADLINE_MODEL.period_deadlines(site.deadline_rules, set(), date(2025, 9, 30),
-                                          site.today)
+                                          site.today, set(range(1970, 2150)))
     assert got["tb"] == {"due": date(2025, 10, 7), "past": True, "text": None}
 
 

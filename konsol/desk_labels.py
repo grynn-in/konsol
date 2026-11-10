@@ -37,6 +37,7 @@ LABELS = {
     "Period Close": "Period Close",
     "Close Assertions": "Close Assertions",
     "Consolidated Statement": "Consolidated Statement",
+    "Consolidation Worksheet": "Consolidation Worksheet",
     "Statement Drill": "Statement Drill",
     "Statement Commentary": "Statement Commentaries",
     "Assertion Run": "Assertion Runs",
@@ -76,6 +77,7 @@ LABELS = {
     "Fair Value Allocation Profile": "Fair Value Allocation Profiles",
     "ISO Currency": "ISO Currencies",
     "Close Settings": "Close Settings",
+    "Close Holiday Calendar": "Close Holiday Calendars",
     "konsol-setup": "Konsol Setup",
     # --- Data: sources ---------------------------------------------------
     "Connector": "Connectors",
