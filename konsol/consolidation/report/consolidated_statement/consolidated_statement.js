@@ -1,7 +1,7 @@
 // Consolidated Statement — the Numbers statement (P&L and Balance Sheet) in Desk.
 // A heading opens Statement Drill for that heading with the same filters;
 // "Export to Excel" downloads the statement through
-// statement_api.export_statement (a form POST: open_url_post);
+// statement_api.export_statement (a form POST in a new tab: open_url_post);
 // "Add commentary" saves a heading's commentary through
 // commentary_api.save_commentary (the Close app's own call).
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
@@ -46,14 +46,20 @@ function export_to_excel() {
 	// A form POST (open_url_post adds the CSRF token); values are sent as
 	// strings, as a blank filter is "", never "null" or "undefined".
 	const value = (name) => frappe.query_report.get_filter_value(name) || "";
-	open_url_post(frappe.request.url, {
-		cmd: "konsol.close.statement_api.export_statement",
-		fiscal_year: value("fiscal_year"),
-		fiscal_period: value("fiscal_period"),
-		basis: value("basis"),
-		consolidation_group: value("consolidation_group"),
-		entity: value("entity"),
-	});
+	// Posted to the method's own URL: a "cmd" posted to "/" is deprecated in
+	// Frappe v16 and removed in v17. new_window (true) opens a blank tab, so a
+	// refusal (JSON) lands there and the Desk tab keeps the statement.
+	open_url_post(
+		"/api/method/konsol.close.statement_api.export_statement",
+		{
+			fiscal_year: value("fiscal_year"),
+			fiscal_period: value("fiscal_period"),
+			basis: value("basis"),
+			consolidation_group: value("consolidation_group"),
+			entity: value("entity"),
+		},
+		true,
+	);
 }
 
 function add_commentary() {
