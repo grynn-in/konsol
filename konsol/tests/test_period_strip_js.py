@@ -50,7 +50,7 @@ const report = {
 };
 global.document = doc;
 const strip = require(script);
-const info = { years: scenario.years, year_min: 1980, year_max: 2045, period_min: 1, period_max: 12 };
+const info = { years: scenario.years, year_min: 1980, year_max: 2045, period_min: scenario.period_min ?? 0, period_max: scenario.period_max ?? 13 };
 strip.attach(report, info);
 if (scenario.attach_twice) strip.attach(report, info);
 
@@ -88,6 +88,7 @@ setTimeout(() => console.log(JSON.stringify({
 	aria: Object.fromEntries(["year-prev", "year-next", "period-prev", "period-next", "year-range", "period-range"]
 		.map((c) => [c, one(`konsol-strip-${c}`).attrs["aria-label"]])),
 	label_titles: ["year", "period"].map((r) => one(`konsol-strip-${r}-label`).attrs.title || ""),
+	captions: ['open', 'close'].map((c) => by('konsol-strip-cap-' + c).map((e) => e.textContent)[0]),
 	initial: state(), initial_disabled: disabled(), log,
 })), 250);
 """
@@ -109,7 +110,7 @@ BASE = {"filters": {"fiscal_year": 2024, "fiscal_period": 6}, "years": [2023, 20
 def test_strip_renders_above_the_filter_row_with_both_rows():
     out = _run(BASE)
     assert out["containers"] == 1 and out["above_form"]
-    assert out["range_attrs"] == [["range", "1980", "2045", "1"], ["range", "1", "12", "1"]]
+    assert out["range_attrs"] == [["range", "1980", "2045", "1"], ["range", "0", "13", "1"]]
     assert out["initial"] == {"year": {"thumb": "2024", "label": "2024"},
                               "period": {"thumb": "6", "label": "6"}}
 
@@ -129,13 +130,13 @@ def test_dragging_updates_the_label_but_changes_no_filter():
 
 
 def test_buttons_step_by_one_and_clamp_at_the_ends():
-    out = _run({"filters": {"fiscal_year": 2045, "fiscal_period": 12}, "years": [],
+    out = _run({"filters": {"fiscal_year": 2045, "fiscal_period": 13}, "years": [],
                 "steps": [["click", "period", "next"], ["click", "year", "next"],
                           ["click", "period", "prev"], ["click", "year", "prev"]]})
     lasts = [s.get("last") for s in out["log"]]
     # a step that changes nothing sets no filter (no refresh)
-    assert lasts[2:] == [{"fiscal_year": 2045, "fiscal_period": 11},
-                         {"fiscal_year": 2044, "fiscal_period": 11}]
+    assert lasts[2:] == [{"fiscal_year": 2045, "fiscal_period": 12},
+                         {"fiscal_year": 2044, "fiscal_period": 12}]
     assert [s["calls"] for s in out["log"]] == [0, 0, 1, 2]
 
 
@@ -145,31 +146,31 @@ def test_buttons_are_disabled_at_and_beyond_the_ends():
         return _run({"filters": {"fiscal_year": year, "fiscal_period": period},
                      "years": []})["initial_disabled"]
     assert disabled(2024, 6) == [False, False, False, False]
-    assert disabled(1980, 1) == [True, False, True, False]
-    assert disabled(2045, 12) == [False, True, False, True]
-    assert disabled(1975, 13) == [True, False, False, True]
-    assert disabled(2050, 0) == [False, True, True, False]
+    assert disabled(1980, 0) == [True, False, True, False]
+    assert disabled(2045, 13) == [False, True, False, True]
+    assert disabled(1975, 14) == [True, False, False, True]
+    assert disabled(2050, -1) == [False, True, True, False]
 
 
 def test_typing_a_value_updates_the_disabled_buttons():
-    out = _run({**BASE, "steps": [["type", "fiscal_period", 12], ["type", "fiscal_period", 5]]})
+    out = _run({**BASE, "steps": [["type", "fiscal_period", 13], ["type", "fiscal_period", 5]]})
     assert [s["disabled"][2:] for s in out["log"]] == [[False, True], [False, False]]
 
 
 def test_stepping_from_an_out_of_range_value_does_not_move_it_backwards():
-    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 13}, "years": [],
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 14}, "years": [],
                 "steps": [["click", "period", "next"], ["click", "period", "prev"]]})
     assert [s["calls"] for s in out["log"]] == [0, 1]
-    assert out["log"][1]["last"] == {"fiscal_year": 2024, "fiscal_period": 12}
+    assert out["log"][1]["last"] == {"fiscal_year": 2024, "fiscal_period": 13}
 
 
 def test_out_of_range_typed_value_puts_thumb_at_end_and_label_shows_real_value():
-    out = _run({"filters": {"fiscal_year": 1975, "fiscal_period": 13}, "years": []})
+    out = _run({"filters": {"fiscal_year": 1975, "fiscal_period": 14}, "years": []})
     assert out["initial"] == {"year": {"thumb": "1980", "label": "1975"},
-                              "period": {"thumb": "12", "label": "13"}}
+                              "period": {"thumb": "13", "label": "14"}}
     out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 6}, "years": [],
-                "steps": [["type", "fiscal_period", 0]]})
-    assert out["log"][0]["state"]["period"] == {"thumb": "1", "label": "0"}
+                "steps": [["type", "fiscal_period", -1]]})
+    assert out["log"][0]["state"]["period"] == {"thumb": "0", "label": "-1"}
     assert out["log"][0]["calls"] == 0  # following the typed box never sets a filter
 
 
@@ -244,3 +245,24 @@ def test_unmeasurable_filters_fall_back_to_the_plain_layout():
 def test_spacing_between_the_strips_and_before_the_filter_row():
     css = open(SCRIPT).read()
     assert "margin:0 0 10px" in css and "margin-bottom:8px" in css
+
+
+def test_period_zero_and_thirteen_are_in_range_and_read_open_and_close():
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 0}, "years": [],
+                "steps": [["type", "fiscal_period", 13], ["drag", "period", 0], ["drag", "period", 13],
+                          ["drag", "period", 7]]})
+    assert out["initial"]["period"] == {"thumb": "0", "label": "Open"}
+    labels = [s["state"]["period"]["label"] for s in out["log"]]
+    assert labels == ["Close", "Open", "Close", "7"]
+    assert out["log"][0]["state"]["period"]["thumb"] == "13"
+    assert out["label_titles"][1] == ""  # not out of range
+
+
+def test_the_year_label_is_always_the_number():
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 6}, "years": []})
+    assert out["initial"]["year"]["label"] == "2024"
+
+
+def test_open_and_close_captions_sit_at_the_ends_of_the_period_track():
+    out = _run(BASE)
+    assert out["captions"] == ["Open", "Close"]

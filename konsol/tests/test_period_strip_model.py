@@ -23,7 +23,7 @@ def _p(fy, fp, period_type="Regular"):
 def test_bounds_are_fixed():
     info = M.strip_info([], None)
     assert (info["year_min"], info["year_max"], info["period_min"], info["period_max"]) == (
-        1980, 2045, 1, 12)
+        1980, 2045, 0, 13)
     assert info["years"] == [] and info["latest"] is None
 
 

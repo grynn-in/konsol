@@ -1,7 +1,8 @@
 """Period strips (Desk query reports): the pure logic behind the Year and
 Period slider strips. No DOM, no frappe; the script runs under node.
 
-Rules: the typed boxes can hold 0 or 13, which a strip cannot show, so the
+Rules: the typed boxes can hold values a strip cannot show (a year before 1980,
+period 14 or -1), so the
 strip sits at the nearest end and flags out_of_range. Filters are remembered
 per user; a route option beats the saved value; with nothing saved the report
 opens on the latest period with data. A route that carries a fiscal year or
@@ -125,3 +126,10 @@ def test_to_save_keeps_only_listed_keys_and_drops_empty_values():
                                 "currency": "USD", "other": "x"},
                                ["fiscal_year", "fiscal_period", "entity", "basis", "missing"]]])
     assert got == {"fiscal_year": 2024, "fiscal_period": 0}
+
+
+def test_period_label_reads_open_and_close_at_the_ends():
+    out = _run(["period_label", [0]], ["period_label", ["0"]], ["period_label", [13]],
+               ["period_label", [7]], ["period_label", [None]], ["period_label", [""]],
+               ["period_label", [14]])
+    assert out == ["Open", "Open", "Close", "7", "", "", "14"]

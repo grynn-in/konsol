@@ -85,7 +85,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 """
 
 INFO = {"years": [2023, 2024], "latest": {"fiscal_year": 2024, "fiscal_period": 12},
-        "year_min": 1980, "year_max": 2045, "period_min": 1, "period_max": 12}
+        "year_min": 1980, "year_max": 2045, "period_min": 0, "period_max": 13}
 WS_KEYS = ["fiscal_year", "fiscal_period", "consolidation_group", "entities", "dimension"]
 TODAY = {"fiscal_year": 2026, "fiscal_period": 11, "consolidation_group": "", "entities": [],
          "dimension": ""}
