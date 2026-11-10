@@ -1404,6 +1404,21 @@ def test_entity_statement_out_of_scope_is_refused():
     assert site.ch_calls == []
 
 
+def test_scoped_caller_gets_one_refusal_for_unknown_and_out_of_scope_codes():
+    """#495 V4a: scope is checked before existence, so a scoped caller cannot
+    learn whether a code exists or is a group."""
+    site = _entity_site()
+    site.allowed = {"ZZB"}
+    texts = set()
+    for code in ("ZZNOPE", "ZZA", "ZZG"):  # unknown, real out of scope, group out of scope
+        error = _call_entity_raises(site, entity=code)
+        assert type(error).__name__ == "PermissionError", (code, repr(error))
+        texts.add(str(error).replace(code, "<code>"))
+    assert len(texts) == 1, texts
+    assert "not an entity" not in next(iter(texts)) and "group entity" not in next(iter(texts))
+    assert site.ch_calls == []
+
+
 def test_entity_statement_entity_accountant_is_refused_by_only_for():
     site = _entity_site()
     site.user, site.roles = ENTITY_ACC, {"Entity Accountant"}
