@@ -78,7 +78,6 @@ class ConsolidationGroup(NestedSet):
         "acquisition_costs_treatment": "acquisition_costs_treatment",
         "measurement_period": "measurement_period",
         "bargain_purchase": "bargain_purchase",
-        "partial_period_treatment": "partial_period_treatment",
         # konsolidat#198 (design 1): the declared accounts the consolidation
         # journals post to. dbt never assumes a code.
         "goodwill_account": "goodwill_account",
@@ -90,6 +89,9 @@ class ConsolidationGroup(NestedSet):
         "disposal_proceeds_account": "disposal_proceeds_account",
         "goodwill_amortisation_expense_account": "goodwill_amortisation_expense_account",
         "acquisition_costs_account": "acquisition_costs_account",
+        # konsolidat#171: the last warehouse column (an existing table gets it
+        # appended by _ADDED_COLUMNS).
+        "partial_period_treatment": "partial_period_treatment",
     }
 
     # PRD-8 / F2: the link closure, computed by a path walk over the links.
