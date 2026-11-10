@@ -69,14 +69,11 @@ app_include_css = ["konsol_desk.bundle.css", "konsol_sidebar.bundle.css",
                    "konsol_theme.bundle.css"]
 # konsol#415: konsol_brand.js, the site's Brand Colour on every Desk page (see
 # konsol/brand.py).
-# Period strips on the Desk period reports (Deepak Pai, 10 Nov 2026): plain
-# files, in dependency order; each report's onload calls
-# konsol.period_reports.setup, which needs the other three already loaded.
+# Period strips on the Desk period reports (Deepak Pai, 10 Nov 2026): one
+# bundle (public/js/konsol_period_strips.bundle.js) importing the four files in
+# dependency order; each report's onload calls konsol.period_reports.setup.
 app_include_js = ["/assets/konsol/js/konsol_brand.js",
-                  "/assets/konsol/js/period_strip_model.js",
-                  "/assets/konsol/js/report_filter_memory.js",
-                  "/assets/konsol/js/period_strip.js",
-                  "/assets/konsol/js/period_reports.js"]
+                  "konsol_period_strips.bundle.js"]
 boot_session = ["konsol.brand.boot_session"]
 
 # Approve and Reject in the record's Actions menu, on every approval doctype
