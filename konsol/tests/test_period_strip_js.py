@@ -50,7 +50,7 @@ const report = {
 };
 global.document = doc;
 const strip = require(script);
-const info = { years: scenario.years, year_min: 1980, year_max: 2045, period_min: scenario.period_min ?? 0, period_max: scenario.period_max ?? 13 };
+const info = { years: scenario.years, data_years: scenario.data_years || [], year_min: 1980, year_max: 2045, period_min: scenario.period_min ?? 0, period_max: scenario.period_max ?? 13 };
 strip.attach(report, info);
 if (scenario.attach_twice) strip.attach(report, info);
 
@@ -79,6 +79,7 @@ setTimeout(() => console.log(JSON.stringify({
 	layout: { marginLeft: container.style.marginLeft, width: container.style.width },
 	containers: by("konsol-period-strips").length,
 	above_form: body.children.indexOf(one("konsol-period-strips")) < body.children.indexOf(page_form),
+	track_title: one("konsol-strip-year-range").parentNode.attrs.title,
 	ticks: by("konsol-strip-tick").map((e) => e.attrs["data-year"]),
 	tick_left: by("konsol-strip-tick").map((e) => e.style.left),
 	range_attrs: ["year", "period"].map((r) => {
@@ -184,11 +185,14 @@ def test_attach_twice_renders_one_container():
     assert _run({**BASE, "attach_twice": True})["containers"] == 1
 
 
-def test_year_ticks_only_for_declared_years_in_range():
+def test_year_ticks_are_the_years_with_data_not_the_declared_years():
     out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 6},
-                "years": [2025, 2023, 1970, 2050, 2023]})
+                "years": [2020, 2021, 2022, 2023, 2024], "data_years": [2025, 2023, 1970, 2050, 2023]})
     assert out["ticks"] == ["2023", "2025"]
     assert out["tick_left"] == [f"{(y - 1980) / 65 * 100}%" for y in (2023, 2025)]
+    assert out["track_title"] == "Marks: years with data"
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 6}, "years": [2023, 2024]})
+    assert out["ticks"] == []
 
 
 def test_buttons_and_ranges_have_aria_labels():

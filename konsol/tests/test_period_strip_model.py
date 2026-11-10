@@ -62,3 +62,8 @@ def test_only_regular_periods_with_data_count():
 def test_no_declared_periods_means_none():
     assert M.strip_info([], [(2025, 1)])["latest"] is None
     assert M.strip_info([_p(2025, 13, "Adjustment")], None)["latest"] is None
+
+
+def test_data_years_are_sorted_unique_and_default_empty():
+    assert M.strip_info([], None)["data_years"] == []
+    assert M.strip_info([_p(2024, 1)], None, [2025, 2023, 2025, "2024"])["data_years"] == [2023, 2024, 2025]
