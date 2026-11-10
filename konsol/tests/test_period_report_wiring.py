@@ -56,10 +56,20 @@ def _app_include_js():
     raise AssertionError("hooks.py has no app_include_js")
 
 
-def test_desk_loads_the_four_scripts_in_dependency_order():
+BUNDLE = "konsol_period_strips.bundle.js"
+
+
+def test_desk_loads_one_bundle_not_the_raw_files():
     included = _app_include_js()
-    paths = [f"/assets/konsol/js/{s}" for s in SCRIPTS]
-    for p, s in zip(paths, SCRIPTS):
-        assert p in included, p
+    assert BUNDLE in included
+    for s in SCRIPTS:
+        assert f"/assets/konsol/js/{s}" not in included, s
+    assert "/assets/konsol/js/konsol_brand.js" in included
+
+
+def test_the_bundle_imports_the_four_files_in_dependency_order():
+    source = open(os.path.join(APP_DIR, "public", "js", BUNDLE)).read()
+    imports = re.findall(r"""^\s*import\s+["']\./([\w.]+)["']""", source, re.M)
+    assert imports == SCRIPTS
+    for s in SCRIPTS:
         assert os.path.exists(os.path.join(APP_DIR, "public", "js", s)), s
-    assert [included.index(p) for p in paths] == sorted(included.index(p) for p in paths)
