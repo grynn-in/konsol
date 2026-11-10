@@ -43,18 +43,19 @@ function has_statement() {
 }
 
 // The Frappe query report checks only `reqd` before a run (conditional-mandatory
-// settings are ignored), so the Basis filter's on_change sets `reqd` on the filter the
-// basis needs, then refreshes: a blank one shows Frappe's inline "Please set
-// filters", never a server error dialog. Frappe calls on_change INSTEAD of
-// its own refresh, so this refreshes itself.
-function require_filter(fieldname, required) {
-	const filter = frappe.query_report.get_filter(fieldname);
-	filter.df.reqd = required ? 1 : 0;
+// settings are ignored), so `reqd` is set on the filter the basis needs: a blank
+// one shows Frappe's inline "Please set filters", never a server error dialog.
+// Two entry points: onload (a report opened from a link: Frappe sets the route
+// filters, calls onload, then refreshes, so onload must not refresh) and the Basis
+// filter's on_change (Frappe calls it INSTEAD of its own refresh, so it refreshes).
+function sync_required(report) {
+	const filter = report.get_filter("entity");
+	filter.df.reqd = report.get_filter_value("basis") === "Entity" ? 1 : 0;
 	filter.refresh();
 }
 
 function on_basis_change() {
-	require_filter("entity", frappe.query_report.get_filter_value("basis") === "Entity");
+	sync_required(frappe.query_report);
 	frappe.query_report.refresh();
 }
 
@@ -184,6 +185,8 @@ frappe.query_reports["Consolidated Statement"] = {
 			},
 		},
 	],
+
+	onload: sync_required,
 
 	formatter(value, row, column, data, default_formatter) {
 		if (data && column.fieldname === "commentary") {

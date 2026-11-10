@@ -3,17 +3,22 @@
 // source documents. Opened from a Consolidated Statement heading.
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
 // The Frappe query report checks only `reqd` before a run (conditional-mandatory
-// settings are ignored), so the Basis filter's on_change sets `reqd` on the filter the
-// basis needs, then refreshes: a blank one shows Frappe's inline "Please set
-// filters", never a server error dialog. Frappe calls on_change INSTEAD of
-// its own refresh, so this refreshes itself.
-function on_basis_change() {
-	const entity_basis = frappe.query_report.get_filter_value("basis") === "Entity";
+// settings are ignored), so `reqd` is set on the filter the basis needs: a blank
+// one shows Frappe's inline "Please set filters", never a server error dialog.
+// Two entry points: onload (a report opened from a link: Frappe sets the route
+// filters, calls onload, then refreshes, so onload must not refresh) and the Basis
+// filter's on_change (Frappe calls it INSTEAD of its own refresh, so it refreshes).
+function sync_required(report) {
+	const entity_basis = report.get_filter_value("basis") === "Entity";
 	for (const [fieldname, required] of [["entity", entity_basis], ["consolidation_group", !entity_basis]]) {
-		const filter = frappe.query_report.get_filter(fieldname);
+		const filter = report.get_filter(fieldname);
 		filter.df.reqd = required ? 1 : 0;
 		filter.refresh();
 	}
+}
+
+function on_basis_change() {
+	sync_required(frappe.query_report);
 	frappe.query_report.refresh();
 }
 
@@ -58,7 +63,6 @@ frappe.query_reports["Statement Drill"] = {
 			fieldtype: "Link",
 			options: "Consolidation Group",
 			depends_on: 'eval:doc.basis!="Entity"',
-			reqd: 1, // the default basis is Group; on_basis_change swaps it
 			description: __("A root group."),
 			// Root groups only (statement_api._ROOT_FILTER: no data_area_id).
 			get_query() {
@@ -80,6 +84,8 @@ frappe.query_reports["Statement Drill"] = {
 			},
 		},
 	],
+
+	onload: sync_required,
 
 	// Layers open; accounts and journals one click away.
 	initial_depth: 0,
