@@ -36,7 +36,8 @@ def test_each_period_report_calls_setup_in_onload_once():
         assert len(found) == 1, f"{name}: expected one onload calling konsol.period_reports.setup"
         listed = [k.strip().strip("\"'") for k in found[0].split(",") if k.strip()]
         assert listed == keys, f"{name}: keys {listed}"
-        assert source.count("onload") == 1, f"{name}: a second onload would replace the first"
+        # Comments may mention onload; a second `onload:` key would replace the first.
+        assert len(re.findall(r"\bonload\s*:", source)) == 1, f"{name}: two onload keys"
 
 
 def test_every_listed_key_is_a_filter_of_that_report():
