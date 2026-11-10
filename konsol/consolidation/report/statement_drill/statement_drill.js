@@ -8,6 +8,11 @@
 // Two entry points: onload (a report opened from a link: Frappe sets the route
 // filters, calls onload, then refreshes, so onload must not refresh) and the Basis
 // filter's on_change (Frappe calls it INSTEAD of its own refresh, so it refreshes).
+// A link carrying basis=Entity runs that on_change while Frappe is still setting
+// the route filters (query_report.js refresh_report, with _no_refresh set): a
+// refresh then would throw "Filter missing" (entity not set yet) and abort the
+// rest of the route, so on_change refreshes only when _no_refresh is unset,
+// the same gate Frappe applies to its own refresh.
 function sync_required(report) {
 	const entity_basis = report.get_filter_value("basis") === "Entity";
 	for (const [fieldname, required] of [["entity", entity_basis], ["consolidation_group", !entity_basis]]) {
@@ -17,9 +22,9 @@ function sync_required(report) {
 	}
 }
 
-function on_basis_change() {
-	sync_required(frappe.query_report);
-	frappe.query_report.refresh();
+function on_basis_change(report) {
+	sync_required(report);
+	if (!report._no_refresh) report.refresh();
 }
 
 frappe.query_reports["Statement Drill"] = {
