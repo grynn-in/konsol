@@ -761,7 +761,8 @@ def test_commentary_section_has_the_three_fields_with_no_default():
     order = [f["fieldname"] for f in _doc()["fields"]]
     assert by_name["commentary_section"]["fieldtype"] == "Section Break"
     assert by_name["commentary_section"]["label"] == "Commentary"
-    assert order.index("commentary_section") > order.index("statement_result_account")
+    # konsol#510: Commentary is a policy, on the Policies tab.
+    assert order.index("policies_tab") < order.index("commentary_section") < order.index("starting_point_tab")
     expected = {"commentary_threshold_amount": "Float",
                 "commentary_threshold_percent": "Percent",
                 "commentary_threshold_combine": "Select"}
@@ -818,48 +819,49 @@ _dm_spec = importlib.util.spec_from_file_location("deadline_model_for_settings_t
 _dm = importlib.util.module_from_spec(_dm_spec)
 _dm_spec.loader.exec_module(_dm)
 
-_EXISTING_ORDER = [
-    "close_order_section",
-    "first_close_fiscal_year",
-    "first_close_fiscal_period",
-    "approvals_section",
-    "self_approval",
-    "rates_section",
-    "rate_move_threshold",
-    "magnitude_warning_factor",
-    "intercompany_section",
-    "intercompany_declaration",
-    "statements_section",
-    "statement_cta_account",
-    "statement_result_account",
-    "statement_net_sales_heading",  # konsol#407 phase 2
-    "commentary_section",
-    "commentary_threshold_amount",
-    "commentary_threshold_percent",
-    "commentary_threshold_combine",
+# konsol#510: the first tab holds policies only. The starting point (first
+# close, intercompany declaration) and the statement accounts get their own
+# tabs. Layout and labels only: no fieldname changes.
+_TAB_LAYOUT = [
+    ("policies_tab", "Policies", [
+        "approvals_section", "self_approval",
+        "rates_section", "rate_move_threshold", "magnitude_warning_factor",
+        "commentary_section", "commentary_threshold_amount",
+        "commentary_threshold_percent", "commentary_threshold_combine"]),
+    ("starting_point_tab", "Starting Point", [
+        "close_order_section", "first_close_fiscal_year", "first_close_fiscal_period",
+        "intercompany_section", "intercompany_declaration"]),
+    ("statement_accounts_tab", "Statement Accounts", [
+        "statements_section", "statement_cta_account", "statement_result_account",
+        "statement_net_sales_heading"]),
+    ("deadlines_tab", "Deadlines", [
+        "deadline_rules_section", "deadline_rules", "holidays_section", "close_holidays"]),
+    ("appearance_tab", "Appearance", ["brand_section", "brand_colour"]),
 ]
 
 
-def test_policies_tab_is_first_and_keeps_existing_fields_in_order():
-    fields = _doc()["fields"]
-    first = fields[0]
-    assert first["fieldname"] == "policies_tab", first["fieldname"]
-    assert first["fieldtype"] == "Tab Break"
-    assert first["label"] == "Policies"
-    order = [f["fieldname"] for f in fields]
-    assert order[1:1 + len(_EXISTING_ORDER)] == _EXISTING_ORDER, order
+def test_tabs_group_policies_starting_point_statement_accounts_deadlines_appearance():
+    doc = _doc()
+    order = [f["fieldname"] for f in doc["fields"]]
+    by_name = {f["fieldname"]: f for f in doc["fields"]}
+    expected = []
+    for tab, label, fields in _TAB_LAYOUT:
+        assert by_name[tab]["fieldtype"] == "Tab Break", tab
+        assert by_name[tab]["label"] == label, (tab, by_name[tab]["label"])
+        expected += [tab, *fields]
+    assert order == expected, order
+    assert doc["field_order"] == expected, doc["field_order"]
 
 
-def test_deadlines_tab_follows_commentary_with_the_two_tables():
-    fields = _doc()["fields"]
-    order = [f["fieldname"] for f in fields]
-    by_name = {f["fieldname"]: f for f in fields}
-    # The Appearance tab (konsol#415) follows Deadlines.
-    assert order[order.index("commentary_threshold_combine") + 1:order.index("appearance_tab")] == [
-        "deadlines_tab", "deadline_rules_section", "deadline_rules",
-        "holidays_section", "close_holidays"], order
-    assert by_name["deadlines_tab"]["fieldtype"] == "Tab Break"
-    assert by_name["deadlines_tab"]["label"] == "Deadlines"
+def test_labels_are_title_case_and_not_repeated():
+    by_name = {f["fieldname"]: f for f in _doc()["fields"]}
+    assert by_name["statement_cta_account"]["label"] == "CTA Account"
+    assert by_name["statement_result_account"]["label"] == "Current-Year Result Account"
+    assert by_name["intercompany_declaration"]["label"] == "Intercompany Declaration"
+
+
+def test_deadlines_tab_holds_the_two_tables():
+    by_name = {f["fieldname"]: f for f in _doc()["fields"]}
     assert by_name["deadline_rules_section"]["fieldtype"] == "Section Break"
     assert by_name["deadline_rules_section"]["label"] == "Deadline Rules"
     assert by_name["holidays_section"]["fieldtype"] == "Section Break"

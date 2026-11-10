@@ -15,22 +15,6 @@
    "label": "Policies"
   },
   {
-   "fieldname": "close_order_section",
-   "fieldtype": "Section Break",
-   "label": "Close Order"
-  },
-  {
-   "fieldname": "first_close_fiscal_year",
-   "fieldtype": "Int",
-   "label": "First Close Fiscal Year",
-   "description": "The first period konsol closes. Earlier periods are history (opening balances). No default: sign-off and period close are refused until this is declared (konsol#303)."
-  },
-  {
-   "fieldname": "first_close_fiscal_period",
-   "fieldtype": "Int",
-   "label": "First Close Fiscal Period"
-  },
-  {
    "fieldname": "approvals_section",
    "fieldtype": "Section Break",
    "label": "Approvals"
@@ -60,44 +44,6 @@
    "description": "A group rate more than this many times above or below what the ISO Currency references imply needs a Reason for Change, and the message names the Quoted Per that would bring it in line (a wrong unit is the usual cause). More than 1 and less than 10, e.g. 3; a rate more than 10x off is always refused. No default: while blank, every rate save shows a warning and nothing is refused (konsol#179)."
   },
   {
-   "fieldname": "intercompany_section",
-   "fieldtype": "Section Break",
-   "label": "Intercompany"
-  },
-  {
-   "fieldname": "intercompany_declaration",
-   "fieldtype": "Select",
-   "label": "Intercompany",
-   "options": "\nNone in this group",
-   "description": "Blank: intercompany is expected, or not set up yet (My work shows 'No intercompany accounts declared' until an Intercompany Account is Published). None in this group: no intercompany is expected; the intercompany screen, My work and the sign-off read 'not applicable'. Refused while any Intercompany Account is Published. No default (konsol#305-W3-7)."
-  },
-  {
-   "fieldname": "statements_section",
-   "fieldtype": "Section Break",
-   "label": "Statements"
-  },
-  {
-   "fieldname": "statement_cta_account",
-   "fieldtype": "Link",
-   "options": "Main Account",
-   "label": "CTA account",
-   "description": "The balance-sheet account the consolidated balance sheet shows currency translation (CTA) under. No default: blank shows the CTA in the unmatched residual."
-  },
-  {
-   "fieldname": "statement_result_account",
-   "fieldtype": "Link",
-   "options": "Main Account",
-   "label": "Current-year result account",
-   "description": "The balance-sheet account the consolidated balance sheet shows the profit or loss to date under. No default."
-  },
-  {
-   "fieldname": "statement_net_sales_heading",
-   "fieldtype": "Link",
-   "options": "Main Account",
-   "label": "Net Sales Heading",
-   "description": "The Published Profit and Loss heading the Konsol home charts as net sales. No default: while blank, the chart shows net result only and asks for this heading."
-  },
-  {
    "fieldname": "commentary_section",
    "fieldtype": "Section Break",
    "label": "Commentary"
@@ -120,6 +66,70 @@
    "label": "When Both Are Declared",
    "options": "\nEither is exceeded\nBoth are exceeded",
    "description": "Only when both an amount and a percentage are declared: whether a heading needs commentary when either is exceeded or only when both are. No default: with both declared and this blank, the sign-off shows a setup gap."
+  },
+  {
+   "fieldname": "starting_point_tab",
+   "fieldtype": "Tab Break",
+   "label": "Starting Point"
+  },
+  {
+   "fieldname": "close_order_section",
+   "fieldtype": "Section Break",
+   "label": "Close Order"
+  },
+  {
+   "fieldname": "first_close_fiscal_year",
+   "fieldtype": "Int",
+   "label": "First Close Fiscal Year",
+   "description": "The first period konsol closes. Earlier periods are history (opening balances). No default: sign-off and period close are refused until this is declared (konsol#303)."
+  },
+  {
+   "fieldname": "first_close_fiscal_period",
+   "fieldtype": "Int",
+   "label": "First Close Fiscal Period"
+  },
+  {
+   "fieldname": "intercompany_section",
+   "fieldtype": "Section Break",
+   "label": "Intercompany"
+  },
+  {
+   "fieldname": "intercompany_declaration",
+   "fieldtype": "Select",
+   "label": "Intercompany Declaration",
+   "options": "\nNone in this group",
+   "description": "Blank: intercompany is expected, or not set up yet (My work shows 'No intercompany accounts declared' until an Intercompany Account is Published). None in this group: no intercompany is expected; the intercompany screen, My work and the sign-off read 'not applicable'. Refused while any Intercompany Account is Published. No default (konsol#305-W3-7)."
+  },
+  {
+   "fieldname": "statement_accounts_tab",
+   "fieldtype": "Tab Break",
+   "label": "Statement Accounts"
+  },
+  {
+   "fieldname": "statements_section",
+   "fieldtype": "Section Break",
+   "label": "Statements"
+  },
+  {
+   "fieldname": "statement_cta_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "CTA Account",
+   "description": "The balance-sheet account the consolidated balance sheet shows currency translation (CTA) under. No default: blank shows the CTA in the unmatched residual."
+  },
+  {
+   "fieldname": "statement_result_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Current-Year Result Account",
+   "description": "The balance-sheet account the consolidated balance sheet shows the profit or loss to date under. No default."
+  },
+  {
+   "fieldname": "statement_net_sales_heading",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Net Sales Heading",
+   "description": "The Published Profit and Loss heading the Konsol home charts as net sales. No default: while blank, the chart shows net result only and asks for this heading."
   },
   {
    "fieldname": "deadlines_tab",
@@ -169,24 +179,26 @@
  ],
  "field_order": [
   "policies_tab",
-  "close_order_section",
-  "first_close_fiscal_year",
-  "first_close_fiscal_period",
   "approvals_section",
   "self_approval",
   "rates_section",
   "rate_move_threshold",
   "magnitude_warning_factor",
-  "intercompany_section",
-  "intercompany_declaration",
-  "statements_section",
-  "statement_cta_account",
-  "statement_result_account",
-  "statement_net_sales_heading",
   "commentary_section",
   "commentary_threshold_amount",
   "commentary_threshold_percent",
   "commentary_threshold_combine",
+  "starting_point_tab",
+  "close_order_section",
+  "first_close_fiscal_year",
+  "first_close_fiscal_period",
+  "intercompany_section",
+  "intercompany_declaration",
+  "statement_accounts_tab",
+  "statements_section",
+  "statement_cta_account",
+  "statement_result_account",
+  "statement_net_sales_heading",
   "deadlines_tab",
   "deadline_rules_section",
   "deadline_rules",
