@@ -105,6 +105,7 @@ SIDEBARS = {
         ("Report", "Period Close"),
         ("Report", "Close Assertions"),
         ("Report", "Consolidated Statement"),
+        ("Report", "Consolidation Worksheet"),
         ("Report", "Statement Drill"),
         ("DocType", "Statement Commentary"),
         ("DocType", "Assertion Run"),

@@ -37,6 +37,7 @@ LABELS = {
     "Period Close": "Period Close",
     "Close Assertions": "Close Assertions",
     "Consolidated Statement": "Consolidated Statement",
+    "Consolidation Worksheet": "Consolidation Worksheet",
     "Statement Drill": "Statement Drill",
     "Statement Commentary": "Statement Commentaries",
     "Assertion Run": "Assertion Runs",

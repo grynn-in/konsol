@@ -18,6 +18,7 @@ REPORT_DIR = os.path.join(APP_DIR, "consolidation", "report")
 SCRIPTS = {
     os.path.join("consolidated_statement", "consolidated_statement.js"): 1,
     os.path.join("statement_drill", "statement_drill.js"): 0,
+    os.path.join("consolidation_worksheet", "consolidation_worksheet.js"): 0,
 }
 
 _CALL = re.compile(r"frappe\.(?:call|xcall)\s*\(")
