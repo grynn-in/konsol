@@ -31,8 +31,12 @@ ROOT_ONLY = "eval:doc.is_group"
 NEW_COLUMNS = (
     "nci_measurement", "accounting_framework", "framework_note", "goodwill_treatment",
     "goodwill_amortisation_years", "acquisition_costs_treatment", "measurement_period",
-    "bargain_purchase", "partial_period_treatment",
-) + P.ACCOUNT_FIELDS
+    "bargain_purchase",
+) + P.ACCOUNT_FIELDS + (
+    # konsolidat#171: added last, where _ADDED_COLUMNS puts it on an existing
+    # table, so a fresh table and an upgraded one have the same column order.
+    "partial_period_treatment",
+)
 
 SELECT_OPTIONS = {
     "accounting_framework": "IFRS\nUS GAAP\nLocal",
@@ -557,6 +561,7 @@ def test_partial_period_treatment_has_no_default_and_says_what_each_value_does()
         assert text in desc, text
 
 
-def test_partial_period_treatment_syncs_to_the_warehouse_next_to_bargain_purchase():
-    assert "partial_period_treatment" in NEW_COLUMNS
+def test_partial_period_treatment_is_the_last_warehouse_column():
+    assert NEW_COLUMNS[-1] == "partial_period_treatment"
+    assert _ddl_columns("epm_gold.consolidation_groups")[-1] == "partial_period_treatment"
     assert _source().count('"partial_period_treatment": "partial_period_treatment"') == 1
