@@ -75,6 +75,9 @@ console.log(JSON.stringify({
 		const e = one(`konsol-strip-${r}-range`);
 		return [e.attrs.type, e.attrs.min, e.attrs.max, e.attrs.step];
 	}),
+	aria: Object.fromEntries(["year-prev", "year-next", "period-prev", "period-next", "year-range", "period-range"]
+		.map((c) => [c, one(`konsol-strip-${c}`).attrs["aria-label"]])),
+	label_titles: ["year", "period"].map((r) => one(`konsol-strip-${r}-label`).attrs.title || ""),
 	initial: state(), initial_disabled: disabled(), log,
 }));
 """
@@ -175,3 +178,21 @@ def test_year_ticks_only_for_declared_years_in_range():
                 "years": [2025, 2023, 1970, 2050, 2023]})
     assert out["ticks"] == ["2023", "2025"]
     assert out["tick_left"] == [f"{(y - 1980) / 65 * 100}%" for y in (2023, 2025)]
+
+
+def test_buttons_and_ranges_have_aria_labels():
+    out = _run(BASE)
+    assert out["aria"] == {"year-prev": "Previous year", "year-next": "Next year",
+                           "period-prev": "Previous period", "period-next": "Next period",
+                           "year-range": "Fiscal year", "period-range": "Fiscal period"}
+
+
+def test_out_of_range_label_explains_itself_and_is_not_red():
+    out = _run({"filters": {"fiscal_year": 1975, "fiscal_period": 6}, "years": []})
+    assert "Outside the strip" in out["label_titles"][0] and "type it in the box" in out["label_titles"][0]
+    assert out["label_titles"][1] == ""
+    out = _run({**BASE, "steps": [["type", "fiscal_year", 1970], ["type", "fiscal_year", 2000]]})
+    assert out["log"][1]["state"]["year"]["label"] == "2000"
+    css = open(SCRIPT).read()
+    rule = [line for line in css.splitlines() if "out-of-range" in line and "{" in line][0]
+    assert "red" not in rule
