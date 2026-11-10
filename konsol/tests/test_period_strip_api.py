@@ -70,13 +70,13 @@ def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, peri
         return doctype_ok
 
     frappe.get_doc = get_doc
-    names = group_names or {}
+    groups = group_names or {}
 
     def get_value(doctype, name, fields, as_dict=False):
         assert doctype == "Consolidation Group"
-        if name not in names:
+        if name not in groups:
             return None
-        return types.SimpleNamespace(consolidation_group=names[name], data_area_id=None)
+        return types.SimpleNamespace(consolidation_group=groups[name], data_area_id=None)
 
     frappe.db = types.SimpleNamespace(get_value=get_value)
     cs = types.ModuleType(_CS_MODULE)
