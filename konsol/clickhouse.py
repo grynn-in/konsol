@@ -711,7 +711,7 @@ _REFERENCE_TABLE_DDL = {
         "nci_account String DEFAULT '', bargain_purchase_gain_account String DEFAULT '', "
         "disposal_gain_loss_account String DEFAULT '', disposal_proceeds_account String DEFAULT '', "
         "goodwill_amortisation_expense_account String DEFAULT '', "
-        "acquisition_costs_account String DEFAULT '') "
+        "acquisition_costs_account String DEFAULT '', partial_period_treatment String DEFAULT '') "
         "ENGINE = MergeTree ORDER BY (consolidation_group, data_area_id)"
     ),
     # konsol#159: the intercompany flag on the group chart (decision 3). One row
@@ -1104,6 +1104,9 @@ _ADDED_COLUMNS = {
         ("disposal_proceeds_account", "String DEFAULT ''"),
         ("goodwill_amortisation_expense_account", "String DEFAULT ''"),
         ("acquisition_costs_account", "String DEFAULT ''"),
+        # konsolidat#171: how an acquiree's P&L enters when control passes
+        # mid-period. Last, where this ALTER puts it on an existing table.
+        ("partial_period_treatment", "String DEFAULT ''"),
     ],
     # konsol#204: the NCI measurement a deal was measured under and, under the
     # full method, the minority's declared fair value
