@@ -9,10 +9,10 @@
 		: window.konsol.period_strip_model;
 
 	const CSS = `
-.konsol-period-strips{margin:0 0 var(--margin-sm,8px);font-size:var(--text-sm,12px);color:var(--text-muted)}
-.konsol-strip-row{display:flex;align-items:center;gap:6px;margin-bottom:2px}
+.konsol-period-strips{box-sizing:border-box;margin:0 0 10px;font-size:var(--text-sm,12px);color:var(--text-muted)}
+.konsol-strip-row{display:flex;align-items:center;gap:6px;margin-bottom:8px}
 .konsol-strip-name{width:48px}
-.konsol-strip-track{position:relative;flex:1;max-width:420px}
+.konsol-strip-track{position:relative;flex:1}
 .konsol-strip-track input[type=range]{width:100%;margin:0;accent-color:var(--primary)}
 .konsol-strip-ticks{position:relative;height:6px}
 .konsol-strip-tick{position:absolute;top:0;width:1px;height:6px;background:var(--border-color);
@@ -99,7 +99,35 @@
 			return report.get_filter_value(r.field, false);
 		}
 
+		// Span the strips from the Fiscal Year box's left edge to the Consolidation
+		// Group box's right edge (Fiscal Period's, when the report has no group).
+		// Measured, not styled: the filter row's widths belong to Frappe. If
+		// anything cannot be measured the plain layout stays.
+		function layout() {
+			const style = container.style;
+			try {
+				const rect = (field) => {
+					const f = report.get_filter(field, false);
+					const w = f && f.$wrapper && (f.$wrapper[0] || f.$wrapper);
+					return w && w.getBoundingClientRect ? w.getBoundingClientRect() : null;
+				};
+				const first = rect("fiscal_year");
+				const last = rect("consolidation_group") || rect("fiscal_period");
+				style.marginLeft = "0px";
+				style.width = "";
+				const own = container.getBoundingClientRect().left;
+				const width = last && first ? last.right - first.left : NaN;
+				if (!first || !last || !(width > 0) || !Number.isFinite(own)) throw new Error("unmeasured");
+				style.marginLeft = `${first.left - own}px`;
+				style.width = `${width}px`;
+			} catch (e) {
+				style.marginLeft = "";
+				style.width = "";
+			}
+		}
+
 		function refresh() {
+			layout();
 			for (const r of rows) {
 				const v = real(r);
 				const pos = model.strip_position(v, r.min, r.max);
@@ -141,6 +169,13 @@
 
 		form_el.parentNode.insertBefore(container, form_el);
 		refresh();
+		let resize_timer = null;
+		if (typeof window !== "undefined" && window.addEventListener) {
+			window.addEventListener("resize", () => {
+				clearTimeout(resize_timer);
+				resize_timer = setTimeout(() => { if (container.parentNode) layout(); }, 80);
+			});
+		}
 		const handle = { container, refresh };
 		report.__konsol_period_strips = handle;
 		return handle;
