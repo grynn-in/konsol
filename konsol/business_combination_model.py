@@ -53,6 +53,11 @@ from konsol.consolidation_policy_model import (
 CENT = Decimal("0.01")
 HUNDRED = Decimal("100")
 ZERO = Decimal("0").quantize(CENT)
+# Acquired book amounts are kept at the warehouse's 4 places, as Consolidation
+# Journals are (#353 option C, journal_model.STORED_PLACES), so a BHD / KWD / OMR
+# trial balance arrives exactly (#271 K1). Not imported: journal_model sits in
+# the close package. Totals and fair value adjustments below stay at the cent.
+STORED = Decimal("0.0001")
 
 _PREFIX = "Business Combination: "
 BALANCE_SHEET_REQUIRED = (
@@ -86,6 +91,17 @@ def _decimal(value):
 
 def _money(value):
     return _decimal(value).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def _stored(value):
+    """Money at the 4 stored places, half up."""
+    return _decimal(value).quantize(STORED, rounding=ROUND_HALF_UP)
+
+
+def _shown(value):
+    """A difference as text: 2 places, or 4 when the cent would hide part of it."""
+    value = _stored(value)
+    return f"{value:.2f}" if value == value.quantize(CENT) else f"{value:.4f}"
 
 
 def _share(header):
@@ -361,12 +377,12 @@ def derive_acquired_balances(tb_rows, retained_earnings_account, fva_lines, peri
     are summed per account; the P&L accounts' total (the result not yet closed
     into retained earnings; closed years net to zero) is folded into
     ``retained_earnings_account``'s line and the P&L lines are dropped. Lines
-    that round to 0.00 are dropped and the rest sorted by account; then each
+    that round to 0.0000 are dropped and the rest sorted by account; then each
     ``(main_account, amount)`` of ``fva_lines`` is added to that account's
     ``fair_value_adjustment``, on a new line with book amount 0 when absent.
 
     Returns ``(lines, problems)``: lines are dicts ``main_account,
-    book_amount, fair_value_adjustment, note`` (money as Decimal to 0.01);
+    book_amount, fair_value_adjustment, note`` (book amounts Decimal to 4 places, adjustments to 0.01);
     problems are sentences, empty when the lines can be used.
     """
     rows = list(tb_rows or ())
@@ -385,7 +401,7 @@ def derive_acquired_balances(tb_rows, retained_earnings_account, fva_lines, peri
             book[account] = book.get(account, Decimal(0)) + amount
 
     total = sum(book.values(), Decimal(0)) + pnl_total
-    if _money(pnl_total) != ZERO:
+    if _stored(pnl_total) != 0:
         if retained_earnings_account:
             book[retained_earnings_account] = book.get(retained_earnings_account, Decimal(0)) + pnl_total
         else:
@@ -396,14 +412,14 @@ def derive_acquired_balances(tb_rows, retained_earnings_account, fva_lines, peri
     if abs(total) > Decimal("0.005"):
         found.append(
             f"{_PREFIX}the trial balance through {period_label} does not balance: "
-            f"it is off by {_money(total):.2f}."
+            f"it is off by {_shown(total)}."
         )
 
     lines = [
-        {"main_account": account, "book_amount": _money(amount),
+        {"main_account": account, "book_amount": _stored(amount),
          "fair_value_adjustment": ZERO, "note": "From the trial balance"}
         for account, amount in sorted(book.items())
-        if _money(amount) != ZERO
+        if _stored(amount) != 0
     ]
     by_account = {line["main_account"]: line for line in lines}
     for account, amount in fva_lines or ():
