@@ -27,6 +27,9 @@ Frappe never runs natively on the Mac. konsol targets **Frappe v16** (Python
   - `docker cp` changed files into `konsolidat_backend`, **and into
     `konsolidat_worker`** for anything that runs as an RQ job, then
     `docker restart konsolidat_worker`.
+    The web server does not reload Python either: `docker restart
+    konsolidat_backend` too, or the Desk keeps serving the old code (10 Nov 2026).
+    In zsh, loop over a file list in `bash -c` (`$F` does not word-split).
   - After changing `hooks.py`, call `frappe.clear_cache()` in your script:
     hooks are cached in Redis.
   - Run plain scripts, not `bench console` (IPython mangles tracebacks):
