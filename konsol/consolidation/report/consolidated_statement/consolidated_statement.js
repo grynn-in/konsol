@@ -83,6 +83,7 @@ function add_commentary() {
 }
 
 frappe.query_reports["Consolidated Statement"] = {
+	onload: (report) => konsol.period_reports.setup(report, { keys: ["fiscal_year", "fiscal_period", "consolidation_group"] }),
 	filters: [
 		{
 			fieldname: "fiscal_year",

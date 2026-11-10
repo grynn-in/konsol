@@ -3,6 +3,7 @@
 // source documents. Opened from a Consolidated Statement heading.
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
 frappe.query_reports["Statement Drill"] = {
+	onload: (report) => konsol.period_reports.setup(report, { keys: ["fiscal_year", "fiscal_period", "consolidation_group", "heading"] }),
 	filters: [
 		{
 			fieldname: "fiscal_year",
