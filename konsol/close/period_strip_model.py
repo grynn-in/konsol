@@ -13,7 +13,7 @@ strip's marks); ``years`` are the declared ones.
 
 YEAR_MIN = 1980
 YEAR_MAX = 2045
-PERIOD_MIN = 0   # Open (opening balances)
+PERIOD_MIN = 1   # P0 (Open) is not selectable: no report can run on it
 PERIOD_MAX = 13  # Close (closing adjustments)
 
 

@@ -21,6 +21,7 @@
 	color:var(--text-color);border-radius:var(--border-radius,2px);line-height:1;padding:1px 7px;cursor:pointer}
 .konsol-strip-btn:disabled{opacity:.4;cursor:default}
 .konsol-strip-caps{display:flex;justify-content:space-between;font-size:10px;line-height:1.2}
+.konsol-strip-cap-disabled{color:var(--text-light);opacity:.6;cursor:default}
 .konsol-strip-label{min-width:40px;font-weight:600;color:var(--text-color)}
 .konsol-strip-label.out-of-range{color:var(--primary,var(--text-muted))}
 `;
@@ -84,7 +85,10 @@
 			}
 			if (r.key === "period") {
 				const caps = el(doc, "div", "konsol-strip-caps");
-				caps.appendChild(el(doc, "span", "konsol-strip-cap-open", "Open"));
+				const open = el(doc, "span", "konsol-strip-cap-open konsol-strip-cap-disabled", "Open");
+				open.setAttribute("aria-disabled", "true");
+				open.setAttribute("title", "Opening period: reports can't run on it yet");
+				caps.appendChild(open);
 				caps.appendChild(el(doc, "span", "konsol-strip-cap-close", "Close"));
 				track.appendChild(caps);
 			}
@@ -180,6 +184,8 @@
 
 		function step_to(r, delta) {
 			const current = real(r);
+			// An empty box: › lands on the first value, ‹ has nothing to go back to.
+			if ((current === undefined || current === null || current === "") && delta < 0) return;
 			const target = model.step(current, delta, r.min, r.max);
 			if (Number(current) === target) return; // nothing changes: no filter, no refresh
 			commit(r, target);
