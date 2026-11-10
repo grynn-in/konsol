@@ -143,6 +143,7 @@ function add_commentary() {
 }
 
 frappe.query_reports["Consolidated Statement"] = {
+	onload: (report) => konsol.period_reports.setup(report, { keys: ["fiscal_year", "fiscal_period", "consolidation_group", "basis", "entity"] }).then(() => sync_required(report)),
 	filters: [
 		{
 			fieldname: "fiscal_year",
@@ -190,8 +191,6 @@ frappe.query_reports["Consolidated Statement"] = {
 			},
 		},
 	],
-
-	onload: sync_required,
 
 	formatter(value, row, column, data, default_formatter) {
 		if (data && column.fieldname === "commentary") {

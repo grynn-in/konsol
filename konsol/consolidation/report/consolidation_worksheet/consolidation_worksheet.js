@@ -4,6 +4,7 @@
 // report's execute; this script holds filters and formatting only.
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
 frappe.query_reports["Consolidation Worksheet"] = {
+	onload: (report) => konsol.period_reports.setup(report, { keys: ["fiscal_year", "fiscal_period", "consolidation_group", "entities", "dimension"] }),
 	filters: [
 		{
 			fieldname: "fiscal_year",

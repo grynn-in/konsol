@@ -153,6 +153,9 @@ global.frappe = {
   utils: { escape_html: (s) => s },
   ui: {},
 };
+// The period strips (#514): onload awaits konsol.period_reports.setup, and
+// Frappe's run_serially awaits the promise onload returns.
+global.konsol = { period_reports: { setup: () => Promise.resolve() } };
 frappe.query_report = {
   data: [],
   get_filter_value: (name) => values[name] || "",
@@ -186,9 +189,11 @@ def run_basis_change(script, report, start, new):
 _ONLOAD_HARNESS = _HARNESS.split("const initial")[0] + r"""
 values.basis = newBasis;
 const hasOnload = typeof def.onload === "function";
-if (hasOnload) def.onload(frappe.query_report);
-const after = Object.fromEntries(Object.entries(dfs).map(([k, df]) => [k, df.reqd || 0]));
-console.log(JSON.stringify({ hasOnload, after, calls }));
+(async () => {
+  if (hasOnload) await def.onload(frappe.query_report);
+  const after = Object.fromEntries(Object.entries(dfs).map(([k, df]) => [k, df.reqd || 0]));
+  console.log(JSON.stringify({ hasOnload, after, calls }));
+})();
 """
 
 
@@ -227,6 +232,9 @@ global.frappe = {
   utils: { escape_html: (s) => s },
   ui: {},
 };
+// The period strips (#514): onload awaits konsol.period_reports.setup, and
+// Frappe's run_serially awaits the promise onload returns.
+global.konsol = { period_reports: { setup: () => Promise.resolve() } };
 const qr = {
   data: [],
   _no_refresh: false,
@@ -247,20 +255,22 @@ for (const df of def.filters) {
   if (df.default !== undefined) values[df.fieldname] = df.default;
 }
 let error = null;
-try {
-  qr._no_refresh = true;
-  for (const df of def.filters) {
-    if (!(df.fieldname in route) || values[df.fieldname] === route[df.fieldname]) continue;
-    values[df.fieldname] = route[df.fieldname];
-    if (df.on_change) df.on_change(qr);
+(async () => {
+  try {
+    qr._no_refresh = true;
+    for (const df of def.filters) {
+      if (!(df.fieldname in route) || values[df.fieldname] === route[df.fieldname]) continue;
+      values[df.fieldname] = route[df.fieldname];
+      if (df.on_change) df.on_change(qr);
+    }
+    if (def.onload) await def.onload(qr);
+    qr._no_refresh = false;
+    qr.refresh();
+  } catch (e) {
+    error = String(e);
   }
-  if (def.onload) def.onload(qr);
-  qr._no_refresh = false;
-  qr.refresh();
-} catch (e) {
-  error = String(e);
-}
-console.log(JSON.stringify({ values, runs, error }));
+  console.log(JSON.stringify({ values, runs, error }));
+})();
 """
 
 
