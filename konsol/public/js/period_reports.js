@@ -8,6 +8,9 @@
 //      with data, applied in ONE set_filter_value, only the values that differ;
 //   2. the Year and Period strips above the filters;
 //   3. the filters saved after each report run (`keys` only).
+// The strip info (years with data, latest period) is per consolidation group:
+// it is fetched for the group that the start values leave in the filter, and
+// again (cached per group) when a report run shows a different group.
 // Browser: konsol.period_reports. Node: module.exports (create(deps) for tests).
 //
 // Frappe's QueryReport.refresh_report runs set_route_filters (which clears
@@ -82,8 +85,10 @@
 
 		function detach(report) {
 			const h = report.__konsol_period_strips;
-			if (h && h.container && h.container.parentNode) h.container.parentNode.removeChild(h.container);
+			if (h && h.detach) h.detach();
+			else if (h && h.container && h.container.parentNode) h.container.parentNode.removeChild(h.container);
 			delete report.__konsol_period_strips;
+			delete report.__konsol_strip_group;
 		}
 
 		function install(report) {
@@ -102,7 +107,10 @@
 						if (this.report_name !== name) return;
 						memory().save(name, values, keys);
 						const h = this.__konsol_period_strips;
-						if (h) h.refresh();
+						if (h) {
+							h.refresh();
+							follow_group(this, h);
+						}
 					}, () => {});
 				}
 				return result;
@@ -114,6 +122,23 @@
 				detach(this);
 				return refresh_report.apply(this, args);
 			};
+		}
+
+		function group_of(report) {
+			return report.get_filter_value("consolidation_group", false) || "";
+		}
+
+		// A different group shows different years with data: fetch (once per
+		// group) and redraw the ticks. A failure keeps the ticks as they are.
+		function follow_group(report, handle) {
+			const group = group_of(report);
+			if (group === report.__konsol_strip_group || !handle.update_info) return;
+			report.__konsol_strip_group = group;
+			strip_info(group).then((info) => {
+				if (info && report.__konsol_period_strips === handle && group_of(report) === group) {
+					handle.update_info(info);
+				}
+			}, (e) => console.warn("period reports: strip info failed", e));
 		}
 
 		function settle() {
@@ -143,14 +168,21 @@
 			const route = route_options();
 			const has_route = keys.some((k) => !is_empty(route[k]));
 
+			const current = current_values(report, keys);
 			let info = null;
+			let group = current.consolidation_group || "";
 			try {
-				info = await strip_info(report.get_filter_value("consolidation_group", false));
+				// The group the start values will leave in the filter: a link's
+				// (already in the filter), else the saved one.
+				if (!has_route && keys.includes("consolidation_group")) {
+					const saved = await memory().load(name);
+					if (!is_empty(saved.consolidation_group)) group = saved.consolidation_group;
+				}
+				info = await strip_info(group);
 			} catch (e) {
 				console.warn("period reports: strip info failed", e);
 			}
 			try {
-				const current = current_values(report, keys);
 				const { values } = await memory().start_values({
 					report_name: name, route_options: route,
 					latest: info && info.latest, defaults: current, keys,
@@ -171,7 +203,14 @@
 			} catch (e) {
 				console.warn("period reports: start values failed", e);
 			}
-			if (info && report.report_name === name) strip().attach(report, info);
+			if (info && report.report_name === name) {
+				strip().attach(report, info);
+				report.__konsol_strip_group = group;
+				// The group may differ from the one the info was fetched for
+				// (a saved group the start values did not apply): follow it.
+				const h = report.__konsol_period_strips;
+				if (h) follow_group(report, h);
+			}
 		}
 
 		return { setup };
