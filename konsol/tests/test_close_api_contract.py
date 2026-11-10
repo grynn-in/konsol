@@ -167,14 +167,36 @@ def _close_files():
     return sorted(glob.glob(os.path.join(CLOSE_DIR, "*.py")))
 
 
+#: Endpoints gated by the Frappe permission of the Desk reports they serve, not
+#: by a fixed role list (Deepak Pai, 10 Nov 2026: a site may grant the three
+#: period reports to other roles, who must not get a "Not permitted" dialog).
+#: Each opens with ``if not <check>(): raise frappe.PermissionError``.
+REPORT_PERMISSION_GATED = {("period_strip_api.py", "period_strip_info")}
+
+
 def _problems_of(code):
     bad = []
     for path in _api_files():
         with open(path) as f:
             source = f.read()
         rel = os.path.relpath(path, APP_DIR)
-        bad += [p["message"] for p in check_source(source, rel) if p["code"] == code]
+        for p in check_source(source, rel):
+            if p["code"] != code:
+                continue
+            if code == "no_gate" and (os.path.basename(path), p["function"]) in REPORT_PERMISSION_GATED:
+                continue
+            bad.append(p["message"])
     return bad
+
+
+def test_report_permission_gated_endpoints_open_with_the_raise():
+    for filename, function in sorted(REPORT_PERMISSION_GATED):
+        with open(os.path.join(CLOSE_DIR, filename)) as f:
+            tree = ast.parse(f.read())
+        fn = next(n for n in _whitelisted_functions(tree) if n.name == function)
+        stmt = _first_statement(fn)
+        assert isinstance(stmt, ast.If) and isinstance(stmt.body[0], ast.Raise), (filename, function)
+        assert "PermissionError" in ast.unparse(stmt.body[0]), (filename, function)
 
 
 def test_the_close_package_exists():
