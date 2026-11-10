@@ -634,7 +634,10 @@ def test_every_workspace_shortcut_and_card_resolves():
             if b["type"] == "number_card":
                 assert b["data"]["number_card_name"] in card_names, (path, b)
         on_page = {b["data"].get("shortcut_name") for b in blocks if b["type"] == "shortcut"}
-        assert set(shortcut_names) <= on_page, (path, sorted(set(shortcut_names) - on_page))
+        # #497 row 11: the home page body is the Konsol Home Tabs block, which draws
+        # the shortcut rows from the child table (test_konsol_home_look pins the names)
+        tabs_only = [b["data"].get("custom_block_name") for b in blocks] == ["Konsol Home Tabs"]
+        assert tabs_only or set(shortcut_names) <= on_page, (path, sorted(set(shortcut_names) - on_page))
         for card_name in card_names:
             assert card_name in cards, (path, card_name)
             _, card = cards[card_name]

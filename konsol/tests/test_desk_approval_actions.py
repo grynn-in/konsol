@@ -145,9 +145,9 @@ def test_home_shows_a_waiting_count_per_approval_doctype():
         # made every shortcut count all records (seen on the v16 copy, 5 Nov).
         assert json.loads(s["stats_filter"]) == [_pending_filter(doctype)], doctype
         assert s["format"] == "{} waiting"
+    # #497 row 11: the page body is the tabs block, which reads these rows from the child table
     blocks = json.loads(ws["content"])
-    on_page = {b["data"]["shortcut_name"] for b in blocks if b["type"] == "shortcut"}
-    assert {s["label"] for s in waiting.values()} <= on_page
+    assert [b["data"].get("custom_block_name") for b in blocks] == ["Konsol Home Tabs"]
 
 
 def test_the_approvals_report_is_removed_with_a_patch():
