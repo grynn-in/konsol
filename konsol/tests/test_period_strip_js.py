@@ -23,6 +23,7 @@ class El {
 	appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
 	insertBefore(c, ref) { c.parentNode = this; const i = this.children.indexOf(ref);
 		this.children.splice(i < 0 ? this.children.length : i, 0, c); return c; }
+	removeChild(c) { this.children.splice(this.children.indexOf(c), 1); c.parentNode = null; return c; }
 	addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
 	fire(t) { (this.listeners[t] || []).forEach((f) => f({ type: t, target: this })); }
 	getBoundingClientRect() { return { left: scenario.container_left || 0 }; }
@@ -40,6 +41,7 @@ const rects = { ...(scenario.rects || {}) };
 const irects = { ...(scenario.input_rects || {}) };
 for (const k of Object.keys(irects)) if (inputs[k]) inputs[k].getBoundingClientRect = () => irects[k];
 const win = { listeners: {}, addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); },
+	removeEventListener(t, f) { this.listeners[t] = (this.listeners[t] || []).filter((x) => x !== f); },
 	fire(t) { (this.listeners[t] || []).forEach((f) => f({ type: t })); } };
 global.window = win;
 const report = {
@@ -54,8 +56,10 @@ const report = {
 global.document = doc;
 const strip = require(script);
 const info = { years: scenario.years, data_years: scenario.data_years || [], year_min: 1980, year_max: 2045, period_min: scenario.period_min ?? 0, period_max: scenario.period_max ?? 13 };
-strip.attach(report, info);
+let handle = strip.attach(report, info);
 if (scenario.attach_twice) strip.attach(report, info);
+if (scenario.detach_attach) { handle.detach(); handle = strip.attach(report, info); }
+if (scenario.update_info) handle.update_info({ ...info, ...scenario.update_info });
 
 const all = body.walk();
 const by = (cls) => all.filter((e) => e.className.split(" ").includes(cls));
@@ -81,6 +85,8 @@ const container = one("konsol-period-strips");
 setTimeout(() => console.log(JSON.stringify({
 	layout: { marginLeft: container.style.marginLeft, width: container.style.width },
 	containers: by("konsol-period-strips").length,
+	resize_listeners: (win.listeners.resize || []).length,
+	handle_cleared: !report.__konsol_period_strips,
 	above_form: body.children.indexOf(one("konsol-period-strips")) < body.children.indexOf(page_form),
 	track_title: one("konsol-strip-year-range").parentNode.attrs.title,
 	ticks: by("konsol-strip-tick").map((e) => e.attrs["data-year"]),
@@ -284,3 +290,14 @@ def test_the_year_label_is_always_the_number():
 def test_open_and_close_captions_sit_at_the_ends_of_the_period_track():
     out = _run(BASE)
     assert out["captions"] == ["Open", "Close"]
+
+
+def test_attach_detach_attach_leaves_one_resize_listener():
+    out = _run({**BASE, "detach_attach": True})
+    assert out["resize_listeners"] == 1
+    assert out["containers"] == 1
+
+
+def test_update_info_replaces_the_year_ticks():
+    out = _run({**BASE, "data_years": [2023], "update_info": {"data_years": [2024, 2026]}})
+    assert out["ticks"] == ["2024", "2026"]
