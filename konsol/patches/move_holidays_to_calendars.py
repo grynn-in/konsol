@@ -10,6 +10,10 @@ declared has no due dates. This patch keeps what a site had declared:
   calendar of its date's year (``no_holidays`` = 0), which is created when
   missing. A date already in that year's calendar is not added twice; an
   existing calendar is never ticked or cleared.
+- A year whose calendar already ticks No Holidays This Year is left alone:
+  its rows stay on Close Settings, the year is printed, and a rerun after the
+  site resolves it places them (review of #512). Nothing stops the migrate.
+- A site without the Close Holiday table has nothing to move.
 - The old rows are deleted only after every row has been placed. Nothing is
   lost: placed + already-present = rows found, and the counts print.
 - Idempotent: a second run finds no Close Settings rows and does nothing.
@@ -29,6 +33,9 @@ def execute():
     frappe.reload_doc("consolidation", "doctype", "close_holiday_calendar")
     frappe.reload_doc("consolidation", "doctype", "close_settings")
 
+    if not frappe.db.table_exists(HOLIDAY):
+        print("move_holidays_to_calendars: no Close Holiday table, nothing to move")
+        return
     rows = frappe.get_all(
         HOLIDAY,
         filters={"parent": SETTINGS, "parenttype": SETTINGS},
@@ -41,9 +48,16 @@ def execute():
         by_year.setdefault(row["holiday_date"].year, []).append(row)
 
     placed = already = created = 0
+    moved, kept = [], []
     for year in sorted(by_year):
         if frappe.db.exists(CALENDAR, year):
             calendar = frappe.get_doc(CALENDAR, year)
+            if calendar.no_holidays:
+                kept += by_year[year]
+                print("move_holidays_to_calendars: %d declares No Holidays This Year, so its %d "
+                      "Close Settings holiday row(s) stay; untick it or delete the rows, then "
+                      "run this patch again" % (year, len(by_year[year])))
+                continue
         else:
             calendar = frappe.get_doc({"doctype": CALENDAR, "year": year, "no_holidays": 0})
             created += 1
@@ -58,10 +72,11 @@ def execute():
             placed += 1
         calendar.flags.ignore_permissions = True
         calendar.save()
+        moved += by_year[year]
 
-    if rows:
-        frappe.db.delete(HOLIDAY, {"name": ["in", [row["name"] for row in rows]]})
+    if moved:
+        frappe.db.delete(HOLIDAY, {"name": ["in", [row["name"] for row in moved]]})
 
     print("move_holidays_to_calendars: %d rows found, %d placed, %d already present, "
-          "%d calendars created, %d rows deleted"
-          % (len(rows), placed, already, created, len(rows)))
+          "%d calendars created, %d rows deleted, %d rows kept"
+          % (len(rows), placed, already, created, len(moved), len(kept)))

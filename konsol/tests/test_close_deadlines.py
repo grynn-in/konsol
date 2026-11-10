@@ -171,7 +171,7 @@ def test_an_undeclared_year_reads_the_sentence_and_no_date():
     reader = _load(site)
     out = reader.period_deadlines([(2025, 12)], TODAY)
     assert out[(2025, 12)]["tb"] == {"due": None, "past": False,
-                                     "text": "Holidays not declared for 2026"}
+                                     "text": "Holidays not declared for 2026: add a Close Holiday Calendar for 2026."}
     # 2025 is declared, so P07 still has its date.
     assert reader.period_deadlines([(2025, 7)], TODAY)[(2025, 7)]["tb"]["due"] == date(2025, 8, 8)
 
@@ -182,7 +182,7 @@ def test_no_calendar_at_all_leaves_every_dated_rule_undeclared_by_year():
     reader = _load(site)
     out = reader.period_deadlines([(2025, 7)], TODAY)
     assert out[(2025, 7)]["tb"] == {"due": None, "past": False,
-                                    "text": "Holidays not declared for 2025"}
+                                    "text": "Holidays not declared for 2025: add a Close Holiday Calendar for 2025."}
 
 
 def test_reads_are_the_close_settings_rules_and_the_calendars_unpaged():

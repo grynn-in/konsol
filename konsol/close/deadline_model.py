@@ -25,7 +25,7 @@ Engineering calls (plan-w5b.md §3):
 holidays are declared per calendar year in a "Close Holiday Calendar". A year
 nobody declared must not count as working days, so when the count reaches a
 day in an undeclared year the step has no due date and reads
-``HOLIDAYS_UNDECLARED`` ("Holidays not declared for 2027"). A year declared
+``HOLIDAYS_UNDECLARED`` ("Holidays not declared for 2027: add a Close Holiday Calendar for 2027."). A year declared
 with no holidays counts every ticked weekday. Rejected: A keep the flat list,
 B infer a year from one date, C a years table beside the list.
 
@@ -50,7 +50,7 @@ STEP_LABEL = {
 }
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 UNDECLARED = "No due date declared"
-HOLIDAYS_UNDECLARED = "Holidays not declared for %d"
+HOLIDAYS_UNDECLARED = "Holidays not declared for {year}: add a Close Holiday Calendar for {year}."
 MIN_YEAR, MAX_YEAR = 1970, 2149  # ClickHouse Date range, as the rest of konsol
 
 MAX_DAYS = 3660
@@ -79,7 +79,7 @@ class UndeclaredYear(ValueError):
     """The count reached a day in a year with no Close Holiday Calendar (#509)."""
 
     def __init__(self, year):
-        super().__init__(HOLIDAYS_UNDECLARED % year)
+        super().__init__(HOLIDAYS_UNDECLARED.format(year=year))
         self.year = year
 
 
@@ -230,6 +230,10 @@ def calendar_problems(year, no_holidays, dates):
     if isinstance(year, bool) or not isinstance(year, int) or not MIN_YEAR <= year <= MAX_YEAR:
         return ["The year must be between %d and %d: got %s." % (MIN_YEAR, MAX_YEAR, year)]
     problems = []
+    if any(day is None for day in dates):
+        # Frappe runs validate before the child's reqd check (review of #512).
+        problems.append("A holiday row has no date: fill it in or delete the row.")
+        return problems
     if no_holidays and dates:
         n = len(dates)
         problems.append("No Holidays This Year is ticked but %d holiday%s: remove %s or untick."

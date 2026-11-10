@@ -24,11 +24,15 @@ class _Doc:
         self.holidays.append(types.SimpleNamespace(**values))
 
     def save(self):
+        # The real controller refuses a ticked year that lists holidays.
+        if self.no_holidays and self.holidays:
+            raise ValueError("No Holidays This Year is ticked but holidays are listed")
         self.site.calendars[self.year] = self
 
 
 class _Site:
-    def __init__(self, settings_rows=(), calendars=()):
+    def __init__(self, settings_rows=(), calendars=(), table=True):
+        self.table = table
         self.rows = [dict(name="H%d" % i, parent="Close Settings", **r)
                      for i, r in enumerate(settings_rows)]
         self.calendars = {}
@@ -44,6 +48,7 @@ class _Site:
 
         def get_all(doctype, filters=None, **k):
             assert doctype == "Close Holiday"
+            assert site.table, "read a table that does not exist"
             assert filters == {"parent": "Close Settings", "parenttype": "Close Settings"}
             return [dict(r) for r in site.rows]
 
@@ -64,7 +69,8 @@ class _Site:
         frappe.get_all = get_all
         frappe.get_doc = get_doc
         frappe.reload_doc = lambda *a: site.reloaded.append(a)
-        frappe.db = types.SimpleNamespace(exists=exists, delete=delete)
+        frappe.db = types.SimpleNamespace(exists=exists, delete=delete,
+                                          table_exists=lambda d: d == "Close Holiday" and site.table)
         return frappe
 
 
@@ -105,7 +111,7 @@ def test_rows_move_into_one_calendar_per_year_and_old_rows_go():
     assert site.reloaded == [("consolidation", "doctype", "close_holiday_calendar"),
                              ("consolidation", "doctype", "close_settings")]
     assert site.printed == ["move_holidays_to_calendars: 3 rows found, 3 placed, 0 already present, "
-                            "2 calendars created, 3 rows deleted"]
+                            "2 calendars created, 3 rows deleted, 0 rows kept"]
 
 
 def test_a_second_run_is_a_no_op():
@@ -115,7 +121,7 @@ def test_a_second_run_is_a_no_op():
     _run(site)
     assert {y: [h.holiday_date for h in c.holidays] for y, c in site.calendars.items()} == before
     assert site.printed == ["move_holidays_to_calendars: 0 rows found, 0 placed, 0 already present, "
-                            "0 calendars created, 0 rows deleted"]
+                            "0 calendars created, 0 rows deleted, 0 rows kept"]
 
 
 def test_a_site_with_no_holidays_creates_nothing():
@@ -136,3 +142,21 @@ def test_no_row_is_lost():
     site = _run(_Site(rows))
     placed = sum(len(c.holidays) for c in site.calendars.values())
     assert placed == len(rows)
+
+
+def test_a_year_declared_with_no_holidays_is_left_alone_and_its_rows_stay():
+    # Review of #512: appending to a ticked calendar would make its save raise
+    # and stop the migrate. The year is reported; its rows stay for a rerun.
+    site = _run(_Site([_row(date(2026, 1, 1)), _row(date(2027, 1, 1))],
+                      calendars=[(2026, 1, [])]))
+    assert site.calendars[2026].no_holidays == 1 and site.calendars[2026].holidays == []
+    assert [h.holiday_date for h in site.calendars[2027].holidays] == [date(2027, 1, 1)]
+    assert [r["holiday_date"] for r in site.rows] == [date(2026, 1, 1)]
+    assert any("2026" in line and "No Holidays This Year" in line for line in site.printed), site.printed
+    assert site.printed[-1] == ("move_holidays_to_calendars: 2 rows found, 1 placed, 0 already present, "
+                                "1 calendars created, 1 rows deleted, 1 rows kept")
+
+
+def test_a_site_without_the_holiday_table_does_nothing():
+    site = _run(_Site([], table=False))
+    assert site.calendars == {}

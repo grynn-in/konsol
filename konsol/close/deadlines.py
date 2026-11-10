@@ -82,7 +82,7 @@ def _child_rows(doctype, parentfield, fields):
 
 def period_deadlines(keys, today):
     """``{(fy, fp): {step: {"due": date|None, "past": bool, "text": str|None}}}``
-    for the Regular periods among ``keys``. Three reads in all."""
+    for the Regular periods among ``keys``. Four reads in all (rules, calendars, holiday rows, fiscal calendar)."""
     wanted = {(int(fy), int(fp)) for fy, fp in keys}
     if not wanted:
         return {}

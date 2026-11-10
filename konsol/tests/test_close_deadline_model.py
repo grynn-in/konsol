@@ -449,12 +449,25 @@ def test_undeclared_year_mid_count_returns_the_year_sentence_not_a_date():
     # Count starts 2025-12-29 (Mon); five working days reach 2026-01-02 (Fri) and beyond.
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5)]
     out = M.period_deadlines(rules, set(), date(2025, 12, 26), date(2026, 1, 20), {2025})
-    assert out["tb"] == {"due": None, "past": False, "text": "Holidays not declared for 2026"}
-    assert out["tb"]["text"] == M.HOLIDAYS_UNDECLARED % 2026
+    assert out["tb"] == {"due": None, "past": False, "text": (
+        "Holidays not declared for 2026: add a Close Holiday Calendar for 2026.")}
+    assert out["tb"]["text"] == M.HOLIDAYS_UNDECLARED.format(year=2026)
 
 
-def test_sentence_constant():
-    assert M.HOLIDAYS_UNDECLARED == "Holidays not declared for %d"
+def test_sentence_constant_names_the_remedy():
+    # Review of #512: after an upgrade a site with rules and no calendars sees
+    # only this sentence, so it says what to do.
+    assert M.HOLIDAYS_UNDECLARED == (
+        "Holidays not declared for {year}: add a Close Holiday Calendar for {year}.")
+
+
+def test_a_blank_holiday_row_is_refused_with_a_sentence_not_a_crash():
+    # Review of #512: Frappe runs validate before the child's reqd check, so a
+    # blank Holiday Date reaches calendar_problems as None.
+    problems = M.calendar_problems(2027, False, [None])
+    assert problems == ["A holiday row has no date: fill it in or delete the row."], problems
+    problems = M.calendar_problems(2027, False, [None, date(2027, 1, 1), None])
+    assert problems == ["A holiday row has no date: fill it in or delete the row."], problems
 
 
 def test_year_boundary_walk_with_both_years_declared():
@@ -481,7 +494,7 @@ def test_undeclared_year_is_per_step_and_offsets_stay_undeclared():
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=1, ic=5, journals=0)]
     out = M.period_deadlines(rules, set(), date(2025, 12, 26), date(2026, 1, 20), {2025})
     assert out["tb"]["due"] == date(2025, 12, 29)
-    assert out["ic"]["text"] == "Holidays not declared for 2026"
+    assert out["ic"]["text"] == "Holidays not declared for 2026: add a Close Holiday Calendar for 2026."
     assert out["journals"]["text"] == M.UNDECLARED
     assert out["signoff"]["text"] == M.UNDECLARED
 
@@ -496,7 +509,7 @@ def test_due_date_raises_for_an_undeclared_year():
         M.due_date(date(2025, 12, 30), 3, MON_FRI, set(), {2025})
     except M.UndeclaredYear as e:
         assert e.year == 2026
-        assert str(e) == "Holidays not declared for 2026"
+        assert str(e) == "Holidays not declared for 2026: add a Close Holiday Calendar for 2026."
     else:
         raise AssertionError("expected UndeclaredYear")
 

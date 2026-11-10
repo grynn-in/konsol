@@ -227,3 +227,13 @@ def test_calendar_controller_refuses_with_the_model_sentences():
     with open(os.path.join(CALENDAR_DIR, "close_holiday_calendar.py")) as f:
         src = f.read()
     assert "calendar_problems" in src
+
+
+def test_calendar_year_is_set_only_once():
+    # Review of #512: the calendar is named by its year, so an edited year
+    # would leave a "2027" record holding 2028.
+    import json
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "close_holiday_calendar",
+                        "close_holiday_calendar.json")
+    year = next(f for f in json.load(open(path))["fields"] if f["fieldname"] == "year")
+    assert year.get("set_only_once") == 1

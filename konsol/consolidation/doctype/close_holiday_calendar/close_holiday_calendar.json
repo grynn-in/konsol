@@ -28,7 +28,8 @@
    "unique": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "description": "The calendar year, for example 2027. One calendar per year."
+   "description": "The calendar year, for example 2027. One calendar per year.",
+   "set_only_once": 1
   },
   {
    "fieldname": "no_holidays",
@@ -51,9 +52,29 @@
   }
  ],
  "permissions": [
-  {"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
-  {"role": "EPM Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1},
-  {"role": "EPM Analyst", "read": 1, "export": 1},
-  {"role": "EPM User", "read": 1}
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1
+  }
  ]
 }

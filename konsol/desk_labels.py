@@ -77,7 +77,7 @@ LABELS = {
     "Fair Value Allocation Profile": "Fair Value Allocation Profiles",
     "ISO Currency": "ISO Currencies",
     "Close Settings": "Close Settings",
-    "Close Holiday Calendar": "Close Holiday Calendar",
+    "Close Holiday Calendar": "Close Holiday Calendars",
     "konsol-setup": "Konsol Setup",
     # --- Data: sources ---------------------------------------------------
     "Connector": "Connectors",
