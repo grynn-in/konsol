@@ -174,3 +174,56 @@ def test_neither_is_a_fixture():
             src = f.read()
         assert "Close Deadline Rule" not in src, fn
         assert "Close Holiday" not in src, fn
+
+
+# --- Close Holiday Calendar (konsol#509) -------------------------------------
+
+CALENDAR_DIR = os.path.join(DT_ROOT, "close_holiday_calendar")
+
+
+def _calendar():
+    return _meta(CALENDAR_DIR, "close_holiday_calendar")
+
+
+def test_calendar_is_a_named_by_year_doctype_in_consolidation():
+    meta = _calendar()
+    assert meta["name"] == "Close Holiday Calendar"
+    assert meta["module"] == "Consolidation"
+    assert not meta.get("istable") and not meta.get("issingle")
+    assert meta["autoname"] == "field:year"
+    assert meta["track_changes"] == 1
+    assert meta["title_field"] == "year"
+    assert os.path.isfile(os.path.join(CALENDAR_DIR, "__init__.py"))
+
+
+def test_calendar_fields():
+    _check_fields(_calendar(), [
+        ("year", "Int", "Year", 1, 1),
+        ("no_holidays", "Check", "No Holidays This Year", 0, 1),
+        ("holidays_section", "Section Break", "Holidays", 0, 0),
+        ("holidays", "Table", "Holidays", 0, 0),
+    ])
+    fields = {f["fieldname"]: f for f in _calendar()["fields"]}
+    assert fields["year"]["unique"] == 1
+    assert fields["holidays"]["options"] == "Close Holiday"
+    assert fields["no_holidays"]["description"]
+    for f in fields.values():
+        assert "default" not in f, f["fieldname"]
+
+
+def test_calendar_permissions_follow_close_settings():
+    settings = _meta(os.path.join(DT_ROOT, "close_settings"), "close_settings")
+    want = {p["role"]: p for p in settings["permissions"]}
+    got = {p["role"]: p for p in _calendar()["permissions"]}
+    assert set(got) == set(want)
+    for role, perm in got.items():
+        for right in ("read", "write"):
+            assert perm.get(right, 0) == want[role].get(right, 0), (role, right)
+    assert got["EPM Analyst"] == {"role": "EPM Analyst", "read": 1, "export": 1}
+    assert got["EPM Admin"].get("create") == 1 and got["EPM Admin"].get("delete") == 1
+
+
+def test_calendar_controller_refuses_with_the_model_sentences():
+    with open(os.path.join(CALENDAR_DIR, "close_holiday_calendar.py")) as f:
+        src = f.read()
+    assert "calendar_problems" in src

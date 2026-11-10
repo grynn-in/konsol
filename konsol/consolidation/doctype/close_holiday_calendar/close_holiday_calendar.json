@@ -1,0 +1,59 @@
+{
+ "name": "Close Holiday Calendar",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 0,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "field:year",
+ "title_field": "year",
+ "search_fields": "year",
+ "sort_field": "year",
+ "sort_order": "DESC",
+ "description": "The group's holidays for one calendar year (konsol#509). Deadlines count a day as a working day only in a year that has a calendar here.",
+ "field_order": [
+  "year",
+  "no_holidays",
+  "holidays_section",
+  "holidays"
+ ],
+ "fields": [
+  {
+   "fieldname": "year",
+   "fieldtype": "Int",
+   "label": "Year",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The calendar year, for example 2027. One calendar per year."
+  },
+  {
+   "fieldname": "no_holidays",
+   "fieldtype": "Check",
+   "label": "No Holidays This Year",
+   "in_list_view": 1,
+   "description": "Tick to declare that this year has no holidays. Leave unticked and list the dates below otherwise. A year with neither is refused, so a year nobody filled in cannot pass for one with no holidays."
+  },
+  {
+   "fieldname": "holidays_section",
+   "fieldtype": "Section Break",
+   "label": "Holidays"
+  },
+  {
+   "fieldname": "holidays",
+   "fieldtype": "Table",
+   "options": "Close Holiday",
+   "label": "Holidays",
+   "description": "Days in this year that are not counted as working days, group-wide. Each date may appear once."
+  }
+ ],
+ "permissions": [
+  {"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+  {"role": "EPM Admin", "read": 1, "write": 1, "create": 1, "delete": 1, "export": 1},
+  {"role": "EPM Analyst", "read": 1, "export": 1},
+  {"role": "EPM User", "read": 1}
+ ]
+}

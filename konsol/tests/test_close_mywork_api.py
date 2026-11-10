@@ -441,7 +441,7 @@ def _call(site):
             key = (r["fiscal_year"], r["fiscal_period"])
             if key in wanted and r["period_type"] == "Regular":
                 out[key] = DEADLINE_MODEL.period_deadlines(
-                    site.deadline_rules, site.holidays, r["end_date"], today)
+                    site.deadline_rules, site.holidays, r["end_date"], today, set(range(1970, 2150)))
         return out
 
     deadlines.period_deadlines = period_deadlines
@@ -1828,7 +1828,7 @@ def test_an_open_period_the_read_did_not_answer_raises():
     for r in site.rows:
         key = (r["fiscal_year"], r["fiscal_period"])
         if key in OPEN_KEYS and key != (2025, 8):
-            full[key] = DEADLINE_MODEL.period_deadlines([], set(), r["end_date"], TODAY)
+            full[key] = DEADLINE_MODEL.period_deadlines([], set(), r["end_date"], TODAY, set(range(1970, 2150)))
     site.deadlines = full
     with pytest.raises(Exception) as info:
         _call(site)

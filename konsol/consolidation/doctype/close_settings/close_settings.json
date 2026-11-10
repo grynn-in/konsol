@@ -154,11 +154,10 @@
    "label": "Holidays"
   },
   {
-   "fieldname": "close_holidays",
-   "fieldtype": "Table",
-   "options": "Close Holiday",
-   "label": "Holidays",
-   "description": "Days that are not counted as working days, group-wide."
+   "fieldname": "holidays_note",
+   "fieldtype": "HTML",
+   "label": "Holidays Note",
+   "options": "<p>Holidays are declared per year, one <a href=\"/desk/close-holiday-calendar\">Close Holiday Calendar</a> for each. A year with no calendar has no due dates: the step reads &quot;Holidays not declared for &lt;year&gt;&quot;.</p>"
   },
   {
    "fieldname": "appearance_tab",
@@ -203,7 +202,7 @@
   "deadline_rules_section",
   "deadline_rules",
   "holidays_section",
-  "close_holidays",
+  "holidays_note",
   "appearance_tab",
   "brand_section",
   "brand_colour"

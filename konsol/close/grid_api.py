@@ -14,8 +14,8 @@ currency, the period's Closing Group Exchange Rates, one plain (no lock)
 ``group_rates.rate_gate`` and ``allowed_entity_codes``; then, when any row
 is visible, one ``close_event.reminders`` read (topic tb) and, when a
 visible row was reminded, one User read for the senders' full names
-(konsol#305 Y57); one ``deadlines.period_deadlines`` read (its three
-queries: the rules, the holidays and the calendar) and one
+(konsol#305 Y57); one ``deadlines.period_deadlines`` read (its four
+queries: the rules, the holiday calendars, their holidays and the fiscal calendar) and one
 ``assertion_run.latest_close_run`` read (konsol#305 D57); only when the IC
 due date is past, one ``ic_api.signoff_summary`` read (its own reads: the
 Intercompany Account count, Close Settings, the two ClickHouse IC tables and

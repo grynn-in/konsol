@@ -274,7 +274,7 @@ def _load_api(site):
         model = _model("deadline_model")
         wanted = {(int(fy), int(fp)) for fy, fp in keys}
         return {(r["fiscal_year"], r["fiscal_period"]): model.period_deadlines(
-                    site.deadline_rules, site.holidays, r["end_date"], today)
+                    site.deadline_rules, site.holidays, r["end_date"], today, set(range(1970, 2150)))
                 for r in site.rows if (r["fiscal_year"], r["fiscal_period"]) in wanted
                 and r["period_type"] == "Regular"}
 
@@ -895,7 +895,7 @@ def _run(signoff_status):
 
 def test_the_stub_deadlines_are_the_real_model_output():
     got = _DM.period_deadlines([_rule(date(2025, 1, 1), tb=5, signoff=10)], set(),
-                               date(2025, 9, 28), date(2025, 10, 11))
+                               date(2025, 9, 28), date(2025, 10, 11), set(range(1970, 2150)))
     assert got["tb"] == {"due": date(2025, 10, 3), "past": True, "text": None}
     assert got["signoff"] == {"due": date(2025, 10, 10), "past": True,
                               "text": None}

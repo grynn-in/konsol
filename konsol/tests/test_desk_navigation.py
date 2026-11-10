@@ -157,6 +157,7 @@ SIDEBARS = {
         ("DocType", "ISO Currency"),
         ("Section", "Settings"),
         ("DocType", "Close Settings"),
+        ("DocType", "Close Holiday Calendar"),
     ]),
     "Pipeline": ("Pipeline", [
         ("Workspace", "Data", "Home"),

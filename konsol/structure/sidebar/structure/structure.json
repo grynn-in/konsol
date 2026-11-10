@@ -440,9 +440,26 @@
    "open_in_new_tab": 0,
    "show_arrow": 0,
    "type": "Link"
+  },
+  {
+   "added": 0,
+   "child": 1,
+   "collapsible": 0,
+   "hidden": 0,
+   "icon": "calendar",
+   "idx": 28,
+   "indent": 0,
+   "is_default_module": 1,
+   "keep_closed": 0,
+   "label": "Close Holiday Calendar",
+   "link_to": "Close Holiday Calendar",
+   "link_type": "DocType",
+   "open_in_new_tab": 0,
+   "show_arrow": 0,
+   "type": "Link"
   }
  ],
- "modified": "2026-11-08 00:40:00.000000",
+ "modified": "2026-11-10 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Structure",
  "name": "Structure",

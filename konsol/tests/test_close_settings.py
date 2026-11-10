@@ -232,7 +232,7 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0, m
          intercompany_declaration="", published=0, sql_log=None,
          statement_cta_account="", statement_result_account="", get_all_log=None,
          commentary_threshold_amount=0, commentary_threshold_percent=0,
-         commentary_threshold_combine="", deadline_rules=(), close_holidays=(),
+         commentary_threshold_combine="", deadline_rules=(),
          statement_net_sales_heading="", main_account_row=None):
     """``published`` is what the stubbed locking count of Published
     Intercompany Accounts answers; every ``frappe.db.sql`` call is appended
@@ -287,7 +287,6 @@ def _run(year, period, period_row_fn, self_approval="", rate_move_threshold=0, m
         doc.commentary_threshold_percent = commentary_threshold_percent
         doc.commentary_threshold_combine = commentary_threshold_combine
         doc.deadline_rules = [_Row(r) for r in deadline_rules]
-        doc.close_holidays = [_Row(r) for r in close_holidays]
         doc.validate()
     finally:
         _m.frappe.throw = saved_throw
@@ -835,7 +834,7 @@ _TAB_LAYOUT = [
         "statements_section", "statement_cta_account", "statement_result_account",
         "statement_net_sales_heading"]),
     ("deadlines_tab", "Deadlines", [
-        "deadline_rules_section", "deadline_rules", "holidays_section", "close_holidays"]),
+        "deadline_rules_section", "deadline_rules", "holidays_section", "holidays_note"]),
     ("appearance_tab", "Appearance", ["brand_section", "brand_colour"]),
 ]
 
@@ -860,7 +859,7 @@ def test_labels_are_title_case_and_not_repeated():
     assert by_name["intercompany_declaration"]["label"] == "Intercompany Declaration"
 
 
-def test_deadlines_tab_holds_the_two_tables():
+def test_deadlines_tab_holds_the_rules_and_a_pointer_to_the_calendars():
     by_name = {f["fieldname"]: f for f in _doc()["fields"]}
     assert by_name["deadline_rules_section"]["fieldtype"] == "Section Break"
     assert by_name["deadline_rules_section"]["label"] == "Deadline Rules"
@@ -872,10 +871,11 @@ def test_deadlines_tab_holds_the_two_tables():
     assert rules["description"] == (
         "A rule applies to every period that ends on or after its Valid From, until the "
         "next rule. No rule = no due dates (shown as 'No due date declared'); nothing is assumed.")
-    holidays = by_name["close_holidays"]
-    assert holidays["fieldtype"] == "Table"
-    assert holidays["options"] == "Close Holiday"
-    assert holidays["description"] == "Days that are not counted as working days, group-wide."
+    assert "close_holidays" not in by_name
+    note = by_name["holidays_note"]
+    assert note["fieldtype"] == "HTML"
+    assert "/desk/close-holiday-calendar" in note["options"]
+    assert "declared per year" in note["options"]
 
 
 def test_no_field_is_reqd_or_defaulted():
@@ -903,18 +903,16 @@ def _refusal(**kw):
 
 def test_empty_deadlines_tab_saves():
     """Failure path: nothing declared is not a problem, and nothing is invented."""
-    _run(None, None, _default_period_row, deadline_rules=[], close_holidays=[])
+    _run(None, None, _default_period_row, deadline_rules=[])
 
 
-def test_one_rule_and_a_holiday_save():
-    _run(None, None, _default_period_row,
-         deadline_rules=[_rule(_dt.date(2025, 1, 1))],
-         close_holidays=[{"holiday_date": _dt.date(2025, 8, 4), "description": "ZZ"}])
+def test_one_rule_saves():
+    _run(None, None, _default_period_row, deadline_rules=[_rule(_dt.date(2025, 1, 1))])
 
 
 def test_duplicate_valid_from_throws_the_model_sentence():
     rules = [_rule(_dt.date(2025, 1, 1)), _rule(_dt.date(2025, 1, 1))]
-    expected = _dm.rule_problems(rules, [])
+    expected = _dm.rule_problems(rules)
     assert expected == ["Two deadline rules start on 2025-01-01: keep one."], expected
     assert _refusal(deadline_rules=rules) == expected[0]
 
@@ -926,16 +924,9 @@ def test_duplicate_valid_from_as_stored_date_and_typed_string_throws():
     assert msg == "Two deadline rules start on 2025-01-01: keep one.", msg
 
 
-def test_duplicate_holiday_as_date_and_string_throws():
-    msg = _refusal(close_holidays=[{"holiday_date": _dt.date(2025, 8, 4)},
-                                   {"holiday_date": "2025-08-04"}])
-    assert msg == "2025-08-04 is listed twice as a holiday.", msg
-
-
 def test_several_problems_are_joined_with_br():
     rules = [_rule(_dt.date(2025, 1, 1), monday=0, tuesday=0, wednesday=0, thursday=0, friday=0,
                    tb_due_days=-1)]
-    holidays = [{"holiday_date": _dt.date(2025, 8, 4)}, {"holiday_date": _dt.date(2025, 8, 4)}]
-    expected = _dm.rule_problems(rules, holidays)
-    assert len(expected) == 3, expected
-    assert _refusal(deadline_rules=rules, close_holidays=holidays) == "<br>".join(expected)
+    expected = _dm.rule_problems(rules)
+    assert len(expected) == 2, expected
+    assert _refusal(deadline_rules=rules) == "<br>".join(expected)

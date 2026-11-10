@@ -21,6 +21,14 @@ Engineering calls (plan-w5b.md §3):
   dated step's ``text`` is None; only an undeclared step carries a sentence
   (``UNDECLARED``). No surface shows a server-formatted date.
 
+#509 (option D, chosen under Deepak Pai's standing rule of 5 Nov 2026):
+holidays are declared per calendar year in a "Close Holiday Calendar". A year
+nobody declared must not count as working days, so when the count reaches a
+day in an undeclared year the step has no due date and reads
+``HOLIDAYS_UNDECLARED`` ("Holidays not declared for 2027"). A year declared
+with no holidays counts every ticked weekday. Rejected: A keep the flat list,
+B infer a year from one date, C a years table beside the list.
+
 Rules are dicts carrying the "Close Deadline Rule" child fields; dates are
 ``datetime.date``.
 """
@@ -42,6 +50,8 @@ STEP_LABEL = {
 }
 WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 UNDECLARED = "No due date declared"
+HOLIDAYS_UNDECLARED = "Holidays not declared for %d"
+MIN_YEAR, MAX_YEAR = 1970, 2149  # ClickHouse Date range, as the rest of konsol
 
 MAX_DAYS = 3660
 TEN_YEARS_ERROR = "Due date could not be computed: no working day in ten years"
@@ -65,19 +75,32 @@ def governing_rule(rules, end_date):
     return best
 
 
-def due_date(end_date, offset, working_days, holidays):
+class UndeclaredYear(ValueError):
+    """The count reached a day in a year with no Close Holiday Calendar (#509)."""
+
+    def __init__(self, year):
+        super().__init__(HOLIDAYS_UNDECLARED % year)
+        self.year = year
+
+
+def due_date(end_date, offset, working_days, holidays, declared_years):
     """The ``offset``-th day after ``end_date`` that is a working day (C-D3).
 
     ``working_days`` is a set of weekday indexes (Monday 0), ``holidays`` a
-    set of dates. Raises ValueError past 3,660 calendar days.
+    set of dates, ``declared_years`` the years that have a calendar. Raises
+    ``UndeclaredYear`` (a ValueError) when the count reaches a day in a year
+    not declared, and ValueError past 3,660 calendar days.
     """
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 1:
         raise ValueError("A due-date offset must be a whole number of working days, at least 1: got %r" % (offset,))
     holidays = set(holidays)
+    declared_years = set(declared_years)
     found = 0
     day = end_date
     for _ in range(MAX_DAYS):
         day = day + timedelta(days=1)
+        if day.year not in declared_years:
+            raise UndeclaredYear(day.year)
         if day.weekday() in working_days and day not in holidays:
             found += 1
             if found == offset:
@@ -89,9 +112,12 @@ def _undeclared():
     return {"due": None, "past": False, "text": UNDECLARED}
 
 
-def period_deadlines(rules, holidays, end_date, today):
+def period_deadlines(rules, holidays, end_date, today, declared_years):
     """``{step: {"due": date|None, "past": bool, "text": str|None}}`` for one
-    period. ``text`` is ``UNDECLARED`` when ``due`` is None, else None (F3)."""
+    period. ``text`` is ``UNDECLARED`` for an undeclared rule or offset, and
+    ``HOLIDAYS_UNDECLARED`` when the count reaches a year with no calendar
+    (#509); it is None for a dated step (F3). ``declared_years`` has no
+    default: a caller that forgets it fails, it does not guess."""
     rule = governing_rule(rules, end_date)
     if rule is None:
         return {step: _undeclared() for step in STEPS}
@@ -103,7 +129,11 @@ def period_deadlines(rules, holidays, end_date, today):
         if offset in (None, "", 0):
             out[step] = _undeclared()
             continue
-        due = due_date(end_date, offset, working_days, holidays)
+        try:
+            due = due_date(end_date, offset, working_days, holidays, declared_years)
+        except UndeclaredYear as err:
+            out[step] = {"due": None, "past": False, "text": str(err)}
+            continue
         out[step] = {"due": due, "past": today > due, "text": None}
     return out
 
@@ -166,12 +196,11 @@ def _repeated(values):
     return repeated
 
 
-def rule_problems(rules, holidays):
+def rule_problems(rules):
     """The sentences that refuse a Close Settings save (D52; C-D1, C-D3).
 
-    ``rules`` are "Close Deadline Rule" child dicts, ``holidays`` are "Close
-    Holiday" child dicts (``holiday_date``). Empty tables are allowed: no rule
-    means no due dates, and nothing is invented. A blank or 0 offset is
+    ``rules`` are "Close Deadline Rule" child dicts. An empty table is
+    allowed: no rule means no due dates, and nothing is invented. A blank or 0 offset is
     undeclared, not a problem. The blank ``change_reason`` is refused by
     ``reqd`` on the child doctype (C-D7), not here.
     """
@@ -188,6 +217,28 @@ def rule_problems(rules, holidays):
             offset = rule.get(OFFSET_FIELD[step])
             if isinstance(offset, (int, float)) and not isinstance(offset, bool) and offset < 0:
                 problems.append("The rule from %s has a negative %s offset." % (start, STEP_LABEL[step]))
-    for day in _repeated([holiday["holiday_date"] for holiday in holidays]):
-        problems.append("%s is listed twice as a holiday." % day)
+    return problems
+
+
+def calendar_problems(year, no_holidays, dates):
+    """The sentences that refuse a Close Holiday Calendar save (#509).
+
+    ``dates`` are the ``datetime.date`` of its holiday rows. A year is
+    declared either with its holidays or with ``no_holidays`` ticked, never
+    both and never neither.
+    """
+    if isinstance(year, bool) or not isinstance(year, int) or not MIN_YEAR <= year <= MAX_YEAR:
+        return ["The year must be between %d and %d: got %s." % (MIN_YEAR, MAX_YEAR, year)]
+    problems = []
+    if no_holidays and dates:
+        n = len(dates)
+        problems.append("No Holidays This Year is ticked but %d holiday%s: remove %s or untick."
+                        % (n, " is listed" if n == 1 else "s are listed", "it" if n == 1 else "them"))
+    if not no_holidays and not dates:
+        problems.append("List the holidays for %d, or tick No Holidays This Year." % year)
+    for day in dates:
+        if day.year != year:
+            problems.append("%s is not in %d." % (day.isoformat(), year))
+    for day in _repeated(dates):
+        problems.append("%s is listed twice." % day.isoformat())
     return problems

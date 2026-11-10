@@ -28,6 +28,7 @@ _spec.loader.exec_module(M)
 
 MON_FRI = {0, 1, 2, 3, 4}
 SUN_THU = {6, 0, 1, 2, 3}
+ALL_YEARS = set(range(1970, 2150))
 
 
 def _rule(valid_from, days, tb=None, ic=None, journals=None, signoff=None):
@@ -78,24 +79,24 @@ def test_constants():
 
 def test_due_date_mon_fri_no_holiday():
     assert date(2025, 7, 31).weekday() == 3  # Thursday
-    assert M.due_date(date(2025, 7, 31), 5, MON_FRI, set()) == date(2025, 8, 7)
+    assert M.due_date(date(2025, 7, 31), 5, MON_FRI, set(), ALL_YEARS) == date(2025, 8, 7)
 
 
 def test_due_date_skips_a_holiday():
-    assert M.due_date(date(2025, 7, 31), 5, MON_FRI, {date(2025, 8, 4)}) == date(2025, 8, 8)
+    assert M.due_date(date(2025, 7, 31), 5, MON_FRI, {date(2025, 8, 4)}, ALL_YEARS) == date(2025, 8, 8)
 
 
 def test_due_date_follows_the_declared_week_not_mon_fri():
     # Sun–Thu: Fri 1 Aug and Sat 2 Aug are not working days.
-    assert M.due_date(date(2025, 7, 31), 1, MON_FRI, set()) == date(2025, 8, 1)
-    assert M.due_date(date(2025, 7, 31), 1, SUN_THU, set()) == date(2025, 8, 3)
-    assert M.due_date(date(2025, 7, 31), 6, MON_FRI, set()) == date(2025, 8, 8)
-    assert M.due_date(date(2025, 7, 31), 6, SUN_THU, set()) == date(2025, 8, 10)
+    assert M.due_date(date(2025, 7, 31), 1, MON_FRI, set(), ALL_YEARS) == date(2025, 8, 1)
+    assert M.due_date(date(2025, 7, 31), 1, SUN_THU, set(), ALL_YEARS) == date(2025, 8, 3)
+    assert M.due_date(date(2025, 7, 31), 6, MON_FRI, set(), ALL_YEARS) == date(2025, 8, 8)
+    assert M.due_date(date(2025, 7, 31), 6, SUN_THU, set(), ALL_YEARS) == date(2025, 8, 10)
 
 
 def test_due_date_counts_after_end_date_not_on_it():
     # end_date itself is a working day (Thu) but is never counted.
-    assert M.due_date(date(2025, 7, 31), 1, {3}, set()) == date(2025, 8, 7)
+    assert M.due_date(date(2025, 7, 31), 1, {3}, set(), ALL_YEARS) == date(2025, 8, 7)
 
 
 def test_due_date_ten_year_stop_raises():
@@ -105,7 +106,7 @@ def test_due_date_ten_year_stop_raises():
         mondays.add(d)
         d += timedelta(days=7)
     try:
-        M.due_date(date(2025, 7, 31), 1, {0}, mondays)
+        M.due_date(date(2025, 7, 31), 1, {0}, mondays, ALL_YEARS)
     except ValueError as e:
         assert str(e) == "Due date could not be computed: no working day in ten years"
     else:
@@ -114,7 +115,7 @@ def test_due_date_ten_year_stop_raises():
 
 def test_due_date_no_working_day_raises_the_ten_year_error():
     try:
-        M.due_date(date(2025, 7, 31), 1, set(), set())
+        M.due_date(date(2025, 7, 31), 1, set(), set(), ALL_YEARS)
     except ValueError as e:
         assert str(e) == "Due date could not be computed: no working day in ten years"
     else:
@@ -124,7 +125,7 @@ def test_due_date_no_working_day_raises_the_ten_year_error():
 def test_due_date_refuses_a_non_positive_offset():
     for bad in (0, -1, None):
         try:
-            M.due_date(date(2025, 7, 31), bad, MON_FRI, set())
+            M.due_date(date(2025, 7, 31), bad, MON_FRI, set(), ALL_YEARS)
         except ValueError:
             pass
         else:
@@ -162,7 +163,7 @@ def test_governing_rule_two_rules_same_start_raise():
 # ---- period_deadlines -------------------------------------------------------
 
 def test_period_deadlines_no_rule_all_undeclared():
-    out = M.period_deadlines([], set(), date(2025, 7, 31), date(2030, 1, 1))
+    out = M.period_deadlines([], set(), date(2025, 7, 31), date(2030, 1, 1), ALL_YEARS)
     assert set(out) == set(M.STEPS)
     for step in M.STEPS:
         assert out[step] == {"due": None, "past": False, "text": M.UNDECLARED}
@@ -170,14 +171,14 @@ def test_period_deadlines_no_rule_all_undeclared():
 
 def test_period_deadlines_rule_starts_later_all_undeclared():
     rules = [_rule(date(2025, 8, 1), MON_FRI, tb=5, ic=5, journals=5, signoff=5)]
-    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2030, 1, 1))
+    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2030, 1, 1), ALL_YEARS)
     for step in M.STEPS:
         assert out[step] == {"due": None, "past": False, "text": M.UNDECLARED}
 
 
 def test_period_deadlines_zero_or_blank_offset_is_undeclared():
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5, ic=0, journals=None, signoff="")]
-    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 1))
+    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 1), ALL_YEARS)
     assert out["tb"] == {"due": date(2025, 8, 7), "past": False, "text": None}
     for step in ("ic", "journals", "signoff"):
         assert out[step] == {"due": None, "past": False, "text": M.UNDECLARED}
@@ -187,7 +188,7 @@ def test_f3_a_dated_step_sends_no_text_and_only_an_undeclared_step_has_one():
     """F3 (review S17): the SPA owns the date wording (dueDate.js), so a dated
     step's ``text`` is None; only an undeclared step carries the sentence."""
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5, ic=0, journals=None, signoff=8)]
-    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 1))
+    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 1), ALL_YEARS)
     assert out == {
         "tb": {"due": date(2025, 8, 7), "past": False, "text": None},
         "ic": {"due": None, "past": False, "text": "No due date declared"},
@@ -199,7 +200,7 @@ def test_f3_a_dated_step_sends_no_text_and_only_an_undeclared_step_has_one():
 
 def test_period_deadlines_each_step_uses_its_own_offset():
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=1, ic=2, journals=3, signoff=5)]
-    out = M.period_deadlines(rules, {date(2025, 8, 4)}, date(2025, 7, 31), date(2025, 7, 31))
+    out = M.period_deadlines(rules, {date(2025, 8, 4)}, date(2025, 7, 31), date(2025, 7, 31), ALL_YEARS)
     assert out["tb"]["due"] == date(2025, 8, 1)
     assert out["ic"]["due"] == date(2025, 8, 5)
     assert out["journals"]["due"] == date(2025, 8, 6)
@@ -209,17 +210,17 @@ def test_period_deadlines_each_step_uses_its_own_offset():
 def test_period_deadlines_uses_the_governing_rule():
     first = _rule(date(2025, 1, 1), MON_FRI, tb=5)
     second = _rule(date(2025, 7, 1), SUN_THU, tb=1)
-    out_jun = M.period_deadlines([first, second], set(), date(2025, 6, 30), date(2025, 6, 30))
-    out_jul = M.period_deadlines([first, second], set(), date(2025, 7, 31), date(2025, 7, 31))
+    out_jun = M.period_deadlines([first, second], set(), date(2025, 6, 30), date(2025, 6, 30), ALL_YEARS)
+    out_jul = M.period_deadlines([first, second], set(), date(2025, 7, 31), date(2025, 7, 31), ALL_YEARS)
     assert out_jun["tb"]["due"] == date(2025, 7, 7)
     assert out_jul["tb"]["due"] == date(2025, 8, 3)
 
 
 def test_period_deadlines_past_is_strictly_after_due():
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5)]
-    on_due = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 7))
+    on_due = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 7), ALL_YEARS)
     assert on_due["tb"] == {"due": date(2025, 8, 7), "past": False, "text": None}
-    day_after = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 8))
+    day_after = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 8), ALL_YEARS)
     assert day_after["tb"] == {"due": date(2025, 8, 7), "past": True, "text": None}
 
 
@@ -231,7 +232,7 @@ def test_period_deadlines_ten_year_error_propagates():
         d += timedelta(days=7)
     rules = [_rule(date(2025, 1, 1), {0}, tb=1)]
     try:
-        M.period_deadlines(rules, mondays, date(2025, 7, 31), date(2025, 8, 1))
+        M.period_deadlines(rules, mondays, date(2025, 7, 31), date(2025, 8, 1), ALL_YEARS)
     except ValueError as e:
         assert str(e) == "Due date could not be computed: no working day in ten years"
     else:
@@ -241,39 +242,35 @@ def test_period_deadlines_ten_year_error_propagates():
 def test_period_deadlines_has_no_overdue_key():
     # C-D4: "overdue" (past AND step open) is the caller's decision.
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5)]
-    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2026, 1, 1))
+    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2026, 1, 1), ALL_YEARS)
     for step in M.STEPS:
         assert set(out[step]) == {"due", "past", "text"}
 
 
 # ---- rule_problems: the save rules (D52; C-D1, C-D3, C-D7) ------------------
-# ``rule_problems(rules, holidays)`` returns the sentences that refuse a Close
-# Settings save. ``rules`` are "Close Deadline Rule" child dicts, ``holidays``
-# are "Close Holiday" child dicts (``holiday_date``). Blank is allowed: it is
-# undeclared, never defaulted.
-
-def _holiday(d, description=None):
-    return {"holiday_date": d, "description": description}
+# ``rule_problems(rules)`` returns the sentences that refuse a Close Settings
+# save. ``rules`` are "Close Deadline Rule" child dicts. Blank is allowed: it
+# is undeclared, never defaulted. Holidays moved to Close Holiday Calendar
+# (#509): see ``calendar_problems`` below.
 
 
 def test_rule_problems_empty_is_allowed_and_invents_nothing():
     # Failure path: an empty Deadlines tab saves; no rule is invented.
-    assert M.rule_problems([], []) == []
+    assert M.rule_problems([]) == []
 
 
-def test_rule_problems_valid_rules_and_holidays_pass():
+def test_rule_problems_valid_rules_pass():
     rules = [
         _rule(date(2025, 1, 1), MON_FRI, tb=5, ic=7, journals=8, signoff=10),
         _rule(date(2025, 7, 1), SUN_THU, tb=3),
     ]
-    holidays = [_holiday(date(2025, 8, 4), "Bank holiday"), _holiday(date(2025, 12, 25))]
-    assert M.rule_problems(rules, holidays) == []
+    assert M.rule_problems(rules) == []
 
 
 def test_rule_problems_blank_and_zero_offsets_are_allowed():
     # Blank or 0 is "undeclared", not a problem (C-D3).
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=0, ic="", journals=None, signoff=None)]
-    assert M.rule_problems(rules, []) == []
+    assert M.rule_problems(rules) == []
 
 
 def test_rule_problems_two_rules_same_valid_from():
@@ -281,12 +278,12 @@ def test_rule_problems_two_rules_same_valid_from():
         _rule(date(2025, 1, 1), MON_FRI, tb=5),
         _rule(date(2025, 1, 1), MON_FRI, tb=6),
     ]
-    assert M.rule_problems(rules, []) == ["Two deadline rules start on 2025-01-01: keep one."]
+    assert M.rule_problems(rules) == ["Two deadline rules start on 2025-01-01: keep one."]
 
 
 def test_rule_problems_three_rules_same_valid_from_one_sentence():
     rules = [_rule(date(2025, 1, 1), MON_FRI, tb=n) for n in (5, 6, 7)]
-    assert M.rule_problems(rules, []) == ["Two deadline rules start on 2025-01-01: keep one."]
+    assert M.rule_problems(rules) == ["Two deadline rules start on 2025-01-01: keep one."]
 
 
 def test_rule_problems_same_sentence_as_governing_rule():
@@ -298,14 +295,14 @@ def test_rule_problems_same_sentence_as_governing_rule():
     try:
         M.governing_rule(rules, date(2025, 7, 31))
     except ValueError as e:
-        assert M.rule_problems(rules, []) == [str(e)]
+        assert M.rule_problems(rules) == [str(e)]
     else:
         raise AssertionError("expected governing_rule to raise")
 
 
 def test_rule_problems_no_working_day():
     rules = [_rule(date(2025, 7, 1), set(), tb=5)]
-    assert M.rule_problems(rules, []) == [
+    assert M.rule_problems(rules) == [
         "The rule from 2025-07-01 declares no working day: tick the days your team works."
     ]
 
@@ -320,16 +317,7 @@ def test_rule_problems_negative_offset_names_each_step_label():
     for step in M.STEPS:
         rule = _rule(date(2025, 7, 1), MON_FRI)
         rule[M.OFFSET_FIELD[step]] = -1
-        assert M.rule_problems([rule], []) == [expected[step]], step
-
-
-def test_rule_problems_duplicate_holiday():
-    holidays = [
-        _holiday(date(2025, 12, 25), "Christmas"),
-        _holiday(date(2025, 8, 4)),
-        _holiday(date(2025, 12, 25), "Christmas again"),
-    ]
-    assert M.rule_problems([], holidays) == ["2025-12-25 is listed twice as a holiday."]
+        assert M.rule_problems([rule]) == [expected[step]], step
 
 
 def test_rule_problems_reports_every_problem():
@@ -337,13 +325,11 @@ def test_rule_problems_reports_every_problem():
         _rule(date(2025, 1, 1), set(), tb=-2, signoff=-1),
         _rule(date(2025, 1, 1), MON_FRI, tb=5),
     ]
-    holidays = [_holiday(date(2025, 8, 4)), _holiday(date(2025, 8, 4))]
-    assert M.rule_problems(rules, holidays) == [
+    assert M.rule_problems(rules) == [
         "Two deadline rules start on 2025-01-01: keep one.",
         "The rule from 2025-01-01 declares no working day: tick the days your team works.",
         "The rule from 2025-01-01 has a negative Trial Balances offset.",
         "The rule from 2025-01-01 has a negative Sign-off offset.",
-        "2025-08-04 is listed twice as a holiday.",
     ]
 
 
@@ -351,13 +337,12 @@ def test_rule_problems_missing_key_raises():
     # No silent fallback: a row without its child field is a programming error.
     rule = _rule(date(2025, 1, 1), MON_FRI, tb=5)
     del rule["valid_from"]
-    for rules, holidays in (([rule], []), ([], [{"description": "x"}])):
-        try:
-            M.rule_problems(rules, holidays)
-        except KeyError:
-            pass
-        else:
-            raise AssertionError("expected KeyError")
+    try:
+        M.rule_problems([rule])
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("expected KeyError")
 
 
 # --- D57b (#305-Q5-1, Deepak Pai, 7 Oct): when the IC and journals steps are open ---
@@ -453,3 +438,92 @@ def test_journals_open_an_unreadable_count_raises_never_false():
         except ValueError:
             continue
         raise AssertionError("journals_open(%r) did not raise" % (count,))
+
+
+# ---- konsol#509: holidays are declared per year ------------------------------
+# Decision #509 option D (chosen under Deepak Pai's standing rule of 5 Nov 2026):
+# a Close Holiday Calendar per year. A year nobody declared must not count as
+# working days: the step reads "Holidays not declared for <year>".
+
+def test_undeclared_year_mid_count_returns_the_year_sentence_not_a_date():
+    # Count starts 2025-12-29 (Mon); five working days reach 2026-01-02 (Fri) and beyond.
+    rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5)]
+    out = M.period_deadlines(rules, set(), date(2025, 12, 26), date(2026, 1, 20), {2025})
+    assert out["tb"] == {"due": None, "past": False, "text": "Holidays not declared for 2026"}
+    assert out["tb"]["text"] == M.HOLIDAYS_UNDECLARED % 2026
+
+
+def test_sentence_constant():
+    assert M.HOLIDAYS_UNDECLARED == "Holidays not declared for %d"
+
+
+def test_year_boundary_walk_with_both_years_declared():
+    rules = [_rule(date(2025, 1, 1), MON_FRI, tb=5)]
+    out = M.period_deadlines(rules, {date(2026, 1, 1)}, date(2025, 12, 26),
+                             date(2026, 1, 20), {2025, 2026})
+    # 29, 30, 31 Dec; 1 Jan is a holiday; 2 Jan; 5 Jan.
+    assert out["tb"] == {"due": date(2026, 1, 5), "past": True, "text": None}
+
+
+def test_a_declared_empty_year_counts_every_working_day():
+    rules = [_rule(date(2025, 1, 1), MON_FRI, tb=1)]
+    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 1), {2025})
+    assert out["tb"]["due"] == date(2025, 8, 1)
+
+
+def test_an_undeclared_year_not_reached_does_not_matter():
+    rules = [_rule(date(2025, 1, 1), MON_FRI, tb=1)]
+    out = M.period_deadlines(rules, set(), date(2025, 7, 31), date(2025, 8, 5), {2025})
+    assert out["tb"]["due"] == date(2025, 8, 1)
+
+
+def test_undeclared_year_is_per_step_and_offsets_stay_undeclared():
+    rules = [_rule(date(2025, 1, 1), MON_FRI, tb=1, ic=5, journals=0)]
+    out = M.period_deadlines(rules, set(), date(2025, 12, 26), date(2026, 1, 20), {2025})
+    assert out["tb"]["due"] == date(2025, 12, 29)
+    assert out["ic"]["text"] == "Holidays not declared for 2026"
+    assert out["journals"]["text"] == M.UNDECLARED
+    assert out["signoff"]["text"] == M.UNDECLARED
+
+
+def test_no_rule_stays_undeclared_whatever_the_years():
+    out = M.period_deadlines([], set(), date(2025, 7, 31), date(2030, 1, 1), set())
+    assert all(v["text"] == M.UNDECLARED for v in out.values())
+
+
+def test_due_date_raises_for_an_undeclared_year():
+    try:
+        M.due_date(date(2025, 12, 30), 3, MON_FRI, set(), {2025})
+    except M.UndeclaredYear as e:
+        assert e.year == 2026
+        assert str(e) == "Holidays not declared for 2026"
+    else:
+        raise AssertionError("expected UndeclaredYear")
+
+
+def test_calendar_problems_clean():
+    assert M.calendar_problems(2026, False, [date(2026, 1, 1), date(2026, 12, 25)]) == []
+    assert M.calendar_problems(2026, True, []) == []
+
+
+def test_calendar_problems_empty_without_no_holidays():
+    assert M.calendar_problems(2026, False, []) == [
+        "List the holidays for 2026, or tick No Holidays This Year."]
+
+
+def test_calendar_problems_no_holidays_with_rows():
+    assert M.calendar_problems(2026, True, [date(2026, 1, 1)]) == [
+        "No Holidays This Year is ticked but 1 holiday is listed: remove it or untick."]
+    assert M.calendar_problems(2026, True, [date(2026, 1, 1), date(2026, 1, 2)]) == [
+        "No Holidays This Year is ticked but 2 holidays are listed: remove them or untick."]
+
+
+def test_calendar_problems_date_outside_year_and_duplicate():
+    got = M.calendar_problems(2026, False, [date(2025, 12, 31), date(2026, 5, 1), date(2026, 5, 1)])
+    assert got == ["2025-12-31 is not in 2026.", "2026-05-01 is listed twice."]
+
+
+def test_calendar_problems_year_range():
+    assert M.calendar_problems(1969, True, []) == ["The year must be between 1970 and 2149: got 1969."]
+    assert M.calendar_problems(2150, True, []) == ["The year must be between 1970 and 2149: got 2150."]
+    assert M.calendar_problems(None, True, []) == ["The year must be between 1970 and 2149: got None."]
