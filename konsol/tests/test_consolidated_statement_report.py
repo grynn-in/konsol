@@ -8,10 +8,13 @@ whole root group's statement. A member row must be refused by name.
 import ast
 import importlib.util
 import os
+import re
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATH = os.path.join(APP_DIR, "consolidation", "report", "consolidated_statement", "consolidated_statement.py")
+#: The one doc-name -> code resolution lives in statement_api (konsol#495 row 11b).
+API_PATH = os.path.join(APP_DIR, "close", "statement_api.py")
 
 
 class Refused(Exception):
@@ -19,9 +22,9 @@ class Refused(Exception):
 
 
 def _group_code_with(rows):
-    """Exec only _group_code against a stub frappe whose get_value reads ``rows``."""
-    tree = ast.parse(open(PATH).read())
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_group_code")
+    """Exec only statement_api.group_code against a stub frappe whose get_value reads ``rows``."""
+    tree = ast.parse(open(API_PATH).read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "group_code")
 
     def get_value(doctype, name, fields, as_dict=False):
         row = rows.get(name)
@@ -36,8 +39,17 @@ def _group_code_with(rows):
 
     frappe = types.SimpleNamespace(db=types.SimpleNamespace(get_value=get_value), throw=throw, _=lambda s: s)
     env = {"frappe": frappe}
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), PATH, "exec"), env)
-    return env["_group_code"]
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), API_PATH, "exec"), env)
+    return env["group_code"]
+
+
+def test_the_report_imports_the_one_resolution_and_keeps_its_name_importable():
+    tree = ast.parse(open(PATH).read())
+    assert not any(isinstance(n, ast.FunctionDef) and n.name == "_group_code" for n in tree.body)
+    assert any(
+        isinstance(n, ast.ImportFrom) and any(a.name == "group_code" and a.asname == "_group_code" for a in n.names)
+        for n in tree.body
+    )
 
 
 ROWS = {
@@ -90,7 +102,7 @@ def _ok(fy, tb_rows):
     return payload, {"tb_rows": tb_rows}
 
 
-def _execute_with(statement):
+def _execute_with(statement, entity_statement=None):
     """Exec the module's functions against stub frappe/statement_api
     (``statement(fy, fp, group)`` -> ``(payload, reads)``, as
     ``statement_api._statement``) and a row model that records the prior
@@ -131,8 +143,21 @@ def _execute_with(statement):
         _dict=_Dict, throw=throw, ValidationError=_ValidationError,
         clear_last_message=lambda: None,
         db=types.SimpleNamespace(get_value=lambda *a, **k: None))
-    api = types.SimpleNamespace(get_statement=lambda *a: _statement(*a)[0], _statement=_statement)
-    env = {"frappe": frappe, "statement_api": api, "statement_report_model": Model}
+    def _entity_statement(fy, fp, entity):
+        seen["entity_calls"].append((fy, fp, entity))
+        return entity_statement(fy, fp, entity)
+
+    seen["entity_calls"] = []
+
+    def get_statement(*a):
+        seen["group_called"] = True
+        return _statement(*a)[0]
+
+    api = types.SimpleNamespace(
+        get_statement=get_statement, _statement=_statement,
+        get_entity_statement=lambda *a: _entity_statement(*a)[0], _entity_statement=_entity_statement)
+    env = {"frappe": frappe, "statement_api": api, "statement_report_model": Model,
+           "_group_code": lambda value: value or None}  # imported from statement_api (row 11b)
     exec(compile(ast.Module(body=fns, type_ignores=[]), PATH, "exec"), env)
     return env["execute"], seen
 
@@ -178,3 +203,151 @@ def test_execute_hands_the_chosen_group_filter_to_the_heading_drill_links():
     assert seen["drill_group"] == "CG-ZZG-"
 
 
+
+
+# --- Basis: Entity (konsol#495 row 4) --------------------------------------
+
+def test_entity_basis_reads_the_entity_statement_and_its_prior_year():
+    execute, seen = _execute_with(
+        lambda *a: (_ for _ in ()).throw(AssertionError("group statement read on entity basis")),
+        lambda fy, fp, entity: _ok(int(fy), [_tb(int(fy), 12)]))
+    result = execute({"fiscal_year": "2024", "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"})
+    assert seen["entity_calls"] == [("2024", 12, "ZZA"), (2023, 12, "ZZA")]
+    assert seen["calls"] == [] and not seen.get("group_called")
+    assert seen["drill_group"] is None
+    assert seen["rows"]["state"] == "ok" and seen["rows"]["period"]["fiscal_year"] == 2023
+    assert result == (["cols"], ["rows"], "msg")
+
+
+def test_entity_basis_without_an_entity_is_refused():
+    execute, seen = _execute_with(lambda *a: _ok(2024, []), lambda *a: _ok(2024, []))
+    try:
+        execute({"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity"})
+    except Refused as e:
+        assert "entity" in str(e).lower()
+    else:
+        raise AssertionError("entity basis without an entity was not refused")
+    assert seen["entity_calls"] == [] and seen["calls"] == []
+
+
+def test_entity_basis_prior_year_refusal_does_not_fail_the_report():
+    def entity_statement(fy, fp, entity):
+        if fy == 2023:
+            raise _ValidationError("FY2023 P12 is not a declared period.")
+        return _ok(int(fy), [_tb(int(fy), 12)])
+
+    execute, seen = _execute_with(lambda *a: _ok(2024, []), entity_statement)
+    execute({"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"})
+    assert seen["rows"]["state"] == "error"
+
+
+def _js():
+    return open(PATH.replace(".py", ".js")).read()
+
+
+def _filter(fieldname):
+    source = _js()
+    start = source.index('fieldname: "%s"' % fieldname)
+    return source[start:source.index("\t\t},", start)]
+
+
+def test_js_basis_and_entity_filters():
+    basis = _filter("basis")
+    assert "Group\\nEntity" in basis and 'default: "Group"' in basis
+    entity = _filter("entity")
+    assert 'options: "Entity"' in entity
+    assert 'depends_on: \'eval:doc.basis=="Entity"\'' in entity
+    # Frappe's query report ignores mandatory_depends_on (it checks only
+    # reqd); the Basis filter's on_change makes the entity required.
+    assert "mandatory_depends_on" not in entity
+    assert "is_group: 0" in entity
+
+
+def _basis_change(start, new):
+    from konsol.tests.test_desk_report_js_calls import run_basis_change
+    return run_basis_change("consolidated_statement/consolidated_statement.js",
+                            "Consolidated Statement", start, new)
+
+
+def test_js_no_filter_uses_mandatory_depends_on():
+    assert "mandatory_depends_on" not in _js()
+
+
+def test_js_switching_basis_to_entity_makes_the_entity_required_then_refreshes():
+    got = _basis_change("Group", "Entity")
+    assert not got["initial"]["entity"]
+    assert got["after"]["entity"], "entity must be reqd on the entity basis"
+    assert got["calls"][-1] == "refresh", got["calls"]
+
+
+def test_js_switching_basis_back_to_group_drops_the_entity_requirement():
+    got = _basis_change("Entity", "Group")
+    assert not got["after"]["entity"]
+    assert not got["after"]["consolidation_group"], "the group stays optional (blank = the only group)"
+    assert got["calls"][-1] == "refresh", got["calls"]
+
+
+def test_js_opened_on_the_entity_basis_requires_the_entity_before_the_first_run():
+    # A link (?basis=Entity) sets the route filter, then onload, then Frappe's
+    # own refresh: no Basis on_change has run yet.
+    from konsol.tests.test_desk_report_js_calls import run_onload
+    got = run_onload("consolidated_statement/consolidated_statement.js",
+                     "Consolidated Statement", "Entity")
+    assert got["hasOnload"]
+    assert got["after"]["entity"]
+    assert "refresh" not in got["calls"], "onload must not refresh: Frappe does"
+
+
+def test_js_opened_on_the_group_basis_leaves_the_entity_optional():
+    from konsol.tests.test_desk_report_js_calls import run_onload
+    got = run_onload("consolidated_statement/consolidated_statement.js",
+                     "Consolidated Statement", "Group")
+    assert got["hasOnload"] and not got["after"]["entity"]
+
+
+def test_js_consolidation_group_is_hidden_on_the_entity_basis():
+    group = _filter("consolidation_group")
+    assert 'depends_on: \'eval:doc.basis!="Entity"\'' in group
+
+
+def test_js_drill_url_uses_the_entity_when_the_row_carries_one():
+    source = _js()
+    start = source.index("function drill_url")
+    body = source[start:source.index("\n}\n", start)]
+    assert "data.drill_entity" in body
+    assert 'params.set("basis", "Entity")' in body
+    assert 'params.set("entity", data.drill_entity)' in body
+    assert 'params.set("consolidation_group", data.drill_group || "")' in body
+    assert "heading: data.code" in body
+
+
+def test_js_heading_link_shows_for_an_entity_row_too():
+    source = _js()
+    assert "data.code && (data.drill_group || data.drill_entity)" in source
+
+
+def _export_body():
+    source = _js()
+    start = source.index("function export_to_excel")
+    return source[start:source.index("\n}\n", start)]
+
+
+def test_js_export_button_posts_all_five_filters():
+    body = _export_body()
+    # Posted to the whitelisted method's own URL: a "cmd" posted to "/" is
+    # deprecated in Frappe v16 and removed in v17. new_window (true) keeps a
+    # refusal's JSON off the Desk tab.
+    assert re.search(r'open_url_post\(\s*"/api/method/konsol\.close\.statement_api\.export_statement",\s*\{', body)
+    assert "cmd:" not in body and "frappe.request.url" not in body
+    assert re.search(r"\},\s*true,?\s*\);", body), "new_window must be true"
+    assert "get_filter_value(name)" in body
+    for name in ("fiscal_year", "fiscal_period", "basis", "consolidation_group", "entity"):
+        assert '%s: value("%s")' % (name, name) in body, name
+
+
+def test_js_export_button_is_added_and_removed_in_after_datatable_render():
+    source = _js()
+    hook = source[source.index("after_datatable_render"):]
+    assert "page.remove_inner_button(EXPORT_TO_EXCEL)" in hook
+    assert "page.add_inner_button(EXPORT_TO_EXCEL, export_to_excel)" in hook
+    assert "has_statement()" in hook

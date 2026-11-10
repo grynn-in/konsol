@@ -1,20 +1,29 @@
 // Consolidated Statement — the Numbers statement (P&L and Balance Sheet) in Desk.
 // A heading opens Statement Drill for that heading with the same filters;
+// "Export to Excel" downloads the statement through
+// statement_api.export_statement (a form POST in a new tab: open_url_post);
 // "Add commentary" saves a heading's commentary through
 // commentary_api.save_commentary (the Close app's own call).
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
 const ADD_COMMENTARY = __("Add commentary");
+const EXPORT_TO_EXCEL = __("Export to Excel");
 
 function drill_url(data) {
 	// The heading row carries the group the statement was built for
 	// (statement_report_model: drill_group), so a blank group filter (the
-	// only group) still opens the right drill.
+	// only group) still opens the right drill. On the entity basis the row
+	// carries drill_entity instead: open the entity drill.
 	const params = new URLSearchParams({
 		fiscal_year: frappe.query_report.get_filter_value("fiscal_year"),
 		fiscal_period: frappe.query_report.get_filter_value("fiscal_period"),
-		consolidation_group: data.drill_group || "",
 		heading: data.code,
 	});
+	if (data.drill_entity) {
+		params.set("basis", "Entity");
+		params.set("entity", data.drill_entity);
+	} else {
+		params.set("consolidation_group", data.drill_group || "");
+	}
 	return `${frappe.router.make_url(["query-report", "Statement Drill"])}?${params}`;
 }
 
@@ -22,6 +31,57 @@ function commentable_headings() {
 	// The rows' can_comment is get_statement's own (role and Open period);
 	// the report never re-decides it.
 	return (frappe.query_report.data || []).filter((row) => row.code && row.can_comment);
+}
+
+function has_statement() {
+	// An ok statement has heading rows carrying the group (or entity) the
+	// statement was built for (statement_report_model: drill_group /
+	// drill_entity); a refusal or a not-built state has none, so no export.
+	return (frappe.query_report.data || []).some(
+		(row) => row.code && (row.drill_group || row.drill_entity),
+	);
+}
+
+// The Frappe query report checks only `reqd` before a run (conditional-mandatory
+// settings are ignored), so `reqd` is set on the filter the basis needs: a blank
+// one shows Frappe's inline "Please set filters", never a server error dialog.
+// Two entry points: onload (a report opened from a link: Frappe sets the route
+// filters, calls onload, then refreshes, so onload must not refresh) and the Basis
+// filter's on_change (Frappe calls it INSTEAD of its own refresh, so it refreshes).
+// A link carrying basis=Entity runs that on_change while Frappe is still setting
+// the route filters (query_report.js refresh_report, with _no_refresh set): a
+// refresh then would throw "Filter missing" (entity not set yet) and abort the
+// rest of the route, so on_change refreshes only when _no_refresh is unset,
+// the same gate Frappe applies to its own refresh.
+function sync_required(report) {
+	const filter = report.get_filter("entity");
+	filter.df.reqd = report.get_filter_value("basis") === "Entity" ? 1 : 0;
+	filter.refresh();
+}
+
+function on_basis_change(report) {
+	sync_required(report);
+	if (!report._no_refresh) report.refresh();
+}
+
+function export_to_excel() {
+	// A form POST (open_url_post adds the CSRF token); values are sent as
+	// strings, as a blank filter is "", never "null" or "undefined".
+	const value = (name) => frappe.query_report.get_filter_value(name) || "";
+	// Posted to the method's own URL: a "cmd" posted to "/" is deprecated in
+	// Frappe v16 and removed in v17. new_window (true) opens a blank tab, so a
+	// refusal (JSON) lands there and the Desk tab keeps the statement.
+	open_url_post(
+		"/api/method/konsol.close.statement_api.export_statement",
+		{
+			fiscal_year: value("fiscal_year"),
+			fiscal_period: value("fiscal_period"),
+			basis: value("basis"),
+			consolidation_group: value("consolidation_group"),
+			entity: value("entity"),
+		},
+		true,
+	);
 }
 
 function add_commentary() {
@@ -99,10 +159,30 @@ frappe.query_reports["Consolidated Statement"] = {
 			default: new Date().getMonth() + 1,
 		},
 		{
+			fieldname: "basis",
+			label: __("Basis"),
+			fieldtype: "Select",
+			options: "Group\nEntity",
+			default: "Group",
+			description: __("Entity: one entity's own trial balance in its functional currency."),
+			on_change: on_basis_change,
+		},
+		{
+			fieldname: "entity",
+			label: __("Entity"),
+			fieldtype: "Link",
+			options: "Entity",
+			depends_on: 'eval:doc.basis=="Entity"',
+			get_query() {
+				return { filters: { is_group: 0 } };
+			},
+		},
+		{
 			fieldname: "consolidation_group",
 			label: __("Consolidation Group"),
 			fieldtype: "Link",
 			options: "Consolidation Group",
+			depends_on: 'eval:doc.basis!="Entity"',
 			description: __("A root group. Leave blank when there is only one."),
 			// Root groups only (statement_api._ROOT_FILTER: no data_area_id).
 			get_query() {
@@ -110,6 +190,8 @@ frappe.query_reports["Consolidated Statement"] = {
 			},
 		},
 	],
+
+	onload: sync_required,
 
 	formatter(value, row, column, data, default_formatter) {
 		if (data && column.fieldname === "commentary") {
@@ -122,7 +204,7 @@ frappe.query_reports["Consolidated Statement"] = {
 		if (!data) {
 			return value;
 		}
-		if (column.fieldname === "label" && data.code && data.drill_group) {
+		if (column.fieldname === "label" && data.code && (data.drill_group || data.drill_entity)) {
 			value = `<a href="${drill_url(data)}" title="${__("Open the drill for this heading")}">${value}</a>`;
 		}
 		if (column.fieldname === "label" && data.indent) {
@@ -138,6 +220,10 @@ frappe.query_reports["Consolidated Statement"] = {
 		// Shown only when get_statement's can_comment allows it (on the rows).
 		const page = frappe.query_report.page;
 		page.remove_inner_button(ADD_COMMENTARY);
+		page.remove_inner_button(EXPORT_TO_EXCEL);
+		if (has_statement()) {
+			page.add_inner_button(EXPORT_TO_EXCEL, export_to_excel);
+		}
 		if (commentable_headings().length) {
 			page.add_inner_button(ADD_COMMENTARY, add_commentary);
 		}
