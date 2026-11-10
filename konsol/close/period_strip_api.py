@@ -10,6 +10,7 @@ import frappe
 
 from konsol import fiscal_calendar
 from konsol.close import ch_read, period_strip_model
+from konsol.consolidation.report.consolidated_statement.consolidated_statement import _group_code
 
 #: Distinct periods with data, newest first. Non-Regular periods (P0, P13) are
 #: filtered by the model against the declared calendar; LIMIT leaves room for them.
@@ -47,7 +48,8 @@ def period_strip_info(consolidation_group=None):
     if not _may_open_a_period_report():
         raise frappe.PermissionError
     period_rows = fiscal_calendar.fiscal_period_rows()
-    group = consolidation_group or None
+    # The Link filter holds the document name; the warehouse holds the code.
+    group = _group_code(consolidation_group) if consolidation_group else None
     where = _GROUP_WHERE if group else ""
     params = {"group": group} if group else None
 
