@@ -406,14 +406,35 @@ def _signoff_gate(site):
     return sg
 
 
+CLOSE_EVENT_MODEL = _load_path("close_event_model_for_statement_api_test",
+                               os.path.join(CLOSE_DIR, "close_event_model.py"))
+sys.modules.pop("close_event_model_for_statement_api_test", None)
+
+
 def _close_event(site):
-    """Stub of the close audit trail's one writer (konsol#496 row 10A-2):
-    ``record`` appends its call to ``site.events``, with whether the
-    workbook bytes were already in the response at that moment."""
+    """Stub of ``konsol.close.close_event.record`` (konsol#496 row 10A-2).
+    It builds the event the way the real ``record`` does (actor, ``at``,
+    ``source`` live, ``detail`` plus ``actor_persona``) and runs the REAL
+    ``close_event_model.event_problems`` on it, refusing with the problems
+    like the real one, so a malformed recorded event fails here. A valid
+    call appends to ``site.events`` (the caller's fields as given, not the
+    added ones)."""
     ce = types.ModuleType("konsol.close.close_event")
 
     def record(kind, fiscal_year, fiscal_period, reference_doctype=None, reference_name=None,
                reason=None, detail=None, entity=None):
+        event = {
+            "kind": kind, "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+            "entity": entity, "reference_doctype": reference_doctype,
+            "reference_name": reference_name, "actor": site.user,
+            "at": datetime(2026, 11, 9, 9, 0, 0),
+            "reason": (reason or "").strip() or None,
+            "detail": dict(detail or {}, actor_persona="close_lead"),
+            "source": CLOSE_EVENT_MODEL.LIVE,
+        }
+        problems = CLOSE_EVENT_MODEL.event_problems(event)
+        if problems:
+            raise AssertionError("close_event.record would refuse: " + "; ".join(problems))
         site.events.append({
             "kind": kind, "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
             "reference_doctype": reference_doctype, "reference_name": reference_name,

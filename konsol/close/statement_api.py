@@ -32,7 +32,7 @@ chart's codes), never the translated entity layer of the consolidated TB.
 One ClickHouse read; no group, commentary or "not included" chip.
 
 ``export_statement(fiscal_year, fiscal_period, consolidation_group=None)``
-(GET, story 8.5, decision #305-W5-3) sends the same statement and every
+(POST since konsol#496: it records a Close Event, and a GET would roll that back; story 8.5, decision #305-W5-3) sends the same statement and every
 heading's drill as a downloaded .xlsx (``statement_export_model``). A
 non-ok state is refused with its own message, never an empty file.
 
