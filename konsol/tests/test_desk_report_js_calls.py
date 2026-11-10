@@ -177,3 +177,27 @@ def run_basis_change(script, report, start, new):
     out = subprocess.run(["node", "-", path, report, start, new], input=_HARNESS,
                          capture_output=True, text=True, check=True).stdout
     return json.loads(out)
+
+
+# Opening a report from a link: Frappe sets the route filters, then calls the
+# report's onload, then refreshes (query_report.js refresh_report). The first
+# run therefore happens before any Basis on_change.
+_ONLOAD_HARNESS = _HARNESS.split("const initial")[0] + r"""
+values.basis = newBasis;
+const hasOnload = typeof def.onload === "function";
+if (hasOnload) def.onload(frappe.query_report);
+const after = Object.fromEntries(Object.entries(dfs).map(([k, df]) => [k, df.reqd || 0]));
+console.log(JSON.stringify({ hasOnload, after, calls }));
+"""
+
+
+def run_onload(script, report, basis, entity=""):
+    """Load a report script in node, preset the Basis filter to ``basis`` (as
+    ``set_route_filters`` does) and call the report's ``onload``. Returns
+    whether an onload exists, the filters' ``reqd`` after it, and the report
+    calls made (a refresh here would be a double run: Frappe refreshes next)."""
+    assert shutil.which("node"), "node is needed to run the report scripts"
+    path = os.path.join(REPORT_DIR, script)
+    out = subprocess.run(["node", "-", path, report, "", basis], input=_ONLOAD_HARNESS,
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)

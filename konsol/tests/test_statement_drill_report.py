@@ -185,9 +185,30 @@ def test_js_no_filter_uses_mandatory_depends_on():
     assert "mandatory_depends_on" not in open(PATH.replace(".py", ".js")).read()
 
 
-def test_js_group_basis_starts_with_the_group_required_and_not_the_entity():
-    got = _basis_change("Group", "Group")
-    assert got["initial"]["consolidation_group"] and not got["initial"]["entity"]
+def _loaded(basis):
+    from konsol.tests.test_desk_report_js_calls import run_onload
+    return run_onload("statement_drill/statement_drill.js", "Statement Drill", basis)
+
+
+def test_js_group_filter_has_no_static_reqd():
+    # A static reqd blocks a link opened on the Entity basis ("Please set
+    # filters"); onload sets it from the basis the link carries.
+    group = _filter("consolidation_group")
+    assert "reqd" not in group
+
+
+def test_js_opened_on_the_group_basis_requires_the_group_not_the_entity():
+    got = _loaded("Group")
+    assert got["hasOnload"]
+    assert got["after"]["consolidation_group"] and not got["after"]["entity"]
+    assert "refresh" not in got["calls"], "onload must not refresh: Frappe does"
+
+
+def test_js_opened_on_the_entity_basis_requires_the_entity_not_the_group():
+    got = _loaded("Entity")
+    assert got["hasOnload"]
+    assert got["after"]["entity"] and not got["after"]["consolidation_group"]
+    assert "refresh" not in got["calls"], "onload must not refresh: Frappe does"
 
 
 def test_js_switching_basis_to_entity_swaps_which_filter_is_required():

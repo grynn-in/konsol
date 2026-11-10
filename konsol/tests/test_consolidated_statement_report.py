@@ -287,6 +287,24 @@ def test_js_switching_basis_back_to_group_drops_the_entity_requirement():
     assert got["calls"][-1] == "refresh", got["calls"]
 
 
+def test_js_opened_on_the_entity_basis_requires_the_entity_before_the_first_run():
+    # A link (?basis=Entity) sets the route filter, then onload, then Frappe's
+    # own refresh: no Basis on_change has run yet.
+    from konsol.tests.test_desk_report_js_calls import run_onload
+    got = run_onload("consolidated_statement/consolidated_statement.js",
+                     "Consolidated Statement", "Entity")
+    assert got["hasOnload"]
+    assert got["after"]["entity"]
+    assert "refresh" not in got["calls"], "onload must not refresh: Frappe does"
+
+
+def test_js_opened_on_the_group_basis_leaves_the_entity_optional():
+    from konsol.tests.test_desk_report_js_calls import run_onload
+    got = run_onload("consolidated_statement/consolidated_statement.js",
+                     "Consolidated Statement", "Group")
+    assert got["hasOnload"] and not got["after"]["entity"]
+
+
 def test_js_consolidation_group_is_hidden_on_the_entity_basis():
     group = _filter("consolidation_group")
     assert 'depends_on: \'eval:doc.basis!="Entity"\'' in group
