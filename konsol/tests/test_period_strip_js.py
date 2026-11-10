@@ -1,0 +1,153 @@
+"""Period strips (Desk query reports): the Year and Period slider strips.
+No browser: the script runs under node against a small fake DOM and a fake
+`frappe.query_report`. What a real browser must still confirm (native arrow
+keys firing `change`, layout, dark theme) is listed in the PR.
+"""
+import json
+import os
+import shutil
+import subprocess
+
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPT = os.path.join(APP_DIR, "public", "js", "period_strip.js")
+
+HARNESS = r"""
+const script = process.argv[1];
+const scenario = JSON.parse(process.argv[2]);
+
+class El {
+	constructor(tag) { this.tagName = tag; this.className = ""; this.children = []; this.parentNode = null;
+		this.attrs = {}; this.listeners = {}; this.style = {}; this.textContent = ""; this.value = ""; this.disabled = false; }
+	setAttribute(k, v) { this.attrs[k] = String(v); if (k === "class") this.className = v; }
+	getAttribute(k) { return this.attrs[k]; }
+	appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+	insertBefore(c, ref) { c.parentNode = this; const i = this.children.indexOf(ref);
+		this.children.splice(i < 0 ? this.children.length : i, 0, c); return c; }
+	addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
+	fire(t) { (this.listeners[t] || []).forEach((f) => f({ type: t, target: this })); }
+	walk(out = []) { out.push(this); this.children.forEach((c) => c.walk(out)); return out; }
+}
+const doc = { createElement: (t) => new El(t), head: new El("head"), getElementById: () => null };
+const body = new El("div");
+const page_form = new El("form");
+body.appendChild(page_form);
+
+const vals = { ...scenario.filters };
+const inputs = { fiscal_year: new El("input"), fiscal_period: new El("input") };
+const calls = [];
+const report = {
+	page: { page_form: [page_form] },
+	get_filter_value: (k) => vals[k],
+	get_filter: (k) => ({ $input: { 0: inputs[k], on: (t, f) => inputs[k].addEventListener(t, f) } }),
+	set_filter_value: (o) => { calls.push(o); Object.assign(vals, o); },
+};
+global.document = doc;
+const strip = require(script);
+const info = { years: scenario.years, year_min: 1980, year_max: 2045, period_min: 1, period_max: 12 };
+strip.attach(report, info);
+if (scenario.attach_twice) strip.attach(report, info);
+
+const all = body.walk();
+const by = (cls) => all.filter((e) => e.className.split(" ").includes(cls));
+const one = (cls) => by(cls)[0];
+const state = () => ({
+	year: { thumb: one("konsol-strip-year-range").value, label: one("konsol-strip-year-label").textContent },
+	period: { thumb: one("konsol-strip-period-range").value, label: one("konsol-strip-period-label").textContent },
+});
+const act = {
+	drag: (row, v) => { const r = one(`konsol-strip-${row}-range`); r.value = String(v); r.fire("input"); },
+	release: (row, v) => { const r = one(`konsol-strip-${row}-range`); r.value = String(v); r.fire("change"); },
+	click: (row, which) => one(`konsol-strip-${row}-${which}`).fire("click"),
+	type: (k, v) => { vals[k] = v; inputs[k].fire("change"); },
+};
+const log = [];
+for (const [name, ...args] of scenario.steps || []) {
+	act[name](...args);
+	log.push({ calls: calls.length, last: calls[calls.length - 1], state: state() });
+}
+console.log(JSON.stringify({
+	containers: by("konsol-period-strips").length,
+	above_form: body.children.indexOf(one("konsol-period-strips")) < body.children.indexOf(page_form),
+	ticks: by("konsol-strip-tick").map((e) => e.attrs["data-year"]),
+	tick_left: by("konsol-strip-tick").map((e) => e.style.left),
+	range_attrs: ["year", "period"].map((r) => {
+		const e = one(`konsol-strip-${r}-range`);
+		return [e.attrs.type, e.attrs.min, e.attrs.max, e.attrs.step];
+	}),
+	initial: state(), log,
+}));
+"""
+
+
+def _run(scenario):
+    node = shutil.which("node")
+    assert node, "node is required"
+    assert os.path.exists(SCRIPT), "period_strip.js is missing"
+    r = subprocess.run([node, "-e", HARNESS, SCRIPT, json.dumps(scenario)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+BASE = {"filters": {"fiscal_year": 2024, "fiscal_period": 6}, "years": [2023, 2024]}
+
+
+def test_strip_renders_above_the_filter_row_with_both_rows():
+    out = _run(BASE)
+    assert out["containers"] == 1 and out["above_form"]
+    assert out["range_attrs"] == [["range", "1980", "2045", "1"], ["range", "1", "12", "1"]]
+    assert out["initial"] == {"year": {"thumb": "2024", "label": "2024"},
+                              "period": {"thumb": "6", "label": "6"}}
+
+
+def test_release_sets_both_filters_in_one_call():
+    out = _run({**BASE, "steps": [["release", "period", 9]]})
+    assert out["log"][0]["calls"] == 1
+    assert out["log"][0]["last"] == {"fiscal_year": 2024, "fiscal_period": 9}
+    out = _run({**BASE, "steps": [["release", "year", 2020]]})
+    assert out["log"][0]["last"] == {"fiscal_year": 2020, "fiscal_period": 6}
+
+
+def test_dragging_updates_the_label_but_changes_no_filter():
+    out = _run({**BASE, "steps": [["drag", "period", 3], ["drag", "period", 4]]})
+    assert [s["calls"] for s in out["log"]] == [0, 0]
+    assert out["log"][1]["state"]["period"]["label"] == "4"
+
+
+def test_buttons_step_by_one_and_clamp_at_the_ends():
+    out = _run({"filters": {"fiscal_year": 2045, "fiscal_period": 12}, "years": [],
+                "steps": [["click", "period", "next"], ["click", "year", "next"],
+                          ["click", "period", "prev"], ["click", "year", "prev"]]})
+    lasts = [s["last"] for s in out["log"]]
+    assert lasts == [{"fiscal_year": 2045, "fiscal_period": 12},
+                     {"fiscal_year": 2045, "fiscal_period": 12},
+                     {"fiscal_year": 2045, "fiscal_period": 11},
+                     {"fiscal_year": 2044, "fiscal_period": 11}]
+    assert [s["calls"] for s in out["log"]] == [1, 2, 3, 4]
+
+
+def test_out_of_range_typed_value_puts_thumb_at_end_and_label_shows_real_value():
+    out = _run({"filters": {"fiscal_year": 1975, "fiscal_period": 13}, "years": []})
+    assert out["initial"] == {"year": {"thumb": "1980", "label": "1975"},
+                              "period": {"thumb": "12", "label": "13"}}
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 6}, "years": [],
+                "steps": [["type", "fiscal_period", 0]]})
+    assert out["log"][0]["state"]["period"] == {"thumb": "1", "label": "0"}
+    assert out["log"][0]["calls"] == 0  # following the typed box never sets a filter
+
+
+def test_typed_change_repositions_the_thumb():
+    out = _run({**BASE, "steps": [["type", "fiscal_year", 2031], ["type", "fiscal_period", 2]]})
+    assert out["log"][1]["state"] == {"year": {"thumb": "2031", "label": "2031"},
+                                      "period": {"thumb": "2", "label": "2"}}
+
+
+def test_attach_twice_renders_one_container():
+    assert _run({**BASE, "attach_twice": True})["containers"] == 1
+
+
+def test_year_ticks_only_for_declared_years_in_range():
+    out = _run({"filters": {"fiscal_year": 2024, "fiscal_period": 6},
+                "years": [2025, 2023, 1970, 2050, 2023]})
+    assert out["ticks"] == ["2023", "2025"]
+    assert out["tick_left"] == [f"{(y - 1980) / 65 * 100}%" for y in (2023, 2025)]
