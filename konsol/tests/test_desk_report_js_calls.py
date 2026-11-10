@@ -7,8 +7,11 @@ each report script's ``frappe.call`` / ``frappe.xcall`` and checks the
 named function's source.
 """
 import ast
+import json
 import os
 import re
+import shutil
+import subprocess
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORT_DIR = os.path.join(APP_DIR, "consolidation", "report")
@@ -132,3 +135,45 @@ def test_the_statement_export_button_posts_export_statement():
     methods = [_open_url_post_method(b) for b in _open_url_post_bodies(source)]
     assert "konsol.close.statement_api.export_statement" in methods
 
+
+# --- Behaviour of the filters' on_change, run in node with a stubbed Desk ---
+
+_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+const [, , script, report, startBasis, newBasis] = process.argv;
+const calls = [];
+const values = { basis: startBasis };
+const dfs = {};
+global.__ = (s) => s;
+global.frappe = {
+  query_reports: {},
+  router: { make_url: () => "" },
+  utils: { escape_html: (s) => s },
+  ui: {},
+};
+frappe.query_report = {
+  data: [],
+  get_filter_value: (name) => values[name] || "",
+  get_filter: (name) => ({ df: dfs[name], refresh: () => calls.push("refresh_" + name) }),
+  refresh: () => calls.push("refresh"),
+};
+vm.runInThisContext(fs.readFileSync(script, "utf8"));
+const def = frappe.query_reports[report];
+for (const df of def.filters) dfs[df.fieldname] = df;
+const initial = Object.fromEntries(Object.entries(dfs).map(([k, df]) => [k, df.reqd || 0]));
+values.basis = newBasis;
+dfs.basis.on_change(frappe.query_report);
+const after = Object.fromEntries(Object.entries(dfs).map(([k, df]) => [k, df.reqd || 0]));
+console.log(JSON.stringify({ initial, after, calls }));
+"""
+
+def run_basis_change(script, report, start, new):
+    """Load a report script in node, set Basis to ``new`` and call the
+    Basis filter's ``on_change`` as Frappe does. Returns the filters' ``reqd``
+    before and after, and the report calls made."""
+    assert shutil.which("node"), "node is needed to run the report scripts"
+    path = os.path.join(REPORT_DIR, script)
+    out = subprocess.run(["node", "-", path, report, start, new], input=_HARNESS,
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)

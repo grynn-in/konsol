@@ -257,8 +257,34 @@ def test_js_basis_and_entity_filters():
     entity = _filter("entity")
     assert 'options: "Entity"' in entity
     assert 'depends_on: \'eval:doc.basis=="Entity"\'' in entity
-    assert 'mandatory_depends_on: \'eval:doc.basis=="Entity"\'' in entity
+    # Frappe's query report ignores mandatory_depends_on (it checks only
+    # reqd); the Basis filter's on_change makes the entity required.
+    assert "mandatory_depends_on" not in entity
     assert "is_group: 0" in entity
+
+
+def _basis_change(start, new):
+    from konsol.tests.test_desk_report_js_calls import run_basis_change
+    return run_basis_change("consolidated_statement/consolidated_statement.js",
+                            "Consolidated Statement", start, new)
+
+
+def test_js_no_filter_uses_mandatory_depends_on():
+    assert "mandatory_depends_on" not in _js()
+
+
+def test_js_switching_basis_to_entity_makes_the_entity_required_then_refreshes():
+    got = _basis_change("Group", "Entity")
+    assert not got["initial"]["entity"]
+    assert got["after"]["entity"], "entity must be reqd on the entity basis"
+    assert got["calls"][-1] == "refresh", got["calls"]
+
+
+def test_js_switching_basis_back_to_group_drops_the_entity_requirement():
+    got = _basis_change("Entity", "Group")
+    assert not got["after"]["entity"]
+    assert not got["after"]["consolidation_group"], "the group stays optional (blank = the only group)"
+    assert got["calls"][-1] == "refresh", got["calls"]
 
 
 def test_js_consolidation_group_is_hidden_on_the_entity_basis():
