@@ -318,6 +318,14 @@ def _invoke(site, run):
     fiscal_calendar.fiscal_period_rows = lambda: [dict(r) for r in site.periods]
     entity_permissions = types.ModuleType("konsol.entity_permissions")
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
+
+    # statement_api imports it since #504 (Basis: Entity); same stub as
+    # test_close_statement_api.py.
+    def assert_entity_access(code, user=None):
+        if site.allowed is not None and code not in site.allowed:
+            raise frappe.PermissionError("Not permitted to access entity '%s'" % code)
+
+    entity_permissions.assert_entity_access = assert_entity_access
     tb_dimension = types.ModuleType("konsol.tb_dimension")
     tb_dimension.declared_dimensions = lambda: [dict(r) for r in site.declared_dims]
     konsol.tb_dimension = tb_dimension
