@@ -30,16 +30,16 @@ _CS_MODULE = "konsol.consolidation.report.consolidated_statement.consolidated_st
 
 
 def _real_group_code(frappe):
-    """The report's own ``_group_code``, extracted from its source (the module
-    imports the whole statement stack) and run against the stub frappe."""
+    """The report's ``_group_code`` is ``statement_api.group_code`` (konsol#495
+    row 11b), extracted from its source (the module imports the whole
+    statement stack) and run against the stub frappe."""
     import ast
-    path = os.path.join(APP_DIR, "consolidation", "report", "consolidated_statement",
-                        "consolidated_statement.py")
+    path = os.path.join(APP_DIR, "close", "statement_api.py")
     fn = next(n for n in ast.parse(open(path).read()).body
-              if isinstance(n, ast.FunctionDef) and n.name == "_group_code")
+              if isinstance(n, ast.FunctionDef) and n.name == "group_code")
     env = {"frappe": frappe}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), path, "exec"), env)
-    return env["_group_code"]
+    return env["group_code"]
 
 
 def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, periods=None,

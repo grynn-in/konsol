@@ -28,7 +28,7 @@ function on_basis_change(report) {
 }
 
 frappe.query_reports["Statement Drill"] = {
-	onload: (report) => konsol.period_reports.setup(report, { keys: ["fiscal_year", "fiscal_period", "consolidation_group", "heading"] }),
+	onload: (report) => konsol.period_reports.setup(report, { keys: ["fiscal_year", "fiscal_period", "consolidation_group", "heading", "basis", "entity"] }).then(() => sync_required(report)),
 	filters: [
 		{
 			fieldname: "fiscal_year",
@@ -90,8 +90,6 @@ frappe.query_reports["Statement Drill"] = {
 			},
 		},
 	],
-
-	onload: sync_required,
 
 	// Layers open; accounts and journals one click away.
 	initial_depth: 0,

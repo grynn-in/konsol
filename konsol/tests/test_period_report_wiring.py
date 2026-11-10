@@ -13,8 +13,10 @@ REPORT_DIR = os.path.join(APP_DIR, "consolidation", "report")
 KEYS = {
     "consolidation_worksheet": ["fiscal_year", "fiscal_period", "consolidation_group",
                                 "entities", "dimension"],
-    "consolidated_statement": ["fiscal_year", "fiscal_period", "consolidation_group"],
-    "statement_drill": ["fiscal_year", "fiscal_period", "consolidation_group", "heading"],
+    "consolidated_statement": ["fiscal_year", "fiscal_period", "consolidation_group",
+                               "basis", "entity"],
+    "statement_drill": ["fiscal_year", "fiscal_period", "consolidation_group", "heading",
+                        "basis", "entity"],
 }
 
 _SETUP = re.compile(
