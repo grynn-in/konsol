@@ -24,6 +24,9 @@ _CALL = re.compile(r"frappe\.(?:call|xcall)\s*\(")
 _METHOD = re.compile(r"""method\s*:\s*["']([\w.]+)["']""")
 _OPEN_URL_POST = re.compile(r"open_url_post\s*\(")
 _CMD = re.compile(r"""cmd\s*:\s*["']([\w.]+)["']""")
+# open_url_post names its function either as a cmd parameter (POST to "/",
+# deprecated in Frappe v16) or in the URL it posts to (/api/method/<dotted>).
+_URL_METHOD = re.compile(r"""["'`]/api/method/([\w.]+)["'`]""")
 _TYPE = re.compile(r"""type\s*:\s*["'](\w+)["']""")
 
 
@@ -97,21 +100,35 @@ def _open_url_post_bodies(source):
         yield source[match.end():i - 1]
 
 
+def _open_url_post_method(body):
+    """The dotted function an ``open_url_post`` body names: the URL form
+    (``"/api/method/<dotted>"``, first argument) or a literal ``cmd``."""
+    found = _URL_METHOD.search(body) or _CMD.search(body)
+    return found.group(1) if found else None
+
+
 def test_every_open_url_post_names_a_whitelisted_post_function():
-    """``open_url_post`` is a POST by construction, so its ``cmd`` must be
-    a function that accepts exactly POST (a GET-only function would refuse
-    it; the default any-method one is not pinned)."""
+    """``open_url_post`` is a POST by construction, so the function it names
+    (in the URL or a ``cmd``) must accept exactly POST (a GET-only function
+    would refuse it; the default any-method one is not pinned)."""
     for script in SCRIPTS:
         source = open(os.path.join(REPORT_DIR, script)).read()
         for body in _open_url_post_bodies(source):
-            cmd = _CMD.search(body)
-            assert cmd, f"{script}: an open_url_post without a literal cmd: {body[:80]!r}"
-            methods = _whitelist_methods(cmd.group(1))
-            assert methods is not None, f"{script}: {cmd.group(1)} is not a whitelisted function"
-            assert list(methods) == ["POST"], f"{script}: {cmd.group(1)} allows {methods}"
+            method = _open_url_post_method(body)
+            assert method, f"{script}: an open_url_post without a literal method: {body[:80]!r}"
+            methods = _whitelist_methods(method)
+            assert methods is not None, f"{script}: {method} is not a whitelisted function"
+            assert list(methods) == ["POST"], f"{script}: {method} allows {methods}"
+
+
+def test_open_url_post_helper_reads_the_url_form_and_the_cmd_form():
+    assert _open_url_post_method('"/api/method/konsol.a.b", {x: 1}') == "konsol.a.b"
+    assert _open_url_post_method('frappe.request.url, {cmd: "konsol.c.d"}') == "konsol.c.d"
+    assert _open_url_post_method("frappe.request.url, {x: 1}") is None
 
 
 def test_the_statement_export_button_posts_export_statement():
     source = open(os.path.join(REPORT_DIR, "consolidated_statement", "consolidated_statement.js")).read()
-    cmds = [_CMD.search(b).group(1) for b in _open_url_post_bodies(source) if _CMD.search(b)]
-    assert "konsol.close.statement_api.export_statement" in cmds
+    methods = [_open_url_post_method(b) for b in _open_url_post_bodies(source)]
+    assert "konsol.close.statement_api.export_statement" in methods
+

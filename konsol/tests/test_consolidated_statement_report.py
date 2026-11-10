@@ -8,6 +8,7 @@ whole root group's statement. A member row must be refused by name.
 import ast
 import importlib.util
 import os
+import re
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -289,8 +290,12 @@ def _export_body():
 
 def test_js_export_button_posts_all_five_filters():
     body = _export_body()
-    assert "open_url_post(frappe.request.url" in body
-    assert 'cmd: "konsol.close.statement_api.export_statement"' in body
+    # Posted to the whitelisted method's own URL: a "cmd" posted to "/" is
+    # deprecated in Frappe v16 and removed in v17. new_window (true) keeps a
+    # refusal's JSON off the Desk tab.
+    assert re.search(r'open_url_post\(\s*"/api/method/konsol\.close\.statement_api\.export_statement",\s*\{', body)
+    assert "cmd:" not in body and "frappe.request.url" not in body
+    assert re.search(r"\},\s*true,?\s*\);", body), "new_window must be true"
     assert "get_filter_value(name)" in body
     for name in ("fiscal_year", "fiscal_period", "basis", "consolidation_group", "entity"):
         assert '%s: value("%s")' % (name, name) in body, name
