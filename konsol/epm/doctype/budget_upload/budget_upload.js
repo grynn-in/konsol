@@ -119,12 +119,4 @@ frappe.ui.form.on("Budget Upload", {
 			frm.add_custom_button(__("Resume load"), () => konsol_budget_load(frm, false));
 		}
 	},
-	onload(frm) {
-		if (!frm.is_new() || frm.doc.amount_basis) return;
-		frappe.db.get_single_value("EPM Settings", "default_amount_basis").then((value) => {
-			if (value && !frm.doc.amount_basis) {
-				frm.set_value("amount_basis", value);
-			}
-		});
-	},
 });
