@@ -249,8 +249,21 @@ def cell(monkeypatch):
     frappe.get_roles = lambda user=None: ["Entity Accountant"]
     frappe.get_doc = get_doc
     frappe.new_doc = new_doc
-    frappe.db = types.SimpleNamespace(get_value=get_value, rollback=lambda: None, commit=commit,
-                                      set_value=forbidden, sql=forbidden)
+    savepoints = {}
+
+    def savepoint(name):
+        savepoints[name] = (json.loads(json.dumps(state.entries)), list(state.saves), list(state.inserts))
+
+    def rollback(save_point=None):
+        if save_point is None:
+            return
+        entries, saves, inserts = savepoints[save_point]
+        state.entries = {k: _Entry(v) for k, v in entries.items()}
+        state.saves[:] = saves
+        state.inserts[:] = inserts
+
+    frappe.db = types.SimpleNamespace(get_value=get_value, rollback=rollback, savepoint=savepoint,
+                                      commit=commit, set_value=forbidden, sql=forbidden)
     utils = types.ModuleType("frappe.utils")
     utils.now_datetime = lambda: None
     frappe.utils = utils
@@ -308,7 +321,21 @@ def cell(monkeypatch):
         frappe.local.response.http_status_code = None
         return api.budget_cell_save()
 
-    return types.SimpleNamespace(api=api, state=state, post=post, frappe=frappe, data=data)
+    def call(fn, body):
+        state.body = body
+        frappe.local.response.http_status_code = None
+        return getattr(api, fn)()
+
+    def row(**overrides):
+        body = {"scenario_id": "BUD", "data_area_id": "E1", "fiscal_year": 2027,
+                "main_account": "6000", "layer": "base", "currency": "EUR",
+                "amount_basis": BASIS, "periods": [{"period": 1, "amount": 500}]}
+        body.update(overrides)
+        return {k: v for k, v in body.items() if v is not ...}
+
+    return types.SimpleNamespace(api=api, state=state, post=post, frappe=frappe, data=data,
+                                 save=lambda **o: call("budget_save", row(**o)),
+                                 batch=lambda rows: call("budget_save_batch", rows), row=row)
 
 
 def _only_entry(cell):
@@ -451,3 +478,71 @@ def test_cell_save_is_post_only_and_has_no_clamp_or_auto_create():
                  "Budget Sheet", "frappe.db.commit"):
         assert gone not in body, gone
     assert "budget_intake" in body
+
+
+# --- S2-X2: budget_save and budget_save_batch take the same path -------------
+
+def test_budget_save_writes_one_entry_per_period(cell):
+    out = cell.save(periods=[{"period": 1, "amount": 500}, {"period": 2, "amount": -70}])
+    entries = sorted(cell.state.entries.values(), key=lambda e: e["fiscal_period"])
+    assert [e["fiscal_period"] for e in entries] == [1, 2]
+    assert [(float(e["lines"][0]["debit"]), float(e["lines"][0]["credit"])) for e in entries] == [
+        (500.0, 0.0), (0.0, 70.0)]
+    assert out["entries"] == [e["name"] for e in entries] and out["name"] == entries[0]["name"]
+
+
+def test_budget_save_refuses_an_undeclared_period_and_a_missing_layer(cell):
+    with pytest.raises(_Thrown, match="period"):
+        cell.save(periods=[{"period": 14, "amount": 1}])
+    with pytest.raises(_Thrown):
+        cell.save(layer=...)
+    assert not cell.state.entries
+
+
+def test_budget_save_takes_the_layer_of_the_period(cell):
+    cell.data["Budget Layer"].append({"name": "board", "writer_role": None, "sort_order": 2})
+    cell.save(layer=..., periods=[{"period": 1, "amount": 5, "layer": "board"}])
+    (entry,) = cell.state.entries.values()
+    assert entry["layer"] == "board"
+
+
+def test_budget_save_never_creates_a_cycle_or_defaults_currency(cell):
+    with pytest.raises(_Thrown):
+        cell.save(fiscal_year=2030)
+    with pytest.raises(_Thrown, match="currency"):
+        cell.save(currency=...)
+    assert not cell.state.entries
+
+
+def test_batch_saves_every_row(cell):
+    out = cell.batch([cell.row(), cell.row(main_account="4000")])
+    assert [r["index"] for r in out["results"]] == [0, 1]
+    (entry,) = cell.state.entries.values()
+    assert sorted(l["main_account"] for l in entry["lines"]) == ["4000", "6000"]
+    assert "errors" not in out
+
+
+def test_one_refused_row_refuses_the_batch_and_names_the_row(cell):
+    rows = [cell.row(), cell.row(periods=[{"period": 14, "amount": 1}])]
+    with pytest.raises(_Thrown, match=r"Row 2"):
+        cell.batch(rows)
+    assert not cell.state.entries
+
+
+def test_an_ungranted_entity_refuses_the_batch_with_a_permission_error(cell):
+    cell.state.denied.add("E2")
+    with pytest.raises(_Denied, match=r"Row 2.*E2"):
+        cell.batch([cell.row(), cell.row(data_area_id="E2")])
+    assert not cell.state.entries
+
+
+def test_a_batch_must_be_a_list(cell):
+    with pytest.raises(_Thrown, match="array"):
+        cell.batch({"scenario_id": "BUD"})
+
+
+def test_the_sheet_path_is_gone_from_api():
+    with open(API_PATH) as f:
+        src = f.read()
+    for gone in ("def _get_or_create_sheet", "def _upsert_budget_line", "Budget Sheet"):
+        assert gone not in src, gone
