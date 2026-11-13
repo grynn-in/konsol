@@ -101,8 +101,10 @@
    "fieldtype": "Column Break"
   },
   {
+   "description": "Derived when read: the Budget Entries this upload loaded that still name it. Never stored.",
    "fieldname": "loaded_count",
    "fieldtype": "Int",
+   "is_virtual": 1,
    "label": "Loaded",
    "read_only": 1
   },
@@ -151,30 +153,30 @@
  "owner": "Administrator",
  "permissions": [
   {
-   "role": "System Manager",
-   "read": 1,
-   "write": 1,
    "create": 1,
    "delete": 1,
-   "report": 1,
-   "export": 1
-  },
-  {
-   "role": "EPM Admin",
-   "read": 1,
-   "write": 1,
-   "create": 1,
-   "report": 1,
    "export": 1,
-   "delete": 1
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "write": 1
   },
   {
-   "role": "EPM Analyst",
-   "read": 1,
-   "write": 1,
    "create": 1,
+   "delete": 1,
+   "export": 1,
+   "read": 1,
    "report": 1,
-   "export": 1
+   "role": "EPM Admin",
+   "write": 1
+  },
+  {
+   "create": 1,
+   "export": 1,
+   "read": 1,
+   "report": 1,
+   "role": "EPM Analyst",
+   "write": 1
   }
  ],
  "sort_field": "modified",
