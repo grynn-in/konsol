@@ -613,3 +613,24 @@ def test_the_load_locks_the_cycle_before_it_touches_an_entry(env):
     touched = [i for i, e in enumerate(env.log) if e[0] in ("delete", "save", "insert", "judged")]
     locks = [i for i, e in enumerate(env.log) if e[0] == "lock cycle"]
     assert locks and locks[0] < touched[0], env.log
+
+
+# ── review fix 5: the outcome counts what the load was asked to load ────────
+
+def test_a_group_refused_at_job_time_makes_the_load_partly_loaded(env):
+    """Ready when the load was asked for, refused when the job judged the
+    file again (a role taken away): the upload is not Loaded."""
+    _file(env, FOUR)
+    doc = _checked(env)
+    env.mod.load(doc.name)
+    assert doc.valid_count == 8
+    _file(env, FOUR, refused={("E2", "board", 1)})
+    env.mod.run_load(doc.name)
+    assert len(env.state.entries) == 6
+    assert doc.status == "Partly Loaded"
+
+
+def test_groups_the_user_chose_to_skip_do_not_spoil_loaded(env):
+    doc = _run(env, FOUR, refused={("E2", "board", 1)})
+    assert len(env.state.entries) == 6
+    assert doc.status == "Loaded"
