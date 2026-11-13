@@ -256,3 +256,14 @@ def test_shared_line_matcher_replaces_duplicates():
     api = _src(API_PATH)
     # the old standalone _find_line / _find_or_append_line copies are gone
     assert "def _find_line(" not in api and "def _find_or_append_line(" not in api
+
+
+# --- review fix 6: the Cycle's scenario and year are set once ----------------
+
+def test_scenario_and_fiscal_year_are_set_once():
+    """A Cycle's entries carry its scenario and year (fetched on every save),
+    so changing either under them would re-label every entry."""
+    with open(os.path.join(APP_DIR, "epm", "doctype", "budget_cycle", "budget_cycle.json")) as fh:
+        fields = {f["fieldname"]: f for f in json.load(fh)["fields"]}
+    for name in ("scenario_id", "fiscal_year"):
+        assert fields[name].get("set_only_once") == 1, name
