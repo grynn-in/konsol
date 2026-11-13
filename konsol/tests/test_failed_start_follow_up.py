@@ -947,6 +947,7 @@ class StartSite:
         frappe.TimestampMismatchError = TimestampMismatchError
         frappe.utils = types.SimpleNamespace(now_datetime=lambda: START, get_bench_path=lambda: "/zz/bench")
         frappe.get_single = lambda name: types.SimpleNamespace(dbt_project_path="/zz/dbt")
+        frappe.get_all = lambda doctype, **k: []   # K9a: no isolated Build Scopes
         _add_session(frappe)
         frappe.logger = lambda: types.SimpleNamespace(info=lambda *a: None, warning=self.warnings.append)
         frappe.flags = _D()
