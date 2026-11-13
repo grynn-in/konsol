@@ -53,6 +53,7 @@ LABELS = {
     "Budget Annual Input": "All Annual Inputs",
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
+    "Budget Layer": "Budget Layers",
     # --- Structure: group ------------------------------------------------
     "Entity": "Entities",
     "Entity Fiscal Calendar": "Entity Fiscal Calendars",
