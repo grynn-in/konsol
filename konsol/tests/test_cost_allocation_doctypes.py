@@ -53,14 +53,14 @@ def test_driver_doctype_identity():
 
 
 def test_driver_layout_tab_section_then_fields():
-    order = [(f["fieldtype"], f.get("fieldname") or f.get("label")) for f in _fields()]
+    order = [(f["fieldtype"], f["fieldname"]) for f in _fields()]
     assert order == [
-        ("Tab Break", "Driver"),
-        ("Section Break", "Driver"),
+        ("Tab Break", "driver_tab"),
+        ("Section Break", "driver_section"),
         ("Data", "driver_name"),
         ("Link", "dimension"),
         ("Data", "unit"),
-        ("Column Break", None),
+        ("Column Break", "col_break_1"),
         ("Check", "carry_forward"),
         ("Check", "is_active"),
         ("Small Text", "description"),
