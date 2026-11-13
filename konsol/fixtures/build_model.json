@@ -97,6 +97,18 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_cost_allocation",
+  "model_name": "gold_cost_allocation",
+  "build_domain": "allocation"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_cost_allocation_frozen",
+  "model_name": "gold_cost_allocation_frozen",
+  "build_domain": "allocation"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_entity_ownership",
   "model_name": "gold_entity_ownership",
   "build_domain": "consolidation"

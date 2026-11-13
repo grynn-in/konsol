@@ -187,6 +187,10 @@ _dbt_trigger_doctypes = [
     # on_submit / on_cancel request the build.
     "Business Combination",
     "Business Disposal",
+    # K9b (konsol#269): a submitted Cost Allocation Run requests the isolated
+    # allocation build (DOCTYPE_BUILD_MAP). Not a consolidation input: its
+    # build never reaches gold_fully_consolidated_tb.
+    "Cost Allocation Run",
     # NOT "Entity" (konsol#110). Its build is requested from the controller,
     # and only when a field the warehouse reads changes — listing it here would
     # ask an EPM Admin to approve a consolidation rebuild for a renamed
