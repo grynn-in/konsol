@@ -468,7 +468,7 @@ def run_governed_build(build_request):
             project_path = settings.dbt_project_path
             cmd = dbt_build_command(
                 _dbt_bin(), project_path, _scope_selector(doc.build_scope),
-                full_refresh=doc.full_refresh,
+                full_refresh=doc.full_refresh, scope=doc.build_scope,
             )
 
             # Execute
@@ -985,7 +985,7 @@ def _run_dbt_build(doc):
     project_path = settings.dbt_project_path
 
     result = subprocess.run(
-        [_dbt_bin(), "build", "--project-dir", project_path, "--profiles-dir", project_path],
+        dbt_build_command(_dbt_bin(), project_path, None),
         capture_output=True,
         text=True,
         timeout=300,
