@@ -25,6 +25,7 @@ RUN_FIELDS = [
     ("fiscal_year", "Int", 1, 0),
     ("fiscal_period", "Int", 1, 0),
     ("status", "Select", 0, 1),
+    ("amended_from", "Link", 0, 1),
     ("method", "Select", 0, 1),
     ("allocation_dimension", "Link", 0, 1),
     ("rule_set_modified", "Datetime", 0, 1),
@@ -116,6 +117,7 @@ def test_doctype_run_link_and_select_options():
     assert fields["allocation_dimension"]["options"] == "Dimension"
     assert fields["allocation_account"]["options"] == "Main Account"
     assert fields["computed_by"]["options"] == "User"
+    assert fields["amended_from"]["options"] == "Cost Allocation Run"
     assert fields["weights"]["options"] == "Cost Allocation Run Weight"
     assert fields["accounts"]["options"] == "Cost Allocation Run Account"
     assert fields["status"]["options"] == "Draft\nPending Approval\nApproved\nCancelled"
