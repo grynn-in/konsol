@@ -558,7 +558,11 @@ def test_every_consolidation_input_reaches_the_consolidated_numbers():
                      if isinstance(n, ast.Assign) and any(
                          isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in n.targets))
 
-    consolidation_inputs = list(triggers) + ["Entity"]
+    # K9b (konsol#269): Cost Allocation Run triggers the isolated allocation
+    # scope, which rebuilds only gold_cost_allocation and its frozen copy. It
+    # is not a consolidation input, so it is named here rather than passed.
+    NOT_CONSOLIDATION_INPUTS = ("Cost Allocation Run",)
+    consolidation_inputs = [t for t in triggers if t not in NOT_CONSOLIDATION_INPUTS] + ["Entity"]
     wrong = {dt: build_map[dt]["scope"] for dt in consolidation_inputs
              if build_map[dt]["scope"] not in freshness_model.NUMBERS_SCOPES}
     assert not wrong, (

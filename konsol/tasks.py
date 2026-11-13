@@ -76,6 +76,9 @@ DOCTYPE_BUILD_MAP = {
     # Reopen moves only `status`, which no model reads, and requests nothing
     # (epm_fiscal_year.py on_update).
     "EPM Fiscal Year": {"scope": "full", "risk": "high"},
+    # K9b (konsol#269): a submitted cost allocation run is an input to the
+    # isolated allocation scope, which rebuilds only its own models.
+    "Cost Allocation Run": {"scope": "allocation", "risk": "low"},
 }
 
 # Scope → dbt selector. Kept as the fallback/default; the Build Scope doctype
@@ -97,6 +100,9 @@ SCOPE_SELECTOR = {
     # because it carries no trial-balance-rows requirement — a TB-only site
     # must be able to build its chart before any TB exists.
     "chart": "@silver_main_accounts",
+    # K9b (konsol#269): isolated, so no upstream: gold_cost_allocation reads
+    # gold_scenario_trial_balance, which its own scope does not rebuild.
+    "allocation": "tag:domain:allocation",
     "full": None,  # no selector = full build
 }
 
