@@ -1710,50 +1710,148 @@ def budget_save():
     return {"sheets": sheets, "name": sheets[0] if sheets else None}
 
 
+def _budget_entry_dims():
+    """The budget dimension fields on Budget Entry Line (the Published
+    in_budget Dimensions schema_apply provisioned), read once per request."""
+    from konsol.epm.doctype.budget_entry_line.budget_entry_line import budget_dimension_fields
+
+    return budget_dimension_fields()
+
+
+def _cell_whole(data, field):
+    """A cell's year or period as a whole number, refused by name otherwise."""
+    try:
+        return int(str(data[field]).strip())
+    except (TypeError, ValueError):
+        frappe.throw(f"{field} must be a whole number (got {data[field]!r})", frappe.ValidationError)
+
+
+def _split_signed_amount(value):
+    """Excel's signed amount as (debit, credit), the TB's sign convention
+    (Q3-a): a positive amount is a debit, a negative one a credit of its
+    absolute value. Read exactly, as every intake reads an amount."""
+    from konsol.tb_balance_model import NotFinite, read_amount
+
+    try:
+        amount = read_amount(value)
+    except (NotFinite, ValueError):
+        frappe.throw(f"amount must be a finite number (got {value!r})", frappe.ValidationError)
+    zero = amount * 0
+    return (amount, zero) if amount >= 0 else (zero, -amount)
+
+
+def _judge_budget_cell(data, dims, debit, credit):
+    """Run one cell through konsol.budget_intake, the one entry every budget
+    writer calls, as a one-row budget table. Returns (report item, row) when
+    the cell is ready; otherwise refuses with every problem the intake found.
+
+    Currency and amount basis come from the request and are never defaulted
+    (Q2-c, the TB's declared-currency rule): a request without them is
+    refused by the intake, by name.
+    """
+    from konsol import budget_intake
+
+    given = [d for d in dims if data.get(d)]
+    header = ["scenario", "layer", "data_area_id", "fiscal_year", "fiscal_period",
+              "main_account", "debit", "credit", "currency"] + given
+    row = [data.get("scenario_id"), data.get("layer"), data.get("data_area_id"),
+           data.get("fiscal_year"), data.get("fiscal_period"), data.get("main_account"),
+           format(debit, "f"), format(credit, "f"), data.get("currency") or ""]
+    row += [data[d] for d in given]
+    try:
+        plan = budget_intake.plan([header, row], form_basis=data.get("amount_basis") or "")
+    except ValueError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+    (item,) = plan["report"]
+    if not item["ok"]:
+        frappe.throw("\n".join(item["errors"]), frappe.ValidationError)
+    ((judged,),) = plan["groups"].values()
+    return item, judged
+
+
+def _entry_line(entry, ident):
+    """The entry's line for account + dimension values, or None. A blank
+    dimension and an unset one are the same value, as Budget Entry judges."""
+    for line in entry.get("lines") or []:
+        if all((line.get(k) or "") == v for k, v in ident.items()):
+            return line
+    return None
+
+
+def _line_amount(line):
+    """A line's signed amount (debit − credit), None when there is no line."""
+    if line is None:
+        return None
+    return float(line.get("debit") or 0) - float(line.get("credit") or 0)
+
+
+def _refuse_entry_mismatch(entry, item):
+    """One entry holds one currency and one amount basis: a cell that states
+    another is refused, naming the entry, never written over it."""
+    for field, label in (("currency", "currency"), ("amount_basis", "amount basis")):
+        held, given = entry.get(field) or "", item[field]
+        if held != given:
+            frappe.throw(
+                f"Budget Entry {entry.name} holds {label} {held!r}; this cell gives {given!r}. "
+                f"One entry holds one {label}.",
+                frappe.ValidationError,
+            )
+
+
+def _set_entry_line(entry, ident, judged):
+    line = _entry_line(entry, ident)
+    if line is None:
+        line = entry.append("lines", dict(ident))
+    line.debit = float(judged["debit"])
+    line.credit = float(judged["credit"])
+    return line
+
+
 @frappe.whitelist(methods=["POST"])
 def budget_cell_save():
-    """Save a single budget cell — sets one period on a sheet's Budget Line.
+    """Save one Excel budget cell as one Budget Entry Line (konsol#348 X1).
 
-    Designed for EPMSAVE() immediate writes from Excel. The (scenario,
-    fiscal_year) Budget Cycle is auto-created Open if absent; once the cycle is
-    locked the write is refused with HTTP 423.
+    Designed for EPMSAVE() immediate writes. The cell goes through
+    konsol.budget_intake.plan, the one entry every budget writer calls: the
+    period must be a declared Regular period of its year (no 1–12 clamp), the
+    layer a declared Budget Layer the user may write (no default), and the
+    (scenario, year) must have a draft Budget Cycle (none is created, Q6-b);
+    the entity, account and dimension access checks run there too.
 
-    Optional optimistic-locking params (backward-compatible — omit for
-    last-write-wins): ``base_modified`` is the Budget Sheet ``modified`` the
-    client last read; if it is stale the write is refused with an HTTP 409
-    ``conflict`` payload (current value + ``current_modified``) so the client can
-    refresh and re-prompt. A successful save echoes the new ``modified`` baseline.
+    Excel sends a signed ``amount``; it is stored as a debit when positive and
+    a credit of its absolute value when negative (Q3-a). ``currency`` and
+    ``amount_basis`` are required: neither is defaulted.
+
+    The cell finds or creates the Budget Entry for (cycle, entity, layer,
+    period) and upserts the one line for its account and dimension values.
+    Only that entry is saved; nothing here commits.
+
+    Optional optimistic locking (omit for last-write-wins): ``base_modified``
+    is the Budget Entry ``modified`` the client last read; if it is stale the
+    write is refused with an HTTP 409 ``conflict`` payload (the line's current
+    signed amount, None when the line does not exist, and
+    ``current_modified``). A successful save echoes the new ``modified``.
     """
     data = _get_json_body()
 
     required = ["scenario_id", "data_area_id", "fiscal_year",
                 "main_account", "fiscal_period", "amount", "layer"]
-    missing = [f for f in required if f not in data or data[f] == ""]
+    missing = [f for f in required if data.get(f) in (None, "")]
     if missing:
         frappe.throw(
             f"Missing required fields: {', '.join(missing)}",
             frappe.ValidationError,
         )
 
-    from konsol.epm.budget_grain import is_valid_layer, normalize_layer
-
-    layer = normalize_layer(data["layer"])
-    if not is_valid_layer(layer):
-        frappe.throw(
-            f"Invalid layer '{layer}'. Allowed: {', '.join(sorted(VALID_LAYERS))}",
-            frappe.ValidationError,
-        )
-
-    fp = int(data["fiscal_period"])
-    if fp < 1 or fp > 12:
-        frappe.throw("fiscal_period must be 1-12", frappe.ValidationError)
-
-    amount = float(data["amount"])
+    _cell_whole(data, "fiscal_year")
+    fp = _cell_whole(data, "fiscal_period")
+    debit, credit = _split_signed_amount(data["amount"])
+    amount = float(debit - credit)
 
     # The add-in's one `dimensions` argument (konsol#287): checked against the
     # declared budget dimensions and moved onto the fields every check below
     # reads, before any of them runs.
-    dims = _budget_dims()
+    dims = _budget_entry_dims()
     _apply_budget_dimensions(data, dims)
     hierarchy_err = _hierarchy_without_node_error(data)
     if hierarchy_err:
@@ -1779,55 +1877,53 @@ def budget_cell_save():
             )
         data[info["dimension"]] = info["member_code"]
 
-    _assert_budget_write_access(data)
-
-    cycle = _resolve_budget_cycle(data)
-    _assert_cycle_open(cycle)
+    # Every check (period, layer, writer role, Cycle, currency, basis, access)
+    # runs in budget_intake, after the dimensions and hierarchy are applied.
+    item, judged = _judge_budget_cell(data, dims, debit, credit)
 
     ident = _line_identity(data, dims)
     base_modified = data.get("base_modified")
-    sheet_filters = {
-        "cycle": cycle["name"],
-        "data_area_id": data["data_area_id"],
-        "layer": layer,
+    entry_key = {
+        "cycle": item["cycle"],
+        "data_area_id": item["entity"],
+        "layer": item["layer"],
+        "fiscal_period": item["fiscal_period"],
     }
 
-    # Resolve -> mutate -> save, with one retry. Different (entity, layer) are
-    # different sheets => no contention; cells of the SAME sheet serialise on the
-    # FOR UPDATE lock below. A concurrent create of the SAME new sheet hits a
-    # duplicate-name error; retry then finds it and takes the locked update path.
+    # Resolve -> mutate -> save, with one retry. Cells of one entry serialise
+    # on the FOR UPDATE lock below. A concurrent create of the same new entry
+    # hits a duplicate-key error; the retry then finds it and takes the locked
+    # update path.
     for _attempt in range(2):
-        existing = frappe.get_all("Budget Sheet", filters=sheet_filters, limit=1)
+        name = frappe.db.get_value("Budget Entry", entry_key, "name")
 
-        if existing:
-            name = existing[0].name
+        if name:
             current_modified = frappe.db.get_value(
-                "Budget Sheet", name, "modified", for_update=True)
-            doc = frappe.get_doc("Budget Sheet", name)
+                "Budget Entry", name, "modified", for_update=True)
+            doc = frappe.get_doc("Budget Entry", name)
             if base_modified and str(current_modified) != str(base_modified):
-                # None (not 0) when the cell was cleared — distinguishable from a
-                # genuine zero so the client's conflict UI can tell them apart.
-                from konsol.epm.budget_grain import find_budget_line
-                line = find_budget_line(doc, ident, dims)
-                current_amount = line.get(_period_field(fp)) if line else None
                 frappe.local.response.http_status_code = 409
                 return {
                     "status": "conflict",
                     "name": name,
                     "fiscal_period": fp,
-                    "layer": layer,
+                    "layer": item["layer"],
                     "your_amount": amount,
-                    "current_amount": current_amount,
+                    "current_amount": _line_amount(_entry_line(doc, ident)),
                     "current_modified": str(current_modified),
                 }
-            _set_cell(doc, ident, fp, amount, dims)
+            _refuse_entry_mismatch(doc, item)
+            _set_entry_line(doc, ident, judged)
             doc.save()
             return {"status": "ok", "name": doc.name, "value": amount,
                     "modified": str(doc.modified)}
 
         # Create path.
-        doc = _get_or_create_sheet(cycle["name"], data, layer)
-        _set_cell(doc, ident, fp, amount, dims)
+        doc = frappe.new_doc("Budget Entry")
+        doc.update(entry_key)
+        doc.update({"currency": item["currency"], "amount_basis": item["amount_basis"],
+                    "source": "Excel"})
+        _set_entry_line(doc, ident, judged)
         try:
             doc.insert()
         except frappe.exceptions.DuplicateEntryError:

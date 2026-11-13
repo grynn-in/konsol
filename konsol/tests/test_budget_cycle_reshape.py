@@ -96,7 +96,8 @@ def test_sheet_sync_key_is_scenario_entity_fy_layer():
 
 def test_writes_resolve_cycle_and_reject_when_locked():
     src = _src(API_PATH)
-    for fn in ("_upsert_budget_line", "budget_cell_save"):
+    # budget_cell_save creates no Cycle; budget_intake refuses a missing one (S2-X1)
+    for fn in ("_upsert_budget_line",):
         body = _func(src, fn)
         assert "_resolve_budget_cycle" in body
         assert "_assert_cycle_open" in body
@@ -158,7 +159,7 @@ def test_layer_is_canonicalized_on_every_write():
     # Fix #3: both write paths normalize layer; the grain helper owns it.
     api = _src(API_PATH)
     assert "normalize_layer" in _func(api, "_upsert_budget_line")
-    assert "normalize_layer" in _func(api, "budget_cell_save")
+    # budget_cell_save takes the layer as given; budget_intake judges it (S2-X1)
     grain = _src(GRAIN_PY)
     assert "def normalize_layer" in grain and "VALID_LAYERS" in grain
     # role gate normalizes too, so a mis-cased layer can't bypass it
