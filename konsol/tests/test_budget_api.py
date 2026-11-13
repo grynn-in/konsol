@@ -169,7 +169,7 @@ def cell(monkeypatch):
     }
     state = types.SimpleNamespace(entries={}, saves=[], inserts=[], denied=set(), body=None,
                                   access_calls=[], clock=0, commits=0, judged_flags=[],
-                                  cycle_locks=[], cycle_refusal=None, log=[])
+                                  cycle_locks=[], cycle_refusal=None, log=[], hidden=set())
 
     def get_all(doctype, filters=None, fields=None, order_by=None, pluck=None, limit_page_length=None,
                 limit=None, **kw):
@@ -185,11 +185,15 @@ def cell(monkeypatch):
         return f"2027-01-01 00:00:{state.clock:02d}"
 
     def get_value(doctype, filters, fieldname=None, for_update=False, **kw):
+        # REPEATABLE READ: a plain read serves the transaction's snapshot, which
+        # misses the entries in `hidden` (committed by another session since);
+        # a locking read sees them.
         assert doctype == "Budget Entry", doctype
+        visible = {n: e for n, e in state.entries.items() if for_update or n not in state.hidden}
         if isinstance(filters, dict):
-            found = [e for e in state.entries.values() if _matches(e, filters)]
+            found = [e for e in visible.values() if _matches(e, filters)]
             return found[0]["name"] if found else None
-        entry = state.entries.get(filters)
+        entry = visible.get(filters)
         return entry.get(fieldname or "name") if entry else None
 
     def get_doc(doctype, name):
@@ -316,6 +320,7 @@ def cell(monkeypatch):
     entry_mod.CycleNotDraftError = CycleNotDraftError
     entry_mod.assert_cycle_draft = assert_cycle_draft
     entry_mod.judged_by_writer = judged_by_writer
+    entry_mod.entry_name = lambda cycle, entity, layer, period: f"BENT-{cycle}-{entity}-{layer}-{period}"
 
     for name, mod in {"frappe": frappe, "frappe.utils": utils, "konsol.clickhouse": clickhouse,
                       "konsol.group_chart": chart, "konsol.period_status": periods,
@@ -656,3 +661,18 @@ def test_a_cell_written_after_the_cycle_is_approved_is_refused(cell):
         cell.post(amount=5, fiscal_period=2)
     (entry,) = cell.state.entries.values()
     assert float(entry["lines"][0]["debit"]) == 100.0
+
+
+# --- review fix 3: the create race finds the other session's entry -----------------
+
+def test_an_entry_another_session_committed_is_found_and_updated(cell):
+    # Another session created the entry after this transaction's snapshot: a
+    # plain lookup misses it, the insert hits the duplicate name, and the
+    # retry must find it with a locking read and update it.
+    cell.post(amount=100)
+    (name,) = cell.state.entries
+    cell.state.hidden = {name}
+    out = cell.post(amount=70, main_account="4000")
+    assert out["status"] == "ok" and out["name"] == name
+    got = sorted((l["main_account"], float(l["debit"])) for l in cell.state.entries[name]["lines"])
+    assert got == [("4000", 70.0), ("6000", 100.0)]

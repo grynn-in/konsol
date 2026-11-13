@@ -464,3 +464,13 @@ def test_a_writer_that_judged_its_rows_is_not_judged_twice(env):
     assert env.judged == []
     assert env.sql, "the Cycle lock is taken whoever writes"
     assert not env.frappe.flags.get("budget_entry_judged"), "the flag is put back"
+
+
+# ---- review fix 3: a writer finds an entry by its name ------------------------------
+
+def test_entry_name_is_the_autoname(env):
+    # The cell path looks an entry up by this name with a locking read on the
+    # primary key, so it must be the name autoname gives.
+    doc = _entry(env)
+    doc.autoname()
+    assert env.ctl.entry_name("BCYC-1", "E1", "base", 3) == doc.name
