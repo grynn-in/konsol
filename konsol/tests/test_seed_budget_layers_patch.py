@@ -14,8 +14,10 @@ PATCHES_TXT = os.path.join(APP_DIR, "patches.txt")
 
 
 class _Site:
-    def __init__(self, roles=(), holders=(), layers=()):
+    def __init__(self, roles=(), holders=(), layers=(), disabled=()):
         self.roles = set(roles)
+        self.disabled = set(disabled)
+        self.calls = []
         self.holders = {r: list(u) for r, u in dict(holders).items()}
         self.layers = {l["layer_code"]: dict(l) for l in layers}
         self.inserted = []
@@ -26,12 +28,16 @@ class _Site:
 
         class DB:
             def exists(self, doctype, name):
+                site.calls.append(("exists", doctype))
                 if doctype == "Role":
                     return name if name in site.roles else None
                 return name if name in site.layers else None
 
             def count(self, doctype, filters):
-                return len(site.holders.get(filters["role"], []))
+                assert doctype == "User", doctype
+                users = filters["name"][1]
+                return sum(1 for u in users if u not in site.disabled
+                           and filters.get("enabled") == 1)
 
         class Doc:
             def __init__(self, d):
@@ -41,8 +47,14 @@ class _Site:
                 site.layers[self.d["layer_code"]] = self.d
                 site.inserted.append(self.d)
 
+        def get_all(doctype, filters=None, pluck=None, **kw):
+            assert doctype == "Has Role" and pluck == "parent"
+            return list(site.holders.get(filters["role"], []))
+
         frappe.db = DB()
         frappe.get_doc = lambda d: Doc(d)
+        frappe.get_all = get_all
+        frappe.reload_doc = lambda *a: site.calls.append(("reload_doc",) + a)
         return frappe
 
     def run(self):
@@ -100,3 +112,16 @@ def test_existing_layer_untouched():
 def test_registered_in_patches_txt():
     with open(PATCHES_TXT) as f:
         assert "konsol.patches.seed_budget_layers" in f.read()
+
+
+def test_reloads_budget_layer_before_touching_it():
+    """patches.txt has no sections, so every patch runs pre-model-sync: the
+    Budget Layer table does not exist yet on an existing site's first migrate."""
+    s = _Site(roles=ALL_ROLES, holders={r: ["u@x"] for r in ALL_ROLES}).run()
+    assert s.calls[0] == ("reload_doc", "epm", "doctype", "budget_layer")
+
+
+def test_only_enabled_users_hold_a_role():
+    s = _Site(roles=ALL_ROLES, holders={r: ["gone@x"] for r in ALL_ROLES},
+              disabled=("gone@x",)).run()
+    assert not any(l.get("writer_role") for l in s.layers.values())
