@@ -465,7 +465,9 @@ def test_a_follow_up_is_flagged_by_every_caller():
                      (REAPER, "follow_up_failed_starts")):
         calls = [n for n in ast.walk(_fn(path, fn)) if isinstance(n, ast.Call)
                  and getattr(n.func, "id", "") == "request_build_for_scope"]
-        assert calls and all(ast.unparse(k) == "carries_changes=True" for c in calls for k in c.keywords), fn
+        # full_refresh= rides along (#261); carries_changes is always True
+        assert calls and all("carries_changes=True" in map(ast.unparse, c.keywords) for c in calls), fn
+        assert all(k.arg in ("carries_changes", "full_refresh") for c in calls for k in c.keywords), fn
 
 
 def test_the_reaper_spends_the_flag_of_the_row_it_follows_up():
@@ -530,7 +532,7 @@ class FakeSite:
 
     def sql(self, query, params=None):
         q = " ".join(query.split())
-        if q.startswith("SELECT name FROM `tabBuild Approval`"):
+        if q.startswith("SELECT name, full_refresh, rebuild_full_refresh FROM `tabBuild Approval`"):
             # the claim: a locking read of the latest rows, under the build lock
             assert self.locked, "the build lock comes before the row locks"
             for part in ("FOR UPDATE", "build_scope = %s", "workflow_state = 'Failed'", "rebuild_requested = 1",
@@ -538,7 +540,8 @@ class FakeSite:
                 assert part in q, f"claim is missing {part!r}: {q}"
             scope, like = params
             assert like == f"{PREFIX}%"
-            return tuple((n,) for n, r in self.rows.items()
+            return tuple((n, r.get("full_refresh", 0), r.get("rebuild_full_refresh", 0))
+                         for n, r in self.rows.items()
                          if r["build_scope"] == scope and self._failed_start(r) and self.flag(n))
         if q.startswith("SELECT 1 FROM `tabPipeline Run`"):   # _ever_built: run_shows_a_build, in SQL
             for part in ("build_approval = %s", "NOT (status = 'Failed'", "IFNULL(error_log, '') LIKE %s", "LIMIT 1"):
@@ -574,7 +577,8 @@ class FakeSite:
         self.locked = False
         self.rollbacks += 1
 
-    def request_build_for_scope(self, scope, trigger_doctype, trigger_docname, carries_changes=False):
+    def request_build_for_scope(self, scope, trigger_doctype, trigger_docname, carries_changes=False,
+                                full_refresh=False):
         if self.request_fails:
             raise RuntimeError("request failed")
         self.requests.append((scope, trigger_doctype, trigger_docname))
@@ -584,7 +588,8 @@ class FakeSite:
         self.rows[name] = dict(name=name, workflow_state="Approved" if scope == "staging" else "Pending Review",
                                rebuild_requested=1 if carries_changes else 0, started_at=None,
                                error_message=None, build_scope=scope, modified=self.now,
-                               trigger_doctype=trigger_doctype, trigger_docname=trigger_docname)
+                               trigger_doctype=trigger_doctype, trigger_docname=trigger_docname,
+                               full_refresh=1 if full_refresh else 0)
         self.commit()
 
     def _run(self, fn):
@@ -732,6 +737,31 @@ def test_a_reaped_running_build_is_still_followed_up():
     site.tick()
     assert site.requests == [("staging", "Build Approval", "BA-1")] and site.errors == []
     assert site.rows["BA-1"]["rebuild_requested"] == 0 and site.rows["BA-F1"]["rebuild_requested"] == 1
+
+
+def test_a_reaper_follow_up_carries_a_full_refresh_that_never_ran():
+    """#261: a schema change's --full-refresh is never dropped by a follow-up.
+    A reaped Running row passes on the refresh it absorbed (its own ran, or
+    never could); a row that never started passes on its own."""
+    cases = (
+        (dict(lost_job("BA-1"), workflow_state="Running", started_at=START, rebuild_full_refresh=1), 1),
+        (dict(lost_job("BA-1"), workflow_state="Running", started_at=START, full_refresh=1), 0),
+        (dict(lost_job("BA-1"), full_refresh=1), 1),
+        (lost_job("BA-1"), 0),
+    )
+    for row, expected in cases:
+        site = FakeSite([row])
+        site.tick()
+        assert site.rows["BA-F1"]["full_refresh"] == expected, row
+
+
+def test_the_sweep_follow_up_carries_a_full_refresh_any_claimed_row_asked_for():
+    site = FakeSite([failed_start("BA-1"), dict(failed_start("BA-2"), full_refresh=1)])
+    assert site.sweep() == ["BA-1"]
+    assert site.rows["BA-F1"]["full_refresh"] == 1, "one claim, one follow-up, and BA-2's refresh in it"
+    site = FakeSite([failed_start("BA-1")])
+    site.sweep()
+    assert site.rows["BA-F1"]["full_refresh"] == 0
 
 
 def ran(name, **fields):
@@ -929,8 +959,8 @@ class StartSite:
     def sql(self, query, params=None, as_dict=False, **k):
         assert "FOR UPDATE" in query, query
         row = self.committed[("Build Approval", params)]
-        if "SELECT rebuild_requested" in query:   # the finish's re-read
-            return ((row["rebuild_requested"],),)
+        if "SELECT rebuild_requested, rebuild_full_refresh" in query:   # the finish's re-read
+            return ((row["rebuild_requested"], row.get("rebuild_full_refresh", 0)),)
         assert "SELECT workflow_state, started_at" in query and as_dict, query   # _stop_before_dbt's
         return [_D(workflow_state=row["workflow_state"], started_at=row["started_at"])]
 

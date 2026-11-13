@@ -84,6 +84,12 @@ class BuildApproval(Document):
         rerun = resetting and before.started_at and before.workflow_state in ("Completed", "Failed")
         if before and before.rebuild_requested and not self.rebuild_requested and not starting and not rerun:
             self.rebuild_requested = 1
+        # The full refresh its follow-up owes (build_lock.flag_full_refresh,
+        # #261) is set the same way, so a save never clears it either. Only a
+        # rerun spends it, like the flag above; it is set only on a Running
+        # row, so a start has none to spend. getattr: older test stubs.
+        if before and getattr(before, "rebuild_full_refresh", 0) and not rerun:
+            self.rebuild_full_refresh = 1
         if resetting:
             if before.started_at:
                 # A row that started runs again as new: its old start would
@@ -101,6 +107,7 @@ class BuildApproval(Document):
                     # on (its changes were dropped with it), so it keeps it.
                     # A Running row can't be reset (above).
                     self.rebuild_requested = 0
+                    self.rebuild_full_refresh = 0
             # The old error goes, since a start-failure message left on a row
             # that runs again would make the failed-start sweep take it for a
             # new one (#140 review). A row that never started keeps its flag:

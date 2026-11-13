@@ -97,3 +97,24 @@ def flag_running_build(row):
     if row.get("workflow_state") in FLAGGED_STATES:
         frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 1 WHERE name = %s", row["name"])
 
+
+
+def flag_full_refresh(row):
+    """A full-refresh request absorbed by a pending or Running build (#261).
+
+    Pending (Draft, Pending Review, Approved): the build reads full_refresh at
+    its start, so it is raised on the row. ``modified`` is bumped, as before:
+    a job that loaded the row earlier fails its start save, and the
+    failed-start sweep carries the flag into the follow-up.
+
+    Running: the build's dbt command is already built, so full_refresh on
+    the row would change nothing and misreport the run. The row holds
+    rebuild_full_refresh instead, and the follow-up its finish requests (it
+    is flagged by flag_running_build) carries it. ``modified`` is not bumped:
+    the job holds the doc and saves it at the end.
+    """
+    name = row["name"]
+    if row.get("workflow_state") == "Running":
+        frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_full_refresh = 1 WHERE name = %s", name)
+    elif not frappe.db.get_value("Build Approval", name, "full_refresh"):
+        frappe.db.set_value("Build Approval", name, "full_refresh", 1)

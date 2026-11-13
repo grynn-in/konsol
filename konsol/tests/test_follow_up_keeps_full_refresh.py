@@ -217,3 +217,46 @@ def test_a_full_refresh_request_while_pending_still_raises_the_pending_row():
     site = Site(**{"BA-1": dict(workflow_state="Approved")})
     _run(site, lambda lifecycle, tasks: site.publish(lifecycle))
     assert site.rows["BA-1"].full_refresh == 1 and site.created == []
+
+
+# --- the reaper's follow-ups (a build that died, or never started) ----------
+
+def _reaper():
+    return _load("reaper_fr", os.path.join(APP_DIR, "orchestrator", "reaper.py"))
+
+
+def test_a_reaped_running_build_passes_its_pending_full_refresh_on():
+    decide = _reaper().follow_up_full_refresh
+    ran = dict(workflow_state="Failed", started_at="2026-11-13 10:00")
+    assert decide(dict(ran, rebuild_full_refresh=1, full_refresh=0)) is True
+    assert decide(dict(ran, rebuild_full_refresh=0, full_refresh=1)) is False, "it ran its own refresh"
+    never = dict(workflow_state="Failed", started_at=None)
+    assert decide(dict(never, rebuild_full_refresh=0, full_refresh=1)) is True, "never ran it"
+    assert decide(dict(never, rebuild_full_refresh=0, full_refresh=0)) is False
+
+
+def test_both_reaper_follow_ups_pass_full_refresh():
+    with open(os.path.join(APP_DIR, "orchestrator", "reaper.py")) as f:
+        src = f.read()
+    reap = src.split("def reap_stale_build_approvals")[1].split("\ndef ")[0]
+    assert "full_refresh=follow_up_full_refresh(as_reaped)" in reap
+    sweep = src.split("def follow_up_failed_starts")[1].split("\ndef ")[0]
+    assert "SELECT name, full_refresh, rebuild_full_refresh FROM `tabBuild Approval`" in sweep
+    assert "full_refresh=full_refresh)" in sweep
+
+
+# --- the field, and the controller's hold on it -----------------------------
+
+def test_the_pending_full_refresh_is_a_read_only_check():
+    import json
+    with open(os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.json")) as f:
+        field = next(f for f in json.load(f)["fields"] if f["fieldname"] == "rebuild_full_refresh")
+    assert field["fieldtype"] == "Check" and field["read_only"] == 1 and field["default"] == "0"
+
+
+def test_a_save_keeps_the_pending_full_refresh_and_a_rerun_spends_it():
+    with open(os.path.join(APP_DIR, "pipeline", "doctype", "build_approval", "build_approval.py")) as f:
+        src = f.read()
+    assert 'if before and getattr(before, "rebuild_full_refresh", 0) and not rerun:' in src
+    rerun = src.split("if rerun:")[1].split("# The old error goes")[0]
+    assert "self.rebuild_requested = 0" in rerun and "self.rebuild_full_refresh = 0" in rerun

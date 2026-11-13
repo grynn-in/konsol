@@ -217,7 +217,9 @@ def reap_stale_build_approvals():
         # Read after our own UPDATE, which saw the latest row: a flag set since
         # the get_all above is visible here (#139 review). A row that moved on
         # meanwhile didn't match, and still carries its own error_message.
-        after = frappe.db.get_value("Build Approval", row["name"], ["error_message", "rebuild_requested"], as_dict=True)
+        after = frappe.db.get_value("Build Approval", row["name"],
+                                    ["error_message", "rebuild_requested", "full_refresh", "rebuild_full_refresh"],
+                                    as_dict=True)
         if after.error_message != note:
             continue
         if row["workflow_state"] == "Running":
@@ -231,7 +233,8 @@ def reap_stale_build_approvals():
             )
         reaped.append(row["name"])
         if after.rebuild_requested:
-            follow_ups.append(dict(row, reap_reason=reason))
+            follow_ups.append(dict(row, reap_reason=reason, full_refresh=after.full_refresh,
+                                   rebuild_full_refresh=after.rebuild_full_refresh))
     if reaped:
         frappe.db.commit()
         frappe.logger().warning(f"Build Approval reaper: marked {len(reaped)} stuck approval(s) Failed: {reaped}")
@@ -257,7 +260,8 @@ def reap_stale_build_approvals():
                 _give_up(row["name"], row["build_scope"], so_far, f"[reaper] marked Failed: {row['reap_reason']}")
                 frappe.db.commit()
                 continue
-            request_build_for_scope(row["build_scope"], "Build Approval", row["name"], carries_changes=True)
+            request_build_for_scope(row["build_scope"], "Build Approval", row["name"], carries_changes=True,
+                                    full_refresh=follow_up_full_refresh(as_reaped))
         except Exception:
             frappe.db.rollback()
             frappe.log_error(title=f"Follow-up build request for {row['name']} failed")
@@ -321,6 +325,15 @@ def follow_up_decision(row, follow_ups_so_far):
     if not never_started(row):
         return "request"
     return "give_up" if follow_ups_so_far >= START_FAILURE_RETRIES else "request"
+
+
+def follow_up_full_refresh(row):
+    """True if the follow-up ``row`` owes must run with --full-refresh (#261). Pure.
+
+    A schema change absorbed while ``row`` ran (rebuild_full_refresh), or a
+    row that asked for a full refresh and never started, so never ran it.
+    """
+    return bool(_get(row, "rebuild_full_refresh") or (never_started(row) and _get(row, "full_refresh")))
 
 
 def start_failure_follow_up(row, follow_ups_so_far):
@@ -483,13 +496,14 @@ def follow_up_failed_starts():
             lock_build_requests()
             # Claim under the lock, re-reading the latest rows: a second sweep
             # finds the flags cleared, and a row that moved on isn't taken.
-            claimed = [r[0] for r in frappe.db.sql(
-                """SELECT name FROM `tabBuild Approval`
+            claimed_rows = frappe.db.sql(
+                """SELECT name, full_refresh, rebuild_full_refresh FROM `tabBuild Approval`
                    WHERE build_scope = %s AND workflow_state = 'Failed' AND rebuild_requested = 1
                      AND started_at IS NULL AND error_message LIKE %s
                    FOR UPDATE""",
                 (row["build_scope"], f"{START_FAILURE_PREFIX}%"),
-            )]
+            )
+            claimed = [r[0] for r in claimed_rows]
             if row["name"] not in claimed:
                 frappe.db.rollback()
                 continue
@@ -500,7 +514,11 @@ def follow_up_failed_starts():
             frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 0 WHERE name IN %s", (tuple(claimed),))
             # Commits the clear with the new request, or absorbs into (and
             # flags) a pending build for the scope, which carries it forward.
-            request_build_for_scope(row["build_scope"], "Build Approval", row["name"], carries_changes=True)
+            # None of them started, so a full refresh any of them asked for
+            # was never run: the one follow-up carries it (#261).
+            full_refresh = any(r[1] or r[2] for r in claimed_rows)
+            request_build_for_scope(row["build_scope"], "Build Approval", row["name"], carries_changes=True,
+                                    full_refresh=full_refresh)
             followed_up.append(row["name"])
         except Exception:
             frappe.db.rollback()  # the flags stay: the next sweep retries

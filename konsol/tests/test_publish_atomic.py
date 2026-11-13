@@ -399,7 +399,8 @@ def _run_publish(touched, enqueued, created=None, ch=None):
                                                    get_connection=refuse("clickhouse")),
         "konsol.dbt_config": types.SimpleNamespace(regenerate_vars=lambda: None),
         "konsol.build_lock": types.SimpleNamespace(lock_build_requests=lambda: None,
-                                                   flag_running_build=lambda row: None),
+                                                   flag_running_build=lambda row: None,
+                                                   flag_full_refresh=lambda row: None),
     }
     before = {k: v for k, v in sys.modules.items() if k.split(".")[0] in ("frappe", "konsol")}
     try:

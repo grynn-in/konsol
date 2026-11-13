@@ -533,13 +533,19 @@ def _finish_governed_build(doc, pipeline_run=None):
     holds the same lock (its debounce's FOR UPDATE) until it commits, so
     either the flag is seen here, or the request finds this row already
     terminal and inserts its own approval. Nothing falls between.
+
+    rebuild_full_refresh is re-read with it: a schema change absorbed while
+    this build ran needs --full-refresh, which this run's command could not
+    take, so the follow-up carries it (#261).
     """
     from konsol.build_lock import build_writer
 
-    flagged = frappe.db.sql(
-        "SELECT rebuild_requested FROM `tabBuild Approval` WHERE name = %s FOR UPDATE", doc.name
-    )[0][0]
+    flagged, full_refresh = frappe.db.sql(
+        "SELECT rebuild_requested, rebuild_full_refresh FROM `tabBuild Approval` WHERE name = %s FOR UPDATE",
+        doc.name,
+    )[0]
     doc.rebuild_requested = flagged
+    doc.rebuild_full_refresh = full_refresh
     doc.completed_at = frappe.utils.now_datetime()
     _set_duration(doc)
     # The build path's own move out of Running (BuildApproval.before_save).
@@ -566,7 +572,8 @@ def _finish_governed_build(doc, pipeline_run=None):
         # After the commit: the request takes the build lock, and must not
         # wait for it while holding this row.
         try:
-            request_build_for_scope(doc.build_scope, "Build Approval", doc.name, carries_changes=True)
+            request_build_for_scope(doc.build_scope, "Build Approval", doc.name, carries_changes=True,
+                                    full_refresh=bool(full_refresh))
         except Exception:
             frappe.db.rollback()   # the job commits on return; don't keep half a request
             frappe.log_error(title=f"Follow-up build request for {doc.name} failed")
@@ -693,7 +700,7 @@ def on_consolidation_doc_update(doc, method):
 
 
 def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_changes=False,
-                            auto_approve_reason=None):
+                            auto_approve_reason=None, full_refresh=False):
     """Request a build of ``scope``: debounced, serialised, and committed.
 
     It commits, so it runs only inside a job: request_consolidation_build's
@@ -711,6 +718,10 @@ def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_cha
     the insert, so it lands Approved. Absorbed into a pending build, the reason
     is dropped and logged: that build may carry unreviewed changes, so an
     approval does not approve it (P22).
+
+    ``full_refresh``: the follow-up owes a schema change its --full-refresh
+    (#261). Set on the new approval; absorbed into a pending build instead,
+    build_lock.flag_full_refresh passes it on, so it is never dropped.
     """
     from konsol.pipeline.doctype.build_approval.build_approval import AUTO_APPROVE_FLAG
 
@@ -719,7 +730,7 @@ def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_cha
     # pending and both inserted a Build Approval (#110 re-review; per-entity
     # jobs on several workers made it likely). The lock is held until the
     # commit below.
-    from konsol.build_lock import flag_running_build, lock_build_requests
+    from konsol.build_lock import flag_full_refresh, flag_running_build, lock_build_requests
 
     lock_build_requests()
 
@@ -742,6 +753,8 @@ def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_cha
         # would miss gold: flag it, and it requests one more build when it
         # finishes (#129). A pending one will read it anyway.
         flag_running_build(existing[0])
+        if full_refresh:
+            flag_full_refresh(existing[0])
         frappe.db.commit()
         dropped = "; absorbed; auto-approve not applied" if auto_approve_reason else ""
         frappe.logger().info(
@@ -758,6 +771,7 @@ def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_cha
     pbr.trigger_docname = trigger_docname
     pbr.requested_by = frappe.session.user
     pbr.rebuild_requested = 1 if carries_changes else 0
+    pbr.full_refresh = 1 if full_refresh else 0
     if auto_approve_reason:
         pbr.auto_approve_reason = auto_approve_reason
         frappe.flags[AUTO_APPROVE_FLAG] = True
