@@ -110,9 +110,9 @@
    "fieldname": "amount_basis",
    "fieldtype": "Select",
    "label": "Amount Basis",
-   "options": "\nPeriod movement\nYear-to-date movement\nPeriod-end balance",
+   "options": "\nPeriod movement\nYear-to-date movement",
    "reqd": 1,
-   "description": "What the amounts are: the same three values as the trial balance. No default."
+   "description": "What the amounts are: a movement for the period, or year to date. A Period-end balance is not supported yet (it needs a declared opening). No default."
   },
   {
    "fieldname": "lines_section",

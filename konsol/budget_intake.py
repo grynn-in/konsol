@@ -119,6 +119,30 @@ def plan(table, *, form_basis, name_lines):
     return {"groups": groups, "report": report, "ok": all(i["ok"] for i in report)}
 
 
+def judge_one(table, *, form_basis):
+    """Judge a table holding ONE Budget Entry's rows for a writer that is not a
+    file (an Excel cell, an API row, a Desk save of a Budget Entry): its
+    problems name no file line. Returns (report item, rows) when the rows are
+    ready; otherwise raises with every problem the plan found, as
+    frappe.PermissionError when it found an access denial (HTTP 403: a denial
+    wins, the other problems are not for a user who may not write the rows),
+    else frappe.ValidationError. Writes nothing."""
+    try:
+        result = plan(table, form_basis=form_basis, name_lines=False)
+    except ValueError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+    if len(result["report"]) != 1:
+        frappe.throw(f"These rows make {len(result['report'])} Budget Entries; one was expected.",
+                     frappe.ValidationError)
+    (item,) = result["report"]
+    if item["denials"]:
+        frappe.throw("\n".join(item["denials"]), frappe.PermissionError)
+    if not item["ok"]:
+        frappe.throw("\n".join(item["errors"]), frappe.ValidationError)
+    (rows,) = result["groups"].values()
+    return item, rows
+
+
 def _at_line(row, message):
     """`message` prefixed with the row's file line, or alone when it has none."""
     line = row.get("line")

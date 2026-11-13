@@ -309,6 +309,8 @@ def _replace_slice(upload, members):
     """Replace one (cycle, entity, layer) slice with the file's periods.
     Returns the entry names in `members` order. Every existing entry is
     judged before anything changes; the caller commits or rolls back."""
+    from konsol.epm.doctype.budget_entry.budget_entry import judged_by_writer
+
     first = members[0][0]
     cycle, entity, layer = first["cycle"], first["entity"], first["layer"]
     existing = {int(r.fiscal_period): r.name for r in frappe.get_all(
@@ -334,10 +336,13 @@ def _replace_slice(upload, members):
         doc.set("lines", [])
         for row in rows:
             doc.append("lines", _line(row))
-        if period in docs:
-            doc.save()
-        else:
-            doc.insert()
+        # run_load judged the file at the start of the job: the entry's
+        # validate checks its Cycle but does not judge these rows again.
+        with judged_by_writer():
+            if period in docs:
+                doc.save()
+            else:
+                doc.insert()
         names.append(doc.name)
     return names
 

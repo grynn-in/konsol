@@ -1613,21 +1613,9 @@ def _judge_budget_cell(data, dims, debit, credit):
            data.get("fiscal_year"), data.get("fiscal_period"), data.get("main_account"),
            format(debit, "f"), format(credit, "f"), data.get("currency") or ""]
     row += [data[d] for d in given]
-    try:
-        # A cell is not a file line: its refusal names no "Line 2", and a
-        # batch names its own row.
-        plan = budget_intake.plan([header, row], form_basis=data.get("amount_basis") or "",
-                                  name_lines=False)
-    except ValueError as error:
-        frappe.throw(str(error), frappe.ValidationError)
-    (item,) = plan["report"]
-    # An access denial stays a PermissionError (403), and wins: the cell's
-    # other problems are not for a user who may not write it.
-    if item["denials"]:
-        frappe.throw("\n".join(item["denials"]), frappe.PermissionError)
-    if not item["ok"]:
-        frappe.throw("\n".join(item["errors"]), frappe.ValidationError)
-    ((judged,),) = plan["groups"].values()
+    # A cell is not a file line: its refusal names no "Line 2", and a batch
+    # names its own row. The one judge every non-file writer shares.
+    item, (judged,) = budget_intake.judge_one([header, row], form_basis=data.get("amount_basis") or "")
     return item, judged
 
 
@@ -1721,6 +1709,7 @@ def _save_budget_cell(data):
     # Every check (period, layer, writer role, Cycle, currency, basis, access)
     # runs in budget_intake, after the dimensions and hierarchy are applied.
     item, judged = _judge_budget_cell(data, dims, debit, credit)
+    from konsol.epm.doctype.budget_entry.budget_entry import judged_by_writer
 
     ident = _line_identity(data, dims)
     base_modified = data.get("base_modified")
@@ -1755,7 +1744,10 @@ def _save_budget_cell(data):
                 }
             _refuse_entry_mismatch(doc, item)
             _set_entry_line(doc, ident, judged)
-            doc.save()
+            # Judged above: the entry's validate must not judge this cell
+            # again, nor the lines other users wrote into the same entry.
+            with judged_by_writer():
+                doc.save()
             return {"status": "ok", "name": doc.name, "value": amount,
                     "modified": str(doc.modified)}
 
@@ -1769,7 +1761,8 @@ def _save_budget_cell(data):
         # transaction, and the race must not undo them.
         frappe.db.savepoint("budget_entry_create")
         try:
-            doc.insert()
+            with judged_by_writer():
+                doc.insert()
         except frappe.exceptions.DuplicateEntryError:
             # concurrent create won; retry as update
             frappe.db.rollback(save_point="budget_entry_create")
