@@ -12,6 +12,9 @@ K8: submit is the approval. The gates run in before_submit / before_cancel and
 the warehouse sync is queued after the commit (header, accounts, weights, and
 the coefficients table rebuilt from every submitted run).
 """
+import re
+from decimal import Decimal
+
 import frappe
 from frappe.model.document import Document
 
@@ -168,6 +171,74 @@ def compute_weights_on(run):
 def compute_weights(name):
     """Compute Weights button: POST, because it writes."""
     return compute_weights_on(frappe.get_doc("Cost Allocation Run", name))
+
+
+# --- K12: Preview Sender Pools (read-only) ----------------------------------------
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _declared_dimensions():
+    """Names of the declared Dimensions: the only column names the pool query accepts."""
+    return frappe.get_all("Dimension", pluck="name", order_by="name", limit_page_length=0)
+
+
+def _array_literal(values):
+    """A ClickHouse Array(String) literal for an HTTP query parameter."""
+    return "[" + ",".join("'" + str(v).replace("\\", "\\\\").replace("'", "\\'") + "'" for v in values) + "]"
+
+
+def build_sender_pool_query(dimension, declared, scenario, entity, fiscal_year,
+                            fiscal_period, accounts, senders):
+    """(sql, params) for the pool of each sender member (pure).
+
+    Every value travels as a ClickHouse query parameter. The one identifier, the
+    dimension column, is refused unless it is a declared dimension name and a
+    plain identifier, then backtick-quoted."""
+    if dimension not in set(declared or []) or not _IDENTIFIER.match(dimension or ""):
+        frappe.throw(f"{_PREFIX}dimension {dimension!r} is not a declared dimension.")
+    sql = (
+        f"SELECT `{dimension}` AS member, sum(amount) AS pool "
+        "FROM epm_gold.gold_scenario_trial_balance "
+        "WHERE scenario_id = {scenario:String} AND data_area_id = {entity:String} "
+        "AND fiscal_year = {fiscal_year:UInt16} AND fiscal_period = {fiscal_period:UInt8} "
+        "AND main_account IN {accounts:Array(String)} "
+        f"AND `{dimension}` IN {{senders:Array(String)}} "
+        f"GROUP BY `{dimension}` ORDER BY member FORMAT TabSeparated"
+    )
+    params = {
+        "param_scenario": scenario, "param_entity": entity,
+        "param_fiscal_year": str(fiscal_year), "param_fiscal_period": str(fiscal_period),
+        "param_accounts": _array_literal(accounts), "param_senders": _array_literal(senders),
+    }
+    return sql, params
+
+
+def _query_sender_pools(sql, params):
+    """Run the pool query; [(member, amount text)]. The only ClickHouse call."""
+    text = clickhouse.execute(sql, params)
+    return [tuple(line.split("\t")) for line in text.splitlines() if line]
+
+
+@frappe.whitelist(methods=["GET"])
+def preview_sender_pools(name):
+    """Each sender's pool on the run's accounts from the warehouse, and the total.
+    Writes nothing, so GET is safe."""
+    run = frappe.get_doc("Cost Allocation Run", name)
+    run.check_permission("read")
+    if not run.weights:
+        frappe.throw(f"{_PREFIX}Compute Weights before previewing sender pools.")
+    senders = []
+    for w in run.weights:
+        if w.sender_member not in senders:
+            senders.append(w.sender_member)
+    sql, params = build_sender_pool_query(
+        run.allocation_dimension, _declared_dimensions(), run.scenario, run.entity,
+        run.fiscal_year, run.fiscal_period, [a.main_account for a in run.accounts], senders)
+    found = {m: Decimal(a) for m, a in _query_sender_pools(sql, params)}
+    pools = [{"sender_member": s, "amount": float(found.get(s, 0))} for s in senders]
+    return {"pools": pools, "total": float(sum(found.get(s, 0) for s in senders)),
+            "has_rows": bool(found)}
 
 
 _PREFIX = "Cost Allocation Run: "
