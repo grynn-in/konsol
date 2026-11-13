@@ -14,6 +14,7 @@ row is flagged.
 """
 from collections import Counter
 from dataclasses import dataclass, field
+from decimal import Decimal
 from fractions import Fraction
 
 DIRECT = "Direct"
@@ -201,3 +202,171 @@ def weights(rows):
     if errs:
         raise CostAllocationError(errs)
     return {(s, m): v / totals[s] for (s, m), v in vals.items()}
+
+
+# --- coefficients (K2b) ------------------------------------------------------
+#
+# A coefficient row says: of one unit of ORIGIN's pool, SENDER holds
+# pool_coefficient at its step and gives `coefficient` of it to RECEIVER.
+# dbt multiplies: x = origin_amount * coefficient, `sent` -x at the sender,
+# `received` +x at the receiver.
+
+COEFFICIENT_PLACES = 12
+_SCALE = 10 ** COEFFICIENT_PLACES
+_QUANTUM = Decimal(1).scaleb(-COEFFICIENT_PLACES)
+COEFFICIENT_COLUMNS = ("run", "origin_member", "step", "sender_member", "receiver_member",
+                       "driver", "pool_coefficient", "coefficient")
+
+
+def _weight(weights, st, recv):
+    try:
+        return weights[(st.step, recv)]
+    except KeyError:
+        raise CostAllocationError("No weight for step %s, receiver %s." % (st.step, recv))
+
+
+def _hop(origin, st, pool, weights):
+    return [{
+        "origin_member": origin, "step": st.step, "sender_member": st.sender_member,
+        "receiver_member": recv, "driver": st.driver,
+        "pool_coefficient": pool, "coefficient": pool * _weight(weights, st, recv),
+    } for recv in st.receivers]
+
+
+def direct_coefficients(steps, weights):
+    """Exact Fraction rows for Direct allocation.
+
+    Each sender is an origin and gives its whole unit pool to its receivers by
+    weight; pool_coefficient is 1 on every row. Refuses a receiver that is a
+    sender (Direct cost never passes through a second sender).
+    """
+    senders = {st.sender_member for st in steps}
+    bad = ["%s receives at step %s but is a sender; Direct allocation does not allow it."
+           % (r, st.step) for st in steps for r in st.receivers if r in senders]
+    if bad:
+        raise CostAllocationError(bad)
+    rows = []
+    for st in sorted(steps, key=lambda s: s.step):
+        rows.extend(_hop(st.sender_member, st, Fraction(1), weights))
+    return rows
+
+
+def step_down_coefficients(steps, weights):
+    """Exact Fraction rows for Step-Down allocation.
+
+    In step order, each sender passes on its own pool plus whatever it received
+    from earlier steps. Per origin O (every sender): O holds 1 at its own step;
+    a later sender S holds the sum of the coefficients it received from O at
+    earlier steps, and gives that times its weights. A sender that holds
+    nothing of O emits no rows for O. A sender receives nothing at or after its
+    own step (refused): cost only flows forward.
+    """
+    ordered = sorted(steps, key=lambda s: s.step)
+    sender_step = {st.sender_member: st.step for st in ordered}
+    bad = ["%s receives at step %s but sends at step %s; Step-Down cost only flows forward."
+           % (r, st.step, sender_step[r])
+           for st in ordered for r in st.receivers
+           if r in sender_step and sender_step[r] <= st.step]
+    if bad:
+        raise CostAllocationError(bad)
+    rows = []
+    for i, origin_step in enumerate(ordered):
+        origin = origin_step.sender_member
+        held = {origin: Fraction(1)}
+        for st in ordered[i:]:
+            pool = held.get(st.sender_member, Fraction(0))
+            if pool == 0:
+                continue
+            for r in _hop(origin, st, pool, weights):
+                held[r["receiver_member"]] = held.get(r["receiver_member"], Fraction(0)) + r["coefficient"]
+                rows.append(r)
+    return rows
+
+
+def _split(units, hop_rows, weights_by_receiver):
+    """Largest remainder: integer units per receiver summing exactly to ``units``.
+
+    Targets are units * weight. Leftover units go to the largest fractional
+    remainders, ties to the receiver name that sorts first.
+    """
+    targets = {r["receiver_member"]: units * weights_by_receiver[r["receiver_member"]]
+               for r in hop_rows}
+    floors = {m: t.numerator // t.denominator for m, t in targets.items()}
+    left = units - sum(floors.values())
+    for m in sorted(targets, key=lambda m: (-(targets[m] - floors[m]), m))[:left]:
+        floors[m] += 1
+    return floors
+
+
+def round_coefficients(exact_rows, weights):
+    """Round exact rows to 12 dp, as Decimals, conserving money exactly.
+
+    Works per origin in step order on integer units of 1e-12:
+      - at the origin's own hop the pool is exactly 1;
+      - at a later sender the pool is the exact sum of the ROUNDED coefficients
+        it received from that origin (so its `received` and `sent` lines net to
+        zero in dbt);
+      - each hop's pool is split over its receivers by largest remainder of
+        pool * weight, so the receiver coefficients sum exactly to the pool.
+    Hence, per origin, the rounded coefficients reaching non-senders sum to
+    exactly 1. Each rounded value is within (number of hops) * 1e-12 of exact.
+    """
+    out, held, pending, hop = [], {}, [], None
+
+    def flush():
+        if not pending:
+            return
+        r0 = pending[0]
+        o = r0["origin_member"]
+        if r0["sender_member"] == o:
+            units = _SCALE
+        else:
+            units = held.get((o, r0["sender_member"]), 0)
+        w = {r["receiver_member"]: weights[(r["step"], r["receiver_member"])] for r in pending}
+        split = _split(units, pending, w)
+        pool = Decimal(units).scaleb(-COEFFICIENT_PLACES).quantize(_QUANTUM)
+        for r in pending:
+            u = split[r["receiver_member"]]
+            held[(o, r["receiver_member"])] = held.get((o, r["receiver_member"]), 0) + u
+            out.append(dict(r, pool_coefficient=pool,
+                            coefficient=Decimal(u).scaleb(-COEFFICIENT_PLACES).quantize(_QUANTUM)))
+        pending.clear()
+
+    for r in exact_rows:
+        key = (r["origin_member"], r["step"], r["sender_member"])
+        if key != hop:
+            flush()
+            hop = key
+        pending.append(r)
+    flush()
+    return out
+
+
+def coefficient_rows(run_name, steps, weights, method):
+    """Rows for epm_staging.cost_allocation_coefficients, 12-dp Decimals.
+
+    Columns, in order: run, origin_member, step, sender_member,
+    receiver_member, driver, pool_coefficient, coefficient. Invariants (the
+    warehouse tests rely on them):
+      T5  per (run, origin, step, sender): sum(coefficient) == pool_coefficient;
+      own per origin: pool_coefficient == 1 at the origin's own step;
+      pass per origin and later sender S: pool_coefficient at S == sum of the
+          coefficients S received from that origin (all at earlier steps);
+      T1  per origin: sum(coefficient) over receivers that are not senders == 1.
+    All exact in Decimal, so origin_amount * coefficient conserves to the cent.
+    """
+    errs = []
+    for st in steps:
+        ws = [_weight(weights, st, r) for r in st.receivers]
+        if any(x < 0 for x in ws) or sum(ws, Fraction(0)) != 1:
+            errs.append("Weights for step %s must be non-negative and sum to exactly 1." % st.step)
+    if errs:
+        raise CostAllocationError(errs)
+    if method == DIRECT:
+        exact = direct_coefficients(steps, weights)
+    elif method == STEP_DOWN:
+        exact = step_down_coefficients(steps, weights)
+    else:
+        raise CostAllocationError("Method must be one of %s, not %r." % (", ".join(METHODS), method))
+    return [{"run": run_name, **{c: r[c] for c in COEFFICIENT_COLUMNS[1:]}}
+            for r in round_coefficients(exact, weights)]

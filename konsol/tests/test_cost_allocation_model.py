@@ -584,3 +584,11 @@ def test_coefficients_property_long_chain_of_thirds_and_sevenths():
                 w[(i + 1, m)] = Fraction(v, tot)
             steps.append(M.Step(i + 1, "S%d" % i, "D", recv))
         _check_invariants(steps, w, "Step-Down")
+
+
+def test_coefficients_weights_not_summing_to_one_refused():
+    steps = [M.Step(1, "IT", "H", ["P1", "P2"])]
+    w = {(1, "P1"): Fraction(1, 3), (1, "P2"): Fraction(1, 3)}
+    with raises(M.CostAllocationError) as ei:
+        M.coefficient_rows("ZZRUN", steps, w, "Direct")
+    assert "step 1" in ei.value.errors[0]
