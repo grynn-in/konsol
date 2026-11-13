@@ -10,6 +10,7 @@ Excel requires optional parameters to come last, and `dimensions`,
 `hierarchy` and `node` are optional, so the two are declared optional in
 functions.json; the function itself refuses them blank.
 """
+import json
 import os
 
 from konsol.tests.test_excel_addin_dimensions import _call, _metadata
@@ -80,3 +81,21 @@ def test_handbook_documents_the_new_arguments():
     text = open(page).read()
     assert ("=K.EPMSAVE(amount, entity, year, period, account, scenarioId, layer, "
             "[dimensions], [hierarchy], [node], currency, amountBasis)") in text
+
+
+def test_a_403_denial_shows_the_servers_reason_in_the_cell():
+    # S2-X3: budget_cell_save now refuses an access denial with HTTP 403. The
+    # cell names the denial, and still says how to sign in, since a 403 can
+    # also mean the session is gone.
+    reply = {"exc_type": "PermissionError",
+             "_server_messages": json.dumps([json.dumps(
+                 {"message": "Not permitted to write entity ZZE"})])}
+    out = _call("EPMSAVE", *_ARGS, None, None, None, "EUR", "Movement", reply=reply, status=403)
+    assert out["error"] is not None, out
+    assert "Not permitted to write entity ZZE" in out["error"]["message"], out
+    assert "sign in" in out["error"]["message"], out
+
+
+def test_a_bare_403_still_asks_to_sign_in():
+    out = _call("EPMSAVE", *_ARGS, None, None, None, "EUR", "Movement", reply={}, status=403)
+    assert out["error"]["message"].startswith("Not logged in"), out
