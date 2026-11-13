@@ -60,6 +60,21 @@ def _read(path):
         return f.read()
 
 
+BUILD_SCOPE_FIXTURE = os.path.join(APP_DIR, "fixtures", "build_scope.json")
+
+
+def _isolated_scope_names(path=BUILD_SCOPE_FIXTURE):
+    """Build Scopes flagged isolated=1 (K9a, K9c): built only by their own scope."""
+    with open(path) as f:
+        return {row["name"] for row in json.load(f) if row.get("isolated") == 1}
+
+
+def _consolidation_inputs(triggers, build_map, isolated_scopes):
+    """Triggers whose build scope is not isolated: an isolated scope rebuilds
+    only its own models, so its trigger is not a consolidation input (K9c)."""
+    return [t for t in triggers if build_map[t]["scope"] not in isolated_scopes]
+
+
 def _func_names(tree):
     return [n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
 
@@ -558,11 +573,10 @@ def test_every_consolidation_input_reaches_the_consolidated_numbers():
                      if isinstance(n, ast.Assign) and any(
                          isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in n.targets))
 
-    # K9b (konsol#269): Cost Allocation Run triggers the isolated allocation
-    # scope, which rebuilds only gold_cost_allocation and its frozen copy. It
-    # is not a consolidation input, so it is named here rather than passed.
-    NOT_CONSOLIDATION_INPUTS = ("Cost Allocation Run",)
-    consolidation_inputs = [t for t in triggers if t not in NOT_CONSOLIDATION_INPUTS] + ["Entity"]
+    # K9c (konsol#269): triggers on an isolated Build Scope (Cost Allocation
+    # Run -> allocation) are not consolidation inputs; derived from the fixture.
+    consolidation_inputs = _consolidation_inputs(
+        triggers, build_map, _isolated_scope_names()) + ["Entity"]
     wrong = {dt: build_map[dt]["scope"] for dt in consolidation_inputs
              if build_map[dt]["scope"] not in freshness_model.NUMBERS_SCOPES}
     assert not wrong, (
