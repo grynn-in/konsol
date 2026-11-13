@@ -116,5 +116,6 @@ def flag_full_refresh(row):
     name = row["name"]
     if row.get("workflow_state") == "Running":
         frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_full_refresh = 1 WHERE name = %s", name)
+    # An Approved row was approved without --full-refresh; this adds it, by design (#521 review).
     elif not frappe.db.get_value("Build Approval", name, "full_refresh"):
         frappe.db.set_value("Build Approval", name, "full_refresh", 1)

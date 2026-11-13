@@ -107,7 +107,7 @@ class Site:
             "frappe": frappe,
             "konsol.airbyte_service": types.SimpleNamespace(AirbyteClient=object),
             "konsol.build_command": types.SimpleNamespace(dbt_build_command=None),
-            "konsol.orchestrator.reaper": types.SimpleNamespace(START_FAILURE_PREFIX="Governed build could not start"),
+            "konsol.orchestrator.reaper": _load("reaper_fr_tasks", os.path.join(APP_DIR, "orchestrator", "reaper.py")),
             "konsol.close.fingerprint": types.SimpleNamespace(check_after_build=lambda *a: []),
             "konsol.pipeline.doctype.build_approval.build_approval": types.SimpleNamespace(
                 AUTO_APPROVE_FLAG="konsol_auto_approve"),

@@ -249,7 +249,8 @@ def reap_stale_build_approvals():
             # can't request a second follow-up for this row (#140 review). The
             # build lock first: the debounce's lock order.
             lock_build_requests()
-            frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 0 WHERE name = %s", row["name"])
+            frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 0, rebuild_full_refresh = 0 "
+                          "WHERE name = %s", row["name"])
             # An Approved row reaped here never started, like a start failure:
             # it is a link in its chain, and the chain is capped the same way.
             # Otherwise a follow-up whose job is lost every time (it is flagged,
@@ -331,9 +332,12 @@ def follow_up_full_refresh(row):
     """True if the follow-up ``row`` owes must run with --full-refresh (#261). Pure.
 
     A schema change absorbed while ``row`` ran (rebuild_full_refresh), or a
-    row that asked for a full refresh and never started, so never ran it.
+    row that asked for a full refresh and did not complete: it never started,
+    or it failed or was reaped part-way, so its refresh may never have landed.
+    Only a Completed row has run its own.
     """
-    return bool(_get(row, "rebuild_full_refresh") or (never_started(row) and _get(row, "full_refresh")))
+    return bool(_get(row, "rebuild_full_refresh")
+                or (_get(row, "workflow_state") != "Completed" and _get(row, "full_refresh")))
 
 
 def start_failure_follow_up(row, follow_ups_so_far):
@@ -450,7 +454,8 @@ def _give_up(name, scope, so_far, last_error):
     """Spend ``name``'s flag and log why its changes won't be built. The caller commits."""
     import frappe
 
-    frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 0 WHERE name = %s", name)
+    frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 0, rebuild_full_refresh = 0 "
+                  "WHERE name = %s", name)
     frappe.log_error(
         title=f"Build Approval {name}: gave up after {so_far} follow-up builds failed to start",
         message=(f"Changes absorbed by the '{scope}' build were never built: {so_far} follow-ups in a "
@@ -511,7 +516,8 @@ def follow_up_failed_starts():
                 _give_up(row["name"], row["build_scope"], so_far, row["error_message"])
                 frappe.db.commit()
                 continue
-            frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 0 WHERE name IN %s", (tuple(claimed),))
+            frappe.db.sql("UPDATE `tabBuild Approval` SET rebuild_requested = 0, rebuild_full_refresh = 0 "
+                          "WHERE name IN %s", (tuple(claimed),))
             # Commits the clear with the new request, or absorbs into (and
             # flags) a pending build for the scope, which carries it forward.
             # None of them started, so a full refresh any of them asked for

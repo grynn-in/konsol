@@ -494,7 +494,7 @@ def test_the_reaper_spends_the_flag_of_the_row_it_follows_up():
     second follow-up from the sweep (#140 review)."""
     src = ast.unparse(_fn(REAPER, "reap_stale_build_approvals"))
     loop = src[src.index("for row in follow_ups:"):]
-    order = [loop.index(s) for s in ("lock_build_requests()", "SET rebuild_requested = 0 WHERE name = %s",
+    order = [loop.index(s) for s in ("lock_build_requests()", "SET rebuild_requested = 0, rebuild_full_refresh = 0 WHERE name = %s",
                                      "follow_up_decision(", "request_build_for_scope(")]
     assert order == sorted(order), order
 
@@ -569,11 +569,11 @@ class FakeSite:
             assert like == f"{PREFIX}%"
             self.evidence_queries.append(name)
             return ((1,),) if any(reaper.run_shows_a_build(r) for r in self.runs.get(name, [])) else ()
-        if q == "UPDATE `tabBuild Approval` SET rebuild_requested = 0 WHERE name IN %s":
+        if q == "UPDATE `tabBuild Approval` SET rebuild_requested = 0, rebuild_full_refresh = 0 WHERE name IN %s":
             for n in params[0]:
                 self.pending[n] = 0
             return None
-        if q == "UPDATE `tabBuild Approval` SET rebuild_requested = 0 WHERE name = %s":
+        if q == "UPDATE `tabBuild Approval` SET rebuild_requested = 0, rebuild_full_refresh = 0 WHERE name = %s":
             self.pending[params] = 0
             return None
         if q.startswith("UPDATE `tabBuild Approval` SET workflow_state = 'Failed'"):   # the reap

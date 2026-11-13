@@ -12,7 +12,7 @@ import frappe
 from konsol.airbyte_service import AirbyteClient
 from konsol.build_command import dbt_build_command
 # reaper.py imports nothing from konsol at module level, so this can't cycle.
-from konsol.orchestrator.reaper import START_FAILURE_PREFIX
+from konsol.orchestrator.reaper import START_FAILURE_PREFIX, follow_up_full_refresh
 
 
 def _dbt_bin():
@@ -536,7 +536,8 @@ def _finish_governed_build(doc, pipeline_run=None):
 
     rebuild_full_refresh is re-read with it: a schema change absorbed while
     this build ran needs --full-refresh, which this run's command could not
-    take, so the follow-up carries it (#261).
+    take, so the follow-up carries it (#261). So does this run's own
+    full_refresh if it did not complete: its refresh may never have landed.
     """
     from konsol.build_lock import build_writer
 
@@ -573,7 +574,7 @@ def _finish_governed_build(doc, pipeline_run=None):
         # wait for it while holding this row.
         try:
             request_build_for_scope(doc.build_scope, "Build Approval", doc.name, carries_changes=True,
-                                    full_refresh=bool(full_refresh))
+                                    full_refresh=follow_up_full_refresh(doc))
         except Exception:
             frappe.db.rollback()   # the job commits on return; don't keep half a request
             frappe.log_error(title=f"Follow-up build request for {doc.name} failed")
