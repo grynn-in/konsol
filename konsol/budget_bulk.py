@@ -36,6 +36,7 @@ import frappe
 from frappe.utils import cint, strip_html
 
 from konsol import budget_intake
+from konsol.entity_permissions import allowed_entity_codes
 from konsol.tb_bulk import _read_table
 
 DOCTYPE = "Budget Upload"
@@ -71,6 +72,30 @@ def _require_loader():
     if not (frappe.has_permission(ENTRY, "create") and frappe.has_permission(DOCTYPE, "create")):
         frappe.throw("Loading budgets in bulk needs permission to create a Budget Upload and a Budget Entry.",
                      frappe.PermissionError)
+
+
+# ── permissions (registered in hooks.py) ──────────────────────────────────
+# As the trial balance upload's (konsol.tb_bulk): an upload holds every
+# entity's figures (its report, and its file, whose read permission follows
+# the upload).
+
+def upload_conditions(user=None):
+    """List filter: a user limited to some entities sees only their own uploads."""
+    user = user or frappe.session.user
+    if allowed_entity_codes(user) is None:
+        return ""
+    return f"`tab{DOCTYPE}`.`owner` = {frappe.db.escape(user)}"
+
+
+def has_upload_permission(doc, user=None, permission_type=None):
+    """Only its owner, or a user who may see every entity in it, may open an
+    upload. Returns exactly True or False (Frappe v16)."""
+    user = user or frappe.session.user
+    allowed = allowed_entity_codes(user)
+    if allowed is None or doc.owner == user:
+        return True
+    entities = {r.get("entity") for r in json.loads(doc.report or "[]")}
+    return entities <= set(allowed)
 
 
 # ── slices ─────────────────────────────────────────────────────────────────

@@ -57,6 +57,7 @@
   },
   {
    "fieldname": "layer",
+   "description": "The Budget Layer these amounts belong to (for example a base plan or a board adjustment). A layer that names a writer role takes amounts only from that role's holders.",
    "fieldtype": "Link",
    "label": "Layer",
    "options": "Budget Layer",
