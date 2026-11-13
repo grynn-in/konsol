@@ -44,7 +44,10 @@ def ctl(monkeypatch):
     frappe.PermissionError = type("PermissionError", (Exception,), {})
     frappe.flags = _Flags()
     frappe.session = types.SimpleNamespace(user="zz@example.com")
-    frappe.db = types.SimpleNamespace(exists=lambda *a, **k: None)
+    statuses = {}
+    frappe.db = types.SimpleNamespace(
+        exists=lambda *a, **k: None,
+        get_value=lambda dt, name, field, *a, **k: statuses.get(name, "Published"))
     frappe.throw = throw
     meta = types.SimpleNamespace(fields=[
         types.SimpleNamespace(fieldname=d, fieldtype="Data") for d in DIMS])
@@ -78,7 +81,7 @@ def ctl(monkeypatch):
     spec = importlib.util.spec_from_file_location("_bai_under_test", PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return types.SimpleNamespace(mod=mod, frappe=frappe, calls=calls)
+    return types.SimpleNamespace(mod=mod, frappe=frappe, calls=calls, statuses=statuses)
 
 
 def _row(ctl, entity):
@@ -109,8 +112,50 @@ def test_check_receives_entity_account_and_every_dimension(ctl):
     assert data["dim_region"] == "EU"
 
 
-@pytest.mark.parametrize("flag", ["in_install", "in_migrate", "in_import"])
-def test_skipped_during_install_migrate_import(ctl, flag):
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_skipped_during_install_migrate(ctl, flag):
     setattr(ctl.frappe.flags, flag, True)
     _row(ctl, "ZZE2").validate()
     assert ctl.calls == []
+
+
+def test_import_flag_does_not_skip_the_check(ctl):
+    # Desk Data Import sets in_import; any user allowed to import must still
+    # be held to their entity grants.
+    ctl.frappe.flags.in_import = True
+    with pytest.raises(ctl.frappe.PermissionError):
+        _row(ctl, "ZZE2").validate()
+
+
+def test_delete_of_ungranted_entity_is_refused(ctl):
+    with pytest.raises(ctl.frappe.PermissionError):
+        _row(ctl, "ZZE2").on_trash()
+
+
+def test_delete_of_granted_entity_passes(ctl):
+    _row(ctl, "ZZE1").on_trash()
+
+
+def test_draft_main_account_is_refused_by_name(ctl):
+    ctl.statuses["4000"] = "Draft"
+    with pytest.raises(Exception) as e:
+        _row(ctl, "ZZE1").validate()
+    assert "4000" in str(e.value) and "Draft" in str(e.value)
+
+
+def test_inactive_main_account_is_refused(ctl):
+    ctl.statuses["4000"] = "Inactive"
+    with pytest.raises(Exception, match="Inactive"):
+        _row(ctl, "ZZE1").validate()
+
+
+def test_published_main_account_passes(ctl):
+    ctl.statuses["4000"] = "Published"
+    _row(ctl, "ZZE1").validate()
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_main_account_status_skipped_during_install_migrate(ctl, flag):
+    setattr(ctl.frappe.flags, flag, True)
+    ctl.statuses["4000"] = "Draft"
+    _row(ctl, "ZZE1").validate()
