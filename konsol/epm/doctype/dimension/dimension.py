@@ -200,8 +200,9 @@ class Dimension(Document):
                 f"underscores, and nothing else — no capitals, spaces, "
                 f"punctuation or surrounding blanks. Either rename it, or leave "
                 f"the name alone and untick Include in Trial Balance if this "
-                f"dimension belongs only to budgets or fact tables, where no "
-                f"prefix is required. konsol will not lower-case or trim the "
+                f"dimension belongs only to fact tables, where no prefix is "
+                f"required. A published budget dimension must stay in the "
+                f"trial balance (BUD-8-2), so it has to be renamed. konsol will not lower-case or trim the "
                 f"name for you, because two dimensions differing only in case "
                 f"would end up sharing one column.",
                 frappe.ValidationError,
