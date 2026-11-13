@@ -349,3 +349,246 @@ def test_weights_negative_value_refused():
     ]
     with raises(M.CostAllocationError):
         M.weights(rows)
+
+
+# --- coefficients (K2b) --------------------------------------------------
+
+import random
+from decimal import Decimal
+
+_Q = Decimal("1e-12")
+_UNIT = Fraction(1, 10 ** 12)
+
+
+def _hand_steps():
+    # Step 1: IT -> HR, P1, P2 by 2:3:5. Step 2: HR -> P1, P2, P3 by 1:1:1.
+    steps = [
+        M.Step(1, "IT", "Headcount", ["HR", "P1", "P2"]),
+        M.Step(2, "HR", "Headcount", ["P1", "P2", "P3"]),
+    ]
+    w = {
+        (1, "HR"): Fraction(1, 5), (1, "P1"): Fraction(3, 10), (1, "P2"): Fraction(1, 2),
+        (2, "P1"): Fraction(1, 3), (2, "P2"): Fraction(1, 3), (2, "P3"): Fraction(1, 3),
+    }
+    return steps, w
+
+
+def _key(r):
+    return (r["origin_member"], r["step"], r["sender_member"], r["receiver_member"])
+
+
+def test_coefficients_step_down_exact_hand_worked():
+    steps, w = _hand_steps()
+    rows = {_key(r): r for r in M.step_down_coefficients(steps, w)}
+    assert set(rows) == {
+        ("IT", 1, "IT", "HR"), ("IT", 1, "IT", "P1"), ("IT", 1, "IT", "P2"),
+        ("IT", 2, "HR", "P1"), ("IT", 2, "HR", "P2"), ("IT", 2, "HR", "P3"),
+        ("HR", 2, "HR", "P1"), ("HR", 2, "HR", "P2"), ("HR", 2, "HR", "P3"),
+    }
+    assert rows[("IT", 1, "IT", "HR")]["pool_coefficient"] == 1
+    assert rows[("IT", 1, "IT", "HR")]["coefficient"] == Fraction(1, 5)
+    assert rows[("IT", 2, "HR", "P3")]["pool_coefficient"] == Fraction(1, 5)
+    assert rows[("IT", 2, "HR", "P3")]["coefficient"] == Fraction(1, 15)
+    assert rows[("HR", 2, "HR", "P1")]["pool_coefficient"] == 1
+    assert rows[("HR", 2, "HR", "P1")]["coefficient"] == Fraction(1, 3)
+    assert all(r["driver"] == "Headcount" for r in rows.values())
+    assert all(isinstance(r["coefficient"], Fraction) for r in rows.values())
+
+
+def test_coefficients_step_down_rounded_hand_worked():
+    steps, w = _hand_steps()
+    rows = {_key(r): r for r in M.coefficient_rows("ZZRUN-1", steps, w, "Step-Down")}
+    D = Decimal
+    expect = {
+        ("IT", 1, "IT", "HR"): (D("1"), D("0.2")),
+        ("IT", 1, "IT", "P1"): (D("1"), D("0.3")),
+        ("IT", 1, "IT", "P2"): (D("1"), D("0.5")),
+        # 0.2 / 3 each: two units left over go to P1, P2 (equal remainders, by name)
+        ("IT", 2, "HR", "P1"): (D("0.2"), D("0.066666666667")),
+        ("IT", 2, "HR", "P2"): (D("0.2"), D("0.066666666667")),
+        ("IT", 2, "HR", "P3"): (D("0.2"), D("0.066666666666")),
+        ("HR", 2, "HR", "P1"): (D("1"), D("0.333333333334")),
+        ("HR", 2, "HR", "P2"): (D("1"), D("0.333333333333")),
+        ("HR", 2, "HR", "P3"): (D("1"), D("0.333333333333")),
+    }
+    assert set(rows) == set(expect)
+    for k, (pool, coef) in expect.items():
+        assert rows[k]["pool_coefficient"] == pool, k
+        assert rows[k]["coefficient"] == coef, k
+        assert rows[k]["run"] == "ZZRUN-1"
+        assert rows[k]["coefficient"].as_tuple().exponent == -12
+        assert rows[k]["pool_coefficient"].as_tuple().exponent == -12
+    final_it = sum(r["coefficient"] for k, r in rows.items() if k[0] == "IT" and k[3] != "HR")
+    assert final_it == Decimal("1")
+
+
+def test_coefficients_row_shape_matches_staging_table():
+    steps, w = _hand_steps()
+    rows = M.coefficient_rows("ZZRUN-1", steps, w, "Step-Down")
+    cols = ["run", "origin_member", "step", "sender_member", "receiver_member",
+            "driver", "pool_coefficient", "coefficient"]
+    assert all(list(r) == cols for r in rows)
+
+
+def test_coefficients_direct():
+    steps = [
+        M.Step(1, "IT", "Headcount", ["P1", "P2"]),
+        M.Step(2, "HR", "Area", ["P1", "P2", "P3"]),
+    ]
+    w = {(1, "P1"): Fraction(1, 3), (1, "P2"): Fraction(2, 3),
+         (2, "P1"): Fraction(1, 7), (2, "P2"): Fraction(2, 7), (2, "P3"): Fraction(4, 7)}
+    exact = {_key(r): r for r in M.direct_coefficients(steps, w)}
+    assert set(exact) == {("IT", 1, "IT", "P1"), ("IT", 1, "IT", "P2"),
+                          ("HR", 2, "HR", "P1"), ("HR", 2, "HR", "P2"), ("HR", 2, "HR", "P3")}
+    assert all(r["pool_coefficient"] == 1 for r in exact.values())
+    assert exact[("HR", 2, "HR", "P3")]["coefficient"] == Fraction(4, 7)
+    assert exact[("HR", 2, "HR", "P3")]["driver"] == "Area"
+    rows = {_key(r): r for r in M.coefficient_rows("ZZRUN-2", steps, w, "Direct")}
+    assert rows[("IT", 1, "IT", "P1")]["coefficient"] == Decimal("0.333333333333")
+    assert rows[("IT", 1, "IT", "P2")]["coefficient"] == Decimal("0.666666666667")
+    # 1/7 = .142857142857|142, 2/7 = .285714285714|285, 4/7 = .571428571428|571
+    assert rows[("HR", 2, "HR", "P1")]["coefficient"] == Decimal("0.142857142857")
+    assert rows[("HR", 2, "HR", "P2")]["coefficient"] == Decimal("0.285714285714")
+    assert rows[("HR", 2, "HR", "P3")]["coefficient"] == Decimal("0.571428571429")
+
+
+def test_coefficients_direct_refuses_receiver_that_sends():
+    steps = [M.Step(1, "IT", "H", ["HR"]), M.Step(2, "HR", "H", ["P1"])]
+    w = {(1, "HR"): Fraction(1), (2, "P1"): Fraction(1)}
+    with raises(M.CostAllocationError):
+        M.direct_coefficients(steps, w)
+
+
+def test_coefficients_step_down_refuses_backward_flow():
+    steps = [M.Step(1, "IT", "H", ["P1"]), M.Step(2, "HR", "H", ["IT"])]
+    w = {(1, "P1"): Fraction(1), (2, "IT"): Fraction(1)}
+    with raises(M.CostAllocationError):
+        M.step_down_coefficients(steps, w)
+
+
+def test_coefficients_missing_weight_refused():
+    steps = [M.Step(1, "IT", "H", ["P1", "P2"])]
+    with raises(M.CostAllocationError):
+        M.direct_coefficients(steps, {(1, "P1"): Fraction(1)})
+
+
+def test_coefficients_unknown_method_refused():
+    steps, w = _hand_steps()
+    with raises(M.CostAllocationError):
+        M.coefficient_rows("ZZRUN-1", steps, w, "Reciprocal")
+
+
+def test_coefficients_unreached_sender_has_no_rows_for_that_origin():
+    # IT gives HR zero weight, so origin IT never reaches HR's step.
+    steps = [M.Step(1, "IT", "H", ["HR", "P1"]), M.Step(2, "HR", "H", ["P1", "P2"])]
+    w = {(1, "HR"): Fraction(0), (1, "P1"): Fraction(1),
+         (2, "P1"): Fraction(1, 2), (2, "P2"): Fraction(1, 2)}
+    keys = {_key(r) for r in M.step_down_coefficients(steps, w)}
+    assert not any(k[0] == "IT" and k[2] == "HR" for k in keys)
+    assert ("IT", 1, "IT", "HR") in keys  # the zero-weight hop itself is kept
+
+
+def _check_invariants(steps, w, method):
+    exact = M.step_down_coefficients(steps, w) if method == "Step-Down" \
+        else M.direct_coefficients(steps, w)
+    rows = M.coefficient_rows("ZZRUN", steps, w, method)
+    assert [_key(r) for r in rows] == [_key(r) for r in exact]
+    senders = {s.sender_member for s in steps}
+    sender_step = {s.sender_member: s.step for s in steps}
+    hops = {}
+    for r in rows:
+        assert r["coefficient"].as_tuple().exponent == -12
+        assert r["pool_coefficient"].as_tuple().exponent == -12
+        assert r["coefficient"] >= 0
+        assert r["step"] == sender_step[r["sender_member"]]
+        hops.setdefault((r["origin_member"], r["step"], r["sender_member"]), []).append(r)
+    # T5: per (origin, step, sender) receiver coefficients sum exactly to the pool.
+    for hop in hops.values():
+        assert len({r["pool_coefficient"] for r in hop}) == 1
+        assert sum(r["coefficient"] for r in hop) == hop[0]["pool_coefficient"]
+    for origin in {r["origin_member"] for r in rows}:
+        mine = [r for r in rows if r["origin_member"] == origin]
+        own = [r for r in mine if r["sender_member"] == origin]
+        assert own and all(r["pool_coefficient"] == 1 for r in own)
+        # An intermediate sender passes on exactly what it received from this origin.
+        for (o, st, snd), hop in hops.items():
+            if o == origin and snd != origin:
+                got = sum(r["coefficient"] for r in mine if r["receiver_member"] == snd)
+                assert got == hop[0]["pool_coefficient"]
+                assert all(r["step"] < st for r in mine if r["receiver_member"] == snd)
+        # T1: the origin's unit ends wholly at non-senders.
+        assert sum(r["coefficient"] for r in mine if r["receiver_member"] not in senders) == 1
+        # Nothing flows back to a sender after its own step.
+        for r in mine:
+            if r["receiver_member"] in senders:
+                assert sender_step[r["receiver_member"]] > r["step"]
+    # Rounding stays within one unit per hop of the exact flow.
+    bound = len(hops) * _UNIT
+    for r, x in zip(rows, exact):
+        assert abs(Fraction(r["coefficient"]) - x["coefficient"]) <= bound
+        assert abs(Fraction(r["pool_coefficient"]) - x["pool_coefficient"]) <= bound
+    # Deterministic, independent of receiver declaration order.
+    shuffled = [M.Step(s.step, s.sender_member, s.driver, list(reversed(s.receivers)))
+                for s in reversed(steps)]
+    again = M.coefficient_rows("ZZRUN", shuffled, w, method)
+    assert sorted(map(_key, again)) == sorted(map(_key, rows))
+    by = {_key(r): r for r in rows}
+    assert all(by[_key(r)] == r for r in again)
+
+
+def _random_case(rng, method):
+    n_send = rng.randint(1, 5)
+    finals = ["F%d" % i for i in range(rng.randint(1, 6))]
+    senders = ["S%d" % i for i in range(n_send)]
+    steps, w = [], {}
+    for i, snd in enumerate(senders):
+        pool = list(finals) + (senders[i + 1:] if method == "Step-Down" else [])
+        recv = rng.sample(pool, rng.randint(1, len(pool)))
+        vals = [rng.choice([0, 1, 2, 3, 7, 11, 13, 0.1, 2.5]) for _ in recv]
+        if not any(vals):
+            vals[0] = 3
+        tot = sum(Fraction(str(v)) for v in vals)
+        for m, v in zip(recv, vals):
+            w[(i + 1, m)] = Fraction(str(v)) / tot
+        steps.append(M.Step(i + 1, snd, "D%d" % (i % 2), recv))
+    return steps, w
+
+
+def test_coefficients_property_step_down_random():
+    for seed in range(300):
+        steps, w = _random_case(random.Random(seed), "Step-Down")
+        _check_invariants(steps, w, "Step-Down")
+
+
+def test_coefficients_property_direct_random():
+    for seed in range(300):
+        steps, w = _random_case(random.Random(10_000 + seed), "Direct")
+        _check_invariants(steps, w, "Direct")
+
+
+def test_coefficients_property_long_chain_of_thirds_and_sevenths():
+    # Each sender passes everything on in thirds or sevenths to the next sender
+    # and finals; nothing terminates in decimal and the error has to stay put.
+    for seed in range(20):
+        rng = random.Random(500 + seed)
+        n = 8
+        steps, w = [], {}
+        for i in range(n):
+            recv = (["S%d" % (i + 1)] if i + 1 < n else []) + ["F0", "F1"]
+            if rng.random() < 0.5:
+                recv.append("F2")
+            d = rng.choice([3, 7])
+            vals = [rng.randint(1, d) for _ in recv]
+            tot = sum(vals)
+            for m, v in zip(recv, vals):
+                w[(i + 1, m)] = Fraction(v, tot)
+            steps.append(M.Step(i + 1, "S%d" % i, "D", recv))
+        _check_invariants(steps, w, "Step-Down")
+
+
+def test_coefficients_weights_not_summing_to_one_refused():
+    steps = [M.Step(1, "IT", "H", ["P1", "P2"])]
+    w = {(1, "P1"): Fraction(1, 3), (1, "P2"): Fraction(1, 3)}
+    with raises(M.CostAllocationError) as ei:
+        M.coefficient_rows("ZZRUN", steps, w, "Direct")
+    assert "step 1" in ei.value.errors[0]
