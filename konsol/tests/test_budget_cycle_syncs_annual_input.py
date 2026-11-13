@@ -8,8 +8,9 @@ on submit and on cancel, and never on a draft save.
 
 The cycle controller is loaded against stubbed frappe. The real
 ``after_commit_once`` and ``sync_doctype_after_commit`` are lifted from
-clickhouse.py by AST and run against a stub after-commit queue, so the
-once-per-transaction key is the production one.
+clickhouse.py by AST and run against a stub after-commit queue, and the real
+Budget Annual Input module is loaded, so the once-per-transaction key is the
+production one.
 """
 import ast
 import functools
@@ -23,6 +24,7 @@ import pytest
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CYCLE_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_cycle", "budget_cycle.py")
 CLICKHOUSE = os.path.join(APP_DIR, "clickhouse.py")
+BAI_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_annual_input", "budget_annual_input.py")
 BAI_TABLE = "epm_gold.budget_annual_input"
 BAI_KEY = ("sync_doctype", "Budget Annual Input", BAI_TABLE)
 
@@ -56,6 +58,7 @@ def env(monkeypatch):
     frappe.flags = types.SimpleNamespace(in_install=False, in_import=False, in_migrate=False, in_patch=False)
     frappe.db = types.SimpleNamespace(after_commit=types.SimpleNamespace(_functions=queue, add=queue.append))
     frappe.get_all = lambda *a, **k: []
+    frappe.get_meta = lambda dt: types.SimpleNamespace(fields=[])
     frappe.throw = lambda *a, **k: (_ for _ in ()).throw(Exception(a))
     model = types.ModuleType("frappe.model")
     docmod = types.ModuleType("frappe.model.document")
@@ -64,13 +67,6 @@ def env(monkeypatch):
     utils.now_datetime = lambda: "2026-11-13 00:00:00"
     grain = types.ModuleType("konsol.epm.budget_grain")
     grain.digest_name = lambda prefix, parts: prefix + "-" + "-".join(parts)
-    bai = types.ModuleType("konsol.epm.doctype.budget_annual_input.budget_annual_input")
-
-    class BudgetAnnualInput:
-        CH_TABLE = BAI_TABLE
-        CH_FIELD_MAP = {"scenario_id": "scenario_id"}
-
-    bai.BudgetAnnualInput = BudgetAnnualInput
     scenario = types.ModuleType("konsol.epm.doctype.scenario.scenario")
     scenario.locked_scenario_type = lambda s: "budget"
 
@@ -78,10 +74,14 @@ def env(monkeypatch):
         "frappe": frappe, "frappe.model": model, "frappe.model.document": docmod,
         "frappe.utils": utils, "konsol.clickhouse": _clickhouse_stub(frappe),
         "konsol.epm.budget_grain": grain,
-        "konsol.epm.doctype.budget_annual_input.budget_annual_input": bai,
         "konsol.epm.doctype.scenario.scenario": scenario,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
+    spec = importlib.util.spec_from_file_location(
+        "konsol.epm.doctype.budget_annual_input.budget_annual_input", BAI_PY)
+    bai = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bai)
+    monkeypatch.setitem(sys.modules, spec.name, bai)
 
     spec = importlib.util.spec_from_file_location("_budget_cycle_a3_under_test", CYCLE_PY)
     mod = importlib.util.module_from_spec(spec)

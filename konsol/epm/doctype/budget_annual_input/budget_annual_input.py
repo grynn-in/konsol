@@ -213,7 +213,7 @@ class BudgetAnnualInput(Document):
             )
 
     def on_update(self):
-        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        queue_sync()
 
     def after_delete(self):
         """after_delete, NOT on_trash.
@@ -225,4 +225,12 @@ class BudgetAnnualInput(Document):
         GovernedReferenceDocument.after_delete and the Connector registry
         (test_connector_registry, test_dimension_mapping).
         """
-        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        queue_sync()
+
+
+def queue_sync():
+    """Queue the whole-table sync of Budget Annual Input, once per transaction,
+    after the commit. A save, a delete, and a Budget Cycle submit or cancel
+    (which changes which rows qualify under CH_SYNC_FILTERS) all call this, so
+    they share one key and one sync."""
+    sync_doctype_after_commit("Budget Annual Input", BudgetAnnualInput.CH_TABLE, BudgetAnnualInput.CH_FIELD_MAP)
