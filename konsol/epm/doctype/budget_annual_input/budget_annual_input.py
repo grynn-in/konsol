@@ -55,9 +55,56 @@ class _FieldMap:
         return {**FIXED_FIELD_MAP, **{d: d for d in budget_dimension_fields()}}
 
 
+#: The filter for "no row qualifies". A name is never NULL or '', so this
+#: matches nothing. Never ``["in", []]``, and never an empty dict:
+#: resolve_sync_filters treats a falsy declaration as none and syncs every row.
+_MATCH_NOTHING = {"name": ["is", "not set"]}
+
+
+def approved_annual_input_names():
+    """Names of the annual rows whose Budget Cycle is approved (docstatus 1).
+
+    BUD-4: the cycle is keyed on (scenario_id, fiscal_year), as this row is.
+    The pair is matched, not each half: approving (S1, 2026) and (S2, 2025)
+    must not approve (S1, 2025). A draft, cancelled or absent cycle approves
+    nothing.
+    """
+    approved = {
+        (c.get("scenario_id"), str(c.get("fiscal_year")))
+        for c in frappe.get_all(
+            "Budget Cycle", filters={"docstatus": 1},
+            fields=["scenario_id", "fiscal_year"], limit_page_length=0)
+    }
+    if not approved:
+        return []
+    rows = frappe.get_all(
+        "Budget Annual Input",
+        filters={"scenario_id": ["in", sorted({s for s, _ in approved})]},
+        fields=["name", "scenario_id", "fiscal_year"], limit_page_length=0)
+    return sorted(r["name"] for r in rows
+                  if (r.get("scenario_id"), str(r.get("fiscal_year"))) in approved)
+
+
+class _SyncFilters:
+    """CH_SYNC_FILTERS, worked out when read (BUD-4).
+
+    Budget Annual Input is not submittable, so without a declaration
+    resolve_sync_filters returns None and every row reaches the warehouse,
+    whatever its cycle's state. Both write paths read this through
+    resolve_sync_filters: the per-save sync (on_update, after_delete) and
+    reconcile_all. Each is a TRUNCATE+INSERT, so a row that leaves the set
+    leaves the warehouse at the next sync.
+    """
+
+    def __get__(self, instance, owner):
+        names = approved_annual_input_names()
+        return {"name": ["in", names]} if names else dict(_MATCH_NOTHING)
+
+
 class BudgetAnnualInput(Document):
     CH_TABLE = "epm_gold.budget_annual_input"
     CH_FIELD_MAP = _FieldMap()
+    CH_SYNC_FILTERS = _SyncFilters()
 
     def validate(self):
         # The copy the Planning sidebar filters on, taken under a share lock
