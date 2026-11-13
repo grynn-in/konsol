@@ -568,3 +568,28 @@ def test_a_denial_wins_over_other_problems_of_the_same_cell(cell):
 def test_a_cell_refused_for_another_reason_is_still_a_validation_error(cell):
     with pytest.raises(_Thrown):
         cell.post(fiscal_period=14)
+
+
+# --- S2-X3: messages read right for each writer ----------------------------------
+
+def test_a_cell_refusal_names_no_file_line(cell):
+    with pytest.raises(_Thrown) as raised:
+        cell.post(main_account="9999")
+    assert "9999" in str(raised.value)
+    assert "Line" not in str(raised.value), str(raised.value)
+
+
+def test_a_cell_denial_names_no_file_line(cell):
+    cell.state.denied.add("E2")
+    with pytest.raises(_Denied) as raised:
+        cell.post(data_area_id="E2")
+    assert str(raised.value) == "Not permitted to write entity E2"
+
+
+def test_a_batch_refusal_names_the_row_once(cell):
+    with pytest.raises(_Thrown) as raised:
+        cell.batch([cell.row(), cell.row(main_account="9999")])
+    message = str(raised.value)
+    assert message.startswith("Row 2: "), message
+    assert "Line" not in message, message
+    assert "9999" in message, message

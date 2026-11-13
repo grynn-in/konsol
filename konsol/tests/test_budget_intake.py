@@ -143,9 +143,9 @@ def env(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    def plan(table, form_basis=BASIS):
+    def plan(table, form_basis=BASIS, name_lines=True):
         frappe.session.user = state.user
-        return mod.plan(table, form_basis=form_basis)
+        return mod.plan(table, form_basis=form_basis, name_lines=name_lines)
 
     return types.SimpleNamespace(mod=mod, data=data, state=state, plan=plan)
 
@@ -213,6 +213,43 @@ def test_an_access_denial_is_kept_apart_from_other_problems(env):
 def test_a_clean_group_has_no_denials(env):
     plan = env.plan([HEADER, _row()])
     assert [item["denials"] for item in plan["report"]] == [[]]
+
+
+# ---- S2-X3: the caller chooses whether problems name file lines ------------------
+
+def test_a_file_writer_gets_its_line_numbers(env):
+    env.state.denied_entities = {"E2"}
+    plan = env.plan([HEADER, _row(account="9999"), _row(entity="E2")], name_lines=True)
+    first, second = plan["report"]
+    assert any(e.startswith("Line 2: ") and "9999" in e for e in first["errors"]), first["errors"]
+    assert second["denials"] == ["Line 3: Not permitted to write entity E2"]
+
+
+def test_a_writer_without_lines_gets_no_line_prefix(env):
+    # An Excel cell or an API row has no file line: "Line 2:" would point at
+    # nothing (the one-row table's header is line 1).
+    env.state.denied_entities = {"E2"}
+    plan = env.plan([HEADER, _row(account="9999"), _row(entity="E2", debit="1.234")],
+                    name_lines=False)
+    first, second = plan["report"]
+    errors = first["errors"] + second["errors"]
+    assert errors, plan
+    assert not [e for e in errors if "Line" in e or "line" in e], errors
+    assert any("9999" in e for e in first["errors"]), first["errors"]
+    assert second["denials"] == ["Not permitted to write entity E2"]
+    assert any("1.234" in e for e in second["errors"]), second["errors"]
+
+
+def test_a_duplicate_without_lines_names_the_account(env):
+    plan = env.plan([HEADER, _row(), _row()], name_lines=False)
+    (item,) = plan["report"]
+    dupes = [e for e in item["errors"] if "4000" in e]
+    assert dupes and not [e for e in dupes if "Line" in e or "None" in e], item["errors"]
+
+
+def test_the_caller_must_say_whether_lines_are_named(env):
+    with pytest.raises(TypeError):
+        env.mod.plan([HEADER, _row()], form_basis=BASIS)
 
 
 def test_the_plan_writes_nothing(env):

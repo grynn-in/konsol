@@ -114,7 +114,8 @@ def env(monkeypatch):
     state = types.SimpleNamespace(can_create=True, table=[["h"], ["r"]], plan_report=None,
                                   plan_groups=None, plan_raises=None, plan_calls=[], doc=None,
                                   entries={}, enqueued=[], commits=0, rollbacks=0, job_running=False,
-                                  denied_accounts=set(), fail_on=set(), deleted=[])
+                                  denied_accounts=set(), fail_on=set(), deleted=[],
+                                  plan_lines=[])
 
     def get_doc(arg, name=None):
         if isinstance(arg, dict):
@@ -203,8 +204,9 @@ def env(monkeypatch):
 
     intake = types.ModuleType("konsol.budget_intake")
 
-    def plan(table, *, form_basis):
+    def plan(table, *, form_basis, name_lines):
         state.plan_calls.append((table, form_basis))
+        state.plan_lines.append(name_lines)
         if state.plan_raises:
             raise state.plan_raises
         report = [dict(r, errors=list(r["errors"])) for r in state.plan_report]
@@ -266,6 +268,14 @@ def test_check_file_reports_an_access_denial_and_raises_nothing(env):
     assert env.state.doc.status == "Checked"
     assert stored[1]["errors"] == [denial] and not stored[1]["ok"]
     assert out["valid_count"] == 1
+
+
+def test_the_file_report_names_its_lines(env):
+    # S2-X3: a file's refusals keep their line numbers; the check and the
+    # load both ask the intake for them.
+    env.state.plan_report = [_item("E1", "base")]
+    env.mod.check_file("/files/b.csv", "Period movement")
+    assert env.state.plan_lines == [True]
 
 
 def test_check_file_writes_no_budget_entry(env):
