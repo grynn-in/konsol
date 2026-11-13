@@ -942,7 +942,8 @@ class StartSite:
         return the exception it raised, or None."""
         frappe = types.ModuleType("frappe")
         frappe.get_doc = self.get_doc
-        frappe.db = types.SimpleNamespace(commit=self.commit, rollback=self.rollback, sql=self.sql)
+        frappe.db = types.SimpleNamespace(commit=self.commit, rollback=self.rollback, sql=self.sql,
+                                         exists=lambda *a, **k: None)   # K10: no submitted run
         frappe.publish_realtime = lambda *a, **k: None
         frappe.TimestampMismatchError = TimestampMismatchError
         frappe.utils = types.SimpleNamespace(now_datetime=lambda: START, get_bench_path=lambda: "/zz/bench")
