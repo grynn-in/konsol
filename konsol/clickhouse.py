@@ -769,9 +769,15 @@ _REFERENCE_TABLE_DDL = {
     # with two customers' dimensions as literals, so a site budgeting by
     # dim_region wrote a column the table did not have, and the write-through
     # failed.
+    #
+    # Budget S2 (A7, Q13-a): the layer and the currency of the row, after
+    # main_account as on the doctype, both required there so neither has a
+    # DEFAULT. Identical to konsolidat's clickhouse/init-db.sql (S2-R6;
+    # test_budget_annual_input_ddl.py pins it). Added to an existing table by
+    # _POSITIONED_COLUMNS below.
     "epm_gold.budget_annual_input": (
         "(scenario_id String, data_area_id String, fiscal_year UInt16, "
-        "main_account String, "
+        "main_account String, layer String, currency String, "
         "annual_amount Decimal(18,2), spread_profile_id String, "
         "submitted_by String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, main_account)"
@@ -1160,6 +1166,12 @@ _POSITIONED_COLUMNS = {
         ("path_id", "String", "path"),
         ("link_owner_group", "String", "path_id"),
         ("link_owner_data_area_id", "String", "link_owner_group"),
+    ],
+    # Budget S2 (A7, Q13-a): AFTER main_account, not last, because the site's
+    # dim_* budget columns are already appended to an existing table
+    "epm_gold.budget_annual_input": [
+        ("layer", "String", "main_account"),
+        ("currency", "String", "layer"),
     ],
 }
 

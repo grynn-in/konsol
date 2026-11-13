@@ -21,6 +21,9 @@ FIXED_FIELD_MAP = {
     "data_area_id": "data_area_id",
     "fiscal_year": "fiscal_year",
     "main_account": "main_account",
+    # Budget S2 (A7): both required on the doctype (A5)
+    "layer": "layer",
+    "currency": "currency",
     "annual_amount": "annual_amount",
     "spread_profile_id": "spread_profile_id",
     "submitted_by": "submitted_by",
