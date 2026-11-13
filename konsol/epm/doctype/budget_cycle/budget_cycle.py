@@ -64,6 +64,7 @@ class BudgetCycle(Document):
     def on_submit(self):
         """Push the locked sheets downstream, after the commit (#124/#136)."""
         after_commit_once(("budget_cycle", self.name, "lock"), functools.partial(self._push_sheets, True))
+        self._resync_annual_input()
 
     def before_cancel(self):
         """Unlock the cycle: reopen its sheets for editing."""
@@ -81,6 +82,19 @@ class BudgetCycle(Document):
                 # never be committed.)
                 sheet.db_set("d365_writeback_status", "", update_modified=False)
         after_commit_once(("budget_cycle", self.name, "unlock"), functools.partial(self._push_sheets, False))
+        self._resync_annual_input()
+
+    @staticmethod
+    def _resync_annual_input():
+        """Queue the Budget Annual Input sync, once per transaction, after the
+        commit (BUD-4). Its rows reach ClickHouse only while their cycle has
+        docstatus 1 (CH_SYNC_FILTERS), so they change membership when a cycle
+        is submitted or cancelled, not when they are saved. The sync replaces
+        the whole table, so one sync covers every cycle in the transaction:
+        the key is the doctype's own, shared with Annual Input saves."""
+        from konsol.epm.doctype.budget_annual_input.budget_annual_input import queue_sync
+
+        queue_sync()
 
     def _push_sheets(self, active):
         """Sync every sheet to ClickHouse and queue its D365 push (lock) or

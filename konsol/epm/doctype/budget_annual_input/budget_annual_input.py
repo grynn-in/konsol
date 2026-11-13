@@ -55,15 +55,64 @@ class _FieldMap:
         return {**FIXED_FIELD_MAP, **{d: d for d in budget_dimension_fields()}}
 
 
+#: The filter for "no row qualifies". A name is never NULL or '', so this
+#: matches nothing. Never ``["in", []]``, and never an empty dict:
+#: resolve_sync_filters treats a falsy declaration as none and syncs every row.
+_MATCH_NOTHING = {"name": ["is", "not set"]}
+
+
+def approved_annual_input_names():
+    """Names of the annual rows whose Budget Cycle is approved (docstatus 1).
+
+    BUD-4: the cycle is keyed on (scenario_id, fiscal_year), as this row is.
+    The pair is matched, not each half: approving (S1, 2026) and (S2, 2025)
+    must not approve (S1, 2025). A draft, cancelled or absent cycle approves
+    nothing.
+    """
+    approved = {
+        (c.get("scenario_id"), str(c.get("fiscal_year")))
+        for c in frappe.get_all(
+            "Budget Cycle", filters={"docstatus": 1},
+            fields=["scenario_id", "fiscal_year"], limit_page_length=0)
+    }
+    if not approved:
+        return []
+    rows = frappe.get_all(
+        "Budget Annual Input",
+        filters={"scenario_id": ["in", sorted({s for s, _ in approved})]},
+        fields=["name", "scenario_id", "fiscal_year"], limit_page_length=0)
+    return sorted(r["name"] for r in rows
+                  if (r.get("scenario_id"), str(r.get("fiscal_year"))) in approved)
+
+
+class _SyncFilters:
+    """CH_SYNC_FILTERS, worked out when read (BUD-4).
+
+    Budget Annual Input is not submittable, so without a declaration
+    resolve_sync_filters returns None and every row reaches the warehouse,
+    whatever its cycle's state. Both write paths read this through
+    resolve_sync_filters: the per-save sync (on_update, after_delete) and
+    reconcile_all. Each is a TRUNCATE+INSERT, so a row that leaves the set
+    leaves the warehouse at the next sync.
+    """
+
+    def __get__(self, instance, owner):
+        names = approved_annual_input_names()
+        return {"name": ["in", names]} if names else dict(_MATCH_NOTHING)
+
+
 class BudgetAnnualInput(Document):
     CH_TABLE = "epm_gold.budget_annual_input"
     CH_FIELD_MAP = _FieldMap()
+    CH_SYNC_FILTERS = _SyncFilters()
 
     def validate(self):
         # The copy the Planning sidebar filters on, taken under a share lock
         # so it cannot race a Scenario type change (review of #460).
         from konsol.epm.doctype.scenario.scenario import locked_scenario_type
 
+        self._assert_write_access()
+        self._validate_main_account_published()
         self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
         self._guard_cycle_locked()
@@ -80,8 +129,27 @@ class BudgetAnnualInput(Document):
         the same hole through the budget lock, via the other verb. on_trash is
         the right hook for a REFUSAL (it runs before the row is gone, so the
         throw prevents the delete); the publish stays in after_delete.
+
+        The write-access check runs here too: delete is a write, and a user
+        granted one entity must not delete another's annual figure.
         """
+        self._assert_write_access()
         self._guard_cycle_locked()
+
+    def _validate_main_account_published(self):
+        """The warehouse chart reads Published Main Accounts only, so a row on
+        a Draft or Inactive account would never map. The Link accepts any
+        status; refuse it here. Skipped during install/migrate."""
+        if frappe.flags.in_install or frappe.flags.in_migrate or not self.main_account:
+            return
+        status = frappe.db.get_value("Main Account", self.main_account, "status")
+        if status != "Published":
+            frappe.throw(
+                f"Main Account {self.main_account} is {status}, not Published. "
+                f"The warehouse chart reads Published accounts only, so this "
+                f"budget row would never map. Publish the account or pick a "
+                f"published one."
+            )
 
     def _validate_unique_grain(self):
         """One annual figure per (scenario, entity, year, account, dimensions).
@@ -113,6 +181,23 @@ class BudgetAnnualInput(Document):
                 f"{self.data_area_id} / {self.fiscal_year} / {self.main_account} "
                 f"({dupe}). Two rows at one grain double the spread budget."
             )
+
+    def _assert_write_access(self):
+        """The same entity, account and dimension check the bottom-up budget
+        writes run (api._assert_budget_write_access, konsol#413). Without it a
+        Desk save wrote any entity's annual figure. Skipped during
+        install/migrate only: Desk Data Import sets in_import, and an importing
+        user must not bypass the check."""
+        if frappe.flags.in_install or frappe.flags.in_migrate:
+            return
+        from konsol.api import _assert_budget_write_access
+
+        data = {
+            "data_area_id": self.data_area_id,
+            "main_account": self.main_account,
+        }
+        data.update({d: self.get(d) for d in budget_dimension_fields()})
+        _assert_budget_write_access(data)
 
     def _stamp_submitter(self):
         """submitted_by is an audit field, not free text."""
@@ -149,7 +234,7 @@ class BudgetAnnualInput(Document):
             )
 
     def on_update(self):
-        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        queue_sync()
 
     def after_delete(self):
         """after_delete, NOT on_trash.
@@ -161,4 +246,12 @@ class BudgetAnnualInput(Document):
         GovernedReferenceDocument.after_delete and the Connector registry
         (test_connector_registry, test_dimension_mapping).
         """
-        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+        queue_sync()
+
+
+def queue_sync():
+    """Queue the whole-table sync of Budget Annual Input, once per transaction,
+    after the commit. A save, a delete, and a Budget Cycle submit or cancel
+    (which changes which rows qualify under CH_SYNC_FILTERS) all call this, so
+    they share one key and one sync."""
+    sync_doctype_after_commit("Budget Annual Input", BudgetAnnualInput.CH_TABLE, BudgetAnnualInput.CH_FIELD_MAP)
