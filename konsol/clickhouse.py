@@ -974,6 +974,42 @@ _REFERENCE_TABLE_DDL = {
         "ENGINE = MergeTree() ORDER BY (consolidation_group, journal_id, fiscal_year, "
         "fiscal_period, main_account)"
     ),
+    # konsol#269 (cost allocation phase 1, K1): the run, its accounts, weights,
+    # coefficients and statistics. Identical to konsolidat's clickhouse/init-db.sql
+    # (W1); keep them identical. Pinned by tests/test_cost_allocation_ddl.py.
+    "epm_staging.cost_allocation_runs": (
+        "(name String, rule_set String, method String, allocation_dimension String, "
+        "receiver_account_mode String, allocation_account String, "
+        "amounts_after_approval String, data_area_id String, scenario_id String, "
+        "fiscal_year UInt16, fiscal_period UInt8, computed_at DateTime) "
+        "ENGINE = MergeTree ORDER BY name"
+    ),
+    "epm_staging.cost_allocation_run_accounts": (
+        "(parent String, idx UInt32, main_account String, declared_account String) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
+    "epm_staging.cost_allocation_run_weights": (
+        "(parent String, idx UInt32, step UInt16, sender_member String, "
+        "receiver_member String, driver String, statistic String, value_period UInt8, "
+        "carried_forward UInt8, driver_value Decimal(38,9)) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
+    "epm_staging.cost_allocation_coefficients": (
+        "(run String, origin_member String, step UInt16, sender_member String, "
+        "receiver_member String, driver String, pool_coefficient Decimal(38,12), "
+        "coefficient Decimal(38,12)) "
+        "ENGINE = MergeTree ORDER BY (run, origin_member, step, receiver_member)"
+    ),
+    "epm_staging.cost_allocation_statistics": (
+        "(name String, driver String, dimension String, data_area_id String, "
+        "scenario_id String, fiscal_year UInt16) "
+        "ENGINE = MergeTree ORDER BY name"
+    ),
+    "epm_staging.cost_allocation_statistic_values": (
+        "(parent String, idx UInt32, fiscal_period UInt8, member String, "
+        "value Decimal(38,9)) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
 }
 
 # Relations a previous release wrote and this one abandoned. Nothing truncates a
