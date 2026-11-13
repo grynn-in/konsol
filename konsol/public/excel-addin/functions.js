@@ -315,8 +315,30 @@ function cf(group, year, period, line) {
 
 var saveCache = {};
 
-function epmSave(amount, entity, year, period, account, scenarioId, layer, dimensions, hierarchy, node) {
+// EPMSAVE's currency and amount basis (konsol#348 S2-X3): the server requires
+// both and defaults neither, so a blank one is refused here, naming its
+// argument, before anything is sent. They come after `node` so that no
+// existing argument moves; Excel needs optional parameters last, so
+// functions.json declares them optional and this check makes them required.
+function requiredSaveArgs(currency, amountBasis) {
+  var missing = [];
+  if (!cellText(Array.isArray(currency) ? currency[0] && currency[0][0] : currency)) {
+    missing.push("currency (argument 11, the ISO code the amount is in, e.g. EUR)");
+  }
+  if (!cellText(Array.isArray(amountBasis) ? amountBasis[0] && amountBasis[0][0] : amountBasis)) {
+    missing.push("amountBasis (argument 12, Movement or Year-to-date)");
+  }
+  if (missing.length) {
+    throw new CustomFunctions.Error(
+      CustomFunctions.ErrorCode.invalidValue,
+      "K.EPMSAVE needs " + missing.join(" and ") + ": a budget figure states both, and neither is defaulted."
+    );
+  }
+}
+
+function epmSave(amount, entity, year, period, account, scenarioId, layer, dimensions, hierarchy, node, currency, amountBasis) {
   checkArity(arguments, epmSave, "EPMSAVE");
+  requiredSaveArgs(currency, amountBasis);
   var amt = Number(amount);
 
   if (!isFinite(amt) || !isFinite(Number(year)) || !isFinite(Number(period))) {
@@ -327,7 +349,8 @@ function epmSave(amount, entity, year, period, account, scenarioId, layer, dimen
 
   var dims = parseDimensions(dimensions);
   var key = [scenarioId, entity, year, period, account, layer,
-             dimensionsKey(dims), hierarchy || "", node || ""].join("|");
+             dimensionsKey(dims), hierarchy || "", node || "",
+             String(currency), String(amountBasis)].join("|");
   if (saveCache[key] === amt) {
     return amt;
   }
@@ -339,7 +362,9 @@ function epmSave(amount, entity, year, period, account, scenarioId, layer, dimen
     main_account: String(account),
     fiscal_period: Number(period),
     amount: amt,
-    layer: String(layer)
+    layer: String(layer),
+    currency: String(currency),
+    amount_basis: String(amountBasis)
   };
   if (dims) data.dimensions = dims;
   if (hierarchy) data.hierarchy = String(hierarchy);

@@ -31,11 +31,17 @@ The other functions have their own argument order. `dimensions` is the fifth arg
 =K.EPM_VARIANCE(entity, year, period, account, [dimensions], [scenarioId], [hierarchy], [node])
 =K.EPM_DEBIT(entity, year, period, account, [dimensions], [hierarchy], [node])
 =K.EPM_CREDIT(entity, year, period, account, [dimensions], [hierarchy], [node])
-=K.EPMSAVE(amount, entity, year, period, account, scenarioId, layer, [dimensions], [hierarchy], [node])
+=K.EPMSAVE(amount, entity, year, period, account, scenarioId, layer, [dimensions], [hierarchy], [node], currency, amountBasis)
 =K.CF(group, year, period, line)
 ```
 
-`K.EPMSAVE` writes a budget figure.
+`K.EPMSAVE` writes a budget figure. Its last two arguments are required: `currency` is the ISO code the amount is in (the entity's functional currency, for example `EUR`), and `amountBasis` is `Movement` or `Year-to-date`. Neither is defaulted. They come after `node`, so leave the optional arguments empty to reach them:
+
+```
+=K.EPMSAVE(1000, "E1", 2026, 3, "6100", "PLAN26", "base", , , , "EUR", "Movement")
+```
+
+A formula written without them shows `#VALUE!` and names the missing argument.
 
 ## Reports
 
