@@ -436,3 +436,48 @@ def test_rule_set_controller_refuses_unpublished_dimension():
 def test_rule_set_controller_refuses_dimension_not_in_budget():
     msg = _refusal(_rs_doc(_rs_module(state=("Published", 0))))
     assert msg and "In Budget" in msg
+
+
+# === K11 (konsol#269): the Allocation section of the Planning sidebar ========
+
+PLANNING_SIDEBAR = os.path.join(APP_DIR, "epm", "sidebar", "planning", "planning.json")
+NAVIGATION_TEST = os.path.join(APP_DIR, "tests", "test_desk_navigation.py")
+#: The Planning sidebar's modified value on feat/cost-allocation-p1, before K11.
+PLANNING_MODIFIED_BEFORE_K11 = "2026-11-08 02:00:00.000000"
+COST_ALLOCATION_DOCTYPES = (
+    "Cost Allocation Driver", "Cost Allocation Statistic",
+    "Cost Allocation Rule Set", "Cost Allocation Run")
+
+
+def _planning():
+    with open(PLANNING_SIDEBAR) as f:
+        return json.load(f)
+
+
+def test_sidebar_planning_has_allocation_section_with_four_links_in_order():
+    items = _planning()["items"]
+    starts = [i for i, row in enumerate(items)
+              if row["type"] == "Section Break" and row["label"] == "Allocation"]
+    assert len(starts) == 1, starts
+    rows = items[starts[0] + 1:]
+    assert all(row["type"] == "Link" and row["link_type"] == "DocType" for row in rows), rows
+    assert [(row["link_to"], row["label"]) for row in rows] == [
+        ("Cost Allocation Driver", "Drivers"),
+        ("Cost Allocation Statistic", "Statistics"),
+        ("Cost Allocation Rule Set", "Rule Sets"),
+        ("Cost Allocation Run", "Runs"),
+    ], rows
+    assert all(row["child"] == 1 and row["is_default_module"] == 1 for row in rows), rows
+
+
+def test_sidebar_planning_modified_is_later_than_before_k11():
+    assert _planning()["modified"] > PLANNING_MODIFIED_BEFORE_K11, _planning()["modified"]
+
+
+def test_sidebar_cost_allocation_doctypes_are_not_in_not_on_a_sidebar():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_desk_navigation_k11", NAVIGATION_TEST)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    left = sorted(set(COST_ALLOCATION_DOCTYPES) & module.NOT_ON_A_SIDEBAR)
+    assert left == [], left
