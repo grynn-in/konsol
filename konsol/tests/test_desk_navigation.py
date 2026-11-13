@@ -126,6 +126,7 @@ SIDEBARS = {
         ("DocType", "Scenario"),
         ("DocType", "Spread Profile"),
         ("DocType", "Budget Layer"),
+        ("DocType", "Budget Upload"),
         ("DocType", "Budget Cycle"),
         ("DocType", "Budget Sheet"),
         ("DocType", "Budget Annual Input"),
