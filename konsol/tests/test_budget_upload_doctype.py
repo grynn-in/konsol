@@ -97,8 +97,11 @@ def test_permissions():
         p = perms[role]
         for k in ("read", "write", "create"):
             assert p.get(k) == 1, (role, k)
-        for k in ("delete", "submit", "cancel"):
+        for k in ("submit", "cancel"):
             assert not p.get(k), (role, k)
+    # As on Trial Balance Upload: EPM Admin may delete an upload, the analyst may not.
+    assert perms["EPM Admin"].get("delete") == 1
+    assert not perms["EPM Analyst"].get("delete")
     # Entity Accountant is left out: a multi-entity file has no data_area_id,
     # so Frappe cannot scope it (test_role_access, ENTITY_SCOPED_DOCTYPES).
     assert set(perms) == {"System Manager", "EPM Admin", "EPM Analyst"}
