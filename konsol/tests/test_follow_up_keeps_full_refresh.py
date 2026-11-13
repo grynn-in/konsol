@@ -198,6 +198,21 @@ def test_a_plain_request_while_running_gets_a_plain_follow_up():
     assert len(site.created) == 1 and site.rows[site.created[0]].full_refresh == 0
 
 
+def test_a_failed_full_refresh_build_passes_its_own_refresh_to_the_follow_up():
+    """A full-refresh build absorbs a plain request, then fails (a dbt error
+    or a timeout): its refresh may never have reached the warehouse, so the
+    follow-up runs with --full-refresh. A build that completed does not."""
+    for state, expected in (("Failed", 1), ("Completed", 0)):
+        site = Site(**{"BA-1": dict(workflow_state="Running", full_refresh=1)})
+
+        def steps(lifecycle, tasks):
+            site.publish(lifecycle, full_refresh=False)
+            site.finish(tasks, "BA-1", state=state)
+        _run(site, steps)
+        assert len(site.created) == 1, (state, site.created)
+        assert site.rows[site.created[0]].full_refresh == expected, state
+
+
 def test_a_full_refresh_follow_up_absorbed_by_a_pending_build_raises_its_flag():
     """A request committed between the finish and its follow-up made a new
     pending approval; the follow-up is absorbed into it, which must then run
@@ -229,7 +244,11 @@ def test_a_reaped_running_build_passes_its_pending_full_refresh_on():
     decide = _reaper().follow_up_full_refresh
     ran = dict(workflow_state="Failed", started_at="2026-11-13 10:00")
     assert decide(dict(ran, rebuild_full_refresh=1, full_refresh=0)) is True
-    assert decide(dict(ran, rebuild_full_refresh=0, full_refresh=1)) is False, "it ran its own refresh"
+    assert decide(dict(ran, rebuild_full_refresh=0, full_refresh=1)) is True, (
+        "it failed: its own refresh may never have been applied")
+    done = dict(workflow_state="Completed", started_at="2026-11-13 10:00")
+    assert decide(dict(done, rebuild_full_refresh=0, full_refresh=1)) is False, "it ran its own refresh"
+    assert decide(dict(done, rebuild_full_refresh=1, full_refresh=0)) is True
     never = dict(workflow_state="Failed", started_at=None)
     assert decide(dict(never, rebuild_full_refresh=0, full_refresh=1)) is True, "never ran it"
     assert decide(dict(never, rebuild_full_refresh=0, full_refresh=0)) is False

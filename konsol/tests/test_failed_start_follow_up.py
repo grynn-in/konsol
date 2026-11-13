@@ -327,6 +327,25 @@ def test_a_reset_of_a_row_that_ran_starts_it_over():
     assert doc.rebuild_requested == 0 and doc.error_message is None and doc.started_at is None
 
 
+def test_a_stale_save_never_clears_the_pending_full_refresh_and_a_rerun_spends_it():
+    """#261: build_lock.flag_full_refresh sets it with SQL, without bumping
+    modified, so a form or job holding the row from before saves a 0 over it."""
+    BuildApproval = _build_approval()
+    run = dict(started_at=START, completed_at=None, duration_seconds=0)
+    before = types.SimpleNamespace(workflow_state="Running", rebuild_requested=1, rebuild_full_refresh=1, **run)
+    doc = BuildApproval(before=before, workflow_state="Running", rebuild_requested=1, rebuild_full_refresh=0,
+                        build_scope="staging", requested_by="Administrator", error_message=None, **run)
+    doc.before_save()
+    assert doc.rebuild_full_refresh == 1, "a stale save kept it"
+    before = types.SimpleNamespace(workflow_state="Completed", rebuild_requested=1, rebuild_full_refresh=1,
+                                   started_at=START, completed_at=START, duration_seconds=300.0)
+    doc = BuildApproval(before=before, workflow_state="Draft", rebuild_requested=1, rebuild_full_refresh=1,
+                        build_scope="staging", requested_by="Administrator", error_message=None,
+                        started_at=START, completed_at=START, duration_seconds=300.0)
+    doc.before_save()
+    assert doc.rebuild_full_refresh == 0 and doc.rebuild_requested == 0, "a rerun spends both"
+
+
 def test_a_reset_of_a_finished_row_spends_its_flag():
     for state in ("Completed", "Failed"):
         doc = _save(state, 1, "Draft", 1, started_at=START)
@@ -741,11 +760,12 @@ def test_a_reaped_running_build_is_still_followed_up():
 
 def test_a_reaper_follow_up_carries_a_full_refresh_that_never_ran():
     """#261: a schema change's --full-refresh is never dropped by a follow-up.
-    A reaped Running row passes on the refresh it absorbed (its own ran, or
-    never could); a row that never started passes on its own."""
+    A reaped row passes on the refresh it absorbed and its own: it failed,
+    so its own may never have landed."""
     cases = (
         (dict(lost_job("BA-1"), workflow_state="Running", started_at=START, rebuild_full_refresh=1), 1),
-        (dict(lost_job("BA-1"), workflow_state="Running", started_at=START, full_refresh=1), 0),
+        # a full-refresh build that died: its refresh may never have landed
+        (dict(lost_job("BA-1"), workflow_state="Running", started_at=START, full_refresh=1), 1),
         (dict(lost_job("BA-1"), full_refresh=1), 1),
         (lost_job("BA-1"), 0),
     )
