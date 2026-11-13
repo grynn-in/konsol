@@ -12,6 +12,9 @@ lists every missing (step, receiver, period), unless the driver declares
 carry-forward, in which case the latest earlier period's value is used and the
 row is flagged.
 """
+import csv
+import io
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -370,3 +373,59 @@ def coefficient_rows(run_name, steps, weights, method):
         raise CostAllocationError("Method must be one of %s, not %r." % (", ".join(METHODS), method))
     return [{"run": run_name, **{c: r[c] for c in COEFFICIENT_COLUMNS[1:]}}
             for r in round_coefficients(exact, weights)]
+
+
+# -- statistic CSV (K5b) -------------------------------------------------------
+
+STATISTIC_HEADER = ("fiscal_period", "member", "value")
+STATISTIC_MAX_ROWS = 20000
+_DECIMAL = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)")
+_INTEGER = re.compile(r"[+-]?\d+")
+
+
+def parse_statistic_csv(text):
+    """Parse a statistic file into [{fiscal_period, member, value}], all or
+    nothing: every bad row is reported at once, by its row number (the header
+    is row 1). `value` is a Decimal built from the exact text, so 10.10 stays
+    10.10. A UTF-8 byte-order mark and CRLF line ends are accepted."""
+    text = text.lstrip("\ufeff")
+    if not text.strip():
+        raise CostAllocationError("The file is empty.")
+    lines = list(csv.reader(io.StringIO(text, newline="")))
+    header = tuple(c.strip().lower() for c in lines[0])
+    if header != STATISTIC_HEADER:
+        raise CostAllocationError(
+            "The header must be exactly fiscal_period,member,value; "
+            f"found {','.join(c.strip() for c in lines[0])}.")
+    errors, rows, seen = [], [], 0
+    for number, cells in enumerate(lines[1:], start=2):
+        if not any(c.strip() for c in cells):
+            continue
+        seen += 1
+        if seen > STATISTIC_MAX_ROWS:
+            errors.append(
+                f"More than {STATISTIC_MAX_ROWS:,} data rows (from row {number}); "
+                "split the statistic by entity, scenario or year.")
+            break
+        if len(cells) != 3:
+            errors.append(f"Row {number}: expected 3 columns, found {len(cells)}.")
+            continue
+        period, member, value = (c.strip() for c in cells)
+        problems = []
+        if not _INTEGER.fullmatch(period):
+            problems.append(f"fiscal_period {period!r} is not a whole number")
+        if not member:
+            problems.append("member is blank")
+        if not _DECIMAL.fullmatch(value):
+            problems.append(f"value {value!r} is not a decimal number")
+        elif Decimal(value) < 0:
+            problems.append(f"value {value} is negative")
+        if problems:
+            errors.append(f"Row {number}: " + "; ".join(problems) + ".")
+            continue
+        rows.append({"fiscal_period": int(period), "member": member, "value": Decimal(value)})
+    if errors:
+        raise CostAllocationError(errors)
+    if not rows:
+        raise CostAllocationError("The file has a header but no data rows.")
+    return rows

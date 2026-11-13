@@ -9,6 +9,7 @@ import frappe
 from frappe.model.document import Document
 
 from konsol import period_status
+from konsol.cost_allocation_model import CostAllocationError, parse_statistic_csv
 from konsol.clickhouse import sync_doctype_after_commit
 from konsol.epm.doctype.cost_allocation_statistic_value.cost_allocation_statistic_value import (
     CostAllocationStatisticValue,
@@ -131,3 +132,30 @@ class CostAllocationStatistic(Document):
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
         for doctype, controller in self.CHILD_CONTROLLERS.items():
             sync_doctype_after_commit(doctype, controller.CH_TABLE, controller.CH_FIELD_MAP)
+
+
+@frappe.whitelist(methods=["POST"])
+def load_values_from_file(name):
+    """Replace every value row from the attached CSV (K5b). A draft only.
+    All or nothing: the file is parsed in full before any row changes, and the
+    save re-runs validate (periods, members, duplicates); a refusal there
+    leaves the stored document as it was, because the request rolls back."""
+    doc = frappe.get_doc("Cost Allocation Statistic", name)
+    doc.check_permission("write")
+    if doc.docstatus != 0 or doc.status != "Draft":
+        frappe.throw(f"{_PREFIX}values can be loaded into a draft only.")
+    if not doc.values_file:
+        frappe.throw(f"{_PREFIX}attach a CSV file in Values File first.")
+    content = frappe.get_doc("File", {"file_url": doc.values_file}).get_content()
+    try:
+        text = content.decode("utf-8-sig") if isinstance(content, bytes) else content
+        rows = parse_statistic_csv(text)
+    except UnicodeDecodeError:
+        frappe.throw(f"{_PREFIX}the file is not UTF-8 text; save it as CSV UTF-8.")
+    except CostAllocationError as e:
+        frappe.throw(f"{_PREFIX}the file was not loaded.<br>" + "<br>".join(e.errors))
+    doc.set("values", [])
+    for r in rows:
+        doc.append("values", {"fiscal_period": r["fiscal_period"], "member": r["member"],
+                              "value": float(r["value"])})
+    doc.save()
