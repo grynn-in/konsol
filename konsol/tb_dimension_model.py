@@ -60,6 +60,15 @@ PUBLISHED = "Published"
 
 FLAG = "in_trial_balance"
 
+#: Where each Dimension flag puts a dimension, as a refusal says it. A file
+#: may be judged against another flag (``in_budget`` for a budget file,
+#: konsol#348); a flag missing here raises KeyError rather than borrow the
+#: trial balance's words.
+_FLAG_PLACE = {
+    FLAG: "on the trial balance",
+    "in_budget": "in the budget",
+}
+
 #: Strings a Check field can arrive as that mean "off". A Frappe Check is an
 #: int, but a row that came through JSON, CSV or a REST payload can carry the
 #: text "0" — which is truthy in Python. Treating it as on would switch a
@@ -135,11 +144,12 @@ def accepted_dimensions_sentence(accepted):
     return f"This site also accepts the optional dimension column(s) {shown}."
 
 
-def accepted_dimension_columns(declared_rows):
+def accepted_dimension_columns(declared_rows, flag=FLAG):
     """The dim_* header names a trial-balance file may carry.
 
     `declared_rows` is an iterable of dicts with ``dimension_name``, ``status``
-    and ``in_trial_balance``. A name is accepted only when it is a legal
+    and ``in_trial_balance`` (or the `flag` given: ``in_budget`` for a budget
+    file). A name is accepted only when it is a legal
     dimension name AND the Dimension is Published AND the flag is ticked;
     accepted names are taken verbatim, which is now safe because a legal name
     is already lower snake case and so is every header the parsers produce.
@@ -149,12 +159,15 @@ def accepted_dimension_columns(declared_rows):
         for row in declared_rows
         if is_legal_dimension_name(row.get("dimension_name"))
         and row.get("status") == PUBLISHED
-        and _is_on(row.get(FLAG))
+        and _is_on(row.get(flag))
     )
 
 
-def dimension_problems(headers, declared_rows):
+def dimension_problems(headers, declared_rows, flag=FLAG):
     """Sentences describing every dim_* header the file may not carry.
+
+    `flag` is the Dimension flag the file is judged against, as for
+    accepted_dimension_columns.
 
     `headers` are the file's header names, already alias-resolved and
     lowercased. Blank headers are not columns and non-``dim_*`` headers are
@@ -165,6 +178,7 @@ def dimension_problems(headers, declared_rows):
     four refusals it is, so the caller can show the reader what to do. A
     header repeated in the file is reported once.
     """
+    place = _FLAG_PLACE[flag]   # an unknown flag fails here, not at the first refusal
     by_name = {}
     # Dimensions whose own name is illegal, keyed the way a parser would have
     # rendered them as a header (lower-cased, padding gone). This map is used
@@ -220,9 +234,9 @@ def dimension_problems(headers, declared_rows):
             )
             continue
 
-        if not _is_on(row.get(FLAG)):
+        if not _is_on(row.get(flag)):
             problems.append(
-                f'Column "{name}" names a dimension that is not on the trial balance; '
-                f"tick {FLAG} on the Dimension {name} before a file may carry it."
+                f'Column "{name}" names a dimension that is not {place}; '
+                f"tick {flag} on the Dimension {name} before a file may carry it."
             )
     return problems
