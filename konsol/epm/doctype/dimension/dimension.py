@@ -198,11 +198,13 @@ class Dimension(Document):
                 f"header of exactly that name: it must be the four characters "
                 f"dim_ followed by one or more lower-case letters, digits or "
                 f"underscores, and nothing else — no capitals, spaces, "
-                f"punctuation or surrounding blanks. Either rename it, or leave "
+                f"punctuation or surrounding blanks. Either create a new dimension under a legal name, or leave "
                 f"the name alone and untick Include in Trial Balance if this "
                 f"dimension belongs only to fact tables, where no prefix is "
                 f"required. A published budget dimension must stay in the "
-                f"trial balance (BUD-8-2), so it has to be renamed. konsol will not lower-case or trim the "
+                f"trial balance (BUD-8-2), so create a new dimension under a "
+                f"legal dim_ name instead; dimensions cannot be renamed. "
+                f"konsol will not lower-case or trim the "
                 f"name for you, because two dimensions differing only in case "
                 f"would end up sharing one column.",
                 frappe.ValidationError,
@@ -257,8 +259,9 @@ class Dimension(Document):
             f"Budget ticked and Include in Trial Balance unticked. A budget "
             f"dimension must also be a trial-balance dimension, so budget and "
             f"actuals compare like-for-like in variance. Either tick Include "
-            f"in Trial Balance, or untick Include in Budget. To keep it as it "
-            f"is, unpublish it instead.",
+            f"in Trial Balance (its name must then start with dim_; if it does "
+            f"not, create a new dim_ dimension instead), or untick Include in "
+            f"Budget. To keep it as it is, unpublish it instead.",
             frappe.ValidationError,
         )
 

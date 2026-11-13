@@ -23,12 +23,15 @@ ROWS = [
 ]
 
 
-def _run():
+def _run(source=None):
     writes = []
+    calls = []
+    logged = []
 
     def get_all(doctype, filters=None, fields=None, **kw):
         assert doctype == "Dimension"
-        rows = [r for r in ROWS if all(r.get(k) == v for k, v in (filters or {}).items())]
+        calls.append(filters)
+        rows = [r for r in (ROWS if source is None else source) if all(r.get(k) == v for k, v in (filters or {}).items())]
         return [{"name": r["name"]} for r in rows]
 
     def forbidden(name):
@@ -39,6 +42,7 @@ def _run():
     frappe = types.ModuleType("frappe")
     frappe.get_all = get_all
     frappe.get_list = get_all
+    frappe.log_error = lambda *a, **k: logged.append((a, k))
     frappe.get_doc = forbidden("get_doc")
     frappe.delete_doc = forbidden("delete_doc")
     frappe.db = types.SimpleNamespace(
@@ -59,26 +63,50 @@ def _run():
             sys.modules.pop("frappe", None)
         else:
             sys.modules["frappe"] = saved
-    return buf.getvalue(), writes
+    return buf.getvalue(), writes, calls, logged
 
 
 def test_names_both_offenders_and_both_fixes():
-    out, _ = _run()
+    out = _run()[0]
     assert "dim_cost_center" in out
     assert "dim_department" in out
-    assert "In Trial Balance" in out
-    assert "In Budget" in out
+    assert "Include in Trial Balance" in out
+    assert "Include in Budget" in out
+    assert "unpublish" in out
+
+
+def test_filter_is_exactly_published_budget_not_tb():
+    calls = _run()[2]
+    assert calls == [{"status": "Published", "in_budget": 1, "in_trial_balance": 0}]
+
+
+def _flat(entry):
+    a, k = entry
+    return " ".join(str(x) for x in a) + " " + " ".join(str(v) for v in k.values())
+
+
+def test_log_error_called_with_both_offenders():
+    logged = _run()[3]
+    assert len(logged) == 1
+    text = _flat(logged[0])
+    assert "dim_cost_center" in text and "dim_department" in text
+    assert logged[0][1].get("title") and logged[0][1].get("message")
+
+
+def test_log_error_not_called_when_no_offenders():
+    logged = _run(source=[])[3]
+    assert logged == []
 
 
 def test_unpublished_and_compliant_dimensions_not_named():
-    out, _ = _run()
+    out = _run()[0]
     assert "dim_draft_only" not in out
     assert "dim_in_tb" not in out
     assert "dim_not_budget" not in out
 
 
 def test_no_write_call():
-    _, writes = _run()
+    writes = _run()[1]
     assert writes == []
 
 

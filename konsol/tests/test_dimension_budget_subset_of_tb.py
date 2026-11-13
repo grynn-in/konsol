@@ -126,6 +126,17 @@ def test_the_refusal_states_both_fixes():
     # The form's labels, the only names of these settings an admin has seen.
     assert "tick Include in Trial Balance" in msg, msg
     assert "untick Include in Budget" in msg, msg
+    assert (
+        "(its name must then start with dim_; if it does not, create a new "
+        "dim_ dimension instead)"
+    ) in msg, msg
+
+
+def test_the_name_rule_says_create_new_not_rename():
+    msg = _refusal(_doc(in_trial_balance=1, name="zz_budget_only"))
+    assert "create a new dimension under a legal dim_ name instead" in msg, msg
+    assert "dimensions cannot be renamed" in msg, msg
+    assert "has to be renamed" not in msg, msg
 
 
 def test_published_with_both_flags_passes():
