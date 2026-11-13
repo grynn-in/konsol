@@ -205,9 +205,10 @@ def test_an_access_denial_is_kept_apart_from_other_problems(env):
     (denial,) = refused["denials"]
     assert "Not permitted to write entity E2" in denial
     assert denial in refused["errors"]
-    # The layer's writer role is a declared rule, not an access grant.
-    assert not [d for d in refused["denials"] if "Budget Approver" in d]
-    assert any("Budget Approver" in e for e in refused["errors"])
+    # Review fix 7a: the layer's writer role is an access denial too (403);
+    # the CSV report still names it among the errors.
+    (role,) = [d for d in refused["denials"] if "Budget Approver" in d]
+    assert role in refused["errors"]
 
 
 def test_a_clean_group_has_no_denials(env):
@@ -412,7 +413,8 @@ def test_an_annual_row_in_an_undeclared_layer_is_refused(env):
 
 
 def test_an_annual_row_in_a_role_held_layer_needs_the_role(env):
-    with pytest.raises(Thrown, match="Budget Approver"):
+    # An access denial (review fix 7a), as on the cell path.
+    with pytest.raises(Denied, match="Budget Approver"):
         _annual_check(env, layer="board")
     env.state.roles = ["Budget Approver"]
     _annual_check(env, layer="board")
@@ -437,3 +439,11 @@ def test_an_ungranted_annual_row_raises_the_permission_error(env):
 def test_the_annual_access_check_alone_runs_for_a_delete(env):
     env.mod.assert_annual_access(_annual(layer="nope", currency="USD"))
     assert len(env.state.access_calls) == 1
+
+
+def test_a_writer_role_refusal_is_a_denial_even_when_access_is_granted(env):
+    plan = env.plan([HEADER, _row(layer="board")])
+    (item,) = plan["report"]
+    (denial,) = item["denials"]
+    assert "board" in denial and "Budget Approver" in denial
+    assert item["errors"] == [denial]

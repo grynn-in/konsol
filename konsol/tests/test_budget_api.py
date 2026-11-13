@@ -709,3 +709,12 @@ def test_a_batch_with_a_stale_period_rolls_back_whole_and_raises_the_409(cell):
     assert raised.value.http_status_code == 409
     assert str(raised.value).startswith("Row 2: ")
     assert json.loads(json.dumps(cell.state.entries)) == before, "nothing of the batch stands"
+
+
+# --- review fix 7a: a layer's writer role refuses with a 403 ----------------------
+
+def test_a_cell_in_a_layer_whose_writer_role_the_user_lacks_is_a_permission_error(cell):
+    cell.data["Budget Layer"].append({"name": "board", "writer_role": "Budget Approver", "sort_order": 2})
+    with pytest.raises(_Denied, match="Budget Approver"):
+        cell.post(layer="board")
+    assert not cell.state.entries
