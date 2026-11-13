@@ -112,6 +112,7 @@ class BudgetAnnualInput(Document):
         from konsol.epm.doctype.scenario.scenario import locked_scenario_type
 
         self._assert_write_access()
+        self._validate_main_account_published()
         self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
         self._guard_cycle_locked()
@@ -128,8 +129,27 @@ class BudgetAnnualInput(Document):
         the same hole through the budget lock, via the other verb. on_trash is
         the right hook for a REFUSAL (it runs before the row is gone, so the
         throw prevents the delete); the publish stays in after_delete.
+
+        The write-access check runs here too: delete is a write, and a user
+        granted one entity must not delete another's annual figure.
         """
+        self._assert_write_access()
         self._guard_cycle_locked()
+
+    def _validate_main_account_published(self):
+        """The warehouse chart reads Published Main Accounts only, so a row on
+        a Draft or Inactive account would never map. The Link accepts any
+        status; refuse it here. Skipped during install/migrate."""
+        if frappe.flags.in_install or frappe.flags.in_migrate or not self.main_account:
+            return
+        status = frappe.db.get_value("Main Account", self.main_account, "status")
+        if status != "Published":
+            frappe.throw(
+                f"Main Account {self.main_account} is {status}, not Published. "
+                f"The warehouse chart reads Published accounts only, so this "
+                f"budget row would never map. Publish the account or pick a "
+                f"published one."
+            )
 
     def _validate_unique_grain(self):
         """One annual figure per (scenario, entity, year, account, dimensions).
@@ -166,8 +186,9 @@ class BudgetAnnualInput(Document):
         """The same entity, account and dimension check the bottom-up budget
         writes run (api._assert_budget_write_access, konsol#413). Without it a
         Desk save wrote any entity's annual figure. Skipped during
-        install/migrate/import, as the cycle guard is."""
-        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_import:
+        install/migrate only: Desk Data Import sets in_import, and an importing
+        user must not bypass the check."""
+        if frappe.flags.in_install or frappe.flags.in_migrate:
             return
         from konsol.api import _assert_budget_write_access
 
