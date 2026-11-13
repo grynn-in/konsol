@@ -18,6 +18,7 @@ HOOKS = {
     "konsol.entity_permissions.has_entity_doc_permission",
     "konsol.entity_permissions.has_close_event_permission",
     "konsol.tb_bulk.has_upload_permission",
+    "konsol.budget_bulk.has_upload_permission",
     "konsol.handbook.has_guide_page_permission",
 }
 
@@ -84,13 +85,21 @@ def test_upload_hook_returns_exact_bools():
         ({"ZZA", "ZZB"}, "x@example.com", True),  # sees every entity in it
         ({"ZZA"}, "x@example.com", False),        # misses one entity
     ]
-    for allowed, owner, expected in cases:
-        env = {"json": json, "frappe": frappe_stub,
-               "allowed_entity_codes": lambda user=None, a=allowed: a}
-        _load_functions("tb_bulk.py", ["has_upload_permission"], env)
-        doc = types.SimpleNamespace(owner=owner, report=report)
-        got = env["has_upload_permission"](doc, "u@example.com")
-        assert got is expected, f"allowed={allowed!r} owner={owner} returned {got!r}"
+    # The budget upload holds every entity's figures too (review fix 8).
+    for module in ("tb_bulk.py", "budget_bulk.py"):
+        for allowed, owner, expected in cases:
+            env = {"json": json, "frappe": frappe_stub,
+                   "allowed_entity_codes": lambda user=None, a=allowed: a}
+            _load_functions(module, ["has_upload_permission"], env)
+            doc = types.SimpleNamespace(owner=owner, report=report)
+            got = env["has_upload_permission"](doc, "u@example.com")
+            assert got is expected, f"{module} allowed={allowed!r} owner={owner} returned {got!r}"
+
+
+def test_budget_upload_is_owner_scoped_like_the_trial_balance_upload():
+    src = _src("hooks.py")
+    assert 'has_permission["Budget Upload"] = "konsol.budget_bulk.has_upload_permission"' in src
+    assert 'permission_query_conditions["Budget Upload"] = "konsol.budget_bulk.upload_conditions"' in src
 
 
 def test_guide_page_hook_returns_exact_bools():

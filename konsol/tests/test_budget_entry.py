@@ -474,3 +474,9 @@ def test_entry_name_is_the_autoname(env):
     doc = _entry(env)
     doc.autoname()
     assert env.ctl.entry_name("BCYC-1", "E1", "base", 3) == doc.name
+
+
+# ---- review fix 8: the layer says what it is ----------------------------------------
+
+def test_layer_has_help_text():
+    assert _fields()["layer"].get("description"), "a non-obvious field carries help text"
