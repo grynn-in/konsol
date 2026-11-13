@@ -70,6 +70,7 @@ NOT_ON_A_SIDEBAR = {
     "Cost Allocation Run",
     # konsol#269 K4: same, K11 removes it.
     "Cost Allocation Rule Set",
+    "Cost Allocation Statistic",
 }
 
 #: The rail, top to bottom: (title, link_type, link_to).
