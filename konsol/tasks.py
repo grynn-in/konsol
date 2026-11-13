@@ -10,7 +10,7 @@ import time
 import frappe
 
 from konsol.airbyte_service import AirbyteClient
-from konsol.build_command import dbt_build_command
+from konsol.build_command import dbt_build_command, isolated_scopes
 # reaper.py imports nothing from konsol at module level, so this can't cycle.
 from konsol.orchestrator.reaper import START_FAILURE_PREFIX
 
@@ -34,6 +34,9 @@ def _dbt_bin():
 # #305-D2-10). None stops at "staging" — a staging-only build would leave the
 # consolidated numbers stale. Trial Balance Submission maps to "full": its rows
 # reach every gold domain, not only consolidation's (konsol#334).
+# The isolated Build Scope rebuilt after a close build changes its inputs (K10).
+ALLOCATION_SCOPE = "allocation"
+
 DOCTYPE_BUILD_MAP = {
     # konsol#306, #305-D2-10: was "staging" — staging rebuilds
     # gold_consolidation_adjustments etc. but not gold_fully_consolidated_tb
@@ -576,6 +579,21 @@ def _finish_governed_build(doc, pipeline_run=None):
         except Exception:
             frappe.db.rollback()   # the job commits on return; don't keep half a request
             frappe.log_error(title=f"Follow-up build request for {doc.name} failed")
+
+    # K10 (konsol#269): allocation lines read gold_scenario_trial_balance, and
+    # every build but the allocation one excludes the allocation models (K9a).
+    # So a completed build of any other scope leaves submitted runs stale:
+    # request the allocation build, once, after the commit. Not after a
+    # failed build (nothing changed), nor after an isolated scope's own build
+    # (no loop).
+    if (doc.workflow_state == "Completed"
+            and doc.build_scope not in isolated_scopes()
+            and frappe.db.exists("Cost Allocation Run", {"docstatus": 1})):
+        try:
+            request_build_for_scope(ALLOCATION_SCOPE, "Build Approval", doc.name)
+        except Exception:
+            frappe.db.rollback()
+            frappe.log_error(title=f"Allocation follow-up build request for {doc.name} failed")
 
 
 STOPPED_BEFORE_DBT = "Governed build stopped: its Pipeline Run was finished before dbt started"

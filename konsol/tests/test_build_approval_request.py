@@ -829,7 +829,7 @@ def test_allocation_follow_up_after_a_completed_close_build_with_a_submitted_run
     for scope in ("full", "consolidation", "actuals"):
         requests, exists_calls, name = _finish("Completed", scope, True)
         assert name == "allocation"
-        assert [a[0] for a, _ in requests] == [("allocation", "Build Approval", "BA-1")], (scope, requests)
+        assert [a for a, _ in requests] == [("allocation", "Build Approval", "BA-1")], (scope, requests)
         assert exists_calls == [("Cost Allocation Run", {"docstatus": 1})]
 
 
