@@ -129,6 +129,7 @@ SIDEBARS = {
         ("DocType", "Budget Upload"),
         ("DocType", "Budget Cycle"),
         ("DocType", "Budget Sheet"),
+        ("DocType", "Budget Entry"),
         ("DocType", "Budget Annual Input"),
     ]),
     "Structure": ("Structure", [

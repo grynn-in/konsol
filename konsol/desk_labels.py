@@ -50,6 +50,7 @@ LABELS = {
     # strategic and operational. Filtered links use FILTERED_LABELS below.
     "Budget Cycle": "All Cycles",
     "Budget Sheet": "All Sheets",
+    "Budget Entry": "All Entries",
     "Budget Annual Input": "All Annual Inputs",
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
