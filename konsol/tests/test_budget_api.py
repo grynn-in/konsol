@@ -635,3 +635,24 @@ def test_the_cell_path_saves_the_entry_as_judged_and_only_there(cell):
     cell.post(amount=200)
     assert cell.state.judged_flags == [True, True]
     assert not cell.frappe.flags.get("budget_entry_judged")
+
+
+# --- review fix 2: the cell path locks the Cycle first ---------------------------
+
+def test_the_cell_path_locks_the_cycle_before_the_entry(cell):
+    cell.post(amount=100)
+    cell.post(amount=200)
+    assert cell.state.cycle_locks == ["BCYC-BUD-2027", "BCYC-BUD-2027"]
+
+
+def test_a_cell_written_after_the_cycle_is_approved_is_refused(cell):
+    # The intake's own Cycle check reads a snapshot; the locking read sees the
+    # submit another session committed since.
+    cell.post(amount=100)
+    cell.state.cycle_refusal = "Budget Cycle BCYC-BUD-2027 is approved"
+    with pytest.raises(_Thrown, match="BCYC-BUD-2027 is approved"):
+        cell.post(amount=200)
+    with pytest.raises(_Thrown, match="approved"):
+        cell.post(amount=5, fiscal_period=2)
+    (entry,) = cell.state.entries.values()
+    assert float(entry["lines"][0]["debit"]) == 100.0

@@ -94,7 +94,12 @@ class FakeEntry:
     def append(self, field, row):
         getattr(self, field).append(dict(row))
 
+    def _validate(self):
+        # Budget Entry's validate takes the Cycle lock and refuses a non-draft.
+        sys.modules["konsol.epm.doctype.budget_entry.budget_entry"].assert_cycle_draft(self.cycle)
+
     def insert(self):
+        self._validate()
         self._log.append(("judged", bool(sys.modules["frappe"].flags.get("budget_entry_judged"))))
         assert self.name not in self._store, "the same key twice"
         self._store[self.name] = self
@@ -102,6 +107,7 @@ class FakeEntry:
         return self
 
     def save(self):
+        self._validate()
         self._log.append(("judged", bool(sys.modules["frappe"].flags.get("budget_entry_judged"))))
         self._log.append(("save", "Budget Entry", self.name))
         return self
@@ -117,7 +123,7 @@ def env(monkeypatch):
                                   plan_groups=None, plan_raises=None, plan_calls=[], doc=None,
                                   entries={}, enqueued=[], commits=0, rollbacks=0, job_running=False,
                                   denied_accounts=set(), fail_on=set(), deleted=[],
-                                  plan_lines=[])
+                                  plan_lines=[], approve_at_commit=None, cycle_approved=False)
 
     def get_doc(arg, name=None):
         if isinstance(arg, dict):
@@ -179,6 +185,9 @@ def env(monkeypatch):
 
     def commit():
         state.commits += 1
+        if state.approve_at_commit == state.commits:
+            # Another session submits the Cycle; it commits here.
+            state.cycle_approved = True
         snapshot.clear()
         snapshot.update({n: (e, list(e.lines)) for n, e in state.entries.items()})
 
@@ -231,8 +240,11 @@ def env(monkeypatch):
     entry_mod = types.ModuleType("konsol.epm.doctype.budget_entry.budget_entry")
     entry_mod.CycleNotDraftError = type("CycleNotDraftError", (Thrown,), {})
 
-    def assert_cycle_draft(cycle, action="changed"):
+    def assert_cycle_draft(cycle, action="changed", missing_ok=False):
         log.append(("lock cycle", cycle))
+        if state.cycle_approved:
+            raise entry_mod.CycleNotDraftError(f"Budget Cycle {cycle} is approved: a Budget Entry is "
+                                               f"{action} only while its Cycle is a draft.")
     entry_mod.assert_cycle_draft = assert_cycle_draft
 
     @contextlib.contextmanager
@@ -568,3 +580,36 @@ def test_the_load_saves_every_entry_as_judged_and_only_there(env):
     flags = [entry[1] for entry in env.log if entry[0] == "judged"]
     assert len(flags) == 16 and all(flags), flags
     assert not env.frappe.flags.get("budget_entry_judged")
+
+
+# ── review fix 2: a Cycle approved during the load ─────────────────────────
+
+def test_a_slice_written_after_the_cycle_is_approved_is_refused_and_the_load_goes_on(env):
+    """The Cycle is submitted (in another session) after the first slice
+    commits. Every later slice is refused by the entry's Cycle guard: it is
+    reported as refused, not failed, and the job carries on to the end."""
+    env.state.approve_at_commit = 2   # the first slice's commit, then its progress save
+    doc = _run(env, FOUR)
+    report = json.loads(doc.report)
+    first = [r for r in report if (r["entity"], r["layer"]) == ("E1", "base")]
+    rest = [r for r in report if (r["entity"], r["layer"]) != ("E1", "base")]
+    assert all(r.get("loaded") for r in first)
+    assert len(rest) == 6
+    for r in rest:
+        assert not r.get("loaded") and not r.get("load_error") and r["ok"] is False, r
+        assert any("approved during the load" in e and CYCLE in e for e in r["errors"]), r["errors"]
+    assert doc.failed_count == 0
+    assert doc.status == "Partly Loaded"
+    assert {e.data_area_id + e.layer for e in env.state.entries.values()} == {"E1base"}
+
+
+def test_the_load_locks_the_cycle_before_it_touches_an_entry(env):
+    # One lock order for every writer (Cycle, then entries) so a load and a
+    # cell write of the same Cycle cannot deadlock on each other.
+    _run(env, FOUR)
+    _checked(env).name = "BU-0002"
+    env.log.clear()
+    _run(env, [("E1", "base", 1)])   # deletes E1 base P2, saves P1
+    touched = [i for i, e in enumerate(env.log) if e[0] in ("delete", "save", "insert", "judged")]
+    locks = [i for i, e in enumerate(env.log) if e[0] == "lock cycle"]
+    assert locks and locks[0] < touched[0], env.log
