@@ -7,18 +7,24 @@ Cycle and never typed. Every save copies the header onto the lines
 (``stamp_header``, T0), so each warehouse row carries it.
 
 Not submittable, and no sync hook: the Cycle's submit and cancel sync the
-lines (T2). The entry guards that itself: ``validate`` and ``on_trash`` read
-the Cycle with a locking read (``assert_cycle_draft``) and refuse unless it is
-a draft (docstatus 0). The lock makes a Cycle submit wait for an open write,
-so the submit's after-commit sync includes it; a write that starts after the
-submit sees docstatus 1 and is refused. Install and migrate skip the check.
+lines (T2). The entry guards that itself with a locking read of the Cycle
+(``assert_cycle_draft``): a save takes it in ``check_if_latest``, before
+Frappe locks the entry, and again in ``validate``; a save is refused unless
+the Cycle is a draft (docstatus 0). The lock makes a Cycle submit wait for an
+open write, so the submit's after-commit sync includes it; a write that starts
+after the submit sees docstatus 1 and is refused. A delete is refused under an
+approved Cycle only (a cancelled Cycle's entries may go); Frappe locks the
+entry before ``on_trash``, so the delete takes the Cycle lock NOWAIT and fails
+fast instead of waiting while it holds the entry. Install and migrate skip
+the check.
 
 ``validate`` then judges the lines through konsol.budget_intake, the same
 rules as every other budget writer (access, the layer's writer role,
 currency, basis, period, account, scenario). A writer that has already judged
 the rows it writes (the Excel cell, the bulk load) saves inside
 ``judged_by_writer()``, so the rows are not judged twice. An entry without
-lines is judged on its Cycle only: there is no row to judge.
+lines is judged on its Cycle only: there is no row to judge. A line removed
+on the Desk is judged for access and the layer's writer role.
 """
 from contextlib import contextmanager
 from decimal import Decimal
@@ -53,22 +59,35 @@ class BudgetConflictError(frappe.ValidationError):
     http_status_code = 409
 
 
-def assert_cycle_draft(cycle, action="changed", missing_ok=False):
-    """Lock the Cycle row (SELECT ... FOR UPDATE) and refuse unless it is a
-    draft, naming the Cycle and its state. A locking read sees the latest
-    committed docstatus (REPEATABLE READ would otherwise serve the snapshot)
-    and holds the row until the transaction ends, so a Cycle submit waits for
-    this write. Skipped in install and migrate. A writer calls it before it
-    locks any entry, so every path takes the Cycle lock first."""
+def assert_cycle_draft(cycle, action="changed", *, missing_ok=False, wait=True, refuse=(1, 2)):
+    """Lock the Cycle row (SELECT ... FOR UPDATE) and refuse a Cycle whose
+    docstatus is in `refuse`, naming the Cycle and its state. A locking read
+    sees the latest committed docstatus (REPEATABLE READ would otherwise serve
+    the snapshot) and holds the row until the transaction ends, so a Cycle
+    submit waits for this write. Skipped in install and migrate.
+
+    Lock order: every budget writer locks the Cycle before any Budget Entry
+    (the cell path, the load, and a save through check_if_latest). A delete
+    cannot: Frappe locks the entry (NOWAIT) before on_trash and runs no hook
+    earlier. So a delete passes ``wait=False``: it takes the Cycle lock NOWAIT
+    and fails fast, rather than wait on the Cycle while holding the entry."""
     if frappe.flags.in_install or frappe.flags.in_migrate:
         return
-    rows = frappe.db.sql("SELECT docstatus FROM `tabBudget Cycle` WHERE name=%s FOR UPDATE", (cycle,))
+    query = "SELECT docstatus FROM `tabBudget Cycle` WHERE name=%s FOR UPDATE"
+    try:
+        rows = frappe.db.sql(query if wait else query + " NOWAIT", (cycle,))
+    except (frappe.QueryTimeoutError, frappe.QueryDeadlockError) as error:
+        if wait:
+            raise
+        # Keep the type: a deadlock has already rolled the transaction back.
+        frappe.throw(f"Budget Cycle {cycle} is being changed by another user, so this Budget Entry "
+                     "cannot be deleted right now. Try again in a moment.", type(error))
     if not rows:
         if missing_ok:
             return
         frappe.throw(f"Budget Cycle {cycle} does not exist.", frappe.ValidationError)
     docstatus = int(rows[0][0])
-    if docstatus != 0:
+    if docstatus in refuse:
         state = _CYCLE_STATE.get(docstatus, f"docstatus {docstatus}")
         frappe.throw(f"Budget Cycle {cycle} is {state}: a Budget Entry is {action} only while its "
                      "Cycle is a draft.", CycleNotDraftError)
@@ -111,17 +130,32 @@ class BudgetEntry(Document):
         self._judge_lines()
         self._compute_totals()
 
+    def check_if_latest(self, *args, **kwargs):
+        """Frappe's check reads this entry FOR UPDATE (load_doc_before_save).
+        The Cycle is locked first, the order every budget writer keeps."""
+        assert_cycle_draft(self.cycle, "changed")
+        return super().check_if_latest(*args, **kwargs)
+
     def on_trash(self):
-        # A missing Cycle guards nothing: an orphan entry may go.
-        assert_cycle_draft(self.cycle, "deleted", missing_ok=True)
+        # Frappe has locked this entry already: take the Cycle NOWAIT (see
+        # assert_cycle_draft). Only an approved Cycle refuses: a cancelled
+        # Cycle's entries are out of the warehouse and may go. A missing Cycle
+        # guards nothing: an orphan entry may go.
+        assert_cycle_draft(self.cycle, "deleted", missing_ok=True, wait=False, refuse=(1,))
 
     def _judge_lines(self):
         """The lines through konsol.budget_intake, as one budget table: a
-        denial raises PermissionError, any other problem ValidationError."""
-        lines = self.get("lines") or []
-        if frappe.flags.get(_JUDGED_FLAG) or not lines:
+        denial raises PermissionError, any other problem ValidationError. A
+        line removed since the last save is a write to it too: its access and
+        the layer's writer role are judged (assert_may_remove)."""
+        if frappe.flags.get(_JUDGED_FLAG):
             return
         from konsol import budget_intake
+
+        lines = self.get("lines") or []
+        self._judge_removed_lines(budget_intake, lines)
+        if not lines:
+            return
 
         dims = [d for d in budget_dimension_fields() if any(line.get(d) for line in lines)]
         header = ["scenario", "layer", "data_area_id", "fiscal_year", "fiscal_period",
@@ -131,6 +165,18 @@ class BudgetEntry(Document):
                  self.currency or ""] + [line.get(d) or "" for d in dims]
                 for line in lines]
         budget_intake.judge_one([header] + rows, form_basis=self.amount_basis or "")
+
+    def _judge_removed_lines(self, budget_intake, lines):
+        before = self.get_doc_before_save()
+        if not before:
+            return
+        kept = {line.get("name") for line in lines if line.get("name")}
+        removed = [line for line in before.get("lines") or [] if line.get("name") not in kept]
+        if removed:
+            dims = budget_dimension_fields()
+            budget_intake.assert_may_remove(self.data_area_id, self.layer, [
+                {"main_account": line.get("main_account"), **{d: line.get(d) or "" for d in dims}}
+                for line in removed])
 
     def _fetch_from_cycle(self):
         """Scenario and year are the Cycle's, whatever the entry held."""

@@ -54,7 +54,7 @@
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Amount Basis",
-   "options": "Period movement\nYear-to-date movement\nPeriod-end balance"
+   "options": "Period movement\nYear-to-date movement"
   },
   {
    "fieldname": "col_break_1",

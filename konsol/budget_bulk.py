@@ -274,9 +274,12 @@ def load(name, skip_invalid=0, amount_basis=None):
                       refused_kind="problems")
     doc.status = "Loading"
     doc.save()
-    # `upload` is the only job kwarg: enqueue's own parameters cannot be.
+    # `upload` and `expected` are the only job kwargs: enqueue's own
+    # parameters cannot be. `expected` is the groups this re-check found
+    # ready, which the job's outcome is judged against.
     frappe.enqueue("konsol.budget_bulk.run_load", queue="long", timeout=JOB_TIMEOUT, job_id=_job_id(doc.name),
-                   deduplicate=True, enqueue_after_commit=True, upload=doc.name)
+                   deduplicate=True, enqueue_after_commit=True, upload=doc.name,
+                   expected=[list(_group_key(r)) for r in report if r["ok"]])
     return _payload(doc)
 
 
@@ -341,10 +344,11 @@ def _replace_slice(upload, members):
     # The Cycle first, before any entry (every budget writer's lock order). A
     # Cycle submitted since the job judged the file refuses the slice here.
     assert_cycle_draft(cycle)
-    existing = {int(r.fiscal_period): r.name for r in frappe.get_all(
-        ENTRY, filters={"cycle": cycle, "data_area_id": entity, "layer": layer},
-        fields=["name", "fiscal_period"], order_by="fiscal_period asc, name asc", limit_page_length=0)}
-    docs = {p: frappe.get_doc(ENTRY, n) for p, n in existing.items()}
+    # Locking reads: the slice's entries as committed now, held to the commit.
+    existing = {int(r.fiscal_period): r.name for r in frappe.db.get_values(
+        ENTRY, {"cycle": cycle, "data_area_id": entity, "layer": layer}, ["name", "fiscal_period"],
+        as_dict=True, order_by="fiscal_period asc, name asc", for_update=True)}
+    docs = {p: frappe.get_doc(ENTRY, n, for_update=True) for p, n in existing.items()}
     for d in docs.values():
         _assert_may_replace(d)
     in_file = {int(item["fiscal_period"]) for item, _ in members}
@@ -375,17 +379,24 @@ def _replace_slice(upload, members):
     return names
 
 
+def _group_key(item):
+    """A report item's group: (scenario, year, entity, layer, period)."""
+    return (item["scenario"], int(item["fiscal_year"]), item["entity"], item["layer"],
+            int(item["fiscal_period"]))
+
+
 def _outcome(loaded, failed, expected):
-    """`expected` is the number of groups ready when the load was asked for
-    (the upload's valid_count then), not the job's own count: a group that
-    became refused at job time was meant to load, so the load is not Loaded.
-    A group the user chose to skip was never expected."""
-    if expected and loaded >= expected and not failed:
+    """`loaded` and `expected` are sets of group keys. `expected` is the
+    groups ready when the load was asked for, not the job's own: a group that
+    became refused at job time was meant to load, so the load is not Loaded,
+    even when another group became ready in its place. A group the user chose
+    to skip was never expected."""
+    if expected and expected <= loaded and not failed:
         return "Loaded"
     return "Partly Loaded" if loaded else "Failed"
 
 
-def run_load(upload):
+def run_load(upload, expected):
     """Background job: replace every ready slice of the upload's file.
 
     Runs as the user who asked (Frappe sets the job's user), so the plan's
@@ -404,14 +415,18 @@ def run_load(upload):
     started = time.monotonic()
     doc = frappe.get_doc(DOCTYPE, upload)
     report = json.loads(doc.report or "[]")
-    # What load() promised: its re-check's ready count. The job's progress
-    # saves overwrite valid_count, so it is read once, here.
-    expected = cint(doc.valid_count)
+    # What load() promised: the groups its re-check found ready.
+    expected = {(s, int(y), e, l, int(p)) for s, y, e, l, p in expected}
+    loaded_keys = set()
     loaded = failed = 0
     try:
         result = budget_intake.plan(_read_table(doc.upload_file), form_basis=doc.amount_basis or "",
                                     name_lines=True)
         report = _whole_slices(result["report"])
+        # End the snapshot the plan read in: the slices read the entries as
+        # they are now (and lock them), not as they were when the file was
+        # judged. The plan wrote nothing.
+        frappe.db.commit()
         slices = {}
         # plan builds its report in the groups' order, one item per group.
         for (_key, rows), item in zip(result["groups"].items(), report):
@@ -430,21 +445,22 @@ def run_load(upload):
                     for (item, _), name in zip(members, names):
                         item["loaded"] = name
                         item.pop("load_error", None)
+                        loaded_keys.add(_group_key(item))
                     loaded += len(members)
                     break
                 except BaseTimeoutException:
                     raise
                 except CycleNotDraftError as e:
-                    # Submitted after the job judged the file: refused, as
-                    # the plan would refuse it now, not failed. Its earlier
-                    # slices stand and the Cycle's approval synced them.
+                    # Approved (or cancelled) after the job judged the file:
+                    # refused, as the plan would refuse it now, not failed.
+                    # Its earlier slices stand; an approval synced them.
                     frappe.db.rollback()
                     frappe.clear_messages()
                     reason = strip_html(str(e)) or type(e).__name__
                     for item, _ in members:
                         item["ok"] = False
                         item["errors"] = list(item["errors"]) + [
-                            f"Not loaded: the Cycle was approved during the load. {reason}"]
+                            f"Not loaded: the Cycle left Draft during the load. {reason}"]
                     break
                 except Exception as e:
                     frappe.db.rollback()
@@ -461,7 +477,7 @@ def run_load(upload):
             _save_progress(doc.name, report, failed, status="Partly Loaded" if loaded else "Failed",
                            error="Stopped at the time limit; load again to finish it.")
         else:
-            _save_progress(doc.name, report, failed, status=_outcome(loaded, failed, expected),
+            _save_progress(doc.name, report, failed, status=_outcome(loaded_keys, failed, expected),
                            error="" if total else "Nothing in this file was ready to load.")
     except Exception as e:
         frappe.db.rollback()

@@ -157,6 +157,28 @@ def _role_problems(layer, role, bypass, roles, user):
     return []
 
 
+def assert_may_remove(entity, layer, rows):
+    """Removing budget lines is a write to them: the layer's writer role and
+    the access check on each row (entity, account, dimensions). `rows` are
+    dicts with main_account and the dim_* values. Raises frappe.PermissionError
+    naming every refusal. Writes nothing."""
+    from konsol.api import _assert_budget_write_access
+
+    user = frappe.session.user
+    roles = set(frappe.get_roles(user))
+    bypass = user == "Administrator" or bool(BYPASS_ROLES & roles)
+    found = frappe.get_all("Budget Layer", filters={"name": layer}, fields=["name", "writer_role"],
+                           order_by="name asc", limit_page_length=0)
+    denials = _role_problems(layer, (found[0].writer_role or "") if found else "", bypass, roles, user)
+    for row in rows:
+        try:
+            _assert_budget_write_access(dict(row, data_area_id=entity))
+        except frappe.PermissionError as error:
+            denials.append(f"Removing account {row.get('main_account')}: {error}")
+    if denials:
+        frappe.throw("\n".join(denials), frappe.PermissionError)
+
+
 def assert_annual_access(row):
     """The entity, account and dimension check for one annual figure (konsol#413).
     Raises frappe.PermissionError."""
