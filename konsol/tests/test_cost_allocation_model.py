@@ -592,3 +592,74 @@ def test_coefficients_weights_not_summing_to_one_refused():
     with raises(M.CostAllocationError) as ei:
         M.coefficient_rows("ZZRUN", steps, w, "Direct")
     assert "step 1" in ei.value.errors[0]
+
+
+# -- K5b: statistic CSV parser -------------------------------------------------
+
+def _csv_errors(text):
+    with raises(M.CostAllocationError) as box:
+        M.parse_statistic_csv(text)
+    return box.value.errors
+
+
+def test_parse_csv_good_rows_keep_exact_decimal_text():
+    from decimal import Decimal
+    rows = M.parse_statistic_csv("fiscal_period,member,value\n1,ZZIT,10.10\n2,ZZHR,0\n")
+    assert rows == [
+        {"fiscal_period": 1, "member": "ZZIT", "value": Decimal("10.10")},
+        {"fiscal_period": 2, "member": "ZZHR", "value": Decimal("0")},
+    ]
+    assert str(rows[0]["value"]) == "10.10"
+
+
+def test_parse_csv_header_trimmed_case_insensitive_bom_and_crlf():
+    text = "﻿ Fiscal_Period , MEMBER ,Value\r\n3, ZZIT ,1.5\r\n"
+    rows = M.parse_statistic_csv(text)
+    assert [(r["fiscal_period"], r["member"]) for r in rows] == [(3, "ZZIT")]
+
+
+def test_parse_csv_header_must_be_exact():
+    for head in ("period,member,value", "fiscal_period,member", "fiscal_period,member,value,extra",
+                 "member,fiscal_period,value"):
+        errs = _csv_errors(head + "\n1,ZZIT,1\n")
+        assert any("header" in e.lower() for e in errs), (head, errs)
+
+
+def test_parse_csv_empty_file_and_header_only_are_refused():
+    assert any("empty" in e.lower() for e in _csv_errors(""))
+    assert any("empty" in e.lower() for e in _csv_errors("﻿\r\n"))
+    assert any("no data rows" in e.lower() for e in _csv_errors("fiscal_period,member,value\n"))
+
+
+def test_parse_csv_reports_every_bad_row_at_once_with_its_number():
+    text = ("fiscal_period,member,value\n"
+            "1,ZZIT,10\n"        # row 2 fine
+            "x,ZZIT,1\n"         # row 3 period
+            "2, ,1\n"            # row 4 member
+            "2,ZZHR,abc\n"       # row 5 value
+            "2,ZZHR,-1\n"        # row 6 negative
+            "2,ZZHR,1e3\n"       # row 7 exponent
+            "2,ZZHR\n")          # row 8 short
+    errs = _csv_errors(text)
+    for n in range(3, 9):
+        assert any(("row %d" % n) in e.lower() for e in errs), (n, errs)
+    assert not any("row 2" in e.lower() for e in errs)
+    assert len(errs) == 6
+
+
+def test_parse_csv_period_must_be_an_integer():
+    errs = _csv_errors("fiscal_period,member,value\n1.5,ZZIT,1\n")
+    assert any("fiscal_period" in e for e in errs)
+
+
+def test_parse_csv_row_cap_is_20000():
+    head = "fiscal_period,member,value\n"
+    ok = head + "".join("1,M%d,1\n" % i for i in range(20000))
+    assert len(M.parse_statistic_csv(ok)) == 20000
+    errs = _csv_errors(ok + "1,MX,1\n")
+    assert any("20,000" in e for e in errs)
+
+
+def test_parse_csv_skips_blank_lines_but_counts_them_in_row_numbers():
+    errs = _csv_errors("fiscal_period,member,value\n\n1,ZZIT,bad\n")
+    assert any("row 3" in e.lower() for e in errs)
