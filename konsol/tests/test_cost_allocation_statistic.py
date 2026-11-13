@@ -170,6 +170,19 @@ class _Doc:
     def __init__(self, **kw):
         self.__dict__.update(kw)
 
+    def set(self, key, value):
+        setattr(self, key, value)
+
+    def append(self, key, row):
+        getattr(self, key).append(_Row(row))
+
+    def check_permission(self, perm):
+        self.permission_checked = perm
+
+    def save(self):
+        self.saved = True
+        self.validate()
+
     def get(self, key, default=None):
         return getattr(self, key, default)
 
@@ -193,6 +206,9 @@ class _World:
         self.closed = set()
         self.syncs = []
         self.after_commit = []
+        self.docs = {}                # name -> statistic under load
+        self.file_content = b""
+        self.file_reads = []
 
 
 def _load(world):
@@ -203,7 +219,13 @@ def _load(world):
 
     frappe.throw = throw
     frappe._ = lambda s: s
-    frappe.whitelist = lambda *a, **k: (lambda fn: fn)
+    def whitelist(*a, **k):
+        def deco(fn):
+            fn.whitelist_kwargs = k
+            return fn
+        return deco
+
+    frappe.whitelist = whitelist
     frappe.ValidationError = type("ValidationError", (Exception,), {})
 
     def get_value(doctype, name, field=None, *a, **k):
@@ -223,6 +245,15 @@ def _load(world):
 
     frappe.db = types.SimpleNamespace(get_value=get_value, sql=sql)
     frappe.get_all = get_all
+
+    def get_doc(doctype, name=None):
+        if doctype == "File":
+            world.file_reads.append(name)
+            return types.SimpleNamespace(get_content=lambda: world.file_content)
+        assert doctype == "Cost Allocation Statistic", doctype
+        return world.docs[name]
+
+    frappe.get_doc = get_doc
     model = types.ModuleType("frappe.model")
     document = types.ModuleType("frappe.model.document")
     document.Document = _Doc
@@ -424,3 +455,108 @@ def test_no_commit_and_no_save_in_the_controller():
     with open(os.path.join(EPM_DOCTYPES, STAT, STAT + ".py")) as f:
         src = f.read()
     assert "db.commit" not in src and "self.save(" not in src
+
+
+# -- K5b: Load from File -------------------------------------------------------
+
+GOOD_CSV = "fiscal_period,member,value\n1,ZZIT,7\n2,ZZHR,3.5\n"
+
+
+def _loadable(w, mod, **over):
+    over.setdefault("docstatus", 0)
+    over.setdefault("status", "Draft")
+    over.setdefault("values_file", "/private/files/zz.csv")
+    doc = _stat(w, mod, **over)
+    w.docs[doc.name] = doc
+    return doc
+
+
+def test_load_is_a_post_only_whitelisted_function():
+    mod = _load(_World())
+    assert mod.load_values_from_file.whitelist_kwargs == {"methods": ["POST"]}
+
+
+def test_load_replaces_every_row_and_saves():
+    w = _World()
+    mod = _load(w)
+    doc = _loadable(w, mod)
+    w.file_content = GOOD_CSV.encode()
+    mod.load_values_from_file("CAS-00001")
+    assert [(r.fiscal_period, r.member, r.value) for r in doc.values] == [
+        (1, "ZZIT", 7.0), (2, "ZZHR", 3.5)]
+    assert doc.saved is True
+    assert doc.permission_checked == "write"
+    assert w.file_reads == [{"file_url": "/private/files/zz.csv"}]
+    assert doc.row_count == 2 and doc.total == 10.5     # validate ran on save
+
+
+def test_load_accepts_a_bom_and_a_decoded_string():
+    w = _World()
+    mod = _load(w)
+    doc = _loadable(w, mod)
+    w.file_content = b"\xef\xbb\xbf" + GOOD_CSV.encode()
+    mod.load_values_from_file("CAS-00001")
+    assert len(doc.values) == 2
+    w.file_content = GOOD_CSV
+    mod.load_values_from_file("CAS-00001")
+    assert len(doc.values) == 2
+
+
+def test_load_refuses_a_submitted_or_pending_document_and_changes_nothing():
+    for over in ({"docstatus": 1, "status": "Approved"}, {"docstatus": 0, "status": "Pending Approval"},
+                 {"docstatus": 2, "status": "Cancelled"}):
+        w = _World()
+        mod = _load(w)
+        doc = _loadable(w, mod, **over)
+        before = list(doc.values)
+        w.file_content = GOOD_CSV.encode()
+        msg = _refusal(lambda: mod.load_values_from_file("CAS-00001"))
+        assert "draft" in msg.lower()
+        assert doc.values == before and not doc.get("saved") and w.file_reads == []
+
+
+def test_load_refuses_when_no_file_is_attached():
+    w = _World()
+    mod = _load(w)
+    doc = _loadable(w, mod, values_file=None)
+    msg = _refusal(lambda: mod.load_values_from_file("CAS-00001"))
+    assert "file" in msg.lower() and not doc.get("saved")
+
+
+def test_load_with_bad_rows_lists_every_error_and_changes_nothing():
+    w = _World()
+    mod = _load(w)
+    doc = _loadable(w, mod)
+    before = list(doc.values)
+    w.file_content = b"fiscal_period,member,value\nx,ZZIT,1\n2,,1\n"
+    msg = _refusal(lambda: mod.load_values_from_file("CAS-00001"))
+    assert "row 2" in msg.lower() and "row 3" in msg.lower()
+    assert doc.values == before and not doc.get("saved")
+
+
+def test_load_with_undecodable_bytes_changes_nothing():
+    w = _World()
+    mod = _load(w)
+    doc = _loadable(w, mod)
+    before = list(doc.values)
+    w.file_content = b"\xff\xfe\x00bad"
+    _refusal(lambda: mod.load_values_from_file("CAS-00001"))
+    assert doc.values == before and not doc.get("saved")
+
+
+def test_load_save_refusal_propagates_so_the_request_rolls_back():
+    w = _World()
+    mod = _load(w)
+    _loadable(w, mod)
+    w.file_content = b"fiscal_period,member,value\n1,NOTAMEMBER,1\n"
+    msg = _refusal(lambda: mod.load_values_from_file("CAS-00001"))
+    assert "NOTAMEMBER" in msg
+
+
+def test_load_button_is_in_the_form_script():
+    path = os.path.join(EPM_DOCTYPES, STAT, STAT + ".js")
+    with open(path) as f:
+        src = f.read()
+    assert "Load from File" in src and "values_file" in src
+    assert f"konsol.epm.doctype.{STAT}.{STAT}.load_values_from_file" in src
+    assert "docstatus === 0" in src
