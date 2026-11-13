@@ -202,7 +202,7 @@ def test_an_access_denial_is_kept_apart_from_other_problems(env):
     plan = env.plan([HEADER, _row(), _row(entity="E2", layer="board")])
     ok, refused = plan["report"]
     assert ok["denials"] == []
-    (denial,) = refused["denials"]
+    (denial,) = [d for d in refused["denials"] if "Not permitted" in d]
     assert "Not permitted to write entity E2" in denial
     assert denial in refused["errors"]
     # Review fix 7a: the layer's writer role is an access denial too (403);

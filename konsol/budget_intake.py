@@ -26,6 +26,7 @@ What it does, in order:
      account, dimensions). A refused row refuses its group, naming its line.
    - the layer's writer_role: a layer that names one takes rows only from its
      holders. System Manager and Administrator bypass, as the access check does.
+     A refusal is an access denial, as the access check's is.
 
 An inactive Scenario is gathered and refused as inactive; only a Scenario that
 does not exist is refused as undeclared.
@@ -60,11 +61,10 @@ def plan(table, *, form_basis, name_lines):
     file or `form_basis`, '' when none). A group with any error is not ready;
     a writer writes nothing for it.
 
-    ``denials`` lists the access refusals (_assert_budget_write_access) among
-    ``errors``: they are also in ``errors``, so a report names them with the
-    rest, and an API writer raises them as a PermissionError (HTTP 403), not
-    a ValidationError. The layer's writer role is a declared rule, not an
-    access grant, and is not a denial.
+    ``denials`` lists the access refusals among ``errors``: the layer's writer
+    role and _assert_budget_write_access on each row. They are also in
+    ``errors``, so a report names them with the rest, and an API writer raises
+    them as a PermissionError (HTTP 403), not a ValidationError.
 
     `form_basis` is the upload's Amount Basis ('' when it has none); it has no
     default, so a writer states what it means.
@@ -104,8 +104,8 @@ def plan(table, *, form_basis, name_lines):
         if cycle_problem:
             errors.append(cycle_problem)
         errors.extend(_duplicates(rows))
-        errors.extend(_role_problems(key.layer, facts["layers"].get(key.layer), bypass, roles, user))
-        denials = []
+        # The layer's writer role is an access rule: a refusal is a denial.
+        denials = _role_problems(key.layer, facts["layers"].get(key.layer), bypass, roles, user)
         for row in rows:
             data = dict(row, data_area_id=key.data_area_id)
             try:
@@ -167,7 +167,8 @@ def assert_annual_access(row):
 def annual_check(row):
     """Judge one Budget Annual Input before it is saved. `row` is a dict with
     scenario_id, data_area_id, main_account, layer, currency and the dim_*
-    values. Raises frappe.PermissionError when the user may not write it, else
+    values. Raises frappe.PermissionError when the user may not write it (the
+    access check, or the layer's writer role), else
     frappe.ValidationError naming every other problem. Writes nothing.
 
     Not judged here: the period (an annual figure has none), the Cycle (the
@@ -190,8 +191,10 @@ def annual_check(row):
                             limit_page_length=0)
     functional = (entity[0].functional_currency or "") if entity else ""
     layer = row.get("layer")
+    denials = _role_problems(layer, layers.get(layer), bypass, roles, user)
+    if denials:
+        frappe.throw("\n".join(denials), frappe.PermissionError)
     problems = M.layer_problems(layer, layers)
-    problems += _role_problems(layer, layers.get(layer), bypass, roles, user)
     problems += M.scenario_problems(row.get("scenario_id"), scenario)
     problems += currency_problems(row.get("data_area_id"), functional, [(None, row.get("currency"))])
     if problems:
