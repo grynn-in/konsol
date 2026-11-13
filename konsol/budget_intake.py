@@ -27,7 +27,13 @@ What it does, in order:
    - the layer's writer_role: a layer that names one takes rows only from its
      holders. System Manager and Administrator bypass, as the access check does.
 
-An inactive Scenario is not gathered, so it is refused as an undeclared one.
+An inactive Scenario is gathered and refused as inactive; only a Scenario that
+does not exist is refused as undeclared.
+
+``annual_check`` is the same entry for one Budget Annual Input (A6): access,
+declared layer, the layer's writer role, a plan scenario, and the entity's
+functional currency. ``assert_annual_access`` is its access check alone (a
+delete is a write, but its layer and currency are not re-judged).
 Layer codes are compared exactly: ``Base`` is not ``base``.
 """
 import frappe
@@ -36,6 +42,7 @@ from konsol import budget_bulk_model as M
 from konsol.entity_permissions import BYPASS_ROLES
 from konsol.group_chart import chart_accounts
 from konsol.period_status import PeriodNotDeclared, period_row
+from konsol.tb_currency_model import currency_problems
 
 #: Docstatus words for a Cycle that is not a draft.
 _CYCLE_STATE = {1: "approved", 2: "cancelled"}
@@ -80,10 +87,7 @@ def plan(table, *, form_basis):
         if cycle_problem:
             errors.append(cycle_problem)
         errors.extend(_duplicates(rows))
-        role = facts["layers"].get(key.layer)
-        if role and not bypass and role not in roles:
-            errors.append(f"Layer {key.layer} takes rows only from holders of the {role} role, and "
-                          f"{user} does not hold it. Ask for the role, or write into another layer.")
+        errors.extend(_role_problems(key.layer, facts["layers"].get(key.layer), bypass, roles, user))
         for row in rows:
             data = dict(row, data_area_id=key.data_area_id)
             try:
@@ -93,6 +97,55 @@ def plan(table, *, form_basis):
         item["ok"] = not errors
         report.append(item)
     return {"groups": groups, "report": report, "ok": all(i["ok"] for i in report)}
+
+
+def _role_problems(layer, role, bypass, roles, user):
+    if role and not bypass and role not in roles:
+        return [f"Layer {layer} takes rows only from holders of the {role} role, and "
+                f"{user} does not hold it. Ask for the role, or write into another layer."]
+    return []
+
+
+def assert_annual_access(row):
+    """The entity, account and dimension check for one annual figure (konsol#413).
+    Raises frappe.PermissionError."""
+    from konsol.api import _assert_budget_write_access
+
+    _assert_budget_write_access(row)
+
+
+def annual_check(row):
+    """Judge one Budget Annual Input before it is saved. `row` is a dict with
+    scenario_id, data_area_id, main_account, layer, currency and the dim_*
+    values. Raises frappe.PermissionError when the user may not write it, else
+    frappe.ValidationError naming every other problem. Writes nothing.
+
+    Not judged here: the period (an annual figure has none), the Cycle (the
+    controller's lock guard), the grain, and the Main Account's status (the
+    controller refuses a non-Published account by name)."""
+    assert_annual_access(row)
+    user = frappe.session.user
+    roles = set(frappe.get_roles(user))
+    bypass = user == "Administrator" or bool(BYPASS_ROLES & roles)
+    layers = {r.name: r.writer_role or "" for r in frappe.get_all(
+        "Budget Layer", fields=["name", "writer_role"], order_by="sort_order asc, name asc",
+        limit_page_length=0)}
+    found = frappe.get_all("Scenario", filters={"name": row.get("scenario_id")},
+                           fields=["name", "scenario_type", "is_active"], order_by="name asc",
+                           limit_page_length=0)
+    scenario = ({"scenario_type": found[0].scenario_type, "is_active": found[0].is_active}
+                if found else None)
+    entity = frappe.get_all("Entity", filters={"name": row.get("data_area_id")},
+                            fields=["name", "functional_currency"], order_by="name asc",
+                            limit_page_length=0)
+    functional = (entity[0].functional_currency or "") if entity else ""
+    layer = row.get("layer")
+    problems = M.layer_problems(layer, layers)
+    problems += _role_problems(layer, layers.get(layer), bypass, roles, user)
+    problems += M.scenario_problems(row.get("scenario_id"), scenario)
+    problems += currency_problems(row.get("data_area_id"), functional, [(None, row.get("currency"))])
+    if problems:
+        frappe.throw("\n".join(problems), frappe.ValidationError)
 
 
 def _budget_dimensions():
@@ -129,8 +182,8 @@ def _facts(groups):
         "layers": {r.name: r.writer_role or "" for r in frappe.get_all(
             "Budget Layer", fields=["name", "writer_role"], order_by="sort_order asc, name asc",
             limit_page_length=0)},
-        "scenarios": {r.name: {"scenario_type": r.scenario_type} for r in frappe.get_all(
-            "Scenario", filters={"is_active": 1}, fields=["name", "scenario_type"],
+        "scenarios": {r.name: {"scenario_type": r.scenario_type, "is_active": r.is_active} for r in frappe.get_all(
+            "Scenario", fields=["name", "scenario_type", "is_active"],
             order_by="name asc", limit_page_length=0)},
         "cycles": cycles,
     }

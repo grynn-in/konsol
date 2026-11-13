@@ -114,7 +114,7 @@ class BudgetAnnualInput(Document):
         # so it cannot race a Scenario type change (review of #460).
         from konsol.epm.doctype.scenario.scenario import locked_scenario_type
 
-        self._assert_write_access()
+        self._intake_check()
         self._validate_main_account_published()
         self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
@@ -136,7 +136,10 @@ class BudgetAnnualInput(Document):
         The write-access check runs here too: delete is a write, and a user
         granted one entity must not delete another's annual figure.
         """
-        self._assert_write_access()
+        if not (frappe.flags.in_install or frappe.flags.in_migrate):
+            from konsol import budget_intake
+
+            budget_intake.assert_annual_access(self._intake_row())
         self._guard_cycle_locked()
 
     def _validate_main_account_published(self):
@@ -185,22 +188,23 @@ class BudgetAnnualInput(Document):
                 f"({dupe}). Two rows at one grain double the spread budget."
             )
 
-    def _assert_write_access(self):
-        """The same entity, account and dimension check the bottom-up budget
-        writes run (api._assert_budget_write_access, konsol#413). Without it a
-        Desk save wrote any entity's annual figure. Skipped during
-        install/migrate only: Desk Data Import sets in_import, and an importing
-        user must not bypass the check."""
+    def _intake_row(self):
+        row = {f: self.get(f) for f in (
+            "scenario_id", "data_area_id", "fiscal_year", "main_account", "layer", "currency")}
+        row.update({d: self.get(d) for d in budget_dimension_fields()})
+        return row
+
+    def _intake_check(self):
+        """Every budget writer goes through konsol.budget_intake: the entity,
+        account and dimension access check (konsol#413), the declared layer and
+        its writer role, a plan scenario, and the entity's functional currency.
+        Skipped during install/migrate only: Desk Data Import sets in_import,
+        and an importing user must not bypass the check."""
         if frappe.flags.in_install or frappe.flags.in_migrate:
             return
-        from konsol.api import _assert_budget_write_access
+        from konsol import budget_intake
 
-        data = {
-            "data_area_id": self.data_area_id,
-            "main_account": self.main_account,
-        }
-        data.update({d: self.get(d) for d in budget_dimension_fields()})
-        _assert_budget_write_access(data)
+        budget_intake.annual_check(self._intake_row())
 
     def _stamp_submitter(self):
         """submitted_by is an audit field, not free text."""

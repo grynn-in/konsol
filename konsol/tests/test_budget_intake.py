@@ -257,10 +257,17 @@ def test_a_cycle_that_is_not_a_draft_is_refused(env, year, word):
 
 # ---- scenarios ----------------------------------------------------------------
 
-def test_an_inactive_scenario_is_refused_like_an_undeclared_one(env):
+def test_an_inactive_scenario_is_refused_as_inactive_not_undeclared(env):
     plan = env.plan([HEADER, _row(scenario="OLD")])
     assert not plan["ok"]
-    assert any("Scenario OLD is not declared" in e for e in _errors(plan)), _errors(plan)
+    errors = _errors(plan)
+    assert any("Scenario OLD is inactive" in e for e in errors), errors
+    assert not any("not declared" in e for e in errors), errors
+
+
+def test_a_scenario_that_does_not_exist_is_still_not_declared(env):
+    plan = env.plan([HEADER, _row(scenario="NOPE")])
+    assert any("Scenario NOPE is not declared" in e for e in _errors(plan)), _errors(plan)
 
 
 def test_an_actual_scenario_is_refused(env):
@@ -300,15 +307,75 @@ def test_every_fact_query_states_its_order(env):
         assert all(orders), f"{doctype} is read without order_by"
 
 
-def test_only_active_scenarios_are_gathered(env):
+def test_inactive_scenarios_are_gathered_so_they_can_be_named(env):
     seen = {}
 
     original = sys.modules["frappe"].get_all
 
-    def spy(doctype, filters=None, **kw):
+    def spy(doctype, filters=None, fields=None, **kw):
         if doctype == "Scenario":
-            seen["filters"] = filters
-        return original(doctype, filters=filters, **kw)
+            seen["filters"], seen["fields"] = filters, fields
+        return original(doctype, filters=filters, fields=fields, **kw)
     sys.modules["frappe"].get_all = spy
     env.plan([HEADER, _row()])
-    assert seen["filters"].get("is_active") == 1
+    assert "is_active" not in (seen["filters"] or {})
+    assert "is_active" in seen["fields"]
+
+
+# ---- the annual entry (A6): Budget Annual Input's validate -------------------------
+
+def _annual(**over):
+    row = {"scenario_id": "BUD", "fiscal_year": 2027, "data_area_id": "E1", "main_account": "4000",
+           "layer": "base", "currency": "EUR", "dim_cost_center": "CC1"}
+    row.update(over)
+    return row
+
+
+def _annual_check(env, **over):
+    env.plan  # fixture sets the frappe stub's user via plan(); do it here too
+    sys.modules["frappe"].session.user = env.state.user
+    env.mod.annual_check(_annual(**over))
+
+
+def test_a_clean_annual_row_passes_and_runs_the_access_check_once(env):
+    _annual_check(env)
+    assert [(c["data_area_id"], c["main_account"], c["dim_cost_center"])
+            for c in env.state.access_calls] == [("E1", "4000", "CC1")]
+
+
+def test_an_annual_row_in_the_wrong_currency_is_refused(env):
+    with pytest.raises(Thrown, match="USD"):
+        _annual_check(env, currency="USD")
+
+
+def test_an_annual_row_in_an_undeclared_layer_is_refused(env):
+    with pytest.raises(Thrown, match="Layer nope is not declared"):
+        _annual_check(env, layer="nope")
+
+
+def test_an_annual_row_in_a_role_held_layer_needs_the_role(env):
+    with pytest.raises(Thrown, match="Budget Approver"):
+        _annual_check(env, layer="board")
+    env.state.roles = ["Budget Approver"]
+    _annual_check(env, layer="board")
+
+
+def test_an_annual_row_on_an_inactive_scenario_says_inactive(env):
+    with pytest.raises(Thrown, match="Scenario OLD is inactive"):
+        _annual_check(env, scenario_id="OLD")
+
+
+def test_an_annual_row_on_an_actual_scenario_is_refused(env):
+    with pytest.raises(Thrown, match="actual scenario"):
+        _annual_check(env, scenario_id="ACT")
+
+
+def test_an_ungranted_annual_row_raises_the_permission_error(env):
+    env.state.denied_entities = {"E1"}
+    with pytest.raises(Denied):
+        _annual_check(env)
+
+
+def test_the_annual_access_check_alone_runs_for_a_delete(env):
+    env.mod.assert_annual_access(_annual(layer="nope", currency="USD"))
+    assert len(env.state.access_calls) == 1

@@ -158,19 +158,8 @@ def check_group(key, rows, *, period, layers, scenario, chart, functional_curren
         article = "an" if kind[:1].upper() in "AEIOU" else "a"
         errors.append(f"{label} is {article} {kind} period: a budget goes into the declared Regular "
                       "periods of its year")
-    declared = list(layers)
-    if key.layer not in declared:
-        if declared:
-            errors.append(f"Layer {key.layer} is not declared. Declared layers: {', '.join(declared)}. "
-                          f"Use one of them, or create {key.layer} as a Budget Layer")
-        else:
-            errors.append(f"Layer {key.layer} is not declared: this site has no Budget Layer yet. "
-                          f"Create {key.layer} (or the layers you plan in) as a Budget Layer first")
-    if scenario is None:
-        errors.append(f"Scenario {key.scenario} is not declared: create it as a Scenario first")
-    elif scenario["scenario_type"] == ACTUAL:
-        errors.append(f"Scenario {key.scenario} is an actual scenario: actuals come from the trial balance, "
-                      "not a budget file. Use a budget, forecast or other plan scenario")
+    errors.extend(layer_problems(key.layer, layers))
+    errors.extend(scenario_problems(key.scenario, scenario))
     errors.extend(_row_problems(rows, chart))
     errors.extend(_currency_problems(key.data_area_id, functional_currency, minor_unit, rows))
     errors.extend(_basis_problems(rows, form_basis))
@@ -179,6 +168,33 @@ def check_group(key, rows, *, period, layers, scenario, chart, functional_curren
         "layer": key.layer, "fiscal_period": key.fiscal_period, "rows": len(rows),
         "errors": errors, "ok": not errors,
     }
+
+
+def layer_problems(layer, layers):
+    """Why `layer` is refused: it is not one of the declared Budget Layer codes
+    (compared exactly). Shared by the file and the annual figure."""
+    declared = list(layers)
+    if layer in declared:
+        return []
+    if declared:
+        return [f"Layer {layer} is not declared. Declared layers: {', '.join(declared)}. "
+                f"Use one of them, or create {layer} as a Budget Layer"]
+    return [f"Layer {layer} is not declared: this site has no Budget Layer yet. "
+            f"Create {layer} (or the layers you plan in) as a Budget Layer first"]
+
+
+def scenario_problems(name, scenario):
+    """Why Scenario `name` is refused. `scenario` is None when it does not
+    exist, else a dict with `scenario_type` and `is_active`. An inactive one is
+    named inactive, not undeclared. A dict without `is_active` counts as active."""
+    if scenario is None:
+        return [f"Scenario {name} is not declared: create it as a Scenario first"]
+    if not scenario.get("is_active", 1):
+        return [f"Scenario {name} is inactive: activate it as a Scenario, or use an active one"]
+    if scenario["scenario_type"] == ACTUAL:
+        return [f"Scenario {name} is an actual scenario: actuals come from the trial balance, "
+                "not a budget file. Use a budget, forecast or other plan scenario"]
+    return []
 
 
 def _row_problems(rows, chart):
