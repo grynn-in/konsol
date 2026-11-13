@@ -34,10 +34,17 @@ function postJson(path, body) {
     body: JSON.stringify(body)
   }).then(function (res) {
     if (res.status === 401 || res.status === 403) {
-      throw new CustomFunctions.Error(
-        CustomFunctions.ErrorCode.notAvailable,
-        "Not logged in — open the Konsolidat task pane and sign in."
-      );
+      // A 403 is also an access denial (a budget write the user may not
+      // make, S2-X3): name it when the server says why, and still say how
+      // to sign in, since the session may be gone instead.
+      return res.json().catch(function () { return {}; }).then(function (body) {
+        var why = res.status === 403 ? serverMessage(body) : "";
+        throw new CustomFunctions.Error(
+          CustomFunctions.ErrorCode.notAvailable,
+          why ? why + " (If you are not signed in, open the Konsolidat task pane and sign in.)"
+            : "Not logged in — open the Konsolidat task pane and sign in."
+        );
+      });
     }
     if (!res.ok) {
       return res.json().catch(function () { return {}; }).then(function (body) {
