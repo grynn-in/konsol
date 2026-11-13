@@ -17,9 +17,9 @@ def _cell_save_src():
         src = fh.read()
     tree = ast.parse(src)
     for n in ast.walk(tree):
-        if isinstance(n, ast.FunctionDef) and n.name == "budget_cell_save":
+        if isinstance(n, ast.FunctionDef) and n.name == "_save_budget_cell":
             return ast.get_source_segment(src, n)
-    raise AssertionError("budget_cell_save not found")
+    raise AssertionError("_save_budget_cell not found")
 
 
 def test_takes_for_update_row_lock():
@@ -72,13 +72,13 @@ def test_cell_save_handles_create_race():
     assert "DuplicateEntryError" in src and "continue" in src
 
 
-def test_upsert_handles_create_race():
-    src = _api_src()
-    tree = ast.parse(src)
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "_upsert_budget_line")
-    body = ast.get_source_segment(src, fn)
-    assert "DuplicateEntryError" in body
+def test_create_race_rolls_back_to_a_savepoint_not_the_batch():
+    """budget_save_batch holds earlier rows in the transaction: the race
+    handler must not roll the whole transaction back."""
+    src = _cell_save_src()
+    assert 'frappe.db.savepoint("budget_entry_create")' in src
+    assert 'rollback(save_point="budget_entry_create")' in src
+    assert "frappe.db.rollback()" not in src
 
 
 def test_account_category_load_is_guarded():

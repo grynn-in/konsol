@@ -102,7 +102,7 @@ def _src(path):
 
 def test_budget_filters_includes_grain_dimensions():
     src = _src(API_PATH)
-    assert "budget_dimension_names" in src, "_budget_filters must extend the key with in_budget dims"
+    assert "budget_dimension_fields" in src, "the entry key must extend with the in_budget dims"
 
 
 def test_grain_migration_patch_registered():

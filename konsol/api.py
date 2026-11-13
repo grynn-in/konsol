@@ -32,8 +32,6 @@ MAX_BATCH_SIZE = 2000
 # constant could not express a 13-period year, and its 1-12 clamp made the
 # year-end close unreadable.
 
-VALID_LAYERS = {"base", "challenge", "management", "board"}
-
 _SAFE_IDENTIFIER = re.compile(r'^[a-z][a-z0-9_]*$')
 _SAFE_SCENARIO_ID = re.compile(r'^[A-Za-z0-9_]+$')
 # Fully-qualified ClickHouse table: schema.table, lowercase identifiers only.
@@ -515,7 +513,7 @@ def _extract_batch_dimensions(req):
 def _apply_budget_dimensions(data, dims):
     """Move a budget write's ``dimensions`` dict onto ``data`` (konsol#287).
 
-    ``dims`` is ``_budget_dims()``: the in_budget dimensions provisioned on
+    ``dims`` is ``_budget_entry_dims()``: the in_budget dimensions provisioned on
     Budget Line. A name outside it is refused, never ignored: an ignored
     dimension would write the amount to the line without it. A name given
     both in the dict and as a top-level key must agree.
@@ -644,92 +642,15 @@ def _resolve_period(period, year):
     return resolve_period(period, declared_calendar(year))
 
 
-def _period_field(fiscal_period):
-    """Wide period column name for a fiscal period (1-12) → ``period_NN``."""
-    return "period_%02d" % int(fiscal_period)
-
-
-def _budget_dims():
-    """``in_budget`` dim fieldnames provisioned on Budget Line — resolved ONCE
-    per request and threaded through, not re-queried per cell (avoids an N+1 of
-    one Dimension lookup per period × line on the Excel write path)."""
-    from konsol.epm.budget_grain import budget_dimension_names
-
-    meta = frappe.get_meta("Budget Line")
-    return [d for d in budget_dimension_names() if meta.get_field(d)]
-
-
 def _line_identity(data, dims):
-    """main_account + in_budget dim values identifying a Budget Line in a sheet.
+    """main_account + in_budget dim values identifying a line on a Budget Entry.
 
-    ``dims`` comes from ``_budget_dims()`` (resolved once). A dimension flagged
-    ``in_budget`` whose Custom Field is not yet provisioned is already excluded
-    from ``dims``, so it is skipped here too.
+    ``dims`` comes from ``_budget_entry_dims()`` (resolved once).
     """
     ident = {"main_account": data["main_account"]}
     for dim in dims:
         ident[dim] = data.get(dim, "") or ""
     return ident
-
-
-def _resolve_budget_cycle(data, create=True):
-    """Find (or create) the Budget Cycle for (scenario, fiscal_year).
-
-    Returns ``{"name", "status"}`` or None. A new cycle starts Open
-    (docstatus 0); the manager submits it to lock. The create path tolerates the
-    concurrent-create race (two first-writes to the same scenario/year): on a
-    ``DuplicateEntryError`` it re-reads the row the other writer just inserted
-    instead of 500-ing.
-    """
-    filters = {
-        "scenario_id": data["scenario_id"],
-        "fiscal_year": int(data["fiscal_year"]),
-    }
-    existing = frappe.get_all(
-        "Budget Cycle", filters=filters, fields=["name", "status"], limit=1)
-    if existing:
-        return existing[0]
-    if not create:
-        return None
-    doc = frappe.new_doc("Budget Cycle")
-    doc.update(filters)
-    doc.status = "Open"
-    try:
-        doc.insert()
-    except frappe.exceptions.DuplicateEntryError:
-        frappe.db.rollback()  # concurrent create won — re-read it
-        row = frappe.get_all(
-            "Budget Cycle", filters=filters, fields=["name", "status"], limit=1)
-        if row:
-            return row[0]
-        raise
-    return {"name": doc.name, "status": doc.status}
-
-
-def _assert_cycle_open(cycle):
-    """Reject budget writes once the cycle is locked (HTTP 423)."""
-    if cycle and cycle.get("status") == "Locked":
-        frappe.local.response.http_status_code = 423  # Locked
-        frappe.throw(
-            "Budget Cycle '{0}' is locked; the budget is final. "
-            "Cancel the cycle to amend.".format(cycle["name"]),
-            frappe.ValidationError,
-        )
-
-
-def _get_or_create_sheet(cycle_name, data, layer):
-    """Find or load (else build, uninserted) the Budget Sheet for (cycle, entity, layer)."""
-    filters = {
-        "cycle": cycle_name,
-        "data_area_id": data["data_area_id"],
-        "layer": layer,
-    }
-    existing = frappe.get_all("Budget Sheet", filters=filters, limit=1)
-    if existing:
-        return frappe.get_doc("Budget Sheet", existing[0].name)
-    doc = frappe.new_doc("Budget Sheet")
-    doc.update(filters)
-    return doc
 
 
 # ---------------------------------------------------------------------------
@@ -1643,73 +1564,6 @@ def _validate_budget_fields(data):
         frappe.throw("periods must be a non-empty array", frappe.ValidationError)
 
 
-def _set_cell(sheet, ident, fiscal_period, amount, dims):
-    """Set one period cell on the sheet's Budget Line (account+dims), appending if new."""
-    from konsol.epm.budget_grain import find_budget_line
-
-    line = find_budget_line(sheet, ident, dims, append=True)
-    line.set(_period_field(fiscal_period), amount)
-    return line
-
-
-def _upsert_budget_line(data):
-    """Create/update Budget Line(s) for a budget save payload. Returns sheet name(s).
-
-    Resolves the (auto-created, Open) Budget Cycle, then writes each period into
-    its (cycle × entity × layer) sheet — layer is sheet-level now, so a payload
-    mixing layers fans out across sheets. Only the supplied periods are touched;
-    unspecified months on an existing line are preserved. Layer is canonicalised
-    + validated so a sheet's grain can't split on case (e.g. 'Base' vs 'base').
-    """
-    from konsol.epm.budget_grain import is_valid_layer, normalize_layer
-
-    _assert_budget_write_access(data)
-    cycle = _resolve_budget_cycle(data)
-    _assert_cycle_open(cycle)
-    dims = _budget_dims()
-    ident = _line_identity(data, dims)
-
-    by_layer = {}
-    for p in data["periods"]:
-        layer = normalize_layer(p.get("layer", "base"))
-        if not is_valid_layer(layer):
-            frappe.throw(
-                f"Invalid layer '{layer}'. Allowed: {', '.join(sorted(VALID_LAYERS))}",
-                frappe.ValidationError,
-            )
-        by_layer.setdefault(layer, []).append(p)
-
-    sheet_names = []
-    for layer, periods in by_layer.items():
-        # One retry to absorb the concurrent-create race on a brand-new sheet.
-        for _attempt in range(2):
-            sheet = _get_or_create_sheet(cycle["name"], data, layer)
-            for p in periods:
-                fp = int(p.get("period", p.get("fiscal_period", 0)))
-                _set_cell(sheet, ident, fp, float(p.get("amount", 0)), dims)
-            try:
-                sheet.save()
-            except frappe.exceptions.DuplicateEntryError:
-                frappe.db.rollback()  # concurrent create won — retry as update
-                continue
-            sheet_names.append(sheet.name)
-            break
-    return sheet_names
-
-
-@frappe.whitelist(methods=["POST"])
-def budget_save():
-    """Save a budget line into its (cycle, entity, layer) sheet(s).
-
-    The Budget Cycle for (scenario, fiscal_year) is auto-created Open if absent;
-    writes are rejected once it is locked.
-    """
-    data = _get_json_body()
-    _validate_budget_fields(data)
-    sheets = _upsert_budget_line(data)
-    return {"sheets": sheets, "name": sheets[0] if sheets else None}
-
-
 def _budget_entry_dims():
     """The budget dimension fields on Budget Entry Line (the Published
     in_budget Dimensions schema_apply provisioned), read once per request."""
@@ -1807,32 +1661,11 @@ def _set_entry_line(entry, ident, judged):
     return line
 
 
-@frappe.whitelist(methods=["POST"])
-def budget_cell_save():
-    """Save one Excel budget cell as one Budget Entry Line (konsol#348 X1).
-
-    Designed for EPMSAVE() immediate writes. The cell goes through
-    konsol.budget_intake.plan, the one entry every budget writer calls: the
-    period must be a declared Regular period of its year (no 1–12 clamp), the
-    layer a declared Budget Layer the user may write (no default), and the
-    (scenario, year) must have a draft Budget Cycle (none is created, Q6-b);
-    the entity, account and dimension access checks run there too.
-
-    Excel sends a signed ``amount``; it is stored as a debit when positive and
-    a credit of its absolute value when negative (Q3-a). ``currency`` and
-    ``amount_basis`` are required: neither is defaulted.
-
-    The cell finds or creates the Budget Entry for (cycle, entity, layer,
-    period) and upserts the one line for its account and dimension values.
-    Only that entry is saved; nothing here commits.
-
-    Optional optimistic locking (omit for last-write-wins): ``base_modified``
-    is the Budget Entry ``modified`` the client last read; if it is stale the
-    write is refused with an HTTP 409 ``conflict`` payload (the line's current
-    signed amount, None when the line does not exist, and
-    ``current_modified``). A successful save echoes the new ``modified``.
-    """
-    data = _get_json_body()
+def _save_budget_cell(data):
+    """Write one budget cell (the dict budget_cell_save documents) as one Budget
+    Entry Line and return the response payload. The one path budget_cell_save,
+    budget_save and budget_save_batch share; nothing here commits."""
+    data = dict(data)
 
     required = ["scenario_id", "data_area_id", "fiscal_year",
                 "main_account", "fiscal_period", "amount", "layer"]
@@ -1924,10 +1757,14 @@ def budget_cell_save():
         doc.update({"currency": item["currency"], "amount_basis": item["amount_basis"],
                     "source": "Excel"})
         _set_entry_line(doc, ident, judged)
+        # A savepoint, not a rollback: a batch holds earlier rows in the same
+        # transaction, and the race must not undo them.
+        frappe.db.savepoint("budget_entry_create")
         try:
             doc.insert()
         except frappe.exceptions.DuplicateEntryError:
-            frappe.db.rollback()  # concurrent create won — retry as update
+            # concurrent create won; retry as update
+            frappe.db.rollback(save_point="budget_entry_create")
             continue
         return {"status": "ok", "name": doc.name, "value": amount,
                 "modified": str(doc.modified)}
@@ -1939,35 +1776,96 @@ def budget_cell_save():
 
 
 @frappe.whitelist(methods=["POST"])
+def budget_cell_save():
+    """Save one Excel budget cell as one Budget Entry Line (konsol#348 X1).
+
+    Designed for EPMSAVE() immediate writes. The cell goes through
+    konsol.budget_intake.plan, the one entry every budget writer calls: the
+    period must be a declared Regular period of its year (no 1–12 clamp), the
+    layer a declared Budget Layer the user may write (no default), and the
+    (scenario, year) must have a draft Budget Cycle (none is created, Q6-b);
+    the entity, account and dimension access checks run there too.
+
+    Excel sends a signed ``amount``; it is stored as a debit when positive and
+    a credit of its absolute value when negative (Q3-a). ``currency`` and
+    ``amount_basis`` are required: neither is defaulted.
+
+    The cell finds or creates the Budget Entry for (cycle, entity, layer,
+    period) and upserts the one line for its account and dimension values.
+    Only that entry is saved; nothing here commits.
+
+    Optional optimistic locking (omit for last-write-wins): ``base_modified``
+    is the Budget Entry ``modified`` the client last read; if it is stale the
+    write is refused with an HTTP 409 ``conflict`` payload (the line's current
+    signed amount, None when the line does not exist, and
+    ``current_modified``). A successful save echoes the new ``modified``.
+    """
+    return _save_budget_cell(_get_json_body())
+
+
+def _budget_save_cells(data):
+    """A budget_save payload as cells: one per entry of ``periods``, each
+    ``{period | fiscal_period, amount, layer?, currency?, amount_basis?}``.
+    A period's own layer, currency and basis override the payload's; none is
+    defaulted. Every cell goes through _save_budget_cell, so every check is
+    the one budget_cell_save runs. Returns the entry names, in order."""
+    if not isinstance(data, dict):
+        frappe.throw("each budget line must be an object", frappe.ValidationError)
+    _validate_budget_fields(data)
+    shared = {k: v for k, v in data.items() if k not in ("periods", "base_modified")}
+    names = []
+    for p in data["periods"]:
+        if not isinstance(p, dict):
+            frappe.throw("each period must be an object", frappe.ValidationError)
+        cell = dict(shared)
+        cell.update({k: v for k, v in p.items() if k not in ("period", "fiscal_period")})
+        cell["fiscal_period"] = p.get("period", p.get("fiscal_period"))
+        names.append(_save_budget_cell(cell)["name"])
+    return list(dict.fromkeys(names))
+
+
+@frappe.whitelist(methods=["POST"])
+def budget_save():
+    """Save a budget line for one or more periods (konsol#348 X2).
+
+    Each period is one cell and goes through the same path as
+    budget_cell_save: konsol.budget_intake judges it, and it lands as a line on
+    its Budget Entry for (cycle, entity, layer, period). No Cycle is created,
+    no layer, currency or amount basis is defaulted, and an amount is signed
+    (positive debit, negative credit). One refused period refuses the request.
+    Returns ``{"entries": [names], "name": first}``.
+    """
+    entries = _budget_save_cells(_get_json_body())
+    return {"entries": entries, "name": entries[0] if entries else None}
+
+
+@frappe.whitelist(methods=["POST"])
 def budget_save_batch():
-    """Save multiple budget lines at once."""
+    """Save multiple budget lines at once, all or nothing (konsol#348 X2).
+
+    Each item is a budget_save payload. One refused item refuses the batch:
+    nothing is saved, and the error names the row ("Row 2: ..."; rows count
+    from 1). A permission denial stays a PermissionError, any other refusal a
+    ValidationError. Returns ``{"results": [{"name", "entries", "index"}]}``.
+    """
     items = _get_json_body()
     if not isinstance(items, list):
         frappe.throw("Expected a JSON array", frappe.ValidationError)
 
+    frappe.db.savepoint("budget_save_batch")
     results = []
-    errors = []
     for i, data in enumerate(items):
         try:
-            _validate_budget_fields(data)
-            sheets = _upsert_budget_line(data)
-            results.append({"name": sheets[0] if sheets else None,
-                            "sheets": sheets, "index": i})
-            errors.append(None)
-        except frappe.PermissionError as e:
-            # Surface authorization denials per item (don't bury as a generic
-            # failure) so the client can flag exactly which lines were blocked.
-            results.append(None)
-            errors.append({"index": i, "error": str(e)})
+            entries = _budget_save_cells(data)
+        except (frappe.PermissionError, frappe.ValidationError) as e:
+            frappe.db.rollback(save_point="budget_save_batch")
+            frappe.throw(f"Row {i + 1}: {e}", type(e))
         except Exception:
+            frappe.db.rollback(save_point="budget_save_batch")
             frappe.log_error("Budget save failed", frappe.get_traceback())
-            results.append(None)
-            errors.append({"index": i, "error": "Save failed — check server logs"})
-
-    response = {"results": results}
-    if any(e is not None for e in errors):
-        response["errors"] = errors
-    return response
+            frappe.throw(f"Row {i + 1}: save failed; check the server logs", frappe.ValidationError)
+        results.append({"name": entries[0] if entries else None, "entries": entries, "index": i})
+    return {"results": results}
 
 
 # ---------------------------------------------------------------------------
