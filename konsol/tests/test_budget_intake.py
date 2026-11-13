@@ -447,3 +447,27 @@ def test_a_writer_role_refusal_is_a_denial_even_when_access_is_granted(env):
     (denial,) = item["denials"]
     assert "board" in denial and "Budget Approver" in denial
     assert item["errors"] == [denial]
+
+
+# ---- re-review 6a: removing lines is a write to them ---------------------------------
+
+def test_removing_lines_runs_the_access_check_on_each(env):
+    sys.modules["frappe"].session.user = env.state.user
+    env.mod.assert_may_remove("E1", "base", [{"main_account": "4000", "dim_cost_center": "CC1"}])
+    assert [(c["data_area_id"], c["main_account"], c["dim_cost_center"]) for c in env.state.access_calls] == [
+        ("E1", "4000", "CC1")]
+
+
+def test_removing_a_line_of_a_denied_entity_is_refused(env):
+    sys.modules["frappe"].session.user = env.state.user
+    env.state.denied_entities = {"E2"}
+    with pytest.raises(Denied):
+        env.mod.assert_may_remove("E2", "base", [{"main_account": "4000"}])
+
+
+def test_removing_a_line_needs_the_layers_writer_role(env):
+    sys.modules["frappe"].session.user = env.state.user
+    with pytest.raises(Denied, match="Budget Approver"):
+        env.mod.assert_may_remove("E1", "board", [{"main_account": "4000"}])
+    env.state.roles = ["Budget Approver"]
+    env.mod.assert_may_remove("E1", "board", [{"main_account": "4000"}])

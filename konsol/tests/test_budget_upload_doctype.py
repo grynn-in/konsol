@@ -67,7 +67,9 @@ def test_amount_basis_is_never_defaulted():
     with open(TBU) as fh:
         tbu = {x["fieldname"]: x for x in json.load(fh)["fields"]}
     assert f["fieldtype"] == "Select"
-    assert f["options"] == tbu["amount_basis"]["options"]
+    # The TB's bases less Period-end balance (Q15-c).
+    assert f["options"].replace("\nPeriod-end balance", "") == f["options"]
+    assert set(f["options"].split("\n")) < set(tbu["amount_basis"]["options"].split("\n"))
     assert not f.get("reqd") and not f.get("default")
     assert f.get("description")
 
@@ -116,3 +118,10 @@ def test_controller_only_derives_the_loaded_count_and_indicator():
     assert "class BudgetUpload(Document)" in src
     assert sorted(line.strip() for line in src.splitlines() if line.strip().startswith("def ")) == [
         "def loaded_count(self):", "def onload(self):"]
+
+
+def test_the_upload_offers_only_the_budget_bases():
+    """Q15-c: a Period-end balance needs a declared opening; the form must
+    not offer what the check refuses."""
+    options = [o for o in _fields()["amount_basis"]["options"].split("\n") if o]
+    assert options == ["Period movement", "Year-to-date movement"]

@@ -191,7 +191,16 @@ def env(monkeypatch):
     entries = {}  # name -> key dict
     dims = ["dim_cost_center", "dim_project"]
 
+    locks = []   # lock acquisition, in order
+
     class Document:
+        def check_if_latest(self):
+            # Frappe's: load_doc_before_save reads the entry FOR UPDATE.
+            locks.append(("entry", self.name))
+
+        def get_doc_before_save(self):
+            return getattr(self, "_before", None)
+
         def get(self, key, default=None):
             return getattr(self, key, default)
 
@@ -206,9 +215,16 @@ def env(monkeypatch):
 
     sql_calls = []
 
+    held_elsewhere = set()   # Cycles another session has locked
+
     def sql(query, values=None, *a, **k):
         sql_calls.append((" ".join(query.split()), values))
         assert "FOR UPDATE" in query and "`tabBudget Cycle`" in query, query
+        if values[0] in held_elsewhere:
+            if "NOWAIT" in query:
+                raise frappe.QueryTimeoutError("Lock wait timeout exceeded")
+            raise AssertionError("waited on a Cycle lock while holding the entry's")
+        locks.append(("cycle", values[0]))
         row = cycles.get(values[0])
         return [(row["docstatus"],)] if row else []
 
@@ -242,6 +258,8 @@ def env(monkeypatch):
     frappe.ValidationError = Thrown
     frappe.DuplicateEntryError = Thrown
     frappe.PermissionError = Denied
+    frappe.QueryTimeoutError = type("QueryTimeoutError", (Exception,), {})
+    frappe.QueryDeadlockError = type("QueryDeadlockError", (Exception,), {})
     frappe.flags = _Flags()
     frappe.db = types.SimpleNamespace(get_value=get_value, sql=sql)
     frappe.get_meta = lambda dt: types.SimpleNamespace(fields=[
@@ -263,6 +281,14 @@ def env(monkeypatch):
         return {}, []
     intake.judge_one = judge_one
     intake.refuse = None
+    removed = []
+
+    def assert_may_remove(entity, layer, rows):
+        removed.append((entity, layer, [dict(r) for r in rows]))
+        if intake.refuse_removal:
+            frappe.throw(intake.refuse_removal, Denied)
+    intake.assert_may_remove = assert_may_remove
+    intake.refuse_removal = None
     for name, mod in {"frappe": frappe, "frappe.model": model,
                       "frappe.model.document": docmod,
                       "konsol.clickhouse": ch, "konsol.budget_intake": intake}.items():
@@ -281,7 +307,8 @@ def env(monkeypatch):
     spec.loader.exec_module(ctl)
     return types.SimpleNamespace(ctl=ctl, cycles=cycles, entries=entries, frappe=frappe,
                                  grain=loaded["konsol.epm.budget_grain"], sql=sql_calls,
-                                 judged=judged, intake=intake)
+                                 judged=judged, intake=intake, locks=locks, removed=removed,
+                                 held_elsewhere=held_elsewhere)
 
 
 def _entry(env, lines=(), **kw):
@@ -411,13 +438,19 @@ def test_validate_reads_the_cycle_with_a_locking_read(env):
         "SELECT docstatus FROM `tabBudget Cycle` WHERE name=%s FOR UPDATE", ("BCYC-1",))
 
 
-@pytest.mark.parametrize("docstatus, word", [(1, "approved"), (2, "cancelled")])
-def test_an_entry_under_a_cycle_that_is_not_a_draft_cannot_be_deleted(env, docstatus, word):
-    env.cycles["BCYC-1"]["docstatus"] = docstatus
+def test_an_entry_under_an_approved_cycle_cannot_be_deleted(env):
+    env.cycles["BCYC-1"]["docstatus"] = 1
     doc = _entry(env, name="BENT-ME")
-    with pytest.raises(Thrown, match=word):
+    with pytest.raises(Thrown, match="approved"):
         doc.on_trash()
     assert env.sql and "FOR UPDATE" in env.sql[0][0]
+
+
+def test_an_entry_under_a_cancelled_cycle_may_be_deleted(env):
+    # Re-review 3: a cancelled Cycle's entries are not in the warehouse and
+    # would otherwise be undeletable forever.
+    env.cycles["BCYC-1"]["docstatus"] = 2
+    _entry(env, name="BENT-ME").on_trash()
 
 
 def test_an_entry_under_a_draft_cycle_may_be_deleted(env):
@@ -487,3 +520,73 @@ def test_a_stale_save_is_a_409():
     # exception class at import time.
     src = open(PY_PATH).read()
     assert "class BudgetConflictError(frappe.ValidationError)" in src and "http_status_code = 409" in src
+
+
+# ---- re-review 1: the Cycle is locked before the entry ------------------------------
+
+def test_a_save_locks_the_cycle_before_frappe_locks_the_entry(env):
+    doc = _entry(env, name="BENT-ME")
+    doc.check_if_latest()
+    assert env.locks == [("cycle", "BCYC-1"), ("entry", "BENT-ME")]
+
+
+def test_a_save_under_an_approved_cycle_is_refused_before_the_entry_is_locked(env):
+    env.cycles["BCYC-1"]["docstatus"] = 1
+    doc = _entry(env, name="BENT-ME")
+    with pytest.raises(Thrown, match="approved"):
+        doc.check_if_latest()
+    assert ("entry", "BENT-ME") not in env.locks
+
+
+def test_install_and_migrate_skip_the_cycle_lock_in_check_if_latest(env):
+    env.frappe.flags.in_migrate = True
+    _entry(env, name="BENT-ME").check_if_latest()
+    assert env.locks == [("entry", "BENT-ME")]
+
+
+def test_a_delete_does_not_wait_on_the_cycle_while_holding_the_entry(env):
+    """Frappe locks the entry (NOWAIT) before on_trash, and no hook runs
+    earlier, so the delete's Cycle check must not wait: a writer holding the
+    Cycle and waiting on this entry would deadlock with it."""
+    env.held_elsewhere.add("BCYC-1")
+    doc = _entry(env, name="BENT-ME")
+    with pytest.raises(env.frappe.QueryTimeoutError, match="BCYC-1"):
+        doc.on_trash()
+    assert "NOWAIT" in env.sql[-1][0]
+
+
+# ---- re-review 6a: a line removed on the Desk is access-checked --------------------
+
+def _before(env, doc, lines):
+    before = _entry(env, name=doc.name, lines=lines)
+    for i, line in enumerate(before.lines):
+        line.name = f"row-{i}"
+    doc._before = before
+    return before
+
+
+def test_a_removed_line_is_judged_for_access_and_writer_role(env):
+    doc = _entry(env, name="BENT-ME", lines=[dict(main_account="4000", debit=1, credit=0)])
+    doc.lines[0].name = "row-0"
+    _before(env, doc, [dict(main_account="4000", debit=1, credit=0),
+                       dict(main_account="9999", debit=5, credit=0, dim_cost_center="CC9")])
+    doc.validate()
+    ((entity, layer, rows),) = env.removed
+    assert (entity, layer) == ("E1", "base")
+    assert [(r["main_account"], r.get("dim_cost_center")) for r in rows] == [("9999", "CC9")]
+
+
+def test_removing_a_line_the_user_may_not_write_is_refused(env):
+    env.intake.refuse_removal = "No access to account 9999"
+    doc = _entry(env, name="BENT-ME", lines=[])
+    _before(env, doc, [dict(main_account="9999", debit=5, credit=0)])
+    with pytest.raises(Denied, match="9999"):
+        doc.validate()
+
+
+def test_a_writer_that_judged_its_rows_skips_the_removal_check(env):
+    doc = _entry(env, name="BENT-ME", lines=[])
+    _before(env, doc, [dict(main_account="9999", debit=5, credit=0)])
+    with env.ctl.judged_by_writer():
+        doc.validate()
+    assert env.removed == []

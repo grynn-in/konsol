@@ -189,6 +189,8 @@ def cell(monkeypatch):
         # misses the entries in `hidden` (committed by another session since);
         # a locking read sees them.
         assert doctype == "Budget Entry", doctype
+        if for_update:
+            state.log.append(("lock entry", filters))
         visible = {n: e for n, e in state.entries.items() if for_update or n not in state.hidden}
         if isinstance(filters, dict):
             found = [e for e in visible.values() if _matches(e, filters)]
@@ -651,6 +653,9 @@ def test_the_cell_path_locks_the_cycle_before_the_entry(cell):
     cell.post(amount=100)
     cell.post(amount=200)
     assert cell.state.cycle_locks == ["BCYC-BUD-2027", "BCYC-BUD-2027"]
+    # Re-review 5: the order itself, so a revert of it fails here.
+    kinds = [kind for kind, _ in cell.state.log]
+    assert kinds == ["lock cycle", "lock entry", "lock cycle", "lock entry"], cell.state.log
 
 
 def test_a_cell_written_after_the_cycle_is_approved_is_refused(cell):

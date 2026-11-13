@@ -123,9 +123,10 @@ def env(monkeypatch):
                                   plan_groups=None, plan_raises=None, plan_calls=[], doc=None,
                                   entries={}, enqueued=[], commits=0, rollbacks=0, job_running=False,
                                   denied_accounts=set(), fail_on=set(), deleted=[],
-                                  plan_lines=[], approve_at_commit=None, cycle_approved=False)
+                                  plan_lines=[], approve_at_commit=None, cycle_approved=False,
+                                  cycle_state="approved", hidden=set(), after_plan=None, existing_reads=[])
 
-    def get_doc(arg, name=None):
+    def get_doc(arg, name=None, for_update=False):
         if isinstance(arg, dict):
             if arg.get("doctype") == "Budget Entry":
                 for k in ("cycle", "data_area_id", "layer", "fiscal_period"):
@@ -153,7 +154,8 @@ def env(monkeypatch):
     def get_all(doctype, filters=None, fields=None, pluck=None, **kw):
         assert doctype == "Budget Entry", doctype
         assert kw.get("order_by"), "every list read states its order"
-        rows = sorted((e for e in state.entries.values() if _match(e, filters)), key=lambda e: e.name)
+        rows = sorted((e for e in state.entries.values() if _match(e, filters) and e.name not in state.hidden),
+                      key=lambda e: e.name)
         if pluck:
             return [getattr(e, pluck) for e in rows]
         return [types.SimpleNamespace(**{f: getattr(e, f) for f in fields}) for e in rows]
@@ -185,6 +187,7 @@ def env(monkeypatch):
 
     def commit():
         state.commits += 1
+        state.hidden.clear()   # a new snapshot sees what others committed
         if state.approve_at_commit == state.commits:
             # Another session submits the Cycle; it commits here.
             state.cycle_approved = True
@@ -202,8 +205,17 @@ def env(monkeypatch):
         assert doctype == "Budget Upload" and name == state.doc.name
         state.doc.__dict__.update(values)
 
+    def get_values(doctype, filters, fields, as_dict=False, order_by=None, for_update=False, **kw):
+        # REPEATABLE READ: a plain read misses `hidden` (committed by another
+        # session since this transaction's snapshot); a locking read sees it.
+        assert doctype == "Budget Entry" and as_dict and order_by, (doctype, as_dict, order_by)
+        state.existing_reads.append(for_update)
+        rows = sorted((e for e in state.entries.values() if _match(e, filters)
+                       and (for_update or e.name not in state.hidden)), key=lambda e: e.name)
+        return [types.SimpleNamespace(**{f: getattr(e, f) for f in fields}) for e in rows]
+
     frappe.db = types.SimpleNamespace(commit=commit, rollback=rollback, set_value=set_value,
-                                      is_deadlocked=lambda e: False)
+                                      is_deadlocked=lambda e: False, get_values=get_values)
     utils = types.ModuleType("frappe.utils")
     utils.cint = lambda v: int(v or 0)
     utils.strip_html = lambda s: s
@@ -222,6 +234,8 @@ def env(monkeypatch):
         if state.plan_raises:
             raise state.plan_raises
         report = [dict(r, errors=list(r["errors"])) for r in state.plan_report]
+        if state.after_plan:
+            state.after_plan()
         groups = state.plan_groups or {}
         return {"groups": groups, "report": report, "ok": all(r["ok"] for r in report)}
     intake.plan = plan
@@ -243,7 +257,7 @@ def env(monkeypatch):
     def assert_cycle_draft(cycle, action="changed", missing_ok=False):
         log.append(("lock cycle", cycle))
         if state.cycle_approved:
-            raise entry_mod.CycleNotDraftError(f"Budget Cycle {cycle} is approved: a Budget Entry is "
+            raise entry_mod.CycleNotDraftError(f"Budget Cycle {cycle} is {state.cycle_state}: a Budget Entry is "
                                                f"{action} only while its Cycle is a draft.")
     entry_mod.assert_cycle_draft = assert_cycle_draft
 
@@ -382,7 +396,8 @@ def test_load_queues_the_job_after_commit_with_a_deduplicated_job_id(env):
     # parameters cannot be).
     reserved = {"method", "queue", "timeout", "event", "is_async", "job_name", "now", "enqueue_after_commit",
                 "on_success", "on_failure", "at_front", "job_id", "deduplicate"}
-    assert set(kw) - reserved == {"upload"}
+    assert set(kw) - reserved == {"upload", "expected"}
+    assert sorted(map(tuple, kw["expected"])) == sorted(("BUD", 2027, e, l, p) for e, l, p in FOUR)
     assert env.state.entries == {}, "load itself writes no Budget Entry"
 
 
@@ -432,11 +447,18 @@ def test_a_refused_period_holds_back_its_whole_slice(env):
     assert out["valid_count"] == 6
 
 
+def _job(env):
+    """Run the last queued load job with the kwargs it was queued with."""
+    _method, kw = env.state.enqueued[-1]
+    reserved = {"queue", "timeout", "job_id", "deduplicate", "enqueue_after_commit"}
+    env.mod.run_load(**{k: v for k, v in kw.items() if k not in reserved})
+
+
 def _run(env, slices, refused=()):
     _file(env, slices, refused)
     doc = env.state.doc if env.state.doc and env.state.doc.status == "Checked" else _checked(env)
     env.mod.load(doc.name, skip_invalid=1)
-    env.mod.run_load(doc.name)
+    _job(env)
     return doc
 
 
@@ -444,7 +466,7 @@ def test_loading_a_refused_file_writes_nothing(env):
     _file(env, [("E1", "base", 1)], refused={("E1", "base", 1)})
     doc = _checked(env)
     doc.status = "Loading"
-    env.mod.run_load(doc.name)
+    env.mod.run_load(doc.name, expected=[])
     assert env.state.entries == {}
     assert doc.status == "Failed"
 
@@ -531,7 +553,7 @@ def test_a_slice_that_raises_is_rolled_back_and_the_rest_load(env):
                                        lines=[{"main_account": "BOOM"}])
     env.state.fail_on = {"BOOM"}
     env.frappe.db.commit()
-    env.mod.run_load(doc.name)
+    _job(env)
     assert doc.status == "Partly Loaded" and doc.failed_count == 2
     assert env.state.rollbacks >= 1
     assert "X" in env.state.entries and env.state.entries["X"].budget_upload == ""
@@ -597,7 +619,7 @@ def test_a_slice_written_after_the_cycle_is_approved_is_refused_and_the_load_goe
     assert len(rest) == 6
     for r in rest:
         assert not r.get("loaded") and not r.get("load_error") and r["ok"] is False, r
-        assert any("approved during the load" in e and CYCLE in e for e in r["errors"]), r["errors"]
+        assert any("during the load" in e and "approved" in e and CYCLE in e for e in r["errors"]), r["errors"]
     assert doc.failed_count == 0
     assert doc.status == "Partly Loaded"
     assert {e.data_area_id + e.layer for e in env.state.entries.values()} == {"E1base"}
@@ -625,7 +647,7 @@ def test_a_group_refused_at_job_time_makes_the_load_partly_loaded(env):
     env.mod.load(doc.name)
     assert doc.valid_count == 8
     _file(env, FOUR, refused={("E2", "board", 1)})
-    env.mod.run_load(doc.name)
+    _job(env)
     assert len(env.state.entries) == 6
     assert doc.status == "Partly Loaded"
 
@@ -634,3 +656,48 @@ def test_groups_the_user_chose_to_skip_do_not_spoil_loaded(env):
     doc = _run(env, FOUR, refused={("E2", "board", 1)})
     assert len(env.state.entries) == 6
     assert doc.status == "Loaded"
+
+
+# ── re-review 2: the load sees what was committed after it judged the file ──
+
+def test_an_entry_committed_after_the_plan_is_seen_by_the_first_slice(env):
+    _file(env, [("E1", "base", 1)])
+    doc = _checked(env)
+    env.mod.load(doc.name)
+
+    def another_session_commits():
+        # E1 base P3, written by a cell while the job judged the file.
+        env.state.entries["LATE"] = FakeEntry(env.state.entries, env.log, name="LATE", cycle=CYCLE,
+                                              data_area_id="E1", layer="base", fiscal_period=3,
+                                              budget_upload="", lines=[{"main_account": "4000"}])
+        env.state.hidden.add("LATE")
+    env.state.after_plan = another_session_commits
+    _job(env)
+    assert "LATE" not in env.state.entries, "P3 is absent from the file, so the slice replaces it"
+    assert env.state.existing_reads and all(env.state.existing_reads), "the slice reads FOR UPDATE"
+
+
+# ── re-review 3: a Cycle cancelled during the load is named cancelled ───────
+
+def test_a_cycle_cancelled_during_the_load_is_not_called_approved(env):
+    env.state.approve_at_commit, env.state.cycle_state = 2, "cancelled"
+    doc = _run(env, FOUR)
+    refused = [r for r in json.loads(doc.report) if not r["ok"]]
+    assert refused
+    for r in refused:
+        assert any("cancelled" in e and "during the load" in e for e in r["errors"]), r["errors"]
+        assert not any("approved during the load" in e for e in r["errors"]), r["errors"]
+
+
+# ── re-review 4: the outcome compares the groups, not their counts ─────────
+
+def test_the_outcome_compares_the_ready_groups_not_their_number(env):
+    """At load, E2 board is refused (6 ready); at job time E2 board is ready
+    and E1 base refused (6 ready again). Same count, different groups: E1 base
+    was promised and not loaded."""
+    _file(env, FOUR, refused={("E2", "board", 1)})
+    doc = _checked(env)
+    env.mod.load(doc.name, skip_invalid=1)
+    _file(env, FOUR, refused={("E1", "base", 1)})
+    _job(env)
+    assert doc.status == "Partly Loaded"
