@@ -49,6 +49,24 @@ def ctl(monkeypatch):
         exists=lambda *a, **k: None,
         get_value=lambda dt, name, field, *a, **k: statuses.get(name, "Published"))
     frappe.throw = throw
+    frappe.ValidationError = Exception
+    frappe._ = lambda s: s
+    frappe.get_roles = lambda user=None: ["Entity Accountant"]
+    tables = {
+        "Budget Layer": [{"name": "base", "writer_role": None, "sort_order": 1},
+                         {"name": "board", "writer_role": "Budget Approver", "sort_order": 4}],
+        "Scenario": [{"name": "ZZS", "scenario_type": "budget", "is_active": 1},
+                     {"name": "ZZOLD", "scenario_type": "budget", "is_active": 0}],
+        "Entity": [{"name": "ZZE1", "functional_currency": "EUR"},
+                   {"name": "ZZE2", "functional_currency": "EUR"}],
+    }
+
+    def get_all(doctype, filters=None, fields=None, **kw):
+        rows = [r for r in tables[doctype]
+                if all(r.get(f) == v for f, v in (filters or {}).items())]
+        return [types.SimpleNamespace(**r, get=r.get) for r in rows]
+
+    frappe.get_all = get_all
     meta = types.SimpleNamespace(fields=[
         types.SimpleNamespace(fieldname=d, fieldtype="Data") for d in DIMS])
     frappe.get_meta = lambda dt: meta
@@ -71,24 +89,44 @@ def ctl(monkeypatch):
 
     api._assert_budget_write_access = _assert
 
+    perms = types.ModuleType("konsol.entity_permissions")
+    perms.BYPASS_ROLES = frozenset({"System Manager", "Administrator"})
+    chart = types.ModuleType("konsol.group_chart")
+    chart.chart_accounts = lambda: {}
+    periods = types.ModuleType("konsol.period_status")
+    periods.PeriodNotDeclared = type("PeriodNotDeclared", (Exception,), {})
+    periods.period_row = lambda y, p: None
+
+    # the real intake and its model: validate must go through them
+    intake_spec = importlib.util.spec_from_file_location(
+        "konsol.budget_intake", os.path.join(APP_DIR, "budget_intake.py"))
+    intake = importlib.util.module_from_spec(intake_spec)
+
     for name, mod in {
+        "konsol.entity_permissions": perms, "konsol.group_chart": chart,
+        "konsol.period_status": periods,
         "frappe": frappe, "frappe.model": model,
         "frappe.model.document": docmod, "konsol.clickhouse": ch,
         "konsol.epm.doctype.scenario.scenario": scen, "konsol.api": api,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
+    intake_spec.loader.exec_module(intake)
+    monkeypatch.setitem(sys.modules, "konsol.budget_intake", intake)
+    monkeypatch.setattr(sys.modules["konsol"], "budget_intake", intake, raising=False)
     spec = importlib.util.spec_from_file_location("_bai_under_test", PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return types.SimpleNamespace(mod=mod, frappe=frappe, calls=calls, statuses=statuses)
 
 
-def _row(ctl, entity):
-    return ctl.mod.BudgetAnnualInput(
-        doctype="Budget Annual Input", name="x", scenario_id="ZZS",
+def _row(ctl, entity, **over):
+    fields = dict(
+        doctype="Budget Annual Input", name="x", scenario_id="ZZS", layer="base", currency="EUR",
         data_area_id=entity, fiscal_year="2026", main_account="4000",
         dim_cost_center="CC1", dim_region="EU", submitted_by="u")
+    fields.update(over)
+    return ctl.mod.BudgetAnnualInput(**fields)
 
 
 def test_ungranted_entity_is_refused(ctl):
@@ -159,3 +197,27 @@ def test_main_account_status_skipped_during_install_migrate(ctl, flag):
     setattr(ctl.frappe.flags, flag, True)
     ctl.statuses["4000"] = "Draft"
     _row(ctl, "ZZE1").validate()
+
+
+def test_validate_goes_through_the_intake_not_a_private_check(ctl):
+    assert not hasattr(ctl.mod.BudgetAnnualInput, "_assert_write_access")
+
+
+def test_wrong_currency_is_refused_on_save(ctl):
+    with pytest.raises(Exception, match="USD"):
+        _row(ctl, "ZZE1", currency="USD").validate()
+
+
+def test_undeclared_layer_is_refused_on_save(ctl):
+    with pytest.raises(Exception, match="Layer nope is not declared"):
+        _row(ctl, "ZZE1", layer="nope").validate()
+
+
+def test_inactive_scenario_is_refused_as_inactive(ctl):
+    with pytest.raises(Exception, match="Scenario ZZOLD is inactive"):
+        _row(ctl, "ZZE1", scenario_id="ZZOLD").validate()
+
+
+def test_layer_and_currency_are_not_judged_on_delete(ctl):
+    _row(ctl, "ZZE1", layer="nope", currency="USD").on_trash()
+    assert len(ctl.calls) == 1

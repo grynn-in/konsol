@@ -252,6 +252,15 @@ def test_an_undeclared_scenario_is_refused_by_name():
     assert item["errors"] == ["Scenario BUD is not declared: create it as a Scenario first"]
 
 
+def test_an_inactive_scenario_is_refused_as_inactive_not_undeclared():
+    item = _check(scenario={"scenario_type": "budget", "is_active": 0})
+    assert item["errors"] == ["Scenario BUD is inactive: activate it as a Scenario, or use an active one"]
+
+
+def test_an_active_scenario_passes():
+    assert _check(scenario={"scenario_type": "budget", "is_active": 1})["ok"]
+
+
 def test_an_actual_scenario_is_refused_by_name():
     item = _check(scenario={"scenario_type": "actual"})
     assert item["errors"] == ["Scenario BUD is an actual scenario: actuals come from the trial balance, "
