@@ -18,12 +18,18 @@ LAYERS = (
 
 
 def _role_is_held(role):
+    """True when an ENABLED user holds the role: a disabled holder writes nothing."""
     if not role or not frappe.db.exists("Role", role):
         return False
-    return bool(frappe.db.count("Has Role", {"role": role, "parenttype": "User"}))
+    users = frappe.get_all("Has Role", filters={"role": role, "parenttype": "User"}, pluck="parent")
+    return bool(users) and bool(frappe.db.count("User", {"name": ["in", users], "enabled": 1}))
 
 
 def execute():
+    # patches.txt has no [pre_model_sync]/[post_model_sync] sections, so Frappe
+    # runs every patch BEFORE the doctype sync: on an existing site's first
+    # migrate the Budget Layer table does not exist yet.
+    frappe.reload_doc("epm", "doctype", "budget_layer")
     for code, label, order, role in LAYERS:
         if frappe.db.exists("Budget Layer", code):
             continue
