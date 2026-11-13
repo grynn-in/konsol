@@ -811,3 +811,140 @@ def test_lifecycle_coefficient_resync_reads_submitted_runs_only():
     m.frappe.get_all = spy
     m.CostAllocationRun.resync_staging()
     assert ("Cost Allocation Run", {"docstatus": 1}) in seen
+
+
+# --- K12: Preview Sender Pools (stubbed frappe) ---------------------------------
+
+_DECLARED = ["dim_zz", "dim_other"]
+
+
+class _PreviewRun(_Run):
+    def __init__(self, with_weights=True, **kw):
+        super().__init__(**kw)
+        self.entity = "ZZE"
+        self.allocation_dimension = "dim_zz"
+        self.weights = ([_Row(step=1, sender_member="IT"), _Row(step=1, sender_member="IT"),
+                         _Row(step=2, sender_member="HR")] if with_weights else [])
+        self.accounts = [_Row(main_account="6000"), _Row(main_account="6010")]
+
+    def check_permission(self, *a, **k):
+        pass
+
+
+def _preview_module(run=None, rows=None):
+    m = _run_module()
+    m.frappe = _FakeFrappe(run)
+    m._declared_dimensions = lambda: list(_DECLARED)
+    seen = {}
+
+    def query(sql, params):
+        seen["sql"], seen["params"] = sql, params
+        return list(rows or [])
+    m._query_sender_pools = query
+    m.seen = seen
+    return m
+
+
+def _build(m, **over):
+    args = dict(dimension="dim_zz", declared=_DECLARED, scenario="ZZ Actual", entity="ZZE",
+                fiscal_year=2026, fiscal_period=3, accounts=["6000", "6010"], senders=["IT", "HR"])
+    args.update(over)
+    return m.build_sender_pool_query(**args)
+
+
+def test_preview_sql_is_parameterised_and_holds_no_values():
+    m = _preview_module()
+    sql, params = _build(m, scenario="ZZ'; DROP TABLE x; --", entity="ZZE", accounts=["6000"], senders=["IT"])
+    for value in ("ZZ'; DROP", "ZZE", "6000", "IT", "2026"):
+        assert value not in sql
+    assert "{" in sql and all(k.startswith("param_") for k in params)
+    assert "DROP" in " ".join(str(v) for v in params.values())
+
+
+def test_preview_filters_cover_scenario_entity_period_accounts_and_senders():
+    m = _preview_module()
+    sql, params = _build(m)
+    assert "epm_gold.gold_scenario_trial_balance" in sql
+    for col in ("scenario_id", "data_area_id", "fiscal_year", "fiscal_period", "main_account"):
+        assert col in sql
+    assert "`dim_zz` IN" in sql and "GROUP BY" in sql
+    vals = " ".join(str(v) for v in params.values())
+    for v in ("ZZ Actual", "ZZE", "2026", "3", "6000", "6010", "IT", "HR"):
+        assert v in vals
+
+
+def test_preview_identifier_is_validated_against_declared_dimensions():
+    m = _preview_module()
+    for bad in ("dim_missing", "dim_zz`; DROP", ""):
+        try:
+            _build(m, dimension=bad)
+        except (_Refused, ValueError, Exception) as exc:
+            assert "dimension" in str(exc).lower()
+        else:
+            raise AssertionError("undeclared dimension accepted: " + bad)
+
+
+def test_preview_identifier_that_is_declared_but_not_an_identifier_is_refused():
+    m = _preview_module()
+    try:
+        _build(m, dimension="a b`", declared=["a b`"])
+    except Exception as exc:
+        assert "dimension" in str(exc).lower()
+    else:
+        raise AssertionError("unsafe identifier accepted")
+
+
+def test_preview_returns_pool_per_sender_and_total():
+    run = _PreviewRun()
+    m = _preview_module(run, rows=[("IT", "100.50"), ("HR", "40")])
+    out = m.preview_sender_pools("CAR-00001")
+    assert [(p["sender_member"], p["amount"]) for p in out["pools"]] == [("IT", 100.5), ("HR", 40.0)]
+    assert out["total"] == 140.5 and out["has_rows"] is True
+    assert m.seen["params"]["param_senders"] in ("['IT','HR']", "['HR','IT']")
+
+
+def test_preview_with_no_warehouse_rows_returns_zeros_not_an_error():
+    m = _preview_module(_PreviewRun(), rows=[])
+    out = m.preview_sender_pools("CAR-00001")
+    assert [(p["sender_member"], p["amount"]) for p in out["pools"]] == [("IT", 0), ("HR", 0)]
+    assert out["total"] == 0 and out["has_rows"] is False
+
+
+def test_preview_refuses_a_run_without_weights():
+    m = _preview_module(_PreviewRun(with_weights=False))
+    try:
+        m.preview_sender_pools("CAR-00001")
+    except _Refused as exc:
+        assert "compute" in str(exc).lower()
+    else:
+        raise AssertionError("run without weights accepted")
+    assert "sql" not in m.seen
+
+
+def test_preview_method_is_get_and_writes_nothing():
+    with open(RUN_PY) as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "preview_sender_pools")
+    methods = None
+    for dec in fn.decorator_list:
+        if isinstance(dec, ast.Call):
+            for kw in dec.keywords:
+                if kw.arg == "methods":
+                    methods = ast.literal_eval(kw.value)
+    assert methods == ["GET"]
+    run = _PreviewRun()
+    m = _preview_module(run, rows=[("IT", "1")])
+    m.preview_sender_pools("CAR-00001")
+    assert run.saved == 0
+    body = ast.dump(fn)
+    for writer in ("save", "insert", "db_set", "commit", "enqueue"):
+        assert writer not in body
+
+
+def test_preview_button_is_on_the_draft_form_and_shows_a_table():
+    with open(RUN_JS) as f:
+        js = f.read()
+    assert "Preview Sender Pools" in js
+    assert "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.preview_sender_pools" in js
+    assert "frappe.ui.Dialog" in js or "frappe.msgprint" in js
+    assert "has_rows" in js
