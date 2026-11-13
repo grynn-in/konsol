@@ -1,0 +1,235 @@
+{
+ "name": "Budget Entry",
+ "doctype": "DocType",
+ "module": "EPM",
+ "issingle": 0,
+ "istable": 0,
+ "is_submittable": 0,
+ "engine": "InnoDB",
+ "autoname": "",
+ "track_changes": 1,
+ "title_field": "data_area_id",
+ "show_title_field_in_link": 0,
+ "search_fields": "cycle, data_area_id, layer",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "modified": "2026-11-13 12:00:00.000000",
+ "fields": [
+  {
+   "fieldname": "entry_tab",
+   "fieldtype": "Tab Break",
+   "label": "Entry"
+  },
+  {
+   "fieldname": "budget_section",
+   "fieldtype": "Section Break",
+   "label": "Budget"
+  },
+  {
+   "fieldname": "cycle",
+   "fieldtype": "Link",
+   "label": "Budget Cycle",
+   "options": "Budget Cycle",
+   "reqd": 1,
+   "set_only_once": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The Cycle this entry belongs to. It must exist and be in Draft to write."
+  },
+  {
+   "fieldname": "scenario_id",
+   "fieldtype": "Link",
+   "label": "Scenario",
+   "options": "Scenario",
+   "read_only": 1,
+   "fetch_from": "cycle.scenario_id",
+   "in_standard_filter": 1,
+   "description": "Fetched from the Cycle."
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Int",
+   "label": "Fiscal Year",
+   "read_only": 1,
+   "fetch_from": "cycle.fiscal_year",
+   "in_standard_filter": 1,
+   "description": "Fetched from the Cycle."
+  },
+  {
+   "fieldname": "layer",
+   "fieldtype": "Link",
+   "label": "Layer",
+   "options": "Budget Layer",
+   "reqd": 1,
+   "set_only_once": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1
+  },
+  {
+   "fieldname": "budget_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "data_area_id",
+   "fieldtype": "Link",
+   "label": "Entity",
+   "options": "Entity",
+   "reqd": 1,
+   "set_only_once": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The entity access check runs on every line."
+  },
+  {
+   "fieldname": "fiscal_period",
+   "fieldtype": "Int",
+   "label": "Fiscal Period",
+   "reqd": 1,
+   "set_only_once": 1,
+   "in_list_view": 1,
+   "description": "A declared Regular period of the year."
+  },
+  {
+   "fieldname": "amounts_section",
+   "fieldtype": "Section Break",
+   "label": "Amounts"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "ISO Currency",
+   "reqd": 1,
+   "description": "Must equal the entity's functional currency. Never defaulted."
+  },
+  {
+   "fieldname": "amounts_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "amount_basis",
+   "fieldtype": "Select",
+   "label": "Amount Basis",
+   "options": "\nPeriod movement\nYear-to-date movement\nPeriod-end balance",
+   "reqd": 1,
+   "description": "What the amounts are: the same three values as the trial balance. No default."
+  },
+  {
+   "fieldname": "lines_section",
+   "fieldtype": "Section Break",
+   "label": "Lines"
+  },
+  {
+   "fieldname": "lines",
+   "fieldtype": "Table",
+   "label": "Lines",
+   "options": "Budget Entry Line",
+   "description": "One line per account and dimension combination."
+  },
+  {
+   "fieldname": "summary_tab",
+   "fieldtype": "Tab Break",
+   "label": "Summary"
+  },
+  {
+   "fieldname": "totals_section",
+   "fieldtype": "Section Break",
+   "label": "Totals"
+  },
+  {
+   "fieldname": "row_count",
+   "fieldtype": "Int",
+   "label": "Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_debit",
+   "fieldtype": "Currency",
+   "label": "Total Debit",
+   "options": "currency",
+   "precision": "4",
+   "read_only": 1
+  },
+  {
+   "fieldname": "totals_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_credit",
+   "fieldtype": "Currency",
+   "label": "Total Credit",
+   "options": "currency",
+   "precision": "4",
+   "read_only": 1,
+   "description": "No balance rule: unequal totals are allowed."
+  },
+  {
+   "fieldname": "source_section",
+   "fieldtype": "Section Break",
+   "label": "Source"
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "label": "Source",
+   "options": "\nUpload\nExcel\nDesk",
+   "read_only": 1,
+   "description": "Set by the writer that last changed this entry."
+  },
+  {
+   "fieldname": "budget_upload",
+   "fieldtype": "Link",
+   "label": "Budget Upload",
+   "options": "Budget Upload",
+   "read_only": 1,
+   "description": "The upload that last replaced this entry, when there was one."
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1
+  },
+  {
+   "role": "Entity Accountant",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "print": 1
+  }
+ ]
+}

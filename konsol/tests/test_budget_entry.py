@@ -192,6 +192,9 @@ def env(monkeypatch):
         def set(self, key, value):
             setattr(self, key, value)
 
+        def is_new(self):
+            return getattr(self, "__islocal", None)
+
     def throw(msg, exc=None, *a, **k):
         raise Thrown(msg)
 
@@ -255,6 +258,7 @@ def _entry(env, lines=(), **kw):
     header.update(kw)
     for k, v in header.items():
         setattr(doc, k, v)
+    setattr(doc, "__islocal", 1 if kw.get("name") is None else None)
     doc.lines = [_Row(idx=i + 1, **line) for i, line in enumerate(lines)]
     return doc
 
@@ -282,6 +286,17 @@ def test_same_key_twice_is_refused(env):
                                      fiscal_period=3)
     doc = _entry(env)
     with pytest.raises(Thrown, match="BENT-OTHER"):
+        doc.validate()
+
+
+def test_same_key_twice_is_refused_after_autoname(env):
+    """Frappe runs autoname before validate, so a new entry already carries the
+    digest name the existing one holds: it must not be taken for itself."""
+    doc = _entry(env)
+    doc.autoname()
+    env.entries[doc.name] = dict(cycle="BCYC-1", data_area_id="E1", layer="base",
+                                 fiscal_period=3)
+    with pytest.raises(Thrown, match=doc.name):
         doc.validate()
 
 

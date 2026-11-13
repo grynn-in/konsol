@@ -45,6 +45,9 @@ REFERRING_DOCTYPES = (
     # S2-T0: Budget Entry Line copies its entry's entity for the warehouse row.
     # A new doctype, so the table_exists() guard makes the entry free.
     "Budget Entry Line",
+    # S2-T1: Budget Entry, the parent that declares the entity. A new doctype,
+    # so the same table_exists() guard makes the entry free.
+    "Budget Entry",
 )
 
 
