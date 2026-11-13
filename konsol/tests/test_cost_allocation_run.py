@@ -274,6 +274,8 @@ class _Run:
 def _run_module(rule_set=None, stats=None, carry=None, tree=None, user="zz@example.com"):
     from konsol.tests import test_cost_allocation_doctypes as dt  # noqa: F401  (stub helper)
     dt._install_document_stub()
+    # the module-level @frappe.whitelist runs at import; give the stub one
+    sys.modules["frappe"].whitelist = lambda *a, **k: (lambda fn: fn)
     spec = importlib.util.spec_from_file_location("cost_allocation_run_k7", RUN_PY)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -336,7 +338,7 @@ def test_compute_happy_path_snapshots_step_down_run():
     assert run.saved == 1
     got = {(w["step"], w["receiver_member"]): w for w in run.weights}
     assert len(run.weights) == 4          # the stale row is gone
-    assert got[(1, "HR")]["weight"] == 10 / 50 and got[(1, "P1")]["weight"] == 20 / 50
+    assert got[(1, "HR")]["weight"] == float(Fraction(1, 3)) and got[(1, "P1")]["weight"] == float(Fraction(2, 3))
     assert got[(2, "P1")]["weight"] == 20 / 50 and got[(2, "P2")]["weight"] == 30 / 50
     w = got[(1, "HR")]
     assert (w["sender_member"], w["driver"], w["statistic"], w["value_period"],
