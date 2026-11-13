@@ -1,0 +1,180 @@
+{
+  "name": "Cost Allocation Rule Set",
+  "doctype": "DocType",
+  "module": "EPM",
+  "engine": "InnoDB",
+  "issingle": 0,
+  "istable": 0,
+  "track_changes": 1,
+  "autoname": "format:CARS-{#####}",
+  "title_field": "rule_set_name",
+  "search_fields": "entity,method",
+  "fields": [
+    {
+      "fieldname": "rule_set_tab",
+      "fieldtype": "Tab Break",
+      "label": "Rule Set"
+    },
+    {
+      "fieldname": "scope_section",
+      "fieldtype": "Section Break",
+      "label": "Scope"
+    },
+    {
+      "fieldname": "rule_set_name",
+      "fieldtype": "Data",
+      "label": "Rule Set Name",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "entity",
+      "fieldtype": "Link",
+      "label": "Entity",
+      "options": "Entity",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "allocation_dimension",
+      "fieldtype": "Link",
+      "label": "Allocation Dimension",
+      "options": "Dimension",
+      "reqd": 1,
+      "description": "Must be Published and In Budget. Senders and receivers are members of this dimension."
+    },
+    {
+      "fieldname": "column",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "method",
+      "fieldtype": "Select",
+      "label": "Method",
+      "options": "Direct\nStep-Down",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Direct: receivers are never senders. Step-Down: cost flows only to later senders."
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "Draft\nActive\nInactive",
+      "reqd": 1,
+      "default": "Draft",
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "treatment_section",
+      "fieldtype": "Section Break",
+      "label": "Treatment"
+    },
+    {
+      "fieldname": "receiver_account_mode",
+      "fieldtype": "Select",
+      "label": "Receiver Account Mode",
+      "options": "Sender's Own Accounts\nDeclared Allocation Account",
+      "reqd": 1,
+      "description": "Where allocated cost lands on the receiver: on the pool's own accounts, or on one declared account."
+    },
+    {
+      "fieldname": "allocation_account",
+      "fieldtype": "Link",
+      "label": "Allocation Account",
+      "options": "Main Account",
+      "depends_on": "eval:doc.receiver_account_mode=='Declared Allocation Account'",
+      "mandatory_depends_on": "eval:doc.receiver_account_mode=='Declared Allocation Account'"
+    },
+    {
+      "fieldname": "treatment_column",
+      "fieldtype": "Column Break"
+    },
+    {
+      "fieldname": "amounts_after_approval",
+      "fieldtype": "Select",
+      "label": "Amounts After Approval",
+      "options": "Follow Latest Data\nFreeze at Approval",
+      "reqd": 1,
+      "default": "Follow Latest Data",
+      "description": "Frozen amounts come from the first allocation build after approval; drift from current data is reported."
+    },
+    {
+      "fieldname": "scenarios_section",
+      "fieldtype": "Section Break",
+      "label": "Scenarios"
+    },
+    {
+      "fieldname": "applies_to_all_scenarios",
+      "fieldtype": "Check",
+      "label": "Applies to All Scenarios"
+    },
+    {
+      "fieldname": "scenarios",
+      "fieldtype": "Table",
+      "label": "Scenarios",
+      "options": "Cost Allocation Rule Set Scenario",
+      "depends_on": "eval:!doc.applies_to_all_scenarios",
+      "mandatory_depends_on": "eval:!doc.applies_to_all_scenarios"
+    },
+    {
+      "fieldname": "rules_tab",
+      "fieldtype": "Tab Break",
+      "label": "Rules"
+    },
+    {
+      "fieldname": "accounts_section",
+      "fieldtype": "Section Break",
+      "label": "Cost Pool Accounts"
+    },
+    {
+      "fieldname": "accounts",
+      "fieldtype": "Table",
+      "label": "Cost Pool Accounts",
+      "options": "Cost Allocation Rule Set Account",
+      "reqd": 1,
+      "description": "At least one. A group account includes its descendants."
+    },
+    {
+      "fieldname": "steps_section",
+      "fieldtype": "Section Break",
+      "label": "Steps"
+    },
+    {
+      "fieldname": "rules",
+      "fieldtype": "Table",
+      "label": "Steps",
+      "options": "Cost Allocation Rule",
+      "reqd": 1,
+      "description": "One sender per step, spread on one driver."
+    },
+    {
+      "fieldname": "receivers_section",
+      "fieldtype": "Section Break",
+      "label": "Receivers"
+    },
+    {
+      "fieldname": "receivers",
+      "fieldtype": "Table",
+      "label": "Receivers",
+      "options": "Cost Allocation Rule Receiver"
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    },
+    {
+      "export": 1,
+      "role": "EPM Admin",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "delete": 1
+    }
+  ]
+}
