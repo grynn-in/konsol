@@ -57,8 +57,21 @@ SIGNATURES = {
     "EPM_CREDIT": ["entity", "year", "period", "account", "dimensions",
                    "hierarchy", "node"],
     "EPMSAVE": ["amount", "entity", "year", "period", "account", "scenarioId",
-                "layer", "dimensions", "hierarchy", "node"],
+                "layer", "dimensions", "hierarchy", "node", "currency", "amountBasis"],
 }
+
+#: EPMSAVE's last two arguments, which the server requires and never
+#: defaults (S2-X3). Appended so that no existing argument moves.
+_SAVE_TAIL = ["EUR", "Movement"]
+
+
+def _filled(fn, n, pad):
+    """The read arguments padded with `pad` up to the signature's length; an
+    EPMSAVE also gets its currency and amount basis in their own slots."""
+    args = ([100] if fn == "EPMSAVE" else []) + list(_READ)
+    if fn == "EPMSAVE":
+        return args + [pad] * (len(n) - len(args) - len(_SAVE_TAIL)) + _SAVE_TAIL
+    return args + [pad] * (len(n) - len(args))
 
 
 def _metadata():
@@ -224,8 +237,7 @@ def test_an_argument_past_the_last_slot_is_refused():
     # has one argument more than the signature. Dropped, its layer filter
     # would be lost and the cell would sum every layer.
     for fn, n in SIGNATURES.items():
-        args = ([100] if fn == "EPMSAVE" else []) + list(_READ)
-        args += [""] * (len(n) - len(args)) + ["base"]
+        args = _filled(fn, n, "") + ["base"]
         out = _call(fn, *args)
         assert out["error"] is not None, (fn, out)
         assert "argument" in out["error"]["message"], (fn, out)
@@ -240,8 +252,7 @@ def test_empty_slots_past_the_signature_are_accepted():
     # every cell the pane's Apply painted said "takes at most 11 arguments").
     # Nothing past the signature carries a value, so nothing is lost.
     for fn, n in SIGNATURES.items():
-        args = ([100] if fn == "EPMSAVE" else []) + list(_READ)
-        args += [None] * (len(n) - len(args) + 1) + [""]
+        args = _filled(fn, n, None) + [None, ""]
         out = _call(fn, *args, reply={"message": {"values": [1.0], "errors": [None]}})
         assert out["error"] is None, (fn, out)
 
@@ -252,8 +263,7 @@ def test_an_invocation_object_past_the_signature_is_accepted():
     # "takes at most 11 arguments, not 12" with the 11-parameter metadata
     # served). An object that is not a range is Excel's, not the formula's.
     for fn, n in SIGNATURES.items():
-        args = ([100] if fn == "EPMSAVE" else []) + list(_READ)
-        args += [None] * (len(n) - len(args)) + [{"address": "Sheet1!B2", "functionName": "EPM"}]
+        args = _filled(fn, n, None) + [{"address": "Sheet1!B2", "functionName": "EPM"}]
         out = _call(fn, *args, reply={"message": {"values": [1.0], "errors": [None]}})
         assert out["error"] is None, (fn, out)
 
@@ -273,7 +283,7 @@ def test_the_refusal_names_what_the_extra_argument_was():
 def test_epmsave_sends_the_dimensions_dict():
     reply = {"message": {"status": "ok", "value": 100}}
     out = _call("EPMSAVE", 100, "ZZE", 2026, 1, "ZZ6100", "ZZ_PLAN", "base",
-                [["dim_region=EU;dim_product=X"]], "ZZ_H", "ZZ_N", reply=reply)
+                [["dim_region=EU;dim_product=X"]], "ZZ_H", "ZZ_N", *_SAVE_TAIL, reply=reply)
     assert out["error"] is None, out
     assert out["result"] == 100
     (req,) = out["requests"]
@@ -299,7 +309,7 @@ def test_epmsave_shows_the_servers_refusal():
              "_server_messages": json.dumps([json.dumps(
                  {"message": "Dimension 'dim_zz' is not a budget dimension."})])}
     out = _call("EPMSAVE", 100, "ZZE", 2026, 1, "ZZ6100", "ZZ_PLAN", "base",
-                [["dim_zz=EU"]], reply=reply, status=417)
+                [["dim_zz=EU"]], "", "", *_SAVE_TAIL, reply=reply, status=417)
     assert out["error"] is not None, out
     assert "dim_zz" in out["error"]["message"]
 
