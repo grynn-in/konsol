@@ -678,3 +678,34 @@ def test_an_entry_another_session_committed_is_found_and_updated(cell):
     assert out["status"] == "ok" and out["name"] == name
     got = sorted((l["main_account"], float(l["debit"])) for l in cell.state.entries[name]["lines"])
     assert got == [("4000", 70.0), ("6000", 100.0)]
+
+
+# --- review fix 4: a 409 conflict is never counted as a save -----------------------
+
+def _stale(cell):
+    first = cell.post(amount=100)
+    cell.post(amount=200)
+    return first["modified"]
+
+
+def test_budget_save_raises_a_409_when_a_period_is_stale(cell):
+    stale = _stale(cell)
+    with pytest.raises(cell.api.BudgetConflictError) as raised:
+        cell.save(periods=[{"period": 1, "amount": 9, "base_modified": stale}])
+    assert raised.value.http_status_code == 409
+    assert "BENT-BCYC-BUD-2027-E1-base-1" in str(raised.value)
+    (line,) = _only_entry(cell)["lines"]
+    assert float(line["debit"]) == 200.0
+
+
+def test_a_batch_with_a_stale_period_rolls_back_whole_and_raises_the_409(cell):
+    stale = _stale(cell)
+    before = json.loads(json.dumps(cell.state.entries))
+    rows = [cell.row(main_account="4000"),
+            cell.row(periods=[{"period": 2, "amount": 3},
+                              {"period": 1, "amount": 9, "base_modified": stale}])]
+    with pytest.raises(cell.api.BudgetConflictError) as raised:
+        cell.batch(rows)
+    assert raised.value.http_status_code == 409
+    assert str(raised.value).startswith("Row 2: ")
+    assert json.loads(json.dumps(cell.state.entries)) == before, "nothing of the batch stands"
