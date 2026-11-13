@@ -320,6 +320,7 @@ def cell(monkeypatch):
         finally:
             frappe.flags["budget_entry_judged"] = was
     entry_mod.CycleNotDraftError = CycleNotDraftError
+    entry_mod.BudgetConflictError = type("BudgetConflictError", (_Thrown,), {"http_status_code": 409})
     entry_mod.assert_cycle_draft = assert_cycle_draft
     entry_mod.judged_by_writer = judged_by_writer
     entry_mod.entry_name = lambda cycle, entity, layer, period: f"BENT-{cycle}-{entity}-{layer}-{period}"
@@ -369,7 +370,7 @@ def cell(monkeypatch):
         body.update(overrides)
         return {k: v for k, v in body.items() if v is not ...}
 
-    return types.SimpleNamespace(api=api, state=state, post=post, frappe=frappe, data=data,
+    return types.SimpleNamespace(api=api, state=state, post=post, frappe=frappe, data=data, entry=entry_mod,
                                  save=lambda **o: call("budget_save", row(**o)),
                                  batch=lambda rows: call("budget_save_batch", rows), row=row)
 
@@ -690,7 +691,7 @@ def _stale(cell):
 
 def test_budget_save_raises_a_409_when_a_period_is_stale(cell):
     stale = _stale(cell)
-    with pytest.raises(cell.api.BudgetConflictError) as raised:
+    with pytest.raises(cell.entry.BudgetConflictError) as raised:
         cell.save(periods=[{"period": 1, "amount": 9, "base_modified": stale}])
     assert raised.value.http_status_code == 409
     assert "BENT-BCYC-BUD-2027-E1-base-1" in str(raised.value)
@@ -704,7 +705,7 @@ def test_a_batch_with_a_stale_period_rolls_back_whole_and_raises_the_409(cell):
     rows = [cell.row(main_account="4000"),
             cell.row(periods=[{"period": 2, "amount": 3},
                               {"period": 1, "amount": 9, "base_modified": stale}])]
-    with pytest.raises(cell.api.BudgetConflictError) as raised:
+    with pytest.raises(cell.entry.BudgetConflictError) as raised:
         cell.batch(rows)
     assert raised.value.http_status_code == 409
     assert str(raised.value).startswith("Row 2: ")

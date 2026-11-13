@@ -69,11 +69,12 @@ def test_save_and_batch_go_through_the_cell_path():
 
 
 def test_cell_save_enforces_write_access():
-    """S2-X1: the cell goes through budget_intake.plan, which runs
-    _assert_budget_write_access on every row (test_budget_intake.py)."""
+    """S2-X1: the cell goes through budget_intake (judge_one, which calls
+    plan), which runs _assert_budget_write_access on every row
+    (test_budget_intake.py)."""
     tree = _api_tree()
     assert "_judge_budget_cell" in _calls_in(_func(tree, "_save_budget_cell"))
-    assert "plan" in _calls_in(_func(tree, "_judge_budget_cell"))
+    assert "judge_one" in _calls_in(_func(tree, "_judge_budget_cell"))
 
 
 def test_batch_reports_permission_errors_per_item():

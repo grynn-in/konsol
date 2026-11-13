@@ -45,6 +45,14 @@ class CycleNotDraftError(frappe.ValidationError):
     """A Budget Entry write under a Cycle that is approved or cancelled."""
 
 
+class BudgetConflictError(frappe.ValidationError):
+    """A budget_save period whose ``base_modified`` is stale: HTTP 409. Raised,
+    not returned, so a multi-period or batch save never counts it as saved and
+    the request (or the batch's savepoint) rolls back what it wrote before."""
+
+    http_status_code = 409
+
+
 def assert_cycle_draft(cycle, action="changed", missing_ok=False):
     """Lock the Cycle row (SELECT ... FOR UPDATE) and refuse unless it is a
     draft, naming the Cycle and its state. A locking read sees the latest

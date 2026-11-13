@@ -480,3 +480,10 @@ def test_entry_name_is_the_autoname(env):
 
 def test_layer_has_help_text():
     assert _fields()["layer"].get("description"), "a non-obvious field carries help text"
+
+
+def test_a_stale_save_is_a_409():
+    # Review fix 4: api raises it; it lives here so api imports no frappe
+    # exception class at import time.
+    src = open(PY_PATH).read()
+    assert "class BudgetConflictError(frappe.ValidationError)" in src and "http_status_code = 409" in src

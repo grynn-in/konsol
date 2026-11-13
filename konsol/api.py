@@ -1551,14 +1551,6 @@ def epm_batch():
 # Budget Write-Back Endpoints
 # ---------------------------------------------------------------------------
 
-class BudgetConflictError(frappe.ValidationError):
-    """A budget_save period whose ``base_modified`` is stale: HTTP 409. Raised,
-    not returned, so a multi-period or batch save never counts it as saved and
-    the request (or the batch's savepoint) rolls back what it wrote before."""
-
-    http_status_code = 409
-
-
 def _validate_budget_fields(data):
     """Validate required fields for budget save. Raises on missing."""
     required = ["scenario_id", "data_area_id", "fiscal_year", "main_account", "periods"]
@@ -1828,7 +1820,8 @@ def _budget_save_cells(data):
     A period's own layer, currency and basis override the payload's; none is
     defaulted. Every cell goes through _save_budget_cell, so every check is
     the one budget_cell_save runs. A period may give its own ``base_modified``;
-    a stale one raises BudgetConflictError (409), never counted as saved.
+    a stale one raises budget_entry.BudgetConflictError (409), never counted
+    as saved.
     Returns the entry names, in order."""
     if not isinstance(data, dict):
         frappe.throw("each budget line must be an object", frappe.ValidationError)
@@ -1843,6 +1836,8 @@ def _budget_save_cells(data):
         cell["fiscal_period"] = p.get("period", p.get("fiscal_period"))
         out = _save_budget_cell(cell)
         if out["status"] == "conflict":
+            from konsol.epm.doctype.budget_entry.budget_entry import BudgetConflictError
+
             frappe.throw(
                 f"Budget Entry {out['name']} (period {out['fiscal_period']}, layer {out['layer']}) "
                 f"changed since {cell.get('base_modified')}: it now holds {out['current_amount']} "
