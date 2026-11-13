@@ -571,6 +571,27 @@ def test_every_consolidation_input_reaches_the_consolidated_numbers():
     )
 
 
+def test_isolated_build_scope_trigger_is_not_a_consolidation_input():
+    """K9c (konsol#269): a trigger whose DOCTYPE_BUILD_MAP scope is an
+    isolated Build Scope is not a consolidation input; a trigger on a
+    non-isolated scope still is. Stubs only: the real mapping is checked by
+    test_every_consolidation_input_reaches_the_consolidated_numbers."""
+    build_map = {
+        "Isolated Doc": {"scope": "allocation", "risk": "low"},
+        "Plain Doc": {"scope": "consolidation", "risk": "low"},
+    }
+    triggers = ["Isolated Doc", "Plain Doc"]
+    assert _consolidation_inputs(triggers, build_map, ["allocation"]) == ["Plain Doc"]
+    assert _consolidation_inputs(triggers, build_map, []) == ["Isolated Doc", "Plain Doc"]
+
+
+def test_isolated_scopes_are_read_from_the_build_scope_fixture():
+    """K9c: the isolated set comes from fixtures/build_scope.json isolated=1."""
+    isolated = _isolated_scope_names()
+    assert "allocation" in isolated
+    assert "consolidation" not in isolated
+
+
 # ===================================================================
 # konsolidat#199: preflight refuses claimed batches with no Amount Basis.
 # Every trial-balance row was read as a period movement; a batch that
