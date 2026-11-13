@@ -199,11 +199,13 @@ def scenario_problems(name, scenario):
 
 def _row_problems(rows, chart):
     """The TB's account and sign rules (konsol.close.tb_model.check_rows), one
-    sentence per problem, naming its line. No basis, partner or duplicate rule."""
+    sentence per problem, naming its line (nothing when the row's line is
+    None: the caller has none). No basis, partner or duplicate rule."""
     result = _tb_model.check_rows(rows, chart, None, None, None)
     out = [p for p in result["file_problems"] if p == _tb_model.NO_CHART]
     for row in result["rows"]:
-        out.extend(f"Line {row['line']}: {p['message']}" for p in row["problems"] if p["code"] in _ROW_RULES)
+        where = f"Line {row['line']}: " if row["line"] is not None else ""
+        out.extend(f"{where}{p['message']}" for p in row["problems"] if p["code"] in _ROW_RULES)
     return out
 
 

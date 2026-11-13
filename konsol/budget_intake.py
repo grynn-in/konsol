@@ -48,7 +48,7 @@ from konsol.tb_currency_model import currency_problems
 _CYCLE_STATE = {1: "approved", 2: "cancelled"}
 
 
-def plan(table, *, form_basis):
+def plan(table, *, form_basis, name_lines):
     """Judge a budget table for the current user. Returns
 
         {"groups": {BudgetKey: [rows]}, "report": [item per group], "ok": bool}
@@ -68,8 +68,19 @@ def plan(table, *, form_basis):
 
     `form_basis` is the upload's Amount Basis ('' when it has none); it has no
     default, so a writer states what it means.
+
+    `name_lines` says whether a problem names its file line ("Line 3: ...").
+    A file writer (the CSV check and load) passes True. A writer whose rows
+    are not file lines (an Excel cell, an API row) passes False: each row's
+    line is None, the convention the shared checks read as "no line known",
+    and a problem names its account instead or nothing. A batch caller then
+    names its own row. No default.
     """
     groups = M.split_table(table, _budget_dimensions())
+    if not name_lines:
+        for rows in groups.values():
+            for row in rows:
+                row["line"] = None
     facts = _facts(groups)
     user = frappe.session.user
     roles = set(frappe.get_roles(user))
@@ -100,12 +111,18 @@ def plan(table, *, form_basis):
             try:
                 _assert_budget_write_access(data)
             except frappe.PermissionError as error:
-                denials.append(f"Line {row.get('line')}: {error}")
+                denials.append(_at_line(row, error))
         errors.extend(denials)
         item["denials"] = denials
         item["ok"] = not errors
         report.append(item)
     return {"groups": groups, "report": report, "ok": all(i["ok"] for i in report)}
+
+
+def _at_line(row, message):
+    """`message` prefixed with the row's file line, or alone when it has none."""
+    line = row.get("line")
+    return f"Line {line}: {message}" if line is not None else str(message)
 
 
 def _role_problems(layer, role, bypass, roles, user):
@@ -224,14 +241,17 @@ def _cycle(found, key):
 
 def _duplicates(rows):
     """One sentence per row that repeats an earlier row's account and dim_*
-    values within one Budget Entry, naming both lines."""
+    values within one Budget Entry, naming both lines (or, when the rows have
+    no lines, the account alone)."""
     seen, out = {}, []
     for row in rows:
         dims = tuple(sorted((k, row.get(k) or "") for k in row if k.startswith("dim_")))
         ident = (row.get("main_account"), dims)
         if ident in seen:
             named = ", ".join(f"{d} {v}" for d, v in dims if v)
-            out.append(f"Lines {seen[ident]} and {row.get('line')} both hold account {ident[0]}"
+            where = (f"Lines {seen[ident]} and {row.get('line')} both hold"
+                     if row.get("line") is not None else "Two rows hold")
+            out.append(f"{where} account {ident[0]}"
                        + (f" with {named}" if named else "")
                        + ". Keep one row per account and dimension combination.")
         else:

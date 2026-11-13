@@ -114,7 +114,7 @@ def _record_check(doc):
     """Check the file and write the report onto the upload."""
     try:
         report = budget_intake.plan(_read_table(doc.upload_file),
-                                    form_basis=doc.amount_basis or "")["report"]
+                                    form_basis=doc.amount_basis or "", name_lines=True)["report"]
     except ValueError as e:
         doc.status, doc.error, doc.report = "Failed", str(e), "[]"
         doc.group_count = doc.valid_count = doc.total_rows = 0
@@ -364,7 +364,8 @@ def run_load(upload):
     report = json.loads(doc.report or "[]")
     loaded = failed = 0
     try:
-        result = budget_intake.plan(_read_table(doc.upload_file), form_basis=doc.amount_basis or "")
+        result = budget_intake.plan(_read_table(doc.upload_file), form_basis=doc.amount_basis or "",
+                                    name_lines=True)
         report = _whole_slices(result["report"])
         slices = {}
         # plan builds its report in the groups' order, one item per group.

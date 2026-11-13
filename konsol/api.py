@@ -1614,7 +1614,10 @@ def _judge_budget_cell(data, dims, debit, credit):
            format(debit, "f"), format(credit, "f"), data.get("currency") or ""]
     row += [data[d] for d in given]
     try:
-        plan = budget_intake.plan([header, row], form_basis=data.get("amount_basis") or "")
+        # A cell is not a file line: its refusal names no "Line 2", and a
+        # batch names its own row.
+        plan = budget_intake.plan([header, row], form_basis=data.get("amount_basis") or "",
+                                  name_lines=False)
     except ValueError as error:
         frappe.throw(str(error), frappe.ValidationError)
     (item,) = plan["report"]
