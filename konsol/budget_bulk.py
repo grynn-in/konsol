@@ -350,8 +350,12 @@ def _replace_slice(upload, members):
     return names
 
 
-def _outcome(loaded, failed, ready):
-    if ready and loaded == ready and not failed:
+def _outcome(loaded, failed, expected):
+    """`expected` is the number of groups ready when the load was asked for
+    (the upload's valid_count then), not the job's own count: a group that
+    became refused at job time was meant to load, so the load is not Loaded.
+    A group the user chose to skip was never expected."""
+    if expected and loaded >= expected and not failed:
         return "Loaded"
     return "Partly Loaded" if loaded else "Failed"
 
@@ -375,6 +379,9 @@ def run_load(upload):
     started = time.monotonic()
     doc = frappe.get_doc(DOCTYPE, upload)
     report = json.loads(doc.report or "[]")
+    # What load() promised: its re-check's ready count. The job's progress
+    # saves overwrite valid_count, so it is read once, here.
+    expected = cint(doc.valid_count)
     loaded = failed = 0
     try:
         result = budget_intake.plan(_read_table(doc.upload_file), form_basis=doc.amount_basis or "",
@@ -429,7 +436,7 @@ def run_load(upload):
             _save_progress(doc.name, report, failed, status="Partly Loaded" if loaded else "Failed",
                            error="Stopped at the time limit; load again to finish it.")
         else:
-            _save_progress(doc.name, report, failed, status=_outcome(loaded, failed, total),
+            _save_progress(doc.name, report, failed, status=_outcome(loaded, failed, expected),
                            error="" if total else "Nothing in this file was ready to load.")
     except Exception as e:
         frappe.db.rollback()
