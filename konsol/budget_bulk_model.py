@@ -24,20 +24,30 @@ What differs:
   carries no intercompany partner until #427 decides how one would (Q2-c).
 - a dim_* column is accepted only for a Dimension that is Published and ticked
   ``in_budget``; ``in_trial_balance`` does not count (konsol.tb_dimension_model).
+
+The per-group check (check_group, M2) judges one Budget Entry against facts
+the caller reads: the period must be a declared Regular period of its year
+(Opening, Closing and Adjustment are refused by name, BUD-10-1) whatever its
+close status, because the Cycle is what freezes a plan (Q4-b); the layer must
+be a declared Budget Layer, and a site with none is told to create one
+(Q8-a); the scenario must be declared and not an actual.
 """
 from collections import namedtuple
 
 from konsol.tb_basis_model import COLUMN as BASIS
+from konsol.period_read_model import REGULAR
 from konsol.tb_bulk_model import (
     ALIASES, MAX_LINE_ERRORS, PARTNER, REQUIRED as TB_REQUIRED, Contract,
-    group_basis, resolve_basis, split_by_contract, table_from_csv,
+    group_basis, period_name, resolve_basis, split_by_contract, table_from_csv,
 )
 
 __all__ = ("ALIASES", "MAX_LINE_ERRORS", "BudgetKey", "REQUIRED", "OPTIONAL", "ACCEPTED", "HEADER_HELP",
            "DIMENSION_FLAG", "PARTNER_REFUSAL", "CONTRACT", "split_table", "table_from_csv",
-           "group_basis", "resolve_basis")
+           "group_basis", "resolve_basis", "check_group", "ACTUAL")
 
 SCENARIO = "scenario"
+#: The Scenario.scenario_type a budget file may not load into.
+ACTUAL = "actual"
 LAYER = "layer"
 REQUIRED = (SCENARIO, LAYER) + TB_REQUIRED
 #: Optional columns a file may carry, beyond REQUIRED. No partner (Q2-c).
@@ -80,3 +90,46 @@ def split_table(table, declared_dimensions):
     dimensions" passes ().
     """
     return split_by_contract(table, declared_dimensions, CONTRACT)
+
+
+def check_group(key, rows, *, period, layers, scenario):
+    """Everything in M2's remit that would stop one Budget Entry loading, as
+    one report row {scenario, fiscal_year, entity, layer, fiscal_period, rows,
+    errors, ok}. Every problem is reported together.
+
+    The facts come from the caller and have no defaults:
+    - `period`: None when (fiscal_year, fiscal_period) is not declared, else a
+      dict with at least `type` (Opening/Regular/Closing/Adjustment). Its
+      `status` is not read: a Closed Regular period is accepted (Q4-b).
+    - `layers`: the site's declared Budget Layer codes; empty on a site that
+      has none (Q8-a: a fresh site starts empty).
+    - `scenario`: None when the Scenario is not declared, else a dict with
+      `scenario_type`.
+    """
+    errors = []
+    label = period_name(key.fiscal_year, key.fiscal_period)
+    if period is None:
+        errors.append(f"{label} is not declared: a budget goes into the declared Regular periods of its year")
+    elif period["type"] != REGULAR:
+        kind = period["type"]
+        article = "an" if kind[:1].upper() in "AEIOU" else "a"
+        errors.append(f"{label} is {article} {kind} period: a budget goes into the declared Regular "
+                      "periods of its year")
+    declared = list(layers)
+    if key.layer not in declared:
+        if declared:
+            errors.append(f"Layer {key.layer} is not declared. Declared layers: {', '.join(declared)}. "
+                          f"Use one of them, or create {key.layer} as a Budget Layer")
+        else:
+            errors.append(f"Layer {key.layer} is not declared: this site has no Budget Layer yet. "
+                          f"Create {key.layer} (or the layers you plan in) as a Budget Layer first")
+    if scenario is None:
+        errors.append(f"Scenario {key.scenario} is not declared: create it as a Scenario first")
+    elif scenario["scenario_type"] == ACTUAL:
+        errors.append(f"Scenario {key.scenario} is an actual scenario: actuals come from the trial balance, "
+                      "not a budget file. Use a budget, forecast or other plan scenario")
+    return {
+        "scenario": key.scenario, "fiscal_year": key.fiscal_year, "entity": key.data_area_id,
+        "layer": key.layer, "fiscal_period": key.fiscal_period, "rows": len(rows),
+        "errors": errors, "ok": not errors,
+    }

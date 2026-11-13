@@ -143,6 +143,19 @@ def _whole(value, what, lineno, errors):
         return None
 
 
+_COUNT_WORDS = {2: "Two", 3: "Three", 4: "Four", 5: "Five", 6: "Six", 7: "Seven", 8: "Eight", 9: "Nine"}
+
+
+def _repeated_sentence(name, count, head_line):
+    """The refusal of a column the header names `count` times (count > 1)."""
+    # The partner keeps the wording its refusal has always had.
+    spoken = "partner" if name == PARTNER else name
+    sentence = f"{_COUNT_WORDS.get(count, count)} {spoken} columns on line {head_line}: keep one"
+    if name == BASIS:
+        sentence += " of " + ", ".join(BASIS_ALIASES)
+    return sentence
+
+
 class Contract:
     """What one kind of bulk file carries, so the trial balance and the budget
     (konsol.budget_bulk_model, konsol#348) share ONE reader: header
@@ -262,29 +275,19 @@ def split_by_contract(table, declared_dimensions, contract):
         problems.append(dims_help)
     if problems:
         raise ValueError("\n".join(problems))
-    if names.count(CURRENCY) > 1:
-        # `col` reads the first of two, so the second would never be judged.
-        raise ValueError(f"Two currency columns on line {head_line}: keep one")
-    if names.count(PARTNER) > 1:
-        raise ValueError(f"Two partner columns on line {head_line}: keep one")
-    if names.count(BASIS) > 1:
-        raise ValueError(f"Two amount_basis columns on line {head_line}: keep one of "
-                         + ", ".join(BASIS_ALIASES))
-    # A dimension named twice is refused for the same reason the partner and
-    # the basis are (konsol#255): `col` below resolves a name to names.index(n),
-    # the FIRST occurrence, so the second column was read by nobody and its
-    # values were dropped without a word. Every repeated dimension is named in
-    # one refusal, as the header problems above are, so one pass fixes the file.
-    # This sits AFTER the dimension_problems raise deliberately: an undeclared
-    # dim_* header has already been refused with declare / publish / tick, and
-    # telling the reader to "keep one" of a column they may not carry at all
-    # would be two answers to one question.
-    repeated_dims = [n for i, n in enumerate(names)
-                     if n in accepted_dims and names.index(n) == i
-                     and names.count(n) > 1]
-    if repeated_dims:
-        raise ValueError("\n".join(
-            f"Two {n} columns on line {head_line}: keep one" for n in repeated_dims))
+    # Any column named more than once is refused (konsol#255, konsol#348 M2):
+    # `col` below resolves a name to names.index(n), the FIRST occurrence, so
+    # a second debit, layer or dim_* column was read by nobody and its values
+    # were dropped without a word. Names are compared after _header_name, so
+    # `Debit` and `debit`, or `account` and `main_account`, are one column.
+    # Every repeated column is named with its count in one refusal, so one
+    # pass fixes the file. This sits AFTER the problems raise deliberately: an
+    # unknown, refused-by-name or undeclared dim_* header has already been
+    # refused for what it is, and telling the reader to "keep one" of a column
+    # they may not carry at all would be two answers to one question.
+    repeated = [n for i, n in enumerate(names) if n and names.index(n) == i and names.count(n) > 1]
+    if repeated:
+        raise ValueError("\n".join(_repeated_sentence(n, names.count(n), head_line) for n in repeated))
     col = {n: names.index(n) for n in set(names)}
     #: The accepted dim_* columns this file actually carries, in header order.
     dim_names = [n for n in names if n in accepted_dims]
