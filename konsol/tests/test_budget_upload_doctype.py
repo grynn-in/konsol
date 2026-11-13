@@ -1,8 +1,8 @@
 """Budget Upload doctype (U0, konsol#348 part 2): mirrors Trial Balance Upload.
 
 Shape, the never-defaulted amount basis, the read-only job fields and the
-permissions. The check and load (U1, U2) and the form buttons (U3) are later
-tasks, so the controller holds no behaviour yet.
+permissions. The check and load (U1, U2) live in konsol/budget_bulk.py; the
+controller only derives the loaded count and the form indicator (U2).
 """
 import json
 import os
@@ -107,8 +107,12 @@ def test_permissions():
     assert set(perms) == {"System Manager", "EPM Admin", "EPM Analyst"}
 
 
-def test_controller_is_minimal():
+def test_controller_only_derives_the_loaded_count_and_indicator():
+    """U2 made loaded_count derived, as on Trial Balance Upload: the controller
+    reads it (and the form's status_now) from konsol.budget_bulk.upload_state
+    and holds nothing else."""
     with open(os.path.join(DIR, "budget_upload.py")) as f:
         src = f.read()
     assert "class BudgetUpload(Document)" in src
-    assert "def " not in src
+    assert sorted(line.strip() for line in src.splitlines() if line.strip().startswith("def ")) == [
+        "def loaded_count(self):", "def onload(self):"]

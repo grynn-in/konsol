@@ -85,6 +85,9 @@ class FakeEntry:
         self.lines = list(kw.get("lines") or [])
         self.name = self.__dict__.get("name") or f"BENT-{kw['cycle']}-{kw['data_area_id']}-{kw['layer']}-{kw['fiscal_period']}"
 
+    def get(self, field, default=None):
+        return getattr(self, field, default)
+
     def set(self, field, value):
         setattr(self, field, list(value))
 
@@ -373,7 +376,7 @@ def test_a_refused_period_holds_back_its_whole_slice(env):
 
 def _run(env, slices, refused=()):
     _file(env, slices, refused)
-    doc = env.state.doc if env.state.doc and env.state.doc.report else _checked(env)
+    doc = env.state.doc if env.state.doc and env.state.doc.status == "Checked" else _checked(env)
     env.mod.load(doc.name, skip_invalid=1)
     env.mod.run_load(doc.name)
     return doc
@@ -446,6 +449,7 @@ def test_an_existing_line_the_user_may_not_write_fails_the_slice_and_writes_noth
     _run(env, FOUR)
     env.state.entries[f"BENT-{CYCLE}-E1-base-1"].lines.append({"main_account": "9999", "debit": 1.0})
     env.state.denied_accounts = {"9999"}
+    env.frappe.db.commit()
     _checked(env).name = "BU-0002"
     doc = _run(env, FOUR)
     e = env.state.entries[f"BENT-{CYCLE}-E1-base-1"]
