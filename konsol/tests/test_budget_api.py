@@ -386,7 +386,7 @@ def test_cell_save_refuses_a_missing_cycle_and_creates_none(cell):
 
 def test_cell_save_goes_through_the_access_check(cell):
     cell.state.denied = {"E2"}
-    with pytest.raises(Exception, match="Not permitted to write entity E2"):
+    with pytest.raises(_Denied, match="Not permitted to write entity E2"):
         cell.post(data_area_id="E2")
     assert not cell.state.entries
     assert cell.state.access_calls and cell.state.access_calls[-1]["main_account"] == "6000"
@@ -529,7 +529,7 @@ def test_one_refused_row_refuses_the_batch_and_names_the_row(cell):
 
 def test_an_ungranted_entity_refuses_the_batch_with_a_permission_error(cell):
     cell.state.denied.add("E2")
-    with pytest.raises(_Thrown, match=r"Row 2.*E2"):
+    with pytest.raises(_Denied, match=r"Row 2.*E2"):
         cell.batch([cell.row(), cell.row(data_area_id="E2")])
     assert not cell.state.entries
 
@@ -544,3 +544,27 @@ def test_the_sheet_path_is_gone_from_api():
         src = f.read()
     for gone in ("def _get_or_create_sheet", "def _upsert_budget_line", "Budget Sheet"):
         assert gone not in src, gone
+
+
+# --- S2-X3: an access denial stays a PermissionError (HTTP 403, not 417) -------
+
+def test_budget_save_raises_a_permission_error_for_a_denial(cell):
+    cell.state.denied.add("E2")
+    with pytest.raises(_Denied, match="Not permitted to write entity E2"):
+        cell.save(data_area_id="E2")
+    assert not cell.state.entries
+
+
+def test_a_denial_wins_over_other_problems_of_the_same_cell(cell):
+    # A user who may not write the entity learns that first; the cell's other
+    # problems are not theirs to fix.
+    cell.state.denied.add("E2")
+    with pytest.raises(_Denied) as raised:
+        cell.post(data_area_id="E2", fiscal_period=14)
+    assert "not declared" not in str(raised.value)
+    assert not cell.state.entries
+
+
+def test_a_cell_refused_for_another_reason_is_still_a_validation_error(cell):
+    with pytest.raises(_Thrown):
+        cell.post(fiscal_period=14)

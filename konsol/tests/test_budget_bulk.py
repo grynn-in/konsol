@@ -255,6 +255,19 @@ def test_check_file_writes_counts_and_report_and_names_the_refusal(env):
     assert env.state.plan_calls == [(env.state.table, "Period movement")]
 
 
+def test_check_file_reports_an_access_denial_and_raises_nothing(env):
+    # S2-X3: the API raises a PermissionError for a denial; a CSV check keeps
+    # it in the report, beside every other refusal of the file.
+    denial = "Line 3: No access to account 9999"
+    item = dict(_item("E2", "base", errors=[denial]), denials=[denial])
+    env.state.plan_report = [_item("E1", "base"), item]
+    out = env.mod.check_file("/files/b.csv", "Period movement")
+    stored = json.loads(env.state.doc.report)
+    assert env.state.doc.status == "Checked"
+    assert stored[1]["errors"] == [denial] and not stored[1]["ok"]
+    assert out["valid_count"] == 1
+
+
 def test_check_file_writes_no_budget_entry(env):
     env.state.plan_report = [_item("E1", "base")]
     env.mod.check_file("/files/b.csv")

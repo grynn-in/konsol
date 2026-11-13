@@ -194,6 +194,27 @@ def test_an_ungranted_row_is_refused_naming_its_line(env):
         refused["errors"]
 
 
+def test_an_access_denial_is_kept_apart_from_other_problems(env):
+    # S2-X3: an API writer raises a PermissionError (403) for a denial, not a
+    # ValidationError (417), so the plan says which refusals are denials. The
+    # CSV report keeps naming them among the errors.
+    env.state.denied_entities = {"E2"}
+    plan = env.plan([HEADER, _row(), _row(entity="E2", layer="board")])
+    ok, refused = plan["report"]
+    assert ok["denials"] == []
+    (denial,) = refused["denials"]
+    assert "Not permitted to write entity E2" in denial
+    assert denial in refused["errors"]
+    # The layer's writer role is a declared rule, not an access grant.
+    assert not [d for d in refused["denials"] if "Budget Approver" in d]
+    assert any("Budget Approver" in e for e in refused["errors"])
+
+
+def test_a_clean_group_has_no_denials(env):
+    plan = env.plan([HEADER, _row()])
+    assert [item["denials"] for item in plan["report"]] == [[]]
+
+
 def test_the_plan_writes_nothing(env):
     # new_doc, get_doc and db writes raise in the stub
     plan = env.plan([HEADER, _row()])
