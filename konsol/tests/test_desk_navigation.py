@@ -65,6 +65,8 @@ NOT_ON_A_SIDEBAR = {
     "Reporting Hierarchy Member",
     # Site-written Handbook pages: listed from the Konsol Handbook workspace (plan, Pages table).
     "Konsol Guide Page",
+    # konsol#269 K3: the Planning sidebar's Allocation section is K11's; remove this entry when K11 lands.
+    "Cost Allocation Driver",
 }
 
 #: The rail, top to bottom: (title, link_type, link_to).
