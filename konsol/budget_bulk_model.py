@@ -38,7 +38,7 @@ from collections import namedtuple
 
 from konsol.tb_balance_model import NotFinite, place_problems, valid_minor_unit
 from konsol.tb_basis_model import AMOUNT_BASES, COLUMN as BASIS, canonical as canonical_basis
-from konsol.tb_currency_model import code as currency_code, currency_problems
+from konsol.tb_currency_model import code as currency_code, currency_problems, declared_currency
 from konsol.period_read_model import REGULAR
 from konsol.tb_bulk_model import (
     ALIASES, MAX_LINE_ERRORS, PARTNER, REQUIRED as TB_REQUIRED, Contract,
@@ -120,7 +120,8 @@ def split_table(table, declared_dimensions):
     return split_by_contract(table, declared_dimensions, CONTRACT)
 
 
-def check_group(key, rows, *, period, layers, scenario, chart, functional_currency, minor_unit, form_basis):
+def check_group(key, rows, *, period, layers, scenario, chart, functional_currency, minor_unit, form_basis,
+                from_file):
     """Everything that would stop one Budget Entry loading (M2 and M3), as
     one report row {scenario, fiscal_year, entity, layer, fiscal_period, rows,
     errors, ok}. Every problem is reported together.
@@ -145,6 +146,10 @@ def check_group(key, rows, *, period, layers, scenario, chart, functional_curren
       The file's amount_basis column, when given, must agree with it. Only
       Movement and Year-to-date are accepted; Period-end balance is refused by
       name (Q15-c). A group with no basis anywhere is refused, never defaulted.
+    - `from_file`: True when the rows are a file's lines (the upload), False
+      for an Excel cell, an API row or a Budget Entry saved on the Desk. The
+      currency and basis sentences say "the file" and "the upload" only to a
+      file.
 
     A budget need not balance: there is no balance rule. Rows with a negative
     amount are refused, as on the trial balance.
@@ -161,8 +166,8 @@ def check_group(key, rows, *, period, layers, scenario, chart, functional_curren
     errors.extend(layer_problems(key.layer, layers))
     errors.extend(scenario_problems(key.scenario, scenario))
     errors.extend(_row_problems(rows, chart))
-    errors.extend(_currency_problems(key.data_area_id, functional_currency, minor_unit, rows))
-    errors.extend(_basis_problems(rows, form_basis))
+    errors.extend(_currency_problems(key.data_area_id, functional_currency, minor_unit, rows, from_file))
+    errors.extend(_basis_problems(rows, form_basis, from_file))
     return {
         "scenario": key.scenario, "fiscal_year": key.fiscal_year, "entity": key.data_area_id,
         "layer": key.layer, "fiscal_period": key.fiscal_period, "rows": len(rows),
@@ -209,8 +214,18 @@ def _row_problems(rows, chart):
     return out
 
 
-def _currency_problems(entity, functional_currency, minor_unit, rows):
+def _currency_problems(entity, functional_currency, minor_unit, rows, from_file):
+    """The TB's currency rule, with the budget's own sentence for a currency
+    that is not the entity's (it names the file only to a file, and a budget
+    is not a trial balance)."""
     declared = [(r.get("line"), r.get("currency")) for r in rows]
+    given, expected = declared_currency(declared), currency_code(functional_currency)
+    if given and expected and given != expected:
+        # Judged as if it matched, for the blank-row problems; then the budget's sentence.
+        subject = f"The file declares {given}" if from_file else f"The currency given is {given}"
+        return currency_problems(entity, given, declared) + [
+            f"{subject} but Entity {entity}'s Functional Currency is {expected}: give the budget in "
+            f"{expected}, or correct the Entity's Functional Currency."]
     problems = currency_problems(entity, functional_currency, declared)
     if problems:
         return problems
@@ -225,15 +240,22 @@ def _currency_problems(entity, functional_currency, minor_unit, rows):
         return [f"An amount cannot be read: {error}"]
 
 
-def _basis_problems(rows, form_basis):
+def _basis_problems(rows, form_basis, from_file):
     """One basis per Budget Entry, from the column or the upload, never
-    defaulted: Movement or Year-to-date; a Period-end balance is refused by name."""
+    defaulted: Movement or Year-to-date; a Period-end balance is refused by name.
+    A writer that is not a file is told what to give, not about a file."""
     given = group_basis(rows)
     form = canonical_basis(form_basis)
     if given and form and canonical_basis(given) not in (None, form):
-        return [f'The file says "{canonical_basis(given)}" but the upload says "{form}"; '
-                "one file holds one amount basis, so fix the upload or the file."]
+        if from_file:
+            return [f'The file says "{canonical_basis(given)}" but the upload says "{form}"; '
+                    "one file holds one amount basis, so fix the upload or the file."]
+        return [f'The rows say "{canonical_basis(given)}" but the amount basis given is "{form}"; '
+                "one Budget Entry holds one amount basis."]
     basis, problem = resolve_basis(given, form_basis)
+    if problem and not from_file and not (form_basis and str(form_basis).strip()):
+        allowed = " or ".join(f'"{b}"' for b in BUDGET_BASES)
+        return [f"Amount Basis is required: give the amount basis, {allowed}. It is never defaulted."]
     if problem:
         return [problem]
     if basis == PERIOD_END:

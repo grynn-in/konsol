@@ -94,7 +94,8 @@ def plan(table, *, form_basis, name_lines):
             key, rows, period=facts["periods"].get((key.fiscal_year, key.fiscal_period)),
             layers=list(facts["layers"]), scenario=facts["scenarios"].get(key.scenario),
             chart=facts["chart"], functional_currency=currency,
-            minor_unit=facts["minor_units"].get(currency), form_basis=form_basis)
+            minor_unit=facts["minor_units"].get(currency), form_basis=form_basis,
+            from_file=name_lines)
         cycle, cycle_problem = _cycle(facts["cycles"].get((key.scenario, key.fiscal_year), ()), key)
         item["cycle"] = cycle
         item["currency"] = currency or ""
