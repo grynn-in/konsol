@@ -216,6 +216,7 @@ import importlib.util
 import sys
 import types
 from datetime import datetime
+from decimal import Decimal
 from fractions import Fraction
 
 RUN_PY = os.path.join(EPM_DOCTYPES, RUN, "cost_allocation_run.py")
@@ -271,14 +272,34 @@ class _Run:
         self.saved += 1
 
 
+def _exec_run_module(alias):
+    """Exec the Run controller with konsol.clickhouse / konsol.period_status
+    stubbed (K8), restoring sys.modules afterwards. Tests rebind the module
+    globals they care about."""
+    ch = types.ModuleType("konsol.clickhouse")
+    ps = types.ModuleType("konsol.period_status")
+    stubs = {"konsol.clickhouse": ch, "konsol.period_status": ps}
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        spec = importlib.util.spec_from_file_location(alias, RUN_PY)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    return module
+
+
 def _run_module(rule_set=None, stats=None, carry=None, tree=None, user="zz@example.com"):
     from konsol.tests import test_cost_allocation_doctypes as dt  # noqa: F401  (stub helper)
     dt._install_document_stub()
     # the module-level @frappe.whitelist runs at import; give the stub one
     sys.modules["frappe"].whitelist = lambda *a, **k: (lambda fn: fn)
-    spec = importlib.util.spec_from_file_location("cost_allocation_run_k7", RUN_PY)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _exec_run_module("cost_allocation_run_k7")
     module.frappe = _FakeFrappe()
     module._load_rule_set = lambda name: rule_set if rule_set is not None else _rule_set()
     module._statistic_values = lambda entity, scenario, fy, period: list(
@@ -461,3 +482,332 @@ def test_compute_button_is_on_the_draft_run_form_and_posts():
     assert "docstatus === 0" in js or "docstatus == 0" in js
     assert "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.compute_weights" in js
     assert "reload_doc" in js
+
+
+# --- K8: submit / cancel gates and warehouse sync (stubbed frappe) ---------------
+
+class _Refusal(Exception):
+    pass
+
+
+class _World:
+    """In-memory site for the K8 hooks."""
+
+    def __init__(self):
+        self.scenarios = {"ZZ Actual": {"scenario_type": "actual", "is_active": 1},
+                          "ZZ Budget": {"scenario_type": "budget", "is_active": 1}}
+        self.rule_set = {"modified": datetime(2026, 11, 12, 8, 0, 0), "status": "Active",
+                         "applies_to_all_scenarios": 0}
+        self.rs_scenarios = ["ZZ Actual", "ZZ Budget"]
+        self.other_rows = []
+        self.sql = []
+        self.open_calls = []
+        self.closed = set()
+        self.syncs = []
+        self.once = []
+        self.sync_table_calls = []
+        self.get_all_data = {}
+
+
+def _k8(world):
+    module = _exec_run_module("cost_allocation_run_k8")
+    fr = types.SimpleNamespace()
+
+    def throw(msg, *a, **k):
+        raise _Refusal(msg)
+
+    def get_value(doctype, name, fields=None, as_dict=False, **k):
+        if doctype == "Scenario":
+            row = world.scenarios.get(name)
+            if row is None or isinstance(fields, str):
+                return row[fields] if row is not None else None
+            return _Row(row)
+        if doctype == "Cost Allocation Rule Set":
+            return _Row(world.rule_set)
+        raise AssertionError(doctype)
+
+    def get_all(doctype, filters=None, fields=None, pluck=None, **k):
+        if doctype == "Cost Allocation Rule Set Scenario":
+            return list(world.rs_scenarios)
+        return [_Row(r) for r in world.get_all_data.get(doctype, [])]
+
+    def sql(query, values=None, as_dict=False, **k):
+        world.sql.append((query, values))
+        return [_Row(r) for r in world.other_rows]
+
+    fr.throw = throw
+    fr.whitelist = lambda *a, **k: (lambda fn: fn)
+    fr.db = types.SimpleNamespace(get_value=get_value, sql=sql)
+    fr.get_all = get_all
+    module.frappe = fr
+
+    ps = types.SimpleNamespace()
+
+    def assert_open(year, period, action="run"):
+        world.open_calls.append((year, period))
+        if (year, period) in world.closed:
+            raise _Refusal(f"period {period} of FY{year} is closed")
+
+    ps.assert_open = assert_open
+    module.period_status = ps
+    ch = types.SimpleNamespace()
+    ch.sync_doctype_after_commit = lambda *a, **k: world.syncs.append(a)
+    ch.after_commit_once = lambda key, fn: world.once.append((key, fn))
+    ch.sync_table = lambda table, columns, rows, **k: world.sync_table_calls.append(
+        (table, columns, rows, k)) or len(rows)
+    module.clickhouse = ch
+    return module
+
+
+def _k8_run(module, scenario="ZZ Actual", **over):
+    cls = module.CostAllocationRun
+    doc = cls.__new__(cls)
+    weights = [_Row(step=1, sender_member="IT", receiver_member="HR"),
+               _Row(step=1, sender_member="IT", receiver_member="P1"),
+               _Row(step=2, sender_member="HR", receiver_member="P1")]
+    base = dict(name="CAR-00001", doctype="Cost Allocation Run", docstatus=0,
+                rule_set="ZZ Rules", entity="ZZE", scenario=scenario, fiscal_year=2026,
+                fiscal_period=3, rule_set_modified=datetime(2026, 11, 12, 8, 0, 0),
+                weights=weights)
+    base.update(over)
+    doc.__dict__.update(base)
+    doc.get = lambda key, default=None: doc.__dict__.get(key, default)
+    return doc
+
+
+def _refused(fn):
+    try:
+        fn()
+    except _Refusal as exc:
+        return str(exc)
+    raise AssertionError("expected a refusal")
+
+
+def test_lifecycle_before_submit_passes_a_clean_actual_run():
+    w = _World()
+    m = _k8(w)
+    _k8_run(m).before_submit()
+    assert w.open_calls == [(2026, 3)]
+
+
+def test_lifecycle_before_submit_refuses_a_closed_period_on_actual():
+    w = _World()
+    w.closed.add((2026, 3))
+    m = _k8(w)
+    assert "closed" in _refused(_k8_run(m).before_submit)
+
+
+def test_lifecycle_before_submit_skips_the_period_gate_for_budget():
+    w = _World()
+    w.closed.add((2026, 3))
+    m = _k8(w)
+    _k8_run(m, scenario="ZZ Budget").before_submit()
+    assert w.open_calls == []
+
+
+def test_lifecycle_before_submit_refuses_without_weights():
+    w = _World()
+    m = _k8(w)
+    msg = _refused(_k8_run(m, weights=[]).before_submit)
+    assert "Compute Weights" in msg
+
+
+def test_lifecycle_before_submit_refuses_a_rule_set_edited_since_compute():
+    w = _World()
+    w.rule_set["modified"] = datetime(2026, 11, 13, 9, 0, 0)
+    m = _k8(w)
+    assert "recompute" in _refused(_k8_run(m).before_submit).lower()
+
+
+def test_lifecycle_before_submit_refuses_an_inactive_rule_set():
+    w = _World()
+    w.rule_set["status"] = "Inactive"
+    m = _k8(w)
+    assert "Active" in _refused(_k8_run(m).before_submit)
+
+
+def test_lifecycle_before_submit_refuses_a_scenario_out_of_scope():
+    w = _World()
+    w.rs_scenarios = ["ZZ Budget"]
+    m = _k8(w)
+    assert "scope" in _refused(_k8_run(m).before_submit)
+    w.rule_set["applies_to_all_scenarios"] = 1
+    _k8_run(m).before_submit()
+
+
+def test_lifecycle_before_submit_refuses_an_inactive_scenario():
+    w = _World()
+    w.scenarios["ZZ Actual"]["is_active"] = 0
+    m = _k8(w)
+    assert "active" in _refused(_k8_run(m).before_submit).lower()
+
+
+def test_lifecycle_before_submit_refuses_a_shared_sender_and_locks_the_rows():
+    w = _World()
+    w.other_rows = [{"name": "CAR-00009", "sender_member": "HR"}]
+    m = _k8(w)
+    msg = _refused(_k8_run(m).before_submit)
+    assert "CAR-00009" in msg and "HR" in msg
+    query, values = w.sql[-1]
+    assert query.rstrip().upper().endswith("FOR UPDATE")
+    assert "docstatus = 1" in query and "name != %(name)s" in query
+    for key in ("entity", "scenario", "fiscal_year", "fiscal_period"):
+        assert key in values
+
+
+def test_lifecycle_before_submit_allows_a_run_with_other_senders():
+    w = _World()
+    w.other_rows = [{"name": "CAR-00009", "sender_member": "OPS"}]
+    m = _k8(w)
+    _k8_run(m).before_submit()
+    assert len(w.sql) == 1 and w.sql[0][0].rstrip().upper().endswith("FOR UPDATE")
+
+
+def test_lifecycle_before_cancel_is_gated_on_actual_only():
+    w = _World()
+    w.closed.add((2026, 3))
+    m = _k8(w)
+    assert "closed" in _refused(_k8_run(m, docstatus=1).before_cancel)
+    w.open_calls.clear()
+    _k8_run(m, scenario="ZZ Budget", docstatus=1).before_cancel()
+    assert w.open_calls == []
+
+
+def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
+    w = _World()
+    m = _k8(w)
+    for hook in ("on_submit", "on_cancel", "after_delete"):
+        w.syncs.clear()
+        w.once.clear()
+        getattr(_k8_run(m, docstatus=1), hook)()
+        assert [(s[0], s[1]) for s in w.syncs] == [
+            ("Cost Allocation Run", "epm_staging.cost_allocation_runs"),
+            ("Cost Allocation Run Account", "epm_staging.cost_allocation_run_accounts"),
+            ("Cost Allocation Run Weight", "epm_staging.cost_allocation_run_weights")], hook
+        assert [k for k, _fn in w.once] == [("cost_allocation_run_coefficients",)], hook
+        assert w.sync_table_calls == [], hook
+
+
+def test_lifecycle_no_sync_on_a_draft_save_or_validate():
+    with open(RUN_PY) as f:
+        tree = ast.parse(f.read())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "CostAllocationRun")
+    hooks = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
+    assert not hooks & {"on_update", "after_insert", "on_trash"}
+
+
+def test_lifecycle_maps_and_filters():
+    w = _World()
+    m = _k8(w)
+    cls = m.CostAllocationRun
+    assert cls.CH_TABLE == "epm_staging.cost_allocation_runs"
+    assert cls.CH_STAGING_TABLE == "epm_staging.cost_allocation_coefficients"
+    assert cls.CH_FIELD_MAP == {
+        "name": "name", "rule_set": "rule_set", "method": "method",
+        "allocation_dimension": "allocation_dimension",
+        "receiver_account_mode": "receiver_account_mode",
+        "allocation_account": "allocation_account",
+        "amounts_after_approval": "amounts_after_approval",
+        "data_area_id": "entity", "scenario_id": "scenario",
+        "fiscal_year": "fiscal_year", "fiscal_period": "fiscal_period",
+        "computed_at": "computed_at"}
+    acc = cls.CHILD_CONTROLLERS["Cost Allocation Run Account"]
+    assert acc.CH_TABLE == "epm_staging.cost_allocation_run_accounts"
+    assert acc.CH_FIELD_MAP == {"parent": "parent", "idx": "idx",
+                                "main_account": "main_account",
+                                "declared_account": "declared_account"}
+    wt = cls.CHILD_CONTROLLERS["Cost Allocation Run Weight"]
+    assert wt.CH_TABLE == "epm_staging.cost_allocation_run_weights"
+    assert list(wt.CH_FIELD_MAP) == [
+        "parent", "idx", "step", "sender_member", "receiver_member", "driver",
+        "statistic", "value_period", "carried_forward", "driver_value"]
+    assert acc.CH_SYNC_FILTERS == wt.CH_SYNC_FILTERS == {"docstatus": 1}
+
+
+def test_lifecycle_no_commit_and_no_save_in_the_hooks():
+    with open(RUN_PY) as f:
+        src = f.read()
+    assert "db.commit" not in src
+    assert src.count(".save(") == 1   # only compute_weights_on's, on a draft
+
+
+def test_lifecycle_is_not_an_approval_doctype():
+    path = os.path.join(APP_DIR, "close", "close_policy_model.py")
+    with open(path) as f:
+        src = f.read()
+    block = src.split("APPROVAL_DOCTYPES = (")[1].split(")")[0]
+    assert "Cost Allocation Run" not in block
+
+
+# A 3-sender step-down. Driver values chosen so the exact weights are not
+# binary floats: IT -> HR 0.1, P1 0.2, P2 0.3 (1/6, 1/3, 1/2); HR -> P1 1, P2 3.
+def _stored_weights():
+    rows = [
+        (1, "IT", "HR", 0.1), (1, "IT", "P1", 0.2), (1, "IT", "P2", 0.3),
+        (2, "HR", "P1", 1.0), (2, "HR", "P2", 3.0),
+    ]
+    return [{"parent": "CAR-00001", "idx": i + 1, "step": s, "sender_member": snd,
+             "receiver_member": rcv, "driver": "ZZ Head", "driver_value": v,
+             # the float weight is deliberately lossy: it must not be used
+             "weight": float(Fraction(str(v)) / sum(Fraction(str(x[3])) for x in rows if x[0] == s))}
+            for i, (s, snd, rcv, v) in enumerate(rows)]
+
+
+def _expected_rows():
+    from konsol import cost_allocation_model as model
+    steps = model.build_steps(
+        [{"step": 1, "sender_member": "IT", "driver": "ZZ Head"},
+         {"step": 2, "sender_member": "HR", "driver": "ZZ Head"}],
+        [{"step": 1, "receiver_member": "HR"}, {"step": 1, "receiver_member": "P1"},
+         {"step": 1, "receiver_member": "P2"}, {"step": 2, "receiver_member": "P1"},
+         {"step": 2, "receiver_member": "P2"}])
+    exact = {(1, "HR"): Fraction(1, 6), (1, "P1"): Fraction(1, 3), (1, "P2"): Fraction(1, 2),
+             (2, "P1"): Fraction(1, 4), (2, "P2"): Fraction(3, 4)}
+    return model.coefficient_rows("CAR-00001", steps, exact, "Step-Down")
+
+
+def test_lifecycle_coefficient_resync_rebuilds_exact_rows_from_stored_driver_values():
+    w = _World()
+    w.get_all_data["Cost Allocation Run"] = [
+        {"name": "CAR-00001", "method": "Step-Down", "modified": datetime(2026, 11, 13, 9, 0, 0)}]
+    w.get_all_data["Cost Allocation Run Weight"] = _stored_weights()
+    m = _k8(w)
+    written = m.CostAllocationRun.resync_staging(force=True)
+    (table, columns, rows, kw), = w.sync_table_calls
+    assert table == "epm_staging.cost_allocation_coefficients"
+    assert columns == ["run", "origin_member", "step", "sender_member", "receiver_member",
+                       "driver", "pool_coefficient", "coefficient"]
+    assert kw["force"] is True and written == len(rows)
+    expected = [[r[c] for c in columns] for r in _expected_rows()]
+    assert rows == expected
+    by = {(r[1], r[2], r[4]): r for r in rows}
+    # IT's pool reaches P1 directly (1/3) and through HR (1/6 * 1/4): exact
+    assert by[("IT", 2, "P1")][6] == Decimal("0.166666666667")
+    # every hop's receivers sum exactly to the hop's pool coefficient
+    hops = {}
+    for r in rows:
+        hops.setdefault((r[1], r[2], r[3]), [r[6], Decimal(0)])[1] += r[7]
+    assert all(pool == total for pool, total in hops.values())
+
+
+def test_lifecycle_coefficient_resync_with_no_submitted_runs_empties_the_table():
+    w = _World()
+    m = _k8(w)
+    m.CostAllocationRun.resync_staging()
+    (table, columns, rows, kw), = w.sync_table_calls
+    assert rows == [] and kw["force"] is False
+
+
+def test_lifecycle_coefficient_resync_reads_submitted_runs_only():
+    w = _World()
+    seen = []
+    m = _k8(w)
+    orig = m.frappe.get_all
+
+    def spy(doctype, filters=None, **k):
+        seen.append((doctype, filters))
+        return orig(doctype, filters=filters, **k)
+
+    m.frappe.get_all = spy
+    m.CostAllocationRun.resync_staging()
+    assert ("Cost Allocation Run", {"docstatus": 1}) in seen
