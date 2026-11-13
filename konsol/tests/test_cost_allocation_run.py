@@ -208,3 +208,256 @@ def test_doctype_is_installed_as_a_workflow():
     with open(os.path.join(APP_DIR, "workflows.py")) as f:
         installed = re.findall(r'"([^"]+)"', f.read().split("INSTALLED = (")[1].split(")")[0])
     assert "Cost Allocation Run" in installed
+
+
+# --- K7: Compute Weights (stubbed frappe) -------------------------------------
+
+import importlib.util
+import sys
+import types
+from datetime import datetime
+from fractions import Fraction
+
+RUN_PY = os.path.join(EPM_DOCTYPES, RUN, "cost_allocation_run.py")
+RUN_JS = os.path.join(EPM_DOCTYPES, RUN, "cost_allocation_run.js")
+
+
+class _Refused(Exception):
+    pass
+
+
+class _FakeFrappe:
+    """Stands in for frappe: throw, whitelist (records methods), get_doc."""
+
+    def __init__(self, run=None):
+        self.run = run
+
+    def whitelist(self, *a, **k):
+        return lambda fn: fn
+
+    def throw(self, message, *args, **kwargs):
+        raise _Refused(message)
+
+    def get_doc(self, doctype, name):
+        return self.run
+
+
+class _Row(dict):
+    __getattr__ = dict.get
+
+    def as_dict(self):
+        return dict(self)
+
+
+class _Run:
+    """A draft run as the controller sees it; child tables are lists."""
+
+    def __init__(self, docstatus=0, scenario="ZZ Budget", fiscal_year=2026, fiscal_period=3):
+        self.name = "CAR-00001"
+        self.docstatus = docstatus
+        self.rule_set = "ZZ Rules"
+        self.scenario = scenario
+        self.fiscal_year = fiscal_year
+        self.fiscal_period = fiscal_period
+        self.entity = None
+        self.weights = [_Row(step=99)]   # a stale row that must be replaced
+        self.accounts = [_Row(main_account="OLD")]
+        self.saved = 0
+
+    def set(self, field, rows):
+        setattr(self, field, [_Row(r) for r in rows])
+
+    def save(self):
+        self.saved += 1
+
+
+def _run_module(rule_set=None, stats=None, carry=None, tree=None, user="zz@example.com"):
+    from konsol.tests import test_cost_allocation_doctypes as dt  # noqa: F401  (stub helper)
+    dt._install_document_stub()
+    # the module-level @frappe.whitelist runs at import; give the stub one
+    sys.modules["frappe"].whitelist = lambda *a, **k: (lambda fn: fn)
+    spec = importlib.util.spec_from_file_location("cost_allocation_run_k7", RUN_PY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.frappe = _FakeFrappe()
+    module._load_rule_set = lambda name: rule_set if rule_set is not None else _rule_set()
+    module._statistic_values = lambda entity, scenario, fy, period: list(
+        stats if stats is not None else _stats())
+    module._driver_carry_forward = lambda drivers: dict(carry or {})
+    module._descendants = lambda account: list((tree or _TREE)[account])
+    module._now = lambda: datetime(2026, 11, 13, 9, 0, 0)
+    module._user = lambda: user
+    return module
+
+
+_TREE = {"6000": ["6000", "6010", "6020"], "7000": ["7000"]}
+
+
+def _rule_set(**over):
+    rs = {
+        "name": "ZZ Rules", "status": "Active", "entity": "ZZE",
+        "allocation_dimension": "dim_zz", "method": "Step-Down",
+        "receiver_account_mode": "Declared Allocation Account",
+        "allocation_account": "6900", "amounts_after_approval": "Freeze at Approval",
+        "modified": datetime(2026, 11, 12, 8, 0, 0),
+        "applies_to_all_scenarios": 0,
+        "scenarios": [_Row(scenario="ZZ Budget")],
+        "accounts": [_Row(main_account="6000"), _Row(main_account="7000")],
+        "rules": [_Row(step=1, sender_member="IT", driver="ZZ Head"),
+                  _Row(step=2, sender_member="HR", driver="ZZ Head")],
+        "receivers": [_Row(step=1, receiver_member="HR"), _Row(step=1, receiver_member="P1"),
+                      _Row(step=2, receiver_member="P1"), _Row(step=2, receiver_member="P2")],
+    }
+    rs.update(over)
+    return types.SimpleNamespace(**rs)
+
+
+def _stat(statistic, period, member, value, driver="ZZ Head"):
+    return {"statistic": statistic, "driver": driver, "fiscal_period": period,
+            "member": member, "value": value}
+
+
+def _stats():
+    # period 3 for HR and P1, P2; P1 for step 1 has only period 2 (carried).
+    return [_stat("CAS-00001", 3, "HR", 10), _stat("CAS-00001", 3, "P2", 30),
+            _stat("CAS-00002", 2, "P1", 20), _stat("CAS-00001", 3, "P1", 20)]
+
+
+def test_compute_happy_path_snapshots_step_down_run():
+    m = _run_module()
+    run = _Run()
+    m.compute_weights_on(run)
+    assert run.entity == "ZZE"
+    assert (run.method, run.allocation_dimension) == ("Step-Down", "dim_zz")
+    assert run.receiver_account_mode == "Declared Allocation Account"
+    assert run.allocation_account == "6900"
+    assert run.amounts_after_approval == "Freeze at Approval"
+    assert run.rule_set_modified == datetime(2026, 11, 12, 8, 0, 0)
+    assert run.computed_at == datetime(2026, 11, 13, 9, 0, 0)
+    assert run.computed_by == "zz@example.com"
+    assert run.saved == 1
+    got = {(w["step"], w["receiver_member"]): w for w in run.weights}
+    assert len(run.weights) == 4          # the stale row is gone
+    assert got[(1, "HR")]["weight"] == float(Fraction(1, 3)) and got[(1, "P1")]["weight"] == float(Fraction(2, 3))
+    assert got[(2, "P1")]["weight"] == 20 / 50 and got[(2, "P2")]["weight"] == 30 / 50
+    w = got[(1, "HR")]
+    assert (w["sender_member"], w["driver"], w["statistic"], w["value_period"],
+            w["carried_forward"], w["driver_value"]) == ("IT", "ZZ Head", "CAS-00001", 3, 0, 10)
+
+
+def test_compute_step_weights_are_floats_summing_to_one():
+    m = _run_module()
+    run = _Run()
+    m.compute_weights_on(run)
+    for step in (1, 2):
+        total = sum(w["weight"] for w in run.weights if w["step"] == step)
+        assert all(isinstance(w["weight"], float) for w in run.weights)
+        assert abs(total - 1) < 1e-12
+
+
+def test_compute_accounts_expand_a_groups_descendants():
+    m = _run_module()
+    run = _Run()
+    m.compute_weights_on(run)
+    rows = [(a["main_account"], a["declared_account"]) for a in run.accounts]
+    assert rows == [("6000", "6000"), ("6010", "6000"), ("6020", "6000"), ("7000", "7000")]
+
+
+def test_compute_carries_forward_and_counts():
+    # P1 has no period-3 value for step 1; the driver declares carry-forward.
+    stats = [_stat("CAS-00001", 3, "HR", 10), _stat("CAS-00001", 3, "P2", 30),
+             _stat("CAS-00002", 2, "P1", 20), _stat("CAS-00001", 3, "P1", 20)]
+    stats = [s for s in stats if not (s["member"] == "P1" and s["fiscal_period"] == 3)]
+    m = _run_module(stats=stats, carry={"ZZ Head": True})
+    run = _Run()
+    result = m.compute_weights_on(run)
+    carried = [w for w in run.weights if w["carried_forward"]]
+    assert {(w["step"], w["receiver_member"]) for w in carried} == {(1, "P1"), (2, "P1")}
+    assert all(w["value_period"] == 2 and w["statistic"] == "CAS-00002" for w in carried)
+    assert result == {"carried_forward_count": 2, "weights": 4}
+    assert run.values_carried_forward == 1
+
+
+def test_compute_refusal_lists_every_missing_value_and_saves_nothing():
+    stats = [_stat("CAS-00001", 3, "HR", 10)]
+    m = _run_module(stats=stats)
+    run = _Run()
+    try:
+        m.compute_weights_on(run)
+    except _Refused as exc:
+        msg = str(exc)
+    else:
+        raise AssertionError("expected a refusal")
+    for expect in ("step 1, P1", "step 2, P1", "step 2, P2"):
+        assert expect in msg, msg
+    assert run.saved == 0
+    assert [w["step"] for w in run.weights] == [99]   # untouched
+
+
+def test_compute_refuses_a_non_draft_run():
+    m = _run_module()
+    for ds in (1, 2):
+        run = _Run(docstatus=ds)
+        try:
+            m.compute_weights_on(run)
+        except _Refused as exc:
+            assert "draft" in str(exc).lower()
+        else:
+            raise AssertionError("expected a refusal")
+        assert run.saved == 0
+
+
+def test_compute_refuses_an_inactive_rule_set():
+    for status in ("Draft", "Inactive"):
+        m = _run_module(rule_set=_rule_set(status=status))
+        try:
+            m.compute_weights_on(_Run())
+        except _Refused as exc:
+            assert "Active" in str(exc)
+        else:
+            raise AssertionError("expected a refusal")
+
+
+def test_compute_refuses_a_scenario_out_of_scope_but_allows_all_scenarios():
+    m = _run_module(rule_set=_rule_set(scenarios=[_Row(scenario="Other")]))
+    try:
+        m.compute_weights_on(_Run())
+    except _Refused as exc:
+        assert "scenario" in str(exc).lower()
+    else:
+        raise AssertionError("expected a refusal")
+    m = _run_module(rule_set=_rule_set(scenarios=[], applies_to_all_scenarios=1))
+    run = _Run()
+    m.compute_weights_on(run)
+    assert run.saved == 1
+
+
+def test_compute_method_is_post_only_and_dotted_path_exists():
+    with open(RUN_PY) as f:
+        tree = ast.parse(f.read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "compute_weights")
+    found = None
+    for dec in fn.decorator_list:
+        if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                and dec.func.attr == "whitelist"):
+            for kw in dec.keywords:
+                if kw.arg == "methods":
+                    found = ast.literal_eval(kw.value)
+    assert found == ["POST"]
+
+
+def test_compute_whitelisted_function_loads_the_run_and_computes():
+    m = _run_module()
+    run = _Run()
+    m.frappe = _FakeFrappe(run)
+    m.compute_weights("CAR-00001")
+    assert run.saved == 1 and len(run.weights) == 4
+
+
+def test_compute_button_is_on_the_draft_run_form_and_posts():
+    with open(RUN_JS) as f:
+        js = f.read()
+    assert "Compute Weights" in js
+    assert "docstatus === 0" in js or "docstatus == 0" in js
+    assert "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.compute_weights" in js
+    assert "reload_doc" in js
