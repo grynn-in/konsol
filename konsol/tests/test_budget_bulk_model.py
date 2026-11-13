@@ -167,3 +167,17 @@ def test_the_model_is_pure():
         elif isinstance(node, ast.ImportFrom):
             imported.add((node.module or "").split(".")[0])
     assert "frappe" not in imported
+
+
+def test_a_repeated_column_is_refused_by_name_with_its_count():
+    """Two layer (or scenario, or fiscal_period) columns used to read the first
+    and drop the second without a word (konsol#348 M2). The rule is the TB's
+    shared one, so case and aliases count as the same column."""
+    table = [HEADER + ["Layer"], ["BUD", "base", "E1", "2026", "1", "4000", "0", "100", "EUR", "mgmt"]]
+    msg = _raises(B.split_table, table, ())
+    assert "Two layer columns" in msg and "keep one" in msg, msg
+    table = [HEADER + ["SCENARIO", "scenario", "period"],
+             ["BUD", "base", "E1", "2026", "1", "4000", "0", "100", "EUR", "FC", "FC2", "2"]]
+    msg = _raises(B.split_table, table, ())
+    assert "Three scenario columns" in msg, msg
+    assert "Two fiscal_period columns" in msg, msg
