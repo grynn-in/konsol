@@ -31,6 +31,7 @@
     },
     {
       "fieldname": "fiscal_year",
+      "set_only_once": 1,
       "fieldtype": "Int",
       "label": "Fiscal Year",
       "reqd": 1,
