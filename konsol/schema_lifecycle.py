@@ -91,14 +91,15 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE, full_refres
     full_refresh (konsol#261): set on a NEW approval when this request follows
     a schema change (apply_and_rebuild). A reused (debounced) approval may have
     been created by an earlier, schema-free request (e.g. request_governed_rebuild)
-    with full_refresh unset; if THIS request needs it, it is raised on the
-    reused row too — otherwise a plain save's approval would swallow a
-    publish's need for a refresh and the coalesced build would run without
+    with full_refresh unset; if THIS request needs it, build_lock.flag_full_refresh
+    passes it on: raised on a pending row, or, on a Running row whose command
+    is already built, held as rebuild_full_refresh for the follow-up build.
+    Otherwise the coalesced build, or the follow-up, would run without
     --full-refresh.
     """
     # Serialise every build request (konsol.build_lock): the debounce below is
     # check-then-insert, and two requests at once both found nothing pending.
-    from konsol.build_lock import flag_running_build, lock_build_requests
+    from konsol.build_lock import flag_full_refresh, flag_running_build, lock_build_requests
 
     lock_build_requests()
     # A LOCKING read. Under REPEATABLE READ a plain read reuses the snapshot from
@@ -117,10 +118,10 @@ def _request_governed_build(doc, action, scope=_PUBLISH_BUILD_SCOPE, full_refres
         # A Running build may already have read its inputs: flag it for one
         # more build when it finishes (#129). Commits with the caller.
         flag_running_build(existing[0])
-        if full_refresh and not frappe.db.get_value("Build Approval", existing[0].name, "full_refresh"):
-            # Raise the reused approval's flag: it was created by a request
-            # that did not need a refresh, but this one does (#261).
-            frappe.db.set_value("Build Approval", existing[0].name, "full_refresh", 1)
+        if full_refresh:
+            # This request needs a refresh; the reused approval may not carry
+            # one, and if it is Running, its follow-up must (#261).
+            flag_full_refresh(existing[0])
         frappe.msgprint(
             f"A '{scope}' build is already pending ({existing[0].name}); "
             f"no duplicate build requested."

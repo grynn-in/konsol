@@ -119,6 +119,6 @@ def test_a_save_never_clears_the_flag():
 def test_the_reaper_reads_the_flag_after_its_own_update():
     with open(os.path.join(APP_DIR, "orchestrator", "reaper.py")) as f:
         body = f.read().split("def reap_stale_build_approvals")[1]
-    assert body.index("WHERE name = %s AND workflow_state = %s") < body.index('"rebuild_requested"], as_dict=True)')
+    assert body.index("WHERE name = %s AND workflow_state = %s") < body.index('"rebuild_requested", "full_refresh", "rebuild_full_refresh"]')
     assert "if after.rebuild_requested:" in body
 
