@@ -1597,7 +1597,8 @@ def _split_signed_amount(value):
 def _judge_budget_cell(data, dims, debit, credit):
     """Run one cell through konsol.budget_intake, the one entry every budget
     writer calls, as a one-row budget table. Returns (report item, row) when
-    the cell is ready; otherwise refuses with every problem the intake found.
+    the cell is ready; otherwise refuses with every problem the intake found,
+    as a PermissionError when the intake found an access denial.
 
     Currency and amount basis come from the request and are never defaulted
     (Q2-c, the TB's declared-currency rule): a request without them is
@@ -1617,6 +1618,10 @@ def _judge_budget_cell(data, dims, debit, credit):
     except ValueError as error:
         frappe.throw(str(error), frappe.ValidationError)
     (item,) = plan["report"]
+    # An access denial stays a PermissionError (403), and wins: the cell's
+    # other problems are not for a user who may not write it.
+    if item["denials"]:
+        frappe.throw("\n".join(item["denials"]), frappe.PermissionError)
     if not item["ok"]:
         frappe.throw("\n".join(item["errors"]), frappe.ValidationError)
     ((judged,),) = plan["groups"].values()

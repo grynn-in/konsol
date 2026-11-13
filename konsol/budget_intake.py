@@ -60,6 +60,12 @@ def plan(table, *, form_basis):
     file or `form_basis`, '' when none). A group with any error is not ready;
     a writer writes nothing for it.
 
+    ``denials`` lists the access refusals (_assert_budget_write_access) among
+    ``errors``: they are also in ``errors``, so a report names them with the
+    rest, and an API writer raises them as a PermissionError (HTTP 403), not
+    a ValidationError. The layer's writer role is a declared rule, not an
+    access grant, and is not a denial.
+
     `form_basis` is the upload's Amount Basis ('' when it has none); it has no
     default, so a writer states what it means.
     """
@@ -88,12 +94,15 @@ def plan(table, *, form_basis):
             errors.append(cycle_problem)
         errors.extend(_duplicates(rows))
         errors.extend(_role_problems(key.layer, facts["layers"].get(key.layer), bypass, roles, user))
+        denials = []
         for row in rows:
             data = dict(row, data_area_id=key.data_area_id)
             try:
                 _assert_budget_write_access(data)
             except frappe.PermissionError as error:
-                errors.append(f"Line {row.get('line')}: {error}")
+                denials.append(f"Line {row.get('line')}: {error}")
+        errors.extend(denials)
+        item["denials"] = denials
         item["ok"] = not errors
         report.append(item)
     return {"groups": groups, "report": report, "ok": all(i["ok"] for i in report)}
