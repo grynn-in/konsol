@@ -309,10 +309,13 @@ def _replace_slice(upload, members):
     """Replace one (cycle, entity, layer) slice with the file's periods.
     Returns the entry names in `members` order. Every existing entry is
     judged before anything changes; the caller commits or rolls back."""
-    from konsol.epm.doctype.budget_entry.budget_entry import judged_by_writer
+    from konsol.epm.doctype.budget_entry.budget_entry import assert_cycle_draft, judged_by_writer
 
     first = members[0][0]
     cycle, entity, layer = first["cycle"], first["entity"], first["layer"]
+    # The Cycle first, before any entry (every budget writer's lock order). A
+    # Cycle submitted since the job judged the file refuses the slice here.
+    assert_cycle_draft(cycle)
     existing = {int(r.fiscal_period): r.name for r in frappe.get_all(
         ENTRY, filters={"cycle": cycle, "data_area_id": entity, "layer": layer},
         fields=["name", "fiscal_period"], order_by="fiscal_period asc, name asc", limit_page_length=0)}
@@ -361,8 +364,13 @@ def run_load(upload):
     again here, against the facts as they are now. Each slice commits on its
     own and progress is saved after each; a failed slice is rolled back,
     recorded on its rows, and the rest carry on; a deadlock is retried once.
+    A slice whose Cycle was approved after the job judged the file is refused
+    by the Cycle lock (Budget Entry's guard): it is reported as refused, not
+    failed, and the rest carry on.
     """
     from rq.timeouts import BaseTimeoutException
+
+    from konsol.epm.doctype.budget_entry.budget_entry import CycleNotDraftError
 
     started = time.monotonic()
     doc = frappe.get_doc(DOCTYPE, upload)
@@ -394,6 +402,18 @@ def run_load(upload):
                     break
                 except BaseTimeoutException:
                     raise
+                except CycleNotDraftError as e:
+                    # Submitted after the job judged the file: refused, as
+                    # the plan would refuse it now, not failed. Its earlier
+                    # slices stand and the Cycle's approval synced them.
+                    frappe.db.rollback()
+                    frappe.clear_messages()
+                    reason = strip_html(str(e)) or type(e).__name__
+                    for item, _ in members:
+                        item["ok"] = False
+                        item["errors"] = list(item["errors"]) + [
+                            f"Not loaded: the Cycle was approved during the load. {reason}"]
+                    break
                 except Exception as e:
                     frappe.db.rollback()
                     frappe.clear_messages()

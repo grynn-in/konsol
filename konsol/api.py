@@ -1709,7 +1709,12 @@ def _save_budget_cell(data):
     # Every check (period, layer, writer role, Cycle, currency, basis, access)
     # runs in budget_intake, after the dimensions and hierarchy are applied.
     item, judged = _judge_budget_cell(data, dims, debit, credit)
-    from konsol.epm.doctype.budget_entry.budget_entry import judged_by_writer
+    from konsol.epm.doctype.budget_entry.budget_entry import assert_cycle_draft, judged_by_writer
+
+    # The intake read the Cycle from a snapshot. Lock it now, before any entry
+    # (the one lock order every budget writer keeps): a Cycle submitted since
+    # is refused here, and a submit that comes later waits for this write.
+    assert_cycle_draft(item["cycle"])
 
     ident = _line_identity(data, dims)
     base_modified = data.get("base_modified")
