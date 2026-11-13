@@ -270,3 +270,6 @@ def test_json_header_copy_is_read_only_and_hidden():
         assert f[name].get("hidden") == 1, name
     assert f["cycle"]["fieldtype"] == "Link"
     assert f["cycle"]["options"] == "Budget Cycle"
+    # Required, so an entry that forgot to stamp its lines fails the save
+    # loudly instead of syncing lines with no cycle or entity.
+    assert f["cycle"]["reqd"] == 1 and f["data_area_id"]["reqd"] == 1

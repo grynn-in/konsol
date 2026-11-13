@@ -35,6 +35,9 @@ REFERRING_DOCTYPES = {
     # konsol#117 pair 1 (task D): the entity a group declares a method for,
     # on the group node's child table.
     "Consolidation Method Declaration",
+    # S2-T0: the entry's entity, copied onto each Budget Entry Line so the
+    # raw warehouse row carries it (a child query cannot read its parent).
+    "Budget Entry Line",
 }
 
 
