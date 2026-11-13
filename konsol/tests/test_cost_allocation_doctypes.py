@@ -213,3 +213,226 @@ def test_driver_controller_accepts_published_dimension():
     fake = _FakeFrappe({"dim_zz_pub": "Published"})
     doc = _driver(_load_controller(fake), "dim_zz_pub")
     doc.validate()
+
+
+# === K4 (konsol#269): Cost Allocation Rule Set and its child doctypes ========
+
+EPM_DIR = os.path.join(APP_DIR, "epm", "doctype")
+RS_DIR = os.path.join(EPM_DIR, "cost_allocation_rule_set")
+RS_PY = os.path.join(RS_DIR, "cost_allocation_rule_set.py")
+DECLARED_EVAL = "eval:doc.receiver_account_mode=='Declared Allocation Account'"
+NOT_ALL_EVAL = "eval:!doc.applies_to_all_scenarios"
+FROZEN_HELP = (
+    "Frozen amounts come from the first allocation build after approval; "
+    "drift from current data is reported.")
+
+
+def _doctype_json(folder):
+    with open(os.path.join(EPM_DIR, folder, folder + ".json")) as f:
+        return json.load(f)
+
+
+def _rs_field(fieldname):
+    for field in _doctype_json("cost_allocation_rule_set")["fields"]:
+        if field.get("fieldname") == fieldname:
+            return field
+    raise AssertionError(f"Cost Allocation Rule Set has no field {fieldname!r}")
+
+
+def _child_fields(folder):
+    return {f["fieldname"]: f for f in _doctype_json(folder)["fields"]
+            if f["fieldtype"] not in ("Section Break", "Column Break", "Tab Break")}
+
+
+def test_rule_set_doctype_identity():
+    meta = _doctype_json("cost_allocation_rule_set")
+    assert meta["name"] == "Cost Allocation Rule Set"
+    assert meta["module"] == "EPM"
+    assert meta["istable"] == 0
+    assert meta["track_changes"] == 1
+    assert meta["search_fields"] == "entity,method"
+    assert os.path.exists(os.path.join(RS_DIR, "cost_allocation_rule_set_list.js"))
+
+
+def test_rule_set_layout_has_tabs_and_labelled_sections():
+    types_ = [f["fieldtype"] for f in _doctype_json("cost_allocation_rule_set")["fields"]]
+    assert types_.count("Tab Break") == 2
+    for f in _doctype_json("cost_allocation_rule_set")["fields"]:
+        if f["fieldtype"] in ("Tab Break", "Section Break"):
+            assert f.get("label"), f
+    assert _doctype_json("cost_allocation_rule_set")["fields"][0]["fieldtype"] == "Tab Break"
+
+
+def test_rule_set_scope_fields():
+    f = _rs_field("rule_set_name")
+    assert f["fieldtype"] == "Data" and f["reqd"] == 1
+    f = _rs_field("entity")
+    assert (f["fieldtype"], f["options"], f["reqd"]) == ("Link", "Entity", 1)
+    f = _rs_field("allocation_dimension")
+    assert (f["fieldtype"], f["options"], f["reqd"]) == ("Link", "Dimension", 1)
+    assert "Published" in f["description"] and "In Budget" in f["description"]
+    assert _rs_field("column")["fieldtype"] in ("Column Break", "Data")
+    f = _rs_field("method")
+    assert (f["fieldtype"], f["options"], f["reqd"]) == ("Select", "Direct\nStep-Down", 1)
+    f = _rs_field("status")
+    assert (f["fieldtype"], f["options"], f["reqd"]) == ("Select", "Draft\nActive\nInactive", 1)
+
+
+def test_rule_set_select_options_equal_model_constants():
+    from konsol import cost_allocation_model as m
+    assert _rs_field("method")["options"].split("\n") == list(m.METHODS)
+    assert _rs_field("receiver_account_mode")["options"].split("\n") == list(m.ACCOUNT_MODES)
+
+
+def test_rule_set_treatment_fields():
+    f = _rs_field("receiver_account_mode")
+    assert f["fieldtype"] == "Select" and f["reqd"] == 1
+    f = _rs_field("allocation_account")
+    assert (f["fieldtype"], f["options"]) == ("Link", "Main Account")
+    assert f["depends_on"] == DECLARED_EVAL
+    assert f["mandatory_depends_on"] == DECLARED_EVAL
+    assert not f.get("reqd")
+    f = _rs_field("amounts_after_approval")
+    assert f["fieldtype"] == "Select" and f["reqd"] == 1
+    assert f["options"] == "Follow Latest Data\nFreeze at Approval"
+    assert f["description"] == FROZEN_HELP
+
+
+def test_rule_set_scenario_and_table_fields():
+    assert _rs_field("applies_to_all_scenarios")["fieldtype"] == "Check"
+    f = _rs_field("scenarios")
+    assert (f["fieldtype"], f["options"]) == ("Table", "Cost Allocation Rule Set Scenario")
+    assert f["mandatory_depends_on"] == NOT_ALL_EVAL
+    assert f["depends_on"] == NOT_ALL_EVAL
+    f = _rs_field("accounts")
+    assert (f["fieldtype"], f["options"], f["reqd"]) == ("Table", "Cost Allocation Rule Set Account", 1)
+    assert "descendants" in f["description"]
+    f = _rs_field("rules")
+    assert (f["fieldtype"], f["options"], f["reqd"]) == ("Table", "Cost Allocation Rule", 1)
+    f = _rs_field("receivers")
+    assert (f["fieldtype"], f["options"]) == ("Table", "Cost Allocation Rule Receiver")
+
+
+def test_rule_set_child_doctypes():
+    expect = {
+        "cost_allocation_rule_set_scenario": {"scenario": ("Link", "Scenario", 1)},
+        "cost_allocation_rule_set_account": {"main_account": ("Link", "Main Account", 1),
+                                             "account_name": ("Data", None, 0)},
+        "cost_allocation_rule": {"step": ("Int", None, 1), "sender_member": ("Data", None, 1),
+                                 "driver": ("Link", "Cost Allocation Driver", 1),
+                                 "description": ("Data", None, 0)},
+        "cost_allocation_rule_receiver": {"step": ("Int", None, 1),
+                                          "receiver_member": ("Data", None, 1)},
+    }
+    for folder, fields in expect.items():
+        meta = _doctype_json(folder)
+        assert meta["istable"] == 1 and meta["module"] == "EPM", folder
+        assert meta["name"] == folder.replace("_", " ").title(), folder
+        got = _child_fields(folder)
+        assert set(got) == set(fields), (folder, set(got))
+        for name, (ft, opts, reqd) in fields.items():
+            assert got[name]["fieldtype"] == ft, (folder, name)
+            assert got[name].get("options") == opts, (folder, name)
+            assert bool(got[name].get("reqd")) == bool(reqd), (folder, name)
+        assert os.path.exists(os.path.join(EPM_DIR, folder, folder + ".py"))
+    acct = _child_fields("cost_allocation_rule_set_account")["account_name"]
+    assert acct["fetch_from"] == "main_account.account_name" and acct["read_only"] == 1
+
+
+# --- controller -------------------------------------------------------------
+
+class _Row:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+    def as_dict(self):
+        return dict(self.__dict__)
+
+
+class _ThrowingFrappe:
+    def throw(self, message, *args, **kwargs):
+        raise _Refused(message)
+
+
+def _rs_module(state=("Published", 1), members=("A", "B", "C"), drivers=None):
+    _install_document_stub()
+    spec = importlib.util.spec_from_file_location("cost_allocation_rule_set_k4", RS_PY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.frappe = _ThrowingFrappe()
+    module._dimension_state = lambda dim: state
+    module._dimension_members = lambda dim: set(members)
+    module._driver_dimensions = lambda names: dict(
+        drivers if drivers is not None else {n: "dim_zz" for n in names})
+    return module
+
+
+def _rs_doc(module, **over):
+    doc = module.CostAllocationRuleSet.__new__(module.CostAllocationRuleSet)
+    doc.entity = "ZZE"
+    doc.allocation_dimension = "dim_zz"
+    doc.method = "Direct"
+    doc.receiver_account_mode = "Sender's Own Accounts"
+    doc.allocation_account = ""
+    doc.rules = [_Row(step=1, sender_member="A", driver="ZZ Head")]
+    doc.receivers = [_Row(step=1, receiver_member="B"), _Row(step=1, receiver_member="C")]
+    for k, v in over.items():
+        setattr(doc, k, v)
+    return doc
+
+
+def _refusal(doc):
+    try:
+        doc.validate()
+    except _Refused as exc:
+        return str(exc)
+    return None
+
+
+def test_rule_set_controller_accepts_valid():
+    assert _refusal(_rs_doc(_rs_module())) is None
+
+
+def test_rule_set_controller_refuses_each_model_error():
+    m = _rs_module()
+    cases = {
+        "not a member of": dict(rules=[_Row(step=1, sender_member="ZZX", driver="ZZ Head")]),
+        "no receiver": dict(receivers=[]),
+        "cannot receive its own": dict(receivers=[_Row(step=1, receiver_member="A")]),
+        "receiver and a sender": dict(
+            rules=[_Row(step=1, sender_member="A", driver="ZZ Head"),
+                   _Row(step=2, sender_member="B", driver="ZZ Head")],
+            receivers=[_Row(step=1, receiver_member="B"), _Row(step=2, receiver_member="C")]),
+        "Allocation Account is required": dict(receiver_account_mode="Declared Allocation Account"),
+        "would do nothing": dict(allocation_account="ZZ-ACC"),
+        "declared more than once": dict(
+            rules=[_Row(step=1, sender_member="A", driver="ZZ Head"),
+                   _Row(step=1, sender_member="B", driver="ZZ Head")]),
+    }
+    for needle, over in cases.items():
+        msg = _refusal(_rs_doc(m, **over))
+        assert msg and needle in msg, (needle, msg)
+
+
+def test_rule_set_controller_refuses_driver_on_other_dimension():
+    m = _rs_module(drivers={"ZZ Head": "dim_other"})
+    msg = _refusal(_rs_doc(m))
+    assert msg and "dim_other" in msg
+
+
+def test_rule_set_controller_lists_every_error_in_one_throw():
+    m = _rs_module()
+    doc = _rs_doc(m, receivers=[], rules=[_Row(step=1, sender_member="ZZX", driver="ZZ Head")])
+    msg = _refusal(doc)
+    assert "not a member of" in msg and "no receiver" in msg
+
+
+def test_rule_set_controller_refuses_unpublished_dimension():
+    for status in ("Draft", "Inactive", None):
+        msg = _refusal(_rs_doc(_rs_module(state=(status, 1))))
+        assert msg and "Published" in msg, (status, msg)
+
+
+def test_rule_set_controller_refuses_dimension_not_in_budget():
+    msg = _refusal(_rs_doc(_rs_module(state=("Published", 0))))
+    assert msg and "In Budget" in msg
