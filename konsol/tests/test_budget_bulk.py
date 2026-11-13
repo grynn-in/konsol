@@ -95,12 +95,14 @@ class FakeEntry:
         getattr(self, field).append(dict(row))
 
     def insert(self):
+        self._log.append(("judged", bool(sys.modules["frappe"].flags.get("budget_entry_judged"))))
         assert self.name not in self._store, "the same key twice"
         self._store[self.name] = self
         self._log.append(("insert", "Budget Entry", self.name))
         return self
 
     def save(self):
+        self._log.append(("judged", bool(sys.modules["frappe"].flags.get("budget_entry_judged"))))
         self._log.append(("save", "Budget Entry", self.name))
         return self
 
@@ -171,6 +173,7 @@ def env(monkeypatch):
     frappe.has_permission = lambda doctype, ptype=None, **k: state.can_create
     frappe.enqueue = lambda method, **kw: state.enqueued.append((method, kw))
     frappe.clear_messages = lambda: None
+    frappe.flags = {}
     frappe.log_error = lambda *a, **k: log.append(("log_error", k.get("title")))
     snapshot = {}
 
@@ -223,11 +226,31 @@ def env(monkeypatch):
             raise RuntimeError(f"boom on {data['main_account']}")
     api._assert_budget_write_access = access
 
+    # The Budget Entry controller's guard, as the load calls it.
+    import contextlib
+    entry_mod = types.ModuleType("konsol.epm.doctype.budget_entry.budget_entry")
+    entry_mod.CycleNotDraftError = type("CycleNotDraftError", (Thrown,), {})
+
+    def assert_cycle_draft(cycle, action="changed"):
+        log.append(("lock cycle", cycle))
+    entry_mod.assert_cycle_draft = assert_cycle_draft
+
+    @contextlib.contextmanager
+    def judged_by_writer():
+        was = frappe.flags.get("budget_entry_judged")
+        frappe.flags["budget_entry_judged"] = True
+        try:
+            yield
+        finally:
+            frappe.flags["budget_entry_judged"] = was
+    entry_mod.judged_by_writer = judged_by_writer
+
     timeouts = types.ModuleType("rq.timeouts")
     timeouts.BaseTimeoutException = type("BaseTimeoutException", (Exception,), {})
 
     for name, mod in {"frappe": frappe, "frappe.utils": utils, "frappe.utils.background_jobs": jobs,
                       "konsol.tb_bulk": tb, "konsol.budget_intake": intake, "konsol.api": api,
+                      "konsol.epm.doctype.budget_entry.budget_entry": entry_mod,
                       "rq": types.ModuleType("rq"), "rq.timeouts": timeouts}.items():
         monkeypatch.setitem(sys.modules, name, mod)
     spec = importlib.util.spec_from_file_location("_budget_bulk_under_test", PY_PATH)
@@ -534,3 +557,14 @@ def test_loaded_count_is_virtual_on_the_doctype():
     with open(os.path.join(APP_DIR, "epm", "doctype", "budget_upload", "budget_upload.py")) as f:
         src = f.read()
     assert "def loaded_count" in src and "status_now" in src
+
+
+# ── review fix 1: the load tells each entry it has judged the rows ─────────
+
+def test_the_load_saves_every_entry_as_judged_and_only_there(env):
+    _run(env, FOUR)
+    _checked(env).name = "BU-0002"
+    _run(env, FOUR)
+    flags = [entry[1] for entry in env.log if entry[0] == "judged"]
+    assert len(flags) == 16 and all(flags), flags
+    assert not env.frappe.flags.get("budget_entry_judged")

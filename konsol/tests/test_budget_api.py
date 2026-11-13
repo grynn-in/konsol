@@ -168,7 +168,8 @@ def cell(monkeypatch):
                        "in_trial_balance": 1}],
     }
     state = types.SimpleNamespace(entries={}, saves=[], inserts=[], denied=set(), body=None,
-                                  access_calls=[], clock=0, commits=0)
+                                  access_calls=[], clock=0, commits=0, judged_flags=[],
+                                  cycle_locks=[], cycle_refusal=None, log=[])
 
     def get_all(doctype, filters=None, fields=None, order_by=None, pluck=None, limit_page_length=None,
                 limit=None, **kw):
@@ -201,12 +202,14 @@ def cell(monkeypatch):
 
     def bind(doc):
         def save(*a, **k):
+            state.judged_flags.append(bool(frappe.flags.get("budget_entry_judged")))
             doc["modified"] = tick()
             state.entries[doc["name"]] = _Entry(json.loads(json.dumps(doc)))
             state.saves.append(doc["name"])
             return doc
 
         def insert(*a, **k):
+            state.judged_flags.append(bool(frappe.flags.get("budget_entry_judged")))
             name = "BENT-" + "-".join(str(doc.get(f)) for f in
                                        ("cycle", "data_area_id", "layer", "fiscal_period"))
             if name in state.entries:
@@ -240,6 +243,7 @@ def cell(monkeypatch):
     frappe.exceptions = types.SimpleNamespace(DuplicateEntryError=_Duplicate)
     frappe.DuplicateEntryError = _Duplicate
     frappe.session = types.SimpleNamespace(user="ann@example.com")
+    frappe.flags = {}
     frappe.local = types.SimpleNamespace(response=types.SimpleNamespace(http_status_code=None))
     frappe.request = types.SimpleNamespace(get_data=lambda as_text=True: json.dumps(state.body))
     frappe.get_all = get_all
@@ -286,11 +290,38 @@ def cell(monkeypatch):
     line_mod = types.ModuleType("konsol.epm.doctype.budget_entry_line.budget_entry_line")
     line_mod.budget_dimension_fields = lambda: ["dim_cost_center"]
     clickhouse = types.SimpleNamespace(connection_url=lambda s: "", get_connection=lambda: {})
+    # The Budget Entry controller's guard, as the writers call it: the Cycle
+    # lock (finding 2 makes it fail on demand) and the "already judged" scope.
+    entry_mod = types.ModuleType("konsol.epm.doctype.budget_entry.budget_entry")
+
+    class CycleNotDraftError(_Thrown):
+        pass
+
+    def assert_cycle_draft(cycle, action="changed"):
+        state.cycle_locks.append(cycle)
+        state.log.append(("lock cycle", cycle))
+        if state.cycle_refusal:
+            raise CycleNotDraftError(state.cycle_refusal)
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def judged_by_writer():
+        was = frappe.flags.get("budget_entry_judged")
+        frappe.flags["budget_entry_judged"] = True
+        try:
+            yield
+        finally:
+            frappe.flags["budget_entry_judged"] = was
+    entry_mod.CycleNotDraftError = CycleNotDraftError
+    entry_mod.assert_cycle_draft = assert_cycle_draft
+    entry_mod.judged_by_writer = judged_by_writer
 
     for name, mod in {"frappe": frappe, "frappe.utils": utils, "konsol.clickhouse": clickhouse,
                       "konsol.group_chart": chart, "konsol.period_status": periods,
                       "konsol.entity_permissions": perms,
-                      "konsol.epm.doctype.budget_entry_line.budget_entry_line": line_mod}.items():
+                      "konsol.epm.doctype.budget_entry_line.budget_entry_line": line_mod,
+                      "konsol.epm.doctype.budget_entry.budget_entry": entry_mod}.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
     spec = importlib.util.spec_from_file_location("_budget_intake_x1", INTAKE_PATH)
@@ -593,3 +624,14 @@ def test_a_batch_refusal_names_the_row_once(cell):
     assert message.startswith("Row 2: "), message
     assert "Line" not in message, message
     assert "9999" in message, message
+
+
+# --- review fix 1: the cell path tells the entry it has judged the row ------------
+
+def test_the_cell_path_saves_the_entry_as_judged_and_only_there(cell):
+    # The cell is judged once by the intake; Budget Entry's validate must not
+    # judge it again (nor judge the other users' lines the entry holds).
+    cell.post(amount=100)
+    cell.post(amount=200)
+    assert cell.state.judged_flags == [True, True]
+    assert not cell.frappe.flags.get("budget_entry_judged")

@@ -27,7 +27,8 @@ LINE_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_entry_line", "budget_e
 GRAIN_PY = os.path.join(APP_DIR, "epm", "budget_grain.py")
 FISCAL_CALENDAR = os.path.join(APP_DIR, "fiscal_calendar.py")
 
-BASES = ["Period movement", "Year-to-date movement", "Period-end balance"]
+#: Movements only (Q15-c): a Period-end balance needs a declared opening.
+BASES = ["Period movement", "Year-to-date movement"]
 
 
 def _meta():
@@ -91,7 +92,7 @@ def test_amount_basis_is_never_defaulted():
     f = _fields()["amount_basis"]
     options = f["options"].split("\n")
     assert options[0] == "", "a blank first option: a new entry has no basis until one is chosen"
-    assert options[1:] == BASES, "the TB's three values (Q2-c)"
+    assert options[1:] == BASES, "the budget's two bases (Q15-c): no Period-end balance"
     assert not f.get("default")
 
 
@@ -142,11 +143,12 @@ def test_permissions():
 
 def test_no_sync_hook():
     """The Cycle's submit and cancel sync the lines (T2); an entry changes
-    only under a Draft Cycle, so it never syncs itself."""
+    only under a Draft Cycle, so it never syncs itself. ``on_trash`` is the
+    Cycle guard, not a sync."""
     src = open(PY_PATH).read()
     tree = ast.parse(src)
     methods = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
-    assert not methods & {"on_update", "on_submit", "on_cancel", "after_delete", "on_trash"}
+    assert not methods & {"on_update", "on_submit", "on_cancel", "after_delete"}
     assert "sync_doctype" not in src and "queue_sync" not in src
 
 
@@ -171,6 +173,10 @@ class Thrown(Exception):
     pass
 
 
+class Denied(Exception):
+    pass
+
+
 class _Row(types.SimpleNamespace):
     def get(self, key, default=None):
         return getattr(self, key, default)
@@ -181,7 +187,7 @@ class _Row(types.SimpleNamespace):
 
 @pytest.fixture
 def env(monkeypatch):
-    cycles = {"BCYC-1": {"scenario_id": "budget", "fiscal_year": 2027}}
+    cycles = {"BCYC-1": {"scenario_id": "budget", "fiscal_year": 2027, "docstatus": 0}}
     entries = {}  # name -> key dict
     dims = ["dim_cost_center", "dim_project"]
 
@@ -196,7 +202,22 @@ def env(monkeypatch):
             return getattr(self, "__islocal", None)
 
     def throw(msg, exc=None, *a, **k):
-        raise Thrown(msg)
+        raise (exc or Thrown)(msg)
+
+    sql_calls = []
+
+    def sql(query, values=None, *a, **k):
+        sql_calls.append((" ".join(query.split()), values))
+        assert "FOR UPDATE" in query and "`tabBudget Cycle`" in query, query
+        row = cycles.get(values[0])
+        return [(row["docstatus"],)] if row else []
+
+    class _Flags(dict):
+        def __getattr__(self, key):
+            return self.get(key)
+
+        def __setattr__(self, key, value):
+            self[key] = value
 
     def get_value(doctype, name, fields=None, *a, **k):
         if doctype == "Budget Cycle":
@@ -220,7 +241,9 @@ def env(monkeypatch):
     frappe._ = lambda s: s
     frappe.ValidationError = Thrown
     frappe.DuplicateEntryError = Thrown
-    frappe.db = types.SimpleNamespace(get_value=get_value)
+    frappe.PermissionError = Denied
+    frappe.flags = _Flags()
+    frappe.db = types.SimpleNamespace(get_value=get_value, sql=sql)
     frappe.get_meta = lambda dt: types.SimpleNamespace(fields=[
         types.SimpleNamespace(fieldname=d, fieldtype="Data") for d in dims])
     frappe.bold = lambda s: str(s)
@@ -230,9 +253,19 @@ def env(monkeypatch):
     docmod.Document = Document
     ch = types.ModuleType("konsol.clickhouse")
     ch.sync_doctype_after_commit = lambda *a: None
+    intake = types.ModuleType("konsol.budget_intake")
+    judged = []
+
+    def judge_one(table, *, form_basis):
+        judged.append((table, form_basis))
+        if intake.refuse:
+            frappe.throw(*intake.refuse)
+        return {}, []
+    intake.judge_one = judge_one
+    intake.refuse = None
     for name, mod in {"frappe": frappe, "frappe.model": model,
                       "frappe.model.document": docmod,
-                      "konsol.clickhouse": ch}.items():
+                      "konsol.clickhouse": ch, "konsol.budget_intake": intake}.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
     loaded = {}
@@ -246,8 +279,9 @@ def env(monkeypatch):
     spec = importlib.util.spec_from_file_location("_budget_entry_under_test", PY_PATH)
     ctl = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ctl)
-    return types.SimpleNamespace(ctl=ctl, cycles=cycles, entries=entries,
-                                 grain=loaded["konsol.epm.budget_grain"])
+    return types.SimpleNamespace(ctl=ctl, cycles=cycles, entries=entries, frappe=frappe,
+                                 grain=loaded["konsol.epm.budget_grain"], sql=sql_calls,
+                                 judged=judged, intake=intake)
 
 
 def _entry(env, lines=(), **kw):
@@ -358,3 +392,75 @@ def test_lines_carry_the_header(env):
     assert (line.cycle, line.scenario_id, line.layer, line.data_area_id, line.fiscal_year,
             line.fiscal_period, line.currency, line.amount_basis) == (
         "BCYC-1", "budget", "base", "E1", 2027, 3, "EUR", "Period movement")
+
+
+# ---- review fix 1: the entry guards itself ----------------------------------------
+
+@pytest.mark.parametrize("docstatus, word", [(1, "approved"), (2, "cancelled")])
+def test_an_entry_under_a_cycle_that_is_not_a_draft_is_refused(env, docstatus, word):
+    env.cycles["BCYC-1"]["docstatus"] = docstatus
+    doc = _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)])
+    with pytest.raises(Thrown) as raised:
+        doc.validate()
+    assert "BCYC-1" in str(raised.value) and word in str(raised.value)
+
+
+def test_validate_reads_the_cycle_with_a_locking_read(env):
+    _entry(env).validate()
+    assert env.sql and env.sql[0] == (
+        "SELECT docstatus FROM `tabBudget Cycle` WHERE name=%s FOR UPDATE", ("BCYC-1",))
+
+
+@pytest.mark.parametrize("docstatus, word", [(1, "approved"), (2, "cancelled")])
+def test_an_entry_under_a_cycle_that_is_not_a_draft_cannot_be_deleted(env, docstatus, word):
+    env.cycles["BCYC-1"]["docstatus"] = docstatus
+    doc = _entry(env, name="BENT-ME")
+    with pytest.raises(Thrown, match=word):
+        doc.on_trash()
+    assert env.sql and "FOR UPDATE" in env.sql[0][0]
+
+
+def test_an_entry_under_a_draft_cycle_may_be_deleted(env):
+    _entry(env, name="BENT-ME").on_trash()
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_install_and_migrate_skip_the_cycle_check(env, flag):
+    env.cycles["BCYC-1"]["docstatus"] = 1
+    setattr(env.frappe.flags, flag, True)
+    _entry(env).validate()
+    _entry(env, name="BENT-ME").on_trash()
+    assert env.sql == []
+
+
+def test_validate_judges_the_lines_through_the_intake(env):
+    doc = _entry(env, lines=[
+        dict(main_account="4000", debit=100.5, credit=0, dim_cost_center="CC1", description="x"),
+        dict(main_account="5000", debit=0, credit=7, dim_cost_center=None)])
+    doc.validate()
+    ((table, basis),) = env.judged
+    assert basis == "Period movement"
+    header, *rows = table
+    got = [dict(zip(header, r)) for r in rows]
+    assert [(r["scenario"], r["layer"], r["data_area_id"], r["fiscal_year"], r["fiscal_period"],
+             r["main_account"], r["debit"], r["credit"], r["currency"], r["dim_cost_center"])
+            for r in got] == [
+        ("budget", "base", "E1", 2027, 3, "4000", "100.5", "0.0", "EUR", "CC1"),
+        ("budget", "base", "E1", 2027, 3, "5000", "0.0", "7.0", "EUR", "")]
+    assert "dim_project" not in header, "a dimension no line uses is not a column"
+
+
+def test_an_access_denial_from_the_intake_refuses_the_save(env):
+    env.intake.refuse = ("Not permitted to write entity E1", Denied)
+    doc = _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)])
+    with pytest.raises(Denied):
+        doc.validate()
+
+
+def test_a_writer_that_judged_its_rows_is_not_judged_twice(env):
+    doc = _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)])
+    with env.ctl.judged_by_writer():
+        doc.validate()
+    assert env.judged == []
+    assert env.sql, "the Cycle lock is taken whoever writes"
+    assert not env.frappe.flags.get("budget_entry_judged"), "the flag is put back"
