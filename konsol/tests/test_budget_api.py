@@ -218,8 +218,6 @@ def cell(monkeypatch):
             state.entries[name] = _Entry(json.loads(json.dumps(doc)))
             state.inserts.append(name)
             return doc
-        dict.__setitem__(doc, "_save", save)
-        dict.__setitem__(doc, "_insert", insert)
         doc.__dict__["save"] = save
         doc.__dict__["insert"] = insert
 
