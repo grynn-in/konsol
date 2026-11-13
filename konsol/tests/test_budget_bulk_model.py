@@ -4,6 +4,7 @@ contract. It is the trial balance contract (tb_bulk_model) plus required
 dim_* column only for a Dimension declared in_budget."""
 import ast
 import os
+from decimal import Decimal
 
 from konsol import budget_bulk_model as B
 from konsol import tb_bulk_model as T
@@ -186,14 +187,19 @@ def test_a_repeated_column_is_refused_by_name_with_its_count():
 # --- M2: the per-group check (BUD-10-1, Q4-b, Q8-a) ----------------------------
 
 KEY = B.BudgetKey("BUD", 2026, "E1", "base", 3)
-ROWS = [{"main_account": "4000", "debit": 0, "credit": 100, "currency": "EUR", "line": 2}]
+ROWS = [{"main_account": "4000", "debit": Decimal("0"), "credit": Decimal("100"), "currency": "EUR", "line": 2}]
+CHART = {"4000": {"is_group": 0, "is_posting": 1}, "4": {"is_group": 1, "is_posting": 0},
+         "4900": {"is_group": 0, "is_posting": 0}}
 REGULAR = {"code": "P03", "type": "Regular", "status": "Open"}
 BUDGET = {"scenario_type": "budget"}
 LAYERS = ("base", "challenge")
 
 
-def _check(key=KEY, period=REGULAR, layers=LAYERS, scenario=BUDGET):
-    return B.check_group(key, ROWS, period=period, layers=layers, scenario=scenario)
+def _check(key=KEY, period=REGULAR, layers=LAYERS, scenario=BUDGET, rows=ROWS, chart=CHART,
+           functional_currency="EUR", minor_unit=2, form_basis="Period movement"):
+    return B.check_group(key, rows, period=period, layers=layers, scenario=scenario, chart=chart,
+                         functional_currency=functional_currency, minor_unit=minor_unit,
+                         form_basis=form_basis)
 
 
 def test_a_declared_regular_period_layer_and_budget_scenario_pass():
@@ -260,5 +266,117 @@ def test_every_problem_of_a_group_is_reported_together():
 def test_the_check_takes_its_facts_without_defaults():
     import inspect
     params = inspect.signature(B.check_group).parameters
-    for name in ("period", "layers", "scenario"):
+    for name in ("period", "layers", "scenario", "chart", "functional_currency", "minor_unit", "form_basis"):
         assert params[name].default is inspect.Parameter.empty, name
+
+
+# --- M3: currency, decimals, accounts, negatives, basis (Q15-c); no balance rule ------------
+
+def _row(account="4000", debit="0", credit="100", currency="EUR", line=2, **more):
+    return {"main_account": account, "debit": Decimal(debit), "credit": Decimal(credit),
+            "currency": currency, "line": line, **more}
+
+
+def test_an_unbalanced_group_is_accepted():
+    """A budget need not balance: no balance rule."""
+    item = _check(rows=[_row(credit="100"), _row(account="4000", debit="30", credit="0", line=3)])
+    assert item["ok"], item["errors"]
+    item = _check(rows=[_row(credit="100")])
+    assert item["ok"], item["errors"]
+
+
+def test_a_wrong_currency_is_refused_naming_both():
+    item = _check(rows=[_row(currency="USD")])
+    assert not item["ok"]
+    assert len(item["errors"]) == 1
+    assert "USD" in item["errors"][0] and "EUR" in item["errors"][0] and "E1" in item["errors"][0]
+
+
+def test_an_entity_without_a_functional_currency_is_refused_by_name():
+    for missing in (None, ""):
+        item = _check(functional_currency=missing)
+        assert not item["ok"]
+        assert any("E1 has no Functional Currency" in e for e in item["errors"]), item["errors"]
+
+
+def test_a_blank_currency_is_refused():
+    item = _check(rows=[_row(currency="")])
+    assert any("currency is blank" in e for e in item["errors"]), item["errors"]
+
+
+def test_currency_case_is_forgiven():
+    assert _check(rows=[_row(currency=" eur ")])["ok"]
+
+
+def test_more_decimals_than_the_minor_unit_is_refused_naming_the_line():
+    item = _check(rows=[_row(credit="100.005", line=7)])
+    assert item["errors"] == ["Line 7: credit 100.005 has 3 decimal places; EUR has 2."]
+    assert _check(rows=[_row(credit="100.50")])["ok"]
+
+
+def test_a_missing_minor_unit_is_refused_not_defaulted():
+    item = _check(minor_unit=None)
+    assert not item["ok"]
+    assert any("Minor Unit" in e for e in item["errors"]), item["errors"]
+
+
+def test_a_wrong_currency_does_not_also_judge_decimals():
+    item = _check(rows=[_row(currency="USD", credit="100.005")])
+    assert len(item["errors"]) == 1
+
+
+def test_an_unknown_heading_and_closed_account_are_refused():
+    rows = [_row(account="9999", line=2), _row(account="4", line=3), _row(account="4900", line=4)]
+    errors = _check(rows=rows)["errors"]
+    assert any("Line 2" in e and "9999" in e and "not in the group chart" in e for e in errors), errors
+    assert any("Line 3" in e and "heading" in e for e in errors), errors
+    assert any("Line 4" in e and "not open for posting" in e for e in errors), errors
+
+
+def test_a_site_with_no_chart_is_told_the_fix():
+    item = _check(chart={})
+    assert not item["ok"]
+    assert any("No group chart" in e for e in item["errors"]), item["errors"]
+
+
+def test_a_negative_amount_is_refused_as_on_the_trial_balance():
+    item = _check(rows=[_row(credit="-100", line=5)])
+    assert not item["ok"]
+    assert any("Line 5" in e and "Negative credit" in e for e in item["errors"]), item["errors"]
+
+
+def test_movement_and_year_to_date_are_accepted_from_the_upload_or_the_column():
+    for basis in ("Period movement", "Year-to-date movement"):
+        assert _check(form_basis=basis)["ok"], basis
+        assert _check(form_basis=None, rows=[_row(amount_basis=basis)])["ok"], basis
+        assert _check(form_basis="", rows=[_row(amount_basis=basis.upper())])["ok"], basis
+
+
+def test_a_period_end_balance_is_refused_by_name_from_either_source():
+    for item in (_check(form_basis="Period-end balance"),
+                 _check(form_basis=None, rows=[_row(amount_basis="Period-end balance")])):
+        assert not item["ok"]
+        assert len(item["errors"]) == 1
+        message = item["errors"][0]
+        assert "Period-end balance" in message
+        assert "not supported yet" in message and "opening" in message
+
+
+def test_a_missing_basis_is_refused_never_defaulted():
+    for form in (None, ""):
+        item = _check(form_basis=form)
+        assert not item["ok"]
+        assert any("Amount Basis is required" in e for e in item["errors"]), item["errors"]
+
+
+def test_an_unrecognised_basis_is_refused():
+    item = _check(form_basis="Quarterly")
+    assert not item["ok"]
+    assert any('"Quarterly" is not one of' in e for e in item["errors"]), item["errors"]
+
+
+def test_a_column_that_disagrees_with_the_upload_field_is_refused():
+    item = _check(form_basis="Period movement", rows=[_row(amount_basis="Year-to-date movement")])
+    assert not item["ok"]
+    assert any("Year-to-date movement" in e and "Period movement" in e for e in item["errors"]), item["errors"]
+    assert _check(form_basis="period movement", rows=[_row(amount_basis="Period movement")])["ok"]

@@ -32,18 +32,46 @@ close status, because the Cycle is what freezes a plan (Q4-b); the layer must
 be a declared Budget Layer, and a site with none is told to create one
 (Q8-a); the scenario must be declared and not an actual.
 """
+import importlib.util as _importlib_util
+import os as _os
 from collections import namedtuple
 
-from konsol.tb_basis_model import COLUMN as BASIS
+from konsol.tb_balance_model import NotFinite, place_problems, valid_minor_unit
+from konsol.tb_basis_model import AMOUNT_BASES, COLUMN as BASIS, canonical as canonical_basis
+from konsol.tb_currency_model import code as currency_code, currency_problems
 from konsol.period_read_model import REGULAR
 from konsol.tb_bulk_model import (
     ALIASES, MAX_LINE_ERRORS, PARTNER, REQUIRED as TB_REQUIRED, Contract,
     group_basis, period_name, resolve_basis, split_by_contract, table_from_csv,
 )
 
+def _load_tb_model():
+    """konsol/close/tb_model.py loaded by path (pure): reachable under the host
+    tests' stub ``konsol.close`` package, as tb_bulk_model does for period_name."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "close", "tb_model.py")
+    spec = _importlib_util.spec_from_file_location("konsol_budget_close_tb_model", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_tb_model = _load_tb_model()
+#: The row problems a budget judges per line: the TB's account and sign rules.
+_ROW_RULES = frozenset({_tb_model.UNKNOWN_ACCOUNT, _tb_model.HEADING_ACCOUNT, _tb_model.CLOSED_ACCOUNT,
+                        _tb_model.NEGATIVE_AMOUNT})
+
+#: The bases a budget file may declare (Q15-c): movements only. A period-end
+#: balance needs a declared opening, so it is refused by name.
+MOVEMENT, YEAR_TO_DATE, PERIOD_END = AMOUNT_BASES
+BUDGET_BASES = (MOVEMENT, YEAR_TO_DATE)
+PERIOD_END_REFUSAL = (
+    f'Amount basis "{PERIOD_END}" is not supported yet: balance budgets need a declared '
+    f'opening balance. Give "{MOVEMENT}" or "{YEAR_TO_DATE}".'
+)
+
 __all__ = ("ALIASES", "MAX_LINE_ERRORS", "BudgetKey", "REQUIRED", "OPTIONAL", "ACCEPTED", "HEADER_HELP",
            "DIMENSION_FLAG", "PARTNER_REFUSAL", "CONTRACT", "split_table", "table_from_csv",
-           "group_basis", "resolve_basis", "check_group", "ACTUAL")
+           "group_basis", "resolve_basis", "check_group", "ACTUAL", "BUDGET_BASES", "PERIOD_END_REFUSAL")
 
 SCENARIO = "scenario"
 #: The Scenario.scenario_type a budget file may not load into.
@@ -92,8 +120,8 @@ def split_table(table, declared_dimensions):
     return split_by_contract(table, declared_dimensions, CONTRACT)
 
 
-def check_group(key, rows, *, period, layers, scenario):
-    """Everything in M2's remit that would stop one Budget Entry loading, as
+def check_group(key, rows, *, period, layers, scenario, chart, functional_currency, minor_unit, form_basis):
+    """Everything that would stop one Budget Entry loading (M2 and M3), as
     one report row {scenario, fiscal_year, entity, layer, fiscal_period, rows,
     errors, ok}. Every problem is reported together.
 
@@ -105,6 +133,21 @@ def check_group(key, rows, *, period, layers, scenario):
       has none (Q8-a: a fresh site starts empty).
     - `scenario`: None when the Scenario is not declared, else a dict with
       `scenario_type`.
+    - `chart`: the group chart, konsol.group_chart.chart_accounts(); empty
+      means none is published (refused, naming the fix).
+    - `functional_currency`: the entity's, as stored ('' or None when it has
+      none: refused by name, never skipped). The rows' currency is judged by
+      konsol.tb_currency_model, the rule the trial balance applies.
+    - `minor_unit`: that currency's ISO Currency.minor_unit as stored (None
+      when there is none: refused, no default). No line may have more decimal
+      places than it has.
+    - `form_basis`: the upload's Amount Basis ('' or None when it has none).
+      The file's amount_basis column, when given, must agree with it. Only
+      Movement and Year-to-date are accepted; Period-end balance is refused by
+      name (Q15-c). A group with no basis anywhere is refused, never defaulted.
+
+    A budget need not balance: there is no balance rule. Rows with a negative
+    amount are refused, as on the trial balance.
     """
     errors = []
     label = period_name(key.fiscal_year, key.fiscal_period)
@@ -128,8 +171,53 @@ def check_group(key, rows, *, period, layers, scenario):
     elif scenario["scenario_type"] == ACTUAL:
         errors.append(f"Scenario {key.scenario} is an actual scenario: actuals come from the trial balance, "
                       "not a budget file. Use a budget, forecast or other plan scenario")
+    errors.extend(_row_problems(rows, chart))
+    errors.extend(_currency_problems(key.data_area_id, functional_currency, minor_unit, rows))
+    errors.extend(_basis_problems(rows, form_basis))
     return {
         "scenario": key.scenario, "fiscal_year": key.fiscal_year, "entity": key.data_area_id,
         "layer": key.layer, "fiscal_period": key.fiscal_period, "rows": len(rows),
         "errors": errors, "ok": not errors,
     }
+
+
+def _row_problems(rows, chart):
+    """The TB's account and sign rules (konsol.close.tb_model.check_rows), one
+    sentence per problem, naming its line. No basis, partner or duplicate rule."""
+    result = _tb_model.check_rows(rows, chart, None, None, None)
+    out = [p for p in result["file_problems"] if p == _tb_model.NO_CHART]
+    for row in result["rows"]:
+        out.extend(f"Line {row['line']}: {p['message']}" for p in row["problems"] if p["code"] in _ROW_RULES)
+    return out
+
+
+def _currency_problems(entity, functional_currency, minor_unit, rows):
+    declared = [(r.get("line"), r.get("currency")) for r in rows]
+    problems = currency_problems(entity, functional_currency, declared)
+    if problems:
+        return problems
+    currency = currency_code(functional_currency)
+    if not valid_minor_unit(minor_unit):
+        return [f"ISO Currency {currency} has no usable Minor Unit ({minor_unit!r}), so the decimals of "
+                f"this budget cannot be judged. Set its Minor Unit to the ISO 4217 number of decimal "
+                f"places for {currency}, then check again."]
+    try:
+        return place_problems(currency, minor_unit, rows)
+    except (NotFinite, ValueError) as error:
+        return [f"An amount cannot be read: {error}"]
+
+
+def _basis_problems(rows, form_basis):
+    """One basis per Budget Entry, from the column or the upload, never
+    defaulted: Movement or Year-to-date; a Period-end balance is refused by name."""
+    given = group_basis(rows)
+    form = canonical_basis(form_basis)
+    if given and form and canonical_basis(given) not in (None, form):
+        return [f'The file says "{canonical_basis(given)}" but the upload says "{form}"; '
+                "one file holds one amount basis, so fix the upload or the file."]
+    basis, problem = resolve_basis(given, form_basis)
+    if problem:
+        return [problem]
+    if basis == PERIOD_END:
+        return [PERIOD_END_REFUSAL]
+    return []

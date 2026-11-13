@@ -146,6 +146,10 @@ def _valid_minor_unit(minor_unit):
     return isinstance(minor_unit, int) and not isinstance(minor_unit, bool) and minor_unit >= 0
 
 
+#: Public name for the check budgets make before judging decimals (konsol#348 M3).
+valid_minor_unit = _valid_minor_unit
+
+
 def _places(minor_unit):
     return f"{minor_unit} decimal place{'' if minor_unit == 1 else 's'}"
 
