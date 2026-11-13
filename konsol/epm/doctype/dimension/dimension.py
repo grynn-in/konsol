@@ -174,6 +174,8 @@ class Dimension(Document):
         save, and so is ``unpublish()``, so the stale tick could neither be
         walked away from nor retired.
         """
+        self._refuse_published_budget_only()
+
         if not _is_on(getattr(self, FLAG, 0)):
             # Not declared for the trial balance: no dim_ column is created
             # for it and no header is matched against it, so the trial
@@ -196,10 +198,13 @@ class Dimension(Document):
                 f"header of exactly that name: it must be the four characters "
                 f"dim_ followed by one or more lower-case letters, digits or "
                 f"underscores, and nothing else — no capitals, spaces, "
-                f"punctuation or surrounding blanks. Either rename it, or leave "
+                f"punctuation or surrounding blanks. Either create a new dimension under a legal name, or leave "
                 f"the name alone and untick Include in Trial Balance if this "
-                f"dimension belongs only to budgets or fact tables, where no "
-                f"prefix is required. konsol will not lower-case or trim the "
+                f"dimension belongs only to fact tables, where no prefix is "
+                f"required. A published budget dimension must stay in the "
+                f"trial balance (BUD-8-2), so create a new dimension under a "
+                f"legal dim_ name instead; dimensions cannot be renamed. "
+                f"konsol will not lower-case or trim the "
                 f"name for you, because two dimensions differing only in case "
                 f"would end up sharing one column.",
                 frappe.ValidationError,
@@ -225,6 +230,40 @@ class Dimension(Document):
                 f"label says.",
                 frappe.ValidationError,
             )
+
+    def _refuse_published_budget_only(self):
+        """Refuse a Published budget dimension that is not a TB dimension (BUD-8-2).
+
+        Budget variance compares budget against actuals like-for-like, so a
+        dimension a budget is held on must exist on the trial balance too.
+        Decided by Deepak Pai on konsol#348 (BUD-8-2), scoped by Q10 option b:
+        the rule fires when the row is Published AFTER this save. Every
+        consumer of the budget grain reads Published dimensions only
+        (budget_grain, api, dbt_config), so a Draft or Inactive row reaches
+        nothing and saves freely. That keeps ``unpublish()``, which works
+        through ``self.save()``, open for an offender. Rejected: refusing every
+        save (Q10 option a), which would trap an offender with no way to retire
+        it, the defect the docstring of ``validate`` records for the name rule.
+
+        Because every Published budget dimension is now a TB dimension, the
+        ``dim_`` name rule below binds it too.
+        """
+        if self.status != "Published":
+            return
+        if not _is_on(getattr(self, "in_budget", 0)):
+            return
+        if _is_on(getattr(self, FLAG, 0)):
+            return
+        frappe.throw(
+            f"Dimension {self.dimension_name} is Published with Include in "
+            f"Budget ticked and Include in Trial Balance unticked. A budget "
+            f"dimension must also be a trial-balance dimension, so budget and "
+            f"actuals compare like-for-like in variance. Either tick Include "
+            f"in Trial Balance (its name must then start with dim_; if it does "
+            f"not, create a new dim_ dimension instead), or untick Include in "
+            f"Budget. To keep it as it is, unpublish it instead.",
+            frappe.ValidationError,
+        )
 
     def on_update(self):
         """Apply the schema when this save changed what the warehouse sees (#295).

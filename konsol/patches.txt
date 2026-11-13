@@ -56,3 +56,4 @@ konsol.patches.backfill_planning_scenario_type
 konsol.patches.delete_budget_rail
 konsol.patches.add_owner_to_ownership_periods
 konsol.patches.move_holidays_to_calendars
+konsol.patches.report_budget_dimensions_not_in_tb

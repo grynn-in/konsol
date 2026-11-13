@@ -183,8 +183,14 @@ def _doc(name, in_trial_balance=1, **fields):
     return doc
 
 
-def _budget_only_doc(name=BUDGET_ONLY_NAME, status="Published"):
-    """A published, budget-only dimension — legal for budgets, not for a TB."""
+def _budget_only_doc(name=BUDGET_ONLY_NAME, status="Draft"):
+    """A budget-only dimension — legal for budgets, not for a TB.
+
+    Draft by default: since BUD-8-2 (konsol#348) a PUBLISHED budget dimension
+    must also be a trial-balance dimension, so a budget-only one exists only
+    as a Draft or Inactive row (test_dimension_budget_subset_of_tb.py). The
+    name rule's scope is still the flag, which is what these tests pin.
+    """
     return _doc(name, in_trial_balance=0, in_budget=1, status=status)
 
 
@@ -239,7 +245,7 @@ def test_a_budget_only_dimension_can_be_unpublished():
     all — and ``config_service._remove_config_entity`` calls this same
     ``unpublish``, so ``apply_config(prune=True)`` would abort on it too.
     """
-    doc = _budget_only_doc()
+    doc = _budget_only_doc(status="Published")
     del _REBUILDS[:]
     doc.unpublish()
     assert doc.status == "Inactive", doc.status
