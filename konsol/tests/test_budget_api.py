@@ -718,3 +718,21 @@ def test_a_cell_in_a_layer_whose_writer_role_the_user_lacks_is_a_permission_erro
     with pytest.raises(_Denied, match="Budget Approver"):
         cell.post(layer="board")
     assert not cell.state.entries
+
+
+# --- review fix 7b: a cell is not told about a file --------------------------------
+
+def test_a_cell_in_the_wrong_currency_is_not_told_about_a_file(cell):
+    with pytest.raises(_Thrown) as raised:
+        cell.post(currency="USD")
+    message = str(raised.value)
+    assert "USD" in message and "EUR" in message
+    assert "file" not in message.lower(), message
+
+
+def test_a_cell_without_a_basis_is_not_told_about_a_file_or_upload(cell):
+    with pytest.raises(_Thrown) as raised:
+        cell.post(amount_basis=...)
+    message = str(raised.value)
+    assert "Amount Basis is required" in message
+    assert "file" not in message.lower() and "upload" not in message.lower(), message

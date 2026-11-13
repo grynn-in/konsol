@@ -196,10 +196,10 @@ LAYERS = ("base", "challenge")
 
 
 def _check(key=KEY, period=REGULAR, layers=LAYERS, scenario=BUDGET, rows=ROWS, chart=CHART,
-           functional_currency="EUR", minor_unit=2, form_basis="Period movement"):
+           functional_currency="EUR", minor_unit=2, form_basis="Period movement", from_file=True):
     return B.check_group(key, rows, period=period, layers=layers, scenario=scenario, chart=chart,
                          functional_currency=functional_currency, minor_unit=minor_unit,
-                         form_basis=form_basis)
+                         form_basis=form_basis, from_file=from_file)
 
 
 def test_a_declared_regular_period_layer_and_budget_scenario_pass():
@@ -275,7 +275,8 @@ def test_every_problem_of_a_group_is_reported_together():
 def test_the_check_takes_its_facts_without_defaults():
     import inspect
     params = inspect.signature(B.check_group).parameters
-    for name in ("period", "layers", "scenario", "chart", "functional_currency", "minor_unit", "form_basis"):
+    for name in ("period", "layers", "scenario", "chart", "functional_currency", "minor_unit", "form_basis",
+                 "from_file"):
         assert params[name].default is inspect.Parameter.empty, name
 
 
@@ -389,3 +390,23 @@ def test_a_column_that_disagrees_with_the_upload_field_is_refused():
     assert not item["ok"]
     assert any("Year-to-date movement" in e and "Period movement" in e for e in item["errors"]), item["errors"]
     assert _check(form_basis="period movement", rows=[_row(amount_basis="Period movement")])["ok"]
+
+
+# --- review fix 7b: the currency and basis sentences fit the writer ---------------
+
+def test_a_file_is_told_the_file_declares_its_currency():
+    (message,) = _check(rows=[_row(currency="USD")])["errors"]
+    assert message.startswith("The file declares USD")
+    assert "trial balance" not in message, "a budget is not a trial balance"
+
+
+def test_a_cell_or_entry_is_not_told_about_a_file():
+    (message,) = _check(rows=[_row(currency="USD", line=None)], from_file=False)["errors"]
+    assert "USD" in message and "EUR" in message and "E1" in message
+    assert "file" not in message.lower() and "trial balance" not in message, message
+    for form in (None, ""):
+        item = _check(rows=[_row(line=None)], form_basis=form, from_file=False)
+        (message,) = item["errors"]
+        assert "Amount Basis is required" in message
+        assert "file" not in message.lower() and "upload" not in message.lower(), message
+        assert "Period-end" not in message, "only the budget's bases are offered"
