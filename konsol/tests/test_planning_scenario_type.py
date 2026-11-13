@@ -118,8 +118,7 @@ def test_writers_set_the_link_then_insert_or_save():
     """api.py and the reshape patch create cycles and sheets with new_doc and set
     the link field before insert, so the fetch has something to follow."""
     api = _src("api.py")
-    assert re.search(r'new_doc\("Budget Cycle"\)\s*\n\s*doc\.update\(filters\)', api)
-    assert re.search(r'new_doc\("Budget Sheet"\)\s*\n\s*doc\.update\(filters\)', api)
+    assert re.search(r'new_doc\("Budget Entry"\)\s*\n\s*doc\.update\(entry_key\)', api)
     reshape = _src("patches", "reshape_budget_input_to_cycle.py")
     assert "doc.scenario_id = scenario_id" in reshape and "doc.insert()" in reshape
     assert "sheet.cycle = cycle_name" in reshape

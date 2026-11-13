@@ -510,7 +510,7 @@ def test_no_function_makes_excel_append_an_invocation_argument():
 
 
 def test_budget_cell_save_refuses_a_hierarchy_without_a_node():
-    block = _read_api().split("def budget_cell_save")[1].split("\n@frappe.whitelist")[0]
+    block = _read_api().split("def _save_budget_cell")[1].split("\n@frappe.whitelist")[0]
     check = block.index("_hierarchy_without_node_error(data)")
     assert check < block.index("_judge_budget_cell(data")
 
@@ -571,7 +571,7 @@ def test_budget_write_refuses_a_dimension_given_twice_with_two_values():
 
 
 def test_budget_cell_save_applies_dimensions_before_any_check():
-    block = _read_api().split("def budget_cell_save")[1].split("\n@frappe.whitelist")[0]
+    block = _read_api().split("def _save_budget_cell")[1].split("\n@frappe.whitelist")[0]
     applied = block.index("_apply_budget_dimensions(data, dims)")
     assert applied < block.index("validate_hierarchy_write")
     assert applied < block.index("_judge_budget_cell(data")

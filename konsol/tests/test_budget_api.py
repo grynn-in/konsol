@@ -35,7 +35,7 @@ def test_budget_save_upserts():
     """Must upsert (create or update) the sheet/line based on composite key."""
     with open(API_PATH) as f:
         content = f.read()
-    assert "_upsert_budget_line" in content
+    assert "_budget_save_cells" in content and "_save_budget_cell" in content
     # Must check for existing doc before creating
     assert "get_all" in content or "get_list" in content
 
@@ -66,20 +66,18 @@ def test_budget_cell_save_endpoint_exists():
     assert "budget_cell_save" in func_names
 
 
-def test_budget_cell_save_validates_layer():
-    """budget_cell_save must validate layer against allowed values."""
+def test_budget_cell_save_does_not_validate_layer_itself():
+    """The layer is judged by budget_intake against the declared Budget Layers."""
     with open(API_PATH) as f:
         content = f.read()
-    assert "VALID_LAYERS" in content
-    assert "base" in content
-    assert "challenge" in content
+    assert "VALID_LAYERS" not in content
 
 
 def test_budget_cell_save_upserts_period():
     """budget_cell_save must upsert a single period+layer, not replace all."""
     with open(API_PATH) as f:
         content = f.read()
-    fn = content.split("def budget_cell_save")[1].split("\ndef ")[0]
+    fn = content.split("def _save_budget_cell")[1].split("\ndef ")[0]
     # Must check for existing period+layer row
     assert "fiscal_period" in fn
     assert "layer" in fn
@@ -531,7 +529,7 @@ def test_one_refused_row_refuses_the_batch_and_names_the_row(cell):
 
 def test_an_ungranted_entity_refuses_the_batch_with_a_permission_error(cell):
     cell.state.denied.add("E2")
-    with pytest.raises(_Denied, match=r"Row 2.*E2"):
+    with pytest.raises(_Thrown, match=r"Row 2.*E2"):
         cell.batch([cell.row(), cell.row(data_area_id="E2")])
     assert not cell.state.entries
 
