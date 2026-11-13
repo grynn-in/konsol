@@ -64,6 +64,7 @@ class BudgetAnnualInput(Document):
         # so it cannot race a Scenario type change (review of #460).
         from konsol.epm.doctype.scenario.scenario import locked_scenario_type
 
+        self._assert_write_access()
         self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
         self._guard_cycle_locked()
@@ -113,6 +114,22 @@ class BudgetAnnualInput(Document):
                 f"{self.data_area_id} / {self.fiscal_year} / {self.main_account} "
                 f"({dupe}). Two rows at one grain double the spread budget."
             )
+
+    def _assert_write_access(self):
+        """The same entity, account and dimension check the bottom-up budget
+        writes run (api._assert_budget_write_access, konsol#413). Without it a
+        Desk save wrote any entity's annual figure. Skipped during
+        install/migrate/import, as the cycle guard is."""
+        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_import:
+            return
+        from konsol.api import _assert_budget_write_access
+
+        data = {
+            "data_area_id": self.data_area_id,
+            "main_account": self.main_account,
+        }
+        data.update({d: self.get(d) for d in budget_dimension_fields()})
+        _assert_budget_write_access(data)
 
     def _stamp_submitter(self):
         """submitted_by is an audit field, not free text."""
