@@ -42,3 +42,12 @@ def test_js_has_no_trial_balance_endpoints():
     content = _js()
     assert "tb_bulk" not in content
     assert "Trial Balance" not in content
+
+
+def test_amount_basis_is_never_prefilled():
+    """Q2-c (#348): the budget basis is never defaulted. The TB form pre-fills it
+    from EPM Settings; the budget form must not, so the uploader states it."""
+    with open(JS_PATH) as f:
+        src = f.read()
+    assert "default_amount_basis" not in src
+    assert 'set_value("amount_basis"' not in src
