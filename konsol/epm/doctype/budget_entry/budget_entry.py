@@ -79,6 +79,12 @@ def judged_by_writer():
         frappe.flags[_JUDGED_FLAG] = was
 
 
+def entry_name(cycle, data_area_id, layer, fiscal_period):
+    """The name of the entry for this key (its autoname): a writer looks an
+    entry up by it, a locking read on the primary key."""
+    return digest_name("BENT", [cycle, data_area_id, layer, fiscal_period])
+
+
 def _amount(value):
     """A stored amount as the intake reads it: plain decimal notation."""
     return format(Decimal(repr(float(value or 0))), "f")
@@ -86,7 +92,7 @@ def _amount(value):
 
 class BudgetEntry(Document):
     def autoname(self):
-        self.name = digest_name("BENT", [self.get(f) for f in KEY_FIELDS])
+        self.name = entry_name(*(self.get(f) for f in KEY_FIELDS))
 
     def validate(self):
         assert_cycle_draft(self.cycle, "changed")

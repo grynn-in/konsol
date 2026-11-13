@@ -196,8 +196,10 @@ def cell(monkeypatch):
         entry = visible.get(filters)
         return entry.get(fieldname or "name") if entry else None
 
-    def get_doc(doctype, name):
+    def get_doc(doctype, name, for_update=False):
         assert doctype == "Budget Entry", doctype
+        if name in state.hidden and not for_update:
+            raise _Thrown(f"Budget Entry {name} not found")
         stored = state.entries[name]
         doc = _Entry(json.loads(json.dumps(stored)))
         doc["lines"] = [_Row(r) for r in doc.get("lines", [])]

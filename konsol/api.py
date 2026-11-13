@@ -1709,7 +1709,9 @@ def _save_budget_cell(data):
     # Every check (period, layer, writer role, Cycle, currency, basis, access)
     # runs in budget_intake, after the dimensions and hierarchy are applied.
     item, judged = _judge_budget_cell(data, dims, debit, credit)
-    from konsol.epm.doctype.budget_entry.budget_entry import assert_cycle_draft, judged_by_writer
+    from konsol.epm.doctype.budget_entry.budget_entry import (
+        assert_cycle_draft, entry_name, judged_by_writer,
+    )
 
     # The intake read the Cycle from a snapshot. Lock it now, before any entry
     # (the one lock order every budget writer keeps): a Cycle submitted since
@@ -1725,17 +1727,20 @@ def _save_budget_cell(data):
         "fiscal_period": item["fiscal_period"],
     }
 
-    # Resolve -> mutate -> save, with one retry. Cells of one entry serialise
-    # on the FOR UPDATE lock below. A concurrent create of the same new entry
-    # hits a duplicate-key error; the retry then finds it and takes the locked
-    # update path.
+    # Resolve -> mutate -> save, with one retry. The lookup is a locking read
+    # on the entry's name (its primary key): under REPEATABLE READ a plain read
+    # serves this transaction's snapshot, which misses an entry another
+    # session committed since, so the retry after a duplicate-name insert
+    # would never find it. The Cycle lock above already serialises the
+    # Cycle's writers; this lock holds the entry for the save.
+    name = entry_name(entry_key["cycle"], entry_key["data_area_id"], entry_key["layer"],
+                      entry_key["fiscal_period"])
     for _attempt in range(2):
-        name = frappe.db.get_value("Budget Entry", entry_key, "name")
+        current_modified = frappe.db.get_value("Budget Entry", name, "modified", for_update=True)
 
-        if name:
-            current_modified = frappe.db.get_value(
-                "Budget Entry", name, "modified", for_update=True)
-            doc = frappe.get_doc("Budget Entry", name)
+        if current_modified:
+            # Locking too: a plain load would read the snapshot that missed it.
+            doc = frappe.get_doc("Budget Entry", name, for_update=True)
             if base_modified and str(current_modified) != str(base_modified):
                 frappe.local.response.http_status_code = 409
                 return {
