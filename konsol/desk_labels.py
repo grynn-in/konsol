@@ -53,6 +53,11 @@ LABELS = {
     "Budget Annual Input": "All Annual Inputs",
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
+    # --- Planning: allocation (konsol#269 K11) -----------------------------
+    "Cost Allocation Driver": "Drivers",
+    "Cost Allocation Statistic": "Statistics",
+    "Cost Allocation Rule Set": "Rule Sets",
+    "Cost Allocation Run": "Runs",
     # --- Structure: group ------------------------------------------------
     "Entity": "Entities",
     "Entity Fiscal Calendar": "Entity Fiscal Calendars",

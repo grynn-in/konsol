@@ -65,12 +65,6 @@ NOT_ON_A_SIDEBAR = {
     "Reporting Hierarchy Member",
     # Site-written Handbook pages: listed from the Konsol Handbook workspace (plan, Pages table).
     "Konsol Guide Page",
-    # konsol#269 K3: the Planning sidebar's Allocation section is K11's; remove this entry when K11 lands.
-    "Cost Allocation Driver",
-    "Cost Allocation Run",
-    # konsol#269 K4: same, K11 removes it.
-    "Cost Allocation Rule Set",
-    "Cost Allocation Statistic",
 }
 
 #: The rail, top to bottom: (title, link_type, link_to).
@@ -134,6 +128,11 @@ SIDEBARS = {
         ("DocType", "Budget Cycle"),
         ("DocType", "Budget Sheet"),
         ("DocType", "Budget Annual Input"),
+        ("Section", "Allocation"),
+        ("DocType", "Cost Allocation Driver"),
+        ("DocType", "Cost Allocation Statistic"),
+        ("DocType", "Cost Allocation Rule Set"),
+        ("DocType", "Cost Allocation Run"),
     ]),
     "Structure": ("Structure", [
         ("Workspace", "Structure", "Home"),

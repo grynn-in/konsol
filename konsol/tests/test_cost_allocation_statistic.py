@@ -147,12 +147,6 @@ def test_statistic_workflow_and_install():
     assert "Cost Allocation Statistic" in installed
 
 
-def test_statistic_is_on_no_sidebar_until_k11():
-    with open(os.path.join(APP_DIR, "tests", "test_desk_navigation.py")) as f:
-        src = f.read()
-    assert '"Cost Allocation Statistic"' in src.split("NOT_ON_A_SIDEBAR = {")[1].split("}")[0]
-
-
 def test_statistic_controllers_define_their_classes():
     for folder, cls in ((STAT, "CostAllocationStatistic"), (VALUE, "CostAllocationStatisticValue")):
         with open(os.path.join(EPM_DOCTYPES, folder, folder + ".py")) as f:
