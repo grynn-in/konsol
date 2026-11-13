@@ -181,3 +181,84 @@ def test_a_repeated_column_is_refused_by_name_with_its_count():
     msg = _raises(B.split_table, table, ())
     assert "Three scenario columns" in msg, msg
     assert "Two fiscal_period columns" in msg, msg
+
+
+# --- M2: the per-group check (BUD-10-1, Q4-b, Q8-a) ----------------------------
+
+KEY = B.BudgetKey("BUD", 2026, "E1", "base", 3)
+ROWS = [{"main_account": "4000", "debit": 0, "credit": 100, "currency": "EUR", "line": 2}]
+REGULAR = {"code": "P03", "type": "Regular", "status": "Open"}
+BUDGET = {"scenario_type": "budget"}
+LAYERS = ("base", "challenge")
+
+
+def _check(key=KEY, period=REGULAR, layers=LAYERS, scenario=BUDGET):
+    return B.check_group(key, ROWS, period=period, layers=layers, scenario=scenario)
+
+
+def test_a_declared_regular_period_layer_and_budget_scenario_pass():
+    item = _check()
+    assert item["ok"] and item["errors"] == []
+    assert (item["scenario"], item["fiscal_year"], item["entity"], item["layer"], item["fiscal_period"]) == \
+        ("BUD", 2026, "E1", "base", 3)
+    assert item["rows"] == 1
+
+
+def test_a_closed_or_locked_regular_period_is_accepted():
+    """Q4-b: the Cycle freezes a plan, not the period's close status."""
+    for status in ("Closed", "Locked"):
+        assert _check(period=dict(REGULAR, status=status))["ok"], status
+
+
+def test_an_undeclared_period_is_refused_by_name():
+    item = _check(period=None)
+    assert not item["ok"]
+    assert item["errors"] == ["FY2026 P03 is not declared: a budget goes into the declared Regular "
+                              "periods of its year"]
+
+
+def test_opening_closing_and_adjustment_periods_are_refused_by_name():
+    for kind in ("Opening", "Closing", "Adjustment"):
+        item = _check(period={"code": "X", "type": kind, "status": "Open"})
+        assert not item["ok"], kind
+        assert len(item["errors"]) == 1, item
+        assert f"FY2026 P03 is an {kind} period" in item["errors"][0] or \
+            f"FY2026 P03 is a {kind} period" in item["errors"][0], item
+        assert "Regular" in item["errors"][0]
+
+
+def test_an_undeclared_layer_is_refused_naming_the_declared_ones():
+    item = _check(key=KEY._replace(layer="board"))
+    assert not item["ok"]
+    assert item["errors"] == ["Layer board is not declared. Declared layers: base, challenge. "
+                              "Use one of them, or create board as a Budget Layer"]
+
+
+def test_a_site_with_no_layer_is_told_the_fix():
+    item = _check(layers=())
+    assert not item["ok"]
+    assert item["errors"] == ["Layer base is not declared: this site has no Budget Layer yet. "
+                              "Create base (or the layers you plan in) as a Budget Layer first"]
+
+
+def test_an_undeclared_scenario_is_refused_by_name():
+    item = _check(scenario=None)
+    assert item["errors"] == ["Scenario BUD is not declared: create it as a Scenario first"]
+
+
+def test_an_actual_scenario_is_refused_by_name():
+    item = _check(scenario={"scenario_type": "actual"})
+    assert item["errors"] == ["Scenario BUD is an actual scenario: actuals come from the trial balance, "
+                              "not a budget file. Use a budget, forecast or other plan scenario"]
+
+
+def test_every_problem_of_a_group_is_reported_together():
+    item = _check(key=KEY._replace(layer="board"), period=None, scenario=None)
+    assert len(item["errors"]) == 3
+
+
+def test_the_check_takes_its_facts_without_defaults():
+    import inspect
+    params = inspect.signature(B.check_group).parameters
+    for name in ("period", "layers", "scenario"):
+        assert params[name].default is inspect.Parameter.empty, name
