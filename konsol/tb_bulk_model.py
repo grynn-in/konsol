@@ -40,7 +40,7 @@ from konsol.tb_basis_model import ALIASES as BASIS_ALIASES, AMOUNT_BASES, COLUMN
 from konsol.tb_balance_model import NotFinite, currency_and_balance_problems, exact_total, read_amount
 from konsol.tb_currency_model import COLUMN as CURRENCY, MISSING_HELP as MISSING_CURRENCY_HELP
 from konsol.tb_dimension_model import (
-    accepted_dimension_columns, accepted_dimensions_sentence, dimension_problems,
+    FLAG as DIMENSION_FLAG, accepted_dimension_columns, accepted_dimensions_sentence, dimension_problems,
     is_dimension_column,
 )
 
@@ -143,6 +143,45 @@ def _whole(value, what, lineno, errors):
         return None
 
 
+class Contract:
+    """What one kind of bulk file carries, so the trial balance and the budget
+    (konsol.budget_bulk_model, konsol#348) share ONE reader: header
+    resolution, the unknown-header refusal, the dimension rules, the
+    repeated-column checks, the line checks and the per-group basis rule.
+
+    required / accepted: header names after alias resolution. header_help:
+    the header as the refusals spell it. text_keys and whole_keys: the
+    columns a row is grouped by (a blank text key or a non-whole number is a
+    line error); make_key builds the group key from {column: value}.
+    row_text: optional text columns copied onto every row. refused: header ->
+    the sentence that refuses it by name (a header this contract knows and
+    will not take). flag: the Dimension flag a dim_* column must carry.
+    group_noun: what one group is called in a refusal.
+    """
+
+    def __init__(self, *, required, accepted, header_help, text_keys, whole_keys, make_key,
+                 row_text, refused, flag, group_noun):
+        self.required = tuple(required)
+        self.accepted = frozenset(accepted)
+        self.header_help = header_help
+        self.text_keys = tuple(text_keys)
+        self.whole_keys = tuple(whole_keys)
+        self.make_key = make_key
+        self.row_text = tuple(row_text)
+        self.refused = dict(refused)
+        self.flag = flag
+        self.group_noun = group_noun
+
+
+TB_CONTRACT = Contract(
+    required=REQUIRED, accepted=ACCEPTED, header_help=HEADER_HELP,
+    text_keys=("data_area_id",), whole_keys=("fiscal_year", "fiscal_period"),
+    make_key=lambda v: (v["data_area_id"], v["fiscal_year"], v["fiscal_period"]),
+    row_text=("description", PARTNER), refused={}, flag=DIMENSION_FLAG,
+    group_noun="entity-period",
+)
+
+
 def split_table(table, declared_dimensions):
     """Header + rows (lists of cell values) → {(entity, year, period): [rows]}.
 
@@ -167,18 +206,28 @@ def split_table(table, declared_dimensions):
     since the fix differs. This function stays pure: the caller does the
     looking up.
     """
+    return split_by_contract(table, declared_dimensions, TB_CONTRACT)
+
+
+def split_by_contract(table, declared_dimensions, contract):
+    """split_table for any Contract: {key: [rows]}, keys in file order.
+
+    The trial balance passes TB_CONTRACT; konsol.budget_bulk_model passes its
+    own. Every rule below is the trial balance's; only what the Contract
+    names differs.
+    """
     lines = [(i, row) for i, row in enumerate(table, start=1) if any(cell(c) for c in row)]
     if not lines:
         raise ValueError("The file is empty: expected a header row")
     head_line, head = lines[0]
     names = [_header_name(h) for h in head]
     declared = list(declared_dimensions)
-    accepted_dims = accepted_dimension_columns(declared)
+    accepted_dims = accepted_dimension_columns(declared, contract.flag)
     dims_help = accepted_dimensions_sentence(accepted_dims)
-    missing = [c for c in REQUIRED if c not in names]
+    missing = [c for c in contract.required if c not in names]
     if missing:
         raise ValueError(
-            f"Missing column(s) {', '.join(missing)} on line {head_line}. The header must be {HEADER_HELP}"
+            f"Missing column(s) {', '.join(missing)} on line {head_line}. The header must be {contract.header_help}"
             + (f". {MISSING_CURRENCY_HELP}" if CURRENCY in missing else "")
             + (f"\n{dims_help}" if dims_help else "")
         )
@@ -193,18 +242,22 @@ def split_table(table, declared_dimensions):
     # A dim_* header is the declared dimensions' business, not this set's, and
     # it is refused with its own sentence — declare it, publish it, or tick the
     # flag — because the generic "here is the accepted header" line does not
-    # tell the reader which of the three to do. Both kinds of problem are
-    # raised together, as the line errors below are, so one pass fixes the file.
+    # tell the reader which of the three to do. A header the contract refuses
+    # by name (the budget's partner column, #427) gets its own sentence too.
+    # Every kind of problem is raised together, as the line errors below are,
+    # so one pass fixes the file.
     unknown = [n for n in names
-               if n and n not in ACCEPTED and n not in accepted_dims
-               and not is_dimension_column(n)]
+               if n and n not in contract.accepted and n not in accepted_dims
+               and n not in contract.refused and not is_dimension_column(n)]
     problems = []
     if unknown:
         problems.append(
             f"Unrecognised column(s) {', '.join(sorted(set(unknown)))} on line "
-            f"{head_line}. The header may be {HEADER_HELP}"
+            f"{head_line}. The header may be {contract.header_help}"
         )
-    problems.extend(dimension_problems([n for n in names if n not in accepted_dims], declared))
+    problems.extend(contract.refused[n] for n in sorted(set(names) & set(contract.refused)))
+    problems.extend(dimension_problems([n for n in names if n not in accepted_dims], declared,
+                                       contract.flag))
     if problems and dims_help:
         problems.append(dims_help)
     if problems:
@@ -250,14 +303,15 @@ def split_table(table, declared_dimensions):
             i = col.get(name)
             return row[i] if i is not None and i < len(row) else None
 
-        entity = cell(get("data_area_id"))
+        values = {k: cell(get(k)) for k in contract.text_keys}
+        for k in contract.text_keys:
+            if not values[k]:
+                errors.append(f"Line {lineno}: {k} is blank")
         account = cell(get("main_account"))
-        if not entity:
-            errors.append(f"Line {lineno}: data_area_id is blank")
         if not account:
             errors.append(f"Line {lineno}: main_account is blank")
-        year = _whole(get("fiscal_year"), "fiscal_year", lineno, errors)
-        period = _whole(get("fiscal_period"), "fiscal_period", lineno, errors)
+        for k in contract.whole_keys:
+            values[k] = _whole(get(k), k, lineno, errors)
         debit = _amount(get("debit"), "debit", lineno, errors)
         credit = _amount(get("credit"), "credit", lineno, errors)
         basis_cell = cell(get(BASIS))
@@ -265,18 +319,20 @@ def split_table(table, declared_dimensions):
         if basis_cell and basis is None:
             errors.append(f"Line {lineno}: amount_basis {basis_cell!r} is not one of {_allowed_bases()}")
             basis = ""
-        if not entity or not account or year is None or period is None:
+        if (not account or not all(values[k] for k in contract.text_keys)
+                or any(values[k] is None for k in contract.whole_keys)):
             continue
-        key = (entity, year, period)
+        key = contract.make_key(values)
         if basis:
             first_line, first = first_basis.setdefault(key, (lineno, basis))
             if basis != first:
                 errors.append(f'Line {lineno}: amount_basis "{basis}" but line {first_line} of the same '
-                              f'entity-period says "{first}"; one entity-period holds one amount basis')
+                              f'{contract.group_noun} says "{first}"; one {contract.group_noun} holds '
+                              f'one amount basis')
         groups.setdefault(key, []).append({
             "main_account": account, "debit": debit, "credit": credit,
             CURRENCY: cell(get(CURRENCY)),
-            "description": cell(get("description")), PARTNER: cell(get(PARTNER)),
+            **{t: cell(get(t)) for t in contract.row_text},
             BASIS: basis,
             **{d: cell(get(d)) for d in dim_names},
             # The file line, so a refusal can name it as a single upload does
