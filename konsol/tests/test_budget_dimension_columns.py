@@ -21,7 +21,9 @@ import sys
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BUDGET_TABLES = ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input")
+#: S2-I4: Budget Entry Line's raw table carries the same declared columns.
+BUDGET_TABLES = ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input",
+                 "epm_raw.budget_entries")
 #: What the tables carry once created, before any sync: no dimension column.
 BASE_COLUMNS = ["scenario_id", "data_area_id", "fiscal_year", "main_account"]
 
@@ -161,6 +163,21 @@ def test_a_failing_budget_column_sync_is_reported_not_fatal():
     assert "Budget dimension columns: boom" in summary["errors"], summary["errors"]
     assert summary["budget_dimension_columns_synced"] == []
     assert summary["vars_updated"] is True
+
+
+def test_budget_entry_line_gets_the_in_budget_custom_fields():
+    """S2-I4: Budget Entry Line's CH_FIELD_MAP sends its dim_* fields to
+    epm_raw.budget_entries, so the Custom Field sync provisions them on it,
+    from in_budget, after main_account, as on the other budget doctypes."""
+    module, _, _ = _schema_apply({}, {})
+    planned, added = [], []
+    module._plan_dimension_custom_fields = lambda dt, flag: planned.append((dt, flag)) or (
+        set(), {}, [], [], [])
+    module._add_dimension_custom_fields = lambda dt, after, plan: added.append((dt, after)) or []
+    module._remove_orphan_dimension_custom_fields = lambda dt, plan: []
+    module._sync_budget_custom_fields_locked()
+    assert ("Budget Entry Line", "in_budget") in planned, planned
+    assert ("Budget Entry Line", "main_account") in added, added
 
 
 # --------------------------------------------------------------------------
