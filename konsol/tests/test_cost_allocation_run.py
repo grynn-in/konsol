@@ -518,7 +518,10 @@ def _k8(world):
 
     def get_value(doctype, name, fields=None, as_dict=False, **k):
         if doctype == "Scenario":
-            return _Row(world.scenarios[name]) if name in world.scenarios else None
+            row = world.scenarios.get(name)
+            if row is None or isinstance(fields, str):
+                return row[fields] if row is not None else None
+            return _Row(row)
         if doctype == "Cost Allocation Rule Set":
             return _Row(world.rule_set)
         raise AssertionError(doctype)
