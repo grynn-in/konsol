@@ -255,7 +255,8 @@ def test_values_carry_forward_uses_latest_earlier_period():
     assert it["carried_forward"] is False and it["value_period"] == 3
 
 def test_values_carry_forward_off_refuses_even_if_earlier_exists():
-    vals = dict(_values(), **{("Headcount", 2, "Sales"): 7})
+    vals = dict(_values())
+    vals[("Headcount", 2, "Sales")] = 7
     del vals[("Headcount", 3, "Ops")]
     with raises(M.CostAllocationError):
         M.resolve_driver_values(_steps(), 3, vals, {"Headcount": False})
@@ -267,8 +268,11 @@ def test_values_carry_forward_on_but_nothing_earlier_refuses():
     assert "Sales" in ei.value.errors[0]
 
 def test_values_undeclared_carry_forward_is_refused_not_defaulted():
+    vals = _values()
+    del vals[("Headcount", 3, "Sales")]
+    vals[("Headcount", 2, "Sales")] = 7
     with raises(M.CostAllocationError) as ei:
-        M.resolve_driver_values(_steps(), 3, _values(), {})
+        M.resolve_driver_values(_steps(), 3, vals, {})
     assert "Headcount" in ei.value.errors[0]
 
 def test_values_none_value_is_missing():
