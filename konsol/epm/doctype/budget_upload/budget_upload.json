@@ -1,0 +1,184 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:BUU-{#####}",
+ "creation": "2026-11-13 12:00:00.000000",
+ "description": "One bulk budget file (many entities, layers and periods) and what became of it. Check the file, then load it: each ready entity and layer replaces that slice of the cycle's budget entries.",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "upload_tab",
+  "file_section",
+  "upload_file",
+  "amount_basis",
+  "col_break_1",
+  "status",
+  "counts_section",
+  "group_count",
+  "valid_count",
+  "total_rows",
+  "col_break_2",
+  "loaded_count",
+  "failed_count",
+  "result_tab",
+  "result_section",
+  "error",
+  "report",
+  "report_html"
+ ],
+ "fields": [
+  {
+   "fieldname": "upload_tab",
+   "fieldtype": "Tab Break",
+   "label": "Upload"
+  },
+  {
+   "fieldname": "file_section",
+   "fieldtype": "Section Break",
+   "label": "File"
+  },
+  {
+   "description": "A CSV with the trial balance columns plus scenario and layer on every row, and debit and credit. A partner column is refused.",
+   "fieldname": "upload_file",
+   "fieldtype": "Attach",
+   "in_list_view": 1,
+   "label": "File",
+   "reqd": 1,
+   "set_only_once": 1
+  },
+  {
+   "description": "Applies to every row that does not carry its own amount_basis column. Required unless every row carries one; never defaulted. A wrong choice double-counts or halves every figure.",
+   "fieldname": "amount_basis",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Amount Basis",
+   "options": "Period movement\nYear-to-date movement\nPeriod-end balance"
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Draft",
+   "description": "What the last check or load did.",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Job Status",
+   "options": "Draft\nChecked\nLoading\nLoaded\nPartly Loaded\nFailed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "counts_section",
+   "fieldtype": "Section Break",
+   "label": "Counts"
+  },
+  {
+   "description": "The (entity, layer) groups in the file. Each group is checked and loaded on its own.",
+   "fieldname": "group_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Groups",
+   "read_only": 1
+  },
+  {
+   "fieldname": "valid_count",
+   "fieldtype": "Int",
+   "label": "Ready",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_rows",
+   "fieldtype": "Int",
+   "label": "Rows",
+   "read_only": 1
+  },
+  {
+   "fieldname": "col_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "loaded_count",
+   "fieldtype": "Int",
+   "label": "Loaded",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failed_count",
+   "fieldtype": "Int",
+   "label": "Failed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "result_tab",
+   "fieldtype": "Tab Break",
+   "label": "Result"
+  },
+  {
+   "fieldname": "result_section",
+   "fieldtype": "Section Break",
+   "label": "Result"
+  },
+  {
+   "fieldname": "error",
+   "fieldtype": "Small Text",
+   "label": "Problem with the File",
+   "read_only": 1
+  },
+  {
+   "fieldname": "report",
+   "fieldtype": "Code",
+   "hidden": 1,
+   "label": "Report (data)",
+   "options": "JSON",
+   "read_only": 1
+  },
+  {
+   "fieldname": "report_html",
+   "fieldtype": "HTML",
+   "label": "Report"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-11-13 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "EPM",
+ "name": "Budget Upload",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "delete": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

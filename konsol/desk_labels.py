@@ -54,6 +54,7 @@ LABELS = {
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
     "Budget Layer": "Budget Layers",
+    "Budget Upload": "Budget Uploads",
     # --- Structure: group ------------------------------------------------
     "Entity": "Entities",
     "Entity Fiscal Calendar": "Entity Fiscal Calendars",
