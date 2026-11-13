@@ -1,0 +1,87 @@
+{
+ "name": "Cost Allocation Run Weight",
+ "doctype": "DocType",
+ "module": "EPM",
+ "issingle": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "step",
+   "fieldtype": "Int",
+   "label": "Step",
+   "read_only": 1,
+   "in_list_view": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "sender_member",
+   "fieldtype": "Data",
+   "label": "Sender",
+   "read_only": 1,
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "receiver_member",
+   "fieldtype": "Data",
+   "label": "Receiver",
+   "read_only": 1,
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "driver",
+   "fieldtype": "Link",
+   "label": "Driver",
+   "options": "Cost Allocation Driver",
+   "read_only": 1,
+   "in_list_view": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "statistic",
+   "fieldtype": "Link",
+   "label": "Statistic",
+   "options": "Cost Allocation Statistic",
+   "read_only": 1,
+   "columns": 2,
+   "description": "The submitted statistic the driver value was read from. Blank for a fixed-weight driver."
+  },
+  {
+   "fieldname": "value_period",
+   "fieldtype": "Int",
+   "label": "Value Period",
+   "read_only": 1,
+   "columns": 1,
+   "description": "The fiscal period the driver value comes from. Differs from the run's period only when carried forward."
+  },
+  {
+   "fieldname": "carried_forward",
+   "fieldtype": "Check",
+   "label": "Carried Forward",
+   "read_only": 1,
+   "columns": 1
+  },
+  {
+   "fieldname": "driver_value",
+   "fieldtype": "Float",
+   "label": "Driver Value",
+   "precision": "9",
+   "read_only": 1,
+   "columns": 2
+  },
+  {
+   "fieldname": "weight",
+   "fieldtype": "Float",
+   "label": "Weight",
+   "precision": "9",
+   "read_only": 1,
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "This receiver's share of the sender's pool at this step, as a fraction."
+  }
+ ],
+ "permissions": []
+}

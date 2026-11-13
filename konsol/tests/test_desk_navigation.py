@@ -67,6 +67,7 @@ NOT_ON_A_SIDEBAR = {
     "Konsol Guide Page",
     # konsol#269 K3: the Planning sidebar's Allocation section is K11's; remove this entry when K11 lands.
     "Cost Allocation Driver",
+    "Cost Allocation Run",
 }
 
 #: The rail, top to bottom: (title, link_type, link_to).

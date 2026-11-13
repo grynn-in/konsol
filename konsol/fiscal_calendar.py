@@ -23,6 +23,7 @@ _PERIOD_DATA = {
     "Group Exchange Rate": True,
     "Assertion Run": False,
     "TB Exception": True,
+    "Cost Allocation Run": True,
 }
 
 #: Doctypes whose documents carry a fiscal year + period that must be declared.
