@@ -176,3 +176,50 @@ def test_a_budget_pair_still_holds_one_live_cycle_whatever_the_rows_date_says(en
     assert str(raised.value) == (
         "Budget Cycle B-A is already the draft Cycle of ZZB 2027. A scenario and year hold one "
         "live Cycle: work in it, or cancel it and amend it."), raised.value
+
+
+# ---- K4: the name digest carries the as-of date for a forecast ------------------------
+#
+# Two rounds of one pair must get different base names, or the second would
+# take "<digest>-1" and read as an amendment of the first. The digest stub
+# returns "BCYC-<parts joined>", so the tests pin the parts the digest is made of.
+
+def test_a_forecast_cycles_digest_is_made_of_scenario_year_and_as_of(env):
+    doc = env.cycle(scenario_type="forecast", as_of_date=datetime.date(2027, 3, 31), horizon_periods=12)
+    doc.autoname()
+    assert env.digests == [["ZZFC", 2027, "2027-03-31"]]
+    assert doc.name == "BCYC-ZZFC-2027-2027-03-31"
+
+
+def test_two_rounds_of_one_pair_get_different_base_names(env):
+    first = env.cycle(scenario_type="forecast", as_of_date="2027-03-31", horizon_periods=12)
+    first.autoname()
+    env.names.add(first.name)
+    second = env.cycle(scenario_type="forecast", as_of_date="2027-06-30", horizon_periods=12)
+    second.autoname()
+    assert second.name == "BCYC-ZZFC-2027-2027-06-30"
+    assert not second.name.startswith(first.name)
+
+
+def test_a_budget_cycles_digest_is_the_pair_alone(env):
+    env.kind[0] = "budget"
+    doc = env.cycle(scenario_id="ZZB", scenario_type="budget")
+    doc.autoname()
+    assert env.digests == [["ZZB", 2027]]
+    assert doc.name == "BCYC-ZZB-2027"
+
+
+def test_autoname_reads_the_scenarios_type_when_the_copy_is_not_set_yet(env):
+    """A Cycle inserted through the API may reach autoname before scenario_type
+    is copied: the type is read from the Scenario, not guessed from the date."""
+    doc = env.cycle(as_of_date="2027-03-31", horizon_periods=12)
+    doc.autoname()
+    assert env.digests == [["ZZFC", 2027, "2027-03-31"]]
+
+
+def test_the_suffix_scheme_still_applies_within_a_round(env):
+    """#524: a cancelled round keeps its name; its replacement takes -N."""
+    env.names.update({"BCYC-ZZFC-2027-2027-03-31", "BCYC-ZZFC-2027-2027-03-31-1"})
+    doc = env.cycle(scenario_type="forecast", as_of_date="2027-03-31", horizon_periods=12)
+    doc.autoname()
+    assert doc.name == "BCYC-ZZFC-2027-2027-03-31-2"
