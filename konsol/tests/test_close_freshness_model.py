@@ -230,10 +230,10 @@ def test_only_staging_builds_is_never_built():
 
 
 def test_doctype_missing_from_scope_of_raises():
-    with pytest.raises(ValueError, match="Budget Line"):
+    with pytest.raises(ValueError, match="ZZ Unscoped Doctype"):
         _run(
             [_build("BA-1", "consolidation", "Completed", _t(10))],
-            [_change("Budget Line", _t(9))],
+            [_change("ZZ Unscoped Doctype", _t(9))],
         )
 
 

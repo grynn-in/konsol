@@ -58,3 +58,8 @@ konsol.patches.add_owner_to_ownership_periods
 konsol.patches.move_holidays_to_calendars
 konsol.patches.report_budget_dimensions_not_in_tb
 konsol.patches.seed_budget_layers
+konsol.patches.drop_budget_cycle_lock_columns
+konsol.patches.drop_d365_budget_writeback_settings
+konsol.patches.retire_budget_sheet_line
+konsol.patches.drop_budget_monthly_input
+konsol.patches.retire_budget_roles

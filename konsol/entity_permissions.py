@@ -36,7 +36,6 @@ import frappe
 ENTITY_SCOPED_DOCTYPES = (
     "Consolidation Group",
     "Ownership Period",
-    "Budget Sheet",
     # S2-T1: one entity's budget for a (cycle, layer, period).
     "Budget Entry",
     "Historical Equity Rate",

@@ -56,7 +56,8 @@ def env(monkeypatch):
     frappe._ = lambda s: s
     frappe.session = types.SimpleNamespace(user="Administrator")
     frappe.flags = types.SimpleNamespace(in_install=False, in_import=False, in_migrate=False, in_patch=False)
-    frappe.db = types.SimpleNamespace(after_commit=types.SimpleNamespace(_functions=queue, add=queue.append))
+    frappe.db = types.SimpleNamespace(after_commit=types.SimpleNamespace(_functions=queue, add=queue.append),
+                                      count=lambda *a, **k: 0)
     frappe.get_all = lambda *a, **k: []
     frappe.get_meta = lambda dt: types.SimpleNamespace(fields=[])
     frappe.throw = lambda *a, **k: (_ for _ in ()).throw(Exception(a))
@@ -69,12 +70,17 @@ def env(monkeypatch):
     grain.digest_name = lambda prefix, parts: prefix + "-" + "-".join(parts)
     scenario = types.ModuleType("konsol.epm.doctype.scenario.scenario")
     scenario.locked_scenario_type = lambda s: "budget"
+    # #524: validate refuses a second live Cycle of the pair under this lock.
+    intake = types.ModuleType("konsol.budget_intake")
+    intake.lock_cycles = lambda *a, **k: []
+    monkeypatch.setattr(sys.modules["konsol"], "budget_intake", intake, raising=False)
 
     for name, mod in {
         "frappe": frappe, "frappe.model": model, "frappe.model.document": docmod,
         "frappe.utils": utils, "konsol.clickhouse": _clickhouse_stub(frappe),
         "konsol.epm.budget_grain": grain,
         "konsol.epm.doctype.scenario.scenario": scenario,
+        "konsol.budget_intake": intake,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
     spec = importlib.util.spec_from_file_location(
@@ -124,9 +130,9 @@ def test_two_calls_in_one_transaction_queue_one(env):
     assert len(_bai_syncs(env.queue)) == 1
 
 
-def test_sheet_push_still_queued_on_submit_and_cancel(env):
+def test_no_sheet_push_is_queued_on_submit_or_cancel(env):
+    # S2-C W2b: the Cycle no longer pushes the retired sheets (Q9-a, Z1).
     env.cycle().on_submit()
     env.cycle().on_cancel()
     keys = {getattr(f, "_konsol_key", None) for f in env.queue}
-    assert ("budget_cycle", "BCYC-ZZB-2026", "lock") in keys
-    assert ("budget_cycle", "BCYC-ZZB-2026", "unlock") in keys
+    assert not [k for k in keys if k and k[0] == "budget_cycle"], keys

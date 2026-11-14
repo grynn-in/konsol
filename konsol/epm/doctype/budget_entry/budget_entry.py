@@ -12,8 +12,10 @@ lines (T2). The entry guards that itself with a locking read of the Cycle
 Frappe locks the entry, and again in ``validate``; a save is refused unless
 the Cycle is a draft (docstatus 0). The lock makes a Cycle submit wait for an
 open write, so the submit's after-commit sync includes it; a write that starts
-after the submit sees docstatus 1 and is refused. A delete is refused under an
-approved Cycle only (a cancelled Cycle's entries may go); Frappe locks the
+after the submit sees docstatus 1 and is refused. A draft Cycle past its
+workflow's first state (Pending Approval as installed) refuses a save and a
+delete too (V2, Q17-b). A delete is refused under an approved or pending Cycle
+only (a cancelled Cycle's entries may go); Frappe locks the
 entry before ``on_trash``, so the delete takes the Cycle lock NOWAIT and fails
 fast instead of waiting while it holds the entry. Install and migrate skip
 the check.
@@ -63,7 +65,8 @@ _YTD_AT_END_FLAG = "budget_entry_ytd_at_end"
 
 
 class CycleNotDraftError(frappe.ValidationError):
-    """A Budget Entry write under a Cycle that is approved or cancelled."""
+    """A Budget Entry write under a Cycle that is approved or cancelled, or a
+    draft past its workflow's first state (V2)."""
 
 
 class BudgetConflictError(frappe.ValidationError):
@@ -76,7 +79,10 @@ class BudgetConflictError(frappe.ValidationError):
 
 def assert_cycle_draft(cycle, action="changed", *, missing_ok=False, wait=True, refuse=(1, 2)):
     """Lock the Cycle row (SELECT ... FOR UPDATE) and refuse a Cycle whose
-    docstatus is in `refuse`, naming the Cycle and its state. A locking read
+    docstatus is in `refuse`, naming the Cycle and its state. A draft past its
+    workflow's first state is refused whatever `refuse` says (V2, Q17-b: the
+    rule is budget_bulk_model.cycle_pending_refusal, the workflow as installed
+    is budget_intake.cycle_workflow). A locking read
     sees the latest committed docstatus (REPEATABLE READ would otherwise serve
     the snapshot) and holds the row until the transaction ends, so a Cycle
     submit waits for this write. Skipped in install and migrate.
@@ -88,7 +94,7 @@ def assert_cycle_draft(cycle, action="changed", *, missing_ok=False, wait=True, 
     and fails fast, rather than wait on the Cycle while holding the entry."""
     if frappe.flags.in_install or frappe.flags.in_migrate:
         return
-    query = "SELECT docstatus FROM `tabBudget Cycle` WHERE name=%s FOR UPDATE"
+    query = "SELECT docstatus, workflow_state FROM `tabBudget Cycle` WHERE name=%s FOR UPDATE"
     try:
         rows = frappe.db.sql(query if wait else query + " NOWAIT", (cycle,))
     except (frappe.QueryTimeoutError, frappe.QueryDeadlockError) as error:
@@ -106,6 +112,15 @@ def assert_cycle_draft(cycle, action="changed", *, missing_ok=False, wait=True, 
         state = _CYCLE_STATE.get(docstatus, f"docstatus {docstatus}")
         frappe.throw(f"Budget Cycle {cycle} is {state}: a Budget Entry is {action} only while its "
                      "Cycle is a draft.", CycleNotDraftError)
+    from konsol import budget_intake
+    from konsol.budget_bulk_model import cycle_pending_refusal
+
+    # A blank state is the first state: only a draft with a state needs the workflow.
+    if docstatus == 0 and rows[0][1]:
+        row = {"name": cycle, "docstatus": docstatus, "workflow_state": rows[0][1]}
+        refusal = cycle_pending_refusal(row, budget_intake.cycle_workflow())
+        if refusal:
+            frappe.throw(refusal, CycleNotDraftError)
 
 
 @contextmanager

@@ -326,22 +326,6 @@
   {
    "role": "Entity Accountant",
    "read": 1
-  },
-  {
-   "role": "Budget Submitter",
-   "read": 1
-  },
-  {
-   "role": "Budget Controller",
-   "read": 1
-  },
-  {
-   "role": "Budget Manager",
-   "read": 1
-  },
-  {
-   "role": "Budget Approver",
-   "read": 1
   }
  ],
  "sort_field": "lft",

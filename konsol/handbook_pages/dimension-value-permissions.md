@@ -16,7 +16,7 @@ A Dimension Value is one value of one declared dimension, named `<dimension>:<va
 ## What the gate does
 
 - It checks budget figures written through konsol's budget save methods and `=K.EPMSAVE` in Excel. A write of a value the user holds no grant for is refused with "Not permitted to write …".
-- It does **not** check a Budget Sheet edited in its own Desk form.
+- It also checks a Budget Entry edited in its own Desk form: the entry judges its lines through the same rules.
 - Once a dimension is gated, a user with no grant on it can write no value of it.
 - Administrator and System Manager are not restricted.
 - It does not restrict reading. What a user reads is limited by the entities they are assigned.

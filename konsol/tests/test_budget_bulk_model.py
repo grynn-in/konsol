@@ -410,3 +410,79 @@ def test_a_cell_or_entry_is_not_told_about_a_file():
         assert "Amount Basis is required" in message
         assert "file" not in message.lower() and "upload" not in message.lower(), message
         assert "Period-end" not in message, "only the budget's bases are offered"
+
+
+# --- V2 (Q6-b, Q17-b): writes only in the Cycle workflow's first state -------------
+# Draft and Pending Approval are both docstatus 0, and a site may rename the
+# installed workflow's states, so the rule reads the workflow as installed:
+# its first state is the one a budget is written in.
+
+INSTALLED = (["Draft", "Pending Approval", "Approved", "Cancelled"],
+             [("Draft", "Send for Approval", "Pending Approval"),
+              ("Pending Approval", "Reject", "Draft"),
+              ("Pending Approval", "Approve", "Approved")])
+
+
+def _cycle(docstatus, state, name="BC-ZZ-2027"):
+    return {"name": name, "docstatus": docstatus, "workflow_state": state}
+
+
+def test_the_first_state_is_the_installed_workflows_first_state():
+    wf = B.cycle_workflow(*INSTALLED)
+    assert wf["first_state"] == "Draft"
+    assert wf["returns"] == {"Pending Approval": "Reject"}
+
+
+def test_a_cycle_in_the_first_state_takes_writes():
+    wf = B.cycle_workflow(*INSTALLED)
+    assert B.cycle_pending_refusal(_cycle(0, "Draft"), wf) is None
+    assert not B.cycle_closed_to_writes(_cycle(0, "Draft"), wf)
+
+
+def test_a_blank_state_is_the_first_state_as_frappe_reads_it():
+    # Frappe's validate_workflow sets a blank state to the first state.
+    wf = B.cycle_workflow(*INSTALLED)
+    for blank in ("", None):
+        assert not B.cycle_closed_to_writes(_cycle(0, blank), wf)
+
+
+def test_a_pending_cycle_refuses_naming_the_cycle_its_state_and_the_reject():
+    wf = B.cycle_workflow(*INSTALLED)
+    cycle = _cycle(0, "Pending Approval")
+    assert B.cycle_closed_to_writes(cycle, wf)
+    message = B.cycle_pending_refusal(cycle, wf)
+    assert message == ("Budget Cycle BC-ZZ-2027 is Pending Approval: a budget is written only while its "
+                       "Cycle is in Draft. A Reject returns it to Draft.")
+
+
+def test_renamed_states_are_read_as_installed_never_by_name():
+    wf = B.cycle_workflow(["Entwurf", "Zur Freigabe", "Freigegeben"],
+                          [("Entwurf", "Einreichen", "Zur Freigabe"),
+                           ("Zur Freigabe", "Zurueckweisen", "Entwurf")])
+    assert not B.cycle_closed_to_writes(_cycle(0, "Entwurf"), wf)
+    message = B.cycle_pending_refusal(_cycle(0, "Zur Freigabe"), wf)
+    assert "Zur Freigabe" in message and "A Zurueckweisen returns it to Entwurf." in message
+    # "Draft" means nothing to this workflow: a Cycle stuck in it is not in the first state.
+    assert B.cycle_closed_to_writes(_cycle(0, "Draft"), wf)
+
+
+def test_a_later_state_with_no_way_back_still_names_the_first_state():
+    wf = B.cycle_workflow(["Draft", "Review", "Approved"], [("Draft", "Send", "Review")])
+    message = B.cycle_pending_refusal(_cycle(0, "Review"), wf)
+    assert message.endswith("Return it to Draft to write the budget."), message
+
+
+def test_with_no_active_workflow_every_draft_cycle_takes_writes():
+    assert B.cycle_pending_refusal(_cycle(0, "Pending Approval"), None) is None
+    assert not B.cycle_closed_to_writes(_cycle(0, "Pending Approval"), None)
+    # A workflow with no states is no workflow.
+    assert B.cycle_workflow([], []) is None
+
+
+def test_an_approved_cycle_is_closed_and_a_cancelled_one_is_not():
+    wf = B.cycle_workflow(*INSTALLED)
+    assert B.cycle_closed_to_writes(_cycle(1, "Approved"), wf)
+    assert B.cycle_closed_to_writes(_cycle(1, "Approved"), None)
+    # 19-b: under an amended pair the cancelled original is the audit trail.
+    assert not B.cycle_closed_to_writes(_cycle(2, "Cancelled"), wf)
+    assert B.cycle_pending_refusal(_cycle(1, "Approved"), wf) is None

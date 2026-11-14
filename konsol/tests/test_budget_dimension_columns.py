@@ -3,13 +3,15 @@
 `epm_gold.budget_annual_input` and `epm_gold.budget_monthly_input` were created
 with `dim_cost_center` and `dim_department` as literal columns: two customers'
 dimensions in shipped DDL, after the decision that Dimension ships nothing. A
-site budgeting by `dim_region` then had Budget Sheet write a column the table
-did not have, and the write-through failed. Budget Annual Input had the same
+site budgeting by `dim_region` then had the monthly writer write a column the
+table did not have, and the write-through failed. Budget Annual Input had the same
 two names as fixed fields.
 
 Now the tables name no dimension. The Published Dimensions ticked `in_budget`
 decide their `dim_*` columns, added by `_sync_budget_dimension_columns`, and
-Budget Annual Input carries them as Custom Fields, as Budget Line does.
+Budget Annual Input carries them as Custom Fields, as Budget Entry Line does.
+The monthly table was retired by konsol#348 S2-C Z6; epm_raw.budget_entries
+(S2-I4) carries the same set.
 
 Site-free: schema_apply.py, the controller and install.py are loaded against
 stubs, so every assertion is on what WOULD be run.
@@ -22,8 +24,7 @@ import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: S2-I4: Budget Entry Line's raw table carries the same declared columns.
-BUDGET_TABLES = ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input",
-                 "epm_raw.budget_entries")
+BUDGET_TABLES = ("epm_gold.budget_annual_input", "epm_raw.budget_entries")
 #: What the tables carry once created, before any sync: no dimension column.
 BASE_COLUMNS = ["scenario_id", "data_area_id", "fiscal_year", "main_account"]
 

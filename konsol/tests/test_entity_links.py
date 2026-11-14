@@ -20,7 +20,6 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REFERRING_DOCTYPES = {
     "Consolidation Group",
     "Ownership Period",
-    "Budget Sheet",
     "Historical Equity Rate",
     "Trial Balance Submission",
     # konsolidat#146: the top-down half of budget input, moved out of

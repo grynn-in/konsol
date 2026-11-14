@@ -53,6 +53,19 @@ def _matches(row, filters):
     return True
 
 
+INSTALLED_WF = (["Draft", "Pending Approval", "Approved", "Cancelled"],
+               [("Draft", "Send for Approval", "Pending Approval"),
+                ("Pending Approval", "Reject", "Draft"),
+                ("Pending Approval", "Approve", "Approved")])
+
+
+def _workflow_doc(states, transitions, name="Budget Cycle Workflow", field="workflow_state"):
+    return types.SimpleNamespace(
+        name=name, workflow_state_field=field,
+        states=[types.SimpleNamespace(state=s) for s in states],
+        transitions=[types.SimpleNamespace(state=a, action=b, next_state=c) for a, b, c in transitions])
+
+
 @pytest.fixture
 def env(monkeypatch):
     data = {
@@ -67,7 +80,7 @@ def env(monkeypatch):
         ],
         "Budget Cycle": [
             {"name": "BCYC-BUD-2027", "scenario_id": "BUD", "fiscal_year": 2027, "docstatus": 0,
-             "status": "Open"},
+             "workflow_state": "Draft"},
             {"name": "BCYC-BUD-2028", "scenario_id": "BUD", "fiscal_year": 2028, "docstatus": 1},
             {"name": "BCYC-BUD-2029", "scenario_id": "BUD", "fiscal_year": 2029, "docstatus": 2},
             {"name": "BCYC-OLD-2027", "scenario_id": "OLD", "fiscal_year": 2027, "docstatus": 0},
@@ -129,8 +142,22 @@ def env(monkeypatch):
         rows = [r for r in data[doctype] if _matches(r, filters)]
         return [types.SimpleNamespace(**{f: r.get(f) for f in fields}, get=r.get) for r in rows]
 
+    # V2: the active Workflow for Budget Cycle, as installed (None: no active workflow).
+    state.workflow = _workflow_doc(*INSTALLED_WF)
+    state.workflow_reads = []
+
+    def get_value(doctype, filters=None, fieldname=None, *a, **k):
+        state.workflow_reads.append((doctype, filters, fieldname))
+        assert doctype == "Workflow", doctype
+        return state.workflow.name if state.workflow is not None else None
+
+    def get_cached_doc(doctype, name):
+        assert doctype == "Workflow" and state.workflow is not None and name == state.workflow.name
+        return state.workflow
+
+    frappe.get_cached_doc = get_cached_doc
     frappe.db = types.SimpleNamespace(set_value=forbidden, sql=forbidden, insert=forbidden,
-                                      get_values=get_values)
+                                      get_values=get_values, get_value=get_value)
 
     api = types.ModuleType("konsol.api")
 
@@ -336,6 +363,19 @@ def test_a_cycle_that_is_not_a_draft_is_refused(env, year, word):
     assert not plan["ok"]
     errors = _errors(plan)
     assert any(f"BCYC-BUD-{year}" in e and word in e for e in errors), errors
+
+
+def test_a_file_after_an_amendment_is_grouped_onto_the_amendment(env):
+    """#524: the cancelled original keeps the digest name; its amendment is
+    <name>-1. The plan finds the pair's draft Cycle, not the digest name."""
+    for c in env.data["Budget Cycle"]:
+        if c["name"] == "BCYC-BUD-2027":
+            c["docstatus"] = 2
+    env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-1", "scenario_id": "BUD", "fiscal_year": 2027,
+                                     "docstatus": 0, "amended_from": "BCYC-BUD-2027"})
+    plan = env.plan([HEADER, _row()])
+    assert plan["ok"], _errors(plan)
+    assert plan["report"][0]["cycle"] == "BCYC-BUD-2027-1"
 
 
 # ---- scenarios ----------------------------------------------------------------
@@ -656,7 +696,9 @@ def test_lock_cycles_locks_every_cycle_of_the_scenario_and_year(env):
     cycles = env.mod.lock_cycles("BUD", 2027)
     # PR #522 review 2: the lock returns each Cycle's state as it reads it, so
     # the caller judges the Cycle by what is committed now, not its snapshot.
-    assert cycles == [{"name": "BCYC-BUD-2027", "docstatus": 0, "status": "Open"}]
+    # The Cycle has no lock status since S2-C W2a: its workflow_state comes
+    # back instead, for V2 (Q17-b) to judge under the lock.
+    assert cycles == [{"name": "BCYC-BUD-2027", "docstatus": 0, "workflow_state": "Draft"}]
     ((doctype, filters, for_update, order_by),) = env.state.locked_reads
     assert doctype == "Budget Cycle" and for_update and order_by == "name asc"
     assert filters == {"scenario_id": "BUD", "fiscal_year": 2027}
@@ -972,3 +1014,54 @@ def test_deleting_the_only_period_is_allowed(env):
 def test_deleting_a_movement_entry_is_not_judged(env):
     env.mod.assert_ytd_survives_delete("BCYC-BUD-2027", "E1", "base", BASIS, name="BENT-P1")
     assert env.state.locked_reads == []
+
+
+# ---- V2 (Q6-b, Q17-b): a write only in the Cycle workflow's first state ------------
+
+def _set_state(env, name, state):
+    for c in env.data["Budget Cycle"]:
+        if c["name"] == name:
+            c["workflow_state"] = state
+
+
+def test_a_pending_cycle_is_refused_by_name_and_told_a_reject_returns_it_to_draft(env):
+    _set_state(env, "BCYC-BUD-2027", "Pending Approval")
+    plan = env.plan([HEADER, _row()])
+    assert not plan["ok"]
+    assert plan["report"][0]["cycle"] == "BCYC-BUD-2027"
+    assert any("Budget Cycle BCYC-BUD-2027 is Pending Approval" in e and "A Reject returns it to Draft" in e
+               for e in _errors(plan)), _errors(plan)
+
+
+def test_the_first_state_is_read_from_the_active_workflow_as_installed(env):
+    env.state.workflow = _workflow_doc(["Entwurf", "Zur Freigabe", "Freigegeben"],
+                                       [("Zur Freigabe", "Zurueckweisen", "Entwurf")], name="ZZ Renamed")
+    _set_state(env, "BCYC-BUD-2027", "Entwurf")
+    plan = env.plan([HEADER, _row()])
+    assert plan["ok"], _errors(plan)
+    assert ("Workflow", {"document_type": "Budget Cycle", "is_active": 1}, "name") in env.state.workflow_reads
+    _set_state(env, "BCYC-BUD-2027", "Zur Freigabe")
+    plan = env.plan([HEADER, _row()])
+    assert any("is Zur Freigabe" in e and "A Zurueckweisen returns it to Entwurf" in e
+               for e in _errors(plan)), _errors(plan)
+
+
+def test_with_no_active_workflow_a_draft_cycle_in_any_state_is_accepted(env):
+    env.state.workflow = None
+    _set_state(env, "BCYC-BUD-2027", "Pending Approval")
+    plan = env.plan([HEADER, _row()])
+    assert plan["ok"], _errors(plan)
+
+
+def test_cycle_workflow_returns_the_first_state_and_the_way_back(env):
+    assert env.mod.cycle_workflow() == {"first_state": "Draft", "returns": {"Pending Approval": "Reject"}}
+    env.state.workflow = None
+    assert env.mod.cycle_workflow() is None
+
+
+def test_a_workflow_on_another_state_field_is_refused_not_ignored(env):
+    # lock_cycles reads workflow_state; a workflow on another field would leave
+    # it blank, and blank is the first state: every Pending Cycle would take writes.
+    env.state.workflow = _workflow_doc(*INSTALLED_WF, field="zz_state")
+    with pytest.raises(Thrown, match="zz_state"):
+        env.mod.cycle_workflow()

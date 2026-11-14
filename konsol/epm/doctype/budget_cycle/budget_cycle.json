@@ -11,6 +11,16 @@
   "autoname": "",
   "fields": [
     {
+      "fieldname": "cycle_tab",
+      "fieldtype": "Tab Break",
+      "label": "Cycle"
+    },
+    {
+      "fieldname": "cycle_section",
+      "fieldtype": "Section Break",
+      "label": "Cycle"
+    },
+    {
       "fieldname": "scenario_id",
       "set_only_once": 1,
       "fieldtype": "Link",
@@ -38,38 +48,54 @@
       "in_list_view": 1
     },
     {
-      "fieldname": "deadline",
-      "fieldtype": "Date",
-      "label": "Deadline",
-      "description": "Target close date — shown, not auto-enforced"
-    },
-    {
       "fieldname": "col_break_1",
       "fieldtype": "Column Break"
     },
     {
-      "fieldname": "status",
-      "fieldtype": "Select",
-      "label": "Status",
-      "options": "Open\nLocked",
-      "default": "Open",
+      "fieldname": "deadline",
+      "fieldtype": "Date",
+      "label": "Deadline",
+      "description": "A target date; it locks nothing."
+    },
+    {
+      "fieldname": "workflow_state",
+      "fieldtype": "Link",
+      "label": "Workflow State",
+      "options": "Workflow State",
       "read_only": 1,
+      "no_copy": 1,
+      "allow_on_submit": 1,
       "in_list_view": 1,
       "in_standard_filter": 1,
-      "description": "Open while docstatus 0; Locked on submit"
+      "description": "Set by the installed Budget Cycle workflow: Draft, Pending Approval, Approved. Approve is the submit."
     },
     {
-      "fieldname": "locked_by",
+      "fieldname": "amended_from",
       "fieldtype": "Link",
-      "label": "Locked By",
-      "options": "User",
-      "read_only": 1
+      "label": "Amended From",
+      "options": "Budget Cycle",
+      "read_only": 1,
+      "no_copy": 1,
+      "print_hide": 1,
+      "search_index": 1
     },
     {
-      "fieldname": "locked_on",
-      "fieldtype": "Datetime",
-      "label": "Locked On",
-      "read_only": 1
+      "fieldname": "entries_tab",
+      "fieldtype": "Tab Break",
+      "label": "Entries"
+    },
+    {
+      "fieldname": "summary_section",
+      "fieldtype": "Section Break",
+      "label": "Summary"
+    },
+    {
+      "fieldname": "entry_count",
+      "fieldtype": "Int",
+      "label": "Entries",
+      "read_only": 1,
+      "no_copy": 1,
+      "description": "The Budget Entries under this Cycle, counted when the Cycle is opened or saved."
     }
   ],
   "permissions": [
@@ -80,31 +106,34 @@
       "create": 1,
       "delete": 1,
       "submit": 1,
-      "cancel": 1
+      "cancel": 1,
+      "amend": 1,
+      "report": 1,
+      "export": 1,
+      "print": 1,
+      "email": 1,
+      "share": 1
     },
     {
-      "role": "Budget Manager",
+      "role": "EPM Admin",
       "read": 1,
       "write": 1,
       "create": 1,
       "submit": 1,
-      "cancel": 1
-    },
-    {
-      "role": "Budget Submitter",
-      "read": 1
-    },
-    {
-      "role": "Budget Controller",
-      "read": 1
-    },
-    {
-      "role": "Budget Approver",
-      "read": 1,
+      "cancel": 1,
+      "amend": 1,
       "report": 1,
-      "print": 1,
       "export": 1,
-      "email": 1
+      "print": 1
+    },
+    {
+      "role": "EPM Analyst",
+      "read": 1,
+      "write": 1,
+      "create": 1,
+      "report": 1,
+      "export": 1,
+      "print": 1
     },
     {
       "role": "Entity Accountant",
@@ -113,6 +142,14 @@
       "print": 1,
       "export": 1,
       "email": 1
+    },
+    {
+      "role": "EPM User",
+      "read": 1,
+      "report": 1,
+      "print": 1,
+      "export": 1
     }
-  ]
+  ],
+  "search_fields": "scenario_id,fiscal_year"
 }

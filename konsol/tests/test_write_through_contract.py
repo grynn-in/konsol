@@ -217,9 +217,6 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_gold.currencies",
         "epm_gold.entity_fiscal_calendars",
         "epm_gold.budget_annual_input",
-        # a konsol write-through that nothing ever created — the cause of the
-        # long-standing gold_spread_budget build failure
-        "epm_gold.budget_monthly_input",
         # Budget S2 (I3): the raw budget landing table, one row per Budget
         # Entry Line (test_budget_raw_ddl.py)
         "epm_raw.budget_entries",

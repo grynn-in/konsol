@@ -2,11 +2,11 @@
 
 Spec: grynn-in/konsolidat#51. The budget grain is the fixed keys
 (scenario, data_area/LE, fiscal_year, main_account) PLUS every Dimension
-flagged ``in_budget`` (Published). Centralised here so the API line upsert
-(``konsol.api._line_identity`` / ``find_budget_line``), the migration pivot and
-the ClickHouse incremental-sync key all agree on the same grain — two writers
-differing only by a budget dimension (e.g. cost center on a shared Travel
-account) resolve to *different* lines instead of silently clobbering each other.
+flagged ``in_budget`` (Published). Centralised here so every reader of the
+grain agrees on it — two writers differing only by a budget dimension (e.g.
+cost center on a shared Travel account) resolve to *different* rows instead of
+silently clobbering each other. ``digest_name`` is the collision-safe document
+name several doctypes share.
 """
 import hashlib
 import re
@@ -15,23 +15,6 @@ import frappe
 
 # Fixed (non-dimension) components of the budget key, in name order.
 FIXED_KEYS = ("scenario_id", "data_area_id", "fiscal_year", "main_account")
-
-# Canonical additive budget layers (final budget = sum of layers).
-VALID_LAYERS = ("base", "challenge", "management", "board")
-
-
-def normalize_layer(value):
-    """Canonicalise a layer value: trimmed lowercase. Empty → 'base'.
-
-    Both the API write paths and the migration funnel through this so a sheet's
-    (cycle, entity, layer) grain never splits on case/whitespace (e.g. legacy
-    'Base' vs API 'base').
-    """
-    return (str(value or "").strip().lower()) or "base"
-
-
-def is_valid_layer(value):
-    return normalize_layer(value) in VALID_LAYERS
 
 
 def budget_dimension_names():
@@ -113,8 +96,9 @@ def digest_name(prefix, parts):
     humans (slugged, ``-``-joined); the 8-char sha1 digest of the *exact*
     component tuple guarantees two distinct grains never collide even if their
     slugs collapse or the readable head is truncated at the 140-char cap.
-    Used by Budget Cycle / Budget Sheet autoname so realistic long entity /
-    scenario codes can't truncate two different grains onto one name.
+    Used by Budget Cycle, Budget Entry and Historical Equity Rate autoname so
+    realistic long entity / scenario codes can't truncate two different grains
+    onto one name.
     """
     readable = prefix + "-" + "-".join(_slug(p) for p in parts)
     canonical = "\x1f".join("" if p is None else str(p) for p in parts)
@@ -122,24 +106,3 @@ def digest_name(prefix, parts):
     head = readable[: _NAME_MAX - _DIGEST_LEN - 1]
     return f"{head}-{digest}"
 
-
-def line_matches(line, ident, dims):
-    """True if a Budget Line row matches the (main_account + dims) identity."""
-    if line.main_account != ident["main_account"]:
-        return False
-    return all((line.get(d) or "") == (ident.get(d, "") or "") for d in dims)
-
-
-def find_budget_line(sheet, ident, dims, append=False):
-    """Return the sheet's Budget Line matching ``ident`` (account + dims).
-
-    Single source of truth for the line-grain match, shared by the API upsert,
-    the cell-conflict read and the migration pivot so they can never disagree on
-    whether two writes target the same line. ``dims`` is passed in (resolved once
-    per request) to avoid a per-cell ``budget_dimension_names()`` query. With
-    ``append=True`` a missing line is appended and returned; otherwise ``None``.
-    """
-    for line in sheet.lines:
-        if line_matches(line, ident, dims):
-            return line
-    return sheet.append("lines", dict(ident)) if append else None

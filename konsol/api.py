@@ -514,7 +514,7 @@ def _apply_budget_dimensions(data, dims):
     """Move a budget write's ``dimensions`` dict onto ``data`` (konsol#287).
 
     ``dims`` is ``_budget_entry_dims()``: the in_budget dimensions provisioned on
-    Budget Line. A name outside it is refused, never ignored: an ignored
+    Budget Entry Line. A name outside it is refused, never ignored: an ignored
     dimension would write the amount to the line without it. A name given
     both in the dict and as a top-level key must agree.
     """

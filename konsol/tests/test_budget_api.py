@@ -455,6 +455,21 @@ def test_cell_save_refuses_a_missing_cycle_and_creates_none(cell):
     assert [c["name"] for c in cell.data["Budget Cycle"]] == ["BCYC-BUD-2027"]
 
 
+def test_a_cell_after_an_amendment_lands_on_the_amendment(cell):
+    """#524: the cancelled original keeps the digest name; the cell finds the
+    pair's draft Cycle (its amendment, <name>-1) and its entry is keyed on it."""
+    cell.data["Budget Cycle"][:] = [
+        {"name": "BCYC-BUD-2027", "scenario_id": "BUD", "fiscal_year": 2027, "docstatus": 2},
+        {"name": "BCYC-BUD-2027-1", "scenario_id": "BUD", "fiscal_year": 2027, "docstatus": 0,
+         "amended_from": "BCYC-BUD-2027"},
+    ]
+    out = cell.post(amount=500)
+    assert out["status"] == "ok", out
+    entry = _only_entry(cell)
+    assert entry["cycle"] == "BCYC-BUD-2027-1"
+    assert cell.state.cycle_locks == ["BCYC-BUD-2027-1"]
+
+
 def test_cell_save_goes_through_the_access_check(cell):
     cell.state.denied = {"E2"}
     with pytest.raises(_Denied, match="Not permitted to write entity E2"):
@@ -544,7 +559,7 @@ def test_cell_save_is_post_only_and_has_no_clamp_or_auto_create():
     assert decorators == ['frappe.whitelist(methods=["POST"])'], decorators
     body = ast.get_source_segment(src, fn)
     for gone in ("fiscal_period must be 1-12", "normalize_layer", "_resolve_budget_cycle",
-                 "Budget Sheet", "frappe.db.commit"):
+                 "frappe.db.commit"):
         assert gone not in body, gone
     assert "budget_intake" in body
 
@@ -613,7 +628,8 @@ def test_a_batch_must_be_a_list(cell):
 def test_the_sheet_path_is_gone_from_api():
     with open(API_PATH) as f:
         src = f.read()
-    for gone in ("def _get_or_create_sheet", "def _upsert_budget_line", "Budget Sheet"):
+    # Every mention is pinned gone by test_retire_budget_sheet_line_patch.py.
+    for gone in ("def _get_or_create_sheet", "def _upsert_budget_line"):
         assert gone not in src, gone
 
 

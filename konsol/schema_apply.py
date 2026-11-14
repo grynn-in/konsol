@@ -4,7 +4,7 @@ Reads all config doctypes (Dimension, Measure, Dataset) and applies:
   1. dbt_project.yml vars regeneration
   2. ClickHouse ALTER TABLE for missing columns, then the declared dim_*
      columns added to the raw trial-balance table (added only — konsol#255)
-  3. Budget Line custom field sync
+  3. dimension Custom Field sync (the budget and journal line doctypes)
   4. Optional dbt build trigger
 
 Called deliberately, and by the publish path (apply_and_rebuild). Since
@@ -49,7 +49,7 @@ _CH_TYPE_MAP = {
 
 
 _BUDGET_FIELD_SYNC_JOB = "konsol.schema_apply.sync_budget_custom_fields_job"
-# MariaDB named lock serialising every Budget Line Custom Field sync
+# MariaDB named lock serialising every dimension Custom Field sync
 # (_budget_field_sync_lock adds the database name).
 _BUDGET_FIELD_SYNC_LOCK = "konsol_budget_field_sync"
 _BUDGET_FIELD_SYNC_LOCK_WAIT = 30  # seconds
@@ -65,7 +65,7 @@ def apply_schema(run_dbt=False):
     """Read all config doctypes, regenerate everything in one shot.
 
     The standalone action (Apply Schema, `konsol apply-schema`). It syncs the
-    Budget Line Custom Fields inline, as Administrator, and that commits (see
+    dimension Custom Fields inline, as Administrator, and that commits (see
     _sync_budget_custom_fields); nothing else is pending in its transaction.
     A publish calls apply_schema_for_publish instead.
 
@@ -86,7 +86,7 @@ def apply_schema(run_dbt=False):
     run_dbt = frappe.utils.cint(run_dbt)
     summary = _apply_schema_steps()
 
-    # 4. Sync Budget Line custom fields (in_budget dimension columns), as
+    # 4. Sync the dimension Custom Fields (in_budget / in_journal columns), as
     # Administrator for the same reason as the publish's job (see
     # sync_budget_custom_fields_job): the role is checked above, and the sync
     # takes no input.
@@ -139,7 +139,7 @@ def _request_schema_build():
 def apply_schema_for_publish():
     """apply_schema inside a publish's transaction (konsol#135).
 
-    Steps 1-3 as apply_schema. The Budget Line Custom Field sync is queued for
+    Steps 1-3 as apply_schema. The dimension Custom Field sync is queued for
     after the commit instead of run here: a Custom Field insert commits, so it
     committed the publish's save halfway and split it from the build request
     that follows. A publish that rolls back queues nothing.
@@ -150,14 +150,14 @@ def apply_schema_for_publish():
         summary["budget_fields_synced"] = queue_budget_custom_field_sync()
     except Exception as e:
         # Redis unreachable, say. The publish stands; after_migrate, the next
-        # publish or a manual apply_schema repairs Budget Line.
+        # publish or a manual apply_schema repairs the fields.
         summary["errors"].append(f"Budget fields: {str(e)}")
         frappe.log_error("schema_apply: budget field sync not queued", frappe.get_traceback())
     return summary
 
 
 def queue_budget_custom_field_sync():
-    """Sync Budget Line's Custom Fields in a job enqueued after the commit.
+    """Sync the dimension Custom Fields in a job enqueued after the commit.
 
     The sync cannot run inside a transaction that has other work in it:
     CustomField.on_update calls frappe.db.updatedb, which ends with an
@@ -174,7 +174,7 @@ def queue_budget_custom_field_sync():
     # from after_commit.run(). If Redis drops in between, that push raises
     # after the commit: the publish stands, the request errors, and the
     # after-commit callbacks queued behind it are skipped. after_migrate or
-    # the next publish repairs Budget Line.
+    # the next publish repairs the fields.
     frappe.enqueue(_BUDGET_FIELD_SYNC_JOB, queue="short", enqueue_after_commit=True)
     return ["queued after commit"]
 
@@ -186,11 +186,11 @@ def sync_budget_custom_fields_job():
     # or delete one Administrator created (CustomField.on_trash), which the
     # migrate-provisioned dim fields are. The publish already checked the
     # role (_check_schema_role), and the job takes no arguments: it only
-    # brings Budget Line in line with the committed dimensions.
+    # brings the line doctypes in line with the committed dimensions.
     frappe.set_user("Administrator")
     actions = _sync_budget_custom_fields(in_job=True)
     if actions:
-        frappe.logger().info(f"Budget Line custom fields synced: {actions}")
+        frappe.logger().info(f"dimension custom fields synced: {actions}")
     return actions
 
 
@@ -445,12 +445,11 @@ def _sync_journal_dimension_columns():
 
 
 #: The budget tables that carry the declared in_budget dim_* columns: the
-#: two input tables, written by Budget Annual Input and Budget Sheet and read
-#: by gold_spread_budget through get_budget_dimensions(), and (S2-I4) the raw
-#: landing table Budget Entry Line writes through to, whose CH_FIELD_MAP sends
-#: the line's dim_* fields.
-_BUDGET_INPUT_TABLES = ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input",
-                        "epm_raw.budget_entries")
+#: annual input table, read by gold_spread_budget through
+#: get_budget_dimensions(), and (S2-I4) the raw landing table Budget Entry
+#: Line writes through to, whose CH_FIELD_MAP sends the line's dim_* fields.
+#: epm_gold.budget_monthly_input was retired by konsol#348 S2-C Z6.
+_BUDGET_INPUT_TABLES = ("epm_gold.budget_annual_input", "epm_raw.budget_entries")
 
 
 def _sync_budget_dimension_columns():
@@ -459,9 +458,8 @@ def _sync_budget_dimension_columns():
     konsol#287: the tables are created naming no dimension, and the Published
     Dimensions ticked in_budget decide their dim_* columns, as in_trial_balance
     does for the raw trial balance. Both tables get the same set: a budget
-    entered at annual grain is spread to monthly, so a dimension only one of
-    them has would be lost in the spread. epm_raw.budget_entries gets the same
-    set for the same reason (S2-I4). Nothing is dropped, for the reason on
+    entered at annual grain is spread to monthly beside the entries, so a
+    dimension only one of them has would be lost in the spread (S2-I4). Nothing is dropped, for the reason on
     _sync_tb_dimension_columns. Each action names its table.
     """
     return [f"{table}: {action}"
@@ -659,7 +657,7 @@ def _upsert_dbt_source(fact):
 
 
 def _sync_budget_custom_fields(in_job=False):
-    """Ensure Budget Line has Custom Fields for all in_budget Published dimensions.
+    """Ensure every line doctype has Custom Fields for its Published dimensions.
 
     The wide budget lines carry the dimension columns (account + dims + 12
     months); the dims are provisioned here as Custom Fields. Adds missing fields,
@@ -683,8 +681,8 @@ def _sync_budget_custom_fields(in_job=False):
     which the job runner logs and commits. Skipping there could drop a
     publish committed after the holder read. Not RetryBackgroundJobError:
     Frappe v15's retry path ends every retried job in AttributeError and
-    loses its Error Log. An inline caller logs and skips, and Budget Line
-    waits for the next publish, apply_schema or migrate.
+    loses its Error Log. An inline caller logs and skips, and the fields
+    wait for the next publish, apply_schema or migrate.
 
     On an error it rolls back before releasing the lock. After its first
     commit only its own work can be pending (earlier deletes, a half-inserted
@@ -699,7 +697,7 @@ def _sync_budget_custom_fields(in_job=False):
         if got and got[0][0] == 1:  # 0: timed out; NULL: error
             break
     else:
-        msg = f"GET_LOCK('{lock}') returned {got!r}: another Budget Line field sync holds it."
+        msg = f"GET_LOCK('{lock}') returned {got!r}: another dimension field sync holds it."
         if in_job:
             raise TimeoutError(msg)
         frappe.log_error("schema_apply: budget field sync skipped", msg)
@@ -761,7 +759,7 @@ def _sync_budget_custom_fields_locked():
     """Both dimension-carrying line tables, under the one lock already held.
 
     Plain reads: _sync_budget_custom_fields committed after taking the lock, so
-    the snapshot is fresh. Consolidation Journal Line joined Budget Line here
+    the snapshot is fresh. Consolidation Journal Line joined the budget lines here
     for konsolidat#245 option D — one lock rather than a second named lock,
     because both write Custom Fields and an ALTER from either commits.
 
@@ -779,8 +777,7 @@ def _sync_budget_custom_fields_locked():
     the repair rolls back its own delete, so nothing of it is pending when a
     later add fails. See _add_dimension_custom_fields.
     """
-    tables = (("Budget Line", "in_budget", "main_account"),
-              # konsol#287: the annual half of the budget carries the same
+    tables = (# konsol#287: the annual half of the budget carries the
               # declared dimensions instead of two fixed fields.
               ("Budget Annual Input", "in_budget", "main_account"),
               # S2-I4: Budget Entry Line sends its dim_* fields to
@@ -803,7 +800,7 @@ def _plan_dimension_custom_fields(dt, flag):
 
     Split from the add and remove phases so every add across every table runs
     before any delete — see _sync_budget_custom_fields_locked (PR #324 review,
-    finding 3). One body for both callers, Budget Line's ``in_budget`` and
+    finding 3). One body for every caller, the budget lines' ``in_budget`` and
     Consolidation Journal Line's ``in_journal`` (konsolidat#245 option D),
     because two copies would drift and the drift is silent in the worst
     direction: a dimension that is declared and has nowhere to land.
