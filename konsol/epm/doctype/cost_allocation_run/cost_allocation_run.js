@@ -1,7 +1,7 @@
 frappe.ui.form.on("Cost Allocation Run", {
 	refresh(frm) {
 		if (frm.doc.docstatus === 0 && !frm.is_new()) {
-			frm.add_custom_button(__("Compute Weights"), () => {
+			if (frm.doc.status === "Draft") frm.add_custom_button(__("Compute Weights"), () => {
 				frappe.call({
 					method: "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.compute_weights",
 					type: "POST",

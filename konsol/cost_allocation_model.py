@@ -28,6 +28,10 @@ DECLARED_ACCOUNT = "Declared Allocation Account"
 ACCOUNT_MODES = (OWN_ACCOUNTS, DECLARED_ACCOUNT)
 
 
+#: the warehouse column is UInt16
+MIN_STEP, MAX_STEP = 1, 65535
+
+
 class CostAllocationError(Exception):
     """Carries every problem found, not just the first."""
 
@@ -81,6 +85,9 @@ def validate(rs):
         errs.append("A rule set needs at least one rule.")
 
     rule_steps = [r["step"] for r in rs.rules]
+    for s in sorted(set(rule_steps)):
+        if not (MIN_STEP <= s <= MAX_STEP):
+            errs.append("Step %s must be between %d and %d." % (s, MIN_STEP, MAX_STEP))
     for s in _dups(rule_steps):
         errs.append("Step %s is declared more than once." % s)
     for m in _dups([r["sender_member"] for r in rs.rules]):
