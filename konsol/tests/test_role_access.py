@@ -121,8 +121,9 @@ MATRIX = {
     "Budget Cycle": {"EPM Admin": "rwcsxa", "EPM Analyst": "rwc", "Entity Accountant": "r", "EPM User": "r",
                      "Budget Manager": "", "Budget Submitter": "", "Budget Controller": "",
                      "Budget Approver": ""},
+    # konsol#348 Z8: the Budget* read rows are gone; Entity Accountant reads
     "Entity": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r",
-               "Budget Submitter": "r", "Budget Controller": "r", "Budget Manager": "r", "Budget Approver": "r"},
+               "Budget Submitter": "", "Budget Controller": "", "Budget Manager": "", "Budget Approver": ""},
     "EPM Fiscal Year": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
     # konsol#305 T01b: the audit trail is read-only for every role; only
     # konsol.close.close_event writes it, and nobody deletes it (#305-W2-6)
