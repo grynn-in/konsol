@@ -509,18 +509,17 @@ def create_roles():
 
 def _ensure_indexes():
     """Indexes a doctype sync only adds when its JSON changes. Idempotent;
-    never fails a migrate."""
+    never fails a migrate, except for the budget lock indexes, which raise."""
     try:
         from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission import on_doctype_update
         on_doctype_update()
     except Exception:
         frappe.logger().warning("index setup skipped during migrate", exc_info=True)
-    try:
-        # The budget locking reads' indexes (PR #522 review).
-        from konsol.budget_intake import ensure_lock_indexes
-        ensure_lock_indexes()
-    except Exception:
-        frappe.logger().warning("budget lock index setup skipped during migrate", exc_info=True)
+    # The budget locking reads' indexes (PR #522 review). Not wrapped: without
+    # them a FOR UPDATE scans the table and writers deadlock, so a failure
+    # stops the migrate instead of being logged.
+    from konsol.budget_intake import ensure_lock_indexes
+    ensure_lock_indexes()
 
 
 def _seed_defaults():
