@@ -51,6 +51,16 @@ def _site_uses(role):
     return reasons
 
 
+def _grant(user):
+    """Add the Has Role row directly. ``User.add_roles`` saves the User, and a
+    save re-validates every link on it: one stale link stops the migrate (seen
+    live on 14 Nov 2026: users whose default workspace a patch had deleted).
+    The row is the whole grant; the user's cache is cleared so it takes effect."""
+    frappe.get_doc({"doctype": "Has Role", "parenttype": "User", "parentfield": "roles",
+                    "parent": user, "role": NEW_ROLE}).db_insert()
+    frappe.clear_cache(user=user)
+
+
 def execute():
     # patches.txt has no sections, so this runs before the doctype sync.
     frappe.reload_doc("epm", "doctype", "budget_layer")
@@ -65,7 +75,7 @@ def execute():
         granted = []
         for user in holders:
             if not frappe.db.exists("Has Role", {"parent": user, "parenttype": "User", "role": NEW_ROLE}):
-                frappe.get_doc("User", user).add_roles(NEW_ROLE)
+                _grant(user)
                 granted.append(user)
         if granted:
             print(f"retire_budget_roles: {len(granted)} holder(s) of {role} now also hold {NEW_ROLE}")
