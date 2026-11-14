@@ -262,7 +262,7 @@ class BudgetEntry(Document):
             self.scenario_id, self.fiscal_year, self.data_area_id, self.layer,
             [{"main_account": line.get("main_account"), **{d: line.get(d) or "" for d in dims}}
              for line in self.get("lines") or []],
-            entry=self.name, period=self.fiscal_period)
+            cycle=self.cycle, entry=self.name, period=self.fiscal_period)
 
     def _judge_removed_lines(self, budget_intake, lines):
         before = self.get_doc_before_save()

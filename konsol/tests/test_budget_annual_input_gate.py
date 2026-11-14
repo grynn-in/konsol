@@ -210,6 +210,7 @@ def test_the_cycle_lock_guard_refuses_during_a_data_import(ctl):
         raise (exc or Refused)(msg)
 
     ctl.mod.frappe.throw = throw
+    ctl.mod.frappe.ValidationError = Refused
     ctl.mod.frappe.flags.in_import = True
     row = ctl.mod.BudgetAnnualInput()
     row.scenario_id, row.fiscal_year, row.cycle = "ZZS", 2026, "BC-ZZS-2026"

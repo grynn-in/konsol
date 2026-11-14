@@ -286,7 +286,7 @@ def test_undeclared_layer_is_refused_on_save(ctl):
 
 def test_inactive_scenario_is_refused_as_inactive(ctl):
     with pytest.raises(Exception, match="Scenario ZZOLD is inactive"):
-        _row(ctl, "ZZE1", scenario_id="ZZOLD").validate()
+        _row(ctl, "ZZE1", scenario_id="ZZOLD", cycle="BC-ZZOLD-2026").validate()
 
 
 def test_layer_and_currency_are_not_judged_on_delete(ctl):

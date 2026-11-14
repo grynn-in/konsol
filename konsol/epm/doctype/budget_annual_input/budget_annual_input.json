@@ -46,6 +46,17 @@
    "in_list_view": 1
   },
   {
+   "fieldname": "cycle",
+   "set_only_once": 1,
+   "fieldtype": "Link",
+   "options": "Budget Cycle",
+   "label": "Budget Cycle",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The Budget Cycle this figure belongs to: a draft Cycle of the row's Scenario and Fiscal Year. For a forecast the Cycle is the round (its as-of date), so each round holds its own annual figures. The figure reaches the warehouse while this Cycle is approved."
+  },
+  {
    "fieldname": "main_account",
    "set_only_once": 1,
    "fieldtype": "Link",

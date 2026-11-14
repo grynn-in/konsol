@@ -40,7 +40,8 @@ What it does, in order:
      two periods of one layer that give two bases are both refused, each
      naming the other.
    - one writer per grain (Q16-c): a row on a grain a saved Budget Annual
-     Input gives is refused, naming it. A report read, not a lock: the save
+     Input of the SAME Cycle gives is refused, naming it (S3 K6: a figure of
+     another round is another round's). A report read, not a lock: the save
      judges it again under the Cycle lock (assert_no_annual_input), so the
      check does not call ready a slice the load would refuse.
 
@@ -188,7 +189,7 @@ def plan(table, *, form_basis, form_as_of, name_lines, whole_slices):
         if cycle_problem:
             errors.append(cycle_problem)
         errors.extend(_duplicates(rows))
-        errors.extend(_annual_clashes(key, rows, facts["annual"]))
+        errors.extend(_annual_clashes(key, rows, facts["annual"], cycle))
         # The layer's writer role is an access rule: a refusal is a denial.
         denials = _role_problems(key.layer, facts["layers"].get(key.layer), bypass, roles, user)
         for row in rows:
@@ -568,13 +569,17 @@ def _named_dims(dims, key):
     return f" with {named}" if named else ""
 
 
-def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, entry, period):
-    """Refuse a Budget Entry line on a grain a Budget Annual Input already
-    gives (Q16-c): a grain (scenario, year, entity, layer, account, dim_*
-    values) takes its numbers from one writer. `lines` are dicts with
-    main_account and the dim_* values; `entry` and `period` name the entry
-    being saved. Raises frappe.ValidationError naming the Annual Input and the
-    way out. A locking read (the caller holds the Cycle lock). Writes nothing."""
+def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, cycle, entry, period):
+    """Refuse a Budget Entry line on a grain a Budget Annual Input of the same
+    Cycle already gives (Q16-c): a grain (Cycle, entity, layer, account, dim_*
+    values) takes its numbers from one writer. `cycle` is the entry's Cycle
+    (S3 K6, QB4 a: the Annual Input links its Cycle, and another round's
+    figure is not this entry's); `lines` are dicts with main_account and the
+    dim_* values; `entry` and `period` name the entry being saved. Raises
+    frappe.ValidationError naming the Annual Input and the way out. A locking
+    read on the lock index's columns (scenario, year, entity, layer, account),
+    with the Cycle as a further equality (the caller holds the Cycle lock).
+    Writes nothing."""
     accounts = sorted({line.get("main_account") for line in lines if line.get("main_account")})
     if not accounts:
         return
@@ -583,7 +588,7 @@ def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, en
     rows = frappe.db.get_values(
         "Budget Annual Input",
         {"scenario_id": scenario_id, "fiscal_year": fiscal_year, "data_area_id": entity, "layer": layer,
-         "main_account": ["in", accounts]},
+         "main_account": ["in", accounts], "cycle": cycle},
         ["name", "main_account", *sorted(annual_dims)], as_dict=True, order_by="name asc", for_update=True)
     annual = {}
     for row in rows:
@@ -594,26 +599,28 @@ def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, en
             name = annual[key]
             frappe.throw(
                 f"Budget Annual Input {name} already gives account {key[0]}{_named_dims(dims, key)} for "
-                f"{scenario_id} {fiscal_year}, entity {entity}, layer {layer} as an annual figure, so "
-                f"Budget Entry {entry} (period {period}) cannot give it too: a budget line takes its "
-                f"numbers from one writer. Delete Budget Annual Input {name}, or enter the year as "
+                f"{scenario_id} {fiscal_year} (Cycle {cycle}), entity {entity}, layer {layer} as an annual "
+                f"figure, so Budget Entry {entry} (period {period}) cannot give it too: a budget line takes "
+                f"its numbers from one writer. Delete Budget Annual Input {name}, or enter the year as "
                 "monthly entries.",
                 SecondWriterError,
             )
 
 
 def assert_no_entry_lines(row, *, name):
-    """Refuse a Budget Annual Input on a grain a Budget Entry line already
-    gives, in any period (Q16-c). `row` holds scenario_id, fiscal_year,
-    data_area_id, layer, main_account and the dim_* values; `name` is the
-    Annual Input. Raises frappe.ValidationError naming the entry and period.
-    A locking read (the caller holds the Cycle lock). Writes nothing.
+    """Refuse a Budget Annual Input on a grain a Budget Entry line of the same
+    Cycle already gives, in any period (Q16-c). `row` holds scenario_id,
+    fiscal_year, cycle, data_area_id, layer, main_account and the dim_*
+    values; `name` is the Annual Input. Raises frappe.ValidationError naming
+    the entry and period. A locking read on the lock index's columns, with
+    the row's Cycle as a further equality (the caller holds the Cycle lock).
+    Writes nothing.
 
-    Only lines under a Cycle that is not cancelled count (19-b): under an
-    amended pair the cancelled original's entries stay as the audit trail,
-    out of the warehouse, and do not block. (The other direction needs no
-    filter: a Budget Entry is saved only under a draft Cycle of its pair, so
-    an Annual Input of that pair always counts against it.)"""
+    S3 K6 (QB4 a): the row names its Cycle, so only that Cycle's lines are
+    read. That keeps 19-b (a cancelled original's lines, under an amended
+    pair, do not block the amendment's figure) and keeps the rounds of a
+    forecast pair apart, with no second read of the Cycles: the row's Cycle
+    is a draft (the writable guard), so every line of it counts."""
     if not row.get("main_account"):
         return
     line_dims = _dim_fields("Budget Entry Line")
@@ -622,17 +629,12 @@ def assert_no_entry_lines(row, *, name):
         "Budget Entry Line",
         {"parenttype": "Budget Entry", "scenario_id": row.get("scenario_id"),
          "fiscal_year": row.get("fiscal_year"), "data_area_id": row.get("data_area_id"),
-         "layer": row.get("layer"), "main_account": row.get("main_account")},
+         "layer": row.get("layer"), "main_account": row.get("main_account"), "cycle": row.get("cycle")},
         ["parent", "cycle", "fiscal_period", "main_account", *sorted(line_dims)], as_dict=True,
         order_by="fiscal_period asc, parent asc", for_update=True)
     key = _grain_key(row.get("main_account"), row, dims)
-    lines = [line for line in lines if _grain_key(line.main_account, line, dims) == key]
-    cycles = sorted({line.cycle for line in lines})
-    live = {c.name for c in frappe.db.get_values(
-        "Budget Cycle", {"name": ["in", cycles]}, ["name", "docstatus"], as_dict=True,
-        order_by="name asc", for_update=True) if int(c.docstatus) in (0, 1)} if cycles else set()
     for line in lines:
-        if line.cycle in live:
+        if _grain_key(line.main_account, line, dims) == key:
             frappe.throw(
                 f"Budget Entry {line.parent} (period {line.fiscal_period}) already gives account "
                 f"{key[0]}{_named_dims(dims, key)} for {row.get('scenario_id')} {row.get('fiscal_year')}, "
@@ -699,19 +701,23 @@ def _annual_inputs(scenarios, years, entities):
         "Budget Annual Input",
         filters={"scenario_id": ["in", scenarios], "fiscal_year": ["in", years],
                  "data_area_id": ["in", entities]},
-        fields=["name", "scenario_id", "fiscal_year", "data_area_id", "layer", "main_account", *dims],
+        fields=["name", "scenario_id", "fiscal_year", "cycle", "data_area_id", "layer", "main_account", *dims],
         order_by="name asc", limit_page_length=0)
     return dims, rows
 
 
-def _annual_clashes(key, rows, annual):
+def _annual_clashes(key, rows, annual, cycle):
     """One sentence per row of this group on a grain a saved Budget Annual
-    Input gives (Q16-c), naming it and the way out. A blank dimension and an
-    unset one are the same value, as the save's check reads them."""
+    Input of the group's Cycle gives (Q16-c; S3 K6: `cycle` is the round the
+    plan picked, and another round's figure is not this group's), naming it
+    and the way out. A group with no Cycle has nothing to clash with. A blank
+    dimension and an unset one are the same value, as the save's check reads
+    them."""
     annual_dims, annual_rows = annual
+    if not cycle:
+        return []
     mine = [r for r in annual_rows
-            if (r.scenario_id, int(r.fiscal_year), r.data_area_id, r.layer)
-            == (key.scenario, int(key.fiscal_year), key.data_area_id, key.layer)]
+            if (r.cycle, r.data_area_id, r.layer) == (cycle, key.data_area_id, key.layer)]
     if not mine:
         return []
     dims = sorted(set(annual_dims) | {k for row in rows for k in row if k.startswith("dim_")})
@@ -725,9 +731,10 @@ def _annual_clashes(key, rows, annual):
             name = given[grain]
             out.append(_at_line(row, (
                 f"Budget Annual Input {name} already gives account {grain[0]}{_named_dims(dims, grain)} for "
-                f"{key.scenario} {key.fiscal_year}, entity {key.data_area_id}, layer {key.layer} as an annual "
-                "figure, so it cannot be given as a monthly figure too: a budget line takes its numbers from "
-                f"one writer. Delete Budget Annual Input {name}, or leave the account out of these rows.")))
+                f"{key.scenario} {key.fiscal_year} (Cycle {cycle}), entity {key.data_area_id}, layer {key.layer} "
+                "as an annual figure, so it cannot be given as a monthly figure too: a budget line takes its "
+                f"numbers from one writer. Delete Budget Annual Input {name}, or leave the account out of these "
+                "rows.")))
     return out
 
 
