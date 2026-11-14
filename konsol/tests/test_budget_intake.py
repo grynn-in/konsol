@@ -751,9 +751,10 @@ def test_a_file_giving_two_bases_to_one_entity_and_layer_is_refused_in_both_peri
 # ---- Q16-c: a grain takes its numbers from one writer -----------------------------
 
 def _annual_input(name="BAI-1", layer="base", account="4000", cc="CC1", entity="E1", year=2027,
-            scenario="BUD"):
+            scenario="BUD", cycle="BCYC-BUD-2027"):
+    # S3 K6 (QB4 a): the row names its Cycle, the round it belongs to.
     return {"name": name, "scenario_id": scenario, "fiscal_year": year, "data_area_id": entity,
-            "layer": layer, "main_account": account, "dim_cost_center": cc}
+            "layer": layer, "main_account": account, "dim_cost_center": cc, "cycle": cycle}
 
 
 def _line(parent="BENT-P3", period=3, layer="base", account="4000", cc="CC1", entity="E1", year=2027,
@@ -765,7 +766,7 @@ def _line(parent="BENT-P3", period=3, layer="base", account="4000", cc="CC1", en
 
 def _entry_side(env, lines, **kw):
     args = dict(scenario_id="BUD", fiscal_year=2027, entity="E1", layer="base", entry="BENT-P3",
-                period=3)
+                period=3, cycle="BCYC-BUD-2027")
     args.update(kw)
     env.mod.assert_no_annual_input(args.pop("scenario_id"), args.pop("fiscal_year"),
                                    args.pop("entity"), args.pop("layer"), lines, **args)
@@ -800,6 +801,26 @@ def test_the_entry_side_reads_the_annual_inputs_with_a_locking_read(env):
     assert doctype == "Budget Annual Input" and for_update
     assert (filters["scenario_id"], filters["fiscal_year"], filters["data_area_id"], filters["layer"]) == (
         "BUD", 2027, "E1", "base")
+    # S3 K6: the lock index's columns stay (the read runs on it), and the
+    # entry's Cycle joins the predicate: another round's figure is not this one's.
+    assert filters["cycle"] == "BCYC-BUD-2027"
+
+
+def test_the_entry_side_is_keyed_by_the_cycle_not_the_pair(env):
+    """S3 K6 (QB4 a): an annual figure of another round of the same pair
+    does not refuse the entry; one of the entry's own Cycle does."""
+    env.data["Budget Annual Input"] = [_annual_input(scenario="FC", cycle="BCYC-FC-2027-Q1")]
+    _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}], scenario_id="FC",
+                cycle="BCYC-FC-2027-Q2")
+    with pytest.raises(Thrown, match="BAI-1"):
+        _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}], scenario_id="FC",
+                    cycle="BCYC-FC-2027-Q1")
+
+
+def test_the_entry_side_requires_the_cycle(env):
+    with pytest.raises(TypeError):
+        env.mod.assert_no_annual_input("BUD", 2027, "E1", "base", [{"main_account": "4000"}],
+                                       entry="BENT-P3", period=3)
 
 
 def test_an_entry_without_lines_reads_nothing(env):
@@ -809,7 +830,7 @@ def test_an_entry_without_lines_reads_nothing(env):
 
 def _annual_side(env, **over):
     row = {"scenario_id": "BUD", "fiscal_year": 2027, "data_area_id": "E1", "layer": "base",
-           "main_account": "4000", "dim_cost_center": "CC1"}
+           "main_account": "4000", "dim_cost_center": "CC1", "cycle": "BCYC-BUD-2027"}
     row.update(over)
     env.mod.assert_no_entry_lines(row, name="BAI-NEW")
 
@@ -840,6 +861,10 @@ def test_the_annual_side_reads_the_entry_lines_with_a_locking_read(env):
     ((doctype, filters, for_update, _order),) = env.state.locked_reads
     assert doctype == "Budget Entry Line" and for_update
     assert filters["parenttype"] == "Budget Entry"
+    # S3 K6: on the lock index's columns, plus the row's Cycle. No Cycle
+    # docstatus read follows: the row's Cycle is a draft (the guard), so every
+    # line of it counts, and another Cycle's lines are not read.
+    assert (filters["scenario_id"], filters["fiscal_year"], filters["cycle"]) == ("BUD", 2027, "BCYC-BUD-2027")
 
 
 def test_lock_cycles_locks_every_cycle_of_the_scenario_and_year(env):
@@ -863,23 +888,24 @@ def test_lock_cycles_is_skipped_in_install_and_migrate(env, flag):
     assert env.state.locked_reads == []
 
 
-# ---- 19-b: a cancelled Cycle's lines do not block ---------------------------------
+# ---- 19-b, then S3 K6: only the row's own Cycle's lines block -----------------------
 
 def test_lines_under_a_cancelled_cycle_do_not_block_an_annual_input(env):
-    # An amended pair: the cancelled original's entries stay as the audit trail.
+    # An amended pair: the cancelled original's entries stay as the audit
+    # trail; the figure names the amendment, whose lines are read.
     env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-OLD", "scenario_id": "BUD",
                                      "fiscal_year": 2027, "docstatus": 2})
     env.data["Budget Entry Line"] = [_line(cycle="BCYC-BUD-2027-OLD")]
     _annual_side(env)
 
 
-@pytest.mark.parametrize("docstatus", [0, 1])
-def test_lines_under_a_draft_or_approved_cycle_still_block(env, docstatus):
-    env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-X", "scenario_id": "BUD",
-                                     "fiscal_year": 2027, "docstatus": docstatus})
-    env.data["Budget Entry Line"] = [_line(cycle="BCYC-BUD-2027-X")]
+def test_lines_of_another_round_of_the_pair_do_not_block(env):
+    """S3 K6 (QB4 a): the figure is for Q2; Q1's monthly lines are another
+    round's. Keyed by the pair they blocked."""
+    env.data["Budget Entry Line"] = [_line(scenario="FC", cycle="BCYC-FC-2027-Q1")]
+    _annual_side(env, scenario_id="FC", cycle="BCYC-FC-2027-Q2")
     with pytest.raises(Thrown, match="BENT-P3"):
-        _annual_side(env)
+        _annual_side(env, scenario_id="FC", cycle="BCYC-FC-2027-Q1")
 
 
 # ---- PR #522 review 1: every locking read runs on an index -------------------------
@@ -983,6 +1009,16 @@ def test_an_annual_input_on_another_grain_leaves_the_check_ready(env, other):
 def test_the_check_matches_a_blank_dimension_to_an_unset_one(env):
     env.data["Budget Annual Input"] = [_annual_input(cc=None)]
     plan = env.plan([HEADER, _row(cc="")])
+    assert any("BAI-1" in e for e in _errors(plan)), _errors(plan)
+
+
+def test_an_annual_input_of_another_round_leaves_the_check_ready(env):
+    """S3 K6: the plan's one-writer report is keyed by the round it picked."""
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    env.data["Budget Annual Input"] = [_annual_input(scenario="FC", cycle="BCYC-FC-2027-Q1")]
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-06-30")])
+    assert plan["ok"], _errors(plan)
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31")])
     assert any("BAI-1" in e for e in _errors(plan)), _errors(plan)
 
 

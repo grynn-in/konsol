@@ -45,7 +45,10 @@ def _match(row, filters):
 def ctl(monkeypatch):
     tables = {"Budget Cycle": [], "Budget Annual Input": []}
 
+    reads = []
+
     def get_all(doctype, filters=None, fields=None, **kw):
+        reads.append((doctype, filters))
         out = []
         for r in tables[doctype]:
             if _match(r, filters):
@@ -77,18 +80,23 @@ def ctl(monkeypatch):
     spec = importlib.util.spec_from_file_location("_bai_gate_under_test", PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return types.SimpleNamespace(mod=mod, tables=tables)
+    return types.SimpleNamespace(mod=mod, tables=tables, reads=reads)
 
 
-def _cycle(ctl, scenario, year, docstatus):
+def _cycle(ctl, scenario, year, docstatus, name=None):
+    """A Cycle of the pair; its name defaults to BC-<scenario>-<year>-<docstatus>."""
+    name = name or f"BC-{scenario}-{year}-{docstatus}"
     ctl.tables["Budget Cycle"].append(
-        {"name": f"BC-{scenario}-{year}-{docstatus}", "scenario_id": scenario,
-         "fiscal_year": year, "docstatus": docstatus})
+        {"name": name, "scenario_id": scenario, "fiscal_year": year, "docstatus": docstatus})
+    return name
 
 
-def _row(ctl, name, scenario, year):
+def _row(ctl, name, scenario, year, cycle=None):
+    """An annual row; S3 K6 (QB4 a): it names its Cycle, the pair's
+    BC-<scenario>-<year>-1 unless the test says otherwise."""
     ctl.tables["Budget Annual Input"].append(
-        {"name": name, "scenario_id": scenario, "fiscal_year": year})
+        {"name": name, "scenario_id": scenario, "fiscal_year": year,
+         "cycle": cycle or f"BC-{scenario}-{year}-1"})
 
 
 def _synced(ctl):
@@ -112,8 +120,8 @@ def test_row_under_approved_cycle_syncs(ctl):
 
 @pytest.mark.parametrize("docstatus", [0, 2])
 def test_row_under_draft_or_cancelled_cycle_is_excluded(ctl, docstatus):
-    _cycle(ctl, "ZZS", 2026, docstatus)
-    _row(ctl, "held", "ZZS", 2026)
+    cycle = _cycle(ctl, "ZZS", 2026, docstatus)
+    _row(ctl, "held", "ZZS", 2026, cycle=cycle)
     assert _synced(ctl) == []
 
 
@@ -144,11 +152,42 @@ def test_pair_is_matched_not_the_cross_product(ctl):
 
 
 def test_cancelled_cycle_beside_an_approved_one_still_approves(ctl):
-    """An amended cycle leaves a cancelled original; the approved one counts."""
-    _cycle(ctl, "ZZS", 2026, 2)
+    """An amended cycle leaves a cancelled original; a row of the approved
+    amendment counts, a row left on the cancelled original does not (S3 K6:
+    the row's own Cycle decides, not the pair)."""
+    old = _cycle(ctl, "ZZS", 2026, 2)
     _cycle(ctl, "ZZS", 2026, 1)
     _row(ctl, "ok", "ZZS", 2026)
+    _row(ctl, "left_behind", "ZZS", 2026, cycle=old)
     assert _synced(ctl) == ["ok"]
+
+
+def test_only_the_approved_rounds_rows_sync(ctl):
+    """S3 K6 (QB4 a): two forecast rounds of one pair, Q1 approved and Q2 a
+    draft. Matching the pair would send Q2's rows too."""
+    q1 = _cycle(ctl, "ZZFC", 2026, 1, name="BC-ZZFC-2026-Q1")
+    q2 = _cycle(ctl, "ZZFC", 2026, 0, name="BC-ZZFC-2026-Q2")
+    _row(ctl, "q1", "ZZFC", 2026, cycle=q1)
+    _row(ctl, "q2", "ZZFC", 2026, cycle=q2)
+    assert _synced(ctl) == ["q1"]
+
+
+def test_a_row_whose_cycle_does_not_exist_is_excluded(ctl):
+    _cycle(ctl, "ZZS", 2026, 1)
+    _row(ctl, "orphan", "ZZS", 2026, cycle="BC-GONE")
+    assert _synced(ctl) == []
+
+
+def test_the_filter_reads_the_rows_cycle_not_its_pair(ctl):
+    """The declared filter names the rows by cycle: a row of the pair whose
+    cycle field names another doctype's row is not matched by its pair."""
+    _cycle(ctl, "ZZS", 2026, 1)
+    _row(ctl, "ok", "ZZS", 2026)
+    filters = ctl.mod.BudgetAnnualInput.CH_SYNC_FILTERS
+    assert filters == {"name": ["in", ["ok"]]}
+    # The read of the rows filtered on their cycle, not on scenario and year.
+    reads = [r for r in ctl.reads if r[0] == "Budget Annual Input"]
+    assert reads and all("cycle" in (r[1] or {}) and "scenario_id" not in (r[1] or {}) for r in reads), reads
 
 
 def test_filter_is_worked_out_on_every_read(ctl):
@@ -173,6 +212,6 @@ def test_the_cycle_lock_guard_refuses_during_a_data_import(ctl):
     ctl.mod.frappe.throw = throw
     ctl.mod.frappe.flags.in_import = True
     row = ctl.mod.BudgetAnnualInput()
-    row.scenario_id, row.fiscal_year = "ZZS", 2026
+    row.scenario_id, row.fiscal_year, row.cycle = "ZZS", 2026, "BC-ZZS-2026"
     with pytest.raises(Refused, match="BC-ZZS-2026 .ZZS 2026. is approved"):
-        row._guard_cycle_writable([{"name": "BC-ZZS-2026", "docstatus": 1, "workflow_state": "Approved"}])
+        row._guard_cycle_writable({"name": "BC-ZZS-2026", "docstatus": 1, "workflow_state": "Approved"})

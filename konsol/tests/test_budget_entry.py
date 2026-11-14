@@ -322,10 +322,12 @@ def env(monkeypatch):
     intake.refuse_delete = None
     intake.refuse_basis = None
     grain_checks = []
+    grain_cycles = []   # S3 K6: the Cycle each grain check was keyed by
 
-    def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, entry, period):
+    def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, cycle, entry, period):
         locks.append(("grain check", scenario_id))
         grain_checks.append((scenario_id, fiscal_year, entity, layer, [dict(r) for r in lines], entry, period))
+        grain_cycles.append(cycle)
         if intake.refuse_grain:
             frappe.throw(intake.refuse_grain, Thrown)
     intake.assert_no_annual_input = assert_no_annual_input
@@ -350,7 +352,7 @@ def env(monkeypatch):
                                  grain=loaded["konsol.epm.budget_grain"], sql=sql_calls,
                                  judged=judged, intake=intake, locks=locks, removed=removed,
                                  held_elsewhere=held_elsewhere, basis_checks=basis_checks, ytd_checks=ytd_checks, delete_checks=delete_checks,
-                                 grain_checks=grain_checks)
+                                 grain_checks=grain_checks, grain_cycles=grain_cycles)
 
 
 def _entry(env, lines=(), **kw):
@@ -814,3 +816,10 @@ def test_a_budget_entrys_lines_are_judged_without_an_as_of_date_column(env):
     doc.validate()
     ((table, _basis),) = env.judged
     assert "as_of_date" not in table[0]
+
+
+# ---- S3 K6 (QB4 a): the one-writer check is keyed by the entry's Cycle ----------------
+
+def test_the_grain_check_is_keyed_by_the_entrys_cycle(env):
+    _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)]).validate()
+    assert env.grain_cycles == ["BCYC-1"]

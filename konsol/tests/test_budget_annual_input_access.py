@@ -102,7 +102,13 @@ def ctl(monkeypatch):
     def get_value(dt, name, field, *a, **k):
         if dt == "Workflow":
             return workflow.doc.name if workflow.doc else None
+        if dt == "Budget Cycle":
+            # A Cycle outside the locked pair: its own pair, for the refusal to name.
+            row = next((c for c in cycles_elsewhere if c["name"] == name), None)
+            return (row["scenario_id"], row["fiscal_year"]) if row else None
         return statuses.get(name, "Published")
+
+    cycles_elsewhere = [{"name": "BC-ZZOTHER-2025", "scenario_id": "ZZOTHER", "fiscal_year": 2025}]
 
     frappe.get_cached_doc = lambda dt, name: workflow.doc
     frappe.db = types.SimpleNamespace(
@@ -182,13 +188,13 @@ def ctl(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return types.SimpleNamespace(mod=mod, frappe=frappe, calls=calls, statuses=statuses, locks=locks,
-                                 locked=locked, held=held, waits=waits, workflow=workflow)
+                                 locked=locked, held=held, waits=waits, workflow=workflow, tables=tables)
 
 
 def _row(ctl, entity, **over):
     fields = dict(
         doctype="Budget Annual Input", name="x", scenario_id="ZZS", layer="base", currency="EUR",
-        data_area_id=entity, fiscal_year="2026", main_account="4000",
+        cycle="BC-ZZS-2026", data_area_id=entity, fiscal_year="2026", main_account="4000",
         dim_cost_center="CC1", dim_region="EU", submitted_by="u", spread_profile_id="EVEN")
     fields.update(over)
     return ctl.mod.BudgetAnnualInput(**fields)
@@ -335,7 +341,7 @@ def test_a_duplicate_committed_while_the_save_waited_is_refused(ctl):
     transaction's snapshot. Only a locking read sees it."""
     ctl.locked["Budget Annual Input"].append(dict(
         name="BAI-OTHER", scenario_id="ZZS", data_area_id="ZZE1", fiscal_year=2026, layer="base",
-        main_account="4000", dim_cost_center="CC1", dim_region="EU"))
+        cycle="BC-ZZS-2026", main_account="4000", dim_cost_center="CC1", dim_region="EU"))
     with pytest.raises(Exception, match="BAI-OTHER"):
         _row(ctl, "ZZE1").validate()
 
@@ -343,7 +349,7 @@ def test_a_duplicate_committed_while_the_save_waited_is_refused(ctl):
 def test_a_duplicate_with_a_blank_dimension_matches_an_unset_one(ctl):
     ctl.locked["Budget Annual Input"].append(dict(
         name="BAI-OTHER", scenario_id="ZZS", data_area_id="ZZE1", fiscal_year=2026, layer="base",
-        main_account="4000", dim_cost_center="CC1", dim_region=None))
+        cycle="BC-ZZS-2026", main_account="4000", dim_cost_center="CC1", dim_region=None))
     with pytest.raises(Exception, match="BAI-OTHER"):
         _row(ctl, "ZZE1", dim_region="").validate()
 
@@ -351,7 +357,7 @@ def test_a_duplicate_with_a_blank_dimension_matches_an_unset_one(ctl):
 def test_the_row_itself_is_not_its_own_duplicate(ctl):
     ctl.locked["Budget Annual Input"].append(dict(
         name="x", scenario_id="ZZS", data_area_id="ZZE1", fiscal_year=2026, layer="base",
-        main_account="4000", dim_cost_center="CC1", dim_region="EU"))
+        cycle="BC-ZZS-2026", main_account="4000", dim_cost_center="CC1", dim_region="EU"))
     _row(ctl, "ZZE1").validate()
 
 
@@ -368,7 +374,7 @@ def test_a_cancelled_original_beside_a_draft_amendment_does_not_refuse(ctl):
     ctl.locked["Budget Cycle"][0].update(docstatus=2, workflow_state="Cancelled")
     ctl.locked["Budget Cycle"].append({"name": "BC-ZZS-2026-1", "scenario_id": "ZZS", "fiscal_year": 2026,
                                        "docstatus": 0, "workflow_state": "Draft"})
-    _row(ctl, "ZZE1").validate()
+    _row(ctl, "ZZE1", cycle="BC-ZZS-2026-1").validate()
 
 
 def test_an_annual_input_without_a_budget_cycle_is_refused_by_name(ctl):
@@ -513,3 +519,116 @@ def test_spread_profile_key_is_case_sensitive(ctl):
 def test_spread_profile_check_skipped_during_install_migrate(ctl, flag):
     setattr(ctl.frappe.flags, flag, True)
     _row(ctl, "ZZE1", spread_profile_id="NOPE").validate()
+
+
+# ---- S3 K6 (QB4 a): the row names its Cycle; the Cycle, not the pair, is judged ------
+# A forecast pair holds one live Cycle per round (K3), so an annual figure says
+# which round it is for. The pair is still locked first (QB9 a, name order);
+# the guard, the grain and the one-writer check then read the row's Cycle.
+
+def _rounds(ctl):
+    """Scenario ZZFC (forecast) with Q1 approved and Q2 a draft."""
+    ctl.tables["Scenario"].append({"name": "ZZFC", "scenario_type": "forecast", "is_active": 1})
+    ctl.locked["Budget Cycle"] += [
+        {"name": "BC-ZZFC-2026-Q1", "scenario_id": "ZZFC", "fiscal_year": 2026, "docstatus": 1,
+         "workflow_state": "Approved", "as_of_date": "2026-03-31"},
+        {"name": "BC-ZZFC-2026-Q2", "scenario_id": "ZZFC", "fiscal_year": 2026, "docstatus": 0,
+         "workflow_state": "Draft", "as_of_date": "2026-06-30"},
+    ]
+
+
+def test_the_rows_cycle_must_be_a_cycle_of_its_scenario_and_year(ctl):
+    with pytest.raises(Exception) as raised:
+        _row(ctl, "ZZE1", cycle="BC-ZZOTHER-2025").validate()
+    msg = str(raised.value)
+    assert "BC-ZZOTHER-2025" in msg and "ZZOTHER 2025" in msg and "ZZS 2026" in msg, msg
+
+
+def test_a_cycle_that_does_not_exist_is_refused_by_name(ctl):
+    with pytest.raises(Exception, match="BC-GONE"):
+        _row(ctl, "ZZE1", cycle="BC-GONE").validate()
+
+
+def test_a_row_without_a_cycle_is_refused_before_anything_is_read(ctl):
+    with pytest.raises(Exception, match="Budget Cycle"):
+        _row(ctl, "ZZE1", cycle=None).validate()
+    assert [lock for lock in ctl.locks if lock[0] == "read"] == []
+
+
+def test_the_rows_own_round_decides_writable_not_the_pair(ctl):
+    _rounds(ctl)
+    # Q2 is a draft: its row saves although Q1 of the same pair is approved.
+    _row(ctl, "ZZE1", scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q2").validate()
+    # Q1 is approved: its row is refused by name.
+    with pytest.raises(Exception, match=r"BC-ZZFC-2026-Q1 \(ZZFC 2026\) is approved"):
+        _row(ctl, "ZZE1", scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q1").validate()
+
+
+def test_a_row_under_a_cancelled_cycle_is_refused_on_save_and_told_to_amend(ctl):
+    ctl.locked["Budget Cycle"][0].update(docstatus=2, workflow_state="Cancelled")
+    with pytest.raises(Exception) as raised:
+        _row(ctl, "ZZE1").validate()
+    assert "BC-ZZS-2026" in str(raised.value) and "cancelled" in str(raised.value), raised.value
+    assert "amend" in str(raised.value).lower(), raised.value
+
+
+def test_a_row_under_a_cancelled_cycle_may_be_deleted(ctl):
+    ctl.locked["Budget Cycle"][0].update(docstatus=2, workflow_state="Cancelled")
+    _row(ctl, "ZZE1").on_trash()
+
+
+def test_a_delete_is_judged_by_the_rows_own_cycle(ctl):
+    _rounds(ctl)
+    _row(ctl, "ZZE1", scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q2").on_trash()
+    with pytest.raises(Exception, match=r"BC-ZZFC-2026-Q1 \(ZZFC 2026\) is approved"):
+        _row(ctl, "ZZE1", scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q1").on_trash()
+
+
+def test_the_pairs_cycles_are_locked_first_in_name_order_then_the_rows_own_is_read(ctl):
+    _rounds(ctl)
+    _row(ctl, "ZZE1", scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q2").validate()
+    cycles = [name for kind, name in ctl.locks if kind == "cycle"]
+    assert cycles[:2] == ["BC-ZZFC-2026-Q1", "BC-ZZFC-2026-Q2"], cycles
+    assert ctl.locks.index(("cycle", "BC-ZZFC-2026-Q2")) < ctl.locks.index(("read", "Budget Annual Input"))
+
+
+def test_the_same_grain_in_another_round_is_not_a_duplicate(ctl):
+    _rounds(ctl)
+    ctl.locked["Budget Annual Input"].append(dict(
+        name="BAI-Q1", scenario_id="ZZFC", data_area_id="ZZE1", fiscal_year=2026, layer="base",
+        cycle="BC-ZZFC-2026-Q1", main_account="4000", dim_cost_center="CC1", dim_region="EU"))
+    _row(ctl, "ZZE1", scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q2").validate()
+    ctl.locked["Budget Annual Input"].append(dict(
+        name="BAI-Q2", scenario_id="ZZFC", data_area_id="ZZE1", fiscal_year=2026, layer="base",
+        cycle="BC-ZZFC-2026-Q2", main_account="4000", dim_cost_center="CC1", dim_region="EU"))
+    with pytest.raises(Exception, match="BAI-Q2"):
+        _row(ctl, "ZZE1", scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q2").validate()
+
+
+def test_the_grain_read_keeps_the_lock_index_columns_and_adds_the_cycle(ctl):
+    reads = []
+    original = ctl.frappe.db.get_values
+
+    def get_values(doctype, filters=None, fields=None, **kw):
+        reads.append((doctype, dict(filters or {})))
+        return original(doctype, filters=filters, fields=fields, **kw)
+    ctl.frappe.db.get_values = get_values
+    _row(ctl, "ZZE1").validate()
+    (grain,) = [f for dt, f in reads if dt == "Budget Annual Input"]
+    for col in ("scenario_id", "fiscal_year", "data_area_id", "layer", "main_account", "cycle"):
+        assert col in grain and not isinstance(grain[col], list), (col, grain)
+    (lines,) = [f for dt, f in reads if dt == "Budget Entry Line"]
+    assert lines["cycle"] == "BC-ZZS-2026" and lines["scenario_id"] == "ZZS", lines
+
+
+def test_a_budget_entry_line_of_another_round_does_not_block(ctl):
+    _rounds(ctl)
+    ctl.locked["Budget Entry Line"].append(_line(scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q1"))
+    _row(ctl, "ZZE1", scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q2").validate()
+    ctl.locked["Budget Entry Line"].append(_line(scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q2"))
+    with pytest.raises(Exception, match="BENT-P3"):
+        _row(ctl, "ZZE1", scenario_id="ZZFC", cycle="BC-ZZFC-2026-Q2").validate()
+
+
+def test_the_intake_row_carries_the_cycle(ctl):
+    assert _row(ctl, "ZZE1")._intake_row()["cycle"] == "BC-ZZS-2026"
