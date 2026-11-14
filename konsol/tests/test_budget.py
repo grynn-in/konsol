@@ -144,7 +144,9 @@ def test_annual_budget_lock_holds_on_delete_too():
         src = f.read()
     for hook in ("def validate", "def on_trash", "def before_cancel"):
         body = src.split(hook)[1].split("\n    def ")[0]
-        assert "_guard_cycle_locked" in body, hook
+        assert "_guard_cycle_writable" in body, hook
+    # W4: the deadline-lock guard is gone; the V2 rule replaces it.
+    assert "_guard_cycle_locked" not in src
 
 
 def test_annual_budget_grain_is_unique():

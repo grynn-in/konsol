@@ -357,7 +357,7 @@ def test_a_cycle_approved_while_the_save_waited_is_refused(ctl):
     Cycle approved while this save waited on it is seen. Approved is
     docstatus 1: the Cycle has no lock status since S2-C W2a."""
     ctl.locked["Budget Cycle"][0].update(docstatus=1, workflow_state="Approved")
-    with pytest.raises(Exception, match="BC-ZZS-2026 is locked"):
+    with pytest.raises(Exception, match=r"BC-ZZS-2026 \(ZZS 2026\) is approved"):
         _row(ctl, "ZZE1").validate()
 
 
@@ -406,7 +406,7 @@ def test_a_delete_takes_the_cycle_lock_nowait(ctl):
 
 def test_a_delete_under_an_approved_cycle_is_refused(ctl):
     ctl.locked["Budget Cycle"][0].update(docstatus=1, workflow_state="Approved")
-    with pytest.raises(Exception, match="BC-ZZS-2026 is locked"):
+    with pytest.raises(Exception, match=r"BC-ZZS-2026 \(ZZS 2026\) is approved"):
         _row(ctl, "ZZE1").on_trash()
 
 
@@ -450,3 +450,31 @@ def test_with_no_active_workflow_a_draft_cycle_in_any_state_takes_annual_input(c
     ctl.locked["Budget Cycle"][0].update(workflow_state="Pending Approval")
     _row(ctl, "ZZE1").validate()
     _row(ctl, "ZZE1").on_trash()
+
+
+# ---- W4: an Annual Input edit, cancel or delete only while the Cycle is writable ----
+
+APPROVED = ("Budget Cycle BC-ZZS-2026 (ZZS 2026) is approved: annual figures change only while the "
+            "Cycle is a draft in its workflow's first state. Cancel the Cycle and amend it to change them.")
+
+
+@pytest.mark.parametrize("step", ["validate", "before_cancel", "on_trash"])
+def test_an_edit_cancel_or_delete_under_an_approved_cycle_is_refused_naming_it(ctl, step):
+    ctl.locked["Budget Cycle"][0].update(docstatus=1, workflow_state="Approved")
+    with pytest.raises(Exception) as raised:
+        getattr(_row(ctl, "ZZE1"), step)()
+    assert str(raised.value) == APPROVED
+    assert "Reopen" not in str(raised.value) and "locked" not in str(raised.value)
+
+
+def test_a_cancel_under_a_pending_cycle_is_refused_naming_its_state_and_the_reject(ctl):
+    ctl.locked["Budget Cycle"][0].update(workflow_state="Pending Approval")
+    with pytest.raises(Exception) as raised:
+        _row(ctl, "ZZE1").before_cancel()
+    assert str(raised.value) == ("Budget Cycle BC-ZZS-2026 is Pending Approval: a budget is written only "
+                                 "while its Cycle is in Draft. A Reject returns it to Draft.")
+
+
+@pytest.mark.parametrize("step", ["validate", "before_cancel", "on_trash"])
+def test_an_edit_cancel_or_delete_under_a_first_state_cycle_is_accepted(ctl, step):
+    getattr(_row(ctl, "ZZE1"), step)()
