@@ -59,16 +59,11 @@ def _created_roles():
     return set(_assigned_dict(os.path.join(APP_DIR, "install.py"), "ROLES"))
 
 
-# Budget Sheet and Budget Line are being deleted outright (#348 Z1); they still
-# name the retired Budget* roles until then.
-RETIRING = {"budget_sheet", "budget_line"}
 
 
 def test_every_role_the_app_names_is_created():
     named = {}
     for path in glob.glob(os.path.join(APP_DIR, "*", "doctype", "*", "*.json")):
-        if os.path.basename(os.path.dirname(path)) in RETIRING:
-            continue
         with open(path) as f:
             meta = json.load(f)
         if not isinstance(meta, dict):

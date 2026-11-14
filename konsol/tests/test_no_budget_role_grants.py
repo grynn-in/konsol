@@ -9,15 +9,11 @@ import json
 import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Budget Sheet and Budget Line are being deleted outright (Z1), not edited.
-RETIRING = {"budget_sheet", "budget_line"}
 
 
 def test_no_doctype_json_grants_a_budget_role():
     found = []
     for path in glob.glob(os.path.join(APP_DIR, "*", "doctype", "*", "*.json")):
-        if os.path.basename(os.path.dirname(path)) in RETIRING:
-            continue
         with open(path) as f:
             meta = json.load(f)
         if not isinstance(meta, dict):
