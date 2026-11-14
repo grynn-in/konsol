@@ -186,3 +186,16 @@ def test_regenerate_vars_writes_an_empty_dimensions_list(tmp_path):
     assert result["vars"]["dimensions"] == []
     assert result["vars"]["erp_sources"] == ["d365_fo"]
     assert result["vars"]["base_measures"][0]["name"] == "period_net_amount"
+
+
+def test_ownership_exit_journal_is_a_consolidation_build_model():
+    """gold_ownership_exit_journal (konsolidat#335) needs a Build Model entry,
+    or the generated dbt_project.yml gives it no domain."""
+    import json
+    path = os.path.join(APP_DIR, "fixtures", "build_model.json")
+    with open(path) as f:
+        rows = {r["name"]: r for r in json.load(f)}
+    row = rows.get("gold_ownership_exit_journal")
+    assert row is not None
+    assert row["model_name"] == "gold_ownership_exit_journal"
+    assert row["build_domain"] == "consolidation"

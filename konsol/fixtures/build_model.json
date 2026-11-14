@@ -157,6 +157,12 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_ownership_exit_journal",
+  "model_name": "gold_ownership_exit_journal",
+  "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_period_hierarchy",
   "model_name": "gold_period_hierarchy",
   "build_domain": "staging"
