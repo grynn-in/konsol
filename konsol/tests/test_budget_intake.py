@@ -167,9 +167,9 @@ def env(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    def plan(table, form_basis=BASIS, name_lines=True, **kw):
+    def plan(table, form_basis=BASIS, name_lines=True, whole_slices=True):
         frappe.session.user = state.user
-        return mod.plan(table, form_basis=form_basis, name_lines=name_lines, **kw)
+        return mod.plan(table, form_basis=form_basis, name_lines=name_lines, whole_slices=whole_slices)
 
     return types.SimpleNamespace(mod=mod, data=data, state=state, plan=plan)
 

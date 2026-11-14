@@ -204,6 +204,11 @@ class BudgetEntry(Document):
         budget_intake.assert_one_basis(
             self.cycle, self.data_area_id, self.layer, self.amount_basis or "", name=self.name,
             replacing=frappe.flags.get(_REPLACING_FLAG) or ())
+        # A whole-slice replacement (a Budget Upload) was judged by its plan.
+        if frappe.flags.get(_REPLACING_FLAG) is None:
+            budget_intake.assert_ytd_complete(
+                self.cycle, self.data_area_id, self.layer, self.amount_basis or "",
+                self.fiscal_period, name=self.name)
         dims = budget_dimension_fields()
         budget_intake.assert_no_annual_input(
             self.scenario_id, self.fiscal_year, self.data_area_id, self.layer,

@@ -103,7 +103,7 @@ def ensure_lock_indexes():
         add_lock_index(doctype)
 
 
-def plan(table, *, form_basis, name_lines):
+def plan(table, *, form_basis, name_lines, whole_slices):
     """Judge a budget table for the current user. Returns
 
         {"groups": {BudgetKey: [rows]}, "report": [item per group], "ok": bool}
@@ -129,6 +129,12 @@ def plan(table, *, form_basis, name_lines):
     line is None, the convention the shared checks read as "no line known",
     and a problem names its account instead or nothing. A batch caller then
     names its own row. No default.
+
+    `whole_slices` says whether the table states each of its slices whole (a
+    Budget Upload replaces a slice with the file's periods), so the plan can
+    judge a Year-to-date slice's periods (Q21). A one-entry writer passes
+    False: its other periods are saved ones, judged by assert_ytd_complete
+    under the Cycle lock. No default.
     """
     groups = M.split_table(table, _budget_dimensions())
     if not name_lines:
@@ -172,6 +178,8 @@ def plan(table, *, form_basis, name_lines):
         item["denials"] = denials
         report.append(item)
     _refuse_mixed_bases(report)
+    if whole_slices:
+        _refuse_ytd_gaps(report)
     for item in report:
         item["ok"] = not item["errors"]
     return {"groups": groups, "report": report, "ok": all(i["ok"] for i in report)}
@@ -196,6 +204,71 @@ def _refuse_mixed_bases(report):
                     f"period {other['fiscal_period']} gives \"{other['amount_basis']}\" for entity "
                     f"{item['entity']}, layer {item['layer']}: one Cycle, entity and layer hold one "
                     "amount basis across all their periods. Give every period of the layer the same basis.")
+
+
+YTD_BASIS = "Year-to-date movement"
+
+
+def _ranges(periods):
+    """Sorted periods as "1\u20132, 4"."""
+    runs, start, prev = [], None, None
+    for p in sorted(periods):
+        if start is None:
+            start = prev = p
+        elif p == prev + 1:
+            prev = p
+        else:
+            runs.append((start, prev))
+            start = prev = p
+    if start is not None:
+        runs.append((start, prev))
+    return ", ".join(str(a) if a == b else f"{a}\u2013{b}" for a, b in runs)
+
+
+def _ytd_gap_message(entity, layer, stated):
+    """The refusal for a Year-to-date slice whose `stated` periods are not 1..max,
+    or None when they are (Q21). A line's movement is its YTD minus the previous
+    stated period's, so a missing period folds into the next one."""
+    missing = set(range(1, max(stated) + 1)) - set(stated)
+    if not missing:
+        return None
+    return (f"Year-to-date lines for {entity} {layer} state periods {_ranges(stated)} but not "
+            f"{_ranges(missing)}. State every period from 1, or use the Movement basis.")
+
+
+def _refuse_ytd_gaps(report):
+    """A Year-to-date slice states every period from 1 to its last (Q21). The
+    refusal names the slice and the missing periods, on every group of it."""
+    by_slice = {}
+    for item in report:
+        if item["amount_basis"] == YTD_BASIS:
+            slice_key = (item["scenario"], item["fiscal_year"], item["entity"], item["layer"])
+            by_slice.setdefault(slice_key, []).append(item)
+    for items in by_slice.values():
+        stated = {int(i["fiscal_period"]) for i in items}
+        message = _ytd_gap_message(items[0]["entity"], items[0]["layer"], stated)
+        if message:
+            for item in items:
+                item["errors"].append(message)
+
+
+def assert_ytd_complete(cycle, entity, layer, basis, period, *, name, replacing=()):
+    """Refuse a Year-to-date write that would leave its (cycle, entity, layer)
+    slice without a period from 1 to its last (Q21): the slice as it would
+    stand is the saved Year-to-date entries (not `name`, not `replacing`) plus
+    `period`. A locking read, like assert_one_basis. Writes nothing."""
+    if basis != YTD_BASIS:
+        return
+    rows = frappe.db.get_values(
+        "Budget Entry", {"cycle": cycle, "data_area_id": entity, "layer": layer},
+        ["name", "fiscal_period", "amount_basis"], as_dict=True,
+        order_by="fiscal_period asc, name asc", for_update=True)
+    skip = set(replacing) | {name}
+    stated = {int(period)} | {int(r.fiscal_period) for r in rows
+                              if r.name not in skip and (r.amount_basis or "") == basis}
+    message = _ytd_gap_message(entity, layer, stated)
+    if message:
+        frappe.throw(message, frappe.ValidationError)
 
 
 def assert_one_basis(cycle, entity, layer, basis, *, name, replacing=()):
@@ -236,7 +309,7 @@ def judge_one(table, *, form_basis):
     wins, the other problems are not for a user who may not write the rows),
     else frappe.ValidationError. Writes nothing."""
     try:
-        result = plan(table, form_basis=form_basis, name_lines=False)
+        result = plan(table, form_basis=form_basis, name_lines=False, whole_slices=False)
     except ValueError as error:
         frappe.throw(str(error), frappe.ValidationError)
     if len(result["report"]) != 1:

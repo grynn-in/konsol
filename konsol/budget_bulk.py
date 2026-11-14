@@ -139,7 +139,8 @@ def _record_check(doc):
     """Check the file and write the report onto the upload."""
     try:
         report = budget_intake.plan(_read_table(doc.upload_file),
-                                    form_basis=doc.amount_basis or "", name_lines=True)["report"]
+                                    form_basis=doc.amount_basis or "", name_lines=True,
+                                    whole_slices=True)["report"]
     except ValueError as e:
         doc.status, doc.error, doc.report = "Failed", str(e), "[]"
         doc.group_count = doc.valid_count = doc.total_rows = 0
@@ -427,7 +428,7 @@ def run_load(upload, expected):
     loaded = failed = 0
     try:
         result = budget_intake.plan(_read_table(doc.upload_file), form_basis=doc.amount_basis or "",
-                                    name_lines=True)
+                                    name_lines=True, whole_slices=True)
         report = _whole_slices(result["report"])
         # End the snapshot the plan read in: the slices read the entries as
         # they are now (and lock them), not as they were when the file was
