@@ -230,8 +230,9 @@ def _load(world):
         raise AssertionError(doctype)
 
     def get_all(doctype, filters=None, fields=None, pluck=None, **k):
-        assert doctype == "Dimension Value", doctype
-        return list(world.members.get(filters["dimension"], []))
+        # KF2: members come from the shared helper, never frappe.get_all (v16's
+        # virtual get_all pages at 20 and checks the user's read permission).
+        raise AssertionError(f"frappe.get_all({doctype!r}) is not allowed here")
 
     def sql(query, values=None, as_dict=False, **k):
         world.sql.append(query)
@@ -283,6 +284,8 @@ def _load(world):
         spec = importlib.util.spec_from_file_location("cas_under_test", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        # the shared member helper is covered in test_cost_allocation_members.py
+        mod._dimension_members = lambda dimension: set(world.members.get(dimension, []))
         return mod
     finally:
         for k, v in saved.items():
@@ -414,6 +417,59 @@ def test_before_cancel_skips_the_gate_for_a_budget_scenario():
     mod = _load(w)
     _stat(w, mod, scenario="ZZBUD").before_cancel()
     assert w.open_calls == []
+
+
+def test_validate_accepts_the_25th_dimension_value_as_a_member():
+    w = _World()
+    w.members["ZZDIM"] = [f"ZZM{i:02d}" for i in range(1, 26)]
+    mod = _load(w)
+    doc = _stat(w, mod, rows=[{"fiscal_period": 1, "member": "ZZM25", "value": 3.0}])
+    doc.validate()
+    assert doc.row_count == 1
+
+
+def test_statistic_reads_members_through_the_shared_helper_only():
+    src = open(os.path.join(EPM_DOCTYPES, STAT, STAT + ".py")).read()
+    assert "cost_allocation_members" in src
+    assert 'get_all(\n            "Dimension Value"' not in src and '"Dimension Value"' not in src
+
+
+def test_before_cancel_refuses_while_a_submitted_run_cites_the_statistic():
+    w = _World()
+    mod = _load(w)
+    calls = []
+
+    def sql(query, values=None, as_dict=False, **k):
+        calls.append((query, values))
+        q = " ".join(query.split())
+        if ("docstatus = 1" in q and "w.statistic = %(statistic)s" in q
+                and (values or {}).get("statistic") == "CAS-00001"):
+            return [_Row({"name": "CARS-00007"})]
+        return []
+
+    mod.frappe.db.sql = sql
+    msg = _refusal(_stat(w, mod, scenario="ZZBUD").before_cancel)
+    assert "CARS-00007" in msg
+    assert calls
+
+
+def test_before_cancel_allows_when_no_submitted_run_cites_it():
+    w = _World()
+    mod = _load(w)
+
+    def sql(query, values=None, as_dict=False, **k):
+        q = " ".join(query.split())
+        assert "docstatus = 1" in q and (values or {}).get("statistic") == "CAS-00001"
+        return []
+
+    mod.frappe.db.sql = sql
+    _stat(w, mod, scenario="ZZBUD").before_cancel()
+
+
+def test_cancel_exception_is_not_attributed_to_the_decision_maker():
+    src = open(os.path.join(EPM_DOCTYPES, STAT, STAT + ".py")).read()
+    assert "pending" in src
+    assert "Decision Q4 (13 Nov 2026, Deepak Pai): cancelling" not in src
 
 
 def test_sync_header_and_values_after_submit_and_cancel_and_delete():
