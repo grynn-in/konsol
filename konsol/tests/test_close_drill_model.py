@@ -424,3 +424,9 @@ def test_a_heading_with_no_rows_drills_to_zero_with_no_rows():
     result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
     assert result["rows"] == []
     assert result["total"] == 0.0
+
+
+def test_year_end_close_and_ownership_exit_have_labels():
+    """konsolidat#316 / #335: the two new FCTB adjustment types are named."""
+    assert M._LAYER_LABELS["journal_close"] == "Year-end close"
+    assert M._LAYER_LABELS["ownership_exit"] == "Ownership exit"
