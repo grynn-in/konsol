@@ -43,8 +43,9 @@ def ctl(monkeypatch):
             # Frappe's: load_doc_before_save reads the row FOR UPDATE.
             locks.append(("annual input", self.name))
 
-    def throw(msg, *a, **k):
-        raise Exception(msg)
+    def throw(msg, exc=None, *a, **k):
+        # frappe.throw raises the type it is given.
+        raise (exc or Exception)(msg)
 
     frappe = types.ModuleType("frappe")
     frappe.PermissionError = type("PermissionError", (Exception,), {})

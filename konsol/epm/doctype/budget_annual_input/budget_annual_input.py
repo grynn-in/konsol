@@ -177,12 +177,21 @@ class BudgetAnnualInput(Document):
 
         The write-access check runs here too: delete is a write, and a user
         granted one entity must not delete another's annual figure.
+
+        The Cycle is locked here too, so a delete cannot slip past a Cycle
+        approval that is committing. Frappe has locked this row already, so
+        the Cycle lock is taken NOWAIT (lock_cycles(wait=False)): a Cycle
+        another writer holds refuses the delete at once instead of waiting
+        while this row is held. A pair with no Cycle guards nothing: an orphan
+        figure may go, as an orphan Budget Entry may.
         """
         if not (frappe.flags.in_install or frappe.flags.in_migrate):
             from konsol import budget_intake
 
             budget_intake.assert_annual_access(self._intake_row())
-            self._guard_cycle_locked(budget_intake.lock_cycles(self.scenario_id, self.fiscal_year))
+            if self.scenario_id and self.fiscal_year:
+                self._guard_cycle_locked(
+                    budget_intake.lock_cycles(self.scenario_id, self.fiscal_year, wait=False))
 
     def _validate_main_account_published(self):
         """The warehouse chart reads Published Main Accounts only, so a row on

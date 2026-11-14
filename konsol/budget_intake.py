@@ -319,7 +319,7 @@ def annual_check(row):
         frappe.throw("\n".join(problems), frappe.ValidationError)
 
 
-def lock_cycles(scenario_id, fiscal_year):
+def lock_cycles(scenario_id, fiscal_year, *, wait=True):
     """Lock every Budget Cycle row of (scenario, year), in name order, and
     return each as {name, docstatus, status}, read by the lock itself: under
     REPEATABLE READ a plain read would serve the snapshot and miss a Cycle
@@ -328,12 +328,25 @@ def lock_cycles(scenario_id, fiscal_year):
     more than one. The Annual Input writers take this first, the lock order
     every budget writer keeps (the Cycle row before the record it saves). No
     Cycle, nothing locked: then no Budget Entry of the pair exists to conflict
-    with. Skipped in install and migrate, as assert_cycle_draft is."""
+    with. Skipped in install and migrate, as assert_cycle_draft is.
+
+    A delete cannot keep that order: Frappe locks the row before on_trash. It
+    passes ``wait=False``: the lock is taken NOWAIT and a Cycle another writer
+    holds refuses the delete at once, naming the pair, rather than wait on the
+    Cycle while holding the row (Budget Entry's assert_cycle_draft does the
+    same)."""
     if frappe.flags.in_install or frappe.flags.in_migrate:
         return []
-    rows = frappe.db.get_values("Budget Cycle", {"scenario_id": scenario_id, "fiscal_year": fiscal_year},
-                                ["name", "docstatus", "status"], as_dict=True, order_by="name asc",
-                                for_update=True)
+    try:
+        rows = frappe.db.get_values("Budget Cycle", {"scenario_id": scenario_id, "fiscal_year": fiscal_year},
+                                    ["name", "docstatus", "status"], as_dict=True, order_by="name asc",
+                                    for_update=True, wait=wait)
+    except (frappe.QueryTimeoutError, frappe.QueryDeadlockError) as error:
+        if wait:
+            raise
+        # Keep the type: a deadlock has already rolled the transaction back.
+        frappe.throw(f"The Budget Cycle of {scenario_id} {fiscal_year} is being changed by another user, so "
+                     "this annual figure cannot be deleted right now. Try again in a moment.", type(error))
     return [{"name": r.name, "docstatus": int(r.docstatus or 0), "status": r.status or ""} for r in rows]
 
 
