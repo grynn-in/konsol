@@ -1,6 +1,6 @@
 """epm_gold.budget_monthly_input leaves konsol (konsol#348 S2-C Z6, #282).
 
-Budget Sheet wrote it, and S2-C Z1 retired Budget Sheet. konsolidat#356
+The bottom-up sheets wrote it, and S2-C Z1 retired them. konsolidat#356
 already took it out of the warehouse contract and gold_spread_budget no
 longer reads it. So konsol stops creating it (_REFERENCE_TABLE_DDL), stops
 adding dimension columns to it and reading values from it, and a patch drops

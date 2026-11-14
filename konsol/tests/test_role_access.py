@@ -71,12 +71,6 @@ def test_every_role_the_app_names_is_created():
                 named.setdefault(s["allow_edit"], os.path.relpath(path, APP_DIR))
         for t in meta.get("transitions") or []:
             named.setdefault(t.get("allowed"), os.path.relpath(path, APP_DIR))
-    sheet = os.path.join(APP_DIR, "epm", "doctype", "budget_sheet", "budget_sheet.py")
-    for role in _assigned_dict(sheet, "LAYER_ROLES").values():
-        named.setdefault(role, "budget_sheet.py LAYER_ROLES")
-    for aliases in _assigned_dict(sheet, "LAYER_ROLE_ALIASES").values():
-        for role in aliases:
-            named.setdefault(role, "budget_sheet.py LAYER_ROLE_ALIASES")
     missing = {r: where for r, where in named.items() if r and r not in FRAPPE_ROLES and r not in _created_roles()}
     assert not missing, f"named but never created by install.ROLES: {missing}"
 
@@ -111,8 +105,6 @@ MATRIX = {
     # bulk trial balance upload: only the role that submits trial balances loads
     # it holds every entity's figures, so not even read for the Analyst
     "Trial Balance Upload": {"EPM Admin": "rwcd", "EPM Analyst": ""},
-    "Budget Sheet": {"Budget Submitter": "rwc", "Entity Accountant": "rwc", "Budget Controller": "rw",
-                     "Budget Manager": "rw", "Budget Approver": "rw"},
     # konsol#348 S2-C W2a (BUD-9-3): the Analyst drafts and sends, the Close
     # Lead approves (submits) and cancels; no Budget* role row remains
     "Budget Cycle": {"EPM Admin": "rwcsxa", "EPM Analyst": "rwc", "Entity Accountant": "r", "EPM User": "r",

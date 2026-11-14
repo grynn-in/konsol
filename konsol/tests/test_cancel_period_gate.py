@@ -343,7 +343,7 @@ def test_cancel_past_last_declared_period():
 
 def test_budget_cycle_is_an_approval_not_a_lock():
     """S2-C W2b (BUD-9-3, Q9-a): submit is the approval, so the Cycle sets no
-    lock fields, pushes no Budget Sheet and enqueues no D365 write-back. Its
+    lock fields, pushes no sheet and enqueues no D365 write-back. Its
     submit and cancel only queue the warehouse syncs, after the commit."""
     for rel, cls in _classes():
         if cls.name != "BudgetCycle":
@@ -352,7 +352,8 @@ def test_budget_cycle_is_an_approval_not_a_lock():
             module_src = f.read()
         methods = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
         assert not ({"_push_sheets", "_sheets", "_d365_enabled_for"} & methods), methods
-        assert "d365_writeback" not in module_src and "Budget Sheet" not in module_src
+        # Sheet mentions are pinned gone by test_retire_budget_sheet_line_patch.py.
+        assert "d365_writeback" not in module_src
         for field in ("status", "locked_by", "locked_on"):
             assert f"self.{field}" not in module_src, field
         for hook in ("on_submit", "on_cancel"):

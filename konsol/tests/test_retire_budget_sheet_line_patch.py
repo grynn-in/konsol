@@ -193,3 +193,26 @@ def test_schema_apply_and_install_no_longer_name_budget_line():
         src = _source(*path)
         for gone in ("Budget Line", "Budget Sheet", "budget_line", "budget_sheet"):
             assert gone not in src, (path, gone)
+
+
+def test_no_app_file_names_the_retired_doctypes():
+    """Z3: outside the tests and the patches (which record history), nothing in
+    the app names Budget Sheet or Budget Line any more. "Budget Entry Line" is
+    a different name and does not match."""
+    found = []
+    for root, dirs, files in os.walk(APP_DIR):
+        rel = os.path.relpath(root, APP_DIR)
+        if rel.split(os.sep)[0] in ("tests", "patches", "node_modules") or "__pycache__" in rel:
+            dirs[:] = []
+            continue
+        for name in files:
+            path = os.path.join(root, name)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    text = f.read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for gone in DOCTYPES:
+                if gone in text:
+                    found.append((os.path.relpath(path, APP_DIR), gone))
+    assert not found, found

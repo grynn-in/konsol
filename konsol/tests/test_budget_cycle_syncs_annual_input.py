@@ -131,7 +131,7 @@ def test_two_calls_in_one_transaction_queue_one(env):
 
 
 def test_no_sheet_push_is_queued_on_submit_or_cancel(env):
-    # S2-C W2b: the Cycle no longer pushes Budget Sheets (Q9-a, Z1).
+    # S2-C W2b: the Cycle no longer pushes the retired sheets (Q9-a, Z1).
     env.cycle().on_submit()
     env.cycle().on_cancel()
     keys = {getattr(f, "_konsol_key", None) for f in env.queue}

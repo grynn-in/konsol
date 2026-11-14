@@ -1,7 +1,7 @@
 """The scenario_type copies on the planning doctypes cannot go stale (#443).
 
 Decided by Deepak Pai, 7 Nov 2026, on #443 (option B; rejected A, C, D):
-Budget Cycle, Budget Sheet and Budget Annual Input carry a read-only copy of
+Budget Cycle and Budget Annual Input carry a read-only copy of
 their Scenario's type so the Planning sidebar can list budgets and forecasts
 apart. Frappe re-copies a fetched field only when the document itself is saved,
 and never on a submitted cycle, so a Scenario whose type changed afterwards
@@ -10,8 +10,7 @@ would leave every copy wrong, and a forecast cycle listed as a budget.
 Two guards:
 
 1. ``Scenario.validate`` refuses a change of ``scenario_type`` while any Budget
-   Cycle or Budget Annual Input references the scenario, and names the count
-   (a Budget Sheet references it through its cycle, so the cycles count it).
+   Cycle or Budget Annual Input references the scenario, and names the count.
 2. The patch ``backfill_planning_scenario_type`` fills the copy on rows that
    existed before the field did.
 
@@ -159,7 +158,6 @@ def _referenced_site():
         "Budget Cycle": {"C1": {"scenario_id": "FC"}, "C2": {"scenario_id": "FC"},
                          "C3": {"scenario_id": "BU"}},
         "Budget Annual Input": {"A1": {"scenario_id": "FC"}},
-        "Budget Sheet": {},
     })
 
 
@@ -240,23 +238,21 @@ def test_the_backfill_copies_each_rows_scenario_type():
     site = _Site({
         "Scenario": {"BU": {"scenario_type": "budget"}, "FC": {"scenario_type": "forecast"}},
         "Budget Cycle": {"C1": {"scenario_id": "BU"}, "C2": {"scenario_id": "FC", "scenario_type": "forecast"}},
-        "Budget Sheet": {"S1": {"cycle": "C1"}, "S2": {"cycle": "C2", "scenario_type": "budget"}},
-        "Budget Annual Input": {"A1": {"scenario_id": "FC"}},
+        "Budget Annual Input": {"A1": {"scenario_id": "FC"}, "A2": {"scenario_id": "BU", "scenario_type": "forecast"}},
     })
     _patch(site)
     assert site.rows["Budget Cycle"]["C1"]["scenario_type"] == "budget"
     assert site.rows["Budget Cycle"]["C2"]["scenario_type"] == "forecast"
-    assert site.rows["Budget Sheet"]["S1"]["scenario_type"] == "budget"
-    assert site.rows["Budget Sheet"]["S2"]["scenario_type"] == "forecast"  # a wrong copy is fixed
+    assert site.rows["Budget Annual Input"]["A2"]["scenario_type"] == "budget"  # a wrong copy is fixed
     assert site.rows["Budget Annual Input"]["A1"]["scenario_type"] == "forecast"
     # Only rows that differ are written.
     assert ("Budget Cycle", "C2", "scenario_type", "forecast") not in site.set_values
     # The column exists before it is written: migrate runs every konsol patch
     # before the model sync (patches.txt has no [post_model_sync] section).
-    assert set(site.reloaded) == {"budget_cycle", "budget_sheet", "budget_annual_input"}
+    assert set(site.reloaded) == {"budget_cycle", "budget_annual_input"}
 
 
 def test_the_backfill_on_a_site_without_rows_writes_nothing():
-    site = _Site({"Scenario": {}, "Budget Cycle": {}, "Budget Sheet": {}, "Budget Annual Input": {}})
+    site = _Site({"Scenario": {}, "Budget Cycle": {}, "Budget Annual Input": {}})
     _patch(site)
     assert site.set_values == []

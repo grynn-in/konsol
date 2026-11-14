@@ -1,6 +1,6 @@
 """Budget Annual Input runs the budget write-access check on every save (#413).
 
-The bottom-up path (`_upsert_budget_line`, `budget_cell_save`) calls
+The bottom-up path (`budget_cell_save`, through `budget_intake`) calls
 `api._assert_budget_write_access`; the top-down path, a Desk save of an
 annual row, did not, so a user granted one entity could write another's
 budget. These tests load the controller against stubbed frappe and assert
