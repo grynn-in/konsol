@@ -8,7 +8,7 @@
  "editable_grid": 0,
  "engine": "InnoDB",
  "track_changes": 1,
- "autoname": "format:CAS-{#####}",
+ "autoname": "CAS-.#####",
  "title_field": "driver",
  "search_fields": "entity,scenario,fiscal_year",
  "fields": [

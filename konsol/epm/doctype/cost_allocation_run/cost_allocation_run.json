@@ -8,7 +8,7 @@
  "editable_grid": 0,
  "engine": "InnoDB",
  "track_changes": 1,
- "autoname": "format:CAR-{#####}",
+ "autoname": "CAR-.#####",
  "title_field": "rule_set",
  "search_fields": "scenario,fiscal_year,fiscal_period",
  "fields": [

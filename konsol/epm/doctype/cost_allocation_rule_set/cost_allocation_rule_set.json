@@ -6,7 +6,7 @@
   "issingle": 0,
   "istable": 0,
   "track_changes": 1,
-  "autoname": "format:CARS-{#####}",
+  "autoname": "CARS-.#####",
   "title_field": "rule_set_name",
   "search_fields": "entity,method",
   "fields": [
