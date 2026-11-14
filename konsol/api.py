@@ -1848,6 +1848,22 @@ def _budget_save_cells(data):
     return list(dict.fromkeys(names))
 
 
+def _assert_ytd_slices_complete(entry_names):
+    """Judge, once, the Year-to-date slices the entries `entry_names` belong
+    to (Q21-a): a write of several entries is judged at its end, not entry by
+    entry. Raises ValidationError naming the slice and its missing periods."""
+    if not entry_names:
+        return
+    from konsol import budget_intake
+
+    rows = frappe.db.get_values(
+        "Budget Entry", {"name": ["in", list(entry_names)]},
+        ["name", "cycle", "data_area_id", "layer"], as_dict=True,
+        order_by="name asc", for_update=True)
+    budget_intake.assert_ytd_slices_complete(
+        {(r["cycle"], r["data_area_id"], r["layer"]) for r in rows})
+
+
 @frappe.whitelist(methods=["POST"])
 def budget_save():
     """Save a budget line for one or more periods (konsol#348 X2).
@@ -1860,7 +1876,11 @@ def budget_save():
     and a period with a stale ``base_modified`` refuses it with HTTP 409.
     Returns ``{"entries": [names], "name": first}``.
     """
-    entries = _budget_save_cells(_get_json_body())
+    from konsol.epm.doctype.budget_entry.budget_entry import ytd_judged_at_end
+
+    with ytd_judged_at_end():
+        entries = _budget_save_cells(_get_json_body())
+        _assert_ytd_slices_complete(entries)
     return {"entries": entries, "name": entries[0] if entries else None}
 
 
@@ -1877,19 +1897,29 @@ def budget_save_batch():
     if not isinstance(items, list):
         frappe.throw("Expected a JSON array", frappe.ValidationError)
 
+    from konsol.epm.doctype.budget_entry.budget_entry import ytd_judged_at_end
+
     frappe.db.savepoint("budget_save_batch")
     results = []
-    for i, data in enumerate(items):
+    # Year-to-date completeness is judged once per slice after every item is
+    # saved, so the order of the items does not matter (Q21-a).
+    with ytd_judged_at_end():
+        for i, data in enumerate(items):
+            try:
+                entries = _budget_save_cells(data)
+            except (frappe.PermissionError, frappe.ValidationError) as e:
+                frappe.db.rollback(save_point="budget_save_batch")
+                frappe.throw(f"Row {i + 1}: {e}", type(e))
+            except Exception:
+                frappe.db.rollback(save_point="budget_save_batch")
+                frappe.log_error("Budget save failed", frappe.get_traceback())
+                frappe.throw(f"Row {i + 1}: save failed; check the server logs", frappe.ValidationError)
+            results.append({"name": entries[0] if entries else None, "entries": entries, "index": i})
         try:
-            entries = _budget_save_cells(data)
-        except (frappe.PermissionError, frappe.ValidationError) as e:
+            _assert_ytd_slices_complete([n for r in results for n in r["entries"]])
+        except frappe.ValidationError as e:
             frappe.db.rollback(save_point="budget_save_batch")
-            frappe.throw(f"Row {i + 1}: {e}", type(e))
-        except Exception:
-            frappe.db.rollback(save_point="budget_save_batch")
-            frappe.log_error("Budget save failed", frappe.get_traceback())
-            frappe.throw(f"Row {i + 1}: save failed; check the server logs", frappe.ValidationError)
-        results.append({"name": entries[0] if entries else None, "entries": entries, "index": i})
+            frappe.throw(str(e), frappe.ValidationError)
     return {"results": results}
 
 

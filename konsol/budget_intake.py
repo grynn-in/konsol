@@ -271,6 +271,41 @@ def assert_ytd_complete(cycle, entity, layer, basis, period, *, name, replacing=
         frappe.throw(message, frappe.ValidationError)
 
 
+def assert_ytd_slices_complete(slices):
+    """Refuse a write that left a Year-to-date (cycle, entity, layer) slice
+    without a period from 1 to its last (Q21): the check for a write of
+    several entries (a batch), judged once at its end on the slices it
+    touched, whatever order it saved them in. A locking read of what is saved
+    now; writes nothing."""
+    for cycle, entity, layer in sorted(set(slices)):
+        rows = frappe.db.get_values(
+            "Budget Entry", {"cycle": cycle, "data_area_id": entity, "layer": layer},
+            ["name", "fiscal_period", "amount_basis"], as_dict=True,
+            order_by="fiscal_period asc, name asc", for_update=True)
+        stated = {int(r.fiscal_period) for r in rows if (r.amount_basis or "") == YTD_BASIS}
+        message = _ytd_gap_message(entity, layer, stated) if stated else None
+        if message:
+            frappe.throw(message, frappe.ValidationError)
+
+
+def assert_ytd_survives_delete(cycle, entity, layer, basis, *, name):
+    """Refuse deleting the Year-to-date entry `name` when the slice's other
+    Year-to-date periods would not be 1..max (Q21). A locking read; writes
+    nothing."""
+    if basis != YTD_BASIS:
+        return
+    rows = frappe.db.get_values(
+        "Budget Entry", {"cycle": cycle, "data_area_id": entity, "layer": layer},
+        ["name", "fiscal_period", "amount_basis"], as_dict=True,
+        order_by="fiscal_period asc, name asc", for_update=True)
+    stated = {int(r.fiscal_period) for r in rows if r.name != name and (r.amount_basis or "") == basis}
+    message = _ytd_gap_message(entity, layer, stated) if stated else None
+    if message:
+        frappe.throw(
+            f"{message} Deleting this entry would leave that gap: delete from the last period "
+            "down, or replace the slice by upload.", frappe.ValidationError)
+
+
 def assert_one_basis(cycle, entity, layer, basis, *, name, replacing=()):
     """Refuse a Budget Entry whose amount basis differs from another entry of
     its (cycle, entity, layer) (Q15-c), naming that entry, its period and its

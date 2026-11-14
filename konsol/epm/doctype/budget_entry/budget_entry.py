@@ -58,6 +58,8 @@ _JUDGED_FLAG = "budget_entry_judged"
 
 #: frappe.flags key (replacing_entries): entries the current write rewrites.
 _REPLACING_FLAG = "budget_entry_replacing"
+#: frappe.flags key (ytd_judged_at_end): the writer judges Year-to-date at its end.
+_YTD_AT_END_FLAG = "budget_entry_ytd_at_end"
 
 
 class CycleNotDraftError(frappe.ValidationError):
@@ -133,6 +135,21 @@ def replacing_entries(names):
         frappe.flags[_REPLACING_FLAG] = was
 
 
+@contextmanager
+def ytd_judged_at_end():
+    """Save Budget Entries in this scope without judging Year-to-date
+    completeness per entry (Q21): the writer saves several entries (a batch)
+    and judges each touched slice once at its end
+    (budget_intake.assert_ytd_slices_complete), so an order such as P3, P1,
+    P2 is not refused at P3."""
+    was = frappe.flags.get(_YTD_AT_END_FLAG)
+    frappe.flags[_YTD_AT_END_FLAG] = True
+    try:
+        yield
+    finally:
+        frappe.flags[_YTD_AT_END_FLAG] = was
+
+
 def entry_name(cycle, data_area_id, layer, fiscal_period):
     """The name of the entry for this key (its autoname): a writer looks an
     entry up by it, a locking read on the primary key."""
@@ -170,6 +187,15 @@ class BudgetEntry(Document):
         # Cycle's entries are out of the warehouse and may go. A missing Cycle
         # guards nothing: an orphan entry may go.
         assert_cycle_draft(self.cycle, "deleted", missing_ok=True, wait=False, refuse=(1,))
+        # A Year-to-date slice keeps periods 1..max (Q21). A whole-slice
+        # replacement (a Budget Upload) was judged by its plan.
+        if frappe.flags.in_install or frappe.flags.in_migrate:
+            return
+        if frappe.flags.get(_REPLACING_FLAG) is None:
+            from konsol import budget_intake
+
+            budget_intake.assert_ytd_survives_delete(
+                self.cycle, self.data_area_id, self.layer, self.amount_basis or "", name=self.name)
 
     def _judge_lines(self):
         """The lines through konsol.budget_intake, as one budget table: a
@@ -205,7 +231,7 @@ class BudgetEntry(Document):
             self.cycle, self.data_area_id, self.layer, self.amount_basis or "", name=self.name,
             replacing=frappe.flags.get(_REPLACING_FLAG) or ())
         # A whole-slice replacement (a Budget Upload) was judged by its plan.
-        if frappe.flags.get(_REPLACING_FLAG) is None:
+        if frappe.flags.get(_REPLACING_FLAG) is None and not frappe.flags.get(_YTD_AT_END_FLAG):
             budget_intake.assert_ytd_complete(
                 self.cycle, self.data_area_id, self.layer, self.amount_basis or "",
                 self.fiscal_period, name=self.name)

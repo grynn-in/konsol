@@ -357,8 +357,10 @@ def _replace_slice(upload, members):
     in_file = {int(item["fiscal_period"]) for item, _ in members}
     for p in sorted(set(existing) - in_file):
         # The write check above is the user's right to replace the slice;
-        # Budget Entry grants delete to System Manager only.
-        frappe.delete_doc(ENTRY, existing[p], ignore_permissions=True)
+        # Budget Entry grants delete to System Manager only. The plan judged
+        # the slice that results, so a delete here may pass a Year-to-date gap.
+        with replacing_entries(existing.values()):
+            frappe.delete_doc(ENTRY, existing[p], ignore_permissions=True)
     names = []
     for item, rows in members:
         period = int(item["fiscal_period"])
