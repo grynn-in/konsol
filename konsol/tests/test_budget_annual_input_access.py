@@ -48,6 +48,8 @@ def ctl(monkeypatch):
 
     frappe = types.ModuleType("frappe")
     frappe.PermissionError = type("PermissionError", (Exception,), {})
+    frappe.QueryTimeoutError = type("QueryTimeoutError", (Exception,), {})
+    frappe.QueryDeadlockError = type("QueryDeadlockError", (Exception,), {})
     frappe.flags = _Flags()
     frappe.session = types.SimpleNamespace(user="zz@example.com")
     statuses = {}
@@ -58,11 +60,18 @@ def ctl(monkeypatch):
               "Budget Entry Line": [],
               "Budget Annual Input": []}
 
+    held = types.SimpleNamespace(cycle=False)   # another session holds the Cycle rows
+    waits = []
+
     def get_values(doctype, filters=None, fields=None, as_dict=False, order_by=None, for_update=False,
-                   **kw):
+                   wait=True, **kw):
         # REPEATABLE READ: only a locking read sees what another session
         # committed after this transaction's first read.
         assert for_update and as_dict and order_by, (doctype, for_update, as_dict, order_by)
+        if doctype == "Budget Cycle":
+            waits.append(wait)
+            if held.cycle and not wait:
+                raise frappe.QueryTimeoutError("Lock wait timeout exceeded (NOWAIT)")
         def match(value, cond):
             if isinstance(cond, list) and cond[0] == "in":
                 return value in cond[1]
@@ -157,7 +166,7 @@ def ctl(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return types.SimpleNamespace(mod=mod, frappe=frappe, calls=calls, statuses=statuses, locks=locks,
-                                 locked=locked)
+                                 locked=locked, held=held, waits=waits)
 
 
 def _row(ctl, entity, **over):
@@ -369,3 +378,40 @@ def test_install_and_migrate_skip_the_grain_check(ctl, flag):
     ctl.locked["Budget Entry Line"].append(_line())
     _row(ctl, "ZZE1").validate()
     assert [lock for lock in ctl.locks if lock != ("read", "Budget Annual Input")] == []
+
+
+# ---- PR #522 review 3: a delete is under the Cycle lock, NOWAIT --------------------
+# Frappe locks the Annual Input row before on_trash, so a delete cannot take
+# the Cycle first: it takes it NOWAIT and fails fast, as Budget Entry's
+# assert_cycle_draft(wait=False) does, instead of waiting while holding the row.
+
+def test_a_delete_takes_the_cycle_lock_nowait(ctl):
+    _row(ctl, "ZZE1").on_trash()
+    assert ("cycle", "BC-ZZS-2026") in ctl.locks
+    assert ctl.waits == [False]
+
+
+@pytest.mark.parametrize("docstatus,status", [(1, "Locked"), (0, "Locked")])
+def test_a_delete_under_an_approved_or_locked_cycle_is_refused(ctl, docstatus, status):
+    ctl.locked["Budget Cycle"][0].update(docstatus=docstatus, status=status)
+    with pytest.raises(Exception, match="BC-ZZS-2026 is locked"):
+        _row(ctl, "ZZE1").on_trash()
+
+
+def test_a_delete_while_another_writer_holds_the_cycle_fails_fast_by_name(ctl):
+    ctl.held.cycle = True
+    with pytest.raises(ctl.frappe.QueryTimeoutError) as raised:
+        _row(ctl, "ZZE1").on_trash()
+    assert "being changed by another user" in str(raised.value), raised.value
+    assert "ZZS 2026" in str(raised.value), raised.value
+
+
+def test_a_delete_with_no_cycle_passes(ctl):
+    # An orphan figure guards nothing, as an orphan Budget Entry may go.
+    ctl.locked["Budget Cycle"].clear()
+    _row(ctl, "ZZE1").on_trash()
+
+
+def test_a_save_still_waits_for_the_cycle(ctl):
+    _row(ctl, "ZZE1").validate()
+    assert ctl.waits and all(ctl.waits)
