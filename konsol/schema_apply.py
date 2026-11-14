@@ -448,7 +448,7 @@ def _sync_journal_dimension_columns():
 #: annual input table, read by gold_spread_budget through
 #: get_budget_dimensions(), and (S2-I4) the raw landing table Budget Entry
 #: Line writes through to, whose CH_FIELD_MAP sends the line's dim_* fields.
-#: epm_gold.budget_monthly_input left with Budget Sheet (konsol#348 S2-C Z6).
+#: epm_gold.budget_monthly_input was retired by konsol#348 S2-C Z6.
 _BUDGET_INPUT_TABLES = ("epm_gold.budget_annual_input", "epm_raw.budget_entries")
 
 
