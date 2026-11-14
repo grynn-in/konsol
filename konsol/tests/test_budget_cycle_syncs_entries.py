@@ -73,12 +73,17 @@ def env(monkeypatch):
     grain.digest_name = lambda prefix, parts: prefix + "-" + "-".join(parts)
     scenario = types.ModuleType("konsol.epm.doctype.scenario.scenario")
     scenario.locked_scenario_type = lambda s: "budget"
+    # #524: validate refuses a second live Cycle of the pair under this lock.
+    intake = types.ModuleType("konsol.budget_intake")
+    intake.lock_cycles = lambda *a, **k: []
+    monkeypatch.setattr(sys.modules["konsol"], "budget_intake", intake, raising=False)
 
     for name, mod in {
         "frappe": frappe, "frappe.model": model, "frappe.model.document": docmod,
         "frappe.utils": utils, "konsol.clickhouse": _clickhouse_stub(frappe),
         "konsol.epm.budget_grain": grain,
         "konsol.epm.doctype.scenario.scenario": scenario,
+        "konsol.budget_intake": intake,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
     spec = importlib.util.spec_from_file_location(

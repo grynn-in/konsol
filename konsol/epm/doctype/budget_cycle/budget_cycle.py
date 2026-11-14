@@ -48,13 +48,45 @@ class BudgetCycle(Document):
                 ),
                 title=_("Invalid Scenario"),
             )
+        self._refuse_second_live_cycle()
 
     def autoname(self):
         """Collision-safe name for the (scenario, fiscal_year) grain.
 
         Digest-suffixed so long scenario codes can't truncate two cycles onto
-        one 140-char name (see budget_grain.digest_name)."""
-        self.name = digest_name("BCYC", [self.scenario_id, self.fiscal_year])
+        one 140-char name (see budget_grain.digest_name). The digest when it
+        is free, else the first free ``<digest>-N`` (#524): a cancelled Cycle
+        keeps its name as the audit trail, and the next Cycle of its pair
+        must not collide with it. Frappe names an amendment ``<name>-1``
+        itself; this covers a fresh insert, and an amendment on a site whose
+        amend naming is "Default Naming". Nothing finds a Cycle by this name:
+        every writer finds the pair's live Cycle by docstatus."""
+        base = digest_name("BCYC", [self.scenario_id, self.fiscal_year])
+        name, n = base, 0
+        while frappe.db.exists("Budget Cycle", name):
+            n += 1
+            name = f"{base}-{n}"
+        self.name = name
+
+    def _refuse_second_live_cycle(self):
+        """A (scenario, year) holds one live Cycle (docstatus 0 or 1): every
+        budget writer takes the pair's draft, and the warehouse would add two
+        approved Cycles of one pair together. A cancelled Cycle does not
+        count (19-b), so a cancelled pair can be amended (#524). Read under
+        the lock budget_intake.lock_cycles takes, the Cycle-first order every
+        budget writer keeps, so two inserts for one pair cannot both pass.
+        Install and migrate skip it, as lock_cycles does."""
+        from konsol import budget_intake
+
+        states = {0: "draft", 1: "approved"}
+        for c in budget_intake.lock_cycles(self.scenario_id, self.fiscal_year):
+            if c["name"] != self.name and c["docstatus"] in states:
+                frappe.throw(
+                    _("Budget Cycle {0} is already the {1} Cycle of {2} {3}. A scenario and year hold one "
+                      "live Cycle: work in it, or cancel it and amend it.").format(
+                        c["name"], states[c["docstatus"]], self.scenario_id, self.fiscal_year),
+                    frappe.ValidationError,
+                )
 
     def onload(self):
         """Entries change without a Cycle save, so the form counts them when
