@@ -311,6 +311,7 @@ def _run_module(rule_set=None, stats=None, carry=None, tree=None, user="zz@examp
         stats if stats is not None else _stats())
     module._driver_carry_forward = lambda drivers: dict(carry or {})
     module._descendants = lambda account: list((tree or _TREE)[account])
+    module._first_draft_state = lambda: "Draft"
     module._now = lambda: datetime(2026, 11, 13, 9, 0, 0)
     module._user = lambda: user
     return module

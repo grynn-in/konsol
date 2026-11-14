@@ -61,6 +61,12 @@ class CostAllocationRuleSet(Document):
                  for r in _rows(self.rules)]
         receivers = [{"step": r["step"], "receiver_member": r["receiver_member"]}
                      for r in _rows(self.receivers)]
+        from konsol.cost_allocation_members import MemberReadError
+
+        try:
+            members = _dimension_members(self.allocation_dimension)
+        except MemberReadError as exc:
+            return [f"Cost Allocation Rule Set: {exc}"]
         rs = model.RuleSet(
             entity=self.entity,
             dimension=self.allocation_dimension,
@@ -69,7 +75,7 @@ class CostAllocationRuleSet(Document):
             allocation_account=self.allocation_account or "",
             rules=rules,
             receivers=receivers,
-            dimension_members=_dimension_members(self.allocation_dimension),
+            dimension_members=members,
             driver_dimensions=_driver_dimensions(sorted({r["driver"] for r in rules})),
         )
         try:
