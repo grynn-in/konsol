@@ -77,11 +77,15 @@ class FakeUpload:
 
 Key = namedtuple("Key", "scenario fiscal_year data_area_id layer fiscal_period")
 
+#: The running test's state, for FakeEntry (set by the env fixture).
+_STATE = []
+
 
 class FakeEntry:
     def __init__(self, store, log, **kw):
         self.__dict__.update(kw)
         self._store, self._log = store, log
+        self._second_writer = _STATE[0].second_writer if _STATE else set()
         self.lines = list(kw.get("lines") or [])
         self.name = self.__dict__.get("name") or f"BENT-{kw['cycle']}-{kw['data_area_id']}-{kw['layer']}-{kw['fiscal_period']}"
 
@@ -106,8 +110,17 @@ class FakeEntry:
                     and other.amount_basis != self.amount_basis):
                 raise Thrown(f"Budget Entry {other.name} holds amount basis {other.amount_basis!r}")
 
+    def _refuse_second_writer(self):
+        # Budget Entry's Q16-c check: an Annual Input committed since the job
+        # judged the file gives one of this entry's grains.
+        if self.data_area_id in self._second_writer:
+            intake = sys.modules["konsol.budget_intake"]
+            raise intake.SecondWriterError(f"Budget Annual Input BAI-9 already gives account 4000 for "
+                                           f"entity {self.data_area_id}")
+
     def insert(self):
         self._validate()
+        self._refuse_second_writer()
         self._log.append(("judged", bool(sys.modules["frappe"].flags.get("budget_entry_judged"))))
         assert self.name not in self._store, "the same key twice"
         self._store[self.name] = self
@@ -116,6 +129,7 @@ class FakeEntry:
 
     def save(self):
         self._validate()
+        self._refuse_second_writer()
         self._log.append(("judged", bool(sys.modules["frappe"].flags.get("budget_entry_judged"))))
         self._log.append(("save", "Budget Entry", self.name))
         return self
@@ -132,7 +146,10 @@ def env(monkeypatch):
                                   entries={}, enqueued=[], commits=0, rollbacks=0, job_running=False,
                                   denied_accounts=set(), fail_on=set(), deleted=[],
                                   plan_lines=[], approve_at_commit=None, cycle_approved=False,
-                                  cycle_state="approved", hidden=set(), after_plan=None, existing_reads=[])
+                                  cycle_state="approved", hidden=set(), after_plan=None, existing_reads=[],
+                                  second_writer=set())
+
+    _STATE[:] = [state]
 
     def get_doc(arg, name=None, for_update=False):
         if isinstance(arg, dict):
@@ -247,6 +264,7 @@ def env(monkeypatch):
         groups = state.plan_groups or {}
         return {"groups": groups, "report": report, "ok": all(r["ok"] for r in report)}
     intake.plan = plan
+    intake.SecondWriterError = type("SecondWriterError", (Thrown,), {})
 
     api = types.ModuleType("konsol.api")
 
@@ -763,3 +781,23 @@ def test_the_slice_read_filters_on_the_budget_entry_lock_index(env):
     for filters in seen:
         assert {"cycle", "data_area_id", "layer"} <= set(filters), filters
         assert not any(isinstance(filters[c], list) for c in ("cycle", "data_area_id", "layer")), filters
+
+
+# ── PR #522 review 4: a Q16-c refusal at load time is refused, not failed ──────
+
+def test_an_annual_input_saved_during_the_load_refuses_its_slice_and_the_load_goes_on(env):
+    """An Annual Input on one of E2's grains is committed after the job judged
+    the file: Budget Entry's one-writer check refuses E2's slices. They are
+    reported as refused (as a Cycle approved mid-load is), not as failed, and
+    the rest load."""
+    env.state.second_writer = {"E2"}
+    doc = _run(env, FOUR)
+    report = json.loads(doc.report)
+    e2 = [r for r in report if r["entity"] == "E2"]
+    assert e2
+    for r in e2:
+        assert not r.get("loaded") and not r.get("load_error") and r["ok"] is False, r
+        assert any("BAI-9" in e and "Not loaded" in e for e in r["errors"]), r["errors"]
+    assert doc.failed_count == 0
+    assert all(r.get("loaded") for r in report if r["entity"] == "E1")
+    assert doc.status == "Partly Loaded"

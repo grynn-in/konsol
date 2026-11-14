@@ -761,3 +761,49 @@ def test_every_locking_read_in_the_intake_uses_its_index(env):
     assert {dt for dt, _ in reads} == set(EXPECTED_LOCK_INDEXES), reads
     for doctype, filters in reads:
         _assert_on_index(env, doctype, filters)
+
+
+
+# ---- PR #522 review 4: the check names a saved Annual Input on the file's grain ---
+# Load refuses such a slice (Q16-c, Budget Entry's controller); the check must
+# not call it ready.
+
+def test_the_check_refuses_a_row_on_a_saved_annual_input_grain_naming_it(env):
+    env.data["Budget Annual Input"] = [_annual_input()]
+    plan = env.plan([HEADER, _row(), _row(account="6000")])
+    (item,) = plan["report"]
+    assert not item["ok"]
+    (error,) = [e for e in item["errors"] if "Budget Annual Input" in e]
+    assert error.startswith("Line 2: ") and "Budget Annual Input BAI-1" in error and "4000" in error, error
+    assert "Delete Budget Annual Input BAI-1" in error, error
+
+
+@pytest.mark.parametrize("other", [dict(layer="board"), dict(cc="CC2"), dict(account="6000"),
+                                   dict(entity="E2"), dict(year=2028), dict(scenario="OLD")])
+def test_an_annual_input_on_another_grain_leaves_the_check_ready(env, other):
+    env.data["Budget Annual Input"] = [_annual_input(**other)]
+    plan = env.plan([HEADER, _row()])
+    assert plan["ok"], _errors(plan)
+
+
+def test_the_check_matches_a_blank_dimension_to_an_unset_one(env):
+    env.data["Budget Annual Input"] = [_annual_input(cc=None)]
+    plan = env.plan([HEADER, _row(cc="")])
+    assert any("BAI-1" in e for e in _errors(plan)), _errors(plan)
+
+
+def test_the_checks_annual_input_pass_is_a_report_not_a_lock(env):
+    # plan judges a file; the locking read is the controller's, at save.
+    env.data["Budget Annual Input"] = [_annual_input()]
+    env.plan([HEADER, _row()])
+    assert not [r for r in env.state.locked_reads if r[0] == "Budget Annual Input"]
+
+
+def test_a_one_writer_refusal_raises_its_own_error_class(env):
+    assert issubclass(env.mod.SecondWriterError, Thrown)
+    env.data["Budget Annual Input"] = [_annual_input()]
+    with pytest.raises(env.mod.SecondWriterError):
+        _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}])
+    env.data["Budget Entry Line"] = [_line()]
+    with pytest.raises(env.mod.SecondWriterError):
+        _annual_side(env)
