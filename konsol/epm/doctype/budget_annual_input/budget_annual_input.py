@@ -158,9 +158,13 @@ class BudgetAnnualInput(Document):
             )
 
     def _validate_unique_grain(self):
-        """One annual figure per (scenario, entity, year, account, dimensions).
+        """One annual figure per (scenario, entity, year, layer, account,
+        dimensions).
 
         The dimensions are the site's declared budget dimensions (konsol#287).
+        The layer is part of the grain: gold_spread_budget keeps each layer's
+        rows apart (konsolidat#300), so a challenge figure beside the base
+        figure for one account is a second layer, not a duplicate.
 
         gold_spread_budget inner-joins the profile and unions the result with no
         dedup and no aggregation, so two rows at the same grain produce two sets
@@ -172,6 +176,7 @@ class BudgetAnnualInput(Document):
             "scenario_id": self.scenario_id,
             "data_area_id": self.data_area_id,
             "fiscal_year": self.fiscal_year,
+            "layer": self.layer,
             "main_account": self.main_account,
             "name": ["!=", self.name],
         }
@@ -184,7 +189,7 @@ class BudgetAnnualInput(Document):
         if dupe:
             frappe.throw(
                 f"An annual budget row already exists for {self.scenario_id} / "
-                f"{self.data_area_id} / {self.fiscal_year} / {self.main_account} "
+                f"{self.data_area_id} / {self.fiscal_year} / layer {self.layer} / {self.main_account} "
                 f"({dupe}). Two rows at one grain double the spread budget."
             )
 
