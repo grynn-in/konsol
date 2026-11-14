@@ -194,9 +194,10 @@ def env(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    def plan(table, form_basis=BASIS, name_lines=True, whole_slices=True):
+    def plan(table, form_basis=BASIS, name_lines=True, whole_slices=True, form_as_of=""):
         frappe.session.user = state.user
-        return mod.plan(table, form_basis=form_basis, name_lines=name_lines, whole_slices=whole_slices)
+        return mod.plan(table, form_basis=form_basis, form_as_of=form_as_of, name_lines=name_lines,
+                        whole_slices=whole_slices)
 
     return types.SimpleNamespace(mod=mod, data=data, state=state, plan=plan)
 
@@ -385,29 +386,133 @@ def test_lock_cycles_returns_each_rounds_as_of_date_as_a_key(env):
     assert filters == {"scenario_id": "FC", "fiscal_year": 2027}, "QB9 a: the lock stays on the pair"
 
 
-def test_two_draft_rounds_of_a_forecast_pair_refuse_the_write_naming_both(env):
-    """S3 K3 stop-gap until K5 picks the round by the file's as_of_date (QB5 a):
-    a pair with more than one draft Cycle is refused by name, never served
-    drafts[0]. One draft round still takes the write."""
+# ---- S3 K5 (QB5 a): a forecast write names its round by as_of_date ---------------
+
+AS_OF_HEADER = HEADER + ["as_of_date"]
+
+
+def _fc(env, *rounds):
+    """Scenario FC (forecast) with one Cycle per (name suffix, docstatus, as-of date)."""
     env.data["Scenario"].append({"name": "FC", "scenario_type": "forecast", "is_active": 1})
-    env.data["Budget Cycle"] += [
-        {"name": "BCYC-FC-2027-Q1", "scenario_id": "FC", "fiscal_year": 2027, "docstatus": 0,
-         "workflow_state": "Draft", "as_of_date": "2027-03-31"},
-    ]
-    plan = env.plan([HEADER, _row(scenario="FC")])
+    for suffix, docstatus, as_of in rounds:
+        env.data["Budget Cycle"].append(
+            {"name": f"BCYC-FC-2027-{suffix}", "scenario_id": "FC", "fiscal_year": 2027,
+             "docstatus": docstatus, "workflow_state": "Draft" if docstatus == 0 else "", "as_of_date": as_of})
+
+
+def _fc_row(as_of, **kw):
+    return _row(scenario="FC", **kw) + [as_of]
+
+
+def test_a_forecast_file_picks_the_round_by_its_as_of_date(env):
+    """Two draft rounds of one pair live side by side (K3); the file's
+    as_of_date says which one each row is for. Nothing is inferred."""
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31"), _fc_row("2027-06-30", period="2")])
     assert plan["ok"], _errors(plan)
-    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q1"
-    env.data["Budget Cycle"].append(
-        {"name": "BCYC-FC-2027-Q2", "scenario_id": "FC", "fiscal_year": 2027, "docstatus": 0,
-         "workflow_state": "Draft", "as_of_date": "2027-06-30"})
+    assert [(i["cycle"], i["as_of_date"]) for i in plan["report"]] == [
+        ("BCYC-FC-2027-Q1", "2027-03-31"), ("BCYC-FC-2027-Q2", "2027-06-30")]
+
+
+def test_a_forecast_row_without_an_as_of_date_is_refused_by_name(env):
+    _fc(env, ("Q1", 0, "2027-03-31"))
     plan = env.plan([HEADER, _row(scenario="FC")])
     assert not plan["ok"]
-    item = plan["report"][0]
+    (item,) = plan["report"]
+    assert item["cycle"] is None and item["as_of_date"] == ""
+    (problem,) = [e for e in item["errors"] if "as_of_date" in e]
+    assert "FC" in problem and "forecast" in problem and "round" in problem, problem
+    assert not [e for e in item["errors"] if "No Budget Cycle" in e], item["errors"]
+
+
+def test_a_forecast_as_of_date_with_no_round_is_refused_naming_the_round_to_create(env):
+    _fc(env, ("Q1", 0, "2027-03-31"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-09-30")])
+    assert not plan["ok"]
+    (item,) = plan["report"]
     assert item["cycle"] is None
-    (problem,) = [e for e in item["errors"] if "draft Cycles" in e]
-    assert "BCYC-FC-2027-Q1 (as of 2027-03-31)" in problem and "BCYC-FC-2027-Q2 (as of 2027-06-30)" in problem, \
-        problem
-    assert "FC 2027" in problem and "as-of date" in problem, problem
+    (problem,) = [e for e in item["errors"] if "Budget Cycle" in e]
+    assert "FC 2027" in problem and "2027-09-30" in problem and "Create" in problem and "round" in problem, problem
+    assert "BCYC-FC-2027-Q1" not in problem, "the other round is not this write's business"
+
+
+def test_a_budget_row_with_an_as_of_date_is_refused(env):
+    plan = env.plan([AS_OF_HEADER, _row() + ["2027-03-31"]])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    (problem,) = [e for e in item["errors"] if "as_of_date" in e]
+    assert "BUD" in problem and "budget" in problem and "no forecast round" in problem, problem
+    assert item["cycle"] == "BCYC-BUD-2027", "the pair's draft is still named; the row is refused"
+
+
+def test_the_uploads_as_of_date_applies_to_rows_without_the_column(env):
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([HEADER, _row(scenario="FC")], form_as_of="2027-06-30")
+    assert plan["ok"], _errors(plan)
+    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q2"
+    # A Date field arrives as a date, not text; the key is the same.
+    import datetime
+    plan = env.plan([HEADER, _row(scenario="FC")], form_as_of=datetime.date(2027, 3, 31))
+    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q1"
+
+
+def test_the_files_as_of_date_wins_over_the_uploads_when_both_are_given(env):
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31")], form_as_of="2027-06-30")
+    assert plan["ok"], _errors(plan)
+    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q1"
+
+
+def test_two_as_of_dates_in_one_budget_entry_are_refused_naming_both_lines(env):
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31"), _fc_row("2027-06-30", account="6000")])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    assert item["cycle"] is None
+    (problem,) = [e for e in item["errors"] if "one as-of date" in e]
+    assert "Line 3" in problem and "line 2" in problem, problem
+
+
+def test_an_approved_round_is_named_not_the_pairs_latest_cycle(env):
+    """The round's own Cycles are judged: an approved Q1 refuses a Q1 write by
+    name even though the pair's latest Cycle is Q2's draft."""
+    _fc(env, ("Q1", 1, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31")])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    assert item["cycle"] == "BCYC-FC-2027-Q1"
+    assert any("BCYC-FC-2027-Q1" in e and "approved" in e for e in item["errors"]), item["errors"]
+
+
+def test_a_cancelled_round_beside_its_draft_amendment_takes_the_write(env):
+    _fc(env, ("Q1", 2, "2027-03-31"), ("Q1-1", 0, "2027-03-31"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31")])
+    assert plan["ok"], _errors(plan)
+    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q1-1"
+
+
+def test_a_budget_pair_with_a_second_draft_is_still_refused_by_name(env):
+    """Not a round: a budget pair holds one live Cycle (#524). Two drafts is a
+    fault the write names rather than picks from."""
+    env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-X", "scenario_id": "BUD", "fiscal_year": 2027,
+                                     "docstatus": 0, "workflow_state": "Draft"})
+    plan = env.plan([HEADER, _row()])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    assert item["cycle"] is None
+    (problem,) = [e for e in item["errors"] if "BCYC-BUD-2027-X" in e]
+    assert "BCYC-BUD-2027" in problem and "BUD 2027" in problem, problem
+    assert "K5" not in problem and "not built" not in problem, problem
+
+
+def test_a_budget_report_item_carries_a_blank_as_of_date(env):
+    plan = env.plan([HEADER, _row()])
+    assert plan["report"][0]["as_of_date"] == ""
+
+
+def test_the_plan_requires_the_uploads_as_of_date_to_be_stated(env):
+    with pytest.raises(TypeError):
+        env.mod.plan([HEADER, _row()], form_basis=BASIS, name_lines=True, whole_slices=True)
 
 
 def test_a_file_after_an_amendment_is_grouped_onto_the_amendment(env):

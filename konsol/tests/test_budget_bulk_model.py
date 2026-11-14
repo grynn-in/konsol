@@ -561,3 +561,64 @@ def test_in_round_matches_a_cycle_by_as_of_only_for_forecasts():
 def test_cycle_round_problems_is_exported():
     for name in ("cycle_round_problems", "as_of_key", "in_round", "FORECAST"):
         assert name in B.__all__, name
+
+
+# ---- S3 K5 (QB5 a): a forecast write names its round by as_of_date ----------------
+# The file carries an optional as_of_date column; one budget entry's rows give
+# one date. Whether the date is required (forecast) or refused (every other
+# scenario type) is as_of_problems' rule, never a default.
+
+def test_as_of_date_is_an_optional_column_carried_onto_every_row():
+    assert "as_of_date" in B.OPTIONAL
+    assert "[, as_of_date]" in B.HEADER_HELP
+    table = [HEADER + ["as_of_date"],
+             ["FC", "base", "E1", "2026", "1", "4000", "0", "100", "EUR", "2026-03-31"],
+             ["FC", "base", "E1", "2026", "1", "6000", "100", "0", "EUR", ""]]
+    (rows,) = B.split_table(table, ()).values()
+    assert [r["as_of_date"] for r in rows] == ["2026-03-31", ""]
+    # Without the column every row carries the blank, so a caller reads one key.
+    (rows,) = B.split_table([HEADER, ["FC", "base", "E1", "2026", "1", "4000", "0", "100", "EUR"]], ()).values()
+    assert rows[0]["as_of_date"] == ""
+
+
+def test_group_as_of_gives_the_groups_one_date_or_names_the_disagreement():
+    rows = [{"as_of_date": "", "line": 2}, {"as_of_date": "2026-03-31", "line": 3},
+            {"as_of_date": "2026-03-31 00:00:00", "line": 4}]
+    assert B.group_as_of(rows) == ("2026-03-31", None)
+    assert B.group_as_of([{"as_of_date": "", "line": 2}]) == ("", None)
+    given, problem = B.group_as_of([{"as_of_date": "2026-03-31", "line": 2},
+                                    {"as_of_date": "2026-06-30", "line": 3}])
+    assert given == ""
+    assert "Line 3" in problem and "line 2" in problem and "2026-06-30" in problem and "2026-03-31" in problem
+    assert "one as-of date" in problem
+    # Rows without lines (an Excel cell, an API row) are named by their dates alone.
+    _, problem = B.group_as_of([{"as_of_date": "2026-03-31", "line": None},
+                                {"as_of_date": "2026-06-30", "line": None}])
+    assert "2026-03-31" in problem and "2026-06-30" in problem and "Line" not in problem
+
+
+def test_a_forecast_without_an_as_of_date_is_refused_naming_the_column():
+    (problem,) = B.as_of_problems("FC", B.FORECAST, "")
+    assert "FC" in problem and "forecast" in problem and "as_of_date" in problem
+    assert "round" in problem
+    assert B.as_of_problems("FC", B.FORECAST, "2026-03-31") == []
+
+
+def test_a_budget_with_an_as_of_date_is_refused_it_has_no_round():
+    (problem,) = B.as_of_problems("BUD", "budget", "2026-03-31")
+    assert "BUD" in problem and "budget" in problem and "as_of_date" in problem and "no forecast round" in problem
+    assert B.as_of_problems("BUD", "budget", "") == []
+    assert B.as_of_problems("OPS", "operational", "") == []
+
+
+def test_an_as_of_date_that_is_not_a_date_is_refused_by_value():
+    (problem,) = B.as_of_problems("FC", B.FORECAST, "Q2")
+    assert "Q2" in problem and "YYYY-MM-DD" in problem
+    (problem,) = B.as_of_problems("FC", B.FORECAST, "2026-13-01")
+    assert "2026-13-01" in problem and "YYYY-MM-DD" in problem
+
+
+def test_an_undeclared_scenario_is_not_judged_for_its_round():
+    # scenario_problems already refuses it; its type is unknown.
+    assert B.as_of_problems("NOPE", None, "2026-03-31") == []
+    assert B.as_of_problems("NOPE", None, "") == []

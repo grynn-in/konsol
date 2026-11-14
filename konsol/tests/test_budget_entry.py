@@ -188,7 +188,7 @@ class _Row(types.SimpleNamespace):
 @pytest.fixture
 def env(monkeypatch):
     cycles = {"BCYC-1": {"scenario_id": "budget", "fiscal_year": 2027, "docstatus": 0,
-                         "workflow_state": "Draft"}}
+                         "workflow_state": "Draft", "as_of_date": None}}
     entries = {}  # name -> key dict
     dims = ["dim_cost_center", "dim_project"]
 
@@ -791,3 +791,26 @@ def test_with_no_active_workflow_a_draft_cycle_in_any_state_takes_the_save(env):
     env.cycles["BCYC-1"]["workflow_state"] = "Pending Approval"
     _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)]).validate()
     _entry(env, name="BENT-ME").on_trash()
+
+
+# ---- S3 K5 (QB5 a): a Desk save of a forecast entry hands the intake its round ------
+# The intake requires as_of_date for a forecast scenario; a Budget Entry has
+# its Cycle already, so the Cycle's as-of date goes into the judged table.
+
+def test_a_forecast_entrys_lines_are_judged_with_its_cycles_as_of_date(env):
+    env.cycles["BCYC-FC"] = {"scenario_id": "FC", "fiscal_year": 2027, "docstatus": 0,
+                             "workflow_state": "Draft", "as_of_date": "2027-06-30"}
+    doc = _entry(env, cycle="BCYC-FC", lines=[dict(main_account="4000", debit=1, credit=0)])
+    doc.validate()
+    ((table, _basis),) = env.judged
+    header, *rows = table
+    assert header[-1] == "as_of_date"
+    assert [dict(zip(header, r))["as_of_date"] for r in rows] == ["2027-06-30"]
+    assert doc.scenario_id == "FC"
+
+
+def test_a_budget_entrys_lines_are_judged_without_an_as_of_date_column(env):
+    doc = _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)])
+    doc.validate()
+    ((table, _basis),) = env.judged
+    assert "as_of_date" not in table[0]
