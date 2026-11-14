@@ -4,8 +4,8 @@ Shape tests read the JSON; behaviour tests load the controller by file path
 against a stub frappe (the pattern of test_business_combination.py): the stub
 records the locking query, the period_status calls and the syncs.
 
-Decision Q4 (13 Nov 2026, Deepak Pai): the closed-period cancel gate applies
-only when the statistic's scenario has scenario_type 'actual'.
+Decided by Deepak Pai on konsol#269 (14 Nov 2026): the closed-period cancel gate
+applies only when the statistic's scenario has scenario_type 'actual'.
 """
 import ast
 import importlib.util
@@ -466,10 +466,11 @@ def test_before_cancel_allows_when_no_submitted_run_cites_it():
     _stat(w, mod, scenario="ZZBUD").before_cancel()
 
 
-def test_cancel_exception_is_not_attributed_to_the_decision_maker():
+def test_cancel_exception_cites_its_decision():
+    # The actual-only statistic cancel gate was decided on konsol#269 (14 Nov 2026).
     src = open(os.path.join(EPM_DOCTYPES, STAT, STAT + ".py")).read()
-    assert "pending" in src
-    assert "Decision Q4 (13 Nov 2026, Deepak Pai): cancelling" not in src
+    assert "14 Nov 2026" in src and "konsol#269" in src
+    assert "pending" not in src
 
 
 def test_sync_header_and_values_after_submit_and_cancel_and_delete():

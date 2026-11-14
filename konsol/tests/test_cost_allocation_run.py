@@ -1096,10 +1096,11 @@ def test_kf1_before_submit_declares_the_period_on_every_scenario():
     assert "not declared" in _refused(run.before_submit)
 
 
-def test_kf1_period_exception_wording_does_not_claim_a_decision():
+def test_kf1_submit_period_exception_cites_its_decision():
+    # The actual-only submit gate was decided on konsol#269 (14 Nov 2026).
     with open(RUN_PY) as f:
-        text = f.read().lower()
-    assert "decision q4" not in text and "deepak" not in text
+        text = f.read()
+    assert "14 Nov 2026, konsol#269 comment 6874924763" in text
 
 
 def test_kf1_before_submit_refuses_a_run_whose_coefficients_cannot_be_built():

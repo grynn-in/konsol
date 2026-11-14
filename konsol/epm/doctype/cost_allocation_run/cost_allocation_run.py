@@ -279,8 +279,8 @@ class CostAllocationRun(Document):
     def before_submit(self):
         """Submit is the approval. The period must be declared on every
         scenario. The closed-period gate on submit applies to an actual
-        scenario only: that skip for budget and forecast runs is the build's
-        own extension and awaits a decision (konsol#269 review, finding 6)."""
+        scenario only (Deepak Pai, 14 Nov 2026, konsol#269 comment 6874924763;
+        rejected: gating every scenario)."""
         scenario = frappe.db.get_value("Scenario", self.scenario, ["scenario_type", "is_active"],
                                        as_dict=True)
         if not scenario or not scenario.is_active:
@@ -387,7 +387,8 @@ class CostAllocationRun(Document):
                 + ". Cancel that run first.")
 
     def before_cancel(self):
-        """Cancel only while the period is open, and only for an actual scenario (Q4)."""
+        """Cancel only while the period is open, and only for an actual scenario
+        (Deepak Pai, 13 Nov 2026, konsol#269 Q4)."""
         scenario = frappe.db.get_value("Scenario", self.scenario, "scenario_type")
         if scenario != "actual":
             return

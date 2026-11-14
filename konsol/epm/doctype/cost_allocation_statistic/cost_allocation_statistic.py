@@ -1,11 +1,10 @@
 """Cost Allocation Statistic: the driver values for one entity, scenario and
 fiscal year (konsol#269 K5a).
 
-Submit is the approval. Deepak Pai decided (13 Nov 2026, Q4) the closed-period
-cancel gate for the Cost Allocation Run only. Holding a statistic's cancel to
-the period close only when the scenario's scenario_type is 'actual' is an
-extension of that decision, pending his decision. A statistic that a submitted
-run cites in its weights cannot be cancelled at all.
+Submit is the approval. A closed period blocks cancelling a statistic only
+when its scenario's scenario_type is 'actual' (Deepak Pai, 14 Nov 2026,
+konsol#269 comment 6874924763; rejected: gating every scenario). A statistic
+that a submitted run cites in its weights cannot be cancelled at all.
 """
 import frappe
 from frappe.model.document import Document
@@ -120,8 +119,7 @@ class CostAllocationStatistic(Document):
 
     def before_cancel(self):
         self._refuse_while_cited()
-        # Actual-only closed-period gate: an extension of the run's cancel
-        # decision, pending Deepak Pai's decision (not decided by him).
+        # Actual-only closed-period gate (Deepak Pai, 14 Nov 2026, konsol#269).
         if frappe.db.get_value("Scenario", self.scenario, "scenario_type") != "actual":
             return
         for period in sorted({int(r.fiscal_period) for r in self.get("values") or []}):
