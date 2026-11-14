@@ -745,3 +745,21 @@ def test_a_slice_left_out_of_the_reload_keeps_its_basis_rule(env):
     _checked(env).name = "BU-0002"
     doc = _run(env, [("E1", "board", 1)])
     assert doc.status == "Loaded", json.loads(doc.report)
+
+
+# ── PR #522 review 1: the slice's locking read runs on the Budget Entry index ──
+
+def test_the_slice_read_filters_on_the_budget_entry_lock_index(env):
+    seen = []
+    real = env.frappe.db.get_values
+
+    def get_values(doctype, filters, fields, **kw):
+        if kw.get("for_update"):
+            seen.append(dict(filters))
+        return real(doctype, filters, fields, **kw)
+    env.frappe.db.get_values = get_values
+    _run(env, [("E1", "base", 1)])
+    assert seen
+    for filters in seen:
+        assert {"cycle", "data_area_id", "layer"} <= set(filters), filters
+        assert not any(isinstance(filters[c], list) for c in ("cycle", "data_area_id", "layer")), filters

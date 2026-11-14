@@ -683,3 +683,78 @@ def test_lines_under_a_draft_or_approved_cycle_still_block(env, docstatus):
     env.data["Budget Entry Line"] = [_line(cycle="BCYC-BUD-2027-X")]
     with pytest.raises(Thrown, match="BENT-P3"):
         _annual_side(env)
+
+
+# ---- PR #522 review 1: every locking read runs on an index -------------------------
+# Without an index a FOR UPDATE scans the table and InnoDB next-key-locks every
+# row it scans: two cell saves in different Cycles each hold their own entry and
+# wait on the other's (1213), and every budget writer queues behind the scan.
+
+EXPECTED_LOCK_INDEXES = {
+    "Budget Cycle": ("scenario_id", "fiscal_year"),
+    "Budget Entry": ("cycle", "data_area_id", "layer"),
+    "Budget Entry Line": ("scenario_id", "fiscal_year", "data_area_id", "layer", "main_account"),
+    "Budget Annual Input": ("scenario_id", "fiscal_year", "data_area_id", "layer", "main_account"),
+}
+
+CONTROLLERS = {
+    "Budget Cycle": "budget_cycle",
+    "Budget Entry": "budget_entry",
+    "Budget Entry Line": "budget_entry_line",
+    "Budget Annual Input": "budget_annual_input",
+}
+
+
+def test_the_lock_indexes_are_declared_once(env):
+    assert env.mod.LOCK_INDEXES == EXPECTED_LOCK_INDEXES
+
+
+def test_add_lock_index_adds_the_doctypes_index_by_name(env):
+    added = []
+    env.mod.frappe.db.add_index = lambda dt, fields, index_name=None: added.append((dt, fields, index_name))
+    env.mod.ensure_lock_indexes()
+    assert added == [(dt, list(cols), "budget_lock") for dt, cols in EXPECTED_LOCK_INDEXES.items()]
+
+
+@pytest.mark.parametrize("doctype", sorted(CONTROLLERS))
+def test_each_doctype_adds_its_lock_index_on_doctype_update(doctype):
+    """Frappe runs a controller module's on_doctype_update on doctype sync."""
+    import ast
+    folder = CONTROLLERS[doctype]
+    path = os.path.join(os.path.dirname(PY_PATH), "epm", "doctype", folder, f"{folder}.py")
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    (fn,) = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "on_doctype_update"]
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and getattr(n.func, "attr", getattr(n.func, "id", None)) == "add_lock_index"]
+    assert [c.args[0].value for c in calls] == [doctype]
+
+
+def test_migrate_adds_the_lock_indexes_on_existing_sites():
+    """on_doctype_update runs only when a doctype's JSON changes; after_migrate
+    runs _ensure_indexes every time."""
+    with open(os.path.join(os.path.dirname(PY_PATH), "install.py")) as f:
+        src = f.read()
+    body = src.split("def _ensure_indexes")[1].split("\ndef ")[0]
+    assert "ensure_lock_indexes()" in body
+
+
+def _assert_on_index(env, doctype, filters):
+    cols = EXPECTED_LOCK_INDEXES[doctype]
+    assert set(cols) <= set(filters), (doctype, filters)
+    # Equality on every column but the last, which may be an IN list.
+    for col in cols[:-1]:
+        assert not isinstance(filters[col], (list, tuple)), (doctype, col, filters[col])
+
+
+def test_every_locking_read_in_the_intake_uses_its_index(env):
+    env.data["Budget Entry"] = [{"name": "BENT-1", "cycle": "BCYC-BUD-2027", "data_area_id": "E1",
+                                 "layer": "base", "fiscal_period": 1, "amount_basis": BASIS}]
+    env.mod.assert_one_basis("BCYC-BUD-2027", "E1", "base", BASIS, name="BENT-2")
+    _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}])
+    _annual_side(env)
+    env.mod.lock_cycles("BUD", 2027)
+    reads = [(dt, f) for dt, f, _u, _o in env.state.locked_reads if not (dt == "Budget Cycle" and "name" in f)]
+    assert {dt for dt, _ in reads} == set(EXPECTED_LOCK_INDEXES), reads
+    for doctype, filters in reads:
+        _assert_on_index(env, doctype, filters)
