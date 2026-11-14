@@ -481,10 +481,8 @@ ROLES = {
     "EPM Analyst": "Group Accountant: drafts adjustments, rates, ownership, intercompany and allocations; requests builds",
     "EPM Admin": "Close Lead: runs the close, approves builds and adjustments, signs off periods",
     "Entity Accountant": "Uploads and submits trial balances and fills in the base budget, for their own entities only",
-    "Budget Submitter": "Base budget layer (kept as an alias; Entity Accountant is the new name)",
-    "Budget Controller": "Challenge budget layer",
-    "Budget Manager": "Management budget layer; locks the budget cycle",
-    "Budget Approver": "Board budget layer",
+    # The Budget* roles are retired (#348 Q7-c): a site that still holds one
+    # keeps it as site data (patches/retire_budget_roles.py); konsol creates none.
 }
 
 

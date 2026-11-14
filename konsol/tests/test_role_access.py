@@ -5,12 +5,14 @@ The screen shows job titles; the code checks these roles:
   Close Lead        EPM Admin          runs the close, approves (submits)
   Group Accountant  EPM Analyst        drafts adjustments, rates, ownership, IC
   Entity Accountant Entity Accountant  trial balances and base budget, own entities
-  Budget Reviewer   Budget Controller / Manager / Approver
   Viewer            EPM User           reads
 
 Until F7 the core consolidation doctypes were System Manager only, so no
 business role could do consolidation work, and four roles were named in
 permissions and code but never created by the app.
+
+The Budget* roles are retired (#348 Q7-c): konsol neither creates nor grants
+them; a site that holds one keeps it as data, e.g. as a layer's writer role.
 """
 import ast
 import contextlib
@@ -57,9 +59,16 @@ def _created_roles():
     return set(_assigned_dict(os.path.join(APP_DIR, "install.py"), "ROLES"))
 
 
+# Budget Sheet and Budget Line are being deleted outright (#348 Z1); they still
+# name the retired Budget* roles until then.
+RETIRING = {"budget_sheet", "budget_line"}
+
+
 def test_every_role_the_app_names_is_created():
     named = {}
     for path in glob.glob(os.path.join(APP_DIR, "*", "doctype", "*", "*.json")):
+        if os.path.basename(os.path.dirname(path)) in RETIRING:
+            continue
         with open(path) as f:
             meta = json.load(f)
         if not isinstance(meta, dict):
@@ -71,12 +80,6 @@ def test_every_role_the_app_names_is_created():
                 named.setdefault(s["allow_edit"], os.path.relpath(path, APP_DIR))
         for t in meta.get("transitions") or []:
             named.setdefault(t.get("allowed"), os.path.relpath(path, APP_DIR))
-    sheet = os.path.join(APP_DIR, "epm", "doctype", "budget_sheet", "budget_sheet.py")
-    for role in _assigned_dict(sheet, "LAYER_ROLES").values():
-        named.setdefault(role, "budget_sheet.py LAYER_ROLES")
-    for aliases in _assigned_dict(sheet, "LAYER_ROLE_ALIASES").values():
-        for role in aliases:
-            named.setdefault(role, "budget_sheet.py LAYER_ROLE_ALIASES")
     missing = {r: where for r, where in named.items() if r and r not in FRAPPE_ROLES and r not in _created_roles()}
     assert not missing, f"named but never created by install.ROLES: {missing}"
 
@@ -118,8 +121,9 @@ MATRIX = {
     "Budget Cycle": {"EPM Admin": "rwcsxa", "EPM Analyst": "rwc", "Entity Accountant": "r", "EPM User": "r",
                      "Budget Manager": "", "Budget Submitter": "", "Budget Controller": "",
                      "Budget Approver": ""},
+    # konsol#348 Z8: the Budget* read rows are gone; Entity Accountant reads
     "Entity": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r",
-               "Budget Submitter": "r", "Budget Controller": "r", "Budget Manager": "r", "Budget Approver": "r"},
+               "Budget Submitter": "", "Budget Controller": "", "Budget Manager": "", "Budget Approver": ""},
     "EPM Fiscal Year": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
     # konsol#305 T01b: the audit trail is read-only for every role; only
     # konsol.close.close_event writes it, and nobody deletes it (#305-W2-6)
