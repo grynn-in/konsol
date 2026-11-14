@@ -769,3 +769,85 @@ def test_without_a_workflow_a_reset_of_an_auto_approved_row_waits_for_review():
     assert site.rows[name]["auto_approve_reason"] is None
     assert site.rows[name]["approved_by"] is None
     assert site.enqueued == []
+
+
+# --- K10 (konsol#269): allocation follow-up after a completed close build ----
+
+TASKS_PY = os.path.join(APP_DIR, "tasks.py")
+
+
+def _finish(state, scope, runs_exist, flagged=0, isolated=("allocation",)):
+    """Run the real tasks._finish_governed_build (its source, by AST) against
+    stubs. Returns the (scope, trigger_doctype, trigger_docname, kwargs) of
+    every build it requested, and the Cost Allocation Run filters it asked for."""
+    import ast
+    with open(TASKS_PY) as f:
+        tree = ast.parse(f.read())
+    consts = [n for n in tree.body if isinstance(n, ast.Assign)
+              and any(getattr(t, "id", "") == "ALLOCATION_SCOPE" for t in n.targets)]
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_finish_governed_build")
+    requests, exists_calls = [], []
+
+    @contextlib.contextmanager
+    def build_writer():
+        yield
+
+    def exists(doctype, filters=None):
+        exists_calls.append((doctype, filters))
+        return "CAR-1" if runs_exist else None
+
+    frappe = types.SimpleNamespace(
+        db=types.SimpleNamespace(sql=lambda *a, **k: [[flagged]], commit=lambda: None,
+                                 rollback=lambda: None, exists=exists),
+        utils=types.SimpleNamespace(now_datetime=lambda: None),
+        publish_realtime=lambda *a, **k: None,
+        log_error=lambda *a, **k: None,
+    )
+    ns = {"frappe": frappe, "_set_duration": lambda d: None,
+          "isolated_scopes": lambda: list(isolated),
+          "request_build_for_scope": lambda *a, **k: requests.append((a, k))}
+    mods = {"konsol.build_lock": types.SimpleNamespace(build_writer=build_writer),
+            "konsol.close": types.SimpleNamespace(
+                fingerprint=types.SimpleNamespace(check_after_build=lambda *a: None))}
+    saved = {m: sys.modules.get(m) for m in mods}
+    sys.modules.update(mods)
+    try:
+        exec(compile(ast.Module(body=consts + [fn], type_ignores=[]), TASKS_PY, "exec"), ns)
+        doc = _D(name="BA-1", workflow_state=state, build_scope=scope, started_at=None,
+                 save=lambda **k: None)
+        ns["_finish_governed_build"](doc)
+    finally:
+        for m, old in saved.items():
+            if old is None:
+                sys.modules.pop(m, None)
+            else:
+                sys.modules[m] = old
+    return requests, exists_calls, ns.get("ALLOCATION_SCOPE")
+
+
+def test_allocation_follow_up_after_a_completed_close_build_with_a_submitted_run():
+    for scope in ("full", "consolidation", "actuals"):
+        requests, exists_calls, name = _finish("Completed", scope, True)
+        assert name == "allocation"
+        assert [a for a, _ in requests] == [("allocation", "Build Approval", "BA-1")], (scope, requests)
+        assert exists_calls == [("Cost Allocation Run", {"docstatus": 1})]
+
+
+def test_no_allocation_follow_up_when_no_submitted_run_exists():
+    requests, _, _ = _finish("Completed", "full", False)
+    assert requests == []
+
+
+def test_no_allocation_follow_up_after_a_failed_build():
+    requests, _, _ = _finish("Failed", "full", True)
+    assert requests == []
+
+
+def test_no_allocation_follow_up_after_an_allocation_build():
+    requests, _, _ = _finish("Completed", "allocation", True)
+    assert requests == []
+
+
+def test_the_rebuild_flag_follow_up_is_unchanged_and_independent():
+    requests, _, _ = _finish("Completed", "full", True, flagged=1)
+    assert [a[0][0] for a in requests] == ["full", "allocation"]

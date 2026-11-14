@@ -128,6 +128,11 @@ SIDEBARS = {
         ("DocType", "Budget Cycle"),
         ("DocType", "Budget Sheet"),
         ("DocType", "Budget Annual Input"),
+        ("Section", "Allocation"),
+        ("DocType", "Cost Allocation Driver"),
+        ("DocType", "Cost Allocation Statistic"),
+        ("DocType", "Cost Allocation Rule Set"),
+        ("DocType", "Cost Allocation Run"),
     ]),
     "Structure": ("Structure", [
         ("Workspace", "Structure", "Home"),

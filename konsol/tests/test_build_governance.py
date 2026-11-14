@@ -37,9 +37,12 @@ TRIGGER_DOCTYPES = [
     # consolidation input too; nothing rebuilt after one before this.
     "Business Combination",
     "Business Disposal",
+    # K9b (konsol#269): a submitted Cost Allocation Run is an input to the
+    # isolated allocation scope.
+    "Cost Allocation Run",
 ]
 
-VALID_SCOPES = {"staging", "actuals", "scenarios", "consolidation", "reporting", "full"}
+VALID_SCOPES = {"staging", "actuals", "scenarios", "consolidation", "reporting", "full", "allocation"}
 VALID_RISK_LEVELS = {"low", "medium", "high"}
 VALID_WORKFLOW_STATES = {
     "Draft", "Pending Review", "Approved", "Running",
@@ -55,6 +58,21 @@ def _parse(path):
 def _read(path):
     with open(path) as f:
         return f.read()
+
+
+BUILD_SCOPE_FIXTURE = os.path.join(APP_DIR, "fixtures", "build_scope.json")
+
+
+def _isolated_scope_names(path=BUILD_SCOPE_FIXTURE):
+    """Build Scopes flagged isolated=1 (K9a, K9c): built only by their own scope."""
+    with open(path) as f:
+        return {row["name"] for row in json.load(f) if row.get("isolated") == 1}
+
+
+def _consolidation_inputs(triggers, build_map, isolated_scopes):
+    """Triggers whose build scope is not isolated: an isolated scope rebuilds
+    only its own models, so its trigger is not a consolidation input (K9c)."""
+    return [t for t in triggers if build_map[t]["scope"] not in isolated_scopes]
 
 
 def _func_names(tree):
@@ -555,13 +573,37 @@ def test_every_consolidation_input_reaches_the_consolidated_numbers():
                      if isinstance(n, ast.Assign) and any(
                          isinstance(t, ast.Name) and t.id == "DOCTYPE_BUILD_MAP" for t in n.targets))
 
-    consolidation_inputs = list(triggers) + ["Entity"]
+    # K9c (konsol#269): triggers on an isolated Build Scope (Cost Allocation
+    # Run -> allocation) are not consolidation inputs; derived from the fixture.
+    consolidation_inputs = _consolidation_inputs(
+        triggers, build_map, _isolated_scope_names()) + ["Entity"]
     wrong = {dt: build_map[dt]["scope"] for dt in consolidation_inputs
              if build_map[dt]["scope"] not in freshness_model.NUMBERS_SCOPES}
     assert not wrong, (
         "doctypes whose build never reaches the consolidated numbers: "
         f"{wrong}"
     )
+
+
+def test_isolated_build_scope_trigger_is_not_a_consolidation_input():
+    """K9c (konsol#269): a trigger whose DOCTYPE_BUILD_MAP scope is an
+    isolated Build Scope is not a consolidation input; a trigger on a
+    non-isolated scope still is. Stubs only: the real mapping is checked by
+    test_every_consolidation_input_reaches_the_consolidated_numbers."""
+    build_map = {
+        "Isolated Doc": {"scope": "allocation", "risk": "low"},
+        "Plain Doc": {"scope": "consolidation", "risk": "low"},
+    }
+    triggers = ["Isolated Doc", "Plain Doc"]
+    assert _consolidation_inputs(triggers, build_map, ["allocation"]) == ["Plain Doc"]
+    assert _consolidation_inputs(triggers, build_map, []) == ["Isolated Doc", "Plain Doc"]
+
+
+def test_isolated_scopes_are_read_from_the_build_scope_fixture():
+    """K9c: the isolated set comes from fixtures/build_scope.json isolated=1."""
+    isolated = _isolated_scope_names()
+    assert "allocation" in isolated
+    assert "consolidation" not in isolated
 
 
 # ===================================================================
@@ -690,3 +732,98 @@ def test_raw_data_check_asks_for_the_basis_only_after_the_rows_check_passes():
     # and _basis_refusal itself asks nothing when no rows are claimed
     helper = _func_source("_basis_refusal")
     assert helper.index("if not rows") < helper.index("_batches_without_basis()")
+
+
+# ===================================================================
+# K9b (konsol#269): the allocation scope is wired end to end. Its Build Model
+# rows must render the managed block lines konsolidat's dbt_project.yml holds
+# (hand-edited in konsolidat W3; konsol regenerates the block and must match).
+# ===================================================================
+DBT_CONFIG_PATH = os.path.join(APP_DIR, "dbt_config.py")
+BUILD_MODEL_FIXTURE = os.path.join(APP_DIR, "fixtures", "build_model.json")
+BUILD_SCOPE_FIXTURE = os.path.join(APP_DIR, "fixtures", "build_scope.json")
+HOOKS_PY = os.path.join(APP_DIR, "hooks.py")
+
+# konsolidat repo, dbt_project/dbt_project.yml, managed model domains block,
+# the allocation group (hand edit, konsolidat W3). Verbatim.
+KONSOLIDAT_ALLOCATION_LINES = [
+    "      # --- Domain: allocation ---",
+    "      gold_cost_allocation:",
+    "        +tags: ['gold', 'domain:allocation']",
+    "      gold_cost_allocation_frozen:",
+    "        +tags: ['gold', 'domain:allocation']",
+]
+
+
+def _render_model_domains():
+    """konsol/dbt_config.py loaded with frappe stubbed (the test_dbt_config pattern)."""
+    if "frappe" not in sys.modules:
+        sys.modules["frappe"] = types.ModuleType("frappe")
+    spec = importlib.util.spec_from_file_location("dbt_config_k9b", DBT_CONFIG_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.render_model_domains
+
+
+def _build_model_mapping():
+    with open(BUILD_MODEL_FIXTURE) as f:
+        return {row["model_name"]: row["build_domain"] for row in json.load(f)}
+
+
+def _allocation_group(rendered):
+    lines = rendered.split("\n")
+    start = lines.index("      # --- Domain: allocation ---")
+    end = start + 1
+    while end < len(lines) and lines[end].startswith("      ") and not lines[end].startswith("      # --- Domain:") \
+            and not lines[end].startswith("      # --- END"):
+        end += 1
+    return lines[start:end]
+
+
+def test_allocation_build_models_render_konsolidats_hand_edit():
+    mapping = _build_model_mapping()
+    assert mapping["gold_cost_allocation"] == "allocation", mapping.get("gold_cost_allocation")
+    assert mapping["gold_cost_allocation_frozen"] == "allocation", mapping.get("gold_cost_allocation_frozen")
+    rendered = _render_model_domains()(mapping)
+    assert _allocation_group(rendered) == KONSOLIDAT_ALLOCATION_LINES
+
+
+def test_allocation_scope_is_registered_as_isolated_in_the_build_scope_fixture():
+    with open(BUILD_SCOPE_FIXTURE) as f:
+        rows = {row["name"]: row for row in json.load(f)}
+    assert rows["allocation"]["isolated"] == 1
+    assert rows["allocation"]["requires_raw_data"] == 0
+
+
+def test_cost_allocation_run_maps_to_the_allocation_scope_at_low_risk():
+    build_map = _module_literal_from(TASKS_PATH, "DOCTYPE_BUILD_MAP")
+    assert build_map["Cost Allocation Run"] == {"scope": "allocation", "risk": "low"}, build_map.get("Cost Allocation Run")
+
+
+def test_the_allocation_selector_is_its_own_domain_tag():
+    selector = _module_literal_from(TASKS_PATH, "SCOPE_SELECTOR")
+    assert selector["allocation"] == "tag:domain:allocation"
+
+
+def test_cost_allocation_run_triggers_a_build_on_save_submit_and_cancel():
+    """Mirrors Business Combination: the doctype sits on the trigger list, so
+    the doc_events hook queues the build on update, submit and cancel."""
+    with open(HOOKS_PY) as f:
+        tree = ast.parse(f.read())
+    trigger = next(
+        n.value for n in tree.body
+        if isinstance(n, ast.Assign) and any(getattr(t, "id", None) == "_dbt_trigger_doctypes" for t in n.targets)
+    )
+    listed = [e.value for e in trigger.elts if isinstance(e, ast.Constant)]
+    assert "Cost Allocation Run" in listed, listed
+    assert "Business Combination" in listed, listed
+
+
+def _module_literal_from(path, name):
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found in {path}")
