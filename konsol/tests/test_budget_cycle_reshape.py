@@ -96,12 +96,12 @@ def test_sheet_sync_key_is_scenario_entity_fy_layer():
 
 def test_writes_resolve_cycle_and_reject_when_locked():
     src = _src(API_PATH)
-    for fn in ("_upsert_budget_line", "budget_cell_save"):
-        body = _func(src, fn)
-        assert "_resolve_budget_cycle" in body
-        assert "_assert_cycle_open" in body
-    guard = _func(src, "_assert_cycle_open")
-    assert "Locked" in guard and "423" in guard
+    # No API write creates a Cycle or judges its lock itself: every budget
+    # write goes through budget_intake, which refuses a missing or submitted
+    # Cycle (S2-X1, S2-X2).
+    for gone in ("_resolve_budget_cycle", "_assert_cycle_open"):
+        assert "def " + gone not in src, gone
+    assert "budget_intake" in _func(src, "_judge_budget_cell")
 
 
 # --- D365 sheet-grain entrypoints ------------------------------------------
@@ -147,18 +147,15 @@ def test_migration_exposes_legacy_d365_purge():
 
 # --- review fixes -----------------------------------------------------------
 
-def test_cycle_create_race_is_handled():
-    # Fix #2: the cycle insert (outside the per-sheet retry) must absorb the
-    # concurrent-create DuplicateEntryError instead of 500-ing the writer.
-    resolve = _func(_src(API_PATH), "_resolve_budget_cycle")
-    assert "DuplicateEntryError" in resolve and "rollback" in resolve
+def test_no_api_write_creates_a_cycle():
+    # The race this pinned (a Cycle created on first write) is gone with the
+    # auto-create (S2-X1/X2); the Entry-create race is pinned in
+    # test_budget_locking.py.
+    assert 'new_doc("Budget Cycle")' not in _src(API_PATH)
 
 
 def test_layer_is_canonicalized_on_every_write():
-    # Fix #3: both write paths normalize layer; the grain helper owns it.
-    api = _src(API_PATH)
-    assert "normalize_layer" in _func(api, "_upsert_budget_line")
-    assert "normalize_layer" in _func(api, "budget_cell_save")
+    # The API paths take the layer as given; budget_intake judges it (S2-X1, X2).
     grain = _src(GRAIN_PY)
     assert "def normalize_layer" in grain and "VALID_LAYERS" in grain
     # role gate normalizes too, so a mis-cased layer can't bypass it
@@ -257,6 +254,16 @@ def test_shared_line_matcher_replaces_duplicates():
     # Fix #10: the line-match loop lives in one place (budget_grain.find_budget_line).
     assert "def find_budget_line" in _src(GRAIN_PY)
     api = _src(API_PATH)
-    assert "find_budget_line" in api
     # the old standalone _find_line / _find_or_append_line copies are gone
     assert "def _find_line(" not in api and "def _find_or_append_line(" not in api
+
+
+# --- review fix 6: the Cycle's scenario and year are set once ----------------
+
+def test_scenario_and_fiscal_year_are_set_once():
+    """A Cycle's entries carry its scenario and year (fetched on every save),
+    so changing either under them would re-label every entry."""
+    with open(os.path.join(APP_DIR, "epm", "doctype", "budget_cycle", "budget_cycle.json")) as fh:
+        fields = {f["fieldname"]: f for f in json.load(fh)["fields"]}
+    for name in ("scenario_id", "fiscal_year"):
+        assert fields[name].get("set_only_once") == 1, name

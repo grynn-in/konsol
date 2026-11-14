@@ -57,21 +57,31 @@ def test_composite_check_covers_entity_account_and_dimensions():
 
 # --- every write path enforces ---------------------------------------------
 
-def test_upsert_enforces_write_access():
-    """Covers budget_save and budget_save_batch (both go through _upsert)."""
-    assert "_assert_budget_write_access" in _calls_in(_func(_api_tree(), "_upsert_budget_line"))
+def test_save_and_batch_go_through_the_cell_path():
+    """S2-X2: budget_save and budget_save_batch write each period through
+    _save_budget_cell, the path budget_cell_save uses, so the access check runs
+    in budget_intake for every cell."""
+    tree = _api_tree()
+    assert "_save_budget_cell" in _calls_in(_func(tree, "_budget_save_cells"))
+    assert "_budget_save_cells" in _calls_in(_func(tree, "budget_save"))
+    assert "_budget_save_cells" in _calls_in(_func(tree, "budget_save_batch"))
+    assert "_save_budget_cell" in _calls_in(_func(tree, "budget_cell_save"))
 
 
 def test_cell_save_enforces_write_access():
-    assert "_assert_budget_write_access" in _calls_in(_func(_api_tree(), "budget_cell_save"))
+    """S2-X1: the cell goes through budget_intake (judge_one, which calls
+    plan), which runs _assert_budget_write_access on every row
+    (test_budget_intake.py)."""
+    tree = _api_tree()
+    assert "_judge_budget_cell" in _calls_in(_func(tree, "_save_budget_cell"))
+    assert "judge_one" in _calls_in(_func(tree, "_judge_budget_cell"))
 
 
 def test_batch_reports_permission_errors_per_item():
-    """budget_save_batch must distinguish PermissionError from generic failure."""
-    src = open(API_PATH).read()
-    # The PermissionError handler must appear before the generic Exception one.
-    assert "except frappe.PermissionError" in src
-    assert src.index("except frappe.PermissionError") < src.index("Budget save failed")
+    """budget_save_batch keeps a PermissionError a PermissionError, and names the row."""
+    src = ast.get_source_segment(open(API_PATH).read(), _func(_api_tree(), "budget_save_batch"))
+    assert "frappe.PermissionError" in src and "type(e)" in src and "Row {i + 1}" in src
+    assert src.index("frappe.PermissionError") < src.index("Budget save failed")
 
 
 # --- account-category resolution is cached, off the write hot path ----------

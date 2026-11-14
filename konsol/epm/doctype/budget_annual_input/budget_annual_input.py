@@ -21,6 +21,9 @@ FIXED_FIELD_MAP = {
     "data_area_id": "data_area_id",
     "fiscal_year": "fiscal_year",
     "main_account": "main_account",
+    # Budget S2 (A7): both required on the doctype (A5)
+    "layer": "layer",
+    "currency": "currency",
     "annual_amount": "annual_amount",
     "spread_profile_id": "spread_profile_id",
     "submitted_by": "submitted_by",
@@ -111,15 +114,57 @@ class BudgetAnnualInput(Document):
         # so it cannot race a Scenario type change (review of #460).
         from konsol.epm.doctype.scenario.scenario import locked_scenario_type
 
-        self._assert_write_access()
+        cycles = self._lock_cycles()
+        self._intake_check()
         self._validate_main_account_published()
         self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
-        self._guard_cycle_locked()
+        self._guard_cycle_locked(cycles)
         self._validate_unique_grain()
+        self._refuse_second_writer()
+
+    def check_if_latest(self, *args, **kwargs):
+        """Frappe's check reads this row FOR UPDATE (load_doc_before_save).
+        The Cycle is locked first, the order every budget writer keeps."""
+        self._lock_cycles()
+        return super().check_if_latest(*args, **kwargs)
+
+    def _lock_cycles(self):
+        """Lock the Budget Cycle rows of (scenario, year) (Q16-c) and return
+        them as the lock read them ({name, docstatus, status}): a Budget Entry
+        writer holds the same lock while it checks this doctype, so the two
+        one-writer checks cannot both pass, and two Annual Inputs on one grain
+        run _validate_unique_grain one after the other. validate takes it
+        first.
+
+        A pair with no Budget Cycle is refused by name (20-b): there would be
+        nothing to lock, and a budget write never creates a Cycle (Q6-b).
+        Install and migrate skip both, as lock_cycles does."""
+        if not (self.scenario_id and self.fiscal_year):
+            return []
+        from konsol import budget_intake
+
+        cycles = budget_intake.lock_cycles(self.scenario_id, self.fiscal_year)
+        if not cycles and not (frappe.flags.in_install or frappe.flags.in_migrate):
+            frappe.throw(
+                f"No Budget Cycle exists for {self.scenario_id} {self.fiscal_year}. "
+                "Create the Cycle before entering annual figures.",
+                frappe.ValidationError,
+            )
+        return cycles
+
+    def _refuse_second_writer(self):
+        """A grain takes its numbers from one writer (Q16-c): refused when a
+        Budget Entry line of this grain exists, in any period. After the Cycle
+        lock, with a locking read. Skipped in install and migrate."""
+        if frappe.flags.in_install or frappe.flags.in_migrate:
+            return
+        from konsol import budget_intake
+
+        budget_intake.assert_no_entry_lines(self._intake_row(), name=self.name)
 
     def before_cancel(self):
-        self._guard_cycle_locked()
+        self._guard_cycle_locked(self._lock_cycles())
 
     def on_trash(self):
         """The lock has to hold on DELETE too, not just on edit.
@@ -132,9 +177,21 @@ class BudgetAnnualInput(Document):
 
         The write-access check runs here too: delete is a write, and a user
         granted one entity must not delete another's annual figure.
+
+        The Cycle is locked here too, so a delete cannot slip past a Cycle
+        approval that is committing. Frappe has locked this row already, so
+        the Cycle lock is taken NOWAIT (lock_cycles(wait=False)): a Cycle
+        another writer holds refuses the delete at once instead of waiting
+        while this row is held. A pair with no Cycle guards nothing: an orphan
+        figure may go, as an orphan Budget Entry may.
         """
-        self._assert_write_access()
-        self._guard_cycle_locked()
+        if not (frappe.flags.in_install or frappe.flags.in_migrate):
+            from konsol import budget_intake
+
+            budget_intake.assert_annual_access(self._intake_row())
+            if self.scenario_id and self.fiscal_year:
+                self._guard_cycle_locked(
+                    budget_intake.lock_cycles(self.scenario_id, self.fiscal_year, wait=False))
 
     def _validate_main_account_published(self):
         """The warehouse chart reads Published Main Accounts only, so a row on
@@ -152,9 +209,13 @@ class BudgetAnnualInput(Document):
             )
 
     def _validate_unique_grain(self):
-        """One annual figure per (scenario, entity, year, account, dimensions).
+        """One annual figure per (scenario, entity, year, layer, account,
+        dimensions).
 
         The dimensions are the site's declared budget dimensions (konsol#287).
+        The layer is part of the grain: gold_spread_budget keeps each layer's
+        rows apart (konsolidat#300), so a challenge figure beside the base
+        figure for one account is a second layer, not a duplicate.
 
         gold_spread_budget inner-joins the profile and unions the result with no
         dedup and no aggregation, so two rows at the same grain produce two sets
@@ -166,6 +227,7 @@ class BudgetAnnualInput(Document):
             "scenario_id": self.scenario_id,
             "data_area_id": self.data_area_id,
             "fiscal_year": self.fiscal_year,
+            "layer": self.layer,
             "main_account": self.main_account,
             "name": ["!=", self.name],
         }
@@ -174,37 +236,43 @@ class BudgetAnnualInput(Document):
         # miss the very row this would duplicate (the F3 trap).
         grain.update({d: self.get(d) or ["is", "not set"]
                       for d in budget_dimension_fields()})
-        dupe = frappe.db.exists("Budget Annual Input", grain)
+        # A locking read after the Cycle lock, on the lock index's columns: a
+        # plain read serves this transaction's snapshot (REPEATABLE READ) and
+        # misses a row another session committed while this one waited.
+        found = frappe.db.get_values("Budget Annual Input", grain, ["name"], as_dict=True,
+                                     order_by="name asc", for_update=True)
+        dupe = found[0].name if found else None
         if dupe:
             frappe.throw(
                 f"An annual budget row already exists for {self.scenario_id} / "
-                f"{self.data_area_id} / {self.fiscal_year} / {self.main_account} "
+                f"{self.data_area_id} / {self.fiscal_year} / layer {self.layer} / {self.main_account} "
                 f"({dupe}). Two rows at one grain double the spread budget."
             )
 
-    def _assert_write_access(self):
-        """The same entity, account and dimension check the bottom-up budget
-        writes run (api._assert_budget_write_access, konsol#413). Without it a
-        Desk save wrote any entity's annual figure. Skipped during
-        install/migrate only: Desk Data Import sets in_import, and an importing
-        user must not bypass the check."""
+    def _intake_row(self):
+        row = {f: self.get(f) for f in (
+            "scenario_id", "data_area_id", "fiscal_year", "main_account", "layer", "currency")}
+        row.update({d: self.get(d) for d in budget_dimension_fields()})
+        return row
+
+    def _intake_check(self):
+        """Every budget writer goes through konsol.budget_intake: the entity,
+        account and dimension access check (konsol#413), the declared layer and
+        its writer role, a plan scenario, and the entity's functional currency.
+        Skipped during install/migrate only: Desk Data Import sets in_import,
+        and an importing user must not bypass the check."""
         if frappe.flags.in_install or frappe.flags.in_migrate:
             return
-        from konsol.api import _assert_budget_write_access
+        from konsol import budget_intake
 
-        data = {
-            "data_area_id": self.data_area_id,
-            "main_account": self.main_account,
-        }
-        data.update({d: self.get(d) for d in budget_dimension_fields()})
-        _assert_budget_write_access(data)
+        budget_intake.annual_check(self._intake_row())
 
     def _stamp_submitter(self):
         """submitted_by is an audit field, not free text."""
         if not self.submitted_by:
             self.submitted_by = frappe.session.user
 
-    def _guard_cycle_locked(self):
+    def _guard_cycle_locked(self, cycles):
         """A locked Budget Cycle closes BOTH input paths, not just one.
 
         Budget Sheet — the bottom-up path — links a cycle, checks
@@ -215,18 +283,16 @@ class BudgetAnnualInput(Document):
 
         The cycle is derived rather than linked — Budget Cycle is keyed on
         (scenario_id, fiscal_year) and so is this — so no field is duplicated.
-        Skipped during install/migrate/import: fixtures and patches load against
+        `cycles` are the pair's Cycles as budget_intake.lock_cycles read them,
+        under the lock: a Cycle approved (docstatus 1) or Locked while this
+        write waited is seen, which a plain read of the snapshot would miss.
+        Skipped during install/migrate only: a Data Import is a user's write and meets the lock. Fixtures and patches load against
         whatever state the site is in.
         """
-        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_import:
+        if frappe.flags.in_install or frappe.flags.in_migrate:
             return
-        if not (self.scenario_id and self.fiscal_year):
-            return
-        locked = frappe.db.exists("Budget Cycle", {
-            "scenario_id": self.scenario_id,
-            "fiscal_year": self.fiscal_year,
-            "status": "Locked",
-        })
+        locked = next((c["name"] for c in cycles or ()
+                       if c["docstatus"] == 1 or c["status"] == "Locked"), None)
         if locked:
             frappe.throw(
                 f"Budget Cycle {locked} is locked for {self.scenario_id} "
@@ -255,3 +321,11 @@ def queue_sync():
     (which changes which rows qualify under CH_SYNC_FILTERS) all call this, so
     they share one key and one sync."""
     sync_doctype_after_commit("Budget Annual Input", BudgetAnnualInput.CH_TABLE, BudgetAnnualInput.CH_FIELD_MAP)
+
+
+def on_doctype_update():
+    """The index this doctype's budget locking read runs on (PR #522 review;
+    konsol.budget_intake.LOCK_INDEXES)."""
+    from konsol.budget_intake import add_lock_index
+
+    add_lock_index("Budget Annual Input")

@@ -65,6 +65,7 @@ class BudgetCycle(Document):
         """Push the locked sheets downstream, after the commit (#124/#136)."""
         after_commit_once(("budget_cycle", self.name, "lock"), functools.partial(self._push_sheets, True))
         self._resync_annual_input()
+        self._resync_entries()
 
     def before_cancel(self):
         """Unlock the cycle: reopen its sheets for editing."""
@@ -83,6 +84,7 @@ class BudgetCycle(Document):
                 sheet.db_set("d365_writeback_status", "", update_modified=False)
         after_commit_once(("budget_cycle", self.name, "unlock"), functools.partial(self._push_sheets, False))
         self._resync_annual_input()
+        self._resync_entries()
 
     @staticmethod
     def _resync_annual_input():
@@ -93,6 +95,18 @@ class BudgetCycle(Document):
         the whole table, so one sync covers every cycle in the transaction:
         the key is the doctype's own, shared with Annual Input saves."""
         from konsol.epm.doctype.budget_annual_input.budget_annual_input import queue_sync
+
+        queue_sync()
+
+    @staticmethod
+    def _resync_entries():
+        """Queue the Budget Entry Line sync, once per transaction, after the
+        commit (S2-T2). Lines reach ClickHouse only while their cycle has
+        docstatus 1 (CH_SYNC_FILTERS), so, like Annual Input, they change
+        membership on a cycle submit or cancel, never on an entry save. The
+        sync replaces the whole table, so one covers every cycle in the
+        transaction."""
+        from konsol.epm.doctype.budget_entry_line.budget_entry_line import queue_sync
 
         queue_sync()
 
@@ -138,3 +152,11 @@ class BudgetCycle(Document):
             return bool(get_config(entity_id=entity_id).get("enabled"))
         except Exception:
             return False
+
+
+def on_doctype_update():
+    """The index this doctype's budget locking read runs on (PR #522 review;
+    konsol.budget_intake.LOCK_INDEXES)."""
+    from konsol.budget_intake import add_lock_index
+
+    add_lock_index("Budget Cycle")

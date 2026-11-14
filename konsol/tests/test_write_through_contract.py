@@ -220,6 +220,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # a konsol write-through that nothing ever created — the cause of the
         # long-standing gold_spread_budget build failure
         "epm_gold.budget_monthly_input",
+        # Budget S2 (I3): the raw budget landing table, one row per Budget
+        # Entry Line (test_budget_raw_ddl.py)
+        "epm_raw.budget_entries",
         # konsol#110: the entity registry, so a connector-less entity has a
         # currency the consolidation can join on
         "epm_staging.entities",

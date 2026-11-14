@@ -769,9 +769,15 @@ _REFERENCE_TABLE_DDL = {
     # with two customers' dimensions as literals, so a site budgeting by
     # dim_region wrote a column the table did not have, and the write-through
     # failed.
+    #
+    # Budget S2 (A7, Q13-a): the layer and the currency of the row, after
+    # main_account as on the doctype, both required there so neither has a
+    # DEFAULT. Identical to konsolidat's clickhouse/init-db.sql (S2-R6;
+    # test_budget_annual_input_ddl.py pins it). Added to an existing table by
+    # _POSITIONED_COLUMNS below.
     "epm_gold.budget_annual_input": (
         "(scenario_id String, data_area_id String, fiscal_year UInt16, "
-        "main_account String, "
+        "main_account String, layer String, currency String, "
         "annual_amount Decimal(18,2), spread_profile_id String, "
         "submitted_by String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, main_account)"
@@ -785,6 +791,21 @@ _REFERENCE_TABLE_DDL = {
         "main_account String, "
         "fiscal_period UInt8, amount Decimal(18,2), layer String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, layer)"
+    ),
+    # Budget S2 (I3): the raw budget landing table, one row per Budget Entry
+    # Line (konsol#348, D0 Q1-b2), written through while its Budget Cycle is
+    # approved. Debit and credit (Q3-a); amount_basis required, never
+    # defaulted, and no partner column (Q2-c). The columns are Budget Entry
+    # Line's FIXED_FIELD_MAP keys; the site's dim_* columns are added by
+    # ALTER (S2-I4), as on the other budget tables. Identical to konsolidat's
+    # clickhouse/init-db.sql; tests/test_budget_raw_ddl.py in both repos pins it.
+    "epm_raw.budget_entries": (
+        "(entry_name String, cycle String, scenario_id String, layer String, "
+        "data_area_id String, fiscal_year UInt16, fiscal_period UInt8, "
+        "main_account String, debit Decimal(18,4), credit Decimal(18,4), "
+        "currency String, amount_basis String) "
+        "ENGINE = MergeTree "
+        "ORDER BY (scenario_id, data_area_id, fiscal_year, fiscal_period, layer, main_account)"
     ),
     # konsolidat#146: which fiscal calendar each ERP legal entity posts against.
     # It was seeds/entity_fiscal_calendars.csv, and it decides which calendar
@@ -1146,6 +1167,12 @@ _POSITIONED_COLUMNS = {
         ("link_owner_group", "String", "path_id"),
         ("link_owner_data_area_id", "String", "link_owner_group"),
     ],
+    # Budget S2 (A7, Q13-a): AFTER main_account, not last, because the site's
+    # dim_* budget columns are already appended to an existing table
+    "epm_gold.budget_annual_input": [
+        ("layer", "String", "main_account"),
+        ("currency", "String", "layer"),
+    ],
 }
 
 
@@ -1373,6 +1400,9 @@ def ensure_reference_tables():
     for sql in [
         "CREATE DATABASE IF NOT EXISTS epm_staging",
         "CREATE DATABASE IF NOT EXISTS epm_gold",
+        # epm_raw.budget_entries is a reference table; ensure_raw_tables()
+        # creates this database too, but only after these CREATEs run.
+        "CREATE DATABASE IF NOT EXISTS epm_raw",
         *[f"CREATE TABLE IF NOT EXISTS {t} {body}"
           for t, body in _REFERENCE_TABLE_DDL.items()],
         *_added_column_ddl(_REFERENCE_TABLE_DDL),

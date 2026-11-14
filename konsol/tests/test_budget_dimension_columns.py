@@ -21,7 +21,9 @@ import sys
 import types
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BUDGET_TABLES = ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input")
+#: S2-I4: Budget Entry Line's raw table carries the same declared columns.
+BUDGET_TABLES = ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input",
+                 "epm_raw.budget_entries")
 #: What the tables carry once created, before any sync: no dimension column.
 BASE_COLUMNS = ["scenario_id", "data_area_id", "fiscal_year", "main_account"]
 
@@ -163,6 +165,21 @@ def test_a_failing_budget_column_sync_is_reported_not_fatal():
     assert summary["vars_updated"] is True
 
 
+def test_budget_entry_line_gets_the_in_budget_custom_fields():
+    """S2-I4: Budget Entry Line's CH_FIELD_MAP sends its dim_* fields to
+    epm_raw.budget_entries, so the Custom Field sync provisions them on it,
+    from in_budget, after main_account, as on the other budget doctypes."""
+    module, _, _ = _schema_apply({}, {})
+    planned, added = [], []
+    module._plan_dimension_custom_fields = lambda dt, flag: planned.append((dt, flag)) or (
+        set(), {}, [], [], [])
+    module._add_dimension_custom_fields = lambda dt, after, plan: added.append((dt, after)) or []
+    module._remove_orphan_dimension_custom_fields = lambda dt, plan: []
+    module._sync_budget_custom_fields_locked()
+    assert ("Budget Entry Line", "in_budget") in planned, planned
+    assert ("Budget Entry Line", "main_account") in added, added
+
+
 # --------------------------------------------------------------------------
 # Budget Annual Input: the field map and the grain follow its dimension fields
 # --------------------------------------------------------------------------
@@ -189,7 +206,13 @@ def _controller(fields):
     fake.get_meta = lambda doctype: meta
     fake.get_all = lambda *a, **k: (_ for _ in ()).throw(
         AssertionError("no registry query: the field set is read off meta"))
-    fake.db = types.SimpleNamespace(exists=lambda dt, f: exists_calls.append(f) or None)
+    def get_values(dt, f, fields, as_dict=False, order_by=None, for_update=False, **k):
+        # The grain check is a locking read after the Cycle lock (PR #522 review 2).
+        assert dt == "Budget Annual Input" and for_update and as_dict and order_by, (dt, for_update)
+        exists_calls.append(f)
+        return []
+
+    fake.db = types.SimpleNamespace(get_values=get_values)
     fake.throw = lambda msg, *a, **k: (_ for _ in ()).throw(ValueError(msg))
     fake.flags = types.SimpleNamespace(in_install=False, in_migrate=False, in_import=False)
     model = types.ModuleType("frappe.model")
@@ -235,7 +258,7 @@ def test_the_unique_grain_includes_the_dimension_fields():
     """Two rows differing only by a budget dimension are different budget lines."""
     module, exists_calls = _controller({"dim_region"})
     doc = module.BudgetAnnualInput()
-    doc.__dict__.update(name="BAI-1", scenario_id="BUD", data_area_id="ZZA",
+    doc.__dict__.update(name="BAI-1", scenario_id="BUD", data_area_id="ZZA", layer="base",
                         fiscal_year=2026, main_account="ZZ1000", dim_region="EMEA")
     doc._validate_unique_grain()
     assert exists_calls[-1]["dim_region"] == "EMEA", exists_calls
@@ -247,10 +270,22 @@ def test_a_blank_dimension_in_the_grain_matches_null_too():
     gold_spread_budget (no dedup) doubled the annual budget."""
     module, exists_calls = _controller({"dim_region"})
     doc = module.BudgetAnnualInput()
-    doc.__dict__.update(name="BAI-1", scenario_id="BUD", data_area_id="ZZA",
+    doc.__dict__.update(name="BAI-1", scenario_id="BUD", data_area_id="ZZA", layer="base",
                         fiscal_year=2026, main_account="ZZ1000", dim_region=None)
     doc._validate_unique_grain()
     assert exists_calls[-1]["dim_region"] == ["is", "not set"], exists_calls
+
+
+def test_the_unique_grain_includes_the_layer():
+    """gold_spread_budget keeps each layer's rows apart (konsolidat#300), so a
+    challenge figure beside the base figure for one account is not a duplicate.
+    Without the layer in the grain, the challenge row was refused as one."""
+    module, exists_calls = _controller({"dim_region"})
+    doc = module.BudgetAnnualInput()
+    doc.__dict__.update(name="BAI-2", scenario_id="BUD", data_area_id="ZZA", layer="challenge",
+                        fiscal_year=2026, main_account="ZZ1000", dim_region="EMEA")
+    doc._validate_unique_grain()
+    assert exists_calls[-1]["layer"] == "challenge", exists_calls
 
 
 # --------------------------------------------------------------------------

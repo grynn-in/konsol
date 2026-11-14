@@ -12,5 +12,9 @@ def get_data():
                 "label": "Consolidation",
                 "items": ["Consolidation Journal", "IC Balance"],
             },
+            {
+                "label": "Budget",
+                "items": ["Budget Entry"],
+            },
         ],
     }

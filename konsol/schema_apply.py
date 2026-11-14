@@ -444,19 +444,24 @@ def _sync_journal_dimension_columns():
     return _sync_dimension_columns(_JOURNAL_STAGING_TABLE, "in_journal")
 
 
-#: The two budget input tables, written by Budget Annual Input and Budget
-#: Sheet and read by gold_spread_budget through get_budget_dimensions().
-_BUDGET_INPUT_TABLES = ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input")
+#: The budget tables that carry the declared in_budget dim_* columns: the
+#: two input tables, written by Budget Annual Input and Budget Sheet and read
+#: by gold_spread_budget through get_budget_dimensions(), and (S2-I4) the raw
+#: landing table Budget Entry Line writes through to, whose CH_FIELD_MAP sends
+#: the line's dim_* fields.
+_BUDGET_INPUT_TABLES = ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input",
+                        "epm_raw.budget_entries")
 
 
 def _sync_budget_dimension_columns():
-    """Add the declared budget dimension columns to both budget input tables.
+    """Add the declared budget dimension columns to every budget table.
 
     konsol#287: the tables are created naming no dimension, and the Published
     Dimensions ticked in_budget decide their dim_* columns, as in_trial_balance
     does for the raw trial balance. Both tables get the same set: a budget
     entered at annual grain is spread to monthly, so a dimension only one of
-    them has would be lost in the spread. Nothing is dropped, for the reason on
+    them has would be lost in the spread. epm_raw.budget_entries gets the same
+    set for the same reason (S2-I4). Nothing is dropped, for the reason on
     _sync_tb_dimension_columns. Each action names its table.
     """
     return [f"{table}: {action}"
@@ -778,6 +783,10 @@ def _sync_budget_custom_fields_locked():
               # konsol#287: the annual half of the budget carries the same
               # declared dimensions instead of two fixed fields.
               ("Budget Annual Input", "in_budget", "main_account"),
+              # S2-I4: Budget Entry Line sends its dim_* fields to
+              # epm_raw.budget_entries, which _sync_budget_dimension_columns
+              # gives the same in_budget columns.
+              ("Budget Entry Line", "in_budget", "main_account"),
               ("Consolidation Journal Line", "in_journal", "main_account"))
     plans = [_plan_dimension_custom_fields(dt, flag) for dt, flag, _ in tables]
     actions = [r for plan in plans for r in plan[3]]
