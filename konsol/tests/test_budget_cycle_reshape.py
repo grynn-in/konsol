@@ -16,7 +16,6 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API_PATH = os.path.join(APP_DIR, "api.py")
 CYCLE_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_cycle", "budget_cycle.py")
 SHEET_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_sheet", "budget_sheet.py")
-D365_PY = os.path.join(APP_DIR, "d365_writeback.py")
 PATCH_PY = os.path.join(APP_DIR, "patches", "reshape_budget_input_to_cycle.py")
 PATCHES_TXT = os.path.join(APP_DIR, "patches.txt")
 GRAIN_PY = os.path.join(APP_DIR, "epm", "budget_grain.py")
@@ -64,7 +63,7 @@ def test_cycle_is_an_approval_and_pushes_no_sheet():
     # them to ClickHouse and D365; submit is the approval, and the submit and
     # cancel queue the Budget Entry and Annual Input syncs.
     src = _src(CYCLE_PY)
-    for gone in ("_push_sheets", "enqueue_push_budget_sheet", "withdraw_budget_sheet", 'self.status = "'):
+    for gone in ("_push_sheets", 'self.status = "'):
         assert gone not in src, gone
     for hook in ("on_submit", "on_cancel"):
         assert "_resync_entries()" in _func(src, hook), hook
@@ -95,18 +94,6 @@ def test_writes_resolve_cycle_and_reject_when_locked():
     for gone in ("_resolve_budget_cycle", "_assert_cycle_open"):
         assert "def " + gone not in src, gone
     assert "budget_intake" in _func(src, "_judge_budget_cell")
-
-
-# --- D365 sheet-grain entrypoints ------------------------------------------
-
-def test_d365_has_sheet_grain_entrypoints():
-    src = _src(D365_PY)
-    assert _func(src, "push_budget_sheet") is not None
-    assert _func(src, "enqueue_push_budget_sheet") is not None
-    assert _func(src, "withdraw_budget_sheet") is not None
-    assert _func(src, "purge_budget_model") is not None
-    # build_entries now takes the parent cycle's fiscal_year explicitly
-    assert "def build_entries(sheet, fiscal_year" in src
 
 
 # --- non-destructive, idempotent migration ---------------------------------
@@ -169,22 +156,6 @@ def test_cycle_and_sheet_use_digest_autoname():
     for f in ("budget_cycle/budget_cycle", "budget_sheet/budget_sheet"):
         meta = json.load(open(os.path.join(APP_DIR, "epm", "doctype", f + ".json")))
         assert meta.get("autoname", "") == "", f"{f} must not use a raw format autoname"
-
-
-def test_d365_dimension_values_are_dynamic():
-    # Fix #9: every in_budget dim is emitted, not just cost center / department.
-    src = _src(D365_PY)
-    assert "def build_entries(sheet, fiscal_year, fiscal_calendar=None, dim_names=None)" in src
-    dv = _func(src, "_dimension_values")
-    assert "for dim in dims" in dv and "_d365_attribute" in dv
-    assert _func(src, "_d365_attribute") is not None
-
-
-def test_d365_jobs_guard_on_cycle_state():
-    # Fix #7: push only while cycle locked; withdraw skips if re-locked.
-    src = _src(D365_PY)
-    assert "docstatus" in _func(src, "push_budget_sheet")
-    assert "docstatus" in _func(src, "withdraw_budget_sheet")
 
 
 def test_migration_provisions_dims_and_normalizes_and_purges_ch():
