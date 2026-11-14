@@ -25,6 +25,16 @@ the rows it writes (the Excel cell, the bulk load) saves inside
 ``judged_by_writer()``, so the rows are not judged twice. An entry without
 lines is judged on its Cycle only: there is no row to judge. A line removed
 on the Desk is judged for access and the layer's writer role.
+
+The rules that span other records run on every save, whoever writes (the
+writer's own judgement covers its rows, not the other entries), after the
+Cycle lock and with locking reads (``_refuse_second_writer``): one amount
+basis per (cycle, entity, layer) across all its entries (Q15-c,
+``budget_intake.assert_one_basis``), and no line on a grain a Budget Annual
+Input gives (Q16-c, ``budget_intake.assert_no_annual_input``). A Budget Upload that replaces a slice
+whole saves inside ``replacing_entries(names)``: the slice's old entries are
+rewritten in the same transaction, so their old basis is not a second one.
+Install and migrate skip them, as they skip the Cycle lock.
 """
 from contextlib import contextmanager
 from decimal import Decimal
@@ -45,6 +55,9 @@ _CYCLE_STATE = {1: "approved", 2: "cancelled"}
 
 #: frappe.flags key a writer sets (judged_by_writer) when it has judged its rows.
 _JUDGED_FLAG = "budget_entry_judged"
+
+#: frappe.flags key (replacing_entries): entries the current write rewrites.
+_REPLACING_FLAG = "budget_entry_replacing"
 
 
 class CycleNotDraftError(frappe.ValidationError):
@@ -106,6 +119,20 @@ def judged_by_writer():
         frappe.flags[_JUDGED_FLAG] = was
 
 
+@contextmanager
+def replacing_entries(names):
+    """Save Budget Entries in this scope as one write that rewrites the
+    entries `names` (a Budget Upload replacing a slice whole): the basis rule
+    does not count their old basis against the new one. The writer has judged
+    that the new rows give one basis (budget_intake.plan)."""
+    was = frappe.flags.get(_REPLACING_FLAG)
+    frappe.flags[_REPLACING_FLAG] = frozenset(names)
+    try:
+        yield
+    finally:
+        frappe.flags[_REPLACING_FLAG] = was
+
+
 def entry_name(cycle, data_area_id, layer, fiscal_period):
     """The name of the entry for this key (its autoname): a writer looks an
     entry up by it, a locking read on the primary key."""
@@ -128,6 +155,7 @@ class BudgetEntry(Document):
         stamp_header(self)
         self._refuse_duplicate_lines()
         self._judge_lines()
+        self._refuse_second_writer()
         self._compute_totals()
 
     def check_if_latest(self, *args, **kwargs):
@@ -165,6 +193,23 @@ class BudgetEntry(Document):
                  self.currency or ""] + [line.get(d) or "" for d in dims]
                 for line in lines]
         budget_intake.judge_one([header] + rows, form_basis=self.amount_basis or "")
+
+    def _refuse_second_writer(self):
+        """The rules that span other records, for every writer: validate has
+        locked the Cycle, so these locking reads see every committed write."""
+        if frappe.flags.in_install or frappe.flags.in_migrate:
+            return
+        from konsol import budget_intake
+
+        budget_intake.assert_one_basis(
+            self.cycle, self.data_area_id, self.layer, self.amount_basis or "", name=self.name,
+            replacing=frappe.flags.get(_REPLACING_FLAG) or ())
+        dims = budget_dimension_fields()
+        budget_intake.assert_no_annual_input(
+            self.scenario_id, self.fiscal_year, self.data_area_id, self.layer,
+            [{"main_account": line.get("main_account"), **{d: line.get(d) or "" for d in dims}}
+             for line in self.get("lines") or []],
+            entry=self.name, period=self.fiscal_period)
 
     def _judge_removed_lines(self, budget_intake, lines):
         before = self.get_doc_before_save()

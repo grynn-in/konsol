@@ -28,8 +28,20 @@ What it does, in order:
      holders. System Manager and Administrator bypass, as the access check does.
      A refusal is an access denial, as the access check's is.
 
+   - one amount basis per (scenario, year, entity, layer) in the file (Q15-c):
+     two periods of one layer that give two bases are both refused, each
+     naming the other.
+
 An inactive Scenario is gathered and refused as inactive; only a Scenario that
 does not exist is refused as undeclared.
+
+The rules that span saved records run where every writer's save passes, the
+Budget Entry and Budget Annual Input controllers, after they lock the Cycle:
+``assert_one_basis`` (Q15-c: one basis per Cycle, entity and layer across all
+its entries) and the one-writer-per-grain pair (Q16-c). Their reads are
+locking reads: under REPEATABLE READ a plain read serves the transaction's
+snapshot and misses what another writer committed while this one waited on
+the Cycle.
 
 ``annual_check`` is the same entry for one Budget Annual Input (A6): access,
 declared layer, the layer's writer role, a plan scenario, and the entity's
@@ -115,9 +127,61 @@ def plan(table, *, form_basis, name_lines):
                 denials.append(_at_line(row, error))
         errors.extend(denials)
         item["denials"] = denials
-        item["ok"] = not errors
         report.append(item)
+    _refuse_mixed_bases(report)
+    for item in report:
+        item["ok"] = not item["errors"]
     return {"groups": groups, "report": report, "ok": all(i["ok"] for i in report)}
+
+
+def _refuse_mixed_bases(report):
+    """One amount basis per (scenario, year, entity, layer) within the table
+    (Q15-c). A group whose basis differs from another period's of its layer is
+    refused, naming that period and its basis. A group with no basis is
+    refused already, so it is left out."""
+    by_slice = {}
+    for item in report:
+        if item["amount_basis"]:
+            slice_key = (item["scenario"], item["fiscal_year"], item["entity"], item["layer"])
+            by_slice.setdefault(slice_key, []).append(item)
+    for items in by_slice.values():
+        for item in items:
+            other = next((o for o in items if o["amount_basis"] != item["amount_basis"]), None)
+            if other:
+                item["errors"].append(
+                    f"Period {item['fiscal_period']} gives amount basis \"{item['amount_basis']}\" but "
+                    f"period {other['fiscal_period']} gives \"{other['amount_basis']}\" for entity "
+                    f"{item['entity']}, layer {item['layer']}: one Cycle, entity and layer hold one "
+                    "amount basis across all their periods. Give every period of the layer the same basis.")
+
+
+def assert_one_basis(cycle, entity, layer, basis, *, name, replacing=()):
+    """Refuse a Budget Entry whose amount basis differs from another entry of
+    its (cycle, entity, layer) (Q15-c), naming that entry, its period and its
+    basis. `name` is the entry being saved (it does not conflict with
+    itself); `replacing` names entries the same write is rewriting (a Budget
+    Upload replaces a slice whole), whose old basis does not count.
+
+    A locking read (the caller holds the Cycle lock): it sees an entry another
+    writer committed while this one waited. Writes nothing."""
+    if not basis:
+        return
+    rows = frappe.db.get_values(
+        "Budget Entry", {"cycle": cycle, "data_area_id": entity, "layer": layer},
+        ["name", "fiscal_period", "amount_basis"], as_dict=True,
+        order_by="fiscal_period asc, name asc", for_update=True)
+    skip = set(replacing) | {name}
+    for row in rows:
+        if row.name in skip or (row.amount_basis or "") == basis:
+            continue
+        frappe.throw(
+            f"Budget Entry {row.name} (period {row.fiscal_period}) holds amount basis "
+            f"\"{row.amount_basis}\" for Cycle {cycle}, entity {entity}, layer {layer}; this entry "
+            f"gives \"{basis}\". One Cycle, entity and layer hold one amount basis across all their "
+            f"periods. Write this period as \"{row.amount_basis}\", or reload the layer's every period "
+            "with one basis in a Budget Upload.",
+            frappe.ValidationError,
+        )
 
 
 def judge_one(table, *, form_basis):
@@ -222,6 +286,115 @@ def annual_check(row):
     problems += currency_problems(row.get("data_area_id"), functional, [(None, row.get("currency"))])
     if problems:
         frappe.throw("\n".join(problems), frappe.ValidationError)
+
+
+def lock_cycles(scenario_id, fiscal_year):
+    """Lock every Budget Cycle row of (scenario, year), in name order, and
+    return their names: a Budget Annual Input derives its Cycle from the pair
+    rather than linking one, and an amended pair holds more than one. The
+    Annual Input writers take this first, the lock order every budget writer
+    keeps (the Cycle row before the record it saves). No Cycle, nothing
+    locked: then no Budget Entry of the pair exists to conflict with.
+    Skipped in install and migrate, as assert_cycle_draft is."""
+    if frappe.flags.in_install or frappe.flags.in_migrate:
+        return []
+    rows = frappe.db.get_values("Budget Cycle", {"scenario_id": scenario_id, "fiscal_year": fiscal_year},
+                                ["name"], as_dict=True, order_by="name asc", for_update=True)
+    return [r.name for r in rows]
+
+
+def _dim_fields(doctype):
+    """The budget dimension fields `doctype` carries (Data dim_* fields, off
+    the meta, as its controller reads them)."""
+    return {f.fieldname for f in frappe.get_meta(doctype).fields
+            if (f.fieldname or "").startswith("dim_") and f.fieldtype == "Data"}
+
+
+def _grain_key(account, row, dims):
+    """(account, dim values) with a blank dimension and an unset one the same
+    value, as Budget Annual Input's own grain reads them."""
+    return (account,) + tuple(row.get(d) or "" for d in dims)
+
+
+def _named_dims(dims, key):
+    named = ", ".join(f"{d} {v}" for d, v in zip(dims, key[1:]) if v)
+    return f" with {named}" if named else ""
+
+
+def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, entry, period):
+    """Refuse a Budget Entry line on a grain a Budget Annual Input already
+    gives (Q16-c): a grain (scenario, year, entity, layer, account, dim_*
+    values) takes its numbers from one writer. `lines` are dicts with
+    main_account and the dim_* values; `entry` and `period` name the entry
+    being saved. Raises frappe.ValidationError naming the Annual Input and the
+    way out. A locking read (the caller holds the Cycle lock). Writes nothing."""
+    accounts = sorted({line.get("main_account") for line in lines if line.get("main_account")})
+    if not accounts:
+        return
+    annual_dims = _dim_fields("Budget Annual Input")
+    dims = sorted(annual_dims | {k for line in lines for k in line if k.startswith("dim_")})
+    rows = frappe.db.get_values(
+        "Budget Annual Input",
+        {"scenario_id": scenario_id, "fiscal_year": fiscal_year, "data_area_id": entity, "layer": layer,
+         "main_account": ["in", accounts]},
+        ["name", "main_account", *sorted(annual_dims)], as_dict=True, order_by="name asc", for_update=True)
+    annual = {}
+    for row in rows:
+        annual.setdefault(_grain_key(row.main_account, row, dims), row.name)
+    for line in lines:
+        key = _grain_key(line.get("main_account"), line, dims)
+        if key in annual:
+            name = annual[key]
+            frappe.throw(
+                f"Budget Annual Input {name} already gives account {key[0]}{_named_dims(dims, key)} for "
+                f"{scenario_id} {fiscal_year}, entity {entity}, layer {layer} as an annual figure, so "
+                f"Budget Entry {entry} (period {period}) cannot give it too: a budget line takes its "
+                f"numbers from one writer. Delete Budget Annual Input {name}, or enter the year as "
+                "monthly entries.",
+                frappe.ValidationError,
+            )
+
+
+def assert_no_entry_lines(row, *, name):
+    """Refuse a Budget Annual Input on a grain a Budget Entry line already
+    gives, in any period (Q16-c). `row` holds scenario_id, fiscal_year,
+    data_area_id, layer, main_account and the dim_* values; `name` is the
+    Annual Input. Raises frappe.ValidationError naming the entry and period.
+    A locking read (the caller holds the Cycle lock). Writes nothing.
+
+    Only lines under a Cycle that is not cancelled count (19-b): under an
+    amended pair the cancelled original's entries stay as the audit trail,
+    out of the warehouse, and do not block. (The other direction needs no
+    filter: a Budget Entry is saved only under a draft Cycle of its pair, so
+    an Annual Input of that pair always counts against it.)"""
+    if not row.get("main_account"):
+        return
+    line_dims = _dim_fields("Budget Entry Line")
+    dims = sorted(line_dims | {k for k in row if k.startswith("dim_")})
+    lines = frappe.db.get_values(
+        "Budget Entry Line",
+        {"parenttype": "Budget Entry", "scenario_id": row.get("scenario_id"),
+         "fiscal_year": row.get("fiscal_year"), "data_area_id": row.get("data_area_id"),
+         "layer": row.get("layer"), "main_account": row.get("main_account")},
+        ["parent", "cycle", "fiscal_period", "main_account", *sorted(line_dims)], as_dict=True,
+        order_by="fiscal_period asc, parent asc", for_update=True)
+    key = _grain_key(row.get("main_account"), row, dims)
+    lines = [line for line in lines if _grain_key(line.main_account, line, dims) == key]
+    cycles = sorted({line.cycle for line in lines})
+    live = {c.name for c in frappe.db.get_values(
+        "Budget Cycle", {"name": ["in", cycles]}, ["name", "docstatus"], as_dict=True,
+        order_by="name asc", for_update=True) if int(c.docstatus) in (0, 1)} if cycles else set()
+    for line in lines:
+        if line.cycle in live:
+            frappe.throw(
+                f"Budget Entry {line.parent} (period {line.fiscal_period}) already gives account "
+                f"{key[0]}{_named_dims(dims, key)} for {row.get('scenario_id')} {row.get('fiscal_year')}, "
+                f"entity {row.get('data_area_id')}, layer {row.get('layer')} as a monthly figure, so "
+                f"Budget Annual Input {name} cannot give it too: a budget line takes its numbers from one "
+                "writer. Keep entering the year as monthly entries, or remove the account's lines from "
+                "the layer's Budget Entries first.",
+                frappe.ValidationError,
+            )
 
 
 def _budget_dimensions():

@@ -30,12 +30,18 @@ class _Flags:
 def ctl(monkeypatch):
     calls = []
 
+    locks = []   # lock acquisition, in order
+
     class Document:
         def __init__(self, **kw):
             self.__dict__.update(kw)
 
         def get(self, k):
             return self.__dict__.get(k)
+
+        def check_if_latest(self, *args, **kwargs):
+            # Frappe's: load_doc_before_save reads the row FOR UPDATE.
+            locks.append(("annual input", self.name))
 
     def throw(msg, *a, **k):
         raise Exception(msg)
@@ -45,9 +51,29 @@ def ctl(monkeypatch):
     frappe.flags = _Flags()
     frappe.session = types.SimpleNamespace(user="zz@example.com")
     statuses = {}
+    locked = {"Budget Cycle": [{"name": "BC-ZZS-2026", "scenario_id": "ZZS", "fiscal_year": 2026, "docstatus": 0},
+                               {"name": "BC-ZZOLD-2026", "scenario_id": "ZZOLD", "fiscal_year": 2026,
+                                "docstatus": 0}],
+              "Budget Entry Line": []}
+
+    def get_values(doctype, filters=None, fields=None, as_dict=False, order_by=None, for_update=False,
+                   **kw):
+        assert for_update and as_dict and order_by, (doctype, for_update, as_dict, order_by)
+        def match(value, cond):
+            if isinstance(cond, list) and cond[0] == "in":
+                return value in cond[1]
+            return str(value) == str(cond)
+        rows = [r for r in locked[doctype] if all(match(r.get(f), v) for f, v in (filters or {}).items())]
+        if doctype == "Budget Cycle":
+            locks.extend(("cycle", r["name"]) for r in rows)
+        else:
+            locks.append(("read", doctype))
+        return [types.SimpleNamespace(**{f: r.get(f) for f in fields}, get=r.get) for r in rows]
+
     frappe.db = types.SimpleNamespace(
-        exists=lambda *a, **k: None,
-        get_value=lambda dt, name, field, *a, **k: statuses.get(name, "Published"))
+        exists=lambda *a, **k: locks.append(("grain read", a[0])) and None,
+        get_value=lambda dt, name, field, *a, **k: statuses.get(name, "Published"),
+        get_values=get_values)
     frappe.throw = throw
     frappe.ValidationError = Exception
     frappe._ = lambda s: s
@@ -117,7 +143,8 @@ def ctl(monkeypatch):
     spec = importlib.util.spec_from_file_location("_bai_under_test", PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return types.SimpleNamespace(mod=mod, frappe=frappe, calls=calls, statuses=statuses)
+    return types.SimpleNamespace(mod=mod, frappe=frappe, calls=calls, statuses=statuses, locks=locks,
+                                 locked=locked)
 
 
 def _row(ctl, entity, **over):
@@ -221,3 +248,70 @@ def test_inactive_scenario_is_refused_as_inactive(ctl):
 def test_layer_and_currency_are_not_judged_on_delete(ctl):
     _row(ctl, "ZZE1", layer="nope", currency="USD").on_trash()
     assert len(ctl.calls) == 1
+
+
+# ---- Q16-c: a grain takes its numbers from one writer ---------------------------
+
+def _line(**over):
+    line = {"parent": "BENT-P3", "parenttype": "Budget Entry", "cycle": "BC-ZZS-2026",
+            "scenario_id": "ZZS", "fiscal_year": 2026,
+            "data_area_id": "ZZE1", "layer": "base", "fiscal_period": 3, "main_account": "4000",
+            "dim_cost_center": "CC1", "dim_region": "EU"}
+    line.update(over)
+    return line
+
+
+def test_an_annual_input_on_a_budget_entry_grain_is_refused_naming_the_entry(ctl):
+    ctl.locked["Budget Entry Line"].append(_line())
+    with pytest.raises(Exception) as raised:
+        _row(ctl, "ZZE1").validate()
+    assert "Budget Entry BENT-P3" in str(raised.value) and "period 3" in str(raised.value)
+
+
+def test_an_annual_input_beside_another_layers_entry_saves(ctl):
+    ctl.locked["Budget Entry Line"].append(_line(layer="board"))
+    _row(ctl, "ZZE1").validate()
+
+
+def test_validate_locks_the_cycle_before_reading_the_entry_lines(ctl):
+    _row(ctl, "ZZE1").validate()
+    assert ctl.locks.index(("cycle", "BC-ZZS-2026")) < ctl.locks.index(("read", "Budget Entry Line"))
+
+
+def test_a_save_locks_the_cycle_before_frappe_locks_the_annual_input(ctl):
+    """The order every budget writer keeps: the Cycle row first. Frappe's
+    check_if_latest locks this row before validate runs."""
+    _row(ctl, "ZZE1").check_if_latest()
+    assert ctl.locks == [("cycle", "BC-ZZS-2026"), ("annual input", "x")]
+
+
+def test_the_unique_grain_is_read_after_the_cycle_lock(ctl):
+    """Two Annual Inputs on one grain: the second waits on the Cycle, then
+    its duplicate check runs (gap 3 of the Q16 build)."""
+    _row(ctl, "ZZE1").validate()
+    assert ctl.locks.index(("cycle", "BC-ZZS-2026")) < ctl.locks.index(("grain read", "Budget Annual Input"))
+
+
+def test_an_annual_input_without_a_budget_cycle_is_refused_by_name(ctl):
+    # 20-b: no Cycle, nothing to lock, so nothing to serialise the
+    # one-writer checks on; refused as a Budget Entry is (Q6-b).
+    ctl.locked["Budget Cycle"][:] = [c for c in ctl.locked["Budget Cycle"] if c["scenario_id"] != "ZZS"]
+    with pytest.raises(Exception) as raised:
+        _row(ctl, "ZZE1").validate()
+    assert str(raised.value) == ("No Budget Cycle exists for ZZS 2026. Create the Cycle before entering "
+                                 "annual figures.")
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_install_and_migrate_skip_the_missing_cycle_refusal(ctl, flag):
+    setattr(ctl.frappe.flags, flag, True)
+    ctl.locked["Budget Cycle"].clear()
+    _row(ctl, "ZZE1").validate()
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_install_and_migrate_skip_the_grain_check(ctl, flag):
+    setattr(ctl.frappe.flags, flag, True)
+    ctl.locked["Budget Entry Line"].append(_line())
+    _row(ctl, "ZZE1").validate()
+    assert [lock for lock in ctl.locks if lock[0] != "grain read"] == []

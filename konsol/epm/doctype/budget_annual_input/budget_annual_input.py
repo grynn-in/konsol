@@ -114,12 +114,52 @@ class BudgetAnnualInput(Document):
         # so it cannot race a Scenario type change (review of #460).
         from konsol.epm.doctype.scenario.scenario import locked_scenario_type
 
+        self._lock_cycles()
         self._intake_check()
         self._validate_main_account_published()
         self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
         self._guard_cycle_locked()
         self._validate_unique_grain()
+        self._refuse_second_writer()
+
+    def check_if_latest(self, *args, **kwargs):
+        """Frappe's check reads this row FOR UPDATE (load_doc_before_save).
+        The Cycle is locked first, the order every budget writer keeps."""
+        self._lock_cycles()
+        return super().check_if_latest(*args, **kwargs)
+
+    def _lock_cycles(self):
+        """Lock the Budget Cycle rows of (scenario, year) (Q16-c): a Budget
+        Entry writer holds the same lock while it checks this doctype, so the
+        two one-writer checks cannot both pass, and two Annual Inputs on one
+        grain run _validate_unique_grain one after the other. validate takes
+        it first.
+
+        A pair with no Budget Cycle is refused by name (20-b): there would be
+        nothing to lock, and a budget write never creates a Cycle (Q6-b).
+        Install and migrate skip both, as lock_cycles does."""
+        if not (self.scenario_id and self.fiscal_year):
+            return
+        from konsol import budget_intake
+
+        names = budget_intake.lock_cycles(self.scenario_id, self.fiscal_year)
+        if not names and not (frappe.flags.in_install or frappe.flags.in_migrate):
+            frappe.throw(
+                f"No Budget Cycle exists for {self.scenario_id} {self.fiscal_year}. "
+                "Create the Cycle before entering annual figures.",
+                frappe.ValidationError,
+            )
+
+    def _refuse_second_writer(self):
+        """A grain takes its numbers from one writer (Q16-c): refused when a
+        Budget Entry line of this grain exists, in any period. After the Cycle
+        lock, with a locking read. Skipped in install and migrate."""
+        if frappe.flags.in_install or frappe.flags.in_migrate:
+            return
+        from konsol import budget_intake
+
+        budget_intake.assert_no_entry_lines(self._intake_row(), name=self.name)
 
     def before_cancel(self):
         self._guard_cycle_locked()
@@ -158,9 +198,13 @@ class BudgetAnnualInput(Document):
             )
 
     def _validate_unique_grain(self):
-        """One annual figure per (scenario, entity, year, account, dimensions).
+        """One annual figure per (scenario, entity, year, layer, account,
+        dimensions).
 
         The dimensions are the site's declared budget dimensions (konsol#287).
+        The layer is part of the grain: gold_spread_budget keeps each layer's
+        rows apart (konsolidat#300), so a challenge figure beside the base
+        figure for one account is a second layer, not a duplicate.
 
         gold_spread_budget inner-joins the profile and unions the result with no
         dedup and no aggregation, so two rows at the same grain produce two sets
@@ -172,6 +216,7 @@ class BudgetAnnualInput(Document):
             "scenario_id": self.scenario_id,
             "data_area_id": self.data_area_id,
             "fiscal_year": self.fiscal_year,
+            "layer": self.layer,
             "main_account": self.main_account,
             "name": ["!=", self.name],
         }
@@ -184,7 +229,7 @@ class BudgetAnnualInput(Document):
         if dupe:
             frappe.throw(
                 f"An annual budget row already exists for {self.scenario_id} / "
-                f"{self.data_area_id} / {self.fiscal_year} / {self.main_account} "
+                f"{self.data_area_id} / {self.fiscal_year} / layer {self.layer} / {self.main_account} "
                 f"({dupe}). Two rows at one grain double the spread budget."
             )
 

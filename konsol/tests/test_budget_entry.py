@@ -289,6 +289,24 @@ def env(monkeypatch):
             frappe.throw(intake.refuse_removal, Denied)
     intake.assert_may_remove = assert_may_remove
     intake.refuse_removal = None
+    basis_checks = []
+
+    def assert_one_basis(cycle, entity, layer, basis, *, name, replacing=()):
+        locks.append(("basis check", cycle))
+        basis_checks.append((cycle, entity, layer, basis, name, set(replacing)))
+        if intake.refuse_basis:
+            frappe.throw(intake.refuse_basis, Thrown)
+    intake.assert_one_basis = assert_one_basis
+    intake.refuse_basis = None
+    grain_checks = []
+
+    def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, entry, period):
+        locks.append(("grain check", scenario_id))
+        grain_checks.append((scenario_id, fiscal_year, entity, layer, [dict(r) for r in lines], entry, period))
+        if intake.refuse_grain:
+            frappe.throw(intake.refuse_grain, Thrown)
+    intake.assert_no_annual_input = assert_no_annual_input
+    intake.refuse_grain = None
     for name, mod in {"frappe": frappe, "frappe.model": model,
                       "frappe.model.document": docmod,
                       "konsol.clickhouse": ch, "konsol.budget_intake": intake}.items():
@@ -308,7 +326,8 @@ def env(monkeypatch):
     return types.SimpleNamespace(ctl=ctl, cycles=cycles, entries=entries, frappe=frappe,
                                  grain=loaded["konsol.epm.budget_grain"], sql=sql_calls,
                                  judged=judged, intake=intake, locks=locks, removed=removed,
-                                 held_elsewhere=held_elsewhere)
+                                 held_elsewhere=held_elsewhere, basis_checks=basis_checks,
+                                 grain_checks=grain_checks)
 
 
 def _entry(env, lines=(), **kw):
@@ -590,3 +609,75 @@ def test_a_writer_that_judged_its_rows_skips_the_removal_check(env):
     with env.ctl.judged_by_writer():
         doc.validate()
     assert env.removed == []
+
+
+# ---- Q15-c: one amount basis per (cycle, entity, layer), whoever writes ----------
+
+def test_validate_runs_the_one_basis_check_after_the_cycle_lock(env):
+    doc = _entry(env, name="BENT-ME", amount_basis="Year-to-date movement")
+    doc.validate()
+    assert env.basis_checks == [("BCYC-1", "E1", "base", "Year-to-date movement", "BENT-ME", set())]
+    assert env.locks.index(("cycle", "BCYC-1")) < env.locks.index(("basis check", "BCYC-1"))
+
+
+def test_a_writer_that_judged_its_rows_still_gets_the_basis_check(env):
+    # The Excel cell and the bulk load save inside judged_by_writer: the basis
+    # rule spans entries, so no writer's own judgement covers it.
+    doc = _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)])
+    with env.ctl.judged_by_writer():
+        doc.validate()
+    assert len(env.basis_checks) == 1
+
+
+def test_a_second_basis_refuses_the_save(env):
+    env.intake.refuse_basis = "Budget Entry BENT-P1 (period 1) holds amount basis 'Year-to-date movement'"
+    with pytest.raises(Thrown, match="BENT-P1"):
+        _entry(env).validate()
+
+
+def test_entries_being_replaced_are_passed_to_the_basis_check(env):
+    with env.ctl.replacing_entries({"BENT-A", "BENT-B"}):
+        _entry(env, name="BENT-A").validate()
+    assert env.basis_checks[0][5] == {"BENT-A", "BENT-B"}
+    assert not env.frappe.flags.get("budget_entry_replacing"), "the flag is put back"
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_install_and_migrate_skip_the_basis_check(env, flag):
+    setattr(env.frappe.flags, flag, True)
+    _entry(env).validate()
+    assert env.basis_checks == []
+
+
+# ---- Q16-c: a grain takes its numbers from one writer -------------------------------
+
+def test_validate_checks_the_lines_against_annual_inputs_after_the_cycle_lock(env):
+    doc = _entry(env, name="BENT-ME", lines=[
+        dict(main_account="4000", debit=1, credit=0, dim_cost_center="CC1", description="x"),
+        dict(main_account="5000", debit=0, credit=2, dim_cost_center=None)])
+    doc.validate()
+    ((scenario, year, entity, layer, lines, entry, period),) = env.grain_checks
+    assert (scenario, year, entity, layer, entry, period) == ("budget", 2027, "E1", "base", "BENT-ME", 3)
+    assert lines == [{"main_account": "4000", "dim_cost_center": "CC1", "dim_project": ""},
+                     {"main_account": "5000", "dim_cost_center": "", "dim_project": ""}]
+    assert env.locks.index(("cycle", "BCYC-1")) < env.locks.index(("grain check", "budget"))
+
+
+def test_a_writer_that_judged_its_rows_still_gets_the_grain_check(env):
+    doc = _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)])
+    with env.ctl.judged_by_writer():
+        doc.validate()
+    assert len(env.grain_checks) == 1
+
+
+def test_a_line_on_an_annual_input_grain_refuses_the_save(env):
+    env.intake.refuse_grain = "Budget Annual Input BAI-1 already gives account 4000"
+    with pytest.raises(Thrown, match="BAI-1"):
+        _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)]).validate()
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_install_and_migrate_skip_the_grain_check(env, flag):
+    setattr(env.frappe.flags, flag, True)
+    _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)]).validate()
+    assert env.grain_checks == []
