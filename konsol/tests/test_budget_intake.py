@@ -365,6 +365,51 @@ def test_a_cycle_that_is_not_a_draft_is_refused(env, year, word):
     assert any(f"BCYC-BUD-{year}" in e and word in e for e in errors), errors
 
 
+def test_lock_cycles_returns_each_rounds_as_of_date_as_a_key(env):
+    """S3 K3: a forecast pair holds one live Cycle per round (Q23 a). The lock
+    returns the as-of date normalised ('YYYY-MM-DD'), the key in_round reads.
+    The lock itself stays on the pair (QB9 a): the rounds of one pair serialise."""
+    import datetime
+    env.data["Scenario"].append({"name": "FC", "scenario_type": "forecast", "is_active": 1})
+    env.data["Budget Cycle"] += [
+        {"name": "BCYC-FC-2027-Q1", "scenario_id": "FC", "fiscal_year": 2027, "docstatus": 1,
+         "as_of_date": datetime.date(2027, 3, 31)},
+        {"name": "BCYC-FC-2027-Q2", "scenario_id": "FC", "fiscal_year": 2027, "docstatus": 0,
+         "workflow_state": "Draft", "as_of_date": "2027-06-30"},
+    ]
+    cycles = env.mod.lock_cycles("FC", 2027)
+    assert [(c["name"], c["as_of_date"]) for c in cycles] == [
+        ("BCYC-FC-2027-Q1", "2027-03-31"), ("BCYC-FC-2027-Q2", "2027-06-30")]
+    ((doctype, filters, for_update, _order),) = env.state.locked_reads
+    assert doctype == "Budget Cycle" and for_update
+    assert filters == {"scenario_id": "FC", "fiscal_year": 2027}, "QB9 a: the lock stays on the pair"
+
+
+def test_two_draft_rounds_of_a_forecast_pair_refuse_the_write_naming_both(env):
+    """S3 K3 stop-gap until K5 picks the round by the file's as_of_date (QB5 a):
+    a pair with more than one draft Cycle is refused by name, never served
+    drafts[0]. One draft round still takes the write."""
+    env.data["Scenario"].append({"name": "FC", "scenario_type": "forecast", "is_active": 1})
+    env.data["Budget Cycle"] += [
+        {"name": "BCYC-FC-2027-Q1", "scenario_id": "FC", "fiscal_year": 2027, "docstatus": 0,
+         "workflow_state": "Draft", "as_of_date": "2027-03-31"},
+    ]
+    plan = env.plan([HEADER, _row(scenario="FC")])
+    assert plan["ok"], _errors(plan)
+    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q1"
+    env.data["Budget Cycle"].append(
+        {"name": "BCYC-FC-2027-Q2", "scenario_id": "FC", "fiscal_year": 2027, "docstatus": 0,
+         "workflow_state": "Draft", "as_of_date": "2027-06-30"})
+    plan = env.plan([HEADER, _row(scenario="FC")])
+    assert not plan["ok"]
+    item = plan["report"][0]
+    assert item["cycle"] is None
+    (problem,) = [e for e in item["errors"] if "draft Cycles" in e]
+    assert "BCYC-FC-2027-Q1 (as of 2027-03-31)" in problem and "BCYC-FC-2027-Q2 (as of 2027-06-30)" in problem, \
+        problem
+    assert "FC 2027" in problem and "as-of date" in problem, problem
+
+
 def test_a_file_after_an_amendment_is_grouped_onto_the_amendment(env):
     """#524: the cancelled original keeps the digest name; its amendment is
     <name>-1. The plan finds the pair's draft Cycle, not the digest name."""
@@ -698,7 +743,9 @@ def test_lock_cycles_locks_every_cycle_of_the_scenario_and_year(env):
     # the caller judges the Cycle by what is committed now, not its snapshot.
     # The Cycle has no lock status since S2-C W2a: its workflow_state comes
     # back instead, for V2 (Q17-b) to judge under the lock.
-    assert cycles == [{"name": "BCYC-BUD-2027", "docstatus": 0, "workflow_state": "Draft"}]
+    # S3 K3: and its as_of_date (the round key for a forecast; '' on a budget),
+    # so the Cycle's one-live-Cycle rule can judge the round under the lock.
+    assert cycles == [{"name": "BCYC-BUD-2027", "docstatus": 0, "workflow_state": "Draft", "as_of_date": ""}]
     ((doctype, filters, for_update, order_by),) = env.state.locked_reads
     assert doctype == "Budget Cycle" and for_update and order_by == "name asc"
     assert filters == {"scenario_id": "BUD", "fiscal_year": 2027}
