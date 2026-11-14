@@ -4,6 +4,35 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (14 Nov 2026, night): budget S2-C merged, konsol#528 (0063ded9).** The S2 stage of epic #348 is complete. Task file `.claude/memory/active/tasks-budget.md`.
+
+**What landed**
+- **Budget Cycle workflow** (BUD-9-3): Draft → Pending Approval → Approved; Reject goes back to Draft.
+  - A Pending Approval Cycle refuses every budget write (Q17-b). The first state is read from the installed workflow, so renamed states still work.
+  - Cancel is refused once every period of the year is closed.
+- **Amending** (#524): a cancelled Cycle can be amended. Every Cycle, amendments included, takes the first free `<digest>-N` name.
+  - An amendment starts empty (Q22-a, chosen under the standing rule). An explicit copy action is #527.
+- **Retired:**
+  - Budget Sheet and Budget Line. Their patch refuses to drop the tables while rows remain.
+  - `epm_gold.budget_monthly_input`.
+  - The D365 budget write-back and its EPM Settings fields (Q9-a).
+- **Budget* roles** (Q7-c): every holder gains Entity Accountant and keeps the old role. The Manager and Approver holders are named in the migrate log. A role is deleted only when nothing holds or names it.
+- **Connector:** keeps its write-back parts (**Q18-b, Deepak Pai**). Z4c is closed.
+
+**Evidence**
+- Host suite 8214/8214; CI green.
+- Live walk on the local test site: all 9 workflow checks pass, the migrate exits 0, and ZZ data is cleaned up.
+- The live migrate found that `retire_budget_roles` saved Users: a stale link stopped it. Fixed before the merge.
+
+**Before deploying #528 to a hosted example site**
+Check that Budget Sheet/Line hold 0 rows. Otherwise the migrate stops and names the counts.
+
+**Open follow-ups**
+- #525: an unknown spread profile is dropped silently.
+- #527: copy entries into an amended Cycle.
+- #529: no workflow reaches its docstatus-2 state.
+- #530: users still point at a deleted default workspace.
+
 **Update (14 Nov 2026): budget S2 merged. konsol#522 (d9c6e64d) and konsolidat#356 (bd11e230) merged together.** Epic #348; task file `.claude/memory/active/tasks-budget.md`.
 
 **What landed**
