@@ -51,17 +51,25 @@ def ctl(monkeypatch):
     frappe.flags = _Flags()
     frappe.session = types.SimpleNamespace(user="zz@example.com")
     statuses = {}
-    locked = {"Budget Cycle": [{"name": "BC-ZZS-2026", "scenario_id": "ZZS", "fiscal_year": 2026, "docstatus": 0},
+    locked = {"Budget Cycle": [{"name": "BC-ZZS-2026", "scenario_id": "ZZS", "fiscal_year": 2026, "docstatus": 0,
+                                "status": "Open"},
                                {"name": "BC-ZZOLD-2026", "scenario_id": "ZZOLD", "fiscal_year": 2026,
-                                "docstatus": 0}],
-              "Budget Entry Line": []}
+                                "docstatus": 0, "status": "Open"}],
+              "Budget Entry Line": [],
+              "Budget Annual Input": []}
 
     def get_values(doctype, filters=None, fields=None, as_dict=False, order_by=None, for_update=False,
                    **kw):
+        # REPEATABLE READ: only a locking read sees what another session
+        # committed after this transaction's first read.
         assert for_update and as_dict and order_by, (doctype, for_update, as_dict, order_by)
         def match(value, cond):
             if isinstance(cond, list) and cond[0] == "in":
                 return value in cond[1]
+            if isinstance(cond, list) and cond[0] == "!=":
+                return str(value) != str(cond[1])
+            if isinstance(cond, list) and cond == ["is", "not set"]:
+                return value in (None, "")
             return str(value) == str(cond)
         rows = [r for r in locked[doctype] if all(match(r.get(f), v) for f, v in (filters or {}).items())]
         if doctype == "Budget Cycle":
@@ -70,8 +78,13 @@ def ctl(monkeypatch):
             locks.append(("read", doctype))
         return [types.SimpleNamespace(**{f: r.get(f) for f in fields}, get=r.get) for r in rows]
 
+    def plain_read(*a, **k):
+        # A writer check after the Cycle lock reads FOR UPDATE: a plain read
+        # serves the snapshot and misses what another writer committed.
+        raise AssertionError(f"plain read of {a[:1]}: a writer check reads with a locking read")
+
     frappe.db = types.SimpleNamespace(
-        exists=lambda *a, **k: locks.append(("grain read", a[0])) and None,
+        exists=plain_read,
         get_value=lambda dt, name, field, *a, **k: statuses.get(name, "Published"),
         get_values=get_values)
     frappe.throw = throw
@@ -287,9 +300,50 @@ def test_a_save_locks_the_cycle_before_frappe_locks_the_annual_input(ctl):
 
 def test_the_unique_grain_is_read_after_the_cycle_lock(ctl):
     """Two Annual Inputs on one grain: the second waits on the Cycle, then
-    its duplicate check runs (gap 3 of the Q16 build)."""
+    its duplicate check runs (gap 3 of the Q16 build), as a locking read."""
     _row(ctl, "ZZE1").validate()
-    assert ctl.locks.index(("cycle", "BC-ZZS-2026")) < ctl.locks.index(("grain read", "Budget Annual Input"))
+    assert ctl.locks.index(("cycle", "BC-ZZS-2026")) < ctl.locks.index(("read", "Budget Annual Input"))
+
+
+def test_a_duplicate_committed_while_the_save_waited_is_refused(ctl):
+    """PR #522 review 2: another session committed the same grain after this
+    transaction's snapshot. Only a locking read sees it."""
+    ctl.locked["Budget Annual Input"].append(dict(
+        name="BAI-OTHER", scenario_id="ZZS", data_area_id="ZZE1", fiscal_year=2026, layer="base",
+        main_account="4000", dim_cost_center="CC1", dim_region="EU"))
+    with pytest.raises(Exception, match="BAI-OTHER"):
+        _row(ctl, "ZZE1").validate()
+
+
+def test_a_duplicate_with_a_blank_dimension_matches_an_unset_one(ctl):
+    ctl.locked["Budget Annual Input"].append(dict(
+        name="BAI-OTHER", scenario_id="ZZS", data_area_id="ZZE1", fiscal_year=2026, layer="base",
+        main_account="4000", dim_cost_center="CC1", dim_region=None))
+    with pytest.raises(Exception, match="BAI-OTHER"):
+        _row(ctl, "ZZE1", dim_region="").validate()
+
+
+def test_the_row_itself_is_not_its_own_duplicate(ctl):
+    ctl.locked["Budget Annual Input"].append(dict(
+        name="x", scenario_id="ZZS", data_area_id="ZZE1", fiscal_year=2026, layer="base",
+        main_account="4000", dim_cost_center="CC1", dim_region="EU"))
+    _row(ctl, "ZZE1").validate()
+
+
+@pytest.mark.parametrize("docstatus,status", [(1, "Locked"), (0, "Locked"), (1, "Open")])
+def test_a_cycle_approved_while_the_save_waited_is_refused(ctl, docstatus, status):
+    """PR #522 review 2: the Cycle's state is read by the lock itself, so a
+    Cycle approved while this save waited on it is seen."""
+    ctl.locked["Budget Cycle"][0].update(docstatus=docstatus, status=status)
+    with pytest.raises(Exception, match="BC-ZZS-2026 is locked"):
+        _row(ctl, "ZZE1").validate()
+
+
+def test_a_cancelled_original_beside_a_draft_amendment_does_not_refuse(ctl):
+    ctl.locked["Budget Cycle"][0].update(docstatus=2, status="Open")
+    ctl.locked["Budget Cycle"].append({"name": "BC-ZZS-2026-1", "scenario_id": "ZZS", "fiscal_year": 2026,
+                                       "docstatus": 0, "status": "Open"})
+    _row(ctl, "ZZE1").validate()
 
 
 def test_an_annual_input_without_a_budget_cycle_is_refused_by_name(ctl):
@@ -314,4 +368,4 @@ def test_install_and_migrate_skip_the_grain_check(ctl, flag):
     setattr(ctl.frappe.flags, flag, True)
     ctl.locked["Budget Entry Line"].append(_line())
     _row(ctl, "ZZE1").validate()
-    assert [lock for lock in ctl.locks if lock[0] != "grain read"] == []
+    assert [lock for lock in ctl.locks if lock != ("read", "Budget Annual Input")] == []

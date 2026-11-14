@@ -66,7 +66,8 @@ def env(monkeypatch):
             {"name": "board", "writer_role": "Budget Approver", "sort_order": 4},
         ],
         "Budget Cycle": [
-            {"name": "BCYC-BUD-2027", "scenario_id": "BUD", "fiscal_year": 2027, "docstatus": 0},
+            {"name": "BCYC-BUD-2027", "scenario_id": "BUD", "fiscal_year": 2027, "docstatus": 0,
+             "status": "Open"},
             {"name": "BCYC-BUD-2028", "scenario_id": "BUD", "fiscal_year": 2028, "docstatus": 1},
             {"name": "BCYC-BUD-2029", "scenario_id": "BUD", "fiscal_year": 2029, "docstatus": 2},
             {"name": "BCYC-OLD-2027", "scenario_id": "OLD", "fiscal_year": 2027, "docstatus": 0},
@@ -652,8 +653,10 @@ def test_the_annual_side_reads_the_entry_lines_with_a_locking_read(env):
 
 
 def test_lock_cycles_locks_every_cycle_of_the_scenario_and_year(env):
-    names = env.mod.lock_cycles("BUD", 2027)
-    assert names == ["BCYC-BUD-2027"]
+    cycles = env.mod.lock_cycles("BUD", 2027)
+    # PR #522 review 2: the lock returns each Cycle's state as it reads it, so
+    # the caller judges the Cycle by what is committed now, not its snapshot.
+    assert cycles == [{"name": "BCYC-BUD-2027", "docstatus": 0, "status": "Open"}]
     ((doctype, filters, for_update, order_by),) = env.state.locked_reads
     assert doctype == "Budget Cycle" and for_update and order_by == "name asc"
     assert filters == {"scenario_id": "BUD", "fiscal_year": 2027}
