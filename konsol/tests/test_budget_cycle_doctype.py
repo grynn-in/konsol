@@ -73,6 +73,45 @@ def test_key_fields_unchanged():
     assert fields["scenario_type"]["read_only"] == 1
 
 
+# ---- S3 K1: a forecast round is (scenario, fiscal year, as-of date) (#348 Q23 a) ------
+
+FORECAST_ONLY = "eval:doc.scenario_type=='forecast'"
+
+
+def test_as_of_date_keys_the_forecast_round():
+    f = _fields()["as_of_date"]
+    assert f["fieldtype"] == "Date"
+    # Required on a forecast, refused on every other type (QB8 a): never
+    # `reqd`, which would demand it of a budget Cycle too.
+    assert not f.get("reqd")
+    assert f["mandatory_depends_on"] == FORECAST_ONLY
+    assert f["depends_on"] == FORECAST_ONLY
+    # Part of the Cycle's key and name (K4): set once, like scenario_id and fiscal_year.
+    assert f.get("set_only_once") == 1
+    assert f.get("in_list_view") == 1
+    assert "forecast" in f["description"] and "round" in f["description"], f["description"]
+    assert "one Cycle per fiscal year" in f["description"], f["description"]  # Q24 a
+
+
+def test_horizon_periods_is_the_rounds_length():
+    f = _fields()["horizon_periods"]
+    assert f["fieldtype"] == "Int"
+    assert not f.get("reqd")
+    assert f["mandatory_depends_on"] == FORECAST_ONLY
+    assert f["depends_on"] == FORECAST_ONLY
+    assert "forecast" in f["description"] and "1 or more" in f["description"], f["description"]
+
+
+def test_the_round_fields_sit_in_the_cycle_section_after_the_year():
+    order = [f["fieldname"] for f in _doctype()["fields"]]
+    assert order.index("fiscal_year") < order.index("as_of_date") < order.index("horizon_periods") \
+        < order.index("col_break_1")
+
+
+def test_as_of_date_is_searchable():
+    assert _doctype()["search_fields"] == "scenario_id,fiscal_year,as_of_date"
+
+
 def test_tabs_per_the_part_2_table():
     """Cycle tab (Cycle section) holds the key, the deadline and the state;
     the Entries tab (Summary section) holds the count."""
