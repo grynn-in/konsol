@@ -58,7 +58,9 @@ def env(monkeypatch):
     frappe._ = lambda s: s
     frappe.session = types.SimpleNamespace(user="Administrator")
     frappe.flags = types.SimpleNamespace(in_install=False, in_import=False, in_migrate=False, in_patch=False)
-    frappe.db = types.SimpleNamespace(after_commit=types.SimpleNamespace(_functions=queue, add=queue.append))
+    counts = {}
+    frappe.db = types.SimpleNamespace(after_commit=types.SimpleNamespace(_functions=queue, add=queue.append),
+                                      count=lambda dt, filters=None: counts.get((dt, (filters or {}).get("cycle")), 0))
     frappe.get_all = lambda *a, **k: []
     frappe.get_meta = lambda dt: types.SimpleNamespace(fields=[])
     frappe.throw = lambda *a, **k: (_ for _ in ()).throw(Exception(a))
@@ -71,12 +73,17 @@ def env(monkeypatch):
     grain.digest_name = lambda prefix, parts: prefix + "-" + "-".join(parts)
     scenario = types.ModuleType("konsol.epm.doctype.scenario.scenario")
     scenario.locked_scenario_type = lambda s: "budget"
+    # #524: validate refuses a second live Cycle of the pair under this lock.
+    intake = types.ModuleType("konsol.budget_intake")
+    intake.lock_cycles = lambda *a, **k: []
+    monkeypatch.setattr(sys.modules["konsol"], "budget_intake", intake, raising=False)
 
     for name, mod in {
         "frappe": frappe, "frappe.model": model, "frappe.model.document": docmod,
         "frappe.utils": utils, "konsol.clickhouse": _clickhouse_stub(frappe),
         "konsol.epm.budget_grain": grain,
         "konsol.epm.doctype.scenario.scenario": scenario,
+        "konsol.budget_intake": intake,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
     spec = importlib.util.spec_from_file_location(
@@ -99,7 +106,7 @@ def env(monkeypatch):
         doc.save = lambda *a, **k: pytest.fail("on_submit/on_cancel must not save")
         return doc
 
-    return types.SimpleNamespace(cycle=cycle, queue=queue)
+    return types.SimpleNamespace(cycle=cycle, queue=queue, counts=counts)
 
 
 def _entry_syncs(queue):
@@ -140,3 +147,23 @@ def test_two_calls_in_one_transaction_queue_one_sync_per_table(env):
 def test_annual_input_sync_still_queued(env):
     env.cycle().on_submit()
     assert BAI_KEY in _keys(env.queue)
+
+
+# ---- S2-C W2b: entry_count is counted, never typed ----------------------------
+
+def test_entry_count_is_counted_on_save(env):
+    env.counts[("Budget Entry", "BCYC-ZZB-2026")] = 3
+    env.counts[("Budget Entry", "BCYC-OTHER")] = 9
+    doc = env.cycle()
+    doc.entry_count = 99
+    doc.validate()
+    assert doc.entry_count == 3
+
+
+def test_entry_count_is_fresh_when_the_form_opens(env):
+    """Entries change without a Cycle save, so the form counts them on load."""
+    env.counts[("Budget Entry", "BCYC-ZZB-2026")] = 2
+    doc = env.cycle()
+    doc.onload()
+    assert doc.entry_count == 2
+

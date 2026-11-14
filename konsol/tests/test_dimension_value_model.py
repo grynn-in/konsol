@@ -59,7 +59,7 @@ def test_sources_are_the_tables_that_carry_the_column():
     cols = {
         "epm_gold.gold_trial_balance": {"dim_a", "dim_b", "account"},
         "epm_gold.budget_annual_input": {"dim_a"},
-        "epm_gold.budget_monthly_input": set(),
+        "epm_raw.budget_entries": set(),
     }
     assert dvm.value_sources(["dim_a", "dim_b", "dim_c"], cols) == [
         ("dim_a", "epm_gold.budget_annual_input"),
@@ -91,7 +91,8 @@ def test_value_tables_are_the_warehouse_not_the_d365_silver_table():
     assert "epm_silver.silver_financial_dimensions" not in dvm.VALUE_TABLES
     assert "epm_gold.gold_trial_balance" in dvm.VALUE_TABLES
     assert "epm_gold.budget_annual_input" in dvm.VALUE_TABLES
-    assert "epm_gold.budget_monthly_input" in dvm.VALUE_TABLES
+    # S2-C Z6: the retired monthly table is no longer read.
+    assert "epm_gold.budget_monthly_input" not in dvm.VALUE_TABLES
 
 
 def test_parse_rows_builds_named_rows_sorted_and_distinct():

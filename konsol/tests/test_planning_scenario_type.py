@@ -1,9 +1,9 @@
-"""Budget Cycle, Budget Sheet and Budget Annual Input carry their Scenario's type.
+"""Budget Cycle and Budget Annual Input carry their Scenario's type.
 
 Decided by Deepak Pai, 7 Nov 2026, on #443 (option B; rejected A, separate
 Budget and Forecast rail entries; C, Forecast doctypes; D, unfiltered
 duplicates): one rail entry, Planning, lists budgets and forecasts apart. Budget
-and forecast share these three doctypes; a forecast is one whose Scenario has
+and forecast share these two doctypes; a forecast is one whose Scenario has
 ``scenario_type = forecast``. A Frappe list filters only on the doctype's own
 columns, so each doctype gets a read-only copy of the type to filter on.
 
@@ -11,15 +11,12 @@ Frappe v16 mechanics this relies on (frappe/model/document.py
 ``get_invalid_links``, run by ``_validate_links`` on every insert and save):
 for each Link field it reads ``frappe.db.get_value(<linked doctype>, <name>,
 <source fields>)`` from the linked row's stored columns and copies each
-``fetch_from`` value. So Budget Sheet's ``cycle.scenario_type`` reads the
-cycle's own stored copy, which is a real column, and the fetch-of-a-fetch
-needs no controller code. It is copied only while the document is new or not
+``fetch_from`` value. It is copied only while the document is new or not
 submitted, so a submitted cycle keeps the value it had; Scenario refuses a type
 change while any cycle or annual input names it, so that value cannot go stale.
 
 The copy is navigation only. It must never reach ClickHouse: the warehouse
-tables ``epm_gold.budget_annual_input`` and ``epm_gold.budget_monthly_input``
-have no such column, and the scenario's type is already in
+table ``epm_gold.budget_annual_input`` has no such column, and the scenario's type is already in
 ``epm_gold.scenario_definitions``.
 """
 import ast
@@ -34,7 +31,6 @@ DT_DIR = os.path.join(APP_DIR, "epm", "doctype")
 FETCHED = {
     "budget_cycle": ("scenario_id", "scenario_id.scenario_type"),
     "budget_annual_input": ("scenario_id", "scenario_id.scenario_type"),
-    "budget_sheet": ("cycle", "cycle.scenario_type"),
 }
 
 
@@ -70,19 +66,10 @@ def test_each_planning_doctype_carries_a_read_only_fetched_scenario_type():
 def test_the_link_each_fetch_follows_exists():
     """``fetch_from`` names ``<link field>.<source>``; the link must be a Link to
     the doctype that holds the source."""
-    targets = {"scenario_id": "Scenario", "cycle": "Budget Cycle"}
+    targets = {"scenario_id": "Scenario"}
     for folder, (link, _) in FETCHED.items():
         f = _field(_meta(folder), link)
         assert f is not None and f["fieldtype"] == "Link" and f["options"] == targets[link], folder
-
-
-def test_the_sheets_source_is_the_cycles_stored_column():
-    """The fetch-of-a-fetch works because Frappe reads the linked row's stored
-    column; a virtual field there would read as None."""
-    cycle = _field(_meta("budget_cycle"), "scenario_type")
-    assert cycle is not None and not cycle.get("is_virtual")
-    scenario = _field(_meta("scenario"), "scenario_type")
-    assert scenario is not None and scenario["fieldtype"] == "Select"
 
 
 def test_the_field_follows_its_link():
@@ -97,9 +84,7 @@ def test_the_field_follows_its_link():
 WRITERS = [
     ("api.py",),
     ("patches", "reshape_budget_input_to_cycle.py"),
-    ("d365_writeback.py",),
     ("epm", "doctype", "budget_cycle", "budget_cycle.py"),
-    ("epm", "doctype", "budget_sheet", "budget_sheet.py"),
     ("epm", "doctype", "budget_annual_input", "budget_annual_input.py"),
 ]
 
@@ -115,20 +100,12 @@ def test_no_writer_skips_the_link_fetch():
 
 
 def test_writers_set_the_link_then_insert_or_save():
-    """api.py and the reshape patch create cycles and sheets with new_doc and set
+    """api.py and the reshape patch create their documents with new_doc and set
     the link field before insert, so the fetch has something to follow."""
     api = _src("api.py")
     assert re.search(r'new_doc\("Budget Entry"\)\s*\n\s*doc\.update\(entry_key\)', api)
     reshape = _src("patches", "reshape_budget_input_to_cycle.py")
     assert "doc.scenario_id = scenario_id" in reshape and "doc.insert()" in reshape
-    assert "sheet.cycle = cycle_name" in reshape
-
-
-def test_d365_writeback_only_db_sets_its_own_status():
-    """The write-back changes a sheet with db_set on its two status fields only."""
-    src = _src("d365_writeback.py")
-    fields = set(re.findall(r'db_set\("([a-z_0-9]+)"', src))
-    assert fields <= {"d365_writeback_status", "d365_writeback_error"}, fields
 
 
 # --- the copy never reaches ClickHouse ------------------------------------------
@@ -151,21 +128,12 @@ def test_annual_input_field_map_does_not_send_scenario_type():
     assert 'startswith("dim_")' in src
 
 
-def test_sheet_sync_columns_do_not_include_scenario_type():
-    src = _src("epm", "doctype", "budget_sheet", "budget_sheet.py")
-    tree = ast.parse(src)
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "_sync_to_clickhouse")
-    assert "scenario_type" not in ast.get_source_segment(src, fn)
-
-
 def test_budget_cycle_has_no_warehouse_table():
     src = _src("epm", "doctype", "budget_cycle", "budget_cycle.py")
     assert "CH_TABLE" not in src and "CH_FIELD_MAP" not in src
 
 
-def test_the_budget_input_tables_have_no_scenario_type_column():
+def test_the_budget_input_table_has_no_scenario_type_column():
     src = _src("clickhouse.py")
     ddl = _module_assign(src, "_REFERENCE_TABLE_DDL")
-    for table in ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input"):
-        assert "scenario_type" not in ddl[table], table
+    assert "scenario_type" not in ddl["epm_gold.budget_annual_input"]

@@ -162,52 +162,6 @@
    "description": "Shared secret for Airbyte webhook auth (X-Webhook-Secret header)"
   },
   {
-   "fieldname": "tab_d365_writeback",
-   "fieldtype": "Tab Break",
-   "label": "D365 Write-Back"
-  },
-  {
-   "fieldname": "d365_writeback_section",
-   "fieldtype": "Section Break",
-   "label": "D365 F&O Budget Write-Back (Legacy)"
-  },
-  {
-   "fieldname": "enable_d365_budget_writeback",
-   "fieldtype": "Check",
-   "label": "Enable D365 Budget Write-Back",
-   "default": "0",
-   "description": "Push approved budgets to D365 BudgetRegisterEntries (one-way; ClickHouse stays source of truth)"
-  },
-  {
-   "fieldname": "d365_resource_url",
-   "fieldtype": "Data",
-   "label": "D365 Resource URL",
-   "description": "e.g. https://yourorg.operations.dynamics.com"
-  },
-  {
-   "fieldname": "d365_tenant_id",
-   "fieldtype": "Data",
-   "label": "Azure AD Tenant ID"
-  },
-  {
-   "fieldname": "d365_client_id",
-   "fieldtype": "Data",
-   "label": "D365 Client ID"
-  },
-  {
-   "fieldname": "d365_client_secret",
-   "fieldtype": "Password",
-   "label": "D365 Client Secret"
-  },
-  {
-   "fieldname": "d365_fiscal_year_start_month",
-   "fieldtype": "Int",
-   "label": "Fiscal Year Start Month",
-   "default": "1",
-   "depends_on": "enable_d365_budget_writeback",
-   "description": "Month when the D365 fiscal year begins (1=Jan, 4=Apr, 7=Jul, 10=Oct). Maps budget period numbers to OData AccountingDate. For 4-4-5 calendars, supply a CustomFiscalCalendar programmatically. NEEDS-LIVE-TENANT: must match the Fiscal calendar configured in D365 F&O for the target legal entity."
-  },
-  {
    "fieldname": "tab_sync_status",
    "fieldtype": "Tab Break",
    "label": "Airbyte Sync Status"

@@ -40,7 +40,7 @@ def apply_and_rebuild(doc, action):
     # instead of raising, so a failed DDL does not stop the request.
     # The trade-off: if the request then fails (a lock-wait timeout, say), the
     # ClickHouse DDL stays applied; it only adds tables and columns, so
-    # re-publishing recovers. The Budget Line Custom Field sync is not in this
+    # re-publishing recovers. The dimension Custom Field sync is not in this
     # transaction: a Custom Field insert commits (frappe.db.updatedb), so it
     # runs in a job enqueued after the commit. The publish, its row and its
     # build request commit or roll back together (konsol#135).

@@ -19,7 +19,8 @@ import os
 
 import frappe
 
-INSTALLED = ("Consolidation Journal", "Business Combination", "Business Disposal", "Build Approval")
+INSTALLED = ("Consolidation Journal", "Business Combination", "Business Disposal", "Build Approval",
+             "Budget Cycle")
 
 
 def _definitions():

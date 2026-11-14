@@ -105,7 +105,7 @@ class Dimension(Document):
         (schema_apply.py:276 and :445, a looser rule that wants a plain
         lower-case identifier and no prefix) and
         ``budget_grain.budget_dimension_names()`` hands ``dimension_name``
-        straight to Budget Line fieldnames. ``business_unit`` is a legal name
+        straight to budget line fieldnames. ``business_unit`` is a legal name
         for both and is what the existing suite already tests the budget grain
         against (test_hierarchy_node_ambiguity.py:332).
 
@@ -138,7 +138,7 @@ class Dimension(Document):
         save, and it is refused here like any other — naming the flag as the
         reason, because "rename it" is unanswerable to someone who did not
         touch the name, and offering unticking as the other way out, because
-        renaming a budget dimension rewrites every Budget Line fieldname built
+        renaming a budget dimension rewrites every budget line fieldname built
         from it and may well be the wrong fix.
 
         The name is REFUSED, never corrected. Lowercasing or stripping on the
@@ -299,7 +299,7 @@ class Dimension(Document):
         """Refuse to delete a Published Dimension (konsol#300, option A).
 
         A delete applies no schema, so the dimension's ``var('dimensions')``
-        entry and its Budget Line, Budget Annual Input and Consolidation
+        entry and its Budget Entry Line, Budget Annual Input and Consolidation
         Journal Line Custom Fields would outlive it, and dbt would keep
         building a dimension konsol no longer has. Unpublish is the one path
         that removes them and requests the rebuild, and it is a tracked

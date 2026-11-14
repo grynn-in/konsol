@@ -1,7 +1,7 @@
 """Budget Input is RETIRED (PRD-08) — these tests guard the retirement.
 
-The live budget chain is Budget Cycle → Budget Sheet → Budget Line (covered by
-``test_budget_cycle_reshape.py`` / ``test_budget_api.py``). ``Budget Input``
+The live budget chain is Budget Cycle → Budget Entry → Budget Entry Line
+(covered by ``test_budget_entry.py`` / ``test_budget_api.py``). ``Budget Input``
 (+ ``Budget Input Child`` and its per-doc workflow) was the deprecated
 pre-reshape entry point; its code is deleted and a guarded migration patch
 drops the doctypes. Site-free source assertions here pin the safety gates:
@@ -41,7 +41,7 @@ def test_budget_input_doctype_dirs_are_deleted():
 
 
 def test_live_budget_chain_doctypes_remain():
-    for d in ("budget_cycle", "budget_sheet", "budget_line"):
+    for d in ("budget_cycle", "budget_entry", "budget_entry_line"):
         path = os.path.join(APP_DIR, "epm", "doctype", d, f"{d}.json")
         assert os.path.isfile(path), f"live budget chain doctype missing: {d}"
 
@@ -56,11 +56,11 @@ def test_retire_patch_is_registered_after_historical_budget_patches():
 
 
 def test_retire_patch_verifies_migration_parity_before_deleting():
-    # If old Budget Input rows exist but no Budget Sheet was ever produced,
-    # the retire patch must throw instead of dropping the only copy.
+    # If old Budget Input rows exist but the reshape produced nothing, the
+    # retire patch must throw instead of dropping the only copy.
     execute = _func(_src(RETIRE_PY), "execute")
     assert "frappe.throw" in execute
-    assert '"Budget Sheet"' in execute
+    assert execute.count("frappe.db.count(") == 2  # the inputs and their pivot
     assert execute.index("frappe.throw") < execute.index("delete_doc")
 
 
@@ -99,9 +99,9 @@ def _budget_annual_dir():
 
 def test_annual_budget_input_is_konsols_not_a_seed():
     """konsolidat#146: seeds/budget_annual_input.csv was the last seed the dbt
-    project owned. konsol already had the bottom-up path (Budget Cycle → Sheet →
-    Line → epm_gold.budget_monthly_input); this is the top-down half that
-    gold_spread_budget spreads into months by profile."""
+    project owned. konsol already had the bottom-up path (since konsol#348
+    S2-I, Budget Entry → epm_raw.budget_entries); this is the top-down half
+    that gold_spread_budget spreads into months by profile."""
     import json
     import os
 
@@ -120,21 +120,6 @@ def test_annual_budget_input_is_konsols_not_a_seed():
     assert fields["data_area_id"]["options"] == "Entity"
 
 
-def test_monthly_budget_table_is_created_by_something():
-    """epm_gold.budget_monthly_input has always been a konsol write-through with
-    NOTHING that creates it — no seed, no DDL — so gold_spread_budget failed
-    every build with "Unknown table expression identifier". It is in
-    _REFERENCE_TABLE_DDL now, which cleared one of the three documented baseline
-    failures."""
-    import os
-
-    with open(os.path.join(
-            os.path.dirname(_budget_annual_dir()), "..", "..", "clickhouse.py")) as f:
-        src = f.read()
-    assert '"epm_gold.budget_monthly_input": (' in src
-    assert '"epm_gold.budget_annual_input": (' in src
-
-
 def test_annual_budget_lock_holds_on_delete_too():
     """after_delete republishes immediately, so a lock that only guards validate
     could be walked around by deleting a row instead of editing one."""
@@ -144,7 +129,9 @@ def test_annual_budget_lock_holds_on_delete_too():
         src = f.read()
     for hook in ("def validate", "def on_trash", "def before_cancel"):
         body = src.split(hook)[1].split("\n    def ")[0]
-        assert "_guard_cycle_locked" in body, hook
+        assert "_guard_cycle_writable" in body, hook
+    # W4: the deadline-lock guard is gone; the V2 rule replaces it.
+    assert "_guard_cycle_locked" not in src
 
 
 def test_annual_budget_grain_is_unique():
@@ -169,7 +156,8 @@ def test_budget_ddl_names_no_dimension():
     dimensions as literal columns, so a site budgeting by dim_region wrote a
     column the table did not have and the write-through failed. They now
     name no dimension; schema_apply._sync_budget_dimension_columns adds the
-    declared ones, the same set to both tables."""
+    declared ones. (epm_gold.budget_monthly_input, the other table, was
+    retired by konsol#348 S2-C Z6.)"""
     import os
     import re
 
@@ -178,7 +166,7 @@ def test_budget_ddl_names_no_dimension():
         ch = f.read()
     with open(os.path.join(root, "schema_apply.py")) as f:
         schema_apply = f.read()
-    for table in ("epm_gold.budget_annual_input", "epm_gold.budget_monthly_input"):
+    for table in ("epm_gold.budget_annual_input",):
         block = ch.split(f'"{table}": (')[1].split("),")[0]
         assert not re.findall(r"\bdim_\w+", block), (table, block)
         assert f'"{table}"' in schema_apply.split("_BUDGET_INPUT_TABLES = ")[1].split("\n")[0], table

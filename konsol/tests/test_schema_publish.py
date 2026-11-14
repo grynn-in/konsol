@@ -278,7 +278,8 @@ def test_schema_apply_budget_fields_filter_published():
     # each names its own flag. A table that lost its call would leave a
     # declared dimension with nowhere to land.
     locked = _extract_function(content, "_sync_budget_custom_fields_locked")
-    assert '"Budget Line", "in_budget"' in locked, locked
+    assert '"Budget Entry Line", "in_budget"' in locked, locked
+    assert '"Budget Annual Input", "in_budget"' in locked, locked
     assert '"Consolidation Journal Line", "in_journal"' in locked, locked
 
 

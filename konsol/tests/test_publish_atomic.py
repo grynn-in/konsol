@@ -1,6 +1,6 @@
 """A publish commits or rolls back as one transaction (konsol#135).
 
-The Budget Line Custom Field sync inserts Custom Fields, and CustomField.on_update
+The dimension Custom Field sync inserts Custom Fields, and CustomField.on_update
 calls frappe.db.updatedb, which ends with a commit. Run inside a publish, it
 committed the Dimension's save halfway, before the build request was taken.
 The publish now enqueues the sync as a job after the commit.
@@ -47,8 +47,8 @@ def _call_name(call):
 
 
 #: The tables an in_budget Dimension puts a Custom Field on (konsol#287 added
-#: Budget Annual Input beside Budget Line).
-BUDGET_DTS = ("Budget Line", "Budget Annual Input", "Budget Entry Line")
+#: Budget Annual Input; S2-I4 Budget Entry Line).
+BUDGET_DTS = ("Budget Annual Input", "Budget Entry Line")
 
 
 def _load(names, ns):
@@ -316,7 +316,7 @@ def _run_publish(touched, enqueued, created=None, ch=None):
     (and any konsol module they import), against a frappe that records, and
     refuses, everything the Custom Field sync or a commit would touch. So an
     inline sync is caught whatever name it is called under, even through a
-    helper that swallows the error (install._sync_budget_line_custom_fields).
+    helper that swallows the error (install._sync_dimension_custom_fields).
 
     ``created``, if given, collects the Build Approval doc(s) new_doc handed
     back, so a caller can inspect what apply_and_rebuild set on it (konsol#261).
@@ -445,14 +445,14 @@ def test_publish_runs_only_schema_ddl_against_clickhouse():
     # The statements an empty declared set implies: each sync reads back what is
     # on its table before it can decide there is nothing to do. Two tables carry
     # per-site dimension columns now — the raw trial balance, the journal's
-    # staging table (konsolidat#245 option D) and the two budget input tables
-    # (konsol#287), and epm_raw.budget_entries (S2-I4) — so five read-backs
+    # staging table (konsolidat#245 option D), the annual budget input table
+    # (konsol#287), and epm_raw.budget_entries (S2-I4) — so four read-backs
     # and no more.
     selects = [" ".join(s.split()) for s in ch
                if " ".join(s.split()).startswith(CH_INTROSPECTION)]
-    assert len(selects) == 5, ch
+    assert len(selects) == 4, ch
     for table in ("trial_balance_submissions", "consolidation_adjustments",
-                  "budget_annual_input", "budget_monthly_input", "budget_entries"):
+                  "budget_annual_input", "budget_entries"):
         assert sum(f"table = '{table}'" in s for s in selects) == 1, (table, selects)
 
     # Nothing is declared in this fixture, so no column may be added OR
@@ -478,12 +478,12 @@ def test_apply_and_rebuild_marks_the_build_approval_full_refresh():
 
 
 def test_after_migrate_re_runs_the_sync_as_the_repair_path():
-    """A crash between the publish's commit and the job leaves Budget Line
+    """A crash between the publish's commit and the job leaves Budget Entry Line
     behind; the next migrate (or publish, or apply_schema) repairs it."""
     fns = _functions(INSTALL)
     after = {_call_name(c) for c in _calls(fns["after_migrate"])}
-    assert "_sync_budget_line_custom_fields" in after
-    helper = {_call_name(c) for c in _calls(fns["_sync_budget_line_custom_fields"])}
+    assert "_sync_dimension_custom_fields" in after
+    helper = {_call_name(c) for c in _calls(fns["_sync_dimension_custom_fields"])}
     assert "_sync_budget_custom_fields" in helper
 
 
@@ -491,7 +491,7 @@ def test_after_migrate_re_runs_the_sync_as_the_repair_path():
 
 class _Site:
     """MariaDB as the sync sees it: a named lock, and REPEATABLE READ
-    transactions over Budget Line's Custom Fields. A transaction reads its
+    transactions over Budget Entry Line's Custom Fields. A transaction reads its
     snapshot (taken at its last commit or rollback) plus its own uncommitted
     writes; a row another session commits later stays invisible to it.
     Violations are recorded, not raised: the sync swallows a failing
@@ -538,12 +538,12 @@ class _Site:
         self._read(f"{doctype} columns")
         return [(r["fieldname"], "varchar(140)", "YES", "", None, "")
                 for n, r in self.committed.items()
-                if r.get("dt", "Budget Line") == doctype and n not in self.missing_columns]
+                if r.get("dt", "Budget Entry Line") == doctype and n not in self.missing_columns]
 
     def seed(self, fieldname, creation="old", dt=None):
         """``dt`` None seeds the field on every in_budget table, as a synced
         site has it (konsol#287: Budget Annual Input carries the same fields as
-        Budget Line)."""
+        Budget Entry Line)."""
         for one in ((dt,) if dt else BUDGET_DTS):
             self.committed[f"{one}-{fieldname}"] = {"fieldname": fieldname,
                                                     "creation": creation, "dt": one}
@@ -579,7 +579,7 @@ class _Site:
         """Another session commits the field: not in this snapshot.
 
         dt-aware since konsolidat#245 gave a second table its own fields (PR
-        #324 re-review, finding 3's related note): hard-coded to Budget Line it
+        #324 re-review, finding 3's related note): hard-coded to Budget Entry Line it
         could only ever stage the wrong table's row. ``dt`` None is every
         in_budget table, as ``seed``.
         """
@@ -615,7 +615,7 @@ class _Site:
     def get_all(self, doctype, filters=None, fields=None, limit_page_length=None):
         self._read(doctype)
         # konsolidat#245 option D: the locked sync now runs for both line
-        # tables, Budget Line (in_budget) and Consolidation Journal Line
+        # tables, Budget Entry Line (in_budget) and Consolidation Journal Line
         # (in_journal), through one shared body. Either flag is legal here; a
         # third would be a mistake, so the set is closed.
         if doctype == "Dimension":
@@ -627,7 +627,7 @@ class _Site:
                     if d.get(flag) == 1 and d["status"] == "Published"]
         assert doctype == "Custom Field", doctype
         dt = filters.get("dt")
-        assert dt in ("Budget Line", "Budget Annual Input", "Budget Entry Line",
+        assert dt in ("Budget Annual Input", "Budget Entry Line",
                       "Consolidation Journal Line"), filters
         assert filters == {"dt": dt, "fieldname": ("like", "dim_%")}, filters
         # Filtered by dt, like the real query. Without it a field on one table
@@ -635,19 +635,19 @@ class _Site:
         # new journal tests caught that in this stub.
         return [types.SimpleNamespace(name=n, fieldname=r["fieldname"])
                 for n, r in self.visible().items()
-                if r["fieldname"].startswith("dim_") and r.get("dt", "Budget Line") == dt]
+                if r["fieldname"].startswith("dim_") and r.get("dt", "Budget Entry Line") == dt]
 
     def exists(self, doctype, filters):
         assert doctype == "Custom Field"
         creation = filters.get("creation")
         # dt-scoped, like the real query in _created_elsewhere. Left dt-blind, a
-        # failed journal insert of dim_cc found Budget Line's dim_cc, decided
+        # failed journal insert of dim_cc found Budget Entry Line's dim_cc, decided
         # "the goal is met" and left the journal field uncreated while
         # reporting success — and under option D the same fieldname on both
         # tables is the NORMAL case (PR #324 re-review, finding 3).
         return next((n for n, r in self.visible().items()
                      if r["fieldname"] == filters["fieldname"]
-                     and r.get("dt", "Budget Line") == filters.get("dt", "Budget Line")
+                     and r.get("dt", "Budget Entry Line") == filters.get("dt", "Budget Entry Line")
                      and (creation is None or r["creation"] != creation[1])), None)
 
     def _stamp(self):
@@ -717,7 +717,7 @@ def _sync(site):
 def _site_with(**dims):
     site = _Site()
     for name, status in dims.items():
-        # in_journal off, so these tests keep asserting the Budget Line sync
+        # in_journal off, so these tests keep asserting the Budget Entry Line sync
         # alone; the journal table has its own test below (konsolidat#245).
         site.dimensions[name] = {"label": name, "in_budget": 1, "in_journal": 0,
                                  "status": status}
@@ -735,13 +735,13 @@ def test_the_sync_is_idempotent_and_follows_publish_and_unpublish():
     sync = _sync(site)
 
     site.dimensions["dim_zz"] = {"label": "ZZ", "in_budget": 1, "in_journal": 0, "status": "Published"}
-    # one field per in_budget table: Budget Line, Budget Annual Input
-    # and Budget Entry Line (S2-I4)
-    assert sync() == ["added dim_zz"] * 3
+    # one field per in_budget table: Budget Annual Input and Budget Entry
+    # Line (S2-I4)
+    assert sync() == ["added dim_zz"] * 2
     assert sync() == [], "a second run (a duplicate job, or after_migrate) changes nothing"
 
     site.dimensions["dim_zz"]["status"] = "Inactive"   # unpublished
-    assert sync() == ["removed dim_zz"] * 3
+    assert sync() == ["removed dim_zz"] * 2
     assert sync() == []
     assert _fieldnames(site) == {"dim_cost_center", "other_field"}
     assert site.violations == [] and not site.held
@@ -753,7 +753,7 @@ def test_reads_follow_a_commit_under_the_lock_and_the_release_follows_the_last_c
     delete_doc's get_doc) are plain, so the snapshot must postdate the lock."""
     site = _site_with(dim_zz="Inactive")
     site.seed("dim_zz")
-    assert _sync(site)() == ["removed dim_zz"] * 3
+    assert _sync(site)() == ["removed dim_zz"] * 2
     assert site.violations == [], site.violations
     assert _fieldnames(site) == set()
 
@@ -765,7 +765,7 @@ def test_a_failing_delete_rolls_back_before_the_lock_is_released():
     site = _site_with(dim_a="Inactive", dim_b="Inactive")
     site.seed("dim_a")
     site.seed("dim_b")
-    site.fail_delete = {"Budget Line-dim_b"}
+    site.fail_delete = {"Budget Entry Line-dim_b"}
     try:
         _sync(site)()
     except RuntimeError:
@@ -803,7 +803,7 @@ def test_a_field_committed_elsewhere_after_the_read_counts_as_synced():
         site.stamp_before_validate = stamped
         _field_lands_after_the_read(site, "dim_zz")
         assert _sync(site)() == [], stamped
-        assert site.committed["Budget Line-dim_zz"]["creation"] == "theirs", stamped
+        assert site.committed["Budget Entry Line-dim_zz"]["creation"] == "theirs", stamped
         assert site.violations == [] and not site.held, stamped
 
 
@@ -815,9 +815,9 @@ def test_the_adds_run_before_the_deletes():
     site = _site_with(dim_old="Inactive", dim_zz="Published")
     site.seed("dim_old")
     _field_lands_after_the_read(site, "dim_zz")
-    assert _sync(site)() == ["removed dim_old"] * 3
+    assert _sync(site)() == ["removed dim_old"] * 2
     assert _fieldnames(site) == {"dim_zz"}, "dim_old removed, dim_zz synced"
-    assert site.committed["Budget Line-dim_zz"]["creation"] == "theirs"
+    assert site.committed["Budget Entry Line-dim_zz"]["creation"] == "theirs"
     assert site.violations == [] and not site.held
 
 
@@ -853,7 +853,7 @@ def test_an_alter_failure_leaves_our_row_committed_and_still_raises():
         site.stamp_before_validate = stamped
         site.fail_insert = "alter"
         assert _sync_raises(site, (RuntimeError,)), f"swallowed: stamped={stamped}"
-        assert site.committed["Budget Line-dim_zz"]["creation"] != "theirs", stamped
+        assert site.committed["Budget Annual Input-dim_zz"]["creation"] != "theirs", stamped
         assert site.violations == [] and not site.held, stamped
 
 
@@ -884,7 +884,7 @@ def test_the_job_waits_for_the_lock_then_raises_a_plain_error():
 def test_the_job_syncs_once_a_later_attempt_gets_the_lock():
     site = _site_with(dim_zz="Published")
     site.lock = [0, 1]
-    assert _sync(site)(in_job=True) == ["added dim_zz"] * 3
+    assert _sync(site)(in_job=True) == ["added dim_zz"] * 2
     assert site.lock_calls == 2 and site.violations == []
 
 
@@ -930,7 +930,7 @@ def _site_with_journal(**dims):
 
 def test_the_journal_line_gets_its_own_custom_fields():
     """konsolidat#245 option D. Before this test the shared dt/flag/insert_after
-    parameterisation was exercised for Budget Line only — the stub returned []
+    parameterisation was exercised for Budget Entry Line only — the stub returned []
     for the journal table and every fixture dimension carried in_journal: 0."""
     site = _site_with_journal(dim_cost_center="Published")
     sync = _sync(site)
@@ -938,8 +938,8 @@ def test_the_journal_line_gets_its_own_custom_fields():
     assert sync() == [], "a second run changes nothing"
     added = [r for r in site.committed.values() if r.get("dt") == "Consolidation Journal Line"]
     assert [r["fieldname"] for r in added] == ["dim_cost_center"], site.committed
-    assert not [r for r in site.committed.values() if r.get("dt") == "Budget Line"], \
-        "in_budget is 0: Budget Line must not gain the field"
+    assert not [r for r in site.committed.values() if r.get("dt") == "Budget Entry Line"], \
+        "in_budget is 0: Budget Entry Line must not gain the field"
 
 
 def test_un_declaring_a_journal_dimension_removes_only_its_frappe_field():
@@ -955,9 +955,9 @@ def test_a_dimension_on_both_tables_gets_a_field_on_each():
     site.dimensions["dim_cc"] = {"label": "CC", "in_budget": 1, "in_journal": 1,
                                  "status": "Published"}
     sync = _sync(site)
-    assert sorted(sync()) == ["added dim_cc"] * 4
+    assert sorted(sync()) == ["added dim_cc"] * 3
     dts = sorted(r.get("dt") for r in site.committed.values())
-    assert dts == ["Budget Annual Input", "Budget Entry Line", "Budget Line",
+    assert dts == ["Budget Annual Input", "Budget Entry Line",
                    "Consolidation Journal Line"], dts
 
 
@@ -985,7 +985,7 @@ def test_a_reported_removal_really_happened_across_both_tables():
     # own pending work — taking any uncommitted delete with it.
     site.commit_elsewhere("dim_j", dt="Consolidation Journal Line")
     site.fail_insert = "db_table_validate"
-    assert _sync(site)() == ["removed dim_old"] * 3
+    assert _sync(site)() == ["removed dim_old"] * 2
     for dt in BUDGET_DTS:
         assert f"{dt}-dim_old" not in site.committed, (
             "reported 'removed dim_old' while the row is still committed: a "
@@ -1001,9 +1001,8 @@ def test_a_dimension_the_sync_could_never_see_again_is_refused_not_created():
     site.dimensions["business_unit"] = {"label": "BU", "in_budget": 1, "in_journal": 0,
                                         "status": "Published"}
     actions = _sync(site)()
-    # refused once per in_budget table: Budget Line, Budget Annual Input
-    # and Budget Entry Line
-    assert actions == ["refused business_unit"] * 3, actions
+    # refused once per in_budget table: Budget Annual Input and Budget Entry Line
+    assert actions == ["refused business_unit"] * 2, actions
     assert not site.committed, "no Custom Field may be created for it"
 
 
@@ -1032,7 +1031,7 @@ def test_every_add_runs_before_every_delete_across_both_tables():
     ns["_sync_budget_custom_fields_locked"]()
 
     phases = [c[0] for c in calls]
-    assert phases.count("add") == 4 and phases.count("remove") == 4, calls
+    assert phases.count("add") == 3 and phases.count("remove") == 3, calls
     last_add = max(i for i, p in enumerate(phases) if p == "add")
     first_remove = min(i for i, p in enumerate(phases) if p == "remove")
     assert last_add < first_remove, (
@@ -1040,7 +1039,7 @@ def test_every_add_runs_before_every_delete_across_both_tables():
         f"then discard it. Order was {calls}")
     # and both tables are still covered, each named once per phase
     assert sorted(c[1] for c in calls if c[0] == "add") == \
-        ["Budget Annual Input", "Budget Entry Line", "Budget Line",
+        ["Budget Annual Input", "Budget Entry Line",
          "Consolidation Journal Line"], calls
 
 
@@ -1056,19 +1055,19 @@ def test_a_committed_row_whose_column_alter_failed_is_repaired():
     """konsol#169, Deepak Pai's option A (7 Nov 2026). Frappe's sql_ddl commits
     the Custom Field row before it runs the ALTER, so a failed ALTER leaves a
     row with no column behind it. The sync compared rows, so the field counted
-    as existing on every later run and nothing ever repaired it: Budget Line
+    as existing on every later run and nothing ever repaired it: Budget Entry Line
     had a field in its meta with no column, and reads of it failed."""
     site = _site_with(dim_zz="Published")
     site.seed("dim_zz")                              # synced earlier, on every budget table
-    site.drop_column("dim_zz", dt="Budget Line")     # ... but Budget Line's ALTER had failed
-    assert not _column_present(site, "Budget Line", "dim_zz")
+    site.drop_column("dim_zz", dt="Budget Entry Line")     # ... but Budget Entry Line's ALTER had failed
+    assert not _column_present(site, "Budget Entry Line", "dim_zz")
 
     actions = _sync(site)()
 
     assert actions == ["repaired dim_zz"], actions
-    assert _column_present(site, "Budget Line", "dim_zz"), "the ALTER did not run again"
-    assert "Budget Line-dim_zz" in site.committed, "the row must be re-added, not just dropped"
-    assert site.committed["Budget Line-dim_zz"]["creation"] != "old", "the old row was kept"
+    assert _column_present(site, "Budget Entry Line", "dim_zz"), "the ALTER did not run again"
+    assert "Budget Entry Line-dim_zz" in site.committed, "the row must be re-added, not just dropped"
+    assert site.committed["Budget Entry Line-dim_zz"]["creation"] != "old", "the old row was kept"
     assert site.committed["Budget Annual Input-dim_zz"]["creation"] == "old", \
         "a table whose column is fine must not be touched"
     assert _sync(site)() == [], "once repaired, a second run changes nothing"
@@ -1086,22 +1085,22 @@ def test_a_repair_whose_alter_fails_again_is_reported_by_name_not_counted_presen
     site = _site_with(dim_zz="Published", dim_old="Inactive")
     site.seed("dim_zz")                              # on every budget table
     site.seed("dim_old")                             # an orphan on each, to show the sync goes on
-    site.drop_column("dim_zz", dt="Budget Line")
+    site.drop_column("dim_zz", dt="Budget Entry Line")
     site.fail_insert = "alter"                       # every ALTER in this run fails
 
     actions = _sync(site)()
 
-    assert len(actions) == 4 and actions[0].startswith("repair of dim_zz failed"), actions
+    assert len(actions) == 3 and actions[0].startswith("repair of dim_zz failed"), actions
     assert "ALTER TABLE failed" in actions[0], actions
-    assert actions[1:] == ["removed dim_old"] * 3, "the rest of the sync must still run"
-    assert not _column_present(site, "Budget Line", "dim_zz")
-    assert "Budget Line-dim_zz" in site.committed, "the row stays, as Frappe leaves it"
+    assert actions[1:] == ["removed dim_old"] * 2, "the rest of the sync must still run"
+    assert not _column_present(site, "Budget Entry Line", "dim_zz")
+    assert "Budget Entry Line-dim_zz" in site.committed, "the row stays, as Frappe leaves it"
     assert len(site.logged) == 1 and "dim_zz" in site.logged[0][0], site.logged
     assert site.violations == [] and not site.held
     # still broken, still not counted present: the next run tries once more
     site.fail_insert = None
     assert _sync(site)() == ["repaired dim_zz"]
-    assert _column_present(site, "Budget Line", "dim_zz")
+    assert _column_present(site, "Budget Entry Line", "dim_zz")
 
 
 def test_a_broken_row_for_an_undeclared_dimension_is_still_removed():
@@ -1110,7 +1109,7 @@ def test_a_broken_row_for_an_undeclared_dimension_is_still_removed():
     remove phase, or it would outlive the dimension for ever."""
     site = _site_with(dim_old="Inactive")
     site.seed("dim_old")
-    site.drop_column("dim_old", dt="Budget Line")
-    assert _sync(site)() == ["removed dim_old"] * 3
+    site.drop_column("dim_old", dt="Budget Entry Line")
+    assert _sync(site)() == ["removed dim_old"] * 2
     assert not [n for n in site.committed if n.endswith("-dim_old")], site.committed
     assert site.violations == [] and not site.held

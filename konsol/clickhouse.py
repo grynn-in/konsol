@@ -393,7 +393,7 @@ def sync_rows(table, columns, rows, key_columns, key_values):
     given key — safe for concurrent writes from different docs.
 
     Args:
-        table: Fully qualified table name (e.g. 'epm_gold.budget_monthly_input').
+        table: Fully qualified table name (e.g. 'epm_gold.budget_annual_input').
         columns: List of column names for INSERT.
         rows: List of tuples/lists matching column order.
         key_columns: List of column names forming the unique key.
@@ -781,16 +781,6 @@ _REFERENCE_TABLE_DDL = {
         "annual_amount Decimal(18,2), spread_profile_id String, "
         "submitted_by String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, main_account)"
-    ),
-    # The bottom-up half, written by Budget Sheet. It has always been a konsol
-    # write-through with NOTHING that creates it — no seed, no DDL — which is
-    # why gold_spread_budget is one of the three baseline build failures
-    # ("Unknown table expression identifier 'epm_gold.budget_monthly_input'").
-    "epm_gold.budget_monthly_input": (
-        "(scenario_id String, data_area_id String, fiscal_year UInt16, "
-        "main_account String, "
-        "fiscal_period UInt8, amount Decimal(18,2), layer String) "
-        "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, layer)"
     ),
     # Budget S2 (I3): the raw budget landing table, one row per Budget Entry
     # Line (konsol#348, D0 Q1-b2), written through while its Budget Cycle is
