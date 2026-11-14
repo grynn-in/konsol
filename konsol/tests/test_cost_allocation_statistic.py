@@ -72,7 +72,9 @@ def test_statistic_header_is_a_submittable_epm_doctype():
     assert doc["is_submittable"] == 1
     assert doc.get("istable", 0) == 0
     assert doc["track_changes"] == 1
-    assert doc["autoname"] == "format:CAS-{#####}"
+    # Own naming series per doctype ("CAS-.#####"); a "format:…{#####}" name
+    # shares one empty Series key across doctypes (found live, 14 Nov 2026).
+    assert doc["autoname"] == "CAS-.#####"
     assert doc["title_field"] == "driver"
 
 

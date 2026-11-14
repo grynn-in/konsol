@@ -90,7 +90,9 @@ def test_doctype_header_is_a_submittable_epm_doctype():
     assert doc["is_submittable"] == 1
     assert doc.get("istable", 0) == 0
     assert doc["track_changes"] == 1
-    assert doc["autoname"] == "format:CAR-{#####}"
+    # Own naming series per doctype ("CAR-.#####"); a "format:…{#####}" name
+    # shares one empty Series key across doctypes (found live, 14 Nov 2026).
+    assert doc["autoname"] == "CAR-.#####"
     assert doc["title_field"] == "rule_set"
     assert doc["search_fields"] == "scenario,fiscal_year,fiscal_period"
 
