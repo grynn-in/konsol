@@ -1,4 +1,5 @@
-"""Budget S2 (A7, Q13-a): epm_gold.budget_annual_input carries layer and currency.
+"""Budget S2 (A7, Q13-a): epm_gold.budget_annual_input carries layer and currency;
+S3 B3k (QB4 a): and the row's Budget Cycle.
 
 Two repos create the table: konsolidat's clickhouse/init-db.sql on a fresh
 volume, konsol's _REFERENCE_TABLE_DDL on every migrate. The string below is
@@ -12,6 +13,13 @@ on the doctype. An existing table gets them by ALTER ... AFTER, through
 _POSITIONED_COLUMNS, so an upgraded table has the fresh table's column order
 even when the site's dim_* columns were already added after submitted_by.
 The site's dim_* columns are not in the CREATE (konsol#287).
+
+S3 B3k (QB4 a, konsol#348): the row names its Budget Cycle (K6), so the
+warehouse row carries ``cycle String`` after fiscal_year, as on the doctype
+and as epm_raw.budget_entries carries it; no DEFAULT, the Link is required.
+An existing table gets it by ALTER ... AFTER fiscal_year, through
+_POSITIONED_COLUMNS, first in that list (CREATE order). konsolidat's B3w copies
+this string into init-db.sql.
 """
 import ast
 import importlib.util
@@ -33,21 +41,27 @@ TABLE = "epm_gold.budget_annual_input"
 
 #: konsolidat clickhouse/init-db.sql, verbatim (S2-R6 pins the same string).
 BODY = (
-    "(scenario_id String, data_area_id String, fiscal_year UInt16, "
+    "(scenario_id String, data_area_id String, fiscal_year UInt16, cycle String, "
     "main_account String, layer String, currency String, "
     "annual_amount Decimal(18,2), spread_profile_id String, "
     "submitted_by String) "
     "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, main_account)"
 )
 
+#: The table as konsolidat#146 created it, before S2 (layer, currency) and S3 (cycle).
 OLD_COLUMNS = ["scenario_id", "data_area_id", "fiscal_year", "main_account",
                "annual_amount", "spread_profile_id", "submitted_by"]
+#: The table after S2, before S3.
+S2_COLUMNS = ["scenario_id", "data_area_id", "fiscal_year", "main_account", "layer", "currency",
+              "annual_amount", "spread_profile_id", "submitted_by"]
 
 UPGRADE = (
     f"ALTER TABLE {TABLE} "
+    "ADD COLUMN IF NOT EXISTS cycle String AFTER fiscal_year, "
     "ADD COLUMN IF NOT EXISTS layer String AFTER main_account, "
     "ADD COLUMN IF NOT EXISTS currency String AFTER layer"
 )
+S3_UPGRADE = f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS cycle String AFTER fiscal_year"
 
 
 def _literal(path, name):
@@ -139,9 +153,16 @@ def test_layer_and_currency_have_no_default_and_no_dimension_is_named():
     assert not [c for c in _columns(BODY) if c.startswith("dim_")]
 
 
+def test_cycle_follows_fiscal_year_with_no_default():
+    names = _columns(BODY)
+    assert names.index("cycle") == names.index("fiscal_year") + 1
+    assert "fiscal_year UInt16, cycle String, main_account String" in BODY
+
+
 def test_an_existing_table_gets_them_where_the_create_puts_them():
     positioned = _literal(CH_PATH, "_POSITIONED_COLUMNS")
-    assert positioned.get(TABLE) == [("layer", "String", "main_account"),
+    assert positioned.get(TABLE) == [("cycle", "String", "fiscal_year"),
+                                     ("layer", "String", "main_account"),
                                      ("currency", "String", "layer")]
     names = _columns(BODY)
     for column, typ, after in positioned[TABLE]:
@@ -149,11 +170,16 @@ def test_an_existing_table_gets_them_where_the_create_puts_them():
         assert f"{column} {typ}" in BODY, column
 
 
-def test_an_old_table_gains_both_in_one_alter_after_its_create():
+def test_an_old_table_gains_all_three_in_one_alter_after_its_create():
     sql = _probe({TABLE: OLD_COLUMNS + ["dim_region"]})
     assert _alters(sql) == [UPGRADE], _alters(sql)
     create = sql.index(f"CREATE TABLE IF NOT EXISTS {TABLE} {BODY}")
     assert create < sql.index(UPGRADE), "CREATE IF NOT EXISTS first, then the ALTER"
+
+
+def test_an_s2_table_gains_the_cycle_alone_after_fiscal_year():
+    sql = _probe({TABLE: S2_COLUMNS + ["dim_region"]})
+    assert _alters(sql) == [S3_UPGRADE], _alters(sql)
 
 
 def test_an_upgraded_table_is_not_altered_again():
