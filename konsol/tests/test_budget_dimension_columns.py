@@ -206,7 +206,13 @@ def _controller(fields):
     fake.get_meta = lambda doctype: meta
     fake.get_all = lambda *a, **k: (_ for _ in ()).throw(
         AssertionError("no registry query: the field set is read off meta"))
-    fake.db = types.SimpleNamespace(exists=lambda dt, f: exists_calls.append(f) or None)
+    def get_values(dt, f, fields, as_dict=False, order_by=None, for_update=False, **k):
+        # The grain check is a locking read after the Cycle lock (PR #522 review 2).
+        assert dt == "Budget Annual Input" and for_update and as_dict and order_by, (dt, for_update)
+        exists_calls.append(f)
+        return []
+
+    fake.db = types.SimpleNamespace(get_values=get_values)
     fake.throw = lambda msg, *a, **k: (_ for _ in ()).throw(ValueError(msg))
     fake.flags = types.SimpleNamespace(in_install=False, in_migrate=False, in_import=False)
     model = types.ModuleType("frappe.model")

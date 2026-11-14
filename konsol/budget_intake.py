@@ -321,17 +321,20 @@ def annual_check(row):
 
 def lock_cycles(scenario_id, fiscal_year):
     """Lock every Budget Cycle row of (scenario, year), in name order, and
-    return their names: a Budget Annual Input derives its Cycle from the pair
-    rather than linking one, and an amended pair holds more than one. The
-    Annual Input writers take this first, the lock order every budget writer
-    keeps (the Cycle row before the record it saves). No Cycle, nothing
-    locked: then no Budget Entry of the pair exists to conflict with.
-    Skipped in install and migrate, as assert_cycle_draft is."""
+    return each as {name, docstatus, status}, read by the lock itself: under
+    REPEATABLE READ a plain read would serve the snapshot and miss a Cycle
+    approved while this writer waited on it. A Budget Annual Input derives its
+    Cycle from the pair rather than linking one, and an amended pair holds
+    more than one. The Annual Input writers take this first, the lock order
+    every budget writer keeps (the Cycle row before the record it saves). No
+    Cycle, nothing locked: then no Budget Entry of the pair exists to conflict
+    with. Skipped in install and migrate, as assert_cycle_draft is."""
     if frappe.flags.in_install or frappe.flags.in_migrate:
         return []
     rows = frappe.db.get_values("Budget Cycle", {"scenario_id": scenario_id, "fiscal_year": fiscal_year},
-                                ["name"], as_dict=True, order_by="name asc", for_update=True)
-    return [r.name for r in rows]
+                                ["name", "docstatus", "status"], as_dict=True, order_by="name asc",
+                                for_update=True)
+    return [{"name": r.name, "docstatus": int(r.docstatus or 0), "status": r.status or ""} for r in rows]
 
 
 def _dim_fields(doctype):
