@@ -16,12 +16,17 @@ What it does, in order:
    Layers, the active Scenarios and the Budget Cycles. Every list read states
    its order (Frappe v16 sorts by creation otherwise).
 3. Runs budget_bulk_model.check_group on each group, then adds:
-   - the Cycle: a (scenario, year) with no Budget Cycle is refused, naming the
-     Cycle to create; nothing is created here (Q6-b). A Cycle that is not a
-     draft (docstatus 0) is refused, and so is a draft past its workflow's
-     first state, Pending Approval as installed (V2, Q17-b: cycle_workflow).
-     A forecast pair with more than one draft round is refused by name until
-     K5 picks the round by the file's as_of_date (S3 K3 stop-gap, QB5 a).
+   - the round (S3 K5, QB5 a): a forecast row names its round by
+     ``as_of_date``, from the file's column or the writer's form value, and
+     the round is the pair's Cycle with that as-of date; a forecast row
+     without one is refused, and so is a row of any other scenario type
+     with one (budget_bulk_model.as_of_problems). Nothing is inferred from
+     the drafts that exist.
+   - the Cycle: a round (a (scenario, year) pair, or (scenario, year, as-of
+     date) for a forecast) with no Budget Cycle is refused, naming the Cycle
+     to create; nothing is created here (Q6-b). A Cycle that is not a draft
+     (docstatus 0) is refused, and so is a draft past its workflow's first
+     state, Pending Approval as installed (V2, Q17-b: cycle_workflow).
    - duplicate rows: the same account and dim_* values twice in one group
      (one entity, period and layer) is refused, naming both lines. T1 refuses
      the same on save; this names the file lines.
@@ -106,7 +111,7 @@ def ensure_lock_indexes():
         add_lock_index(doctype)
 
 
-def plan(table, *, form_basis, name_lines, whole_slices):
+def plan(table, *, form_basis, form_as_of, name_lines, whole_slices):
     """Judge a budget table for the current user. Returns
 
         {"groups": {BudgetKey: [rows]}, "report": [item per group], "ok": bool}
@@ -114,9 +119,10 @@ def plan(table, *, form_basis, name_lines, whole_slices):
     ``groups`` is in file order. Each report item is budget_bulk_model's
     check_group row {scenario, fiscal_year, entity, layer, fiscal_period, rows,
     errors, ok} plus ``cycle`` (the Budget Cycle's name, or None), ``currency``
-    (the entity's functional currency) and ``amount_basis`` (resolved from the
-    file or `form_basis`, '' when none). A group with any error is not ready;
-    a writer writes nothing for it.
+    (the entity's functional currency), ``amount_basis`` (resolved from the
+    file or `form_basis`, '' when none) and ``as_of_date`` (the round's as-of
+    key, 'YYYY-MM-DD', from the rows or `form_as_of`; '' when none). A group
+    with any error is not ready; a writer writes nothing for it.
 
     ``denials`` lists the access refusals among ``errors``: the layer's writer
     role and _assert_budget_write_access on each row. They are also in
@@ -125,6 +131,11 @@ def plan(table, *, form_basis, name_lines, whole_slices):
 
     `form_basis` is the upload's Amount Basis ('' when it has none); it has no
     default, so a writer states what it means.
+
+    `form_as_of` is the upload's As-of Date ('' or None when it has none),
+    for every row without its own as_of_date; a row's own value wins. A
+    writer whose rows carry the date themselves (an Excel cell, an API row,
+    a Desk save) passes ''. No default: the round is never inferred.
 
     `name_lines` says whether a problem names its file line ("Line 3: ...").
     A file writer (the CSV check and load) passes True. A writer whose rows
@@ -159,13 +170,21 @@ def plan(table, *, form_basis, name_lines, whole_slices):
             chart=facts["chart"], functional_currency=currency,
             minor_unit=facts["minor_units"].get(currency), form_basis=form_basis,
             from_file=name_lines)
+        scenario = facts["scenarios"].get(key.scenario)
+        scenario_type = scenario["scenario_type"] if scenario else None
+        as_of, as_of_problem = M.group_as_of(rows)
+        as_of = as_of or M.as_of_key(form_as_of)
+        round_problems = ([as_of_problem] if as_of_problem else []) + M.as_of_problems(
+            key.scenario, scenario_type, as_of)
         cycle, cycle_problem = _cycle(facts["cycles"].get((key.scenario, key.fiscal_year), ()), key,
-                                      facts["workflow"])
+                                      facts["workflow"], scenario_type, as_of)
         item["cycle"] = cycle
         item["currency"] = currency or ""
         basis, _ = M.resolve_basis(M.group_basis(rows), form_basis)
         item["amount_basis"] = basis or ""
+        item["as_of_date"] = as_of
         errors = item["errors"]
+        errors.extend(round_problems)
         if cycle_problem:
             errors.append(cycle_problem)
         errors.extend(_duplicates(rows))
@@ -189,16 +208,24 @@ def plan(table, *, form_basis, name_lines, whole_slices):
     return {"groups": groups, "report": report, "ok": all(i["ok"] for i in report)}
 
 
+def slice_key(item):
+    """A report item's slice, the (Cycle, entity, layer) a Budget Upload
+    replaces whole: (scenario, year, as-of key, entity, layer). The as-of
+    key keeps two forecast rounds of one pair apart (S3 K5); it is '' on a
+    budget. The Cycle's name is not used: a refused group has none."""
+    return (item["scenario"], int(item["fiscal_year"]), item.get("as_of_date") or "", item["entity"],
+            item["layer"])
+
+
 def _refuse_mixed_bases(report):
-    """One amount basis per (scenario, year, entity, layer) within the table
-    (Q15-c). A group whose basis differs from another period's of its layer is
-    refused, naming that period and its basis. A group with no basis is
-    refused already, so it is left out."""
+    """One amount basis per (scenario, year, round, entity, layer) within the
+    table (Q15-c). A group whose basis differs from another period's of its
+    layer is refused, naming that period and its basis. A group with no basis
+    is refused already, so it is left out."""
     by_slice = {}
     for item in report:
         if item["amount_basis"]:
-            slice_key = (item["scenario"], item["fiscal_year"], item["entity"], item["layer"])
-            by_slice.setdefault(slice_key, []).append(item)
+            by_slice.setdefault(slice_key(item), []).append(item)
     for items in by_slice.values():
         for item in items:
             other = next((o for o in items if o["amount_basis"] != item["amount_basis"]), None)
@@ -246,8 +273,7 @@ def _refuse_ytd_gaps(report):
     by_slice = {}
     for item in report:
         if item["amount_basis"] == YTD_BASIS:
-            slice_key = (item["scenario"], item["fiscal_year"], item["entity"], item["layer"])
-            by_slice.setdefault(slice_key, []).append(item)
+            by_slice.setdefault(slice_key(item), []).append(item)
     for items in by_slice.values():
         stated = {int(i["fiscal_period"]) for i in items}
         message = _ytd_gap_message(items[0]["entity"], items[0]["layer"], stated)
@@ -346,9 +372,11 @@ def judge_one(table, *, form_basis):
     ready; otherwise raises with every problem the plan found, as
     frappe.PermissionError when it found an access denial (HTTP 403: a denial
     wins, the other problems are not for a user who may not write the rows),
-    else frappe.ValidationError. Writes nothing."""
+    else frappe.ValidationError. Writes nothing. The rows carry their own
+    as_of_date column when the write is for a forecast round (S3 K5); there
+    is no form value."""
     try:
-        result = plan(table, form_basis=form_basis, name_lines=False, whole_slices=False)
+        result = plan(table, form_basis=form_basis, form_as_of="", name_lines=False, whole_slices=False)
     except ValueError as error:
         frappe.throw(str(error), frappe.ValidationError)
     if len(result["report"]) != 1:
@@ -711,34 +739,44 @@ def _period(year, period):
         return None
 
 
-def _cycle(found, key, workflow):
-    """(cycle name or None, problem or None) for one (scenario, year). A draft
-    is taken when there is one, and refused while it is past its workflow's
-    first state (V2); otherwise the latest is named and refused.
+def _cycle(found, key, workflow, scenario_type, as_of):
+    """(cycle name or None, problem or None) for one group. `found` are the
+    pair's Cycles in creation order; `as_of` is the group's as-of key ('' for
+    none). A forecast without a date has no round to find and gets no Cycle
+    (as_of_problems refused it); a budget with a date is refused for the
+    date, and its pair's Cycle is still judged and named.
 
-    S3 K3 stop-gap: a forecast pair holds one live Cycle per round (Q23 a),
-    so it may hold several drafts. Until K5 picks the round by the file's
-    ``as_of_date`` (QB5 a), more than one draft is refused by name, never
-    served as ``drafts[0]``: a write that cannot say which round it is for
-    does not land in one by accident."""
+    The round (S3 K5, QB5 a): for a forecast, the pair's Cycles with the
+    group's as-of date (budget_bulk_model.in_round); for any other type, the
+    pair. The round's draft is taken when there is one, and refused while it
+    is past its workflow's first state (V2). No Cycle in the round: refused,
+    naming the round to create. No draft: the round's approved Cycle is named
+    and refused, else its latest cancelled one. A round with two drafts is a
+    fault (the Cycle holds one live Cycle per round) and is refused naming
+    both: a write never picks one by accident."""
+    if scenario_type == M.FORECAST:
+        if not as_of:
+            return None, None  # as_of_problems named the missing date
+        found = [c for c in found if M.in_round(scenario_type, c, as_of)]
+        label, noun = f"{key.scenario} {key.fiscal_year} as of {as_of}", "round"
+    else:
+        label, noun = f"{key.scenario} {key.fiscal_year}", "Cycle"
     drafts = [c for c in found if int(c.docstatus) == 0]
     if len(drafts) > 1:
-        named = " and ".join(f"{c.name} (as of {M.as_of_key(c.get('as_of_date')) or 'no date'})"
-                             for c in drafts)
-        return None, (f"Budget Cycles {named} are all draft Cycles of {key.scenario} {key.fiscal_year}: this "
-                      "write cannot tell which forecast round it is for. Choosing the round by its as-of "
-                      "date is not built yet (konsol#348 K5); until then keep one draft round of the pair "
-                      "open at a time.")
+        named = " and ".join(c.name for c in drafts)
+        return None, (f"Budget Cycles {named} are all draft Cycles of {label}: a {noun} holds one live Cycle, so "
+                      "this write cannot tell which it is for. Cancel the one that should not exist.")
     if drafts:
         return drafts[0].name, M.cycle_pending_refusal(_cycle_row(drafts[0]), workflow)
     if not found:
-        return None, (f"No Budget Cycle for scenario {key.scenario}, fiscal year {key.fiscal_year}. "
-                      f"Create the Budget Cycle for {key.scenario} {key.fiscal_year} first: a budget "
-                      "write never creates one.")
-    latest = found[-1]
-    state = _CYCLE_STATE.get(int(latest.docstatus), f"docstatus {latest.docstatus}")
-    return latest.name, (f"Budget Cycle {latest.name} ({key.scenario} {key.fiscal_year}) is {state}: "
-                         "a budget is written only while its Cycle is a draft.")
+        return None, (f"No Budget Cycle for scenario {key.scenario}, fiscal year {key.fiscal_year}"
+                      + (f" as of {as_of}" if noun == "round" else "") + ". "
+                      f"Create the Budget Cycle ({noun}) for {label} first: a budget write never creates one.")
+    live = [c for c in found if int(c.docstatus) == 1]
+    named = live[0] if live else found[-1]
+    state = _CYCLE_STATE.get(int(named.docstatus), f"docstatus {named.docstatus}")
+    return named.name, (f"Budget Cycle {named.name} ({label}) is {state}: "
+                        "a budget is written only while its Cycle is a draft.")
 
 
 def _duplicates(rows):

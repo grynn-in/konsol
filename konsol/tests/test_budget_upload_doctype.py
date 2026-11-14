@@ -39,8 +39,9 @@ def test_identity():
 def test_field_order_follows_the_part_2_table():
     data = [f["fieldname"] for f in _meta()["fields"]
             if f["fieldtype"] not in ("Tab Break", "Section Break", "Column Break")]
-    assert data == ["upload_file", "amount_basis", "status", "group_count", "valid_count", "total_rows",
-                    "loaded_count", "failed_count", "error", "report", "report_html"]
+    # as_of_date beside amount_basis: the forecast round (S3 K5, QB5 a).
+    assert data == ["upload_file", "amount_basis", "as_of_date", "status", "group_count", "valid_count",
+                    "total_rows", "loaded_count", "failed_count", "error", "report", "report_html"]
     assert _meta()["field_order"] == [f["fieldname"] for f in _meta()["fields"]]
 
 

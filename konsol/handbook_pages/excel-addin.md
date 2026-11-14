@@ -31,7 +31,7 @@ The other functions have their own argument order. `dimensions` is the fifth arg
 =K.EPM_VARIANCE(entity, year, period, account, [dimensions], [scenarioId], [hierarchy], [node])
 =K.EPM_DEBIT(entity, year, period, account, [dimensions], [hierarchy], [node])
 =K.EPM_CREDIT(entity, year, period, account, [dimensions], [hierarchy], [node])
-=K.EPMSAVE(amount, entity, year, period, account, scenarioId, layer, [dimensions], [hierarchy], [node], currency, amountBasis)
+=K.EPMSAVE(amount, entity, year, period, account, scenarioId, layer, [dimensions], [hierarchy], [node], currency, amountBasis, [asOfDate])
 =K.CF(group, year, period, line)
 ```
 
@@ -42,6 +42,12 @@ The other functions have their own argument order. `dimensions` is the fifth arg
 ```
 
 A formula written without them shows `#VALUE!` and names the missing argument.
+
+`asOfDate` names the forecast round the figure is for: the Budget Cycle of the scenario and year with that as-of date, as `YYYY-MM-DD` (a date cell works too). It is required when the scenario is a forecast and refused for any other scenario, so a budget formula leaves it out. A round that has no Budget Cycle yet is refused by name; create the Cycle first, the formula never does.
+
+```
+=K.EPMSAVE(1000, "E1", 2026, 9, "6100", "FC26", "base", , , , "EUR", "Movement", "2026-06-30")
+```
 
 ## Reports
 
@@ -61,4 +67,4 @@ If you are not signed in, nothing is refreshed and the pane opens and says why.
 
 ## When the add-in changes
 
-Excel keeps the add-in's manifest, which lists its buttons and functions. When a konsol release raises the manifest version (the ribbon buttons came with 2.0.2.0, and `K.EPMSAVE`'s currency and amountBasis arguments with 2.0.3.0), your Microsoft 365 administrator uploads the manifest again in the Microsoft 365 admin center, from `/assets/konsol/excel-addin/manifest.xml` on your konsol site. Until then Excel keeps the old buttons and functions. A workbook on an old add-in sends requests the server refuses; reload the add-in.
+Excel keeps the add-in's manifest, which lists its buttons and functions. When a konsol release raises the manifest version (the ribbon buttons came with 2.0.2.0, `K.EPMSAVE`'s currency and amountBasis arguments with 2.0.3.0, and its asOfDate argument with 2.0.4.0), your Microsoft 365 administrator uploads the manifest again in the Microsoft 365 admin center, from `/assets/konsol/excel-addin/manifest.xml` on your konsol site. Until then Excel keeps the old buttons and functions. A workbook on an old add-in sends requests the server refuses; reload the add-in.

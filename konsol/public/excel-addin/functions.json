@@ -105,7 +105,7 @@
     {
       "id": "EPMSAVE",
       "name": "EPMSAVE",
-      "description": "Write a single budget cell back to konsol on recalc. Returns the amount. Currency and amount basis are required. Pass hierarchy + node to write at a hierarchy leaf.",
+      "description": "Write a single budget cell back to konsol on recalc. Returns the amount. Currency and amount basis are required; a forecast also names its round with asOfDate. Pass hierarchy + node to write at a hierarchy leaf.",
       "parameters": [
         { "name": "amount", "description": "Value to write", "type": "number" },
         { "name": "entity", "description": "Legal entity / data area id", "type": "string" },
@@ -118,7 +118,8 @@
         { "name": "hierarchy", "description": "Reporting hierarchy name", "type": "string", "optional": true },
         { "name": "node", "description": "Hierarchy leaf member code", "type": "string", "optional": true },
         { "name": "currency", "description": "Required: the ISO code the amount is in, e.g. EUR. It must be the entity's functional currency; it is never defaulted.", "type": "string", "optional": true },
-        { "name": "amountBasis", "description": "Required: Movement or Year-to-date. It is never defaulted.", "type": "string", "optional": true }
+        { "name": "amountBasis", "description": "Required: Movement or Year-to-date. It is never defaulted.", "type": "string", "optional": true },
+        { "name": "asOfDate", "description": "The forecast round the cell is for, as YYYY-MM-DD (the Budget Cycle of the scenario and year with that as-of date). Required for a forecast scenario, refused for any other; never defaulted.", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     }
