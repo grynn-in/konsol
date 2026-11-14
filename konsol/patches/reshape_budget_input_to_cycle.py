@@ -69,9 +69,17 @@ def execute():
     if not frappe.db.table_exists("Budget Input"):
         return
 
-    from konsol.epm.budget_grain import (
-        budget_dimension_names, find_budget_line, normalize_layer,
-    )
+    # konsol#348 S2-C Z1 retired Budget Sheet and Budget Line and their
+    # helpers left budget_grain. A site still holding Budget Input rows here
+    # has nothing to pivot them into: say so and stop, never fail the migrate.
+    try:
+        from konsol.epm.budget_grain import (
+            budget_dimension_names, find_budget_line, normalize_layer,
+        )
+    except ImportError:
+        print("reshape_budget_input_to_cycle: Budget Sheet and Budget Line are "
+              "retired (konsol#348 S2-C); nothing to pivot Budget Input into")
+        return
 
     # Provision the in_budget dim Custom Fields on Budget Line FIRST. They are
     # not synced during bench migrate (only on Dimension publish / manual apply),

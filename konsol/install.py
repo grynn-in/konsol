@@ -329,7 +329,7 @@ def after_migrate():
     # reconcile_all(force=True) writes the journal's rows through. Placed after
     # it, the reconcile named a column the table did not have yet and logged
     # the table as skipped, then the repair ran (PR #324 re-review, finding 2).
-    _sync_budget_line_custom_fields()
+    _sync_dimension_custom_fields()
     _reconcile_clickhouse()
     _install_workflows()
     _ensure_indexes()
@@ -412,19 +412,19 @@ def _restore_asset_manifest():
             "assets_json redis eviction skipped after migrate", exc_info=True)
 
 
-def _sync_budget_line_custom_fields():
-    """Provision Budget Line's in_budget dim Custom Fields after migrate.
+def _sync_dimension_custom_fields():
+    """Provision the line doctypes' dimension Custom Fields after migrate.
 
     These columns are otherwise only synced on Dimension publish / manual schema
-    apply, but the Excel budget write path (and the reshape migration) need them
-    to exist. Best-effort — never fail a migrate over it.
+    apply, but the budget and journal write paths need them to exist.
+    Best-effort — never fail a migrate over it.
     """
     try:
         from konsol.schema_apply import _sync_budget_custom_fields
         _sync_budget_custom_fields()
     except Exception:
         frappe.logger().warning(
-            "budget line custom field sync skipped after migrate", exc_info=True)
+            "dimension custom field sync skipped after migrate", exc_info=True)
     # konsolidat#245 option D, PR #324 review finding 6: the journal's
     # ClickHouse columns need the same repair path as its Custom Fields. The
     # fields are provisioned above whatever happened earlier; without this, a
