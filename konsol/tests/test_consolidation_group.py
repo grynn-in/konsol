@@ -32,10 +32,11 @@ NEW_COLUMNS = (
     "nci_measurement", "accounting_framework", "framework_note", "goodwill_treatment",
     "goodwill_amortisation_years", "acquisition_costs_treatment", "measurement_period",
     "bargain_purchase",
-) + P.ACCOUNT_FIELDS + (
-    # konsolidat#171: added last, where _ADDED_COLUMNS puts it on an existing
-    # table, so a fresh table and an upgraded one have the same column order.
-    "partial_period_treatment",
+) + tuple(f for f in P.ACCOUNT_FIELDS if f != "exit_gain_loss_account") + (
+    # konsolidat#171: added after the accounts, where _ADDED_COLUMNS puts it on
+    # an existing table, so a fresh table and an upgraded one have the same
+    # column order. konsolidat#335 then appends exit_gain_loss_account last.
+    "partial_period_treatment", "exit_gain_loss_account",
 )
 
 SELECT_OPTIONS = {
@@ -562,6 +563,23 @@ def test_partial_period_treatment_has_no_default_and_says_what_each_value_does()
 
 
 def test_partial_period_treatment_is_the_last_warehouse_column():
-    assert NEW_COLUMNS[-1] == "partial_period_treatment"
-    assert _ddl_columns("epm_gold.consolidation_groups")[-1] == "partial_period_treatment"
+    assert NEW_COLUMNS[-2] == "partial_period_treatment"
+    assert _ddl_columns("epm_gold.consolidation_groups")[-2] == "partial_period_treatment"
     assert _source().count('"partial_period_treatment": "partial_period_treatment"') == 1
+
+
+def test_exit_gain_loss_account_is_declared_optional_and_the_last_warehouse_column():
+    """konsolidat#335: the account an Ownership Period's bare end posts to. Not
+    reqd here (konsol#K2 adds the conditional requirement); may equal the
+    disposal account."""
+    assert NEW_COLUMNS[-1] == "exit_gain_loss_account"
+    assert _ddl_columns("epm_gold.consolidation_groups")[-1] == "exit_gain_loss_account"
+    assert _source().count('"exit_gain_loss_account": "exit_gain_loss_account"') == 1
+    assert P.ACCOUNT_FIELDS[-1] == "exit_gain_loss_account"
+    assert P.LABELS["exit_gain_loss_account"] == "Exit Gain/Loss Account"
+    f = _fields()["exit_gain_loss_account"]
+    assert f["fieldtype"] == "Link" and f["options"] == "Main Account" and not f.get("reqd")
+    assert f["label"] == "Exit Gain/Loss Account"
+    assert f["description"] == (
+        "Posts the gain or loss when an Ownership Period ends without a Business "
+        "Disposal (konsolidat#335). May be the same account as the disposal gain/loss account.")

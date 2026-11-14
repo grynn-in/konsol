@@ -51,7 +51,7 @@ def test_options_and_field_lists_are_the_design_s():
     assert M.ACCOUNT_FIELDS == (
         "goodwill_account", "fair_value_adjustment_account", "investment_account", "nci_account",
         "bargain_purchase_gain_account", "disposal_gain_loss_account", "disposal_proceeds_account",
-        "goodwill_amortisation_expense_account", "acquisition_costs_account")
+        "goodwill_amortisation_expense_account", "acquisition_costs_account", "exit_gain_loss_account")
     assert M.LABELS["goodwill_method"] == "NCI Measurement"
     assert set(M.LABELS) == set(M.POLICY_FIELDS) | set(M.ACCOUNT_FIELDS)
 

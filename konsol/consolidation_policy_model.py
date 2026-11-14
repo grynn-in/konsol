@@ -62,6 +62,8 @@ ACCOUNT_FIELDS = (
     "disposal_proceeds_account",
     "goodwill_amortisation_expense_account",
     "acquisition_costs_account",
+    # konsolidat#335: last, matching the warehouse column order.
+    "exit_gain_loss_account",
 )
 
 LABELS = {
@@ -85,6 +87,7 @@ LABELS = {
     "disposal_proceeds_account": "Deal Settlement Account",
     "goodwill_amortisation_expense_account": "Goodwill Amortisation Expense Account (P&L)",
     "acquisition_costs_account": "Acquisition Costs Account (P&L)",
+    "exit_gain_loss_account": "Exit Gain/Loss Account",
 }
 
 #: Select fields and their allowed options. The two conditional fields
