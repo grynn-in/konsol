@@ -286,10 +286,10 @@ class BudgetAnnualInput(Document):
         `cycles` are the pair's Cycles as budget_intake.lock_cycles read them,
         under the lock: a Cycle approved (docstatus 1) or Locked while this
         write waited is seen, which a plain read of the snapshot would miss.
-        Skipped during install/migrate/import: fixtures and patches load against
+        Skipped during install/migrate only: a Data Import is a user's write and meets the lock. Fixtures and patches load against
         whatever state the site is in.
         """
-        if frappe.flags.in_install or frappe.flags.in_migrate or frappe.flags.in_import:
+        if frappe.flags.in_install or frappe.flags.in_migrate:
             return
         locked = next((c["name"] for c in cycles or ()
                        if c["docstatus"] == 1 or c["status"] == "Locked"), None)
