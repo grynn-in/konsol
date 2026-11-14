@@ -97,6 +97,14 @@ class FakeEntry:
     def _validate(self):
         # Budget Entry's validate takes the Cycle lock and refuses a non-draft.
         sys.modules["konsol.epm.doctype.budget_entry.budget_entry"].assert_cycle_draft(self.cycle)
+        # ... and refuses a second amount basis in its (cycle, entity, layer)
+        # (Q15-c), except from the entries the same write is replacing.
+        replacing = sys.modules["frappe"].flags.get("budget_entry_replacing") or ()
+        for other in self._store.values():
+            if (other.name != self.name and other.name not in replacing
+                    and (other.cycle, other.data_area_id, other.layer) == (self.cycle, self.data_area_id, self.layer)
+                    and other.amount_basis != self.amount_basis):
+                raise Thrown(f"Budget Entry {other.name} holds amount basis {other.amount_basis!r}")
 
     def insert(self):
         self._validate()
@@ -270,6 +278,16 @@ def env(monkeypatch):
         finally:
             frappe.flags["budget_entry_judged"] = was
     entry_mod.judged_by_writer = judged_by_writer
+
+    @contextlib.contextmanager
+    def replacing_entries(names):
+        was = frappe.flags.get("budget_entry_replacing")
+        frappe.flags["budget_entry_replacing"] = frozenset(names)
+        try:
+            yield
+        finally:
+            frappe.flags["budget_entry_replacing"] = was
+    entry_mod.replacing_entries = replacing_entries
 
     timeouts = types.ModuleType("rq.timeouts")
     timeouts.BaseTimeoutException = type("BaseTimeoutException", (Exception,), {})
@@ -701,3 +719,29 @@ def test_the_outcome_compares_the_ready_groups_not_their_number(env):
     _file(env, FOUR, refused={("E1", "base", 1)})
     _job(env)
     assert doc.status == "Partly Loaded"
+
+
+# ---- Q15-c: a reload may change a slice's basis, since it replaces the slice whole ----
+
+def test_a_reload_with_another_basis_replaces_the_whole_slice(env):
+    _run(env, FOUR)
+    _checked(env).name = "BU-0002"
+    _file(env, FOUR)
+    for item in env.state.plan_report:
+        item["amount_basis"] = "Year-to-date movement"
+    doc = env.state.doc if env.state.doc and env.state.doc.status == "Checked" else _checked(env)
+    env.mod.load(doc.name, skip_invalid=1)
+    _job(env)
+    assert doc.status == "Loaded", json.loads(doc.report)
+    assert {e.amount_basis for e in env.state.entries.values()} == {"Year-to-date movement"}
+    assert not env.frappe.flags.get("budget_entry_replacing"), "the flag is put back"
+
+
+def test_a_slice_left_out_of_the_reload_keeps_its_basis_rule(env):
+    """Only the slice being replaced is exempt: entries of another layer are
+    not in its replacing set."""
+    _run(env, [("E1", "base", 1)])
+    env.state.entries[f"BENT-{CYCLE}-E1-base-1"].amount_basis = "Year-to-date movement"
+    _checked(env).name = "BU-0002"
+    doc = _run(env, [("E1", "board", 1)])
+    assert doc.status == "Loaded", json.loads(doc.report)

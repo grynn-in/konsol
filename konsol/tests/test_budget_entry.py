@@ -289,6 +289,15 @@ def env(monkeypatch):
             frappe.throw(intake.refuse_removal, Denied)
     intake.assert_may_remove = assert_may_remove
     intake.refuse_removal = None
+    basis_checks = []
+
+    def assert_one_basis(cycle, entity, layer, basis, *, name, replacing=()):
+        locks.append(("basis check", cycle))
+        basis_checks.append((cycle, entity, layer, basis, name, set(replacing)))
+        if intake.refuse_basis:
+            frappe.throw(intake.refuse_basis, Thrown)
+    intake.assert_one_basis = assert_one_basis
+    intake.refuse_basis = None
     for name, mod in {"frappe": frappe, "frappe.model": model,
                       "frappe.model.document": docmod,
                       "konsol.clickhouse": ch, "konsol.budget_intake": intake}.items():
@@ -308,7 +317,7 @@ def env(monkeypatch):
     return types.SimpleNamespace(ctl=ctl, cycles=cycles, entries=entries, frappe=frappe,
                                  grain=loaded["konsol.epm.budget_grain"], sql=sql_calls,
                                  judged=judged, intake=intake, locks=locks, removed=removed,
-                                 held_elsewhere=held_elsewhere)
+                                 held_elsewhere=held_elsewhere, basis_checks=basis_checks)
 
 
 def _entry(env, lines=(), **kw):
@@ -590,3 +599,41 @@ def test_a_writer_that_judged_its_rows_skips_the_removal_check(env):
     with env.ctl.judged_by_writer():
         doc.validate()
     assert env.removed == []
+
+
+# ---- Q15-c: one amount basis per (cycle, entity, layer), whoever writes ----------
+
+def test_validate_runs_the_one_basis_check_after_the_cycle_lock(env):
+    doc = _entry(env, name="BENT-ME", amount_basis="Year-to-date movement")
+    doc.validate()
+    assert env.basis_checks == [("BCYC-1", "E1", "base", "Year-to-date movement", "BENT-ME", set())]
+    assert env.locks.index(("cycle", "BCYC-1")) < env.locks.index(("basis check", "BCYC-1"))
+
+
+def test_a_writer_that_judged_its_rows_still_gets_the_basis_check(env):
+    # The Excel cell and the bulk load save inside judged_by_writer: the basis
+    # rule spans entries, so no writer's own judgement covers it.
+    doc = _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)])
+    with env.ctl.judged_by_writer():
+        doc.validate()
+    assert len(env.basis_checks) == 1
+
+
+def test_a_second_basis_refuses_the_save(env):
+    env.intake.refuse_basis = "Budget Entry BENT-P1 (period 1) holds amount basis 'Year-to-date movement'"
+    with pytest.raises(Thrown, match="BENT-P1"):
+        _entry(env).validate()
+
+
+def test_entries_being_replaced_are_passed_to_the_basis_check(env):
+    with env.ctl.replacing_entries({"BENT-A", "BENT-B"}):
+        _entry(env, name="BENT-A").validate()
+    assert env.basis_checks[0][5] == {"BENT-A", "BENT-B"}
+    assert not env.frappe.flags.get("budget_entry_replacing"), "the flag is put back"
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_install_and_migrate_skip_the_basis_check(env, flag):
+    setattr(env.frappe.flags, flag, True)
+    _entry(env).validate()
+    assert env.basis_checks == []

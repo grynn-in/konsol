@@ -78,9 +78,14 @@ def env(monkeypatch):
         "ISO Currency": [{"name": "EUR", "minor_unit": 2}],
         "Dimension": [{"dimension_name": "dim_cost_center", "status": "Published", "in_budget": 1,
                        "in_trial_balance": 1}],
+        # Rows the writer checks read (Q15-c, Q16-c), with a locking read.
+        "Budget Entry": [],
+        "Budget Entry Line": [],
+        "Budget Annual Input": [],
     }
     state = types.SimpleNamespace(user="ann@example.com", roles=["Entity Accountant"],
-                                  access_calls=[], denied_entities=set(), queries=[])
+                                  access_calls=[], denied_entities=set(), queries=[],
+                                  locked_reads=[])
 
     def get_all(doctype, filters=None, fields=None, order_by=None, pluck=None, limit_page_length=None,
                 **kw):
@@ -106,7 +111,18 @@ def env(monkeypatch):
     frappe.get_roles = lambda user=None: list(state.roles)
     frappe.new_doc = forbidden
     frappe.get_doc = forbidden
-    frappe.db = types.SimpleNamespace(set_value=forbidden, sql=forbidden, insert=forbidden)
+    def get_values(doctype, filters=None, fields=None, as_dict=False, order_by=None, for_update=False,
+                   **kw):
+        # The writer checks read what is committed now: under REPEATABLE READ
+        # only a locking read does, so a plain read here is a test failure.
+        state.locked_reads.append((doctype, dict(filters or {}), for_update, order_by))
+        assert for_update, f"{doctype}: a writer check reads with a locking read"
+        assert as_dict and order_by, (doctype, as_dict, order_by)
+        rows = [r for r in data[doctype] if _matches(r, filters)]
+        return [types.SimpleNamespace(**{f: r.get(f) for f in fields}, get=r.get) for r in rows]
+
+    frappe.db = types.SimpleNamespace(set_value=forbidden, sql=forbidden, insert=forbidden,
+                                      get_values=get_values)
 
     api = types.ModuleType("konsol.api")
 
@@ -471,3 +487,64 @@ def test_removing_a_line_needs_the_layers_writer_role(env):
         env.mod.assert_may_remove("E1", "board", [{"main_account": "4000"}])
     env.state.roles = ["Budget Approver"]
     env.mod.assert_may_remove("E1", "board", [{"main_account": "4000"}])
+
+
+# ---- Q15-c: one amount basis per (cycle, entity, layer) ------------------------
+
+YTD = "Year-to-date movement"
+
+
+def _entry_row(name, period, basis, cycle="BCYC-BUD-2027", entity="E1", layer="base"):
+    return {"name": name, "cycle": cycle, "data_area_id": entity, "layer": layer,
+            "fiscal_period": period, "amount_basis": basis}
+
+
+def test_a_second_basis_in_one_cycle_entity_and_layer_is_refused_naming_the_entry(env):
+    env.data["Budget Entry"] = [_entry_row("BENT-P1", 1, YTD)]
+    with pytest.raises(Thrown) as raised:
+        env.mod.assert_one_basis("BCYC-BUD-2027", "E1", "base", BASIS, name="BENT-P2")
+    msg = str(raised.value)
+    assert "Budget Entry BENT-P1" in msg and "period 1" in msg and YTD in msg and BASIS in msg, msg
+
+
+def test_the_same_basis_in_another_period_is_accepted(env):
+    env.data["Budget Entry"] = [_entry_row("BENT-P1", 1, BASIS)]
+    env.mod.assert_one_basis("BCYC-BUD-2027", "E1", "base", BASIS, name="BENT-P2")
+
+
+@pytest.mark.parametrize("other", [dict(entity="E2"), dict(layer="board"), dict(cycle="BCYC-OLD-2027")])
+def test_another_basis_in_another_entity_layer_or_cycle_is_accepted(env, other):
+    env.data["Budget Entry"] = [_entry_row("BENT-X", 1, YTD, **other)]
+    env.mod.assert_one_basis("BCYC-BUD-2027", "E1", "base", BASIS, name="BENT-P2")
+
+
+def test_an_entry_does_not_conflict_with_itself(env):
+    # A Desk change of the only entry's basis is not a second basis.
+    env.data["Budget Entry"] = [_entry_row("BENT-P1", 1, YTD)]
+    env.mod.assert_one_basis("BCYC-BUD-2027", "E1", "base", BASIS, name="BENT-P1")
+
+
+def test_entries_being_replaced_in_the_same_write_do_not_conflict(env):
+    # A Budget Upload replaces a slice whole: its old entries are rewritten in
+    # the same transaction, so their old basis is not a second one.
+    env.data["Budget Entry"] = [_entry_row("BENT-P1", 1, YTD), _entry_row("BENT-P2", 2, YTD)]
+    env.mod.assert_one_basis("BCYC-BUD-2027", "E1", "base", BASIS, name="BENT-P1",
+                             replacing={"BENT-P1", "BENT-P2"})
+
+
+def test_the_basis_check_reads_the_entries_with_a_locking_read(env):
+    env.mod.assert_one_basis("BCYC-BUD-2027", "E1", "base", BASIS, name="BENT-P2")
+    ((doctype, filters, for_update, _order),) = env.state.locked_reads
+    assert doctype == "Budget Entry" and for_update
+    assert (filters["cycle"], filters["data_area_id"], filters["layer"]) == ("BCYC-BUD-2027", "E1", "base")
+
+
+def test_a_file_giving_two_bases_to_one_entity_and_layer_is_refused_in_both_periods(env):
+    header = HEADER + ["amount_basis"]
+    plan = env.plan([header, _row(period="1") + [BASIS], _row(period="2") + [YTD],
+                     _row(period="1", entity="E2") + [YTD]], form_basis="")
+    p1, p2, other = plan["report"]
+    assert other["ok"], other["errors"]
+    for item, mine, theirs, period in ((p1, BASIS, YTD, 2), (p2, YTD, BASIS, 1)):
+        assert not item["ok"]
+        assert any(f"period {period}" in e and theirs in e and mine in e for e in item["errors"]), item["errors"]
