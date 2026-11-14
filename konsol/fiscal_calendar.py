@@ -23,6 +23,7 @@ _PERIOD_DATA = {
     "Group Exchange Rate": True,
     "Assertion Run": False,
     "TB Exception": True,
+    "Budget Entry": False,
 }
 
 #: Doctypes whose documents carry a fiscal year + period that must be declared.
@@ -34,6 +35,7 @@ NOT_PERIOD_DATA = {
     "Pipeline Run": "a build log: the period is a run parameter, the data it builds lives in the warehouse",
     "Close Event": "the audit log of actions on a period: it records what happened and posts nothing to it (konsol#305 T01b, E10-P9)",
     "Statement Commentary": "a free-text note on a statement heading for the period: it records context for the numbers and posts nothing to it (konsol#305 M43)",
+    "Budget Entry Line": "a copy of its Budget Entry's year and period, for the warehouse row: the entry is the document that uses the period (S2-T0)",
 }
 
 

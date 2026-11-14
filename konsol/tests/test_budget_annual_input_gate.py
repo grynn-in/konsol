@@ -64,10 +64,15 @@ def ctl(monkeypatch):
     docmod.Document = Document
     ch = types.ModuleType("konsol.clickhouse")
     ch.sync_doctype_after_commit = lambda *a, **k: None
+    # The guard asks budget_intake for the Cycle workflow (V2); none is active here.
+    intake = types.ModuleType("konsol.budget_intake")
+    intake.workflow_for = lambda cycles: None
     for name, mod in {"frappe": frappe, "frappe.model": model,
                       "frappe.model.document": docmod,
-                      "konsol.clickhouse": ch}.items():
+                      "konsol.clickhouse": ch, "konsol.budget_intake": intake}.items():
         monkeypatch.setitem(sys.modules, name, mod)
+    import konsol
+    monkeypatch.setattr(konsol, "budget_intake", intake, raising=False)
 
     spec = importlib.util.spec_from_file_location("_bai_gate_under_test", PATH)
     mod = importlib.util.module_from_spec(spec)
@@ -152,3 +157,22 @@ def test_filter_is_worked_out_on_every_read(ctl):
     assert _synced(ctl) == []
     _cycle(ctl, "ZZS", 2026, 1)
     assert _synced(ctl) == ["late"]
+
+
+# ---- the Cycle lock guard holds during a Data Import --------------------------
+
+def test_the_cycle_lock_guard_refuses_during_a_data_import(ctl):
+    # A Data Import into an approved Cycle was a way past the lock: the guard
+    # skipped on in_import. Only install and migrate skip it.
+    class Refused(Exception):
+        pass
+
+    def throw(msg, exc=None, *a, **k):
+        raise (exc or Refused)(msg)
+
+    ctl.mod.frappe.throw = throw
+    ctl.mod.frappe.flags.in_import = True
+    row = ctl.mod.BudgetAnnualInput()
+    row.scenario_id, row.fiscal_year = "ZZS", 2026
+    with pytest.raises(Refused, match="BC-ZZS-2026 .ZZS 2026. is approved"):
+        row._guard_cycle_writable([{"name": "BC-ZZS-2026", "docstatus": 1, "workflow_state": "Approved"}])

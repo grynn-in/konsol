@@ -252,6 +252,9 @@ has_permission["Close Event"] = "konsol.entity_permissions.has_close_event_permi
 # owner, or to a user who may see every entity in it.
 permission_query_conditions["Trial Balance Upload"] = "konsol.tb_bulk.upload_conditions"
 has_permission["Trial Balance Upload"] = "konsol.tb_bulk.has_upload_permission"
+# The bulk budget upload holds every entity's figures in the same way.
+permission_query_conditions["Budget Upload"] = "konsol.budget_bulk.upload_conditions"
+has_permission["Budget Upload"] = "konsol.budget_bulk.has_upload_permission"
 
 # A site's own Handbook page (konsol#407 phase 3): an editor (EPM Admin,
 # System Manager) reads drafts; every other reader sees published pages only.

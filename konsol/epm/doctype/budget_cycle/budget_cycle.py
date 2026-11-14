@@ -1,33 +1,36 @@
-"""Budget Cycle — the single lock gate for a scenario × fiscal year budget.
+"""Budget Cycle: the approval of a scenario x fiscal year budget (BUD-9-3).
 
-The cycle is the *only* approval/lock construct: there is no per-line or
-per-owner workflow. While the cycle is Open (docstatus 0) anyone with edit
-rights writes budget cells via Excel; the application manager **submits** the
-cycle (docstatus 1) at the deadline, which locks every sheet and fires the
-ClickHouse sync + D365 write-back once per sheet. Cancel reopens for amendment.
+Submit is the approval (decided 12 Sep 2026). The installed workflow
+(budget_cycle_workflow.json) takes a Cycle from Draft to Pending Approval
+(EPM Analyst sends it) and Approve submits it (EPM Admin); Reject returns it
+to Draft. Budget Entries and Annual Inputs are written while the Cycle is a
+draft, and reach the warehouse while it is approved (docstatus 1): the
+submit and the cancel queue their syncs, after the commit.
+
+The deadline is a target date; nothing locks at it. A cancel is refused once
+every period of the year is closed (period_status.assert_year_not_closed); a
+cancelled Cycle leaves the warehouse and stays as the audit trail, and its
+amendment carries the pair on.
 """
-import functools
-
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import now_datetime
 
 from konsol.epm.budget_grain import digest_name
-from konsol.clickhouse import after_commit_once
 
 
 class BudgetCycle(Document):
     def validate(self):
         """Reject 'actual' scenarios.
 
-        A cycle is the lock gate for *authored* plan data; actuals are
+        A cycle approves *authored* plan data; actuals are
         GL-derived (gold_trial_balance, no scenario_id) and are never entered or
         locked here. Targeting an actual scenario would write budget cells into
         gold_spread_budget under scenario_id=ACTUAL, which nothing reads — a
         silent misconfiguration. The picker hides actual scenarios too
         (budget_cycle.js); this is the authoritative guard.
         """
+        self.entry_count = self._count_entries()
         if not self.scenario_id:
             return  # mandatory check surfaces the empty value elsewhere
         # The copy the Planning sidebar filters on, taken under a share lock
@@ -45,44 +48,87 @@ class BudgetCycle(Document):
                 ),
                 title=_("Invalid Scenario"),
             )
+        self._refuse_second_live_cycle()
 
     def autoname(self):
         """Collision-safe name for the (scenario, fiscal_year) grain.
 
         Digest-suffixed so long scenario codes can't truncate two cycles onto
-        one 140-char name (see budget_grain.digest_name)."""
-        self.name = digest_name("BCYC", [self.scenario_id, self.fiscal_year])
+        one 140-char name (see budget_grain.digest_name). The digest when it
+        is free, else the first free ``<digest>-N`` (#524): a cancelled Cycle
+        keeps its name as the audit trail, and the next Cycle of its pair
+        must not collide with it. Every Cycle is named here, an amendment
+        too: set_new_name below makes sure of it. Nothing finds a Cycle by
+        this name: every writer finds the pair's live Cycle by docstatus."""
+        base = digest_name("BCYC", [self.scenario_id, self.fiscal_year])
+        name, n = base, 0
+        while frappe.db.exists("Budget Cycle", name):
+            n += 1
+            name = f"{base}-{n}"
+        self.name = name
 
-    def before_submit(self):
-        """Lock the cycle. Set here, before the submit is written, not with
-        db_set in on_submit: nothing changes after submit (decided 12 Sep 2026;
-        #136)."""
-        self.status = "Locked"
-        self.locked_by = frappe.session.user
-        self.locked_on = now_datetime()
+    def set_new_name(self, *args, **kwargs):
+        """The Cycle owns its name, under any site naming setting.
+
+        Frappe v16 names an amendment by its amend counter before it reaches
+        the controller (frappe/model/naming.py:177-179, _set_amended_name at
+        :549): ``<base of amended_from>-<n+1>``, without checking that the
+        name is free. A fresh Cycle of the pair may already hold it through
+        autoname, so the insert would fail on a duplicate name: amend D after
+        a fresh Cycle took D-1, or amend D-1 after one took D-2. A Document
+        Naming Rule would reach the name before autoname too (naming.py:186).
+        So, once Frappe has named the Cycle (Document.set_new_name,
+        model/document.py:969), autoname names it again: the first free
+        ``<digest>-N``. A name the caller passes (``set_name``), or a Cycle
+        already named, is left alone."""
+        force = kwargs.get("force", args[0] if args else False)
+        set_name = kwargs.get("set_name", args[1] if len(args) > 1 else None)
+        named = self.flags.name_set and not force
+        super().set_new_name(*args, **kwargs)
+        if not named and not set_name:
+            self.autoname()
+
+    def _refuse_second_live_cycle(self):
+        """A (scenario, year) holds one live Cycle (docstatus 0 or 1): every
+        budget writer takes the pair's draft, and the warehouse would add two
+        approved Cycles of one pair together. A cancelled Cycle does not
+        count (19-b), so a cancelled pair can be amended (#524). Read under
+        the lock budget_intake.lock_cycles takes, the Cycle-first order every
+        budget writer keeps, so two inserts for one pair cannot both pass.
+        Install and migrate skip it, as lock_cycles does."""
+        from konsol import budget_intake
+
+        states = {0: "draft", 1: "approved"}
+        for c in budget_intake.lock_cycles(self.scenario_id, self.fiscal_year):
+            if c["name"] != self.name and c["docstatus"] in states:
+                frappe.throw(
+                    _("Budget Cycle {0} is already the {1} Cycle of {2} {3}. A scenario and year hold one "
+                      "live Cycle: work in it, or cancel it and amend it.").format(
+                        c["name"], states[c["docstatus"]], self.scenario_id, self.fiscal_year),
+                    frappe.ValidationError,
+                )
+
+    def onload(self):
+        """Entries change without a Cycle save, so the form counts them when
+        it opens."""
+        self.entry_count = self._count_entries()
 
     def on_submit(self):
-        """Push the locked sheets downstream, after the commit (#124/#136)."""
-        after_commit_once(("budget_cycle", self.name, "lock"), functools.partial(self._push_sheets, True))
+        """Approved: the Cycle's rows enter the warehouse, after the commit."""
         self._resync_annual_input()
+        self._resync_entries()
 
     def before_cancel(self):
-        """Unlock the cycle: reopen its sheets for editing."""
-        self.status = "Open"
-        self.locked_by = None
-        self.locked_on = None
+        """BUD-9-3: cancel only while the year has an open period. Nothing
+        changes before the gate."""
+        from konsol.period_status import assert_year_not_closed
+
+        assert_year_not_closed(self.fiscal_year, _("cancel Budget Cycle {0}").format(self.name))
 
     def on_cancel(self):
-        """Withdraw the sheets downstream, after the commit (#124/#136)."""
-        for sheet in self._sheets():
-            if not self._d365_enabled_for(sheet.data_area_id) and sheet.meta.has_field("d365_writeback_status"):
-                # Write-back off: no withdraw job will clear the status, so clear
-                # it here, inside the transaction; else a stale 'Pushed' makes a
-                # later re-lock skip the push. (A write after the commit would
-                # never be committed.)
-                sheet.db_set("d365_writeback_status", "", update_modified=False)
-        after_commit_once(("budget_cycle", self.name, "unlock"), functools.partial(self._push_sheets, False))
+        """Cancelled: the Cycle's rows leave the warehouse, after the commit."""
         self._resync_annual_input()
+        self._resync_entries()
 
     @staticmethod
     def _resync_annual_input():
@@ -96,45 +142,28 @@ class BudgetCycle(Document):
 
         queue_sync()
 
-    def _push_sheets(self, active):
-        """Sync every sheet to ClickHouse and queue its D365 push (lock) or
-        withdraw (unlock). Runs after the commit, so a sheet synced here can't
-        outlive a lock that rolled back. Each sheet is isolated: one sheet's
-        failure is logged and the rest proceed. The log is deferred, because
-        this runs after the last commit."""
-        for sheet in self._sheets():
-            try:
-                sheet._sync_to_clickhouse(self.scenario_id, self.fiscal_year, active=active)
-                if self._d365_enabled_for(sheet.data_area_id):
-                    if active:
-                        from konsol.d365_writeback import enqueue_push_budget_sheet
-
-                        enqueue_push_budget_sheet(sheet.name)
-                    else:
-                        frappe.enqueue("konsol.d365_writeback.withdraw_budget_sheet", queue="long", name=sheet.name)
-            except Exception:
-                frappe.log_error(
-                    title=f"Budget Cycle {'lock' if active else 'unlock'}: sheet {sheet.name} sync/push failed",
-                    message=frappe.get_traceback(),
-                    defer_insert=True,
-                )
-
-    # ------------------------------------------------------------------
-
-    def _sheets(self):
-        """Load this cycle's Budget Sheet docs."""
-        names = frappe.get_all("Budget Sheet", filters={"cycle": self.name}, pluck="name")
-        return [frappe.get_doc("Budget Sheet", n) for n in names]
-
     @staticmethod
-    def _d365_enabled_for(entity_id):
-        """Whether D365 budget write-back is enabled for an entity.
+    def _resync_entries():
+        """Queue the Budget Entry Line sync, once per transaction, after the
+        commit (S2-T2). Lines reach ClickHouse only while their cycle has
+        docstatus 1 (CH_SYNC_FILTERS), so, like Annual Input, they change
+        membership on a cycle submit or cancel, never on an entry save. The
+        sync replaces the whole table, so one covers every cycle in the
+        transaction."""
+        from konsol.epm.doctype.budget_entry_line.budget_entry_line import queue_sync
 
-        Lazy import + defensive: returns False (not raise) when D365 config is
-        absent, so locking a cycle never fails just because write-back is off.
-        """
-        try:
-            from konsol.d365_writeback import get_config
-            return bool(get_config(entity_id=entity_id).get("enabled"))
-        except Exception:
-            return False
+        queue_sync()
+
+    def _count_entries(self):
+        """The Budget Entries under this Cycle: counted, never typed."""
+        if not self.name:
+            return 0
+        return frappe.db.count("Budget Entry", {"cycle": self.name})
+
+
+def on_doctype_update():
+    """The index this doctype's budget locking read runs on (PR #522 review;
+    konsol.budget_intake.LOCK_INDEXES)."""
+    from konsol.budget_intake import add_lock_index
+
+    add_lock_index("Budget Cycle")

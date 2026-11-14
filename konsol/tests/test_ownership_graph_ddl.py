@@ -199,12 +199,14 @@ def test_the_new_columns_sit_where_the_upgrade_puts_them():
     """_POSITIONED_COLUMNS: (column, type, after). Each column must follow its
     anchor in the CREATE, so a fresh table and an upgraded one agree."""
     positioned = _literal("_POSITIONED_COLUMNS")
-    assert positioned == {
-        ANCESTRY: [("path_id", "String", "path"),
-                   ("link_owner_group", "String", "path_id"),
-                   ("link_owner_data_area_id", "String", "link_owner_group")],
-    }, "the periods table's owner is a sorting-key upgrade, not a positioned column"
-    for table, cols in positioned.items():
+    assert positioned[ANCESTRY] == [("path_id", "String", "path"),
+                                    ("link_owner_group", "String", "path_id"),
+                                    ("link_owner_data_area_id", "String", "link_owner_group")]
+    assert PERIODS not in positioned, \
+        "the periods table's owner is a sorting-key upgrade, not a positioned column"
+    # Other tables' positioned columns are pinned beside their own DDL
+    # (budget_annual_input: test_budget_annual_input_ddl.py).
+    for table, cols in ((t, c) for t, c in positioned.items() if t in BODIES):
         names = _columns(BODIES[table])
         for column, _typ, after in cols:
             assert names.index(column) == names.index(after) + 1, (table, column, after)

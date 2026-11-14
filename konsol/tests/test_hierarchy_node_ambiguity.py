@@ -368,7 +368,7 @@ def test_write_checks_leaf_or_group_in_that_period():
 def test_budget_write_passes_its_period():
     import os
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "api.py")
-    block = open(path).read().split("def budget_cell_save")[1].split("\n@frappe.whitelist")[0]
+    block = open(path).read().split("def _save_budget_cell")[1].split("\n@frappe.whitelist")[0]
     call = block.split("validate_hierarchy_write(")[1].split(")\n")[0]
     assert 'fiscal_year=int(data["fiscal_year"])' in call
     assert "fiscal_period=fp" in call

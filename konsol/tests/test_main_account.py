@@ -320,8 +320,7 @@ def test_permissions_publish_is_the_close_leads():
     full = {"read", "write", "create", "delete", "report", "export"}
     assert perms == {
         "System Manager": full, "EPM Admin": full, "EPM Analyst": {"read", "write", "create", "report", "export"},
-        "EPM User": {"read"}, "Entity Accountant": {"read"}, "Budget Submitter": {"read"},
-        "Budget Controller": {"read"}, "Budget Manager": {"read"}, "Budget Approver": {"read"}}
+        "EPM User": {"read"}, "Entity Accountant": {"read"}}   # no Budget* row (#348 Z8)
     assert not any("import" in p for p in _json()["permissions"]), "no Data Import: use the chart upload"
     # publishing is check_epm_admin's, which a Group Accountant does not pass
     allowed = _literal(os.path.join(APP_DIR, "schema_lifecycle.py"), "_ALLOWED_ROLES")

@@ -30,13 +30,12 @@ class Scenario(Document):
     }
 
     #: Doctypes holding a fetched copy of scenario_type through ``scenario_id``.
-    #: Budget Sheet copies its cycle's, so the cycles count it.
     TYPE_COPIES = ("Budget Cycle", "Budget Annual Input")
 
     def validate(self):
         """Refuse a type change while a copy of the type exists (#443).
 
-        Budget Cycle, Budget Sheet and Budget Annual Input carry a read-only
+        Budget Cycle and Budget Annual Input carry a read-only
         copy of scenario_type, which the Planning sidebar filters on (Deepak
         Pai, 7 Nov 2026, option B; rejected A, C, D). Frappe re-copies it only
         when that row is saved, and never on a submitted cycle, so a changed

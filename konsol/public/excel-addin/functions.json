@@ -105,7 +105,7 @@
     {
       "id": "EPMSAVE",
       "name": "EPMSAVE",
-      "description": "Write a single budget cell back to konsol on recalc. Returns the amount. Pass hierarchy + node to write at a hierarchy leaf.",
+      "description": "Write a single budget cell back to konsol on recalc. Returns the amount. Currency and amount basis are required. Pass hierarchy + node to write at a hierarchy leaf.",
       "parameters": [
         { "name": "amount", "description": "Value to write", "type": "number" },
         { "name": "entity", "description": "Legal entity / data area id", "type": "string" },
@@ -116,7 +116,9 @@
         { "name": "layer", "description": "base | challenge | management | board", "type": "string" },
         { "name": "dimensions", "description": "Dimensions (optional): one text cell such as \"dim_region=EU;dim_product=X\", or a 2-column range of name/value rows. Names are the site's declared dimensions; an undeclared name is refused.", "type": "any", "dimensionality": "matrix", "optional": true },
         { "name": "hierarchy", "description": "Reporting hierarchy name", "type": "string", "optional": true },
-        { "name": "node", "description": "Hierarchy leaf member code", "type": "string", "optional": true }
+        { "name": "node", "description": "Hierarchy leaf member code", "type": "string", "optional": true },
+        { "name": "currency", "description": "Required: the ISO code the amount is in, e.g. EUR. It must be the entity's functional currency; it is never defaulted.", "type": "string", "optional": true },
+        { "name": "amountBasis", "description": "Required: Movement or Year-to-date. It is never defaulted.", "type": "string", "optional": true }
       ],
       "result": { "type": "number" }
     }
