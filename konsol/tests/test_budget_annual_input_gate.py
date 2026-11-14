@@ -170,4 +170,4 @@ def test_the_cycle_lock_guard_refuses_during_a_data_import(ctl):
     row = ctl.mod.BudgetAnnualInput()
     row.scenario_id, row.fiscal_year = "ZZS", 2026
     with pytest.raises(Refused, match="locked"):
-        row._guard_cycle_locked([{"name": "BC-ZZS-2026", "docstatus": 1, "status": "Open"}])
+        row._guard_cycle_locked([{"name": "BC-ZZS-2026", "docstatus": 1, "workflow_state": "Approved"}])

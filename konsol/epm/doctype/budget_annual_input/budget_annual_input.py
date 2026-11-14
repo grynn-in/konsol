@@ -284,15 +284,18 @@ class BudgetAnnualInput(Document):
         The cycle is derived rather than linked — Budget Cycle is keyed on
         (scenario_id, fiscal_year) and so is this — so no field is duplicated.
         `cycles` are the pair's Cycles as budget_intake.lock_cycles read them,
-        under the lock: a Cycle approved (docstatus 1) or Locked while this
-        write waited is seen, which a plain read of the snapshot would miss.
+        under the lock: a Cycle approved (docstatus 1) while this write waited
+        is seen, which a plain read of the snapshot would miss. Which Cycle
+        refuses is budget_bulk_model.cycle_closed_to_writes (W2a; V2 adds Pending
+        Approval there, W4 rewrites this guard).
         Skipped during install/migrate only: a Data Import is a user's write and meets the lock. Fixtures and patches load against
         whatever state the site is in.
         """
         if frappe.flags.in_install or frappe.flags.in_migrate:
             return
-        locked = next((c["name"] for c in cycles or ()
-                       if c["docstatus"] == 1 or c["status"] == "Locked"), None)
+        from konsol.budget_bulk_model import cycle_closed_to_writes
+
+        locked = next((c["name"] for c in cycles or () if cycle_closed_to_writes(c)), None)
         if locked:
             frappe.throw(
                 f"Budget Cycle {locked} is locked for {self.scenario_id} "

@@ -55,9 +55,9 @@ def ctl(monkeypatch):
     frappe.session = types.SimpleNamespace(user="zz@example.com")
     statuses = {}
     locked = {"Budget Cycle": [{"name": "BC-ZZS-2026", "scenario_id": "ZZS", "fiscal_year": 2026, "docstatus": 0,
-                                "status": "Open"},
+                                "workflow_state": "Draft"},
                                {"name": "BC-ZZOLD-2026", "scenario_id": "ZZOLD", "fiscal_year": 2026,
-                                "docstatus": 0, "status": "Open"}],
+                                "docstatus": 0, "workflow_state": "Draft"}],
               "Budget Entry Line": [],
               "Budget Annual Input": []}
 
@@ -340,19 +340,19 @@ def test_the_row_itself_is_not_its_own_duplicate(ctl):
     _row(ctl, "ZZE1").validate()
 
 
-@pytest.mark.parametrize("docstatus,status", [(1, "Locked"), (0, "Locked"), (1, "Open")])
-def test_a_cycle_approved_while_the_save_waited_is_refused(ctl, docstatus, status):
+def test_a_cycle_approved_while_the_save_waited_is_refused(ctl):
     """PR #522 review 2: the Cycle's state is read by the lock itself, so a
-    Cycle approved while this save waited on it is seen."""
-    ctl.locked["Budget Cycle"][0].update(docstatus=docstatus, status=status)
+    Cycle approved while this save waited on it is seen. Approved is
+    docstatus 1: the Cycle has no lock status since S2-C W2a."""
+    ctl.locked["Budget Cycle"][0].update(docstatus=1, workflow_state="Approved")
     with pytest.raises(Exception, match="BC-ZZS-2026 is locked"):
         _row(ctl, "ZZE1").validate()
 
 
 def test_a_cancelled_original_beside_a_draft_amendment_does_not_refuse(ctl):
-    ctl.locked["Budget Cycle"][0].update(docstatus=2, status="Open")
+    ctl.locked["Budget Cycle"][0].update(docstatus=2, workflow_state="Cancelled")
     ctl.locked["Budget Cycle"].append({"name": "BC-ZZS-2026-1", "scenario_id": "ZZS", "fiscal_year": 2026,
-                                       "docstatus": 0, "status": "Open"})
+                                       "docstatus": 0, "workflow_state": "Draft"})
     _row(ctl, "ZZE1").validate()
 
 
@@ -392,9 +392,8 @@ def test_a_delete_takes_the_cycle_lock_nowait(ctl):
     assert ctl.waits == [False]
 
 
-@pytest.mark.parametrize("docstatus,status", [(1, "Locked"), (0, "Locked")])
-def test_a_delete_under_an_approved_or_locked_cycle_is_refused(ctl, docstatus, status):
-    ctl.locked["Budget Cycle"][0].update(docstatus=docstatus, status=status)
+def test_a_delete_under_an_approved_cycle_is_refused(ctl):
+    ctl.locked["Budget Cycle"][0].update(docstatus=1, workflow_state="Approved")
     with pytest.raises(Exception, match="BC-ZZS-2026 is locked"):
         _row(ctl, "ZZE1").on_trash()
 

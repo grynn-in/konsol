@@ -113,8 +113,11 @@ MATRIX = {
     "Trial Balance Upload": {"EPM Admin": "rwcd", "EPM Analyst": ""},
     "Budget Sheet": {"Budget Submitter": "rwc", "Entity Accountant": "rwc", "Budget Controller": "rw",
                      "Budget Manager": "rw", "Budget Approver": "rw"},
-    "Budget Cycle": {"Budget Manager": "rwcsx", "Budget Submitter": "r", "Budget Controller": "r",
-                     "Budget Approver": "r", "Entity Accountant": "r"},
+    # konsol#348 S2-C W2a (BUD-9-3): the Analyst drafts and sends, the Close
+    # Lead approves (submits) and cancels; no Budget* role row remains
+    "Budget Cycle": {"EPM Admin": "rwsx", "EPM Analyst": "rwc", "Entity Accountant": "r", "EPM User": "r",
+                     "Budget Manager": "", "Budget Submitter": "", "Budget Controller": "",
+                     "Budget Approver": ""},
     "Entity": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r",
                "Budget Submitter": "r", "Budget Controller": "r", "Budget Manager": "r", "Budget Approver": "r"},
     "EPM Fiscal Year": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},

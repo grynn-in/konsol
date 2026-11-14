@@ -671,14 +671,15 @@ def test_the_handbook_lists_the_site_guide_pages():
 
 def test_planning_and_data_pages_show_their_counts():
     """Planning counts open budget cycles and open forecast cycles apart, and
-    links Scenarios (#443)."""
+    links Scenarios (#443). Open is a draft Cycle (docstatus 0: Draft or
+    Pending Approval); the Cycle has no status field since S2-C W2a."""
     planning = _ws("Planning")["shortcuts"]
     counted = sorted(
         (s["link_to"], tuple(tuple(f[1:]) for f in json.loads(s["stats_filter"])), s.get("format"))
         for s in planning if s.get("stats_filter"))
     assert counted == [
-        ("Budget Cycle", (("scenario_type", "=", "budget"), ("status", "=", "Open")), "{} open"),
-        ("Budget Cycle", (("scenario_type", "=", "forecast"), ("status", "=", "Open")), "{} open"),
+        ("Budget Cycle", (("scenario_type", "=", "budget"), ("docstatus", "=", 0)), "{} open"),
+        ("Budget Cycle", (("scenario_type", "=", "forecast"), ("docstatus", "=", 0)), "{} open"),
     ], counted
     assert "Scenario" in {s["link_to"] for s in planning}
     data = _ws("Data")

@@ -67,7 +67,7 @@ def env(monkeypatch):
         ],
         "Budget Cycle": [
             {"name": "BCYC-BUD-2027", "scenario_id": "BUD", "fiscal_year": 2027, "docstatus": 0,
-             "status": "Open"},
+             "workflow_state": "Draft"},
             {"name": "BCYC-BUD-2028", "scenario_id": "BUD", "fiscal_year": 2028, "docstatus": 1},
             {"name": "BCYC-BUD-2029", "scenario_id": "BUD", "fiscal_year": 2029, "docstatus": 2},
             {"name": "BCYC-OLD-2027", "scenario_id": "OLD", "fiscal_year": 2027, "docstatus": 0},
@@ -656,7 +656,9 @@ def test_lock_cycles_locks_every_cycle_of_the_scenario_and_year(env):
     cycles = env.mod.lock_cycles("BUD", 2027)
     # PR #522 review 2: the lock returns each Cycle's state as it reads it, so
     # the caller judges the Cycle by what is committed now, not its snapshot.
-    assert cycles == [{"name": "BCYC-BUD-2027", "docstatus": 0, "status": "Open"}]
+    # The Cycle has no lock status since S2-C W2a: its workflow_state comes
+    # back instead, for V2 (Q17-b) to judge under the lock.
+    assert cycles == [{"name": "BCYC-BUD-2027", "docstatus": 0, "workflow_state": "Draft"}]
     ((doctype, filters, for_update, order_by),) = env.state.locked_reads
     assert doctype == "Budget Cycle" and for_update and order_by == "name asc"
     assert filters == {"scenario_id": "BUD", "fiscal_year": 2027}

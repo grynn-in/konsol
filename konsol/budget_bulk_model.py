@@ -261,3 +261,17 @@ def _basis_problems(rows, form_basis, from_file):
     if basis == PERIOD_END:
         return [PERIOD_END_REFUSAL]
     return []
+
+
+def cycle_closed_to_writes(cycle):
+    """Whether a Cycle, as konsol.budget_intake.lock_cycles returns it ({name, docstatus,
+    workflow_state}), refuses budget writes.
+
+    Today: an approved Cycle (docstatus 1). A cancelled Cycle does not (19-b:
+    under an amended pair it is the audit trail), and a draft accepts writes.
+    The seam for V2 (Q6-b, Q17-b): a draft Cycle outside the installed
+    workflow's first state (Pending Approval) refuses too. V2 decides that
+    here, from ``workflow_state``, which the lock has already read; every
+    writer that asks this gets the rule at once. Never read a lock status
+    field: the Cycle has none since S2-C W2a."""
+    return int(cycle["docstatus"]) == 1

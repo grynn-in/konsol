@@ -12,7 +12,7 @@
  "is_hidden": 0,
  "label": "Planning",
  "links": [],
- "modified": "2026-11-08 02:00:00.000000",
+ "modified": "2026-11-14 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "EPM",
  "name": "Planning",
@@ -32,7 +32,7 @@
    "link_to": "Budget Cycle",
    "type": "DocType",
    "format": "{} open",
-   "stats_filter": "[[\"Budget Cycle\", \"scenario_type\", \"=\", \"budget\"], [\"Budget Cycle\", \"status\", \"=\", \"Open\"]]"
+   "stats_filter": "[[\"Budget Cycle\", \"scenario_type\", \"=\", \"budget\"], [\"Budget Cycle\", \"docstatus\", \"=\", 0]]"
   },
   {
    "color": "Blue",
@@ -41,7 +41,7 @@
    "link_to": "Budget Cycle",
    "type": "DocType",
    "format": "{} open",
-   "stats_filter": "[[\"Budget Cycle\", \"scenario_type\", \"=\", \"forecast\"], [\"Budget Cycle\", \"status\", \"=\", \"Open\"]]"
+   "stats_filter": "[[\"Budget Cycle\", \"scenario_type\", \"=\", \"forecast\"], [\"Budget Cycle\", \"docstatus\", \"=\", 0]]"
   },
   {
    "color": "Grey",

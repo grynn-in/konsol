@@ -441,7 +441,7 @@ def annual_check(row):
 
 def lock_cycles(scenario_id, fiscal_year, *, wait=True):
     """Lock every Budget Cycle row of (scenario, year), in name order, and
-    return each as {name, docstatus, status}, read by the lock itself: under
+    return each as {name, docstatus, workflow_state}, read by the lock itself: under
     REPEATABLE READ a plain read would serve the snapshot and miss a Cycle
     approved while this writer waited on it. A Budget Annual Input derives its
     Cycle from the pair rather than linking one, and an amended pair holds
@@ -459,15 +459,16 @@ def lock_cycles(scenario_id, fiscal_year, *, wait=True):
         return []
     try:
         rows = frappe.db.get_values("Budget Cycle", {"scenario_id": scenario_id, "fiscal_year": fiscal_year},
-                                    ["name", "docstatus", "status"], as_dict=True, order_by="name asc",
-                                    for_update=True, wait=wait)
+                                    ["name", "docstatus", "workflow_state"], as_dict=True,
+                                    order_by="name asc", for_update=True, wait=wait)
     except (frappe.QueryTimeoutError, frappe.QueryDeadlockError) as error:
         if wait:
             raise
         # Keep the type: a deadlock has already rolled the transaction back.
         frappe.throw(f"The Budget Cycle of {scenario_id} {fiscal_year} is being changed by another user, so "
                      "this annual figure cannot be deleted right now. Try again in a moment.", type(error))
-    return [{"name": r.name, "docstatus": int(r.docstatus or 0), "status": r.status or ""} for r in rows]
+    return [{"name": r.name, "docstatus": int(r.docstatus or 0), "workflow_state": r.workflow_state or ""}
+            for r in rows]
 
 
 def _dim_fields(doctype):

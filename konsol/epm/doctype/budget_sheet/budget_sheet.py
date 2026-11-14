@@ -58,10 +58,11 @@ class BudgetSheet(Document):
         """
         if not self.cycle:
             return
-        status = frappe.db.get_value("Budget Cycle", self.cycle, "status")
-        if status == "Locked":
+        # An approved Cycle (docstatus 1) is the lock: the Cycle has no
+        # status field since S2-C W2a. (Budget Sheet itself retires in Z1.)
+        if frappe.db.get_value("Budget Cycle", self.cycle, "docstatus") == 1:
             frappe.throw(
-                f"Budget Cycle '{self.cycle}' is locked; cancel it to amend.",
+                f"Budget Cycle '{self.cycle}' is approved; cancel it to amend.",
                 frappe.ValidationError,
             )
 
