@@ -171,3 +171,25 @@ def test_safe_on_a_site_where_they_are_absent():
     for c in site.calls:
         if c[0] == "delete_doc":
             assert c[3].get("ignore_missing") is True
+
+
+# --- Z2: the code that named Sheet and Line is gone ---------------------------
+
+def _source(*parts):
+    with open(os.path.join(APP_DIR, *parts)) as f:
+        return f.read()
+
+
+def test_budget_grain_keeps_only_the_live_helpers():
+    grain = _source("epm", "budget_grain.py")
+    for gone in ("VALID_LAYERS", "normalize_layer", "is_valid_layer", "find_budget_line",
+                 "line_matches", "Budget Line", "Budget Sheet"):
+        assert gone not in grain, gone
+    assert "def digest_name" in grain
+
+
+def test_schema_apply_and_install_no_longer_name_budget_line():
+    for path in (("schema_apply.py",), ("install.py",)):
+        src = _source(*path)
+        for gone in ("Budget Line", "Budget Sheet", "budget_line", "budget_sheet"):
+            assert gone not in src, (path, gone)
