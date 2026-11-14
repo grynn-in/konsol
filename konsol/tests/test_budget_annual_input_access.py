@@ -51,14 +51,19 @@ def ctl(monkeypatch):
     frappe.flags = _Flags()
     frappe.session = types.SimpleNamespace(user="zz@example.com")
     statuses = {}
-    locked = {"Budget Cycle": [{"name": "BC-ZZS-2026", "scenario_id": "ZZS", "fiscal_year": 2026}],
+    locked = {"Budget Cycle": [{"name": "BC-ZZS-2026", "scenario_id": "ZZS", "fiscal_year": 2026, "docstatus": 0},
+                               {"name": "BC-ZZOLD-2026", "scenario_id": "ZZOLD", "fiscal_year": 2026,
+                                "docstatus": 0}],
               "Budget Entry Line": []}
 
     def get_values(doctype, filters=None, fields=None, as_dict=False, order_by=None, for_update=False,
                    **kw):
         assert for_update and as_dict and order_by, (doctype, for_update, as_dict, order_by)
-        rows = [r for r in locked[doctype]
-                if all(str(r.get(f)) == str(v) for f, v in (filters or {}).items())]
+        def match(value, cond):
+            if isinstance(cond, list) and cond[0] == "in":
+                return value in cond[1]
+            return str(value) == str(cond)
+        rows = [r for r in locked[doctype] if all(match(r.get(f), v) for f, v in (filters or {}).items())]
         if doctype == "Budget Cycle":
             locks.extend(("cycle", r["name"]) for r in rows)
         else:
@@ -248,7 +253,8 @@ def test_layer_and_currency_are_not_judged_on_delete(ctl):
 # ---- Q16-c: a grain takes its numbers from one writer ---------------------------
 
 def _line(**over):
-    line = {"parent": "BENT-P3", "parenttype": "Budget Entry", "scenario_id": "ZZS", "fiscal_year": 2026,
+    line = {"parent": "BENT-P3", "parenttype": "Budget Entry", "cycle": "BC-ZZS-2026",
+            "scenario_id": "ZZS", "fiscal_year": 2026,
             "data_area_id": "ZZE1", "layer": "base", "fiscal_period": 3, "main_account": "4000",
             "dim_cost_center": "CC1", "dim_region": "EU"}
     line.update(over)
@@ -289,7 +295,7 @@ def test_the_unique_grain_is_read_after_the_cycle_lock(ctl):
 def test_an_annual_input_without_a_budget_cycle_is_refused_by_name(ctl):
     # 20-b: no Cycle, nothing to lock, so nothing to serialise the
     # one-writer checks on; refused as a Budget Entry is (Q6-b).
-    ctl.locked["Budget Cycle"].clear()
+    ctl.locked["Budget Cycle"][:] = [c for c in ctl.locked["Budget Cycle"] if c["scenario_id"] != "ZZS"]
     with pytest.raises(Exception) as raised:
         _row(ctl, "ZZE1").validate()
     assert str(raised.value) == ("No Budget Cycle exists for ZZS 2026. Create the Cycle before entering "

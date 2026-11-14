@@ -360,7 +360,13 @@ def assert_no_entry_lines(row, *, name):
     gives, in any period (Q16-c). `row` holds scenario_id, fiscal_year,
     data_area_id, layer, main_account and the dim_* values; `name` is the
     Annual Input. Raises frappe.ValidationError naming the entry and period.
-    A locking read (the caller holds the Cycle lock). Writes nothing."""
+    A locking read (the caller holds the Cycle lock). Writes nothing.
+
+    Only lines under a Cycle that is not cancelled count (19-b): under an
+    amended pair the cancelled original's entries stay as the audit trail,
+    out of the warehouse, and do not block. (The other direction needs no
+    filter: a Budget Entry is saved only under a draft Cycle of its pair, so
+    an Annual Input of that pair always counts against it.)"""
     if not row.get("main_account"):
         return
     line_dims = _dim_fields("Budget Entry Line")
@@ -370,11 +376,16 @@ def assert_no_entry_lines(row, *, name):
         {"parenttype": "Budget Entry", "scenario_id": row.get("scenario_id"),
          "fiscal_year": row.get("fiscal_year"), "data_area_id": row.get("data_area_id"),
          "layer": row.get("layer"), "main_account": row.get("main_account")},
-        ["parent", "fiscal_period", "main_account", *sorted(line_dims)], as_dict=True,
+        ["parent", "cycle", "fiscal_period", "main_account", *sorted(line_dims)], as_dict=True,
         order_by="fiscal_period asc, parent asc", for_update=True)
     key = _grain_key(row.get("main_account"), row, dims)
+    lines = [line for line in lines if _grain_key(line.main_account, line, dims) == key]
+    cycles = sorted({line.cycle for line in lines})
+    live = {c.name for c in frappe.db.get_values(
+        "Budget Cycle", {"name": ["in", cycles]}, ["name", "docstatus"], as_dict=True,
+        order_by="name asc", for_update=True) if int(c.docstatus) in (0, 1)} if cycles else set()
     for line in lines:
-        if _grain_key(line.main_account, line, dims) == key:
+        if line.cycle in live:
             frappe.throw(
                 f"Budget Entry {line.parent} (period {line.fiscal_period}) already gives account "
                 f"{key[0]}{_named_dims(dims, key)} for {row.get('scenario_id')} {row.get('fiscal_year')}, "
