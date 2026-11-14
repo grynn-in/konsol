@@ -28,8 +28,20 @@ What it does, in order:
      holders. System Manager and Administrator bypass, as the access check does.
      A refusal is an access denial, as the access check's is.
 
+   - one amount basis per (scenario, year, entity, layer) in the file (Q15-c):
+     two periods of one layer that give two bases are both refused, each
+     naming the other.
+
 An inactive Scenario is gathered and refused as inactive; only a Scenario that
 does not exist is refused as undeclared.
+
+The rules that span saved records run where every writer's save passes, the
+Budget Entry and Budget Annual Input controllers, after they lock the Cycle:
+``assert_one_basis`` (Q15-c: one basis per Cycle, entity and layer across all
+its entries) and the one-writer-per-grain pair (Q16-c). Their reads are
+locking reads: under REPEATABLE READ a plain read serves the transaction's
+snapshot and misses what another writer committed while this one waited on
+the Cycle.
 
 ``annual_check`` is the same entry for one Budget Annual Input (A6): access,
 declared layer, the layer's writer role, a plan scenario, and the entity's
@@ -115,9 +127,61 @@ def plan(table, *, form_basis, name_lines):
                 denials.append(_at_line(row, error))
         errors.extend(denials)
         item["denials"] = denials
-        item["ok"] = not errors
         report.append(item)
+    _refuse_mixed_bases(report)
+    for item in report:
+        item["ok"] = not item["errors"]
     return {"groups": groups, "report": report, "ok": all(i["ok"] for i in report)}
+
+
+def _refuse_mixed_bases(report):
+    """One amount basis per (scenario, year, entity, layer) within the table
+    (Q15-c). A group whose basis differs from another period's of its layer is
+    refused, naming that period and its basis. A group with no basis is
+    refused already, so it is left out."""
+    by_slice = {}
+    for item in report:
+        if item["amount_basis"]:
+            slice_key = (item["scenario"], item["fiscal_year"], item["entity"], item["layer"])
+            by_slice.setdefault(slice_key, []).append(item)
+    for items in by_slice.values():
+        for item in items:
+            other = next((o for o in items if o["amount_basis"] != item["amount_basis"]), None)
+            if other:
+                item["errors"].append(
+                    f"Period {item['fiscal_period']} gives amount basis \"{item['amount_basis']}\" but "
+                    f"period {other['fiscal_period']} gives \"{other['amount_basis']}\" for entity "
+                    f"{item['entity']}, layer {item['layer']}: one Cycle, entity and layer hold one "
+                    "amount basis across all their periods. Give every period of the layer the same basis.")
+
+
+def assert_one_basis(cycle, entity, layer, basis, *, name, replacing=()):
+    """Refuse a Budget Entry whose amount basis differs from another entry of
+    its (cycle, entity, layer) (Q15-c), naming that entry, its period and its
+    basis. `name` is the entry being saved (it does not conflict with
+    itself); `replacing` names entries the same write is rewriting (a Budget
+    Upload replaces a slice whole), whose old basis does not count.
+
+    A locking read (the caller holds the Cycle lock): it sees an entry another
+    writer committed while this one waited. Writes nothing."""
+    if not basis:
+        return
+    rows = frappe.db.get_values(
+        "Budget Entry", {"cycle": cycle, "data_area_id": entity, "layer": layer},
+        ["name", "fiscal_period", "amount_basis"], as_dict=True,
+        order_by="fiscal_period asc, name asc", for_update=True)
+    skip = set(replacing) | {name}
+    for row in rows:
+        if row.name in skip or (row.amount_basis or "") == basis:
+            continue
+        frappe.throw(
+            f"Budget Entry {row.name} (period {row.fiscal_period}) holds amount basis "
+            f"\"{row.amount_basis}\" for Cycle {cycle}, entity {entity}, layer {layer}; this entry "
+            f"gives \"{basis}\". One Cycle, entity and layer hold one amount basis across all their "
+            f"periods. Write this period as \"{row.amount_basis}\", or reload the layer's every period "
+            "with one basis in a Budget Upload.",
+            frappe.ValidationError,
+        )
 
 
 def judge_one(table, *, form_basis):

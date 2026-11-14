@@ -337,7 +337,9 @@ def _replace_slice(upload, members):
     """Replace one (cycle, entity, layer) slice with the file's periods.
     Returns the entry names in `members` order. Every existing entry is
     judged before anything changes; the caller commits or rolls back."""
-    from konsol.epm.doctype.budget_entry.budget_entry import assert_cycle_draft, judged_by_writer
+    from konsol.epm.doctype.budget_entry.budget_entry import (
+        assert_cycle_draft, judged_by_writer, replacing_entries,
+    )
 
     first = members[0][0]
     cycle, entity, layer = first["cycle"], first["entity"], first["layer"]
@@ -369,8 +371,10 @@ def _replace_slice(upload, members):
         for row in rows:
             doc.append("lines", _line(row))
         # run_load judged the file at the start of the job: the entry's
-        # validate checks its Cycle but does not judge these rows again.
-        with judged_by_writer():
+        # validate checks its Cycle but does not judge these rows again. The
+        # slice is replaced whole, so its old entries' basis does not count
+        # against the file's (the plan refused a file giving it two).
+        with judged_by_writer(), replacing_entries(existing.values()):
             if period in docs:
                 doc.save()
             else:
