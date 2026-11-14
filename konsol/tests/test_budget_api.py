@@ -166,6 +166,8 @@ def cell(monkeypatch):
         "ISO Currency": [{"name": "EUR", "minor_unit": 2}],
         "Dimension": [{"dimension_name": "dim_cost_center", "status": "Published", "in_budget": 1,
                        "in_trial_balance": 1}],
+        # The check's one-writer report (Q16-c, PR #522 review 4) reads these.
+        "Budget Annual Input": [],
     }
     state = types.SimpleNamespace(entries={}, saves=[], inserts=[], denied=set(), body=None,
                                   access_calls=[], clock=0, commits=0, judged_flags=[],
@@ -255,6 +257,8 @@ def cell(monkeypatch):
     frappe.local = types.SimpleNamespace(response=types.SimpleNamespace(http_status_code=None))
     frappe.request = types.SimpleNamespace(get_data=lambda as_text=True: json.dumps(state.body))
     frappe.get_all = get_all
+    frappe.get_meta = lambda dt: types.SimpleNamespace(fields=[
+        types.SimpleNamespace(fieldname="dim_cost_center", fieldtype="Data")])
     frappe.get_list = get_all
     frappe.get_roles = lambda user=None: ["Entity Accountant"]
     frappe.get_doc = get_doc

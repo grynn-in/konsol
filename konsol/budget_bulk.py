@@ -409,8 +409,10 @@ def run_load(upload, expected):
     own and progress is saved after each; a failed slice is rolled back,
     recorded on its rows, and the rest carry on; a deadlock is retried once.
     A slice whose Cycle was approved after the job judged the file is refused
-    by the Cycle lock (Budget Entry's guard): it is reported as refused, not
-    failed, and the rest carry on.
+    by the Cycle lock (Budget Entry's guard), and one on a grain a Budget
+    Annual Input saved since then gives is refused by the one-writer check
+    (Q16-c, budget_intake.SecondWriterError): either is reported as refused,
+    not failed, and the rest carry on.
     """
     from rq.timeouts import BaseTimeoutException
 
@@ -454,17 +456,20 @@ def run_load(upload, expected):
                     break
                 except BaseTimeoutException:
                     raise
-                except CycleNotDraftError as e:
-                    # Approved (or cancelled) after the job judged the file:
-                    # refused, as the plan would refuse it now, not failed.
-                    # Its earlier slices stand; an approval synced them.
+                except (CycleNotDraftError, budget_intake.SecondWriterError) as e:
+                    # Refused, as the plan would refuse it now, not failed:
+                    # the Cycle was approved (or cancelled) after the job
+                    # judged the file (its earlier slices stand; an approval
+                    # synced them), or a Budget Annual Input was saved on one
+                    # of the slice's grains (Q16-c).
                     frappe.db.rollback()
                     frappe.clear_messages()
                     reason = strip_html(str(e)) or type(e).__name__
+                    why = ("the Cycle left Draft during the load. " if isinstance(e, CycleNotDraftError)
+                           else "")
                     for item, _ in members:
                         item["ok"] = False
-                        item["errors"] = list(item["errors"]) + [
-                            f"Not loaded: the Cycle left Draft during the load. {reason}"]
+                        item["errors"] = list(item["errors"]) + [f"Not loaded: {why}{reason}"]
                     break
                 except Exception as e:
                     frappe.db.rollback()
