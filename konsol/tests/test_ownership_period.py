@@ -1508,3 +1508,38 @@ def test_resync_closure_calls_the_groups_resync_staging():
             else:
                 sys.modules[n] = old
     assert ran == ["resync"]
+
+
+# --- an exit needs a declared account (konsolidat#335, K2) -------------------
+
+def _exit_doc(account, exists=False, **changes):
+    """A period validated against a root whose exit account is ``account``;
+    ``exists`` answers "is a submitted successor superseding it"."""
+    module = _load(_no_flags())
+    module.frappe.db.get_value = lambda *a, **k: account
+    module.frappe.db.exists = lambda *a, **k: exists
+    module.node_root = lambda node: "ZZROOT"
+    doc = _doc(module, end_date="2025-06-30", **changes)
+    doc._node = lambda: types.SimpleNamespace(name="CG-ZZG-ZZ01")
+    return doc
+
+
+def test_an_end_date_without_a_declared_exit_account_is_refused_naming_field_and_root():
+    with pytest.raises(_Refused) as e:
+        _exit_doc("")._validate_exit_account()
+    assert "Exit Gain/Loss Account" in str(e.value) and "ZZROOT" in str(e.value)
+    with pytest.raises(_Refused):
+        _exit_doc(None, consolidation_method="equity")._validate_exit_account()
+    with pytest.raises(_Refused):
+        _exit_doc(None, consolidation_method="proportional")._validate_exit_account()
+
+
+def test_a_declared_exit_account_open_ended_disposal_or_successor_passes():
+    _exit_doc("7900")._validate_exit_account()
+    _exit_doc("", end_date=None)._validate_exit_account()
+    _exit_doc("", is_disposal=1)._validate_exit_account()
+    _exit_doc("", exists=True)._validate_exit_account()
+
+
+def test_validate_calls_the_exit_account_rule():
+    assert "_validate_exit_account()" in _method_body(_src(), "validate")
