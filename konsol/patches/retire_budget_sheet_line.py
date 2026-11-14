@@ -7,9 +7,10 @@ DocType record, but it leaves the tables, the Custom Fields (Budget Line's
 in_budget dimension columns) and any Property Setter behind, so this patch
 removes them all:
 
-1. Rows still in either table are named in the migrate log, then dropped.
-   There is no refusal: Budget Entry is a fresh intake, not a migration of
-   Sheet rows, and the stack had no customers when this landed.
+1. Rows still in either table refuse the migrate, naming both counts, and
+   nothing is dropped: a drop cannot be undone. The operator exports or
+   deletes the rows (Budget Entry is a fresh intake, not a migration of Sheet
+   rows), then migrates again. Every known site held 0 rows on 14 Nov 2026.
 2. The Custom Fields and Property Setters on both doctypes are deleted.
 3. The DocType records are deleted, parent before its child table.
 4. Both tables are dropped.
@@ -24,16 +25,20 @@ import frappe
 DOCTYPES = ("Budget Sheet", "Budget Line")
 
 
+class SheetRowsRemain(Exception):
+    """Budget Sheet or Budget Line still holds rows: the retirement would drop them."""
+
+
 def execute():
-    for doctype in DOCTYPES:
-        if not frappe.db.table_exists(doctype):
-            continue
-        rows = frappe.db.count(doctype)
-        if rows:
-            message = (f"konsol#348 S2-C Z1: dropping {rows} {doctype} row(s); "
-                       "Budget Entry replaces it")
-            print(message)
-            frappe.logger().warning(message)
+    remaining = [(frappe.db.count(doctype), doctype) for doctype in DOCTYPES
+                 if frappe.db.table_exists(doctype)]
+    remaining = [(rows, doctype) for rows, doctype in remaining if rows]
+    if remaining:
+        counts = ", ".join(f"{rows} {doctype}" for rows, doctype in remaining)
+        raise SheetRowsRemain(
+            f"konsol#348 S2-C: {counts} row(s) remain. Budget Sheet and Budget Line are retired "
+            "and this patch drops their tables, which cannot be undone. Export or delete the rows "
+            "(budgets are now entered as Budget Entries), then run migrate again.")
 
     frappe.db.delete("Custom Field", {"dt": ("in", DOCTYPES)})
     frappe.db.delete("Property Setter", {"doc_type": ("in", DOCTYPES)})
