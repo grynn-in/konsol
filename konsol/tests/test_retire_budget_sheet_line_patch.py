@@ -5,8 +5,8 @@ The doctype code is deleted, but Frappe never drops a table or the Custom
 Fields of a doctype that leaves the app, so this patch does: it deletes the
 Custom Fields and Property Setters on both doctypes, the two DocType records,
 and drops both tables. Every step is guarded, so a rerun, or a site where
-they never existed, is a no-op. Rows still present are named in the migrate
-log before they are dropped.
+they never existed, is a no-op. Rows still present refuse the migrate,
+naming both counts, and nothing is dropped.
 
 A stub frappe records every call over an in-memory site.
 """
@@ -137,15 +137,19 @@ def test_deletes_their_custom_fields_and_property_setters_only():
     assert site.property_setters == [{"doc_type": "Scenario"}]
 
 
-def test_rows_still_present_are_named_before_the_drop():
+def test_rows_still_present_refuse_the_migrate_and_nothing_is_dropped():
+    """Dropping rows cannot be undone, so the patch refuses instead (14 Nov
+    2026, coordinator): the operator exports or deletes them, then migrates
+    again. Both counts are named."""
+    import pytest
+
     site = _Site(rows={"Budget Sheet": 3, "Budget Line": 41})
-    _run(site)
-    warnings = [c[1] for c in site.calls if c[0] == "log.warning"]
-    assert any("3" in w and "Budget Sheet" in w for w in warnings), warnings
-    assert any("41" in w and "Budget Line" in w for w in warnings), warnings
-    first_drop = next(i for i, c in enumerate(site.calls) if c[0] == "sql_ddl")
-    last_warning = max(i for i, c in enumerate(site.calls) if c[0] == "log.warning")
-    assert last_warning < first_drop
+    with pytest.raises(Exception) as caught:
+        _run(site)
+    text = str(caught.value)
+    assert "3 Budget Sheet" in text and "41 Budget Line" in text, text
+    assert not [c for c in site.calls if c[0] in ("sql_ddl", "db.delete", "delete_doc")]
+    assert set(site.tables) == set(DOCTYPES)
 
 
 def test_empty_tables_log_no_warning():
@@ -155,7 +159,7 @@ def test_empty_tables_log_no_warning():
 
 
 def test_a_second_run_is_a_no_op():
-    site = _Site(rows={"Budget Line": 2})
+    site = _Site()
     _run(site)
     site.calls.clear()
     _run(site)
