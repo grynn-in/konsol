@@ -102,7 +102,7 @@ def _perms():
 def test_permissions_per_the_part_2_table():
     assert _perms() == {
         "System Manager": "rwcdsxa",
-        "EPM Admin": "rwsx",
+        "EPM Admin": "rwsxa",   # Q22 (#524): the role that submits and cancels also amends
         "EPM Analyst": "rwc",
         "Entity Accountant": "r",
         "EPM User": "r",

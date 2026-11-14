@@ -18,7 +18,8 @@ What it does, in order:
 3. Runs budget_bulk_model.check_group on each group, then adds:
    - the Cycle: a (scenario, year) with no Budget Cycle is refused, naming the
      Cycle to create; nothing is created here (Q6-b). A Cycle that is not a
-     draft (docstatus 0) is refused. Pending Approval is V2's rule.
+     draft (docstatus 0) is refused, and so is a draft past its workflow's
+     first state, Pending Approval as installed (V2, Q17-b: cycle_workflow).
    - duplicate rows: the same account and dim_* values twice in one group
      (one entity, period and layer) is refused, naming both lines. T1 refuses
      the same on save; this names the file lines.
@@ -156,7 +157,8 @@ def plan(table, *, form_basis, name_lines, whole_slices):
             chart=facts["chart"], functional_currency=currency,
             minor_unit=facts["minor_units"].get(currency), form_basis=form_basis,
             from_file=name_lines)
-        cycle, cycle_problem = _cycle(facts["cycles"].get((key.scenario, key.fiscal_year), ()), key)
+        cycle, cycle_problem = _cycle(facts["cycles"].get((key.scenario, key.fiscal_year), ()), key,
+                                      facts["workflow"])
         item["cycle"] = cycle
         item["currency"] = currency or ""
         basis, _ = M.resolve_basis(M.group_basis(rows), form_basis)
@@ -471,6 +473,47 @@ def lock_cycles(scenario_id, fiscal_year, *, wait=True):
             for r in rows]
 
 
+#: The Budget Cycle field its workflow keeps the state in: lock_cycles and
+#: Budget Entry's assert_cycle_draft read this column.
+CYCLE_STATE_FIELD = "workflow_state"
+
+
+def cycle_workflow():
+    """The active Workflow for Budget Cycle as installed, read for V2 (Q6-b,
+    Q17-b): budget_bulk_model.cycle_workflow's {first_state, returns}, or None
+    when no workflow is active (then every draft Cycle takes writes).
+
+    The first state is the installed workflow's first, never a name written
+    here: a site may rename the states (decision 12 Sep 2026, point 3). A
+    workflow that keeps its state in another field is refused by name: the
+    budget writers read workflow_state, which would then stay blank, and a
+    blank state is the first state, so a Pending Cycle would take writes."""
+    name = frappe.db.get_value("Workflow", {"document_type": "Budget Cycle", "is_active": 1}, "name")
+    if not name:
+        return None
+    workflow = frappe.get_cached_doc("Workflow", name)
+    field = workflow.workflow_state_field
+    if field != CYCLE_STATE_FIELD:
+        frappe.throw(f"Workflow {name} keeps the Budget Cycle state in {field}, but the budget writers read "
+                     f"{CYCLE_STATE_FIELD}. Set its Workflow State Field to {CYCLE_STATE_FIELD}.",
+                     frappe.ValidationError)
+    return M.cycle_workflow([s.state for s in workflow.states or ()],
+                            [(t.state, t.action, t.next_state) for t in workflow.transitions or ()])
+
+
+def workflow_for(cycles):
+    """cycle_workflow() when one of `cycles` ({docstatus, workflow_state}) needs
+    it to be judged: a draft with a state. Otherwise None, with no read: a
+    blank state is the first state, and docstatus 1 or 2 is judged without it."""
+    if any(int(c["docstatus"]) == 0 and c.get("workflow_state") for c in cycles):
+        return cycle_workflow()
+    return None
+
+
+def _cycle_row(c):
+    return {"name": c.name, "docstatus": int(c.docstatus or 0), "workflow_state": c.get("workflow_state") or ""}
+
+
 def _dim_fields(doctype):
     """The budget dimension fields `doctype` carries (Data dim_* fields, off
     the meta, as its controller reads them)."""
@@ -587,9 +630,10 @@ def _facts(groups):
     cycles = {}
     for c in frappe.get_all("Budget Cycle",
                             filters={"scenario_id": ["in", scenarios], "fiscal_year": ["in", years]},
-                            fields=["name", "scenario_id", "fiscal_year", "docstatus"],
+                            fields=["name", "scenario_id", "fiscal_year", "docstatus", "workflow_state"],
                             order_by="creation asc, name asc", limit_page_length=0):
         cycles.setdefault((c.scenario_id, int(c.fiscal_year)), []).append(c)
+    workflow = workflow_for([_cycle_row(c) for found in cycles.values() for c in found])
     return {
         "chart": chart_accounts(),
         "periods": {(k.fiscal_year, k.fiscal_period): _period(k.fiscal_year, k.fiscal_period) for k in keys},
@@ -603,6 +647,7 @@ def _facts(groups):
             "Scenario", fields=["name", "scenario_type", "is_active"],
             order_by="name asc", limit_page_length=0)},
         "cycles": cycles,
+        "workflow": workflow,
         "annual": _annual_inputs(scenarios, years, entities),
     }
 
@@ -657,12 +702,13 @@ def _period(year, period):
         return None
 
 
-def _cycle(found, key):
+def _cycle(found, key, workflow):
     """(cycle name or None, problem or None) for one (scenario, year). A draft
-    is taken when there is one; otherwise the latest is named and refused."""
+    is taken when there is one, and refused while it is past its workflow's
+    first state (V2); otherwise the latest is named and refused."""
     drafts = [c for c in found if int(c.docstatus) == 0]
     if drafts:
-        return drafts[0].name, None
+        return drafts[0].name, M.cycle_pending_refusal(_cycle_row(drafts[0]), workflow)
     if not found:
         return None, (f"No Budget Cycle for scenario {key.scenario}, fiscal year {key.fiscal_year}. "
                       f"Create the Budget Cycle for {key.scenario} {key.fiscal_year} first: a budget "

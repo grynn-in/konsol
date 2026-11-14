@@ -115,7 +115,7 @@ MATRIX = {
                      "Budget Manager": "rw", "Budget Approver": "rw"},
     # konsol#348 S2-C W2a (BUD-9-3): the Analyst drafts and sends, the Close
     # Lead approves (submits) and cancels; no Budget* role row remains
-    "Budget Cycle": {"EPM Admin": "rwsx", "EPM Analyst": "rwc", "Entity Accountant": "r", "EPM User": "r",
+    "Budget Cycle": {"EPM Admin": "rwsxa", "EPM Analyst": "rwc", "Entity Accountant": "r", "EPM User": "r",
                      "Budget Manager": "", "Budget Submitter": "", "Budget Controller": "",
                      "Budget Approver": ""},
     "Entity": {"EPM Admin": "rwc", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r",

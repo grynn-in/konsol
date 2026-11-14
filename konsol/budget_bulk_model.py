@@ -263,15 +263,55 @@ def _basis_problems(rows, form_basis, from_file):
     return []
 
 
-def cycle_closed_to_writes(cycle):
-    """Whether a Cycle, as konsol.budget_intake.lock_cycles returns it ({name, docstatus,
-    workflow_state}), refuses budget writes.
+def cycle_workflow(states, transitions):
+    """The Budget Cycle workflow as V2 reads it (Q17-b), or None when it has no
+    state: ``{"first_state", "returns"}``.
 
-    Today: an approved Cycle (docstatus 1). A cancelled Cycle does not (19-b:
-    under an amended pair it is the audit trail), and a draft accepts writes.
-    The seam for V2 (Q6-b, Q17-b): a draft Cycle outside the installed
-    workflow's first state (Pending Approval) refuses too. V2 decides that
-    here, from ``workflow_state``, which the lock has already read; every
-    writer that asks this gets the rule at once. Never read a lock status
-    field: the Cycle has none since S2-C W2a."""
-    return int(cycle["docstatus"]) == 1
+    `states` are the installed workflow's state names in their order;
+    `transitions` are (state, action, next_state). The first state is the
+    first in that order: Frappe sets a blank state to it, an amendment starts
+    in it and a Reject returns to it. ``returns`` maps each state to the first
+    action that leads back to the first state. Never a state name written
+    here: a site may rename the installed states (12 Sep 2026, point 3)."""
+    states = [s for s in states or () if s]
+    if not states:
+        return None
+    first = states[0]
+    returns = {}
+    for state, action, next_state in transitions or ():
+        if next_state == first and state != first and action:
+            returns.setdefault(state, action)
+    return {"first_state": first, "returns": returns}
+
+
+def cycle_pending_refusal(cycle, workflow):
+    """The sentence that refuses a budget write under a draft Cycle past its
+    workflow's first state (Pending Approval in the installed workflow), or
+    None. `cycle` is {name, docstatus, workflow_state}; `workflow` is
+    cycle_workflow's dict, or None when no workflow is active: then every
+    draft Cycle takes writes. A blank state is the first state, as Frappe
+    reads it. Only docstatus 0 is judged here: approved and cancelled are each
+    writer's own docstatus rule."""
+    if workflow is None or int(cycle["docstatus"]) != 0:
+        return None
+    first = workflow["first_state"]
+    state = cycle.get("workflow_state") or first
+    if state == first:
+        return None
+    action = workflow["returns"].get(state)
+    way_back = (f"A {action} returns it to {first}." if action
+                else f"Return it to {first} to write the budget.")
+    return (f"Budget Cycle {cycle['name']} is {state}: a budget is written only while its Cycle is in "
+            f"{first}. {way_back}")
+
+
+def cycle_closed_to_writes(cycle, workflow):
+    """Whether a Cycle, as konsol.budget_intake.lock_cycles returns it ({name, docstatus,
+    workflow_state}), refuses budget writes, under `workflow` (cycle_workflow's
+    dict, or None with no active workflow).
+
+    An approved Cycle (docstatus 1) refuses, and so does a draft past the
+    workflow's first state (V2, Q6-b, Q17-b: cycle_pending_refusal). A
+    cancelled Cycle does not (19-b: under an amended pair it is the audit
+    trail). Never read a lock status field: the Cycle has none since S2-C W2a."""
+    return int(cycle["docstatus"]) == 1 or cycle_pending_refusal(cycle, workflow) is not None

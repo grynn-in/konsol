@@ -187,7 +187,8 @@ class _Row(types.SimpleNamespace):
 
 @pytest.fixture
 def env(monkeypatch):
-    cycles = {"BCYC-1": {"scenario_id": "budget", "fiscal_year": 2027, "docstatus": 0}}
+    cycles = {"BCYC-1": {"scenario_id": "budget", "fiscal_year": 2027, "docstatus": 0,
+                         "workflow_state": "Draft"}}
     entries = {}  # name -> key dict
     dims = ["dim_cost_center", "dim_project"]
 
@@ -226,7 +227,7 @@ def env(monkeypatch):
             raise AssertionError("waited on a Cycle lock while holding the entry's")
         locks.append(("cycle", values[0]))
         row = cycles.get(values[0])
-        return [(row["docstatus"],)] if row else []
+        return [(row["docstatus"], row.get("workflow_state"))] if row else []
 
     class _Flags(dict):
         def __getattr__(self, key):
@@ -281,6 +282,14 @@ def env(monkeypatch):
         return {}, []
     intake.judge_one = judge_one
     intake.refuse = None
+    # V2: the active Budget Cycle workflow as budget_intake.cycle_workflow reads
+    # it (the real model builds it; None: no active workflow).
+    from konsol import budget_bulk_model
+    intake.workflow = budget_bulk_model.cycle_workflow(
+        ["Draft", "Pending Approval", "Approved", "Cancelled"],
+        [("Draft", "Send for Approval", "Pending Approval"), ("Pending Approval", "Reject", "Draft"),
+         ("Pending Approval", "Approve", "Approved")])
+    intake.cycle_workflow = lambda: intake.workflow
     removed = []
 
     def assert_may_remove(entity, layer, rows):
@@ -468,7 +477,7 @@ def test_an_entry_under_a_cycle_that_is_not_a_draft_is_refused(env, docstatus, w
 def test_validate_reads_the_cycle_with_a_locking_read(env):
     _entry(env).validate()
     assert env.sql and env.sql[0] == (
-        "SELECT docstatus FROM `tabBudget Cycle` WHERE name=%s FOR UPDATE", ("BCYC-1",))
+        "SELECT docstatus, workflow_state FROM `tabBudget Cycle` WHERE name=%s FOR UPDATE", ("BCYC-1",))
 
 
 def test_an_entry_under_an_approved_cycle_cannot_be_deleted(env):
@@ -746,3 +755,39 @@ def test_the_flag_is_put_back_when_the_write_raises(env):
         with env.ctl.ytd_judged_at_end():
             raise RuntimeError("x")
     assert not env.frappe.flags.get("budget_entry_ytd_at_end")
+
+
+# ---- V2 (Q6-b, Q17-b): no write while the Cycle is past its first state -------------
+
+PENDING = ("Budget Cycle BCYC-1 is Pending Approval: a budget is written only while its Cycle is in "
+           "Draft. A Reject returns it to Draft.")
+
+
+def test_a_save_under_a_pending_cycle_is_refused_naming_its_state_and_the_reject(env):
+    env.cycles["BCYC-1"]["workflow_state"] = "Pending Approval"
+    doc = _entry(env, name="BENT-ME", lines=[dict(main_account="4000", debit=1, credit=0)])
+    for step in (doc.check_if_latest, doc.validate):
+        with pytest.raises(env.ctl.CycleNotDraftError) as raised:
+            step()
+        assert str(raised.value) == PENDING
+    assert ("entry", "BENT-ME") not in env.locks
+
+
+def test_a_delete_under_a_pending_cycle_is_refused(env):
+    env.cycles["BCYC-1"]["workflow_state"] = "Pending Approval"
+    with pytest.raises(env.ctl.CycleNotDraftError, match="Pending Approval"):
+        _entry(env, name="BENT-ME").on_trash()
+
+
+def test_assert_cycle_draft_refuses_a_pending_cycle_for_every_writer(env):
+    # The cell save, save, save_batch and the bulk load call it directly.
+    env.cycles["BCYC-1"]["workflow_state"] = "Pending Approval"
+    with pytest.raises(env.ctl.CycleNotDraftError, match="A Reject returns it to Draft"):
+        env.ctl.assert_cycle_draft("BCYC-1")
+
+
+def test_with_no_active_workflow_a_draft_cycle_in_any_state_takes_the_save(env):
+    env.intake.workflow = None
+    env.cycles["BCYC-1"]["workflow_state"] = "Pending Approval"
+    _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)]).validate()
+    _entry(env, name="BENT-ME").on_trash()

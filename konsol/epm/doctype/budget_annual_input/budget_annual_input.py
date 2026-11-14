@@ -119,7 +119,7 @@ class BudgetAnnualInput(Document):
         self._validate_main_account_published()
         self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
-        self._guard_cycle_locked(cycles)
+        self._guard_cycle_writable(cycles)
         self._validate_unique_grain()
         self._refuse_second_writer()
 
@@ -131,7 +131,7 @@ class BudgetAnnualInput(Document):
 
     def _lock_cycles(self):
         """Lock the Budget Cycle rows of (scenario, year) (Q16-c) and return
-        them as the lock read them ({name, docstatus, status}): a Budget Entry
+        them as the lock read them ({name, docstatus, workflow_state}): a Budget Entry
         writer holds the same lock while it checks this doctype, so the two
         one-writer checks cannot both pass, and two Annual Inputs on one grain
         run _validate_unique_grain one after the other. validate takes it
@@ -164,7 +164,7 @@ class BudgetAnnualInput(Document):
         budget_intake.assert_no_entry_lines(self._intake_row(), name=self.name)
 
     def before_cancel(self):
-        self._guard_cycle_locked(self._lock_cycles())
+        self._guard_cycle_writable(self._lock_cycles())
 
     def on_trash(self):
         """The lock has to hold on DELETE too, not just on edit.
@@ -190,7 +190,7 @@ class BudgetAnnualInput(Document):
 
             budget_intake.assert_annual_access(self._intake_row())
             if self.scenario_id and self.fiscal_year:
-                self._guard_cycle_locked(
+                self._guard_cycle_writable(
                     budget_intake.lock_cycles(self.scenario_id, self.fiscal_year, wait=False))
 
     def _validate_main_account_published(self):
@@ -272,35 +272,38 @@ class BudgetAnnualInput(Document):
         if not self.submitted_by:
             self.submitted_by = frappe.session.user
 
-    def _guard_cycle_locked(self, cycles):
-        """A locked Budget Cycle closes BOTH input paths, not just one.
+    def _guard_cycle_writable(self, cycles):
+        """An annual figure is edited, cancelled or deleted only while its
+        Cycle takes budget writes (W4, the V2 rule): refused under an approved
+        Cycle, and under a draft past its workflow's first state (Pending
+        Approval as installed), naming the Cycle and its state.
 
-        Budget Sheet — the bottom-up path — links a cycle, checks
-        `_guard_cycle_locked`, and only reaches ClickHouse when the cycle locks.
-        This is the top-down path into the SAME model (gold_spread_budget), so
-        an ungated write here would be a hole straight through the budget lock:
-        lock the cycle, then keep editing the annual figures.
-
-        The cycle is derived rather than linked — Budget Cycle is keyed on
-        (scenario_id, fiscal_year) and so is this — so no field is duplicated.
+        This is the top-down path into the same model (gold_spread_budget) as
+        the Budget Entries, so an ungated write here would be a way past the
+        Cycle's approval. The Cycle is derived rather than linked: Budget
+        Cycle is keyed on (scenario_id, fiscal_year), and so is this row.
         `cycles` are the pair's Cycles as budget_intake.lock_cycles read them,
-        under the lock: a Cycle approved (docstatus 1) while this write waited
-        is seen, which a plain read of the snapshot would miss. Which Cycle
-        refuses is budget_bulk_model.cycle_closed_to_writes (W2a; V2 adds Pending
-        Approval there, W4 rewrites this guard).
-        Skipped during install/migrate only: a Data Import is a user's write and meets the lock. Fixtures and patches load against
-        whatever state the site is in.
+        under the lock: a Cycle approved or sent for approval while this write
+        waited is seen, which a plain read of the snapshot would miss. Which
+        Cycle refuses is budget_bulk_model.cycle_closed_to_writes; a cancelled
+        Cycle does not (19-b: beside its amendment it is the audit trail).
+        Skipped during install/migrate only: a Data Import is a user's write
+        and meets the rule. Fixtures and patches load against whatever state
+        the site is in.
         """
         if frappe.flags.in_install or frappe.flags.in_migrate:
             return
-        from konsol.budget_bulk_model import cycle_closed_to_writes
+        from konsol import budget_intake
+        from konsol.budget_bulk_model import cycle_closed_to_writes, cycle_pending_refusal
 
-        locked = next((c["name"] for c in cycles or () if cycle_closed_to_writes(c)), None)
-        if locked:
-            frappe.throw(
-                f"Budget Cycle {locked} is locked for {self.scenario_id} "
-                f"{self.fiscal_year}. Reopen it before changing annual input."
-            )
+        workflow = budget_intake.workflow_for(cycles or ())
+        for cycle in cycles or ():
+            if not cycle_closed_to_writes(cycle, workflow):
+                continue
+            frappe.throw(cycle_pending_refusal(cycle, workflow) or (
+                f"Budget Cycle {cycle['name']} ({self.scenario_id} {self.fiscal_year}) is approved: annual "
+                "figures change only while the Cycle is a draft in its workflow's first state. Cancel the "
+                "Cycle and amend it to change them."))
 
     def on_update(self):
         queue_sync()

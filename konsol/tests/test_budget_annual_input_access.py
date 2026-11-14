@@ -93,9 +93,21 @@ def ctl(monkeypatch):
         # serves the snapshot and misses what another writer committed.
         raise AssertionError(f"plain read of {a[:1]}: a writer check reads with a locking read")
 
+    # V2: the active Budget Cycle workflow, as installed (None: no active workflow).
+    workflow = types.SimpleNamespace(doc=types.SimpleNamespace(
+        name="Budget Cycle Workflow", workflow_state_field="workflow_state",
+        states=[types.SimpleNamespace(state=s) for s in ("Draft", "Pending Approval", "Approved", "Cancelled")],
+        transitions=[types.SimpleNamespace(state="Pending Approval", action="Reject", next_state="Draft")]))
+
+    def get_value(dt, name, field, *a, **k):
+        if dt == "Workflow":
+            return workflow.doc.name if workflow.doc else None
+        return statuses.get(name, "Published")
+
+    frappe.get_cached_doc = lambda dt, name: workflow.doc
     frappe.db = types.SimpleNamespace(
         exists=plain_read,
-        get_value=lambda dt, name, field, *a, **k: statuses.get(name, "Published"),
+        get_value=get_value,
         get_values=get_values)
     frappe.throw = throw
     frappe.ValidationError = Exception
@@ -167,7 +179,7 @@ def ctl(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return types.SimpleNamespace(mod=mod, frappe=frappe, calls=calls, statuses=statuses, locks=locks,
-                                 locked=locked, held=held, waits=waits)
+                                 locked=locked, held=held, waits=waits, workflow=workflow)
 
 
 def _row(ctl, entity, **over):
@@ -345,7 +357,7 @@ def test_a_cycle_approved_while_the_save_waited_is_refused(ctl):
     Cycle approved while this save waited on it is seen. Approved is
     docstatus 1: the Cycle has no lock status since S2-C W2a."""
     ctl.locked["Budget Cycle"][0].update(docstatus=1, workflow_state="Approved")
-    with pytest.raises(Exception, match="BC-ZZS-2026 is locked"):
+    with pytest.raises(Exception, match=r"BC-ZZS-2026 \(ZZS 2026\) is approved"):
         _row(ctl, "ZZE1").validate()
 
 
@@ -394,7 +406,7 @@ def test_a_delete_takes_the_cycle_lock_nowait(ctl):
 
 def test_a_delete_under_an_approved_cycle_is_refused(ctl):
     ctl.locked["Budget Cycle"][0].update(docstatus=1, workflow_state="Approved")
-    with pytest.raises(Exception, match="BC-ZZS-2026 is locked"):
+    with pytest.raises(Exception, match=r"BC-ZZS-2026 \(ZZS 2026\) is approved"):
         _row(ctl, "ZZE1").on_trash()
 
 
@@ -415,3 +427,54 @@ def test_a_delete_with_no_cycle_passes(ctl):
 def test_a_save_still_waits_for_the_cycle(ctl):
     _row(ctl, "ZZE1").validate()
     assert ctl.waits and all(ctl.waits)
+
+
+# ---- V2 (Q6-b, Q17-b): no annual write while the Cycle is Pending Approval ----------
+
+def test_a_save_under_a_pending_cycle_is_refused_naming_its_state_and_the_reject(ctl):
+    ctl.locked["Budget Cycle"][0].update(workflow_state="Pending Approval")
+    with pytest.raises(Exception) as raised:
+        _row(ctl, "ZZE1").validate()
+    assert "Budget Cycle BC-ZZS-2026 is Pending Approval" in str(raised.value), raised.value
+    assert "A Reject returns it to Draft" in str(raised.value), raised.value
+
+
+def test_a_delete_under_a_pending_cycle_is_refused(ctl):
+    ctl.locked["Budget Cycle"][0].update(workflow_state="Pending Approval")
+    with pytest.raises(Exception, match="BC-ZZS-2026 is Pending Approval"):
+        _row(ctl, "ZZE1").on_trash()
+
+
+def test_with_no_active_workflow_a_draft_cycle_in_any_state_takes_annual_input(ctl):
+    ctl.workflow.doc = None
+    ctl.locked["Budget Cycle"][0].update(workflow_state="Pending Approval")
+    _row(ctl, "ZZE1").validate()
+    _row(ctl, "ZZE1").on_trash()
+
+
+# ---- W4: an Annual Input edit, cancel or delete only while the Cycle is writable ----
+
+APPROVED = ("Budget Cycle BC-ZZS-2026 (ZZS 2026) is approved: annual figures change only while the "
+            "Cycle is a draft in its workflow's first state. Cancel the Cycle and amend it to change them.")
+
+
+@pytest.mark.parametrize("step", ["validate", "before_cancel", "on_trash"])
+def test_an_edit_cancel_or_delete_under_an_approved_cycle_is_refused_naming_it(ctl, step):
+    ctl.locked["Budget Cycle"][0].update(docstatus=1, workflow_state="Approved")
+    with pytest.raises(Exception) as raised:
+        getattr(_row(ctl, "ZZE1"), step)()
+    assert str(raised.value) == APPROVED
+    assert "Reopen" not in str(raised.value) and "locked" not in str(raised.value)
+
+
+def test_a_cancel_under_a_pending_cycle_is_refused_naming_its_state_and_the_reject(ctl):
+    ctl.locked["Budget Cycle"][0].update(workflow_state="Pending Approval")
+    with pytest.raises(Exception) as raised:
+        _row(ctl, "ZZE1").before_cancel()
+    assert str(raised.value) == ("Budget Cycle BC-ZZS-2026 is Pending Approval: a budget is written only "
+                                 "while its Cycle is in Draft. A Reject returns it to Draft.")
+
+
+@pytest.mark.parametrize("step", ["validate", "before_cancel", "on_trash"])
+def test_an_edit_cancel_or_delete_under_a_first_state_cycle_is_accepted(ctl, step):
+    getattr(_row(ctl, "ZZE1"), step)()
