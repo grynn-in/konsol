@@ -35,6 +35,10 @@ RUN_FIELDS = [
     ("values_carried_forward", "Check", 0, 1),
     ("computed_at", "Datetime", 0, 1),
     ("computed_by", "Link", 0, 1),
+    ("computed_for_rule_set", "Data", 0, 1),
+    ("computed_for_scenario", "Data", 0, 1),
+    ("computed_for_fiscal_year", "Int", 0, 1),
+    ("computed_for_fiscal_period", "Int", 0, 1),
     ("weights", "Table", 0, 1),
     ("accounts", "Table", 0, 1),
 ]
@@ -261,6 +265,7 @@ class _Run:
         self.fiscal_year = fiscal_year
         self.fiscal_period = fiscal_period
         self.entity = None
+        self.status = "Draft"
         self.weights = [_Row(step=99)]   # a stale row that must be replaced
         self.accounts = [_Row(main_account="OLD")]
         self.saved = 0
@@ -500,9 +505,15 @@ class _World:
                          "applies_to_all_scenarios": 0}
         self.rs_scenarios = ["ZZ Actual", "ZZ Budget"]
         self.other_rows = []
+        self.stat_rows = [
+            {"statistic": "CAS-00001", "docstatus": 1, "fiscal_period": 3, "member": "HR", "value": 10},
+            {"statistic": "CAS-00001", "docstatus": 1, "fiscal_period": 3, "member": "P1", "value": 20},
+        ]
         self.sql = []
         self.open_calls = []
         self.closed = set()
+        self.declared_calls = []
+        self.undeclared = set()
         self.syncs = []
         self.once = []
         self.sync_table_calls = []
@@ -523,17 +534,36 @@ def _k8(world):
                 return row[fields] if row is not None else None
             return _Row(row)
         if doctype == "Cost Allocation Rule Set":
-            return _Row(world.rule_set)
+            return _Row(world.rule_set) if name == "ZZ Rules" else None
         raise AssertionError(doctype)
 
     def get_all(doctype, filters=None, fields=None, pluck=None, **k):
         if doctype == "Cost Allocation Rule Set Scenario":
-            return list(world.rs_scenarios)
+            # as the database would: only the named rule set's scenario rows
+            return list(world.rs_scenarios) if (filters or {}).get("parent") == "ZZ Rules" else []
         return [_Row(r) for r in world.get_all_data.get(doctype, [])]
 
     def sql(query, values=None, as_dict=False, **k):
         world.sql.append((query, values))
-        return [_Row(r) for r in world.other_rows]
+        if "`tabCost Allocation Statistic Value`" in query:
+            # the statistic re-read: only the cited statistics, as the IN clause says
+            assert "IN %(statistics)s" in query
+            return [_Row(r) for r in world.stat_rows if r["statistic"] in values["statistics"]]
+        # the shared-sender read: each predicate filters only if the SQL has it
+        out = []
+        for r in world.other_rows:
+            ok = True
+            for key, col in (("entity", "r.entity"), ("scenario", "r.scenario"),
+                             ("fiscal_year", "r.fiscal_year"), ("fiscal_period", "r.fiscal_period")):
+                if f"{col} = %({key})s" in query and r.get(key, values[key]) != values[key]:
+                    ok = False
+            if "r.docstatus = 1" in query and r.get("docstatus", 1) != 1:
+                ok = False
+            if "r.name != %(name)s" in query and r["name"] == values["name"]:
+                ok = False
+            if ok:
+                out.append(_Row(r))
+        return out
 
     fr.throw = throw
     fr.whitelist = lambda *a, **k: (lambda fn: fn)
@@ -548,7 +578,13 @@ def _k8(world):
         if (year, period) in world.closed:
             raise _Refusal(f"period {period} of FY{year} is closed")
 
+    def assert_declared(year, period):
+        world.declared_calls.append((year, period))
+        if (year, period) in world.undeclared:
+            raise _Refusal(f"period {period} of FY{year} is not declared")
+
     ps.assert_open = assert_open
+    ps.assert_declared = assert_declared
     module.period_status = ps
     ch = types.SimpleNamespace()
     ch.sync_doctype_after_commit = lambda *a, **k: world.syncs.append(a)
@@ -562,13 +598,18 @@ def _k8(world):
 def _k8_run(module, scenario="ZZ Actual", **over):
     cls = module.CostAllocationRun
     doc = cls.__new__(cls)
-    weights = [_Row(step=1, sender_member="IT", receiver_member="HR"),
-               _Row(step=1, sender_member="IT", receiver_member="P1"),
-               _Row(step=2, sender_member="HR", receiver_member="P1")]
+    weights = [_Row(step=1, sender_member="IT", receiver_member="HR", driver="ZZ Head",
+                    statistic="CAS-00001", value_period=3, driver_value=10),
+               _Row(step=1, sender_member="IT", receiver_member="P1", driver="ZZ Head",
+                    statistic="CAS-00001", value_period=3, driver_value=20),
+               _Row(step=2, sender_member="HR", receiver_member="P1", driver="ZZ Head",
+                    statistic="CAS-00001", value_period=3, driver_value=20)]
     base = dict(name="CAR-00001", doctype="Cost Allocation Run", docstatus=0,
                 rule_set="ZZ Rules", entity="ZZE", scenario=scenario, fiscal_year=2026,
                 fiscal_period=3, rule_set_modified=datetime(2026, 11, 12, 8, 0, 0),
-                weights=weights)
+                method="Step-Down", weights=weights,
+                computed_for_rule_set="ZZ Rules", computed_for_scenario=scenario,
+                computed_for_fiscal_year=2026, computed_for_fiscal_period=3)
     base.update(over)
     doc.__dict__.update(base)
     doc.get = lambda key, default=None: doc.__dict__.get(key, default)
@@ -660,7 +701,8 @@ def test_lifecycle_before_submit_allows_a_run_with_other_senders():
     w.other_rows = [{"name": "CAR-00009", "sender_member": "OPS"}]
     m = _k8(w)
     _k8_run(m).before_submit()
-    assert len(w.sql) == 1 and w.sql[0][0].rstrip().upper().endswith("FOR UPDATE")
+    sender_reads = [q for q, _v in w.sql if "`tabCost Allocation Run Weight`" in q]
+    assert len(sender_reads) == 1 and sender_reads[0].rstrip().upper().endswith("FOR UPDATE")
 
 
 def test_lifecycle_before_cancel_is_gated_on_actual_only():
@@ -948,3 +990,146 @@ def test_preview_button_is_on_the_draft_form_and_shows_a_table():
     assert "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.preview_sender_pools" in js
     assert "frappe.ui.Dialog" in js or "frappe.msgprint" in js
     assert "has_rows" in js
+
+
+# --- KF1 -------------------------------------------------------------------------
+
+def test_kf1_other_scope_runs_do_not_clash_and_the_filters_are_in_the_sql():
+    # finding 10: the stub applies the SQL's own predicates, so a dropped
+    # predicate lets these foreign-scope rows through and the test fails.
+    w = _World()
+    for key, other in (("scenario", "ZZ Budget"), ("fiscal_year", 2025), ("fiscal_period", 4),
+                       ("entity", "ZZOTHER")):
+        w.other_rows = [{"name": "CAR-00009", "sender_member": "HR", key: other}]
+        _k8_run(_k8(w), scenario="ZZ Actual").before_submit()
+    w.other_rows = [{"name": "CAR-00009", "sender_member": "HR", "docstatus": 2}]
+    _k8_run(_k8(w)).before_submit()
+
+
+def test_kf1_rule_set_scope_is_read_for_the_runs_own_rule_set():
+    w = _World()
+    w.rs_scenarios = ["ZZ Budget"]
+    assert "scope" in _refused(_k8_run(_k8(w), rule_set="ZZ Rules").before_submit)
+    # another rule set name finds nothing (get_value returns None): refused, not passed
+    assert _refused(_k8_run(_k8(w), rule_set="ZZ Other").before_submit)
+
+
+def test_kf1_doctype_weights_accounts_and_computed_fields_are_no_copy():
+    fields = _by_name(RUN)
+    for name in ("weights", "accounts", "computed_at", "computed_by", "rule_set_modified",
+                 "values_carried_forward", "computed_for_rule_set", "computed_for_scenario",
+                 "computed_for_fiscal_year", "computed_for_fiscal_period"):
+        assert fields[name].get("no_copy") == 1, f"{name} is copied by Duplicate and Amend"
+
+
+def test_kf1_compute_snapshots_what_the_weights_were_computed_for():
+    m = _run_module()
+    run = _Run(scenario="ZZ Budget", fiscal_year=2026, fiscal_period=3)
+    m.compute_weights_on(run)
+    assert (run.computed_for_rule_set, run.computed_for_scenario,
+            run.computed_for_fiscal_year, run.computed_for_fiscal_period) == (
+                "ZZ Rules", "ZZ Budget", 2026, 3)
+
+
+def test_kf1_before_submit_refuses_weights_computed_for_another_scope():
+    for field, other in (("rule_set", "ZZ Rules2"), ("scenario", "ZZ Budget"),
+                         ("fiscal_year", 2027), ("fiscal_period", 4)):
+        w = _World()
+        m = _k8(w)
+        run = _k8_run(m, scenario="ZZ Actual")
+        run.__dict__["computed_for_" + field] = other
+        msg = _refused(run.before_submit)
+        assert "recompute" in msg.lower() and field.replace("_", " ") in msg.lower(), (field, msg)
+
+
+def test_kf1_before_submit_refuses_a_run_never_computed_for_a_scope():
+    w = _World()
+    run = _k8_run(_k8(w), computed_for_rule_set=None, computed_for_fiscal_year=0)
+    assert "recompute" in _refused(run.before_submit).lower()
+
+
+def test_kf1_before_submit_refuses_a_cancelled_statistic_and_locks_the_rows():
+    w = _World()
+    w.stat_rows[0]["docstatus"] = 2
+    msg = _refused(_k8_run(_k8(w)).before_submit)
+    assert "CAS-00001" in msg and "HR" in msg
+    query, _values = next(x for x in w.sql if "`tabCost Allocation Statistic Value`" in x[0])
+    assert query.rstrip().upper().endswith("FOR UPDATE")
+
+
+def test_kf1_before_submit_refuses_a_statistic_value_that_changed():
+    w = _World()
+    w.stat_rows[1]["value"] = 25
+    msg = _refused(_k8_run(_k8(w)).before_submit)
+    assert "CAS-00001" in msg and "P1" in msg
+
+
+def test_kf1_before_submit_refuses_a_statistic_value_that_is_gone():
+    w = _World()
+    w.stat_rows = [r for r in w.stat_rows if r["member"] != "HR"]
+    msg = _refused(_k8_run(_k8(w)).before_submit)
+    assert "CAS-00001" in msg and "HR" in msg
+
+
+def test_kf1_before_submit_lists_every_stale_statistic_row():
+    w = _World()
+    w.stat_rows[0]["docstatus"] = 2
+    w.stat_rows[1]["value"] = 25
+    msg = _refused(_k8_run(_k8(w)).before_submit)
+    assert "HR" in msg and "P1" in msg
+
+
+def test_kf1_before_submit_passes_when_the_statistic_values_still_match():
+    w = _World()
+    w.stat_rows[0]["value"] = 10.0
+    _k8_run(_k8(w)).before_submit()
+
+
+def test_kf1_before_submit_declares_the_period_on_every_scenario():
+    for scenario in ("ZZ Actual", "ZZ Budget"):
+        w = _World()
+        _k8_run(_k8(w), scenario=scenario).before_submit()
+        assert w.declared_calls == [(2026, 3)], scenario
+    w = _World()
+    w.undeclared.add((2026, 13))
+    run = _k8_run(_k8(w), scenario="ZZ Budget", fiscal_period=13)
+    assert "not declared" in _refused(run.before_submit)
+
+
+def test_kf1_period_exception_wording_does_not_claim_a_decision():
+    with open(RUN_PY) as f:
+        text = f.read().lower()
+    assert "decision q4" not in text and "deepak" not in text
+
+
+def test_kf1_before_submit_refuses_a_run_whose_coefficients_cannot_be_built():
+    # finding 7: all driver values zero -> the coefficient build refuses; the
+    # submit must refuse, not queue a sync that fails for every run.
+    w = _World()
+    m = _k8(w)
+    run = _k8_run(m)
+    for row in run.weights:
+        row["driver_value"] = 0
+    w.stat_rows = [dict(r, value=0) for r in w.stat_rows]
+    msg = _refused(run.before_submit)
+    assert "zero" in msg.lower() and "CAR-00001" in msg
+
+
+def test_kf1_compute_requires_status_draft():
+    m = _run_module()
+    for status in ("Pending Approval", "Approved", "Cancelled"):
+        run = _Run()
+        run.status = status
+        try:
+            m.compute_weights_on(run)
+        except _Refused as exc:
+            assert "Draft" in str(exc)
+        else:
+            raise AssertionError("expected a refusal in " + status)
+        assert run.saved == 0
+
+
+def test_kf1_compute_button_only_in_draft_status():
+    with open(RUN_JS) as f:
+        js = f.read()
+    assert 'frm.doc.status === "Draft"' in js

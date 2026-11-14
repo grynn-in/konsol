@@ -125,8 +125,9 @@ def account_rows(declared, descendants_of):
 
 def compute_weights_on(run):
     """Compute and snapshot onto ``run`` (a draft). Returns a small summary."""
-    if run.docstatus != 0:
-        frappe.throw("Compute Weights works only on a draft run.")
+    if run.docstatus != 0 or run.status != "Draft":
+        frappe.throw("Compute Weights works only on a run in status Draft: an approver "
+                     "must not approve weights that changed after review.")
     rs = _load_rule_set(run.rule_set)
     if rs.status != "Active":
         frappe.throw(f"Rule set {run.rule_set} is {rs.status}; a run needs an Active rule set.")
@@ -158,6 +159,10 @@ def compute_weights_on(run):
     run.allocation_account = rs.allocation_account
     run.amounts_after_approval = rs.amounts_after_approval
     run.rule_set_modified = rs.modified
+    run.computed_for_rule_set = run.rule_set
+    run.computed_for_scenario = run.scenario
+    run.computed_for_fiscal_year = run.fiscal_year
+    run.computed_for_fiscal_period = run.fiscal_period
     run.computed_at = _now()
     run.computed_by = _user()
     run.values_carried_forward = 1 if carried else 0
@@ -272,13 +277,15 @@ class CostAllocationRun(Document):
     # -- gates ---------------------------------------------------------------
 
     def before_submit(self):
-        """Submit is the approval. Decision Q4 (13 Nov 2026, Deepak Pai): the
-        closed-period gate applies only to an actual scenario; a budget or
-        forecast run is not held to the close."""
+        """Submit is the approval. The period must be declared on every
+        scenario. The closed-period gate on submit applies to an actual
+        scenario only: that skip for budget and forecast runs is the build's
+        own extension and awaits a decision (konsol#269 review, finding 6)."""
         scenario = frappe.db.get_value("Scenario", self.scenario, ["scenario_type", "is_active"],
                                        as_dict=True)
         if not scenario or not scenario.is_active:
             frappe.throw(f"{_PREFIX}scenario {self.scenario} is not active.")
+        period_status.assert_declared(self.fiscal_year, self.fiscal_period)
         if scenario.scenario_type == "actual":
             period_status.assert_open(self.fiscal_year, self.fiscal_period,
                                       action=f"approve cost allocation run {self.name}")
@@ -294,6 +301,7 @@ class CostAllocationRun(Document):
             frappe.throw(
                 f"{_PREFIX}rule set {self.rule_set} changed after the weights were computed. "
                 "Recompute the weights, then submit.")
+        self._refuse_stale_snapshot()
         if not rs.applies_to_all_scenarios:
             in_scope = frappe.get_all(
                 "Cost Allocation Rule Set Scenario",
@@ -302,7 +310,58 @@ class CostAllocationRun(Document):
             if self.scenario not in in_scope:
                 frappe.throw(f"{_PREFIX}scenario {self.scenario} is not in the scope of "
                              f"rule set {self.rule_set}.")
+        self._refuse_stale_statistics(_rows(weights))
+        self._refuse_unbuildable_coefficients(_rows(weights))
         self._refuse_shared_senders({w.sender_member for w in weights})
+
+    def _refuse_stale_snapshot(self):
+        """The weights belong to the rule set, scenario, year and period they were
+        computed for. These fields stay editable after Compute."""
+        stale = [label for label, now, then in (
+            ("rule set", self.rule_set, self.get("computed_for_rule_set")),
+            ("scenario", self.scenario, self.get("computed_for_scenario")),
+            ("fiscal year", self.fiscal_year, self.get("computed_for_fiscal_year")),
+            ("fiscal period", self.fiscal_period, self.get("computed_for_fiscal_period")))
+            if now != then]
+        if stale:
+            frappe.throw(
+                f"{_PREFIX}the weights were computed for another {', '.join(stale)}. "
+                "Recompute the weights, then submit.")
+
+    def _refuse_stale_statistics(self, weights):
+        """Re-read every cited statistic value with FOR UPDATE: the statistic must
+        still be submitted and hold the value the weight was computed from."""
+        cited = sorted({w["statistic"] for w in weights if w.get("statistic")})
+        if not cited:
+            return
+        rows = frappe.db.sql(
+            "SELECT s.name AS statistic, s.docstatus AS docstatus, "
+            "v.fiscal_period AS fiscal_period, v.member AS member, v.value AS value "
+            "FROM `tabCost Allocation Statistic` s "
+            "JOIN `tabCost Allocation Statistic Value` v "
+            "ON v.parent = s.name AND v.parenttype = 'Cost Allocation Statistic' "
+            "WHERE s.name IN %(statistics)s FOR UPDATE",
+            {"statistics": tuple(cited)}, as_dict=True)
+        now = {(r["statistic"], int(r["fiscal_period"]), r["member"]): r for r in rows}
+        stale = []
+        for w in weights:
+            key = (w.get("statistic"), int(w.get("value_period") or 0), w["receiver_member"])
+            row = now.get(key)
+            if (row is None or row["docstatus"] != 1
+                    or _nine(row["value"]) != _nine(w["driver_value"])):
+                stale.append(f"{key[0]} (period {key[1]}, {key[2]})")
+        if stale:
+            frappe.throw(
+                f"{_PREFIX}statistic values changed or were cancelled after the weights "
+                "were computed: " + ", ".join(sorted(set(stale))) + ". Recompute the weights.")
+
+    def _refuse_unbuildable_coefficients(self, weights):
+        """Build the coefficient rows now, so an invalid run is refused at submit
+        and cannot stop the coefficients sync for every other run."""
+        try:
+            _coefficient_rows(self.name, self.method, weights)
+        except model.CostAllocationError as exc:
+            frappe.throw(f"{_PREFIX}{self.name}: " + "<br>".join(exc.errors))
 
     def _refuse_shared_senders(self, senders):
         """A sender's pool is relieved once per entity, scenario and period.
@@ -393,6 +452,11 @@ class CostAllocationRun(Document):
         return clickhouse.sync_table(
             cls.CH_STAGING_TABLE, columns, [[r[c] for c in columns] for r in rows],
             source_max_modified=source_max_modified, force=force)
+
+
+def _nine(value):
+    """A driver value at the 9 places both the statistic and the weight store."""
+    return Decimal(str(value or 0)).quantize(Decimal("0.000000001"))
 
 
 def _coefficient_rows(run_name, method, stored):

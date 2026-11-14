@@ -121,7 +121,8 @@
    "fieldtype": "Datetime",
    "label": "Rule Set Version",
    "read_only": 1,
-   "description": "The rule set's last-modified time when the weights were computed. Submit refuses the run if the rule set has changed since."
+   "description": "The rule set's last-modified time when the weights were computed. Submit refuses the run if the rule set has changed since.",
+   "no_copy": 1
   },
   {
    "fieldname": "col_break_computation",
@@ -162,20 +163,55 @@
    "fieldtype": "Check",
    "label": "Values Carried Forward",
    "read_only": 1,
-   "description": "Set when any weight uses a driver value from an earlier period, under the driver's carry-forward option."
+   "description": "Set when any weight uses a driver value from an earlier period, under the driver's carry-forward option.",
+   "no_copy": 1
   },
   {
    "fieldname": "computed_at",
    "fieldtype": "Datetime",
    "label": "Computed At",
-   "read_only": 1
+   "read_only": 1,
+   "no_copy": 1
   },
   {
    "fieldname": "computed_by",
    "fieldtype": "Link",
    "label": "Computed By",
    "options": "User",
-   "read_only": 1
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "computed_for_rule_set",
+   "fieldtype": "Data",
+   "label": "Computed For Rule Set",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The rule set the weights were computed for. Submit refuses the run if it no longer matches the Rule Set field."
+  },
+  {
+   "fieldname": "computed_for_scenario",
+   "fieldtype": "Data",
+   "label": "Computed For Scenario",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The scenario the weights were computed for. Submit refuses the run if it no longer matches the Scenario field."
+  },
+  {
+   "fieldname": "computed_for_fiscal_year",
+   "fieldtype": "Int",
+   "label": "Computed For Fiscal Year",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The fiscal year the weights were computed for. Submit refuses the run if it no longer matches the Fiscal Year field."
+  },
+  {
+   "fieldname": "computed_for_fiscal_period",
+   "fieldtype": "Int",
+   "label": "Computed For Fiscal Period",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The fiscal period the weights were computed for. Submit refuses the run if it no longer matches the Fiscal Period field."
   },
   {
    "fieldname": "tab_weights",
@@ -193,7 +229,8 @@
    "label": "Weights",
    "options": "Cost Allocation Run Weight",
    "read_only": 1,
-   "description": "Written by Compute Weights. One row per sender, receiver, step and driver value."
+   "description": "Written by Compute Weights. One row per sender, receiver, step and driver value.",
+   "no_copy": 1
   },
   {
    "fieldname": "tab_accounts",
@@ -211,7 +248,8 @@
    "label": "Accounts",
    "options": "Cost Allocation Run Account",
    "read_only": 1,
-   "description": "The cost pool accounts expanded from the rule set, groups included. Written by Compute Weights."
+   "description": "The cost pool accounts expanded from the rule set, groups included. Written by Compute Weights.",
+   "no_copy": 1
   }
  ],
  "permissions": [
