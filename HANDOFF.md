@@ -4,6 +4,48 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (14 Nov 2026, late night): cost allocation phase 1 merged. konsol#523 (2a13dbe) and konsolidat#354 (76bc77f) merged together.** Issue #269; task file `.claude/memory/active/tasks-cost-allocation.md`.
+
+**What landed**
+- **Report-only, driver-based allocation inside one entity.** It never posts to the ERP or the TB.
+- **Decisions on #269** (Deepak Pai, 13–14 Nov):
+  - option B (report-only);
+  - Q3 3B (declared drivers);
+  - Q5 5B (share of the sender's cost now, declared rate in phase 2);
+  - receiver account chosen per rule set;
+  - Amounts After Approval: Follow Latest Data or Freeze at Approval;
+  - one run per period, plus a draft preview;
+  - the closed-period gate applies to actual scenarios only, for run submit, run cancel and statistic cancel.
+- **Engine.** `konsol/cost_allocation_model.py` is pure Python with no frappe and no ClickHouse. It computes exact `Fraction` weights and direct and step-down coefficients, rounded to 12 dp by largest remainder, so money is conserved exactly with no plug. dbt applies the coefficients to `gold_scenario_trial_balance` in `gold_cost_allocation` (enforced contract, `pool_account`) and `gold_cost_allocation_frozen`, which is incremental with `full_refresh=false`.
+- **Doctypes**, in Planning → Allocation:
+  - Cost Allocation Driver;
+  - Statistic, submittable, with a CSV load;
+  - Rule Set;
+  - Run, submittable, with Compute Weights and Preview Sender Pools.
+- **Build isolation.** Build Scope gains `isolated`, and every other build excludes `tag:domain:allocation`, so allocation can never fail a close. A completed close build requests an allocation build when a submitted run exists.
+
+**Evidence**
+- Host suite 8449/8449.
+- konsolidat fixture gate 21/21.
+- CI green on both PRs.
+- Opus review, fixes and re-review. The serious findings fixed before merge:
+  - a silent Decimal overflow above about 1.7M per hop;
+  - declared-account pass-through over-relieving the pool account;
+  - weights approved for another period;
+  - the 20-row cap on virtual Dimension Value reads;
+  - an analyst unable to save a Statistic.
+- Live check on the local test stack: all checks pass. Conservation is exact for actual, budget and declared runs. A frozen run holds while a Follow Latest run moves, and drift warns. The analyst saves with the 25th member.
+
+**Upgrade path**
+No existing site has the frozen table. A later column change to `gold_cost_allocation_frozen` fails loudly; it needs a manual DROP, which discards the frozen amounts.
+
+**Phase 2** (not started): the reciprocal method (exact linear solve in the pure module), fixed and derived driver sources, declared rates with over- and under-recovery.
+
+**Follow-ups**
+- #534: retire `Dimension.allocation_role`.
+- #535: `format:{#####}` autonames share one series (Trial Balance Upload).
+- #536: a governed build whose selector matches nothing reports Completed.
+
 **Update (14 Nov 2026, night): budget S2-C merged, konsol#528 (0063ded9).** The S2 stage of epic #348 is complete. Task file `.claude/memory/active/tasks-budget.md`.
 
 **What landed**
