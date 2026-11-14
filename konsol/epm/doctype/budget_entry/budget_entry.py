@@ -30,7 +30,8 @@ The rules that span other records run on every save, whoever writes (the
 writer's own judgement covers its rows, not the other entries), after the
 Cycle lock and with locking reads (``_refuse_second_writer``): one amount
 basis per (cycle, entity, layer) across all its entries (Q15-c,
-``budget_intake.assert_one_basis``). A Budget Upload that replaces a slice
+``budget_intake.assert_one_basis``), and no line on a grain a Budget Annual
+Input gives (Q16-c, ``budget_intake.assert_no_annual_input``). A Budget Upload that replaces a slice
 whole saves inside ``replacing_entries(names)``: the slice's old entries are
 rewritten in the same transaction, so their old basis is not a second one.
 Install and migrate skip them, as they skip the Cycle lock.
@@ -203,6 +204,12 @@ class BudgetEntry(Document):
         budget_intake.assert_one_basis(
             self.cycle, self.data_area_id, self.layer, self.amount_basis or "", name=self.name,
             replacing=frappe.flags.get(_REPLACING_FLAG) or ())
+        dims = budget_dimension_fields()
+        budget_intake.assert_no_annual_input(
+            self.scenario_id, self.fiscal_year, self.data_area_id, self.layer,
+            [{"main_account": line.get("main_account"), **{d: line.get(d) or "" for d in dims}}
+             for line in self.get("lines") or []],
+            entry=self.name, period=self.fiscal_period)
 
     def _judge_removed_lines(self, budget_intake, lines):
         before = self.get_doc_before_save()

@@ -586,7 +586,7 @@ def test_an_entry_line_on_an_annual_input_grain_is_refused_naming_it_and_the_way
         _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}])
     msg = str(raised.value)
     assert "Budget Annual Input BAI-1" in msg and "4000" in msg and "period 3" in msg, msg
-    assert "delete Budget Annual Input BAI-1" in msg.lower()
+    assert "Delete Budget Annual Input BAI-1" in msg, msg
     assert "enter the year as monthly entries" in msg, msg
 
 

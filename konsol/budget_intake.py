@@ -288,6 +288,104 @@ def annual_check(row):
         frappe.throw("\n".join(problems), frappe.ValidationError)
 
 
+def lock_cycles(scenario_id, fiscal_year):
+    """Lock every Budget Cycle row of (scenario, year), in name order, and
+    return their names: a Budget Annual Input derives its Cycle from the pair
+    rather than linking one, and an amended pair holds more than one. The
+    Annual Input writers take this first, the lock order every budget writer
+    keeps (the Cycle row before the record it saves). No Cycle, nothing
+    locked: then no Budget Entry of the pair exists to conflict with.
+    Skipped in install and migrate, as assert_cycle_draft is."""
+    if frappe.flags.in_install or frappe.flags.in_migrate:
+        return []
+    rows = frappe.db.get_values("Budget Cycle", {"scenario_id": scenario_id, "fiscal_year": fiscal_year},
+                                ["name"], as_dict=True, order_by="name asc", for_update=True)
+    return [r.name for r in rows]
+
+
+def _dim_fields(doctype):
+    """The budget dimension fields `doctype` carries (Data dim_* fields, off
+    the meta, as its controller reads them)."""
+    return {f.fieldname for f in frappe.get_meta(doctype).fields
+            if (f.fieldname or "").startswith("dim_") and f.fieldtype == "Data"}
+
+
+def _grain_key(account, row, dims):
+    """(account, dim values) with a blank dimension and an unset one the same
+    value, as Budget Annual Input's own grain reads them."""
+    return (account,) + tuple(row.get(d) or "" for d in dims)
+
+
+def _named_dims(dims, key):
+    named = ", ".join(f"{d} {v}" for d, v in zip(dims, key[1:]) if v)
+    return f" with {named}" if named else ""
+
+
+def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, entry, period):
+    """Refuse a Budget Entry line on a grain a Budget Annual Input already
+    gives (Q16-c): a grain (scenario, year, entity, layer, account, dim_*
+    values) takes its numbers from one writer. `lines` are dicts with
+    main_account and the dim_* values; `entry` and `period` name the entry
+    being saved. Raises frappe.ValidationError naming the Annual Input and the
+    way out. A locking read (the caller holds the Cycle lock). Writes nothing."""
+    accounts = sorted({line.get("main_account") for line in lines if line.get("main_account")})
+    if not accounts:
+        return
+    annual_dims = _dim_fields("Budget Annual Input")
+    dims = sorted(annual_dims | {k for line in lines for k in line if k.startswith("dim_")})
+    rows = frappe.db.get_values(
+        "Budget Annual Input",
+        {"scenario_id": scenario_id, "fiscal_year": fiscal_year, "data_area_id": entity, "layer": layer,
+         "main_account": ["in", accounts]},
+        ["name", "main_account", *sorted(annual_dims)], as_dict=True, order_by="name asc", for_update=True)
+    annual = {}
+    for row in rows:
+        annual.setdefault(_grain_key(row.main_account, row, dims), row.name)
+    for line in lines:
+        key = _grain_key(line.get("main_account"), line, dims)
+        if key in annual:
+            name = annual[key]
+            frappe.throw(
+                f"Budget Annual Input {name} already gives account {key[0]}{_named_dims(dims, key)} for "
+                f"{scenario_id} {fiscal_year}, entity {entity}, layer {layer} as an annual figure, so "
+                f"Budget Entry {entry} (period {period}) cannot give it too: a budget line takes its "
+                f"numbers from one writer. Delete Budget Annual Input {name}, or enter the year as "
+                "monthly entries.",
+                frappe.ValidationError,
+            )
+
+
+def assert_no_entry_lines(row, *, name):
+    """Refuse a Budget Annual Input on a grain a Budget Entry line already
+    gives, in any period (Q16-c). `row` holds scenario_id, fiscal_year,
+    data_area_id, layer, main_account and the dim_* values; `name` is the
+    Annual Input. Raises frappe.ValidationError naming the entry and period.
+    A locking read (the caller holds the Cycle lock). Writes nothing."""
+    if not row.get("main_account"):
+        return
+    line_dims = _dim_fields("Budget Entry Line")
+    dims = sorted(line_dims | {k for k in row if k.startswith("dim_")})
+    lines = frappe.db.get_values(
+        "Budget Entry Line",
+        {"parenttype": "Budget Entry", "scenario_id": row.get("scenario_id"),
+         "fiscal_year": row.get("fiscal_year"), "data_area_id": row.get("data_area_id"),
+         "layer": row.get("layer"), "main_account": row.get("main_account")},
+        ["parent", "fiscal_period", "main_account", *sorted(line_dims)], as_dict=True,
+        order_by="fiscal_period asc, parent asc", for_update=True)
+    key = _grain_key(row.get("main_account"), row, dims)
+    for line in lines:
+        if _grain_key(line.main_account, line, dims) == key:
+            frappe.throw(
+                f"Budget Entry {line.parent} (period {line.fiscal_period}) already gives account "
+                f"{key[0]}{_named_dims(dims, key)} for {row.get('scenario_id')} {row.get('fiscal_year')}, "
+                f"entity {row.get('data_area_id')}, layer {row.get('layer')} as a monthly figure, so "
+                f"Budget Annual Input {name} cannot give it too: a budget line takes its numbers from one "
+                "writer. Keep entering the year as monthly entries, or remove the account's lines from "
+                "the layer's Budget Entries first.",
+                frappe.ValidationError,
+            )
+
+
 def _budget_dimensions():
     """The site's Dimension rows as the budget header judges them (in_budget).
     Every row, not only the accepted ones, so a refusal can say which of

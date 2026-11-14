@@ -114,12 +114,39 @@ class BudgetAnnualInput(Document):
         # so it cannot race a Scenario type change (review of #460).
         from konsol.epm.doctype.scenario.scenario import locked_scenario_type
 
+        self._lock_cycles()
         self._intake_check()
         self._validate_main_account_published()
         self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
         self._guard_cycle_locked()
         self._validate_unique_grain()
+        self._refuse_second_writer()
+
+    def check_if_latest(self, *args, **kwargs):
+        """Frappe's check reads this row FOR UPDATE (load_doc_before_save).
+        The Cycle is locked first, the order every budget writer keeps."""
+        self._lock_cycles()
+        return super().check_if_latest(*args, **kwargs)
+
+    def _lock_cycles(self):
+        """Lock the Budget Cycle rows of (scenario, year) (Q16-c): a Budget
+        Entry writer holds the same lock while it checks this doctype, so the
+        two one-writer checks cannot both pass."""
+        if self.scenario_id and self.fiscal_year:
+            from konsol import budget_intake
+
+            budget_intake.lock_cycles(self.scenario_id, self.fiscal_year)
+
+    def _refuse_second_writer(self):
+        """A grain takes its numbers from one writer (Q16-c): refused when a
+        Budget Entry line of this grain exists, in any period. After the Cycle
+        lock, with a locking read. Skipped in install and migrate."""
+        if frappe.flags.in_install or frappe.flags.in_migrate:
+            return
+        from konsol import budget_intake
+
+        budget_intake.assert_no_entry_lines(self._intake_row(), name=self.name)
 
     def before_cancel(self):
         self._guard_cycle_locked()
