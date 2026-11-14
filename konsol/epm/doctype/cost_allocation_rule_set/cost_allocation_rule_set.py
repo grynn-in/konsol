@@ -18,8 +18,10 @@ def _dimension_state(dimension):
 
 
 def _dimension_members(dimension):
-    """Member values of a dimension: the Dimension Value rows' `value`."""
-    return set(frappe.get_all("Dimension Value", filters={"dimension": dimension}, pluck="value"))
+    """Member values of a dimension (shared helper: no page cap, no user check)."""
+    from konsol.cost_allocation_members import dimension_members
+
+    return dimension_members(dimension)
 
 
 def _driver_dimensions(drivers):

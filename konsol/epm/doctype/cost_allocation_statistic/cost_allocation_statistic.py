@@ -1,9 +1,11 @@
 """Cost Allocation Statistic: the driver values for one entity, scenario and
 fiscal year (konsol#269 K5a).
 
-Submit is the approval. Decision Q4 (13 Nov 2026, Deepak Pai): cancelling is
-held to the period close only when the scenario's scenario_type is 'actual';
-a budget or forecast statistic can be withdrawn whatever the period status.
+Submit is the approval. Deepak Pai decided (13 Nov 2026, Q4) the closed-period
+cancel gate for the Cost Allocation Run only. Holding a statistic's cancel to
+the period close only when the scenario's scenario_type is 'actual' is an
+extension of that decision, pending his decision. A statistic that a submitted
+run cites in its weights cannot be cancelled at all.
 """
 import frappe
 from frappe.model.document import Document
@@ -18,6 +20,13 @@ from konsol.epm.doctype.cost_allocation_statistic_value.cost_allocation_statisti
 MAX_ROWS = 20000
 _SHOWN = 10
 _PREFIX = "Cost Allocation Statistic: "
+
+
+def _dimension_members(dimension):
+    """Member values of a dimension (shared helper: no page cap, no user check)."""
+    from konsol.cost_allocation_members import dimension_members
+
+    return dimension_members(dimension)
 
 
 def _listing(items):
@@ -63,9 +72,7 @@ class CostAllocationStatistic(Document):
 
     def _row_problems(self, rows):
         found = []
-        members = set(frappe.get_all(
-            "Dimension Value", filters={"dimension": self.dimension}, pluck="value",
-            limit_page_length=0))
+        members = _dimension_members(self.dimension)
         unknown = sorted({r.member for r in rows if r.member not in members})
         if unknown:
             found.append(f"{_PREFIX}not members of dimension {self.dimension}: {_listing(unknown)}.")
@@ -112,11 +119,29 @@ class CostAllocationStatistic(Document):
         self._sync()
 
     def before_cancel(self):
+        self._refuse_while_cited()
+        # Actual-only closed-period gate: an extension of the run's cancel
+        # decision, pending Deepak Pai's decision (not decided by him).
         if frappe.db.get_value("Scenario", self.scenario, "scenario_type") != "actual":
             return
         for period in sorted({int(r.fiscal_period) for r in self.get("values") or []}):
             period_status.assert_open(
                 self.fiscal_year, period, action=f"cancel statistic {self.name}")
+
+    def _refuse_while_cited(self):
+        """A submitted run's weights carry values read from this statistic;
+        cancelling it would leave them citing a document that is gone."""
+        runs = frappe.db.sql(
+            "SELECT DISTINCT r.name AS name FROM `tabCost Allocation Run` r "
+            "JOIN `tabCost Allocation Run Weight` w "
+            "ON w.parent = r.name AND w.parenttype = 'Cost Allocation Run' "
+            "WHERE r.docstatus = 1 AND w.statistic = %(statistic)s "
+            "ORDER BY r.name",
+            {"statistic": self.name}, as_dict=True)
+        if runs:
+            frappe.throw(
+                f"{_PREFIX}{self.name} is cited by submitted Cost Allocation Run "
+                + _listing(r.name for r in runs) + ". Cancel those runs first.")
 
     def on_cancel(self):
         self._sync()
