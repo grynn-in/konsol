@@ -481,3 +481,17 @@ def test_sidebar_cost_allocation_doctypes_are_not_in_not_on_a_sidebar():
     spec.loader.exec_module(module)
     left = sorted(set(COST_ALLOCATION_DOCTYPES) & module.NOT_ON_A_SIDEBAR)
     assert left == [], left
+
+
+def test_kf3_rule_set_reports_a_failed_member_read_distinctly():
+    from konsol.cost_allocation_members import MemberReadError
+
+    m = _rs_module()
+
+    def broken(dim):
+        raise MemberReadError(dim)
+
+    m._dimension_members = broken
+    msg = _refusal(_rs_doc(m))
+    assert msg and "could not read the members of dim_zz" in msg
+    assert "not a member of" not in msg

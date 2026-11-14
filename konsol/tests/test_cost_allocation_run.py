@@ -1019,7 +1019,7 @@ def test_kf1_doctype_weights_accounts_and_computed_fields_are_no_copy():
     for name in ("weights", "accounts", "computed_at", "computed_by", "rule_set_modified",
                  "values_carried_forward", "computed_for_rule_set", "computed_for_scenario",
                  "computed_for_fiscal_year", "computed_for_fiscal_period"):
-        assert fields[name].get("no_copy") == 1, f"{name} is copied by Duplicate and Amend"
+        assert fields[name].get("no_copy") == 1, f"{name} is copied by Duplicate"
 
 
 def test_kf1_compute_snapshots_what_the_weights_were_computed_for():
@@ -1134,3 +1134,63 @@ def test_kf1_compute_button_only_in_draft_status():
     with open(RUN_JS) as f:
         js = f.read()
     assert 'frm.doc.status === "Draft"' in js
+
+
+# --- KF3 ----------------------------------------------------------------------
+
+_COMPUTED = ("computed_at", "computed_by", "computed_for_rule_set", "computed_for_scenario",
+             "computed_for_fiscal_year", "computed_for_fiscal_period",
+             "rule_set_modified", "values_carried_forward")
+
+
+def test_kf3_amended_insert_clears_the_computed_snapshot():
+    # Frappe v16's client copy_doc ignores no_copy when amending, so the server clears.
+    m = _k8(_World())
+    run = _k8_run(m, amended_from="CAR-00001", accounts=[_Row(main_account="6000")],
+                  computed_at=datetime(2026, 11, 12), computed_by="zz@example.com",
+                  values_carried_forward=1)
+    run.set = lambda field, rows: run.__dict__.__setitem__(field, list(rows))
+    run.before_insert()
+    assert run.weights == [] and run.accounts == []
+    for name in _COMPUTED:
+        assert not run.__dict__.get(name), name
+
+
+def test_kf3_plain_insert_keeps_its_fields():
+    m = _k8(_World())
+    run = _k8_run(m, amended_from=None)
+    run.set = lambda field, rows: run.__dict__.__setitem__(field, list(rows))
+    run.before_insert()
+    assert len(run.weights) == 3 and run.computed_for_rule_set == "ZZ Rules"
+
+
+def test_kf3_compute_checks_draft_against_the_workflows_first_draft_state():
+    m = _run_module()
+    m._first_draft_state = lambda: "Intake"
+    ok = _Run()
+    ok.status = "Intake"
+    m.compute_weights_on(ok)
+    assert ok.saved == 1
+    renamed = _Run()
+    renamed.status = "Draft"
+    try:
+        m.compute_weights_on(renamed)
+    except _Refused as exc:
+        assert "Intake" in str(exc)
+    else:
+        raise AssertionError("expected a refusal")
+
+
+def test_kf3_compute_without_a_workflow_checks_docstatus_only():
+    m = _run_module()
+    m._first_draft_state = lambda: None
+    run = _Run()
+    run.status = "Anything"
+    m.compute_weights_on(run)
+    assert run.saved == 1
+    try:
+        m.compute_weights_on(_Run(docstatus=1))
+    except _Refused:
+        pass
+    else:
+        raise AssertionError("expected a refusal")

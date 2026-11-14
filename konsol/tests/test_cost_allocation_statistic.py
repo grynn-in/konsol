@@ -451,6 +451,7 @@ def test_before_cancel_refuses_while_a_submitted_run_cites_the_statistic():
     msg = _refusal(_stat(w, mod, scenario="ZZBUD").before_cancel)
     assert "CARS-00007" in msg
     assert calls
+    assert all(" ".join(q.split()).upper().endswith("FOR UPDATE") for q, _ in calls)
 
 
 def test_before_cancel_allows_when_no_submitted_run_cites_it():
@@ -611,3 +612,18 @@ def test_load_button_is_in_the_form_script():
     assert "Load from File" in src and "values_file" in src
     assert f"konsol.epm.doctype.{STAT}.{STAT}.load_values_from_file" in src
     assert "docstatus === 0" in src
+
+
+def test_kf3_a_failed_member_read_is_not_reported_as_unknown_members():
+    from konsol.cost_allocation_members import MemberReadError
+
+    w = _World()
+    mod = _load(w)
+
+    def broken(dimension):
+        raise MemberReadError(dimension)
+
+    mod._dimension_members = broken
+    msg = _refusal(_stat(w, mod, dimension="ZZDIM").validate)
+    assert "could not read the members of ZZDIM" in msg and "Error Log" in msg
+    assert "not members" not in msg
