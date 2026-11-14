@@ -145,3 +145,86 @@ def test_path_between_tolerates_a_start_outside_the_adjacency():
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+# --- when a link's end is an exit (konsolidat#335 option A, review F6) -------
+#
+# The warehouse (konsolidat macros/ownership_exits.sql) posts an exit when the
+# entity is no longer held, through a live method, the day after the end, and
+# no full Business Disposal ended the link. konsol refuses the end on the same
+# rule, not on whether some successor names this period in ``supersedes``.
+
+import datetime as _dt
+
+_END = _dt.date(2025, 6, 30)
+
+
+def _ending(method="full", is_disposal=0, end=_END):
+    return _Row(end_date=end, consolidation_method=method, is_disposal=is_disposal)
+
+
+def _held(start, end=None, method="full"):
+    return _Row(effective_date=start, end_date=end, consolidation_method=method)
+
+
+def _sale(date=_END, retained=0.0):
+    return _Row(disposal_date=date, retained_interest_pct=retained)
+
+
+def test_an_end_nothing_follows_is_an_exit():
+    assert _model().end_is_exit(_ending(), [], []) is True
+
+
+def test_an_open_ended_link_is_not_an_exit():
+    assert _model().end_is_exit(_ending(end=None), [], []) is False
+
+
+def test_a_an_owner_transfer_is_not_an_exit():
+    """(a) A's link ends, B's starts the next day: the entity stays held."""
+    assert _model().end_is_exit(_ending(), [_held(_dt.date(2025, 7, 1))], []) is False
+
+
+def test_b_a_contiguous_period_without_supersedes_is_not_an_exit():
+    """(b) the rule reads dates, never ``supersedes``: an open-ended or a
+    later-ending period effective the day after keeps the entity."""
+    m = _model()
+    assert m.end_is_exit(_ending(), [_held(_dt.date(2025, 7, 1), _dt.date(2026, 6, 30))], []) is False
+    # a period that started earlier and runs on past the end holds it too
+    assert m.end_is_exit(_ending(), [_held(_dt.date(2024, 1, 1))], []) is False
+
+
+def test_c_another_path_keeping_the_entity_is_not_an_exit():
+    """(c) one owner's link ends while another owner's equity link runs on."""
+    assert _model().end_is_exit(_ending(), [_held(_dt.date(2023, 1, 1), method="equity")], []) is False
+
+
+def test_d_a_link_with_method_none_ending_is_not_an_exit():
+    """(d) the entity was not live through it, so nothing is derecognised."""
+    assert _model().end_is_exit(_ending(method="none"), [], []) is False
+
+
+def test_e_a_successor_with_method_none_is_an_exit():
+    """(e) deemed loss of control: held, but no longer live."""
+    assert _model().end_is_exit(_ending(), [_held(_dt.date(2025, 7, 1), method="none")], []) is True
+
+
+def test_f_a_gap_or_an_earlier_end_is_an_exit():
+    """(f) whatever a successor is named (an amendment renames it), only its
+    dates count: one starting two days later, or ending on the same day, does
+    not hold the entity the day after."""
+    m = _model()
+    assert m.end_is_exit(_ending(), [_held(_dt.date(2025, 7, 2))], []) is True
+    assert m.end_is_exit(_ending(), [_held(_dt.date(2024, 1, 1), _END)], []) is True
+
+
+def test_g_is_disposal_without_a_full_business_disposal_is_an_exit():
+    """(g) the warehouse treats a link as ended by a sale only when it is
+    flagged is_disposal AND a full Business Disposal (retained 0) of the
+    entity is dated on its end."""
+    m = _model()
+    assert m.end_is_exit(_ending(is_disposal=1), [], []) is True
+    assert m.end_is_exit(_ending(is_disposal=1), [], [_sale(retained=20.0)]) is True
+    assert m.end_is_exit(_ending(is_disposal=1), [], [_sale(date=_dt.date(2025, 6, 29))]) is True
+    assert m.end_is_exit(_ending(is_disposal=0), [], [_sale()]) is True
+    assert m.end_is_exit(_ending(is_disposal=1), [], [_sale()]) is False
+    assert m.end_is_exit(_ending(is_disposal=1), [], [_sale(retained=None)]) is False
