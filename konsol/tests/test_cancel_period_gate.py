@@ -22,6 +22,8 @@ GATED = {
     "OwnershipPeriod": "assert_open_between",
     "TrialBalanceSubmission": "assert_open",
     "GroupExchangeRate": "assert_open",
+    # BUD-9-3: a Cycle cancels only while its year is not fully closed
+    "BudgetCycle": "assert_year_not_closed",
 }
 
 
@@ -339,18 +341,60 @@ def test_cancel_past_last_declared_period():
             "Cannot cancel an ownership period: it changes fiscal period P01 of FY2025, which is closed.")
 
 
-def test_budget_cycle_locks_before_the_transition_and_pushes_after_the_commit():
-    """The D365 push/withdraw calls are untouched (the write-back is being
-    redesigned); they only run after the commit now, with the sheet sync."""
+def test_budget_cycle_is_an_approval_not_a_lock():
+    """S2-C W2b (BUD-9-3, Q9-a): submit is the approval, so the Cycle sets no
+    lock fields, pushes no Budget Sheet and enqueues no D365 write-back. Its
+    submit and cancel only queue the warehouse syncs, after the commit."""
     for rel, cls in _classes():
         if cls.name != "BudgetCycle":
             continue
-        src = {name: ast.unparse(_method(cls, name)) for name in ("before_submit", "on_submit", "before_cancel", "on_cancel", "_push_sheets")}
-        assert "self.status = 'Locked'" in src["before_submit"]
-        assert "self.status = 'Open'" in src["before_cancel"]
+        with open(os.path.join(APP_DIR, rel)) as f:
+            module_src = f.read()
+        methods = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
+        assert not ({"_push_sheets", "_sheets", "_d365_enabled_for"} & methods), methods
+        assert "d365_writeback" not in module_src and "Budget Sheet" not in module_src
+        for field in ("status", "locked_by", "locked_on"):
+            assert f"self.{field}" not in module_src, field
         for hook in ("on_submit", "on_cancel"):
-            assert "after_commit_once(" in src[hook] and "_sync_to_clickhouse" not in src[hook], hook
-        assert "enqueue_push_budget_sheet" in src["_push_sheets"] and "withdraw_budget_sheet" in src["_push_sheets"]
+            src = ast.unparse(_method(cls, hook))
+            assert "_resync_annual_input()" in src and "_resync_entries()" in src, hook
+            assert "db_set" not in src and ".save(" not in src, hook
         return
     raise AssertionError("BudgetCycle not found")
 
+
+def _year(fiscal_year=2026, year_status="Open", rows=("Closed", "Closed")):
+    return _SqliteDB(
+        years={fiscal_year: year_status},
+        periods=[(fiscal_year, n, "P%02d" % n, "%d-%02d-01" % (fiscal_year, n), "%d-%02d-28" % (fiscal_year, n), st)
+                 for n, st in enumerate(rows, start=1)],
+    )
+
+
+def test_a_year_with_every_period_closed_refuses_the_cancel():
+    with _period_status(_year(rows=("Closed", "Locked"))) as ps:
+        msg = _refused(ps.assert_year_not_closed, 2026, "cancel Budget Cycle BCYC-ZZ")
+    assert msg == "Cannot cancel Budget Cycle BCYC-ZZ: every period of FY2026 is closed.", msg
+
+
+def test_one_open_period_allows_the_cancel():
+    with _period_status(_year(rows=("Closed", "Open"))) as ps:
+        ps.assert_year_not_closed(2026, "cancel")
+
+
+def test_a_closed_year_closes_its_open_rows():
+    """The effective status is the stricter of the year's and the row's."""
+    with _period_status(_year(year_status="Closed", rows=("Open", "Open"))) as ps:
+        _refused(ps.assert_year_not_closed, 2026, "cancel")
+
+
+def test_an_undeclared_year_is_refused_never_read_as_open():
+    with _period_status(_year(fiscal_year=2025, rows=("Open",))) as ps:
+        msg = _refused(ps.assert_year_not_closed, 2026, "cancel")
+    assert "FY2026 is not declared" in msg, msg
+
+
+def test_a_year_with_no_periods_is_refused():
+    with _period_status(_year(rows=())) as ps:
+        msg = _refused(ps.assert_year_not_closed, 2026, "cancel")
+    assert "FY2026 has no periods" in msg, msg
