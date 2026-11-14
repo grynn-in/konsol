@@ -884,3 +884,46 @@ def test_the_completeness_check_reads_the_slice_with_a_locking_read(env):
     env.mod.assert_ytd_complete("BCYC-BUD-2027", "E1", "base", YTD, 1, name="BENT-P1")
     ((doctype, filters, for_update, _order),) = env.state.locked_reads
     assert doctype == "Budget Entry" and for_update
+
+
+# ---- a failed lock-index setup is not silent --------------------------------------
+
+def _ensure_indexes_fn(monkeypatch, tb_error, lock_error):
+    """install._ensure_indexes, run alone against stubbed imports. Returns
+    (function, warnings logged)."""
+    import ast
+
+    with open(os.path.join(os.path.dirname(PY_PATH), "install.py")) as f:
+        tree = ast.parse(f.read())
+    (fn,) = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_ensure_indexes"]
+    warnings = []
+    logger = types.SimpleNamespace(warning=lambda *a, **k: warnings.append(a))
+    frappe = types.SimpleNamespace(logger=lambda: logger)
+
+    def raiser(error):
+        def run():
+            if error:
+                raise error
+        return run
+
+    tb = types.ModuleType("konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission")
+    tb.on_doctype_update = raiser(tb_error)
+    intake = types.ModuleType("konsol.budget_intake")
+    intake.ensure_lock_indexes = raiser(lock_error)
+    for name, mod in {tb.__name__: tb, "konsol.budget_intake": intake}.items():
+        monkeypatch.setitem(sys.modules, name, mod)
+    namespace = {"frappe": frappe}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "install.py", "exec"), namespace)
+    return namespace["_ensure_indexes"], warnings
+
+
+def test_a_failed_lock_index_setup_raises_from_ensure_indexes(monkeypatch):
+    run, _ = _ensure_indexes_fn(monkeypatch, None, RuntimeError("index failed"))
+    with pytest.raises(RuntimeError, match="index failed"):
+        run()
+
+
+def test_another_index_failure_still_only_logs(monkeypatch):
+    run, warnings = _ensure_indexes_fn(monkeypatch, RuntimeError("tb index failed"), None)
+    run()
+    assert len(warnings) == 1
