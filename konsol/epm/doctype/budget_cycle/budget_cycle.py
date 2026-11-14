@@ -71,21 +71,39 @@ class BudgetCycle(Document):
             frappe.throw("\n".join(problems), frappe.ValidationError)
 
     def autoname(self):
-        """Collision-safe name for the (scenario, fiscal_year) grain.
+        """Collision-safe name for the round: (scenario, fiscal_year), plus the
+        as-of date for a forecast (S3 K4), so two rounds of one pair get
+        different base names and neither reads as the other's amendment.
 
         Digest-suffixed so long scenario codes can't truncate two cycles onto
         one 140-char name (see budget_grain.digest_name). The digest when it
         is free, else the first free ``<digest>-N`` (#524): a cancelled Cycle
-        keeps its name as the audit trail, and the next Cycle of its pair
+        keeps its name as the audit trail, and the next Cycle of its round
         must not collide with it. Every Cycle is named here, an amendment
         too: set_new_name below makes sure of it. Nothing finds a Cycle by
-        this name: every writer finds the pair's live Cycle by docstatus."""
-        base = digest_name("BCYC", [self.scenario_id, self.fiscal_year])
+        this name: every writer finds the round's live Cycle by docstatus."""
+        base = digest_name("BCYC", self._name_parts())
         name, n = base, 0
         while frappe.db.exists("Budget Cycle", name):
             n += 1
             name = f"{base}-{n}"
         self.name = name
+
+    def _name_parts(self):
+        """The key the name digests: (scenario, year) for every type, and the
+        as-of date too for a forecast (its round). The type is the Scenario's,
+        read when the fetched copy is not on the document yet (an API insert
+        reaches autoname before validate copies it); a date on a non-forecast
+        is left out, because validate refuses it anyway."""
+        kind = self.get("scenario_type")
+        if not kind:
+            from konsol.epm.doctype.scenario.scenario import locked_scenario_type
+
+            kind = locked_scenario_type(self.scenario_id)
+        parts = [self.scenario_id, self.fiscal_year]
+        if kind == M.FORECAST:
+            parts.append(M.as_of_key(self.get("as_of_date")))
+        return parts
 
     def set_new_name(self, *args, **kwargs):
         """The Cycle owns its name, under any site naming setting.
