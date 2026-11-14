@@ -228,3 +228,51 @@ def test_g_is_disposal_without_a_full_business_disposal_is_an_exit():
     assert m.end_is_exit(_ending(is_disposal=0), [], [_sale()]) is True
     assert m.end_is_exit(_ending(is_disposal=1), [], [_sale()]) is False
     assert m.end_is_exit(_ending(is_disposal=1), [], [_sale(retained=None)]) is False
+
+
+# --- a re-entry is an acquisition (konsolidat#335 review F4, X14) ------------
+#
+# After the entity left the group (an exit journal, or a full Business
+# Disposal) nothing brings its balances back, so a live period that starts
+# after a gap is an acquisition (IFRS 3) and needs a submitted Business
+# Combination dated on its start.
+
+def _new(start=_dt.date(2026, 1, 1), method="full"):
+    return _Row(effective_date=start, consolidation_method=method)
+
+
+def _gone(end=_END, is_disposal=0, method="full"):
+    return _Row(effective_date=_dt.date(2023, 1, 1), end_date=end,
+                consolidation_method=method, is_disposal=is_disposal)
+
+
+def test_x14_a_re_entry_after_an_exit_without_a_combination_is_refused():
+    assert _model().reentry_after_exit(_new(), [_gone()], [], []) == (_END, True)
+
+
+def test_x14_a_combination_dated_on_the_start_allows_it():
+    assert _model().reentry_after_exit(_new(), [_gone()], [], [_dt.date(2026, 1, 1)]) is None
+    # one dated on another day does not
+    assert _model().reentry_after_exit(_new(), [_gone()], [], [_dt.date(2025, 12, 31)]) == (_END, True)
+
+
+def test_x14_a_contiguous_successor_is_no_re_entry():
+    m = _model()
+    assert m.reentry_after_exit(_new(_dt.date(2025, 7, 1)), [_gone()], [], []) is None
+    # another path still holds the entity the day before
+    held = _Row(effective_date=_dt.date(2023, 1, 1), end_date=None, consolidation_method="equity", is_disposal=0)
+    assert m.reentry_after_exit(_new(), [_gone(), held], [], []) is None
+
+
+def test_x14_a_first_entry_or_a_non_live_period_is_no_re_entry():
+    m = _model()
+    assert m.reentry_after_exit(_new(), [], [], []) is None
+    assert m.reentry_after_exit(_new(), [_gone(method="none")], [], []) is None
+    assert m.reentry_after_exit(_new(method="none"), [_gone()], [], []) is None
+
+
+def test_x14_a_re_entry_after_a_full_disposal_is_also_an_acquisition():
+    """Decided consistently: the entity was sold, buying it again is an
+    acquisition. The answer says it was a disposal, not an exit."""
+    assert _model().reentry_after_exit(
+        _new(), [_gone(is_disposal=1)], [_sale()], []) == (_END, False)
