@@ -773,7 +773,7 @@ def _declared(**over):
 
 def _cg(name, group, entity, parent):
     return types.SimpleNamespace(name=name, consolidation_group=group, data_area_id=entity,
-                                 parent_consolidation_group=parent)
+                                 parent_consolidation_group=parent, exit_gain_loss_account="7900")
 
 
 #: Two hierarchies: ZZG (root group node; entity nodes ZZ01, ZZ02; sub-group
@@ -1516,10 +1516,10 @@ def _exit_doc(account, exists=False, **changes):
     """A period validated against a root whose exit account is ``account``;
     ``exists`` answers "is a submitted successor superseding it"."""
     module = _load(_no_flags())
-    module.frappe.db.get_value = lambda *a, **k: account
+    module.frappe.db.get_value = lambda *a, **k: types.SimpleNamespace(consolidation_group="ZZROOT", exit_gain_loss_account=account)
     module.frappe.db.exists = lambda *a, **k: exists
     module.node_root = lambda node: "ZZROOT"
-    doc = _doc(module, end_date="2025-06-30", **changes)
+    doc = _doc(module, **{"end_date": "2025-06-30", **changes})
     doc._node = lambda: types.SimpleNamespace(name="CG-ZZG-ZZ01")
     return doc
 
