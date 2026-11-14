@@ -61,3 +61,4 @@ konsol.patches.seed_budget_layers
 konsol.patches.drop_budget_cycle_lock_columns
 konsol.patches.drop_d365_budget_writeback_settings
 konsol.patches.retire_budget_sheet_line
+konsol.patches.drop_budget_monthly_input
