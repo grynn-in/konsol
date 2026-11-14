@@ -143,3 +143,46 @@ def end_is_exit(link, others, disposals):
             if _get(sale, "disposal_date") == end and float(_get(sale, "retained_interest_pct") or 0) <= 0:
                 return False
     return True
+
+
+def reentry_after_exit(period, others, disposals, acquisitions):
+    """Whether ``period`` brings back a node that left the group, with no
+    acquisition behind it (konsolidat#335 review F4, X14). A re-entry is an
+    acquisition (IFRS 3): the warehouse derecognised the node when it left
+    (an exit journal, or a full Business Disposal) and its retranslation
+    window restarted, so nothing carries its balances back and a period that
+    merely starts again is silently wrong. It needs a submitted Business
+    Combination dated on its start. A re-entry after a full Business Disposal
+    is refused on the same footing: the node was sold, buying it again is an
+    acquisition too.
+
+    ``period`` has ``effective_date`` and ``consolidation_method``; ``others``
+    the node's OTHER submitted periods, ``disposals`` its submitted Business
+    Disposals (as ``end_is_exit`` reads them), ``acquisitions`` the
+    acquisition dates of its submitted Business Combinations.
+
+    Returns None when nothing is wrong, else ``(left, is_exit)``: the day the
+    latest earlier live period ended and whether that end was an exit (False:
+    a full disposal). Nothing is wrong when ``period`` is not live, when no
+    live period of the node ended before it, when a live period holds the
+    node the day before it starts (a contiguous successor, another owner's
+    link), or when a Business Combination is dated on its start."""
+    start = _get(period, "effective_date")
+    if start is None or _get(period, "consolidation_method") not in LIVE_METHODS:
+        return None
+    earlier = []
+    for other in others:
+        if _get(other, "consolidation_method") not in LIVE_METHODS or _get(other, "effective_date") is None:
+            continue
+        end = _get(other, "end_date")
+        # held the day before: started before ``start``, not ended before it
+        # went by (dates only; this module imports nothing)
+        if _get(other, "effective_date") < start and (end is None or end >= start or (start - end).days == 1):
+            return None
+        if end is not None and end < start:
+            earlier.append(other)
+    if not earlier or start in acquisitions:
+        return None
+    last = max(earlier, key=lambda o: _get(o, "end_date"))
+    rest = [o for o in others if o is not last]
+    return _get(last, "end_date"), end_is_exit(last, rest, disposals)

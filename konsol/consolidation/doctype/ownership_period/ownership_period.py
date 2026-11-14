@@ -35,7 +35,7 @@ from frappe.utils import getdate
 from konsol.clickhouse import after_commit_once, sync_doctype_after_commit
 from konsol.consolidation_policy_model import LABELS, required_accounts
 from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
-from konsol.ownership_graph_model import end_is_exit, ownership_edges, path_between
+from konsol.ownership_graph_model import end_is_exit, ownership_edges, path_between, reentry_after_exit
 from konsol.period_status import assert_open_between, first_period_affected
 
 # ClickHouse's Date type holds 1970-01-01 .. 2149-06-06 and CLAMPS anything
@@ -263,6 +263,51 @@ class OwnershipPeriod(Document):
         self._check_no_gaps_or_overlaps()
         self._check_total_issued()
         self._validate_exit_account()
+
+    def before_submit(self):
+        self._validate_reentry()
+
+    def _validate_reentry(self):
+        """konsolidat#335 F4: a live period that starts after the entity left
+        the group (an exit, or a full disposal) is an acquisition (IFRS 3);
+        nothing else brings its balances back. Refuse it unless a submitted
+        Business Combination of the entity is dated on its start. A group
+        node holds no entity and is not checked. The rule is
+        ``ownership_graph_model.reentry_after_exit``."""
+        start = _date_or_none(self.get("effective_date"))
+        entity = self.get("data_area_id") or None
+        if start is None or not entity:
+            return
+        others = frappe.get_all(
+            "Ownership Period",
+            filters={"consolidation_group": self.consolidation_group, "data_area_id": entity,
+                     "docstatus": 1, "name": ["!=", self.get("name") or ""]},
+            fields=["effective_date", "end_date", "consolidation_method", "is_disposal"])
+        disposals = frappe.get_all(
+            "Business Disposal",
+            filters={"consolidation_group": self.consolidation_group, "disposed_entity": entity, "docstatus": 1},
+            fields=["disposal_date", "retained_interest_pct"])
+        deals = frappe.get_all(
+            "Business Combination",
+            filters={"consolidation_group": self.consolidation_group, "acquired_entity": entity, "docstatus": 1},
+            fields=["acquisition_date"])
+        found = reentry_after_exit(
+            {"effective_date": start, "consolidation_method": self.get("consolidation_method")},
+            [{"effective_date": _date_or_none(r.effective_date), "end_date": _date_or_none(r.end_date),
+              "consolidation_method": r.consolidation_method, "is_disposal": getattr(r, "is_disposal", 0)}
+             for r in others],
+            [{"disposal_date": _date_or_none(r.disposal_date), "retained_interest_pct": r.retained_interest_pct}
+             for r in disposals],
+            [_date_or_none(r.acquisition_date) for r in deals])
+        if found is None:
+            return
+        left, is_exit = found
+        how = "without a Business Disposal" if is_exit else "through a Business Disposal"
+        frappe.throw(
+            f"`{self._owned_label()}` left the group on {left.isoformat()} {how}; "
+            f"re-entering it on {start.isoformat()} is an acquisition and needs a Business Combination "
+            f"dated {start.isoformat()}. Record the Business Combination (it creates this period), "
+            f"then submit.")
 
     def _validate_exit_account(self):
         """konsolidat#335: a link whose end takes its node out of the group
