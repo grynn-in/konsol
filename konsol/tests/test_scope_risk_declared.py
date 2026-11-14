@@ -114,3 +114,40 @@ def test_every_scope_a_caller_passes_is_an_option_with_a_declared_risk():
     scopes = fixture | produced
     assert scopes <= set(_scope_options()), scopes - set(_scope_options())
     assert scopes <= set(_scope_risk()), scopes - set(_scope_risk())
+
+
+# ---------------------------------------------------------------------------
+# K9b (konsol#269): the isolated `allocation` scope is registered everywhere a
+# scope is named: the Build Scope fixture, the Build Approval option and risk,
+# the selector, the doctype map and the Build Model domains.
+# ---------------------------------------------------------------------------
+TASKS_PY = os.path.join(APP_DIR, "tasks.py")
+BUILD_SCOPE_FIXTURE = os.path.join(APP_DIR, "fixtures", "build_scope.json")
+
+
+def _module_literal(path, name):
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found in {path}")
+
+
+def test_allocation_is_an_isolated_scope_that_reads_no_raw_data():
+    with open(BUILD_SCOPE_FIXTURE) as f:
+        rows = {row["name"]: row for row in json.load(f)}
+    assert "allocation" in rows, sorted(rows)
+    assert rows["allocation"]["isolated"] == 1, rows["allocation"]
+    assert rows["allocation"]["requires_raw_data"] == 0, rows["allocation"]
+
+
+def test_allocation_is_a_build_approval_option_declared_low():
+    assert "allocation" in _scope_options()
+    assert _scope_risk()["allocation"] == "low"
+
+
+def test_allocation_has_a_selector_on_its_own_domain_tag():
+    selector = _module_literal(TASKS_PY, "SCOPE_SELECTOR")
+    assert selector["allocation"] == "tag:domain:allocation", selector.get("allocation")

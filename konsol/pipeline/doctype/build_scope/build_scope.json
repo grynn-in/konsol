@@ -27,6 +27,14 @@
       "description": "When checked, a build of this domain preflight-checks that epm_raw (Airbyte/connector) data is available before running."
     },
     {
+      "fieldname": "isolated",
+      "fieldtype": "Check",
+      "label": "Isolated",
+      "default": "0",
+      "in_list_view": 1,
+      "description": "Built only by its own scope; every other build excludes it."
+    },
+    {
       "fieldname": "col_break_1",
       "fieldtype": "Column Break"
     },

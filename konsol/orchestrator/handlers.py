@@ -137,6 +137,11 @@ def build_dbt_command(verb: str, params: Optional[Dict]) -> List[str]:
         # `run`/`seed` execute no tests, so the flag does not apply to them.
         if verb in ("build", "test"):
             argv += ["--indirect-selection", "cautious"]
+    if verb in ("build", "run", "test"):
+        # K9a: an isolated Build Scope is built only by its own scope.
+        from konsol.build_command import isolated_excludes
+
+        argv += isolated_excludes(params.get("build_scope"))
     if params.get("full_refresh"):
         argv += ["--full-refresh"]
     dbt_vars = params.get("vars")

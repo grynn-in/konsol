@@ -25,6 +25,10 @@ SCOPE_RISK = {
     # konsol#182: a chart publish reclassifies every statement
     "chart": "high",
     "full": "high",
+    # K9b (konsol#269): the isolated cost allocation scope. It rebuilds only
+    # gold_cost_allocation and its frozen copy (tag:domain:allocation); no
+    # consolidated figure reads them.
+    "allocation": "low",
 }
 
 

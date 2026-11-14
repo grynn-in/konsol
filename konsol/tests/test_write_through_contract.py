@@ -245,6 +245,14 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # konsol#305-D2-11: the journal's warehouse table; konsol owns its DDL
         # so a migrate can add the reversal columns and drop the old one
         "epm_staging.consolidation_adjustments",
+        # konsol#269 K1: the cost allocation run, its accounts, weights,
+        # coefficients and statistics (test_cost_allocation_ddl.py)
+        "epm_staging.cost_allocation_runs",
+        "epm_staging.cost_allocation_run_accounts",
+        "epm_staging.cost_allocation_run_weights",
+        "epm_staging.cost_allocation_coefficients",
+        "epm_staging.cost_allocation_statistics",
+        "epm_staging.cost_allocation_statistic_values",
     }
     sql = []
     m.execute = lambda s, params=None: sql.append(s) or ""

@@ -82,7 +82,8 @@ class Site:
         site = self
         frappe = types.ModuleType("frappe")
         frappe.db = types.SimpleNamespace(sql=self.sql, get_value=self.get_value, set_value=self.set_value,
-                                          commit=lambda: None, rollback=lambda: None)
+                                          commit=lambda: None, rollback=lambda: None,
+                                          exists=lambda *a, **k: None)  # no Cost Allocation Run (K10)
         frappe.flags = _D()
         frappe.session = types.SimpleNamespace(user="Administrator")
         frappe.local = types.SimpleNamespace(session=_D(user="Administrator", sid="x", data={}), form_dict={})
@@ -106,7 +107,7 @@ class Site:
         stubs = {
             "frappe": frappe,
             "konsol.airbyte_service": types.SimpleNamespace(AirbyteClient=object),
-            "konsol.build_command": types.SimpleNamespace(dbt_build_command=None),
+            "konsol.build_command": types.SimpleNamespace(dbt_build_command=None, isolated_scopes=lambda: []),
             "konsol.orchestrator.reaper": _load("reaper_fr_tasks", os.path.join(APP_DIR, "orchestrator", "reaper.py")),
             "konsol.close.fingerprint": types.SimpleNamespace(check_after_build=lambda *a: []),
             "konsol.pipeline.doctype.build_approval.build_approval": types.SimpleNamespace(
