@@ -97,7 +97,6 @@ def test_the_field_follows_its_link():
 WRITERS = [
     ("api.py",),
     ("patches", "reshape_budget_input_to_cycle.py"),
-    ("d365_writeback.py",),
     ("epm", "doctype", "budget_cycle", "budget_cycle.py"),
     ("epm", "doctype", "budget_sheet", "budget_sheet.py"),
     ("epm", "doctype", "budget_annual_input", "budget_annual_input.py"),
@@ -122,13 +121,6 @@ def test_writers_set_the_link_then_insert_or_save():
     reshape = _src("patches", "reshape_budget_input_to_cycle.py")
     assert "doc.scenario_id = scenario_id" in reshape and "doc.insert()" in reshape
     assert "sheet.cycle = cycle_name" in reshape
-
-
-def test_d365_writeback_only_db_sets_its_own_status():
-    """The write-back changes a sheet with db_set on its two status fields only."""
-    src = _src("d365_writeback.py")
-    fields = set(re.findall(r'db_set\("([a-z_0-9]+)"', src))
-    assert fields <= {"d365_writeback_status", "d365_writeback_error"}, fields
 
 
 # --- the copy never reaches ClickHouse ------------------------------------------

@@ -200,9 +200,6 @@ EXCLUDED_DIR_NAMES = frozenset({"__pycache__", "node_modules", ".git", "dist"})
 
 #: Paths excluded from the scan, repo-relative, and why.
 EXCLUDED_PATHS = {
-    # Frozen by standing instruction and being dumped and redesigned; adding a
-    # rule to code nobody may edit would be a rule that can only ever fail.
-    "konsol/d365_writeback.py": "frozen; being dumped, not fixed",
     # Tests name example dimensions on purpose — that is how they test.
     "konsol/tests": "tests use example dimension names as data",
 }
@@ -1039,5 +1036,4 @@ def test_the_scan_actually_reaches_the_tree():
     files = shipped_files()
     assert len(files) > 100, f"the scan found only {len(files)} shipped files"
     assert "konsol/clickhouse.py" in files
-    assert "konsol/d365_writeback.py" not in files
     assert not [f for f in files if f.startswith("konsol/tests/")]
