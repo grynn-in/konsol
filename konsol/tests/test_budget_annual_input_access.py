@@ -118,6 +118,9 @@ def ctl(monkeypatch):
                          {"name": "board", "writer_role": "Budget Approver", "sort_order": 4}],
         "Scenario": [{"name": "ZZS", "scenario_type": "budget", "is_active": 1},
                      {"name": "ZZOLD", "scenario_type": "budget", "is_active": 0}],
+        # one row per (profile, period): the key is profile_id, not the row name
+        "Spread Profile": [{"name": f"SP-EVEN-P{i}", "profile_id": "EVEN"} for i in (1, 2)]
+                          + [{"name": "SP-Q4-P12", "profile_id": "Q4"}],
         "Entity": [{"name": "ZZE1", "functional_currency": "EUR"},
                    {"name": "ZZE2", "functional_currency": "EUR"}],
     }
@@ -186,7 +189,7 @@ def _row(ctl, entity, **over):
     fields = dict(
         doctype="Budget Annual Input", name="x", scenario_id="ZZS", layer="base", currency="EUR",
         data_area_id=entity, fiscal_year="2026", main_account="4000",
-        dim_cost_center="CC1", dim_region="EU", submitted_by="u")
+        dim_cost_center="CC1", dim_region="EU", submitted_by="u", spread_profile_id="EVEN")
     fields.update(over)
     return ctl.mod.BudgetAnnualInput(**fields)
 
@@ -478,3 +481,35 @@ def test_a_cancel_under_a_pending_cycle_is_refused_naming_its_state_and_the_reje
 @pytest.mark.parametrize("step", ["validate", "before_cancel", "on_trash"])
 def test_an_edit_cancel_or_delete_under_a_first_state_cycle_is_accepted(ctl, step):
     getattr(_row(ctl, "ZZE1"), step)()
+
+
+# --- konsol#525: spread_profile_id must be a Spread Profile's profile_id -------
+
+def test_spread_profile_key_is_accepted(ctl):
+    _row(ctl, "ZZE1", spread_profile_id="EVEN").validate()
+
+
+def test_spread_profile_row_name_is_refused_naming_value_and_valid_keys(ctl):
+    # gold_spread_budget joins on profile_id: a row name matches nothing and the
+    # annual figure would vanish from the budget fact.
+    with pytest.raises(Exception) as e:
+        _row(ctl, "ZZE1", spread_profile_id="SP-EVEN-P1").validate()
+    msg = str(e.value)
+    assert "SP-EVEN-P1" in msg and "EVEN" in msg and "Q4" in msg
+
+
+def test_unknown_spread_profile_is_refused(ctl):
+    with pytest.raises(Exception, match="NOPE"):
+        _row(ctl, "ZZE1", spread_profile_id="NOPE").validate()
+
+
+def test_spread_profile_key_is_case_sensitive(ctl):
+    # the warehouse join is an exact string match
+    with pytest.raises(Exception, match="even"):
+        _row(ctl, "ZZE1", spread_profile_id="even").validate()
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_spread_profile_check_skipped_during_install_migrate(ctl, flag):
+    setattr(ctl.frappe.flags, flag, True)
+    _row(ctl, "ZZE1", spread_profile_id="NOPE").validate()

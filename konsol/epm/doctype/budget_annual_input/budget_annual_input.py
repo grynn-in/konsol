@@ -116,6 +116,7 @@ class BudgetAnnualInput(Document):
         cycles = self._lock_cycles()
         self._intake_check()
         self._validate_main_account_published()
+        self._validate_spread_profile()
         self.scenario_type = locked_scenario_type(self.scenario_id)
         self._stamp_submitter()
         self._guard_cycle_writable(cycles)
@@ -206,6 +207,31 @@ class BudgetAnnualInput(Document):
                 f"budget row would never map. Publish the account or pick a "
                 f"published one."
             )
+
+    def _validate_spread_profile(self):
+        """spread_profile_id is a Spread Profile's profile_id (konsol#525).
+
+        gold_spread_budget inner-joins the profile on profile_id, so a value
+        that matches none (a row name such as SP-EVEN-P1 instead of EVEN, a
+        typo, a profile never created) drops the annual figure from the budget
+        fact without a word. Refused here, naming the value and the valid keys.
+        The match is exact and case-sensitive, as the warehouse join is: the
+        keys are read and compared here, not matched by a database collation.
+        Skipped during install/migrate, as the other checks are.
+        """
+        if frappe.flags.in_install or frappe.flags.in_migrate:
+            return
+        keys = sorted({r.get("profile_id") for r in frappe.get_all(
+            "Spread Profile", fields=["profile_id"], limit_page_length=0) if r.get("profile_id")})
+        if self.spread_profile_id in keys:
+            return
+        valid = ", ".join(keys) if keys else "none: create a Spread Profile first"
+        frappe.throw(
+            f"Spread Profile {self.spread_profile_id!r} is not a Spread Profile's profile_id, so the "
+            f"warehouse would drop this annual figure from the budget. Use a profile_id (not a row name "
+            f"like SP-EVEN-P1). Valid profile_ids: {valid}.",
+            frappe.ValidationError,
+        )
 
     def _validate_unique_grain(self):
         """One annual figure per (scenario, entity, year, layer, account,
