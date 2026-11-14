@@ -927,3 +927,48 @@ def test_another_index_failure_still_only_logs(monkeypatch):
     run, warnings = _ensure_indexes_fn(monkeypatch, RuntimeError("tb index failed"), None)
     run()
     assert len(warnings) == 1
+
+
+# --- Q21-a: a batch is judged once per slice, a delete may not open a gap ----
+
+SLICE = [("BCYC-BUD-2027", "E1", "base")]
+
+
+def test_a_batch_saved_out_of_order_is_complete_when_judged_at_the_end(env):
+    _saved(env, 3, 1, 2)
+    env.mod.assert_ytd_slices_complete(SLICE)
+
+
+def test_a_slice_with_a_gap_is_refused_naming_the_slice_and_the_period(env):
+    _saved(env, 1, 3)
+    with pytest.raises(Thrown) as raised:
+        env.mod.assert_ytd_slices_complete(SLICE)
+    assert "Year-to-date lines for E1 base state periods 1, 3 but not 2." in str(raised.value)
+
+
+def test_a_movement_slice_is_not_judged_at_the_end(env):
+    _saved(env, 1, 3, basis=BASIS)
+    env.mod.assert_ytd_slices_complete(SLICE)
+
+
+def test_deleting_period_1_of_1_to_3_is_refused(env):
+    _saved(env, 1, 2, 3)
+    with pytest.raises(Thrown) as raised:
+        env.mod.assert_ytd_survives_delete("BCYC-BUD-2027", "E1", "base", YTD, name="BENT-P1")
+    message = str(raised.value)
+    assert "E1 base" in message and "but not 1." in message and "last period down" in message
+
+
+def test_deleting_the_last_period_of_1_to_3_is_allowed(env):
+    _saved(env, 1, 2, 3)
+    env.mod.assert_ytd_survives_delete("BCYC-BUD-2027", "E1", "base", YTD, name="BENT-P3")
+
+
+def test_deleting_the_only_period_is_allowed(env):
+    _saved(env, 1)
+    env.mod.assert_ytd_survives_delete("BCYC-BUD-2027", "E1", "base", YTD, name="BENT-P1")
+
+
+def test_deleting_a_movement_entry_is_not_judged(env):
+    env.mod.assert_ytd_survives_delete("BCYC-BUD-2027", "E1", "base", BASIS, name="BENT-P1")
+    assert env.state.locked_reads == []

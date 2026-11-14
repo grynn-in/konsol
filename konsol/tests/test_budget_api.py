@@ -200,6 +200,19 @@ def cell(monkeypatch):
         entry = visible.get(filters)
         return entry.get(fieldname or "name") if entry else None
 
+    def get_values(doctype, filters=None, fields=None, as_dict=False, order_by=None, for_update=False,
+                   **kw):
+        assert doctype == "Budget Entry" and as_dict and for_update, (doctype, as_dict, for_update)
+        rows = [e for e in state.entries.values() if _matches(e, filters)]
+        return [_Row({f: e.get(f) for f in fields}) for e in rows]
+
+    def judge_per_entry(doc):
+        # What Budget Entry._refuse_second_writer does for a save of its own.
+        if not frappe.flags.get("budget_entry_ytd_at_end"):
+            sys.modules["konsol.budget_intake"].assert_ytd_complete(
+                doc["cycle"], doc["data_area_id"], doc["layer"], doc.get("amount_basis") or "",
+                doc["fiscal_period"], name=doc.get("name"))
+
     def get_doc(doctype, name, for_update=False):
         assert doctype == "Budget Entry", doctype
         if name in state.hidden and not for_update:
@@ -212,6 +225,7 @@ def cell(monkeypatch):
 
     def bind(doc):
         def save(*a, **k):
+            judge_per_entry(doc)
             state.judged_flags.append(bool(frappe.flags.get("budget_entry_judged")))
             doc["modified"] = tick()
             state.entries[doc["name"]] = _Entry(json.loads(json.dumps(doc)))
@@ -219,6 +233,9 @@ def cell(monkeypatch):
             return doc
 
         def insert(*a, **k):
+            doc["name"] = "BENT-" + "-".join(str(doc.get(f)) for f in
+                                             ("cycle", "data_area_id", "layer", "fiscal_period"))
+            judge_per_entry(doc)
             state.judged_flags.append(bool(frappe.flags.get("budget_entry_judged")))
             name = "BENT-" + "-".join(str(doc.get(f)) for f in
                                        ("cycle", "data_area_id", "layer", "fiscal_period"))
@@ -276,7 +293,7 @@ def cell(monkeypatch):
         state.saves[:] = saves
         state.inserts[:] = inserts
 
-    frappe.db = types.SimpleNamespace(get_value=get_value, rollback=rollback, savepoint=savepoint,
+    frappe.db = types.SimpleNamespace(get_value=get_value, get_values=get_values, rollback=rollback, savepoint=savepoint,
                                       commit=commit, set_value=forbidden, sql=forbidden)
     utils = types.ModuleType("frappe.utils")
     utils.now_datetime = lambda: None
@@ -325,6 +342,15 @@ def cell(monkeypatch):
             yield
         finally:
             frappe.flags["budget_entry_judged"] = was
+    @contextlib.contextmanager
+    def ytd_judged_at_end():
+        was = frappe.flags.get("budget_entry_ytd_at_end")
+        frappe.flags["budget_entry_ytd_at_end"] = True
+        try:
+            yield
+        finally:
+            frappe.flags["budget_entry_ytd_at_end"] = was
+    entry_mod.ytd_judged_at_end = ytd_judged_at_end
     entry_mod.CycleNotDraftError = CycleNotDraftError
     entry_mod.BudgetConflictError = type("BudgetConflictError", (_Thrown,), {"http_status_code": 409})
     entry_mod.assert_cycle_draft = assert_cycle_draft
@@ -746,3 +772,40 @@ def test_a_cell_without_a_basis_is_not_told_about_a_file_or_upload(cell):
     message = str(raised.value)
     assert "Amount Basis is required" in message
     assert "file" not in message.lower() and "upload" not in message.lower(), message
+
+
+# --- Q21-a: Year-to-date completeness is judged once per slice, at the end ----
+
+YTD = "Year-to-date movement"
+
+
+def _ytd_rows(cell, *periods_per_row):
+    return [cell.row(amount_basis=YTD, periods=[{"period": p, "amount": 10 * p} for p in ps])
+            for ps in periods_per_row]
+
+
+def test_a_batch_stating_p3_p1_p2_ytd_is_accepted(cell):
+    out = cell.batch(_ytd_rows(cell, [3], [1], [2]))
+    assert len(out["results"]) == 3
+    assert sorted(e["fiscal_period"] for e in cell.state.entries.values()) == [1, 2, 3]
+    assert not cell.frappe.flags.get("budget_entry_ytd_at_end"), "the flag is put back"
+
+
+def test_one_budget_save_stating_p3_p1_p2_ytd_is_accepted(cell):
+    cell.save(amount_basis=YTD, periods=[{"period": p, "amount": 1} for p in (3, 1, 2)])
+    assert len(cell.state.entries) == 3
+
+
+def test_a_batch_with_p1_and_p3_ytd_is_refused_naming_2_and_saves_nothing(cell):
+    with pytest.raises(_Thrown) as raised:
+        cell.batch(_ytd_rows(cell, [1], [3]))
+    message = str(raised.value)
+    assert "E1 base" in message and "but not 2." in message
+    assert not cell.state.entries, "nothing of the batch stands"
+    assert not cell.frappe.flags.get("budget_entry_ytd_at_end")
+
+
+def test_a_single_cell_save_keeps_the_per_entry_check(cell):
+    with pytest.raises(_Thrown, match="but not 1"):
+        cell.post(amount_basis=YTD, fiscal_period=3)
+    assert not cell.state.entries

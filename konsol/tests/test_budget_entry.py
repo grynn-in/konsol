@@ -303,6 +303,14 @@ def env(monkeypatch):
         locks.append(("ytd check", cycle))
         ytd_checks.append((cycle, entity, layer, basis, period, name, set(replacing)))
     intake.assert_ytd_complete = assert_ytd_complete
+    delete_checks = []
+
+    def assert_ytd_survives_delete(cycle, entity, layer, basis, *, name):
+        delete_checks.append((cycle, entity, layer, basis, name))
+        if intake.refuse_delete:
+            frappe.throw(intake.refuse_delete, Thrown)
+    intake.assert_ytd_survives_delete = assert_ytd_survives_delete
+    intake.refuse_delete = None
     intake.refuse_basis = None
     grain_checks = []
 
@@ -332,7 +340,7 @@ def env(monkeypatch):
     return types.SimpleNamespace(ctl=ctl, cycles=cycles, entries=entries, frappe=frappe,
                                  grain=loaded["konsol.epm.budget_grain"], sql=sql_calls,
                                  judged=judged, intake=intake, locks=locks, removed=removed,
-                                 held_elsewhere=held_elsewhere, basis_checks=basis_checks, ytd_checks=ytd_checks,
+                                 held_elsewhere=held_elsewhere, basis_checks=basis_checks, ytd_checks=ytd_checks, delete_checks=delete_checks,
                                  grain_checks=grain_checks)
 
 
@@ -701,3 +709,40 @@ def test_install_and_migrate_skip_the_grain_check(env, flag):
     setattr(env.frappe.flags, flag, True)
     _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)]).validate()
     assert env.grain_checks == []
+
+
+# --- Q21-a: a delete may not leave a Year-to-date gap; a batch is judged at the end ---
+
+YTD = "Year-to-date movement"
+
+
+def test_deleting_a_ytd_entry_asks_the_intake_whether_the_slice_survives(env):
+    _entry(env, name="BENT-ME", amount_basis=YTD).on_trash()
+    assert env.delete_checks == [("BCYC-1", "E1", "base", YTD, "BENT-ME")]
+
+
+def test_a_delete_that_opens_a_gap_is_refused(env):
+    env.intake.refuse_delete = "gap"
+    with pytest.raises(Thrown, match="gap"):
+        _entry(env, name="BENT-ME", amount_basis=YTD).on_trash()
+
+
+def test_a_whole_slice_replacement_may_delete_periods(env):
+    env.intake.refuse_delete = "gap"
+    with env.ctl.replacing_entries({"BENT-ME"}):
+        _entry(env, name="BENT-ME", amount_basis=YTD).on_trash()
+    assert env.delete_checks == []
+
+
+def test_a_write_judged_at_the_end_skips_the_per_entry_ytd_check(env):
+    with env.ctl.ytd_judged_at_end():
+        _entry(env, name="BENT-ME", amount_basis=YTD, fiscal_period=3).validate()
+    assert env.ytd_checks == []
+    assert not env.frappe.flags.get("budget_entry_ytd_at_end"), "the flag is put back"
+
+
+def test_the_flag_is_put_back_when_the_write_raises(env):
+    with pytest.raises(RuntimeError):
+        with env.ctl.ytd_judged_at_end():
+            raise RuntimeError("x")
+    assert not env.frappe.flags.get("budget_entry_ytd_at_end")
