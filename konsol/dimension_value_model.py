@@ -25,7 +25,7 @@ RETIRED_DOCTYPE = "Budget Cost Center"
 SEPARATOR = ":"
 
 #: The warehouse tables a declared dimension's values are read from: the gold
-#: trial balance (actuals, from every source) and the two budget input tables.
+#: trial balance (actuals, from every source) and the annual budget input.
 #: Each carries one column per dimension, named after the Dimension
 #: (schema_apply adds them; dbt builds the gold trial balance from
 #: ``var('dimensions')``). A dimension is read from every one of them that has
@@ -34,7 +34,6 @@ SEPARATOR = ":"
 VALUE_TABLES = (
     "epm_gold.gold_trial_balance",
     "epm_gold.budget_annual_input",
-    "epm_gold.budget_monthly_input",
 )
 
 #: A dimension name that may be interpolated into SQL as a column. The same

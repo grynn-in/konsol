@@ -13,6 +13,10 @@ def get_data():
                 "items": ["Consolidation Journal", "IC Balance"],
             },
             {
+                "label": "Budget",
+                "items": ["Budget Entry"],
+            },
+            {
                 "label": "Allocation",
                 "items": ["Cost Allocation Run"],
             },

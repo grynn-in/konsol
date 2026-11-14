@@ -1,0 +1,123 @@
+{
+ "name": "Budget Entry Line",
+ "doctype": "DocType",
+ "module": "EPM",
+ "issingle": 0,
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "fields": [
+  {
+   "fieldname": "main_account",
+   "fieldtype": "Link",
+   "label": "Main Account",
+   "options": "Main Account",
+   "reqd": 1,
+   "in_list_view": 1,
+   "columns": 3,
+   "description": "Must be postable."
+  },
+  {
+   "fieldname": "debit",
+   "fieldtype": "Currency",
+   "label": "Debit",
+   "options": "currency",
+   "precision": "4",
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "Positive or blank."
+  },
+  {
+   "fieldname": "credit",
+   "fieldtype": "Currency",
+   "label": "Credit",
+   "options": "currency",
+   "precision": "4",
+   "in_list_view": 1,
+   "columns": 2,
+   "description": "Positive or blank."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Data",
+   "label": "Description",
+   "in_list_view": 1,
+   "columns": 3
+  },
+  {
+   "fieldname": "header_section",
+   "fieldtype": "Section Break",
+   "label": "Copied from the Entry",
+   "collapsible": 1,
+   "hidden": 1,
+   "description": "Set from the Budget Entry on every save, so the warehouse row carries its header. Never typed here."
+  },
+  {
+   "fieldname": "cycle",
+   "fieldtype": "Link",
+   "label": "Budget Cycle",
+   "options": "Budget Cycle",
+   "reqd": 1,
+   "read_only": 1,
+   "hidden": 1,
+   "description": "The entry's Cycle. The line reaches the warehouse only while this Cycle is approved."
+  },
+  {
+   "fieldname": "scenario_id",
+   "fieldtype": "Data",
+   "label": "Scenario",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "layer",
+   "fieldtype": "Data",
+   "label": "Layer",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "data_area_id",
+   "fieldtype": "Link",
+   "label": "Entity",
+   "options": "Entity",
+   "reqd": 1,
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "header_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Int",
+   "label": "Fiscal Year",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "fiscal_period",
+   "fieldtype": "Int",
+   "label": "Fiscal Period",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Data",
+   "label": "Currency",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "amount_basis",
+   "fieldtype": "Data",
+   "label": "Amount Basis",
+   "read_only": 1,
+   "hidden": 1
+  }
+ ],
+ "permissions": []
+}

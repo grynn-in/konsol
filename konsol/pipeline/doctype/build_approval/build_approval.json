@@ -159,6 +159,14 @@
       "description": "A change arrived while this build was pending or running. One more build is requested when it finishes, or once nothing else is building if it failed to start (#129, #140)."
     },
     {
+      "fieldname": "rebuild_full_refresh",
+      "fieldtype": "Check",
+      "label": "Rebuild With Full Refresh",
+      "default": "0",
+      "read_only": 1,
+      "description": "A schema change (e.g. publishing a Dimension) arrived while this build was running. This run could not take --full-refresh, so the follow-up build runs with it (konsol#261)."
+    },
+    {
       "fieldname": "duration_seconds",
       "fieldtype": "Float",
       "label": "Duration (seconds)",
@@ -222,5 +230,5 @@
       "read": 1
     }
   ],
-  "modified": "2026-09-19 00:00:00.000000"
+  "modified": "2026-11-13 00:00:00.000000"
 }

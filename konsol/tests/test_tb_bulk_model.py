@@ -1133,3 +1133,33 @@ def test_module_imports_no_frappe():
         elif isinstance(node, ast.ImportFrom) and node.module:
             names.add(node.module.split(".")[0])
     assert "frappe" not in names, names
+
+
+# ---------------------------------------------------------------------------
+# konsol#348 M2: ANY repeated column is refused by name, with its count.
+#
+# Measured before the fix: a header with two debit columns (or `account` and
+# `main_account`) was accepted and the second column was read by nobody,
+# because the header resolves to names.index(n), the first occurrence. Only
+# currency, partner, amount_basis and dim_* had a "keep one" guard.
+# ---------------------------------------------------------------------------
+
+def test_a_repeated_required_column_is_refused_case_insensitively_with_its_count():
+    table = [HEADER + ["Debit"], ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "999"]]
+    msg = _raises(M.split_table, table, ())
+    assert "Two debit columns" in msg, msg
+    assert "keep one" in msg, msg
+
+
+def test_a_column_and_its_alias_count_as_the_same_column():
+    table = [HEADER + ["Account"], ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "2020"]]
+    msg = _raises(M.split_table, table, ())
+    assert "Two main_account columns" in msg, msg
+
+
+def test_a_column_named_three_times_gives_its_count_and_every_repeat_is_named():
+    table = [HEADER + ["period", "Fiscal Period", "entity"],
+             ["AMDE", "2025", "12", "1010", "100", "0", "EUR", "11", "10", "AMUS"]]
+    msg = _raises(M.split_table, table, ())
+    assert "Three fiscal_period columns" in msg, msg
+    assert "Two data_area_id columns" in msg, msg

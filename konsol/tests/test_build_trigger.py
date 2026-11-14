@@ -395,7 +395,8 @@ class _RequestSite:
                 sql=lambda q, *a, **k: [_Flags(name="BA-P", workflow_state=self.pending)] if self.pending else [],
                 commit=commit),
             logger=lambda: types.SimpleNamespace(info=self.logs.append, warning=self.logs.append))
-        build_lock = types.SimpleNamespace(lock_build_requests=lambda: None, flag_running_build=lambda row: None)
+        build_lock = types.SimpleNamespace(lock_build_requests=lambda: None, flag_running_build=lambda row: None,
+                                           flag_full_refresh=lambda row: None)
         controller = types.SimpleNamespace(AUTO_APPROVE_FLAG=self.flag)
         self.run = _exec_tasks({"request_build_for_scope"}, {"frappe": self.frappe},
                                {"konsol.build_lock": build_lock, CONTROLLER_MOD: controller})

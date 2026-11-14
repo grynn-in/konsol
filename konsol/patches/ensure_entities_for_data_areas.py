@@ -42,6 +42,12 @@ REFERRING_DOCTYPES = (
     # konsol#117 pair 1 (task D): the entity a group declares a method for, a
     # child row of Consolidation Group. Same column, same free guard.
     "Consolidation Method Declaration",
+    # S2-T0: Budget Entry Line copies its entry's entity for the warehouse row.
+    # A new doctype, so the table_exists() guard makes the entry free.
+    "Budget Entry Line",
+    # S2-T1: Budget Entry, the parent that declares the entity. A new doctype,
+    # so the same table_exists() guard makes the entry free.
+    "Budget Entry",
 )
 
 

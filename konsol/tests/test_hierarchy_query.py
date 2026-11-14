@@ -72,7 +72,7 @@ def test_epm_value_accepts_hierarchy_params():
 
 
 def test_budget_cell_save_validates_hierarchy_leaf():
-    block = _read("api.py").split("def budget_cell_save")[1].split("\n@frappe.whitelist")[0]
+    block = _read("api.py").split("def _save_budget_cell")[1].split("\n@frappe.whitelist")[0]
     assert "validate_hierarchy_write" in block
 
 

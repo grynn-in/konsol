@@ -154,6 +154,44 @@ def assert_open(fiscal_year, fiscal_period, action="run"):
     )
 
 
+def assert_year_not_closed(fiscal_year, action="run"):
+    """Refuse when every declared period of the year is effectively closed
+    (Closed or Locked, the stricter of the period's status and its year's).
+
+    The gate for a record keyed on a whole year, such as a Budget Cycle
+    (BUD-9-3: a budget year counts as closed when every period in it is). One
+    Open period lets the work through. An undeclared year, or a year with no
+    periods, is refused as PeriodNotDeclared, never read as open (konsol#189).
+    The year and its periods are read LOCK IN SHARE MODE, as period_row does,
+    so a concurrent close waits for (or is seen by) the work this guards.
+    """
+    try:
+        year = int(fiscal_year)
+    except (TypeError, ValueError):
+        _not_declared(frappe._("FY{0} is not a fiscal year.").format(fiscal_year))
+    years = frappe.db.sql(
+        "SELECT name, status FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE",
+        (year,),
+        as_dict=True,
+    )
+    if not years:
+        _not_declared(frappe._("FY{0} is not declared: create it in EPM Fiscal Year.").format(year))
+    rows = frappe.db.sql(
+        "SELECT status FROM `tabEPM Fiscal Year Period` "
+        "WHERE parent=%s AND parentfield='periods' LOCK IN SHARE MODE",
+        (years[0]["name"],),
+        as_dict=True,
+    )
+    if not rows:
+        _not_declared(frappe._("FY{0} has no periods: declare them in EPM Fiscal Year.").format(year))
+    if any(effective_status(years[0]["status"], r["status"]) == OPEN for r in rows):
+        return
+    frappe.throw(
+        frappe._("Cannot {0}: every period of FY{1} is closed.").format(action, year),
+        frappe.ValidationError,
+    )
+
+
 #: Status -> the EPM Fiscal Year action that moves a period row there.
 _ACTIONS = {CLOSED: "close_period", LOCKED: "lock_period", OPEN: "reopen_period"}
 

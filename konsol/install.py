@@ -329,7 +329,7 @@ def after_migrate():
     # reconcile_all(force=True) writes the journal's rows through. Placed after
     # it, the reconcile named a column the table did not have yet and logged
     # the table as skipped, then the repair ran (PR #324 re-review, finding 2).
-    _sync_budget_line_custom_fields()
+    _sync_dimension_custom_fields()
     _reconcile_clickhouse()
     _install_workflows()
     _ensure_indexes()
@@ -412,19 +412,19 @@ def _restore_asset_manifest():
             "assets_json redis eviction skipped after migrate", exc_info=True)
 
 
-def _sync_budget_line_custom_fields():
-    """Provision Budget Line's in_budget dim Custom Fields after migrate.
+def _sync_dimension_custom_fields():
+    """Provision the line doctypes' dimension Custom Fields after migrate.
 
     These columns are otherwise only synced on Dimension publish / manual schema
-    apply, but the Excel budget write path (and the reshape migration) need them
-    to exist. Best-effort — never fail a migrate over it.
+    apply, but the budget and journal write paths need them to exist.
+    Best-effort — never fail a migrate over it.
     """
     try:
         from konsol.schema_apply import _sync_budget_custom_fields
         _sync_budget_custom_fields()
     except Exception:
         frappe.logger().warning(
-            "budget line custom field sync skipped after migrate", exc_info=True)
+            "dimension custom field sync skipped after migrate", exc_info=True)
     # konsolidat#245 option D, PR #324 review finding 6: the journal's
     # ClickHouse columns need the same repair path as its Custom Fields. The
     # fields are provisioned above whatever happened earlier; without this, a
@@ -481,10 +481,8 @@ ROLES = {
     "EPM Analyst": "Group Accountant: drafts adjustments, rates, ownership, intercompany and allocations; requests builds",
     "EPM Admin": "Close Lead: runs the close, approves builds and adjustments, signs off periods",
     "Entity Accountant": "Uploads and submits trial balances and fills in the base budget, for their own entities only",
-    "Budget Submitter": "Base budget layer (kept as an alias; Entity Accountant is the new name)",
-    "Budget Controller": "Challenge budget layer",
-    "Budget Manager": "Management budget layer; locks the budget cycle",
-    "Budget Approver": "Board budget layer",
+    # The Budget* roles are retired (#348 Q7-c): a site that still holds one
+    # keeps it as site data (patches/retire_budget_roles.py); konsol creates none.
 }
 
 
@@ -509,12 +507,17 @@ def create_roles():
 
 def _ensure_indexes():
     """Indexes a doctype sync only adds when its JSON changes. Idempotent;
-    never fails a migrate."""
+    never fails a migrate, except for the budget lock indexes, which raise."""
     try:
         from konsol.consolidation.doctype.trial_balance_submission.trial_balance_submission import on_doctype_update
         on_doctype_update()
     except Exception:
         frappe.logger().warning("index setup skipped during migrate", exc_info=True)
+    # The budget locking reads' indexes (PR #522 review). Not wrapped: without
+    # them a FOR UPDATE scans the table and writers deadlock, so a failure
+    # stops the migrate instead of being logged.
+    from konsol.budget_intake import ensure_lock_indexes
+    ensure_lock_indexes()
 
 
 def _seed_defaults():
