@@ -7,8 +7,12 @@ Budget Approver. On an existing site:
   budget doctypes, and keeps the old role;
 - a Role record that has holders stays as site data: a Budget Layer may use it
   as its writer role (seed_budget_layers sets those, and runs first);
-- a Role with no holders is deleted, unless a Budget Layer names it as
-  writer_role or a Custom DocPerm grants it (both are site choices);
+- a Role with no holders is deleted, unless the site still names it: a
+  Budget Layer's writer_role, a Custom DocPerm, a Has Role row of any other
+  parent (Role Profile, Custom Role, Report, Page), a Workflow Transition's
+  ``allowed`` or a Workflow Document State's ``allow_edit``. A kept role is
+  logged with every reason; deleting it would leave those records pointing
+  at nothing;
 - the holders of Budget Manager and Budget Approver are named on the migrate
   log. None of them becomes EPM Admin: the site decides who signs off.
 
@@ -29,9 +33,22 @@ def _holders(role):
 
 
 def _site_uses(role):
-    """The site names the role itself: a layer's writer role or a custom permission."""
-    return bool(frappe.db.exists("Budget Layer", {"writer_role": role})
-                or frappe.db.exists("Custom DocPerm", {"role": role}))
+    """Every record on the site that names the role, as readable reasons;
+    empty when nothing does."""
+    reasons = []
+    layer = frappe.db.exists("Budget Layer", {"writer_role": role})
+    if layer:
+        reasons.append(f"Budget Layer {layer} names it as writer role")
+    if frappe.db.exists("Custom DocPerm", {"role": role}):
+        reasons.append("a Custom DocPerm grants it")
+    rows = frappe.get_all("Has Role", filters={"role": role, "parenttype": ["!=", "User"]},
+                          fields=["parenttype", "parent"])
+    for parent in sorted({f"{r['parenttype']} {r['parent']}" for r in rows}):
+        reasons.append(f"{parent} holds it")
+    for doctype, field in (("Workflow Transition", "allowed"), ("Workflow Document State", "allow_edit")):
+        for workflow in sorted(set(frappe.get_all(doctype, filters={field: role}, pluck="parent"))):
+            reasons.append(f"a {doctype} of Workflow {workflow} names it as {field}")
+    return reasons
 
 
 def execute():
@@ -57,8 +74,9 @@ def execute():
                   f"made EPM Admin; grant it by hand to anyone who should approve budget cycles.")
         if holders:
             continue
-        if _site_uses(role):
-            print(f"retire_budget_roles: kept {role}: no holder, but a Budget Layer or Custom DocPerm names it")
+        reasons = _site_uses(role)
+        if reasons:
+            print(f"retire_budget_roles: kept {role}: no holder, but {'; '.join(reasons)}")
             continue
         # force: the shipped DocPerm rows that still name the role are dropped
         # by the doctype sync that follows the patches, so they must not block it.
