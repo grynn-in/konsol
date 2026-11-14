@@ -109,6 +109,13 @@ def env(monkeypatch):
     frappe.get_all = get_all
     frappe.get_list = get_all
     frappe.get_roles = lambda user=None: list(state.roles)
+    frappe.flags = types.SimpleNamespace(in_install=False, in_migrate=False)
+    #: The dim_* fields each doctype's meta carries.
+    state.meta_dims = {"Budget Annual Input": ["dim_cost_center"],
+                       "Budget Entry Line": ["dim_cost_center"]}
+    frappe.get_meta = lambda dt: types.SimpleNamespace(fields=[
+        types.SimpleNamespace(fieldname=d, fieldtype="Data") for d in state.meta_dims[dt]] + [
+        types.SimpleNamespace(fieldname="dim_section", fieldtype="Section Break")])
     frappe.new_doc = forbidden
     frappe.get_doc = forbidden
     def get_values(doctype, filters=None, fields=None, as_dict=False, order_by=None, for_update=False,
@@ -548,3 +555,112 @@ def test_a_file_giving_two_bases_to_one_entity_and_layer_is_refused_in_both_peri
     for item, mine, theirs, period in ((p1, BASIS, YTD, 2), (p2, YTD, BASIS, 1)):
         assert not item["ok"]
         assert any(f"period {period}" in e and theirs in e and mine in e for e in item["errors"]), item["errors"]
+
+
+# ---- Q16-c: a grain takes its numbers from one writer -----------------------------
+
+def _annual_input(name="BAI-1", layer="base", account="4000", cc="CC1", entity="E1", year=2027,
+            scenario="BUD"):
+    return {"name": name, "scenario_id": scenario, "fiscal_year": year, "data_area_id": entity,
+            "layer": layer, "main_account": account, "dim_cost_center": cc}
+
+
+def _line(parent="BENT-P3", period=3, layer="base", account="4000", cc="CC1", entity="E1", year=2027,
+          scenario="BUD"):
+    return {"parent": parent, "parenttype": "Budget Entry", "scenario_id": scenario,
+            "fiscal_year": year, "data_area_id": entity, "layer": layer, "fiscal_period": period,
+            "main_account": account, "dim_cost_center": cc}
+
+
+def _entry_side(env, lines, **kw):
+    args = dict(scenario_id="BUD", fiscal_year=2027, entity="E1", layer="base", entry="BENT-P3",
+                period=3)
+    args.update(kw)
+    env.mod.assert_no_annual_input(args.pop("scenario_id"), args.pop("fiscal_year"),
+                                   args.pop("entity"), args.pop("layer"), lines, **args)
+
+
+def test_an_entry_line_on_an_annual_input_grain_is_refused_naming_it_and_the_way_out(env):
+    env.data["Budget Annual Input"] = [_annual_input()]
+    with pytest.raises(Thrown) as raised:
+        _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}])
+    msg = str(raised.value)
+    assert "Budget Annual Input BAI-1" in msg and "4000" in msg and "period 3" in msg, msg
+    assert "delete Budget Annual Input BAI-1" in msg.lower()
+    assert "enter the year as monthly entries" in msg, msg
+
+
+@pytest.mark.parametrize("other", [dict(layer="board"), dict(cc="CC2"), dict(account="6000"),
+                                   dict(entity="E2"), dict(year=2028), dict(scenario="OLD")])
+def test_an_annual_input_on_another_grain_does_not_refuse_the_entry(env, other):
+    env.data["Budget Annual Input"] = [_annual_input(**other)]
+    _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}])
+
+
+def test_a_blank_dimension_matches_an_unset_one_across_the_writers(env):
+    env.data["Budget Annual Input"] = [_annual_input(cc=None)]
+    with pytest.raises(Thrown, match="BAI-1"):
+        _entry_side(env, [{"main_account": "4000", "dim_cost_center": ""}])
+
+
+def test_the_entry_side_reads_the_annual_inputs_with_a_locking_read(env):
+    _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}])
+    ((doctype, filters, for_update, _order),) = env.state.locked_reads
+    assert doctype == "Budget Annual Input" and for_update
+    assert (filters["scenario_id"], filters["fiscal_year"], filters["data_area_id"], filters["layer"]) == (
+        "BUD", 2027, "E1", "base")
+
+
+def test_an_entry_without_lines_reads_nothing(env):
+    _entry_side(env, [])
+    assert env.state.locked_reads == []
+
+
+def _annual_side(env, **over):
+    row = {"scenario_id": "BUD", "fiscal_year": 2027, "data_area_id": "E1", "layer": "base",
+           "main_account": "4000", "dim_cost_center": "CC1"}
+    row.update(over)
+    env.mod.assert_no_entry_lines(row, name="BAI-NEW")
+
+
+def test_an_annual_input_on_a_budget_entry_grain_is_refused_naming_the_entry_and_period(env):
+    env.data["Budget Entry Line"] = [_line(parent="BENT-P3", period=3)]
+    with pytest.raises(Thrown) as raised:
+        _annual_side(env)
+    msg = str(raised.value)
+    assert "Budget Entry BENT-P3" in msg and "period 3" in msg and "4000" in msg, msg
+
+
+@pytest.mark.parametrize("other", [dict(layer="board"), dict(cc="CC2"), dict(account="6000"),
+                                   dict(entity="E2"), dict(year=2028), dict(scenario="OLD")])
+def test_a_budget_entry_line_on_another_grain_does_not_refuse_the_annual_input(env, other):
+    env.data["Budget Entry Line"] = [_line(**other)]
+    _annual_side(env)
+
+
+def test_the_annual_side_matches_a_blank_dimension_to_an_unset_one(env):
+    env.data["Budget Entry Line"] = [_line(cc="")]
+    with pytest.raises(Thrown, match="BENT-P3"):
+        _annual_side(env, dim_cost_center=None)
+
+
+def test_the_annual_side_reads_the_entry_lines_with_a_locking_read(env):
+    _annual_side(env)
+    ((doctype, filters, for_update, _order),) = env.state.locked_reads
+    assert doctype == "Budget Entry Line" and for_update
+    assert filters["parenttype"] == "Budget Entry"
+
+
+def test_lock_cycles_locks_every_cycle_of_the_scenario_and_year(env):
+    names = env.mod.lock_cycles("BUD", 2027)
+    assert names == ["BCYC-BUD-2027"]
+    ((doctype, filters, for_update, order_by),) = env.state.locked_reads
+    assert doctype == "Budget Cycle" and for_update and order_by == "name asc"
+    assert filters == {"scenario_id": "BUD", "fiscal_year": 2027}
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_lock_cycles_is_skipped_in_install_and_migrate(env, flag):
+    setattr(env.mod.frappe.flags, flag, True)
+    assert env.mod.lock_cycles("BUD", 2027) == []
+    assert env.state.locked_reads == []
