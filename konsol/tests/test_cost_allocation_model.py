@@ -663,3 +663,23 @@ def test_parse_csv_row_cap_is_20000():
 def test_parse_csv_skips_blank_lines_but_counts_them_in_row_numbers():
     errs = _csv_errors("fiscal_period,member,value\n\n1,ZZIT,bad\n")
     assert any("row 3" in e.lower() for e in errs)
+
+
+# --- KF1 finding 9: a step fits the warehouse UInt16 column ---------------------
+
+def test_validation_step_below_one_is_refused():
+    rs = _rs(rules=[{"step": 0, "sender_member": "HR", "driver": "Headcount"},
+                    {"step": 2, "sender_member": "IT", "driver": "Headcount"}])
+    assert _has(_errors(rs), "between 1 and 65535")
+
+
+def test_validation_step_above_65535_is_refused_and_65535_is_allowed():
+    rs = _rs(rules=[{"step": 1, "sender_member": "HR", "driver": "Headcount"},
+                    {"step": 65536, "sender_member": "IT", "driver": "Headcount"}])
+    assert _has(_errors(rs), "between 1 and 65535")
+    rs = _rs(rules=[{"step": 1, "sender_member": "HR", "driver": "Headcount"},
+                    {"step": 65535, "sender_member": "IT", "driver": "Headcount"}],
+             receivers=[{"step": 1, "receiver_member": "IT"}, {"step": 1, "receiver_member": "Sales"},
+                        {"step": 65535, "receiver_member": "Sales"},
+                        {"step": 65535, "receiver_member": "Ops"}])
+    assert not _has(_errors(rs), "between 1 and 65535")
