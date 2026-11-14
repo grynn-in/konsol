@@ -198,10 +198,15 @@ def required_accounts(policy, deal):
     """The declared-account fieldnames a deal needs, in ACCOUNT_FIELDS order.
 
     ``policy`` is the group root (dict or document); ``deal`` is a dict with
-    ``kind`` ("acquisition" unless "disposal"), ``share_pct``, ``goodwill``
+    ``kind`` ("acquisition" unless "disposal" or "exit"), ``share_pct``, ``goodwill``
     (negative for a bargain purchase) and ``has_costs``.
     """
-    if _text(_get(deal, "kind")).lower() == "disposal":
+    kind = _text(_get(deal, "kind")).lower()
+    if kind == "exit":
+        # a link that ends with no deal document (konsolidat#335): the balance
+        # that derecognition leaves lands on one declared account, no fallback
+        needed = {"exit_gain_loss_account"}
+    elif kind == "disposal":
         needed = {"goodwill_account", "disposal_gain_loss_account", "disposal_proceeds_account"}
     else:
         needed = {"goodwill_account", "fair_value_adjustment_account", "investment_account"}

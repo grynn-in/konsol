@@ -33,6 +33,7 @@ from frappe.model.document import Document
 from frappe.utils import getdate
 
 from konsol.clickhouse import after_commit_once, sync_doctype_after_commit
+from konsol.consolidation_policy_model import LABELS, required_accounts
 from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
 from konsol.ownership_graph_model import ownership_edges, path_between
 from konsol.period_status import assert_open_between, first_period_affected
@@ -261,6 +262,31 @@ class OwnershipPeriod(Document):
         self._validate_dates_representable()
         self._check_no_gaps_or_overlaps()
         self._check_total_issued()
+        self._validate_exit_account()
+
+    def _validate_exit_account(self):
+        """konsolidat#335: a link that ends (end_date, not a disposal, not
+        superseded by a successor) derecognises what it carried, and the
+        balance lands on the root's exit account. Refuse the end until the
+        root declares it; equity-method and proportional links alike. The
+        successor path end-dates its predecessor with db_set and never
+        reaches validate."""
+        if not self.get("end_date") or int(self.get("is_disposal") or 0):
+            return
+        if frappe.db.exists("Ownership Period", {"supersedes": self.get("name"), "docstatus": 1}):
+            return
+        node = self._node()
+        root = node_root(node) if node else self.consolidation_group
+        fields = required_accounts(None, {"kind": "exit"})
+        declared = frappe.db.get_value("Consolidation Group", root, ["consolidation_group", *fields], as_dict=True)
+        for field in fields:
+            if not getattr(declared, field, None):
+                frappe.throw(
+                    f"{LABELS[field]} is not declared on the group root '{getattr(declared, "consolidation_group", None) or root}'. "
+                    f"Ending this ownership on {self.end_date} without a successor "
+                    f"derecognises the entity, and the balance needs that account. "
+                    f"Declare it on the Consolidation Group root, then save again."
+                )
 
     def before_cancel(self):
         """Cancel only while every period this ownership covers is open (#136):
