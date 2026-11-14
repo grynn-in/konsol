@@ -253,7 +253,8 @@ def env(monkeypatch):
 
     intake = types.ModuleType("konsol.budget_intake")
 
-    def plan(table, *, form_basis, name_lines):
+    def plan(table, *, form_basis, name_lines, whole_slices):
+        assert whole_slices is True, "an upload states each slice whole"
         state.plan_calls.append((table, form_basis))
         state.plan_lines.append(name_lines)
         if state.plan_raises:
