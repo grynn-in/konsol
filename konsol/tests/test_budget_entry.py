@@ -297,6 +297,12 @@ def env(monkeypatch):
         if intake.refuse_basis:
             frappe.throw(intake.refuse_basis, Thrown)
     intake.assert_one_basis = assert_one_basis
+    ytd_checks = []
+
+    def assert_ytd_complete(cycle, entity, layer, basis, period, *, name, replacing=()):
+        locks.append(("ytd check", cycle))
+        ytd_checks.append((cycle, entity, layer, basis, period, name, set(replacing)))
+    intake.assert_ytd_complete = assert_ytd_complete
     intake.refuse_basis = None
     grain_checks = []
 
@@ -326,7 +332,7 @@ def env(monkeypatch):
     return types.SimpleNamespace(ctl=ctl, cycles=cycles, entries=entries, frappe=frappe,
                                  grain=loaded["konsol.epm.budget_grain"], sql=sql_calls,
                                  judged=judged, intake=intake, locks=locks, removed=removed,
-                                 held_elsewhere=held_elsewhere, basis_checks=basis_checks,
+                                 held_elsewhere=held_elsewhere, basis_checks=basis_checks, ytd_checks=ytd_checks,
                                  grain_checks=grain_checks)
 
 
@@ -640,6 +646,20 @@ def test_entries_being_replaced_are_passed_to_the_basis_check(env):
         _entry(env, name="BENT-A").validate()
     assert env.basis_checks[0][5] == {"BENT-A", "BENT-B"}
     assert not env.frappe.flags.get("budget_entry_replacing"), "the flag is put back"
+
+
+def test_validate_checks_ytd_completeness_after_the_basis_check(env):
+    doc = _entry(env, name="BENT-ME", amount_basis="Year-to-date movement", fiscal_period=7)
+    doc.validate()
+    assert env.ytd_checks == [("BCYC-1", "E1", "base", "Year-to-date movement", 7, "BENT-ME", set())]
+    assert env.locks.index(("basis check", "BCYC-1")) < env.locks.index(("ytd check", "BCYC-1"))
+
+
+def test_a_whole_slice_replacement_skips_the_ytd_check(env):
+    # A Budget Upload's plan judged the file's every period of the slice.
+    with env.ctl.replacing_entries(set()):
+        _entry(env, name="BENT-ME", amount_basis="Year-to-date movement").validate()
+    assert env.ytd_checks == []
 
 
 @pytest.mark.parametrize("flag", ["in_install", "in_migrate"])

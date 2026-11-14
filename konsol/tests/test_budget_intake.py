@@ -167,9 +167,9 @@ def env(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    def plan(table, form_basis=BASIS, name_lines=True):
+    def plan(table, form_basis=BASIS, name_lines=True, **kw):
         frappe.session.user = state.user
-        return mod.plan(table, form_basis=form_basis, name_lines=name_lines)
+        return mod.plan(table, form_basis=form_basis, name_lines=name_lines, **kw)
 
     return types.SimpleNamespace(mod=mod, data=data, state=state, plan=plan)
 
@@ -807,3 +807,80 @@ def test_a_one_writer_refusal_raises_its_own_error_class(env):
     env.data["Budget Entry Line"] = [_line()]
     with pytest.raises(env.mod.SecondWriterError):
         _annual_side(env)
+
+
+# ---- Q21 (a): a Year-to-date slice states every period from 1 to its last --------
+
+def _ytd_plan(env, periods, entity="E1", layer="base", whole_slices=True):
+    table = [HEADER] + [_row(entity=entity, layer=layer, period=str(p)) for p in periods]
+    return env.plan(table, form_basis=YTD, whole_slices=whole_slices)
+
+
+def test_a_ytd_slice_that_starts_late_is_refused_naming_the_slice_and_periods(env):
+    errors = _errors(_ytd_plan(env, range(7, 13)))
+    assert errors and all("Year-to-date lines for E1 base state periods 7\u201312 but not 1\u20136. "
+                          "State every period from 1, or use the Movement basis." in e for e in errors), errors
+
+
+def test_a_ytd_slice_that_skips_a_period_is_refused(env):
+    errors = _errors(_ytd_plan(env, [1, 2, 4]))
+    assert errors and all("state periods 1\u20132, 4 but not 3." in e for e in errors), errors
+
+
+def test_a_ytd_slice_from_period_1_without_gaps_is_accepted(env):
+    assert _errors(_ytd_plan(env, [1, 2, 3])) == []
+
+
+def test_a_movement_slice_may_start_late_and_skip(env):
+    table = [HEADER, _row(period="7"), _row(period="9")]
+    assert _errors(env.plan(table, form_basis=BASIS, whole_slices=True)) == []
+
+
+def test_each_slice_is_judged_alone(env):
+    table = [HEADER, _row(period="1"), _row(period="2"), _row(entity="E2", period="2")]
+    errors = _errors(env.plan(table, form_basis=YTD, whole_slices=True))
+    assert len(errors) == 1 and "for E2 base" in errors[0], errors
+
+
+def test_a_single_entry_writer_is_not_judged_by_the_plan(env):
+    # One cell is one period: the slice's other periods are read under lock
+    # by assert_ytd_complete, not known to the plan.
+    assert _errors(_ytd_plan(env, [7], whole_slices=False)) == []
+
+
+def _saved(env, *periods, basis=YTD, **kw):
+    env.data["Budget Entry"] = [_entry_row(f"BENT-P{p}", p, basis, **kw) for p in periods]
+
+
+def test_a_write_that_leaves_a_saved_slice_with_a_gap_is_refused(env):
+    _saved(env, 1, 2)
+    with pytest.raises(Thrown) as raised:
+        env.mod.assert_ytd_complete("BCYC-BUD-2027", "E1", "base", YTD, 4, name="BENT-P4")
+    assert "Year-to-date lines for E1 base state periods 1\u20132, 4 but not 3." in str(raised.value)
+
+
+def test_the_next_period_after_the_saved_ones_is_accepted(env):
+    _saved(env, 1, 2)
+    env.mod.assert_ytd_complete("BCYC-BUD-2027", "E1", "base", YTD, 3, name="BENT-P3")
+
+
+def test_a_first_write_must_be_period_1(env):
+    env.mod.assert_ytd_complete("BCYC-BUD-2027", "E1", "base", YTD, 1, name="BENT-P1")
+    with pytest.raises(Thrown, match="but not 1\u20136"):
+        env.mod.assert_ytd_complete("BCYC-BUD-2027", "E1", "base", YTD, 7, name="BENT-P7")
+
+
+def test_rewriting_a_saved_period_does_not_count_it_twice(env):
+    _saved(env, 1, 2, 3)
+    env.mod.assert_ytd_complete("BCYC-BUD-2027", "E1", "base", YTD, 2, name="BENT-P2")
+
+
+def test_a_movement_write_is_not_judged(env):
+    env.mod.assert_ytd_complete("BCYC-BUD-2027", "E1", "base", BASIS, 7, name="BENT-P7")
+    assert env.state.locked_reads == []
+
+
+def test_the_completeness_check_reads_the_slice_with_a_locking_read(env):
+    env.mod.assert_ytd_complete("BCYC-BUD-2027", "E1", "base", YTD, 1, name="BENT-P1")
+    ((doctype, filters, for_update, _order),) = env.state.locked_reads
+    assert doctype == "Budget Entry" and for_update
