@@ -11,6 +11,7 @@
  "fields": [
   {
    "fieldname": "scenario_id",
+   "set_only_once": 1,
    "fieldtype": "Link",
    "options": "Scenario",
    "label": "Scenario",
@@ -29,6 +30,7 @@
   },
   {
    "fieldname": "data_area_id",
+   "set_only_once": 1,
    "fieldtype": "Link",
    "options": "Entity",
    "label": "Entity",
@@ -37,6 +39,7 @@
   },
   {
    "fieldname": "fiscal_year",
+   "set_only_once": 1,
    "fieldtype": "Int",
    "label": "Fiscal Year",
    "reqd": 1,
@@ -44,6 +47,7 @@
   },
   {
    "fieldname": "main_account",
+   "set_only_once": 1,
    "fieldtype": "Link",
    "options": "Main Account",
    "label": "Main Account",
@@ -52,6 +56,7 @@
   },
   {
    "fieldname": "layer",
+   "set_only_once": 1,
    "fieldtype": "Link",
    "options": "Budget Layer",
    "label": "Layer",
