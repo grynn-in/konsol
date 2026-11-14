@@ -114,8 +114,6 @@ MATRIX = {
     # bulk trial balance upload: only the role that submits trial balances loads
     # it holds every entity's figures, so not even read for the Analyst
     "Trial Balance Upload": {"EPM Admin": "rwcd", "EPM Analyst": ""},
-    "Budget Sheet": {"Budget Submitter": "rwc", "Entity Accountant": "rwc", "Budget Controller": "rw",
-                     "Budget Manager": "rw", "Budget Approver": "rw"},
     # konsol#348 S2-C W2a (BUD-9-3): the Analyst drafts and sends, the Close
     # Lead approves (submits) and cancels; no Budget* role row remains
     "Budget Cycle": {"EPM Admin": "rwcsxa", "EPM Analyst": "rwc", "Entity Accountant": "r", "EPM User": "r",

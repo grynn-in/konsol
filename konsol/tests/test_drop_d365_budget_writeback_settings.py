@@ -1,7 +1,7 @@
 """EPM Settings no longer carries the D365 budget write-back (Q9-a on #348).
 
-Deepak Pai decided to retire the D365 budget write-back with Budget Sheet
-(konsol#348, option Q9-a; rejected: keep the write-back and its settings).
+Deepak Pai decided to retire the D365 budget write-back with the bottom-up
+sheets (konsol#348, option Q9-a; rejected: keep the write-back and its settings).
 The doctype loses its fields; the patch deletes a site's stored values from
 tabSingles and the client secret from __Auth. A second run deletes nothing new.
 """

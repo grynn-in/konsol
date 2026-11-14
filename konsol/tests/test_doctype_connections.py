@@ -20,15 +20,10 @@ def _items(data):
     return [item for group in data.get("transactions", []) for item in group.get("items", [])]
 
 
-def test_budget_cycle_links_sheets():
+def test_budget_cycle_links_entries():
     data = _load_dashboard("epm/doctype/budget_cycle/budget_cycle_dashboard.py")
-    assert "Budget Sheet" in _items(data)
-    assert data["non_standard_fieldnames"]["Budget Sheet"] == "cycle"
-
-
-def test_budget_sheet_links_cycle():
-    data = _load_dashboard("epm/doctype/budget_sheet/budget_sheet_dashboard.py")
-    assert data["internal_links"]["Budget Cycle"] == "cycle"
+    assert _items(data) == ["Budget Entry"]
+    assert data["fieldname"] == "cycle"
 
 
 def test_scenario_links_budget_cycles():

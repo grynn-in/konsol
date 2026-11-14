@@ -559,7 +559,7 @@ def test_cell_save_is_post_only_and_has_no_clamp_or_auto_create():
     assert decorators == ['frappe.whitelist(methods=["POST"])'], decorators
     body = ast.get_source_segment(src, fn)
     for gone in ("fiscal_period must be 1-12", "normalize_layer", "_resolve_budget_cycle",
-                 "Budget Sheet", "frappe.db.commit"):
+                 "frappe.db.commit"):
         assert gone not in body, gone
     assert "budget_intake" in body
 
@@ -628,7 +628,8 @@ def test_a_batch_must_be_a_list(cell):
 def test_the_sheet_path_is_gone_from_api():
     with open(API_PATH) as f:
         src = f.read()
-    for gone in ("def _get_or_create_sheet", "def _upsert_budget_line", "Budget Sheet"):
+    # Every mention is pinned gone by test_retire_budget_sheet_line_patch.py.
+    for gone in ("def _get_or_create_sheet", "def _upsert_budget_line"):
         assert gone not in src, gone
 
 

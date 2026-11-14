@@ -9,8 +9,8 @@ link inside Close only.
 
 The rail entry Budget became Planning (Deepak Pai, 7 Nov 2026, option B on
 #443; rejected A, separate Budget and Forecast rail entries; C, Forecast
-doctypes; D, unfiltered duplicates). Budget and forecast share Budget Cycle,
-Budget Sheet and Budget Annual Input; a forecast is one whose Scenario has
+doctypes; D, unfiltered duplicates). Budget and forecast share Budget Cycle
+and Budget Annual Input; a forecast is one whose Scenario has
 ``scenario_type = forecast``. Planning's sidebar lists each of them filtered
 to budget, filtered to forecast, and unfiltered under Shared.
 
@@ -116,11 +116,9 @@ SIDEBARS = {
         ("Workspace", "Planning", "Home"),
         ("Section", "Budget"),
         ("DocType", "Budget Cycle", "budget"),
-        ("DocType", "Budget Sheet", "budget"),
         ("DocType", "Budget Annual Input", "budget"),
         ("Section", "Forecast"),
         ("DocType", "Budget Cycle", "forecast"),
-        ("DocType", "Budget Sheet", "forecast"),
         ("DocType", "Budget Annual Input", "forecast"),
         ("Section", "Shared"),
         ("DocType", "Scenario"),
@@ -128,7 +126,6 @@ SIDEBARS = {
         ("DocType", "Budget Layer"),
         ("DocType", "Budget Upload"),
         ("DocType", "Budget Cycle"),
-        ("DocType", "Budget Sheet"),
         ("DocType", "Budget Entry"),
         ("DocType", "Budget Annual Input"),
     ]),
@@ -430,7 +427,7 @@ def test_only_declared_pairs_are_filtered_and_each_link_claims_its_doctype():
 
 
 #: Budget and forecast share these doctypes (#443).
-PLANNING_DOCTYPES = ("Budget Cycle", "Budget Sheet", "Budget Annual Input")
+PLANNING_DOCTYPES = ("Budget Cycle", "Budget Annual Input")
 
 
 def test_the_planning_doctypes_are_all_on_planning():
@@ -444,7 +441,7 @@ def test_the_unfiltered_planning_links_say_all():
     #443; rejected A, C, D)."""
     labels = _labels()
     assert [labels[dt] for dt in PLANNING_DOCTYPES] == [
-        "All Cycles", "All Sheets", "All Annual Inputs"]
+        "All Cycles", "All Annual Inputs"]
 
 
 def test_no_sidebar_shows_one_label_twice():

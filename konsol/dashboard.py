@@ -50,7 +50,6 @@ _LABELS = {
     "Period Status": "Period Statuses",
     "EPM Fiscal Year": "Fiscal Year",
     "Budget Cycle": "Budget Cycles",
-    "Budget Sheet": "Budget Sheets",
     "Dimension Value": "Dimension Values",
     "Spread Profile": "Spread Profiles",
     "Consolidation Group": "Consolidation Groups",
@@ -102,7 +101,7 @@ _CARDS = [
         "Period Status",
     ]),
     ("Budgeting & Planning", [
-        "Budget Cycle", "Budget Sheet", "Dimension Value", "Spread Profile",
+        "Budget Cycle", "Dimension Value", "Spread Profile",
     ]),
     ("Consolidation", [
         "Consolidation Group", "Ownership Period", "Historical Equity Rate",

@@ -4,11 +4,10 @@ konsolidat#146: this was `seeds/budget_annual_input.csv`, the last seed the dbt
 project owned. Like the ISO currency and fiscal-calendar lists it had no second
 writer, but budget figures are not something a transform repo should hold.
 
-konsol already owned the *bottom-up* path — Budget Cycle → Budget Sheet →
-Budget Line, exploded into `epm_gold.budget_monthly_input` per period. This is
-the other half: one annual number plus a Spread Profile, which
-`gold_spread_budget` turns into twelve monthly rows. The two branches of that
-model are now both konsol's.
+konsol already owned the *bottom-up* path — Budget Cycle → Budget Entry →
+Budget Entry Line, written through to `epm_raw.budget_entries` (konsol#348
+S2-I). This is the other half: one annual number plus a Spread Profile, which
+`gold_spread_budget` turns into twelve monthly rows.
 """
 import frappe
 from frappe.model.document import Document
@@ -221,7 +220,7 @@ class BudgetAnnualInput(Document):
         dedup and no aggregation, so two rows at the same grain produce two sets
         of twelve monthly rows and the budget silently doubles. The CSV this
         replaced had implicit uniqueness; autoname is `hash`, so nothing here
-        does. Budget Sheet protects its own grain the same way, via digest_name.
+        does. Budget Entry protects its own grain the same way, via digest_name.
         """
         grain = {
             "scenario_id": self.scenario_id,

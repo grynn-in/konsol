@@ -18,7 +18,7 @@ balance's private list, and its other consumers require no ``dim_`` prefix:
   * ``schema_apply`` spells fact-table columns with ``_SAFE_IDENTIFIER``,
     ``^[a-z][a-z0-9_]*$`` — no prefix;
   * ``budget_grain.budget_dimension_names()`` returns raw ``dimension_name``
-    values and uses them as Budget Line fieldnames — no prefix; and
+    values and uses them as budget line fieldnames — no prefix; and
   * ``test_hierarchy_node_ambiguity`` already stubs that function as
     ``["business_unit"]``, so a name with no prefix is the shape the existing
     suite tests this code against.
@@ -297,7 +297,7 @@ def test_that_refusal_offers_the_other_way_out():
     """Renaming is one fix; not declaring it for the trial balance is the other.
 
     A dimension the site uses for budgets may simply not belong on a trial
-    balance, and renaming it would rewrite every Budget Line fieldname built
+    balance, and renaming it would rewrite every budget line fieldname built
     from it. The message must not present the rename as the only move.
     """
     msg = _refusal(BUDGET_ONLY_NAME).lower()
