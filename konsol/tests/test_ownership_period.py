@@ -1604,3 +1604,58 @@ def test_is_disposal_exempts_only_with_a_full_business_disposal_on_the_end():
 
 def test_validate_calls_the_exit_account_rule():
     assert "_validate_exit_account()" in _method_body(_src(), "validate")
+
+
+# --- a re-entry is an acquisition (konsolidat#335 review F4, X14) ------------
+
+def _reentry_doc(held=(), deals=(), sales=(), calls=None, **changes):
+    """A period starting 2026-01-01 validated against the node's other
+    submitted periods (``held``), its submitted Business Combinations
+    (``deals``: acquisition dates) and Business Disposals (``sales``)."""
+    module = _load(_no_flags())
+
+    def get_all(doctype, filters=None, fields=None, **k):
+        if calls is not None:
+            calls.append((doctype, filters))
+        rows = {"Ownership Period": held, "Business Disposal": sales,
+                "Business Combination": [dict(acquisition_date=d) for d in deals]}[doctype]
+        return [types.SimpleNamespace(**r) for r in rows]
+
+    module.frappe.get_all = get_all
+    return _doc(module, **{"effective_date": "2026-01-01", "end_date": None, **changes})
+
+
+def _gone(end="2025-06-30"):
+    return dict(effective_date="2023-01-01", end_date=end, consolidation_method="full")
+
+
+def test_a_re_entry_after_an_exit_without_a_combination_is_refused_by_the_sentence():
+    with pytest.raises(_Refused) as e:
+        _reentry_doc(held=[_gone()])._validate_reentry()
+    msg = str(e.value)
+    assert "left the group on 2025-06-30 without a Business Disposal" in msg
+    assert "Business Combination dated 2026-01-01" in msg
+
+
+def test_a_re_entry_with_a_combination_on_its_start_passes():
+    calls = []
+    _reentry_doc(held=[_gone()], deals=["2026-01-01"], calls=calls)._validate_reentry()
+    assert [c for c in calls if c[0] == "Business Combination"], calls
+
+
+def test_a_contiguous_successor_or_a_first_entry_needs_no_combination():
+    _reentry_doc(held=[_gone()], effective_date="2025-07-01")._validate_reentry()
+    _reentry_doc()._validate_reentry()
+
+
+def test_a_re_entry_after_a_full_disposal_is_refused_too():
+    held = [dict(_gone(), is_disposal=1)]
+    sales = [dict(disposal_date="2025-06-30", retained_interest_pct=0.0)]
+    with pytest.raises(_Refused) as e:
+        _reentry_doc(held=held, sales=sales)._validate_reentry()
+    assert "Business Disposal" in str(e.value) and "Business Combination dated 2026-01-01" in str(e.value)
+
+
+def test_a_group_node_and_a_non_live_period_are_not_checked():
+    _reentry_doc(held=[_gone()], data_area_id=None)._validate_reentry()
+    _reentry_doc(held=[_gone()], consolidation_method="none")._validate_reentry()
