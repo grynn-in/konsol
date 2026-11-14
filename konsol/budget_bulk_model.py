@@ -71,11 +71,14 @@ PERIOD_END_REFUSAL = (
 
 __all__ = ("ALIASES", "MAX_LINE_ERRORS", "BudgetKey", "REQUIRED", "OPTIONAL", "ACCEPTED", "HEADER_HELP",
            "DIMENSION_FLAG", "PARTNER_REFUSAL", "CONTRACT", "split_table", "table_from_csv",
-           "group_basis", "resolve_basis", "check_group", "ACTUAL", "BUDGET_BASES", "PERIOD_END_REFUSAL")
+           "group_basis", "resolve_basis", "check_group", "ACTUAL", "BUDGET_BASES", "PERIOD_END_REFUSAL",
+           "FORECAST", "cycle_round_problems", "as_of_key", "in_round")
 
 SCENARIO = "scenario"
 #: The Scenario.scenario_type a budget file may not load into.
 ACTUAL = "actual"
+#: The one Scenario.scenario_type whose Cycles are rounds (#348 QB8 a).
+FORECAST = "forecast"
 LAYER = "layer"
 REQUIRED = (SCENARIO, LAYER) + TB_REQUIRED
 #: Optional columns a file may carry, beyond REQUIRED. No partner (Q2-c).
@@ -315,3 +318,61 @@ def cycle_closed_to_writes(cycle, workflow):
     cancelled Cycle does not (19-b: under an amended pair it is the audit
     trail). Never read a lock status field: the Cycle has none since S2-C W2a."""
     return int(cycle["docstatus"]) == 1 or cycle_pending_refusal(cycle, workflow) is not None
+
+
+# ---- forecast rounds (#348 S3, Q23 a / Q24 a / QB8 a) ---------------------------------
+#
+# A Budget Cycle of a forecast scenario is one round, keyed by (scenario,
+# fiscal year, as-of date); a rolling round that crosses the year end is one
+# Cycle per fiscal year, sharing the as-of date. A Cycle of any other type is
+# the pair (scenario, fiscal year) alone, and carries no round field.
+
+def as_of_key(value):
+    """The round key of an as-of date as the Cycle comparison and the Cycle
+    name read it: 'YYYY-MM-DD', or '' for nothing. A date, a datetime or a
+    string ('2026-03-31', as Frappe hands a Date field in) all give the same
+    key, so a draft and a saved row compare equal."""
+    if value is None:
+        return ""
+    return str(value).strip()[:10]
+
+
+def cycle_round_problems(scenario_type, as_of_date, horizon_periods):
+    """Why a Budget Cycle's round fields are refused, one sentence each, or [].
+
+    A forecast Cycle needs an As-of Date and a Horizon of 1 or more periods
+    (Q23 a). Any other type (budget, strategic, operational) has no rounds
+    (QB8 a), so a value in either field is refused, naming the type: a date
+    left on a budget Cycle would otherwise look like a round. A horizon of 0
+    counts as blank: an Int column holds unset and 0 the same."""
+    problems = []
+    has_date = bool(as_of_key(as_of_date))
+    try:
+        horizon = int(str(horizon_periods).strip()) if horizon_periods not in (None, "") else 0
+    except ValueError:
+        horizon = None  # not a number: refused below as "fewer than 1"
+    if scenario_type == FORECAST:
+        if not has_date:
+            problems.append("A forecast Cycle needs an As-of Date: the round is identified by its scenario, "
+                            "fiscal year and as-of date. Give the actuals cut-off the round forecasts from.")
+        if horizon is None or horizon < 1:
+            problems.append("A forecast Cycle needs a Horizon of 1 or more periods: how many periods the "
+                            "round covers from its as-of date.")
+        return problems
+    if has_date:
+        problems.append(f"A {scenario_type} Cycle has no forecast round: leave As-of Date blank "
+                        "(only a forecast scenario has rounds).")
+    if horizon_periods not in (None, "") and horizon != 0:
+        problems.append(f"A {scenario_type} Cycle has no forecast round: leave Horizon blank "
+                        "(only a forecast scenario has rounds).")
+    return problems
+
+
+def in_round(scenario_type, cycle, as_of_date):
+    """Whether `cycle`, a Cycle row of the pair as konsol.budget_intake.lock_cycles
+    returns it ({name, docstatus, workflow_state, as_of_date}), is in the round
+    of `as_of_date`. For a forecast the round is the as-of date; for every
+    other type the pair is the round, so every row of the pair is in it."""
+    if scenario_type != FORECAST:
+        return True
+    return as_of_key(cycle.get("as_of_date")) == as_of_key(as_of_date)
