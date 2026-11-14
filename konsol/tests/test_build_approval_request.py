@@ -797,7 +797,7 @@ def _finish(state, scope, runs_exist, flagged=0, isolated=("allocation",)):
         return "CAR-1" if runs_exist else None
 
     frappe = types.SimpleNamespace(
-        db=types.SimpleNamespace(sql=lambda *a, **k: [[flagged]], commit=lambda: None,
+        db=types.SimpleNamespace(sql=lambda *a, **k: [[flagged, 0]], commit=lambda: None,
                                  rollback=lambda: None, exists=exists),
         utils=types.SimpleNamespace(now_datetime=lambda: None),
         publish_realtime=lambda *a, **k: None,
@@ -805,6 +805,7 @@ def _finish(state, scope, runs_exist, flagged=0, isolated=("allocation",)):
     )
     ns = {"frappe": frappe, "_set_duration": lambda d: None,
           "isolated_scopes": lambda: list(isolated),
+          "follow_up_full_refresh": lambda d: 0,
           "request_build_for_scope": lambda *a, **k: requests.append((a, k))}
     mods = {"konsol.build_lock": types.SimpleNamespace(build_writer=build_writer),
             "konsol.close": types.SimpleNamespace(

@@ -484,6 +484,12 @@ def test_a_follow_up_is_flagged_by_every_caller():
                      (REAPER, "follow_up_failed_starts")):
         calls = [n for n in ast.walk(_fn(path, fn)) if isinstance(n, ast.Call)
                  and getattr(n.func, "id", "") == "request_build_for_scope"]
+        if fn == "_finish_governed_build":
+            # K10 (konsol#269): the allocation build is a request of its own,
+            # not a follow-up of absorbed changes; every other call is.
+            alloc = [c for c in calls if ast.unparse(c.args[0]) == "ALLOCATION_SCOPE"]
+            assert len(alloc) == 1 and not alloc[0].keywords, fn
+            calls = [c for c in calls if c not in alloc]
         # full_refresh= rides along (#261); carries_changes is always True
         assert calls and all("carries_changes=True" in map(ast.unparse, c.keywords) for c in calls), fn
         assert all(k.arg in ("carries_changes", "full_refresh") for c in calls for k in c.keywords), fn
