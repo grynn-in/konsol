@@ -83,7 +83,6 @@ def test_the_field_follows_its_link():
 
 WRITERS = [
     ("api.py",),
-    ("patches", "reshape_budget_input_to_cycle.py"),
     ("epm", "doctype", "budget_cycle", "budget_cycle.py"),
     ("epm", "doctype", "budget_annual_input", "budget_annual_input.py"),
 ]
@@ -100,12 +99,10 @@ def test_no_writer_skips_the_link_fetch():
 
 
 def test_writers_set_the_link_then_insert_or_save():
-    """api.py and the reshape patch create their documents with new_doc and set
+    """api.py creates its documents with new_doc and sets
     the link field before insert, so the fetch has something to follow."""
     api = _src("api.py")
     assert re.search(r'new_doc\("Budget Entry"\)\s*\n\s*doc\.update\(entry_key\)', api)
-    reshape = _src("patches", "reshape_budget_input_to_cycle.py")
-    assert "doc.scenario_id = scenario_id" in reshape and "doc.insert()" in reshape
 
 
 # --- the copy never reaches ClickHouse ------------------------------------------

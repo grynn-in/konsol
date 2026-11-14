@@ -81,11 +81,15 @@ def test_retire_patch_deletes_workflow_child_and_parent():
 # --- fresh-install guards on the historical patches ---------------------------
 
 def test_historical_budget_patches_are_guarded_for_fresh_installs():
-    for path in (RESHAPE_PY, REKEY_PY):
-        execute = _func(_src(path), "execute")
-        guard = 'if not frappe.db.table_exists("Budget Input")'
-        assert guard in execute, f"missing fresh-install guard: {path}"
-        assert execute.index("table_exists") < execute.index("frappe.get_all")
+    execute = _func(_src(REKEY_PY), "execute")
+    guard = 'if not frappe.db.table_exists("Budget Input")'
+    assert guard in execute, f"missing fresh-install guard: {REKEY_PY}"
+    assert execute.index("table_exists") < execute.index("frappe.get_all")
+    # The reshape now only counts what is left, each table behind its own
+    # table_exists (test_reshape_budget_input_patch.py runs it).
+    execute = _func(_src(RESHAPE_PY), "execute")
+    assert "if frappe.db.table_exists(doctype)" in execute
+    assert "frappe.get_all" not in execute
 
 
 # --- Budget Annual Input (konsolidat#146) -----------------------------------

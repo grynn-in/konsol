@@ -88,13 +88,14 @@ def test_migration_is_registered():
     assert "konsol.patches.reshape_budget_input_to_cycle" in _src(PATCHES_TXT)
 
 
-def test_migration_stops_when_its_helpers_are_retired():
-    # S2-C Z1 removed the grain helpers the reshape imported. The patch has
-    # already run on every site; one still holding Budget Input rows is told
-    # there is nothing to pivot into, and the migrate goes on.
-    execute = _func(_src(PATCH_PY), "execute")
-    guard = execute.split("except ImportError:")[1]
-    assert "print(" in guard and "return" in guard
+def test_migration_refuses_rather_than_pivots():
+    # S2-C Z1 removed what the reshape pivoted into. Its body is now the
+    # refusal test_reshape_budget_input_patch.py runs: no import that can
+    # fail quietly, and nothing printed in place of a refusal.
+    src = _src(PATCH_PY)
+    assert "except ImportError" not in src
+    assert "print(" not in src
+    assert "raise BudgetInputRowsRemain(" in _func(src, "execute")
 
 
 def test_migration_is_non_destructive():
@@ -105,12 +106,12 @@ def test_migration_is_non_destructive():
     assert "rename_doc" not in src
 
 
-def test_migration_exposes_legacy_d365_purge():
+def test_the_dead_cutover_helpers_are_gone():
+    # purge_legacy_d365 imported konsol.d365_writeback, deleted by Z4a, and
+    # purge_legacy_clickhouse truncated a table drop_budget_monthly_input drops.
     src = _src(PATCH_PY)
-    purge = _func(src, "purge_legacy_d365")
-    assert purge is not None
-    assert "purge_budget_model" in purge       # reuses the delete-only $batch
-    assert "budget_model_id" in purge
+    for gone in ("purge_legacy_d365", "purge_legacy_clickhouse", "d365_writeback"):
+        assert gone not in src, gone
 
 
 # --- review fixes -----------------------------------------------------------
