@@ -338,6 +338,19 @@ def test_a_cycle_that_is_not_a_draft_is_refused(env, year, word):
     assert any(f"BCYC-BUD-{year}" in e and word in e for e in errors), errors
 
 
+def test_a_file_after_an_amendment_is_grouped_onto_the_amendment(env):
+    """#524: the cancelled original keeps the digest name; its amendment is
+    <name>-1. The plan finds the pair's draft Cycle, not the digest name."""
+    for c in env.data["Budget Cycle"]:
+        if c["name"] == "BCYC-BUD-2027":
+            c["docstatus"] = 2
+    env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-1", "scenario_id": "BUD", "fiscal_year": 2027,
+                                     "docstatus": 0, "amended_from": "BCYC-BUD-2027"})
+    plan = env.plan([HEADER, _row()])
+    assert plan["ok"], _errors(plan)
+    assert plan["report"][0]["cycle"] == "BCYC-BUD-2027-1"
+
+
 # ---- scenarios ----------------------------------------------------------------
 
 def test_an_inactive_scenario_is_refused_as_inactive_not_undeclared(env):

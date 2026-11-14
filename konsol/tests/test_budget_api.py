@@ -455,6 +455,21 @@ def test_cell_save_refuses_a_missing_cycle_and_creates_none(cell):
     assert [c["name"] for c in cell.data["Budget Cycle"]] == ["BCYC-BUD-2027"]
 
 
+def test_a_cell_after_an_amendment_lands_on_the_amendment(cell):
+    """#524: the cancelled original keeps the digest name; the cell finds the
+    pair's draft Cycle (its amendment, <name>-1) and its entry is keyed on it."""
+    cell.data["Budget Cycle"][:] = [
+        {"name": "BCYC-BUD-2027", "scenario_id": "BUD", "fiscal_year": 2027, "docstatus": 2},
+        {"name": "BCYC-BUD-2027-1", "scenario_id": "BUD", "fiscal_year": 2027, "docstatus": 0,
+         "amended_from": "BCYC-BUD-2027"},
+    ]
+    out = cell.post(amount=500)
+    assert out["status"] == "ok", out
+    entry = _only_entry(cell)
+    assert entry["cycle"] == "BCYC-BUD-2027-1"
+    assert cell.state.cycle_locks == ["BCYC-BUD-2027-1"]
+
+
 def test_cell_save_goes_through_the_access_check(cell):
     cell.state.denied = {"E2"}
     with pytest.raises(_Denied, match="Not permitted to write entity E2"):
