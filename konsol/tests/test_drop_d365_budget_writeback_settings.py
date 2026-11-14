@@ -58,7 +58,9 @@ class _Db:
 
     def sql(self, query, values=()):
         assert "__Auth" in query and "delete" in query.lower(), query
-        self.auth.discard(tuple(values))
+        doctype, name, fieldname = values
+        assert name == doctype
+        self.auth.discard((doctype, fieldname))
 
 
 def _run(db):
