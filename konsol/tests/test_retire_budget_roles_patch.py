@@ -38,6 +38,7 @@ class _Site:
         self.deleted = []
         self.granted = []
         self.printed = []
+        self.cleared = []
 
     def stub(self):
         site = self
@@ -63,10 +64,12 @@ class _Site:
                 self.name = name
 
             def add_roles(self, *roles):
-                for r in roles:
-                    if (self.name, r) not in site.has_role:
-                        site.has_role.add((self.name, r))
-                        site.granted.append((self.name, r))
+                # A full User save re-validates every link on the user: one
+                # stale link (a deleted default workspace, seen live on 14 Nov
+                # 2026) stops the whole migrate. The patch must not save.
+                raise AssertionError("retire_budget_roles saved a User")
+
+            save = add_roles
 
         def get_all(doctype, filters=None, pluck=None, fields=None, **kw):
             if doctype == "Has Role" and filters.get("parenttype") == "User":
@@ -84,6 +87,17 @@ class _Site:
             return [w for (w, r) in sorted(pairs) if r == filters[field]]
 
         def get_doc(doctype, name=None):
+            if isinstance(doctype, dict) and doctype["doctype"] == "Has Role":
+                row = dict(doctype)
+                assert (row["parenttype"], row["parentfield"]) == ("User", "roles"), row
+
+                class NewHasRole:
+                    def db_insert(self, **kw):
+                        key = (row["parent"], row["role"])
+                        assert key not in site.has_role, key
+                        site.has_role.add(key)
+                        site.granted.append(key)
+                return NewHasRole()
             if isinstance(doctype, dict):
                 assert doctype["doctype"] == "Role"
 
@@ -104,6 +118,7 @@ class _Site:
         frappe.get_doc = get_doc
         frappe.delete_doc = delete_doc
         frappe.reload_doc = lambda *a, **k: None
+        frappe.clear_cache = lambda **k: site.cleared.append(k.get("user"))
         return frappe
 
     def run(self):
@@ -255,3 +270,13 @@ def test_install_no_longer_creates_budget_roles():
     roles = ast.literal_eval(node.value)
     assert not [r for r in roles if r.startswith("Budget ")], roles
     assert "Entity Accountant" in roles
+
+
+def test_a_grant_writes_the_has_role_row_without_saving_the_user():
+    """Live on 14 Nov 2026 the migrate stopped: User.add_roles saved users
+    whose default workspace had been deleted. The grant is a Has Role row
+    insert plus the user's cache cleared."""
+    site = _Site(holders={"Budget Approver": ["bruno@zz.test"]})
+    site.run()
+    assert ("bruno@zz.test", "Entity Accountant") in site.granted
+    assert "bruno@zz.test" in site.cleared
