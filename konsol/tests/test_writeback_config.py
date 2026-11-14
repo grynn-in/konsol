@@ -111,12 +111,12 @@ def test_d365_writeback_get_config_delegates_to_resolver():
 
 
 def test_writeback_resolves_config_by_entity():
-    # Post-reshape, the per-entity config resolution lives on the cycle lock
-    # (gating each sheet's push) and in the sheet push itself — not on the
-    # deprecated Budget Input controller.
+    # The per-entity config resolution lives in the sheet push. The Budget
+    # Cycle no longer calls the write-back at all (S2-C W2b, Q9-a; Z4a
+    # deletes the write-back), so only the push's half remains.
     cycle = open(
         os.path.join(APP_DIR, "epm", "doctype", "budget_cycle", "budget_cycle.py")
     ).read()
-    assert "get_config(entity_id=entity_id)" in cycle
+    assert "get_config" not in cycle
     d365 = open(os.path.join(APP_DIR, "d365_writeback.py")).read()
     assert "get_config(entity_id=doc.data_area_id)" in d365
