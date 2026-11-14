@@ -53,6 +53,7 @@ def _table_columns():
 
 
 _ROWS_CACHE = "dimension_value_rows"
+_FAILED = "dimension_value_rows_failed"
 
 
 def _rows():
@@ -71,7 +72,13 @@ def _rows():
     return rows
 
 
+def _read_failed():
+    """True when this request's member read failed (and was logged)."""
+    return bool(getattr(frappe.local, _FAILED, False))
+
+
 def _fetch_rows():
+    setattr(frappe.local, _FAILED, False)
     declared = _declared()
     if not declared:
         return []
@@ -84,6 +91,7 @@ def _fetch_rows():
         return dvm.parse_rows(execute(sql))
     except Exception:  # noqa: BLE001 - picker must degrade gracefully, logged
         frappe.log_error("Dimension Value fetch failed", frappe.get_traceback())
+        setattr(frappe.local, _FAILED, True)
         return []
 
 

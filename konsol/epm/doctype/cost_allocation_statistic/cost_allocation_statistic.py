@@ -71,8 +71,14 @@ class CostAllocationStatistic(Document):
 
     def _row_problems(self, rows):
         found = []
-        members = _dimension_members(self.dimension)
-        unknown = sorted({r.member for r in rows if r.member not in members})
+        from konsol.cost_allocation_members import MemberReadError
+
+        try:
+            members = _dimension_members(self.dimension)
+        except MemberReadError as exc:
+            found.append(f"{_PREFIX}{exc}")
+            members = None
+        unknown = sorted({r.member for r in rows if r.member not in members}) if members is not None else []
         if unknown:
             found.append(f"{_PREFIX}not members of dimension {self.dimension}: {_listing(unknown)}.")
         seen, duplicate = set(), []
@@ -128,13 +134,15 @@ class CostAllocationStatistic(Document):
 
     def _refuse_while_cited(self):
         """A submitted run's weights carry values read from this statistic;
-        cancelling it would leave them citing a document that is gone."""
+        cancelling it would leave them citing a document that is gone. The read
+        locks the rows (REPEATABLE READ): a run submitting at the same time
+        cannot slip past it."""
         runs = frappe.db.sql(
             "SELECT DISTINCT r.name AS name FROM `tabCost Allocation Run` r "
             "JOIN `tabCost Allocation Run Weight` w "
             "ON w.parent = r.name AND w.parenttype = 'Cost Allocation Run' "
             "WHERE r.docstatus = 1 AND w.statistic = %(statistic)s "
-            "ORDER BY r.name",
+            "ORDER BY r.name FOR UPDATE",
             {"statistic": self.name}, as_dict=True)
         if runs:
             frappe.throw(

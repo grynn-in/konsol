@@ -10,7 +10,7 @@ HELPER = os.path.join(APP_DIR, "cost_allocation_members.py")
 DV_PKG = "konsol.epm.doctype.dimension_value"
 
 
-def _helper(rows, calls):
+def _helper(rows, calls, failed=False):
     """Load the helper with a fake dimension_value controller."""
     dv = types.ModuleType(DV_PKG + ".dimension_value")
     dv._rows = lambda: (calls.append("_rows") or rows)
@@ -18,6 +18,7 @@ def _helper(rows, calls):
     def refuse(*a, **k):
         raise AssertionError("per-user read check or paged list used")
 
+    dv._read_failed = lambda: failed
     dv._assert_read = refuse
     dv.DimensionValue = types.SimpleNamespace(get_list=refuse, get_count=refuse)
     chain = {}
@@ -74,3 +75,19 @@ def test_rule_set_reads_members_through_the_helper_only():
     src = open(path).read()
     assert "cost_allocation_members" in src
     assert '"Dimension Value"' not in src
+
+
+def test_an_empty_read_that_failed_raises_a_distinct_error():
+    for mod in _helper([], [], failed=True):
+        try:
+            mod.dimension_members("ZZDIM")
+        except mod.MemberReadError as exc:
+            assert "could not read the members of ZZDIM" in str(exc)
+            assert "Error Log" in str(exc)
+        else:
+            raise AssertionError("expected MemberReadError")
+
+
+def test_an_empty_read_that_did_not_fail_is_an_empty_set():
+    for mod in _helper([], [], failed=False):
+        assert mod.dimension_members("ZZDIM") == set()

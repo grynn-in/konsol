@@ -10,8 +10,24 @@ so this reads the controller's own row source directly.
 """
 
 
+class MemberReadError(Exception):
+    """The members could not be read (the warehouse failed), as opposed to the
+    dimension having none."""
+
+    def __init__(self, dimension):
+        self.dimension = dimension
+        super().__init__(
+            f"could not read the members of {dimension}; see Error Log.")
+
+
 def dimension_members(dimension):
-    """The set of member values of ``dimension``; empty when it is not declared."""
+    """The set of member values of ``dimension``; empty when it is not declared.
+
+    Raises MemberReadError when the read failed, so a caller never reports
+    every member as unknown because the warehouse was down."""
     from konsol.epm.doctype.dimension_value import dimension_value
 
-    return {r["value"] for r in dimension_value._rows() if r["dimension"] == dimension}
+    members = {r["value"] for r in dimension_value._rows() if r["dimension"] == dimension}
+    if not members and dimension_value._read_failed():
+        raise MemberReadError(dimension)
+    return members

@@ -73,6 +73,20 @@ def _descendants(account):
                           pluck="name", order_by="lft")
 
 
+def _first_draft_state():
+    """The active workflow's first state whose doc_status is 0, or None with no
+    active workflow. A site may rename the states, so the name is read, not assumed."""
+    from frappe.model.workflow import get_workflow_name
+
+    name = get_workflow_name("Cost Allocation Run")
+    if not name:
+        return None
+    for state in frappe.get_cached_doc("Workflow", name).states:
+        if int(state.doc_status or 0) == 0:
+            return state.state
+    return None
+
+
 def _now():
     return frappe.utils.now_datetime()
 
@@ -125,9 +139,10 @@ def account_rows(declared, descendants_of):
 
 def compute_weights_on(run):
     """Compute and snapshot onto ``run`` (a draft). Returns a small summary."""
-    if run.docstatus != 0 or run.status != "Draft":
-        frappe.throw("Compute Weights works only on a run in status Draft: an approver "
-                     "must not approve weights that changed after review.")
+    draft = _first_draft_state()
+    if run.docstatus != 0 or (draft is not None and run.status != draft):
+        frappe.throw(f"Compute Weights works only on a run in status {draft or 'Draft'}: "
+                     "an approver must not approve weights that changed after review.")
     rs = _load_rule_set(run.rule_set)
     if rs.status != "Active":
         frappe.throw(f"Rule set {run.rule_set} is {rs.status}; a run needs an Active rule set.")
@@ -275,6 +290,20 @@ class CostAllocationRun(Document):
     }
 
     # -- gates ---------------------------------------------------------------
+
+    def before_insert(self):
+        """An amended run starts empty. Frappe v16's client copy_doc ignores
+        no_copy when amending (create_new.js: is_no_copy = !from_amend && ...),
+        so the server clears what Compute Weights wrote."""
+        if not self.get("amended_from"):
+            return
+        self.set("weights", [])
+        self.set("accounts", [])
+        for field in ("computed_at", "computed_by", "computed_for_rule_set",
+                      "computed_for_scenario", "computed_for_fiscal_year",
+                      "computed_for_fiscal_period", "rule_set_modified"):
+            setattr(self, field, None)
+        self.values_carried_forward = 0
 
     def before_submit(self):
         """Submit is the approval. The period must be declared on every
