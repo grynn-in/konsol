@@ -566,8 +566,8 @@ def _annual_input(name="BAI-1", layer="base", account="4000", cc="CC1", entity="
 
 
 def _line(parent="BENT-P3", period=3, layer="base", account="4000", cc="CC1", entity="E1", year=2027,
-          scenario="BUD"):
-    return {"parent": parent, "parenttype": "Budget Entry", "scenario_id": scenario,
+          scenario="BUD", cycle="BCYC-BUD-2027"):
+    return {"parent": parent, "parenttype": "Budget Entry", "scenario_id": scenario, "cycle": cycle,
             "fiscal_year": year, "data_area_id": entity, "layer": layer, "fiscal_period": period,
             "main_account": account, "dim_cost_center": cc}
 
@@ -664,3 +664,22 @@ def test_lock_cycles_is_skipped_in_install_and_migrate(env, flag):
     setattr(env.mod.frappe.flags, flag, True)
     assert env.mod.lock_cycles("BUD", 2027) == []
     assert env.state.locked_reads == []
+
+
+# ---- 19-b: a cancelled Cycle's lines do not block ---------------------------------
+
+def test_lines_under_a_cancelled_cycle_do_not_block_an_annual_input(env):
+    # An amended pair: the cancelled original's entries stay as the audit trail.
+    env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-OLD", "scenario_id": "BUD",
+                                     "fiscal_year": 2027, "docstatus": 2})
+    env.data["Budget Entry Line"] = [_line(cycle="BCYC-BUD-2027-OLD")]
+    _annual_side(env)
+
+
+@pytest.mark.parametrize("docstatus", [0, 1])
+def test_lines_under_a_draft_or_approved_cycle_still_block(env, docstatus):
+    env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-X", "scenario_id": "BUD",
+                                     "fiscal_year": 2027, "docstatus": docstatus})
+    env.data["Budget Entry Line"] = [_line(cycle="BCYC-BUD-2027-X")]
+    with pytest.raises(Thrown, match="BENT-P3"):
+        _annual_side(env)

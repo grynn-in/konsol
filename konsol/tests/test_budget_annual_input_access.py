@@ -66,7 +66,7 @@ def ctl(monkeypatch):
         return [types.SimpleNamespace(**{f: r.get(f) for f in fields}, get=r.get) for r in rows]
 
     frappe.db = types.SimpleNamespace(
-        exists=lambda *a, **k: None,
+        exists=lambda *a, **k: locks.append(("grain read", a[0])) and None,
         get_value=lambda dt, name, field, *a, **k: statuses.get(name, "Published"),
         get_values=get_values)
     frappe.throw = throw
@@ -279,9 +279,33 @@ def test_a_save_locks_the_cycle_before_frappe_locks_the_annual_input(ctl):
     assert ctl.locks == [("cycle", "BC-ZZS-2026"), ("annual input", "x")]
 
 
+def test_the_unique_grain_is_read_after_the_cycle_lock(ctl):
+    """Two Annual Inputs on one grain: the second waits on the Cycle, then
+    its duplicate check runs (gap 3 of the Q16 build)."""
+    _row(ctl, "ZZE1").validate()
+    assert ctl.locks.index(("cycle", "BC-ZZS-2026")) < ctl.locks.index(("grain read", "Budget Annual Input"))
+
+
+def test_an_annual_input_without_a_budget_cycle_is_refused_by_name(ctl):
+    # 20-b: no Cycle, nothing to lock, so nothing to serialise the
+    # one-writer checks on; refused as a Budget Entry is (Q6-b).
+    ctl.locked["Budget Cycle"].clear()
+    with pytest.raises(Exception) as raised:
+        _row(ctl, "ZZE1").validate()
+    assert str(raised.value) == ("No Budget Cycle exists for ZZS 2026. Create the Cycle before entering "
+                                 "annual figures.")
+
+
+@pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
+def test_install_and_migrate_skip_the_missing_cycle_refusal(ctl, flag):
+    setattr(ctl.frappe.flags, flag, True)
+    ctl.locked["Budget Cycle"].clear()
+    _row(ctl, "ZZE1").validate()
+
+
 @pytest.mark.parametrize("flag", ["in_install", "in_migrate"])
 def test_install_and_migrate_skip_the_grain_check(ctl, flag):
     setattr(ctl.frappe.flags, flag, True)
     ctl.locked["Budget Entry Line"].append(_line())
     _row(ctl, "ZZE1").validate()
-    assert ctl.locks == []
+    assert [lock for lock in ctl.locks if lock[0] != "grain read"] == []
