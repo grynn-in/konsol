@@ -92,6 +92,8 @@ class ConsolidationGroup(NestedSet):
         # konsolidat#171: the last warehouse column (an existing table gets it
         # appended by _ADDED_COLUMNS).
         "partial_period_treatment": "partial_period_treatment",
+        # konsolidat#335: the account a bare Ownership Period end posts to; last.
+        "exit_gain_loss_account": "exit_gain_loss_account",
     }
 
     # PRD-8 / F2: the link closure, computed by a path walk over the links.
