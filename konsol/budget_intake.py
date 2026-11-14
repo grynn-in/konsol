@@ -20,6 +20,8 @@ What it does, in order:
      Cycle to create; nothing is created here (Q6-b). A Cycle that is not a
      draft (docstatus 0) is refused, and so is a draft past its workflow's
      first state, Pending Approval as installed (V2, Q17-b: cycle_workflow).
+     A forecast pair with more than one draft round is refused by name until
+     K5 picks the round by the file's as_of_date (S3 K3 stop-gap, QB5 a).
    - duplicate rows: the same account and dim_* values twice in one group
      (one entity, period and layer) is refused, naming both lines. T1 refuses
      the same on save; this names the file lines.
@@ -443,14 +445,19 @@ def annual_check(row):
 
 def lock_cycles(scenario_id, fiscal_year, *, wait=True):
     """Lock every Budget Cycle row of (scenario, year), in name order, and
-    return each as {name, docstatus, workflow_state}, read by the lock itself: under
-    REPEATABLE READ a plain read would serve the snapshot and miss a Cycle
-    approved while this writer waited on it. A Budget Annual Input derives its
-    Cycle from the pair rather than linking one, and an amended pair holds
-    more than one. The Annual Input writers take this first, the lock order
-    every budget writer keeps (the Cycle row before the record it saves). No
-    Cycle, nothing locked: then no Budget Entry of the pair exists to conflict
-    with. Skipped in install and migrate, as assert_cycle_draft is.
+    return each as {name, docstatus, workflow_state, as_of_date}, read by the
+    lock itself: under REPEATABLE READ a plain read would serve the snapshot
+    and miss a Cycle approved while this writer waited on it. A Budget Annual
+    Input derives its Cycle from the pair rather than linking one, an amended
+    pair holds more than one, and a forecast pair holds one live Cycle per
+    ROUND (S3 K3, Q23 a): ``as_of_date`` comes back as the round key
+    (budget_bulk_model.as_of_key: 'YYYY-MM-DD', '' on a budget Cycle) so the
+    Cycle's own rule can judge the round under the lock. The lock stays on
+    the whole pair (QB9 a): the rounds of one pair serialise. The Annual
+    Input writers take this first, the lock order every budget writer keeps
+    (the Cycle row before the record it saves). No Cycle, nothing locked:
+    then no Budget Entry of the pair exists to conflict with. Skipped in
+    install and migrate, as assert_cycle_draft is.
 
     A delete cannot keep that order: Frappe locks the row before on_trash. It
     passes ``wait=False``: the lock is taken NOWAIT and a Cycle another writer
@@ -461,7 +468,7 @@ def lock_cycles(scenario_id, fiscal_year, *, wait=True):
         return []
     try:
         rows = frappe.db.get_values("Budget Cycle", {"scenario_id": scenario_id, "fiscal_year": fiscal_year},
-                                    ["name", "docstatus", "workflow_state"], as_dict=True,
+                                    ["name", "docstatus", "workflow_state", "as_of_date"], as_dict=True,
                                     order_by="name asc", for_update=True, wait=wait)
     except (frappe.QueryTimeoutError, frappe.QueryDeadlockError) as error:
         if wait:
@@ -469,7 +476,8 @@ def lock_cycles(scenario_id, fiscal_year, *, wait=True):
         # Keep the type: a deadlock has already rolled the transaction back.
         frappe.throw(f"The Budget Cycle of {scenario_id} {fiscal_year} is being changed by another user, so "
                      "this annual figure cannot be deleted right now. Try again in a moment.", type(error))
-    return [{"name": r.name, "docstatus": int(r.docstatus or 0), "workflow_state": r.workflow_state or ""}
+    return [{"name": r.name, "docstatus": int(r.docstatus or 0), "workflow_state": r.workflow_state or "",
+             "as_of_date": M.as_of_key(r.as_of_date)}
             for r in rows]
 
 
@@ -630,7 +638,8 @@ def _facts(groups):
     cycles = {}
     for c in frappe.get_all("Budget Cycle",
                             filters={"scenario_id": ["in", scenarios], "fiscal_year": ["in", years]},
-                            fields=["name", "scenario_id", "fiscal_year", "docstatus", "workflow_state"],
+                            fields=["name", "scenario_id", "fiscal_year", "docstatus", "workflow_state",
+                                    "as_of_date"],
                             order_by="creation asc, name asc", limit_page_length=0):
         cycles.setdefault((c.scenario_id, int(c.fiscal_year)), []).append(c)
     workflow = workflow_for([_cycle_row(c) for found in cycles.values() for c in found])
@@ -705,8 +714,21 @@ def _period(year, period):
 def _cycle(found, key, workflow):
     """(cycle name or None, problem or None) for one (scenario, year). A draft
     is taken when there is one, and refused while it is past its workflow's
-    first state (V2); otherwise the latest is named and refused."""
+    first state (V2); otherwise the latest is named and refused.
+
+    S3 K3 stop-gap: a forecast pair holds one live Cycle per round (Q23 a),
+    so it may hold several drafts. Until K5 picks the round by the file's
+    ``as_of_date`` (QB5 a), more than one draft is refused by name, never
+    served as ``drafts[0]``: a write that cannot say which round it is for
+    does not land in one by accident."""
     drafts = [c for c in found if int(c.docstatus) == 0]
+    if len(drafts) > 1:
+        named = " and ".join(f"{c.name} (as of {M.as_of_key(c.get('as_of_date')) or 'no date'})"
+                             for c in drafts)
+        return None, (f"Budget Cycles {named} are all draft Cycles of {key.scenario} {key.fiscal_year}: this "
+                      "write cannot tell which forecast round it is for. Choosing the round by its as-of "
+                      "date is not built yet (konsol#348 K5); until then keep one draft round of the pair "
+                      "open at a time.")
     if drafts:
         return drafts[0].name, M.cycle_pending_refusal(_cycle_row(drafts[0]), workflow)
     if not found:
