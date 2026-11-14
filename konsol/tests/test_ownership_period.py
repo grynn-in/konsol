@@ -384,11 +384,11 @@ _D = datetime.date
 
 
 def _row(name, effective, end=None, docstatus=1, group="ZZG", entity="ZZ01",
-         owner="CG-ZZG-", owner_label="ZZG", pct=80.0, supersedes=None):
+         owner="CG-ZZG-", owner_label="ZZG", pct=80.0, supersedes=None, method="full"):
     return types.SimpleNamespace(name=name, consolidation_group=group, data_area_id=entity,
                                  owner_node=owner, owner_label=owner_label, ownership_pct=pct,
                                  effective_date=effective, end_date=end, docstatus=docstatus,
-                                 supersedes=supersedes)
+                                 supersedes=supersedes, consolidation_method=method)
 
 
 class _Stored:
@@ -426,6 +426,9 @@ def _site(rows, nodes=None):
             assert nodes is not None, "a tree is needed to read the nodes"
             assert not filters, filters
             return [types.SimpleNamespace(**vars(n)) for n in nodes.values()]
+        if doctype == "Business Disposal":
+            # the exit rule's read (konsolidat#335 F6): these sites record no sale
+            return []
         out = []
         for r in rows:
             ok = True
