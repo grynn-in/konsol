@@ -486,3 +486,78 @@ def test_an_approved_cycle_is_closed_and_a_cancelled_one_is_not():
     # 19-b: under an amended pair the cancelled original is the audit trail.
     assert not B.cycle_closed_to_writes(_cycle(2, "Cancelled"), wf)
     assert B.cycle_pending_refusal(_cycle(1, "Approved"), wf) is None
+
+
+# ---- S3 K2: a forecast round needs an as-of date and a horizon (#348 Q23 a, QB8 a) -----
+
+import datetime as _dt
+
+
+def test_a_forecast_cycle_with_both_is_accepted():
+    assert B.cycle_round_problems("forecast", "2026-03-31", 12) == []
+    assert B.cycle_round_problems("forecast", _dt.date(2026, 3, 31), "1") == []
+
+
+def test_a_forecast_cycle_without_an_as_of_date_is_refused_by_name():
+    (problem,) = B.cycle_round_problems("forecast", None, 12)
+    assert problem.startswith("A forecast Cycle needs an As-of Date"), problem
+    assert "round" in problem
+    assert B.cycle_round_problems("forecast", "", 12) == [problem]
+    assert B.cycle_round_problems("forecast", "   ", 12) == [problem]
+
+
+def test_a_forecast_cycle_needs_a_horizon_of_at_least_one_period():
+    for horizon in (None, 0, "0", -3, "", "x"):
+        (problem,) = B.cycle_round_problems("forecast", "2026-03-31", horizon)
+        assert problem.startswith("A forecast Cycle needs a Horizon of 1 or more periods"), (horizon, problem)
+
+
+def test_a_forecast_cycle_missing_both_is_told_both_at_once():
+    problems = B.cycle_round_problems("forecast", None, None)
+    assert len(problems) == 2
+    assert problems[0].startswith("A forecast Cycle needs an As-of Date")
+    assert problems[1].startswith("A forecast Cycle needs a Horizon")
+
+
+def test_a_budget_cycle_refuses_both_round_fields_naming_the_type():
+    assert B.cycle_round_problems("budget", None, None) == []
+    assert B.cycle_round_problems("budget", None, 0) == []
+    (problem,) = B.cycle_round_problems("budget", "2026-03-31", None)
+    assert problem.startswith("A budget Cycle has no forecast round: leave As-of Date blank"), problem
+    assert "only a forecast scenario has rounds" in problem
+    (problem,) = B.cycle_round_problems("budget", None, 12)
+    assert problem.startswith("A budget Cycle has no forecast round: leave Horizon blank"), problem
+    assert len(B.cycle_round_problems("budget", "2026-03-31", 12)) == 2
+
+
+def test_strategic_and_operational_cycles_refuse_them_too():
+    for kind in ("strategic", "operational"):
+        (problem,) = B.cycle_round_problems(kind, "2026-03-31", None)
+        assert problem.startswith(f"A {kind} Cycle has no forecast round"), problem
+        assert B.cycle_round_problems(kind, None, None) == []
+
+
+def test_as_of_key_normalises_a_date_a_string_and_nothing():
+    """The key the round comparison and the Cycle name read: 'YYYY-MM-DD' or ''."""
+    assert B.as_of_key(_dt.date(2026, 3, 31)) == "2026-03-31"
+    assert B.as_of_key(_dt.datetime(2026, 3, 31, 10, 5)) == "2026-03-31"
+    assert B.as_of_key("2026-03-31") == "2026-03-31"
+    assert B.as_of_key(" 2026-03-31 ") == "2026-03-31"
+    assert B.as_of_key(None) == "" and B.as_of_key("") == ""
+
+
+def test_in_round_matches_a_cycle_by_as_of_only_for_forecasts():
+    """A Cycle row as lock_cycles returns it ({..., as_of_date}) is in the round
+    of `as_of_date` when the types' key agrees: for a forecast the as-of date,
+    for every other type the pair alone (the row is always in the pair)."""
+    assert B.in_round("forecast", {"as_of_date": "2026-03-31"}, _dt.date(2026, 3, 31))
+    assert not B.in_round("forecast", {"as_of_date": "2026-03-31"}, "2026-06-30")
+    assert B.in_round("budget", {"as_of_date": ""}, None)
+    assert B.in_round("budget", {}, None)
+    # A budget pair holds one live Cycle whatever a stray date says.
+    assert B.in_round("budget", {"as_of_date": "2026-03-31"}, None)
+
+
+def test_cycle_round_problems_is_exported():
+    for name in ("cycle_round_problems", "as_of_key", "in_round", "FORECAST"):
+        assert name in B.__all__, name
