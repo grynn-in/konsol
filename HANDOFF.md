@@ -4,6 +4,34 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (14 Nov 2026): budget S2 merged. konsol#522 (d9c6e64d) and konsolidat#356 (bd11e230) merged together.** Epic #348; task file `.claude/memory/active/tasks-budget.md`.
+
+**What landed**
+- Budget intake runs on the trial-balance contract, through one entry point (`budget_intake.plan`). It feeds Budget Entry / Budget Entry Line, Budget Upload (CSV), the Excel/REST saves and Annual Input. Budget Layers are declared.
+- `epm_raw.budget_entries` is the one raw budget table, and `budget_monthly_input` has left the warehouse contract. `gold_spread_budget` reads every layer.
+- Year-to-date lines become movements, using the rule the TB uses (`macros/period_movements.sql`).
+- Decisions on #348:
+  - Q15-c: one amount basis per (cycle, entity, layer).
+  - Q16-c: one writer per grain, so the spread is a plain UNION.
+  - Q19-b: a cancelled Cycle does not block a new one.
+  - Q20-b: an Annual Input needs its Cycle.
+  - Q21-a: a YTD slice states every period from 1 to its last (comment 6875869375).
+  - All of these were taken under the standing rule.
+- Concurrency: writers lock the Cycle row first, and each locking read has a composite `budget_lock` index, added on migrate.
+
+**Evidence**
+- Host suite 8164/8164; fixture gate 70/70; CI green on both repos.
+- Live on the local test site, 20/20 checks:
+  - the locking reads move from a full scan on main to an index lookup;
+  - a NOWAIT delete against a held lock fails in 0.001s;
+  - YTD 100/250/450 lands as movements 100, 150, 200;
+  - ZZ data cleaned up.
+
+**Next**
+- **S2-C:** the Budget Cycle workflow (BUD-9-3, Q17-b); retire Budget Sheet/Line, which still write `epm_gold.budget_monthly_input`, kept in `_REFERENCE_TABLE_DDL` until then; the Budget* roles; the D365 budget write-back (Q9-a).
+- **Bugs:** #524 (a cancelled Cycle's (scenario, year) cannot get a new Cycle) and #525 (an unknown `spread_profile_id` is dropped silently).
+- **Waiting on Deepak:** Z4c (Connector write-back removal) waits for Q18-a.
+
 **Update (11 Nov 2026): konsolidat P1 bugs, and #171 (period dates and partial-period P&L) merged.** Triage of 9 Nov labelled konsolidat P1: #171+#252, #316, #335, #336, #245. Plan approved by Deepak Pai, 9 Nov. Task files: `.claude/memory/active/tasks-konsolidat-p1.md`, `tasks-171-2c.md`.
 - **Merged:** konsolidat#343 (#336: unrealised profit only for full/proportional buyers; seller side filed as #344), #342 (#295: same-currency pairs need no historical rate), #346 + konsol#507 (`partial_period_treatment` on the group root: Whole period / Pro-rate by days / Stub trial balance, required once a Business Combination exists, no default; the column is LAST in the ClickHouse table so upgraded tables match fresh ones), #345 (09e0b59, #171 2a+2b+2c), #350 (ac08ff4, fixture-gate timeout 45 to 75 min). Main CI green on ac08ff4.
 - **#345 behaviour:** the ownership window is judged on the declared period's end date, not the first of the month; a TB period that is not declared is an ERROR. In a deal period, acquisition and disposal P&L follow the group's declared treatment: Whole period (unchanged), Pro-rate by days (inclusive days; acquisition removes the pre-acquisition share per P&L account, keeping partner and dimensions, balanced to retained earnings; disposal posts the post-disposal share as journal line 105, absorbed by the gain/loss), Stub trial balance (the uploaded TB is used as it is). A mid-period deal with no declared treatment is an ERROR (`assert_partial_period_treatment_declared`). Independent oracle: `assert_partial_period_pnl_matches_treatment`.
