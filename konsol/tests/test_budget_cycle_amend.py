@@ -5,10 +5,10 @@ of (scenario, year) alone, so once a Cycle was cancelled its pair could never
 get another: the amend raised "Unknown column 'amended_from'" and a fresh
 insert collided on the digest name.
 
-Now (W2a adds ``amended_from``) Frappe names an amendment ``<name>-1``. The
-Cycle's own autoname does the same for a fresh insert, and for a site whose
-amend naming is "Default Naming": the digest when it is free, else the first
-free ``<digest>-N``. A pair holds one live Cycle (docstatus 0 or 1) at a time:
+Now (W2a adds ``amended_from``) a Cycle can be amended. Every Cycle, fresh
+or amended, under either amend naming setting, takes the digest when it is
+free, else the first free ``<digest>-N``: the controller renames what
+Frappe's amend counter picked, which may be a name a fresh Cycle took. A pair holds one live Cycle (docstatus 0 or 1) at a time:
 a second is refused by name, under the lock budget_intake.lock_cycles takes
 (19-b: a cancelled Cycle does not count).
 

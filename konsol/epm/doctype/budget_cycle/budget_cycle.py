@@ -57,16 +57,36 @@ class BudgetCycle(Document):
         one 140-char name (see budget_grain.digest_name). The digest when it
         is free, else the first free ``<digest>-N`` (#524): a cancelled Cycle
         keeps its name as the audit trail, and the next Cycle of its pair
-        must not collide with it. Frappe names an amendment ``<name>-1``
-        itself; this covers a fresh insert, and an amendment on a site whose
-        amend naming is "Default Naming". Nothing finds a Cycle by this name:
-        every writer finds the pair's live Cycle by docstatus."""
+        must not collide with it. Every Cycle is named here, an amendment
+        too: set_new_name below makes sure of it. Nothing finds a Cycle by
+        this name: every writer finds the pair's live Cycle by docstatus."""
         base = digest_name("BCYC", [self.scenario_id, self.fiscal_year])
         name, n = base, 0
         while frappe.db.exists("Budget Cycle", name):
             n += 1
             name = f"{base}-{n}"
         self.name = name
+
+    def set_new_name(self, *args, **kwargs):
+        """The Cycle owns its name, under any site naming setting.
+
+        Frappe v16 names an amendment by its amend counter before it reaches
+        the controller (frappe/model/naming.py:177-179, _set_amended_name at
+        :549): ``<base of amended_from>-<n+1>``, without checking that the
+        name is free. A fresh Cycle of the pair may already hold it through
+        autoname, so the insert would fail on a duplicate name: amend D after
+        a fresh Cycle took D-1, or amend D-1 after one took D-2. A Document
+        Naming Rule would reach the name before autoname too (naming.py:186).
+        So, once Frappe has named the Cycle (Document.set_new_name,
+        model/document.py:969), autoname names it again: the first free
+        ``<digest>-N``. A name the caller passes (``set_name``), or a Cycle
+        already named, is left alone."""
+        force = kwargs.get("force", args[0] if args else False)
+        set_name = kwargs.get("set_name", args[1] if len(args) > 1 else None)
+        named = self.flags.name_set and not force
+        super().set_new_name(*args, **kwargs)
+        if not named and not set_name:
+            self.autoname()
 
     def _refuse_second_live_cycle(self):
         """A (scenario, year) holds one live Cycle (docstatus 0 or 1): every
