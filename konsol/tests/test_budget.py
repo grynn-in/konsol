@@ -158,7 +158,7 @@ def test_annual_budget_grain_is_unique():
     with open(os.path.join(_budget_annual_dir(), "budget_annual_input.py")) as f:
         src = f.read()
     body = src.split("def _validate_unique_grain")[1].split("\n    def ")[0]
-    for field in ("scenario_id", "data_area_id", "fiscal_year", "main_account",
+    for field in ("scenario_id", "data_area_id", "fiscal_year", "layer", "main_account",
                   "budget_dimension_fields()"):
         assert field in body, field
     assert "frappe.throw" in body

@@ -270,6 +270,18 @@ def test_a_blank_dimension_in_the_grain_matches_null_too():
     assert exists_calls[-1]["dim_region"] == ["is", "not set"], exists_calls
 
 
+def test_the_unique_grain_includes_the_layer():
+    """gold_spread_budget keeps each layer's rows apart (konsolidat#300), so a
+    challenge figure beside the base figure for one account is not a duplicate.
+    Without the layer in the grain, the challenge row was refused as one."""
+    module, exists_calls = _controller({"dim_region"})
+    doc = module.BudgetAnnualInput()
+    doc.__dict__.update(name="BAI-2", scenario_id="BUD", data_area_id="ZZA", layer="challenge",
+                        fiscal_year=2026, main_account="ZZ1000", dim_region="EMEA")
+    doc._validate_unique_grain()
+    assert exists_calls[-1]["layer"] == "challenge", exists_calls
+
+
 # --------------------------------------------------------------------------
 # The columns are added where the tables are created
 # --------------------------------------------------------------------------
