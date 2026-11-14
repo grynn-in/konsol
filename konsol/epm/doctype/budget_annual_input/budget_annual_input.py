@@ -293,9 +293,15 @@ class BudgetAnnualInput(Document):
         """
         if frappe.flags.in_install or frappe.flags.in_migrate:
             return
-        from konsol.budget_bulk_model import cycle_closed_to_writes
+        from konsol import budget_intake
+        from konsol.budget_bulk_model import cycle_closed_to_writes, cycle_pending_refusal
 
-        locked = next((c["name"] for c in cycles or () if cycle_closed_to_writes(c)), None)
+        workflow = budget_intake.workflow_for(cycles or ())
+        for cycle in cycles or ():
+            refusal = cycle_pending_refusal(cycle, workflow)
+            if refusal:
+                frappe.throw(refusal)
+        locked = next((c["name"] for c in cycles or () if cycle_closed_to_writes(c, workflow)), None)
         if locked:
             frappe.throw(
                 f"Budget Cycle {locked} is locked for {self.scenario_id} "

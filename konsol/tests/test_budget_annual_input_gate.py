@@ -64,10 +64,15 @@ def ctl(monkeypatch):
     docmod.Document = Document
     ch = types.ModuleType("konsol.clickhouse")
     ch.sync_doctype_after_commit = lambda *a, **k: None
+    # The guard asks budget_intake for the Cycle workflow (V2); none is active here.
+    intake = types.ModuleType("konsol.budget_intake")
+    intake.workflow_for = lambda cycles: None
     for name, mod in {"frappe": frappe, "frappe.model": model,
                       "frappe.model.document": docmod,
-                      "konsol.clickhouse": ch}.items():
+                      "konsol.clickhouse": ch, "konsol.budget_intake": intake}.items():
         monkeypatch.setitem(sys.modules, name, mod)
+    import konsol
+    monkeypatch.setattr(konsol, "budget_intake", intake, raising=False)
 
     spec = importlib.util.spec_from_file_location("_bai_gate_under_test", PATH)
     mod = importlib.util.module_from_spec(spec)
