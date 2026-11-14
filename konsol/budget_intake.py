@@ -60,6 +60,37 @@ from konsol.tb_currency_model import currency_problems
 #: Docstatus words for a Cycle that is not a draft.
 _CYCLE_STATE = {1: "approved", 2: "cancelled"}
 
+#: The index each budget locking read runs on (PR #522 review). A FOR UPDATE
+#: with no index scans the table, and InnoDB next-key-locks every row it scans:
+#: two cell saves in different Cycles each hold their own entry and then wait
+#: on the other's row (deadlock 1213), and every writer queues behind the scan.
+#: The reads filter on every column with equality, the last (main_account) by
+#: equality or IN.
+LOCK_INDEXES = {
+    # lock_cycles
+    "Budget Cycle": ("scenario_id", "fiscal_year"),
+    # assert_one_basis, and budget_bulk._replace_slice's slice read
+    "Budget Entry": ("cycle", "data_area_id", "layer"),
+    # assert_no_entry_lines
+    "Budget Entry Line": ("scenario_id", "fiscal_year", "data_area_id", "layer", "main_account"),
+    # assert_no_annual_input, and Budget Annual Input's own grain check
+    "Budget Annual Input": ("scenario_id", "fiscal_year", "data_area_id", "layer", "main_account"),
+}
+LOCK_INDEX_NAME = "budget_lock"
+
+
+def add_lock_index(doctype):
+    """Add `doctype`'s lock index if it is missing. Each doctype's
+    on_doctype_update calls this (doctype sync); ensure_lock_indexes covers
+    existing sites from after_migrate."""
+    frappe.db.add_index(doctype, list(LOCK_INDEXES[doctype]), index_name=LOCK_INDEX_NAME)
+
+
+def ensure_lock_indexes():
+    """Every budget lock index, idempotently (add_index checks first)."""
+    for doctype in LOCK_INDEXES:
+        add_lock_index(doctype)
+
 
 def plan(table, *, form_basis, name_lines):
     """Judge a budget table for the current user. Returns

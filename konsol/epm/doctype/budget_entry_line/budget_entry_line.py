@@ -95,3 +95,11 @@ def queue_sync():
     after the commit. A Budget Cycle submit or cancel changes which lines
     qualify under CH_SYNC_FILTERS, so it calls this (S2-T2)."""
     sync_doctype_after_commit(DOCTYPE, BudgetEntryLine.CH_TABLE, BudgetEntryLine.CH_FIELD_MAP)
+
+
+def on_doctype_update():
+    """The index this doctype's budget locking read runs on (PR #522 review;
+    konsol.budget_intake.LOCK_INDEXES)."""
+    from konsol.budget_intake import add_lock_index
+
+    add_lock_index("Budget Entry Line")

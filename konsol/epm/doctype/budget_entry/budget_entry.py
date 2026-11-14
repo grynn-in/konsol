@@ -269,3 +269,11 @@ class BudgetEntry(Document):
         self.row_count = len(lines)
         self.total_debit = sum(line.get("debit") or 0 for line in lines)
         self.total_credit = sum(line.get("credit") or 0 for line in lines)
+
+
+def on_doctype_update():
+    """The index this doctype's budget locking read runs on (PR #522 review;
+    konsol.budget_intake.LOCK_INDEXES)."""
+    from konsol.budget_intake import add_lock_index
+
+    add_lock_index("Budget Entry")

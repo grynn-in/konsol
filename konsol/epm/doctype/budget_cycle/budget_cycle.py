@@ -152,3 +152,11 @@ class BudgetCycle(Document):
             return bool(get_config(entity_id=entity_id).get("enabled"))
         except Exception:
             return False
+
+
+def on_doctype_update():
+    """The index this doctype's budget locking read runs on (PR #522 review;
+    konsol.budget_intake.LOCK_INDEXES)."""
+    from konsol.budget_intake import add_lock_index
+
+    add_lock_index("Budget Cycle")

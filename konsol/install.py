@@ -515,6 +515,12 @@ def _ensure_indexes():
         on_doctype_update()
     except Exception:
         frappe.logger().warning("index setup skipped during migrate", exc_info=True)
+    try:
+        # The budget locking reads' indexes (PR #522 review).
+        from konsol.budget_intake import ensure_lock_indexes
+        ensure_lock_indexes()
+    except Exception:
+        frappe.logger().warning("budget lock index setup skipped during migrate", exc_info=True)
 
 
 def _seed_defaults():
