@@ -276,3 +276,52 @@ def test_x14_a_re_entry_after_a_full_disposal_is_also_an_acquisition():
     acquisition. The answer says it was a disposal, not an exit."""
     assert _model().reentry_after_exit(
         _new(), [_gone(is_disposal=1)], [_sale()], []) == (_END, False)
+
+
+# --- a gap inside one declared period is no exit (konsolidat#335 F1, X18) ----
+#
+# konsol's rules are by day; the warehouse judges ownership at each declared
+# period's end. A link ending 10 Mar and a live link starting 20 Mar (one
+# March) leaves the node held at March's end: no exit journal. Asking for an
+# exit account and then a Business Combination would post a second
+# acquisition on undisposed balances, so it is refused.
+
+def _month(d):
+    return None if d is None else (d.year, d.month)
+
+
+def _mar(day):
+    return _dt.date(2026, 3, day)
+
+
+def test_x18_a_gap_inside_one_period_is_refused():
+    m = _model()
+    found = m.exit_and_return_in_one_period(_new(_mar(20)), [_gone(end=_mar(10))], [], _month)
+    assert found == (_mar(10), (2026, 3))
+
+
+def test_x18_a_business_combination_does_not_excuse_it():
+    # the combination list is not even an argument: the warehouse would post
+    # an acquisition on balances that were never derecognised
+    import inspect
+    assert "acquisitions" not in inspect.signature(_model().exit_and_return_in_one_period).parameters
+
+
+def test_x18_a_later_period_a_successor_or_a_disposal_is_not_this_rule():
+    m = _model()
+    # start in a later period: the re-entry rule (Business Combination) owns it
+    assert m.exit_and_return_in_one_period(_new(_dt.date(2026, 4, 2)), [_gone(end=_mar(10))], [], _month) is None
+    # contiguous successor
+    assert m.exit_and_return_in_one_period(_new(_mar(11)), [_gone(end=_mar(10))], [], _month) is None
+    # a full disposal ended it: the warehouse posts the disposal journal
+    sale = _Row(disposal_date=_mar(10), retained_interest_pct=0)
+    assert m.exit_and_return_in_one_period(
+        _new(_mar(20)), [_gone(end=_mar(10), is_disposal=1)], [sale], _month) is None
+    # not live, or no earlier link
+    assert m.exit_and_return_in_one_period(_new(_mar(20), "none"), [_gone(end=_mar(10))], [], _month) is None
+    assert m.exit_and_return_in_one_period(_new(_mar(20)), [], [], _month) is None
+
+
+def test_x18_an_undeclared_or_non_regular_date_is_not_judged():
+    m = _model()
+    assert m.exit_and_return_in_one_period(_new(_mar(20)), [_gone(end=_mar(10))], [], lambda d: None) is None

@@ -1622,6 +1622,8 @@ def _reentry_doc(held=(), deals=(), sales=(), calls=None, **changes):
         return [types.SimpleNamespace(**r) for r in rows]
 
     module.frappe.get_all = get_all
+    # the declared Regular period of a date: here one per calendar month
+    module._regular_period_of = lambda d: None if d is None else f"FY{d.year} P{d.month}"
     return _doc(module, **{"effective_date": "2026-01-01", "end_date": None, **changes})
 
 
@@ -1659,3 +1661,29 @@ def test_a_re_entry_after_a_full_disposal_is_refused_too():
 def test_a_group_node_and_a_non_live_period_are_not_checked():
     _reentry_doc(held=[_gone()], data_area_id=None)._validate_reentry()
     _reentry_doc(held=[_gone()], consolidation_method="none")._validate_reentry()
+
+
+# --- a gap inside one declared period (konsolidat#335 F1, X18) ---------------
+
+def test_x18_a_gap_inside_one_period_is_refused_even_with_a_combination():
+    held = [dict(_gone(end="2026-03-10"))]
+    for deals in ([], ["2026-03-20"]):
+        with pytest.raises(_Refused) as e:
+            _reentry_doc(held=held, deals=deals, effective_date="2026-03-20")._validate_reentry()
+        msg = str(e.value)
+        assert "ends on 2026-03-10 and starts again on 2026-03-20 inside the same period FY2026 P3" in msg
+        assert "the warehouse consolidates by period" in msg
+        assert "start 2026-03-11" in msg
+
+
+def test_x18_a_start_in_a_later_period_still_needs_the_combination_not_this_rule():
+    held = [dict(_gone(end="2026-03-10"))]
+    with pytest.raises(_Refused) as e:
+        _reentry_doc(held=held, effective_date="2026-04-02")._validate_reentry()
+    assert "needs a Business Combination" in str(e.value)
+    _reentry_doc(held=held, deals=["2026-04-02"], effective_date="2026-04-02")._validate_reentry()
+
+
+def test_x18_the_controller_documents_why_it_asks_for_the_exit_account_always():
+    doc = _method_body(_src(), "_validate_exit_account")
+    assert "cannot see carried balances" in doc and "#358" in doc

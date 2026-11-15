@@ -186,3 +186,33 @@ def reentry_after_exit(period, others, disposals, acquisitions):
     last = max(earlier, key=lambda o: _get(o, "end_date"))
     rest = [o for o in others if o is not last]
     return _get(last, "end_date"), end_is_exit(last, rest, disposals)
+
+
+def exit_and_return_in_one_period(period, others, disposals, period_of):
+    """Whether ``period`` starts again in the same declared period in which
+    an earlier link of its node ended in an exit (konsolidat#335 review F1,
+    X18). The rules above are by day; the warehouse reads ownership at each
+    declared period's end (macros/ownership_resolution.sql), so a link that
+    ends 10 Mar and a live link that starts 20 Mar (one Regular period) leave
+    the node held when March closes: no exit journal. Asking for the exit
+    account, then for a Business Combination, would post a second acquisition
+    on balances that were never derecognised. A Business Combination
+    therefore does not excuse it.
+
+    ``period_of(date)`` is the code of the declared Regular period holding
+    ``date`` (None when none does: such a date is not judged). The other
+    arguments are those of ``reentry_after_exit``; only an end that
+    ``end_is_exit`` calls an exit counts (a full disposal and a contiguous
+    successor do not).
+
+    Returns None when nothing is wrong, else ``(end, period_code)``."""
+    found = reentry_after_exit(period, others, disposals, ())
+    if found is None:
+        return None
+    left, is_exit = found
+    if not is_exit:
+        return None
+    code = period_of(left)
+    if code is None or code != period_of(_get(period, "effective_date")):
+        return None
+    return left, code
