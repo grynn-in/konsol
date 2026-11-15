@@ -44,8 +44,11 @@ REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW":
 
 def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="approver@example.com",
             flags=None, refs=None, previous=None, move_threshold_pct=50, magnitude_factor=None,
-            amended=None):
+            amended=None, actuals="ACTUAL"):
+    """``actuals``: the Rate Set(s) flagged Is Actuals (konsol#348); a str, a
+    tuple of names, or None for a site that has flagged none."""
     frappe = types.ModuleType("frappe")
+    flagged = [] if actuals is None else ([actuals] if isinstance(actuals, str) else list(actuals))
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
     refs = REFS if refs is None else refs
@@ -68,6 +71,10 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
         if doctype == "ISO Currency":
             return [types.SimpleNamespace(name=c, usd_log10=refs[c], get=lambda f, c=c: refs[c])
                     for c in filters["name"][1] if c in refs]
+        if doctype == "Rate Set":
+            record.setdefault("rate_set_reads", []).append((filters, k.get("pluck")))
+            assert filters == {"is_actuals": 1} and k.get("pluck") == "name", (filters, k)
+            return list(flagged)
         return []
 
     frappe.throw = throw
@@ -1301,11 +1308,14 @@ def test_the_move_rule():
     assert not hasattr(r, "MOVE_NEEDS_REASON"), "the threshold is declared, not coded"
 
 
-def test_the_previous_rate_is_read_as_a_true_rate():
-    frappe = _frappe({}, previous=("GER-2099-11-JPY-USD-Closing-01", 0.6607, "100", 2099, 11))
+def test_the_previous_rate_is_read_as_a_true_rate_within_its_set():
+    record = {}
+    frappe = _frappe(record, previous=("GER-2099-11-JPY-USD-Closing-01", 0.6607, "100", 2099, 11))
     r = _rules_module(frappe)
-    rate, label = r.previous_approved("USD", "JPY", "Closing", 2099, 12)
+    rate, label = r.previous_approved("USD", "JPY", "Closing", 2099, 12, "ACTUAL")
     assert rate == 0.006607 and label == "FY2099 P11 (GER-2099-11-JPY-USD-Closing-01)"
+    [query] = [q for q in record["sql"] if "ORDER BY fiscal_year DESC" in q]
+    assert "rate_set = %s" in query, "konsol#348: a budget set's rate is not the actuals' previous rate"
 
 
 def test_every_iso_currency_has_a_reference():
@@ -1417,7 +1427,8 @@ def test_the_pre_fill_drafts_a_rate_past_the_warning_factor_and_lists_it():
     inserted = []
     frappe = _frappe({}, magnitude_factor=3)
     frappe.only_for = lambda roles: None
-    frappe.get_all = lambda *a, **k: []
+    lookup = frappe.get_all
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
 
     class Doc(dict):
         def __init__(self, d):
@@ -1445,8 +1456,15 @@ def test_the_pre_fill_in_action():
     inserted, record = [], {}
     frappe = _frappe(record)
     frappe.only_for = lambda roles: inserted.append(("roles", roles))
-    frappe.get_all = lambda *a, **k: [types.SimpleNamespace(from_currency="GBP", to_currency="CHF",
-                                                             rate_type="Closing")]
+    lookup = frappe.get_all
+    taken_filters = []
+
+    def get_all(doctype, **k):
+        if doctype == "Rate Set":
+            return lookup(doctype, **k)
+        taken_filters.append(k["filters"])
+        return [types.SimpleNamespace(from_currency="GBP", to_currency="CHF", rate_type="Closing")]
+    frappe.get_all = get_all
 
     class Doc(dict):
         def __init__(self, d):
@@ -1484,6 +1502,11 @@ def test_the_pre_fill_in_action():
         ("EUR", "Closing"), ("EUR", "Average"), ("GBP", "Average"), ("JPY", "Closing")}
     assert all(d["source"] == "ERP pre-fill" and d["erp_quote"] == d["quote"] and "docstatus" not in d
                for d in drafts)
+    # konsol#348: the pre-fill proposes actuals, so every draft names the set
+    # flagged Is Actuals, and a draft or approved rate in another set does
+    # not count as "existing"
+    assert all(d["rate_set"] == "ACTUAL" for d in drafts), drafts
+    assert taken_filters and all(f["rate_set"] == "ACTUAL" for f in taken_filters), taken_filters
     eur_avg = next(d for d in drafts if d["from_currency"] == "EUR" and d["rate_type"] == "Average")
     assert (eur_avg["quote"], eur_avg["quoted_per"]) == (0.945, "1") and "Default" in eur_avg["source_note"]
     jpy = next(d for d in drafts if d["from_currency"] == "JPY")
@@ -1728,7 +1751,7 @@ def test_the_adoption_enters_each_rate_per_the_unit_that_keeps_it():
     made = []
     frappe = _frappe({}, user="Administrator")
     lookup = frappe.get_all
-    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "ISO Currency" else []
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype in ("ISO Currency", "Rate Set") else []
     frappe.utils = types.SimpleNamespace(today=lambda: "2026-09-13")
     frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
     frappe.db.savepoint = lambda name: None
@@ -1750,6 +1773,7 @@ def test_the_adoption_enters_each_rate_per_the_unit_that_keeps_it():
     closing = next(d for d in made if d["rate_type"] == "Closing")
     assert (closing["quote"], closing["quoted_per"], closing["erp_quote"]) == (0.663730291, "100", 0.663730291)
     assert closing["source"] == "Adoption"
+    assert closing["rate_set"] == "ACTUAL", "konsol#348: the adoption records actuals"
     average = next(d for d in made if d["rate_type"] == "Average")
     assert (average["quote"], average["quoted_per"], average["erp_quote"]) == (0.66, "100", None)
 
@@ -1761,7 +1785,7 @@ def _adopter(refs, used, made=None):
     frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
     frappe.db.savepoint = lambda name: None
     lookup = frappe.get_all
-    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "ISO Currency" else []
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype in ("ISO Currency", "Rate Set") else []
 
     class Doc(dict):
         name = "GER-X"
@@ -1830,7 +1854,8 @@ def test_the_adoption_runs_as_the_system_only_and_a_dry_run_writes_nothing():
     frappe = _frappe({}, user="someone@example.com")
     assert _refused(_rules_module(frappe).adopt_erp_rates)
     frappe = _frappe({}, user="Administrator")
-    frappe.get_all = lambda *a, **k: []
+    lookup = frappe.get_all
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
     frappe.get_doc = lambda d: (_ for _ in ()).throw(AssertionError("a dry run wrote"))
     frappe.utils = types.SimpleNamespace(today=lambda: "2026-09-13")
     frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
@@ -1929,3 +1954,147 @@ def test_an_approved_rate_requests_a_consolidation_build():
     build_map = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
                      and getattr(n.targets[0], "id", "") == "DOCTYPE_BUILD_MAP")
     assert build_map["Group Exchange Rate"]["scope"] == "consolidation"
+
+
+# -- the rate set (konsol#348, S4-Q1 option c, 15 Nov 2026) --------------------------
+#
+# Every rate names its Rate Set. The grain, the one-approved-rate rule, the
+# supersede check, the index and the name all key on it, so a budget set and
+# the actuals set each hold their own EUR -> CHF P12 Closing rate. The actuals
+# readers (close gate, pre-fill, adoption, previous-rate comparison) read the
+# one set flagged Is Actuals, and refuse by name while none is flagged.
+
+def test_a_rate_names_its_set():
+    f = _fields()
+    rs = f["rate_set"]
+    assert (rs["fieldtype"], rs["options"], rs["reqd"]) == ("Link", "Rate Set", 1)
+    assert rs["in_list_view"] == 1 and rs["in_standard_filter"] == 1
+    assert rs.get("description") and "Actuals" in rs["description"], "say which set the actuals read"
+    assert _json()["field_order"][0] == "rate_set", "the set comes first: it decides what the rate is for"
+    module, _ = _controller()
+    assert module.GRAIN == ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
+                            "rate_set")
+
+
+def test_a_blank_set_is_refused_not_defaulted():
+    """reqd covers the form; a REST write or a patch with ignore_mandatory
+    reaches validate, which must not let a rate fall into any set."""
+    refused, _, msg = _validate(rate_set=None)
+    assert refused and "Rate Set" in msg, msg
+    assert not _validate(rate_set="BUDGET_2027")[0]
+
+
+def test_the_name_carries_the_set():
+    module, _ = _controller()
+    made = []
+    naming = types.ModuleType("frappe.model.naming")
+    naming.make_autoname = lambda pattern, doc=None: made.append(pattern) or pattern
+    saved = sys.modules.get("frappe.model.naming")
+    sys.modules["frappe.model.naming"] = naming
+    try:
+        _doc(module, rate_set="BUDGET_2027").autoname()
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe.model.naming", None)
+        else:
+            sys.modules["frappe.model.naming"] = saved
+    assert made == ["GER-2099-12-EUR-CHF-Closing-BUDGET_2027-.##"], made
+
+
+def _approvals(module, record, approved):
+    """The controller's FOR UPDATE read, answered from ``approved`` rows on
+    every GRAIN field (the stub's default answers on none)."""
+    frappe = module.frappe
+    original = frappe.db.sql
+
+    def sql(query, params=(), *a, **k):
+        if "FOR UPDATE" in query:
+            record.setdefault("sql", []).append(query)
+            key, name = tuple(params[:-1]), params[-1]
+            return [(r["name"],) for r in approved
+                    if tuple(r[f] for f in module.GRAIN) == key and r["name"] != name]
+        return original(query, params, *a, **k)
+    frappe.db.sql = sql
+
+
+def test_two_sets_may_each_approve_the_same_key_and_one_set_may_not_twice():
+    module, record = _controller()
+    actual = dict(name="GER-2099-12-EUR-CHF-Closing-ACTUAL-01", to_currency="CHF", from_currency="EUR",
+                  fiscal_year=2099, fiscal_period=12, rate_type="Closing", rate_set="ACTUAL")
+    _approvals(module, record, [actual])
+    budget = _doc(module, name="GER-2099-12-EUR-CHF-Closing-BUDGET_2027-01", rate_set="BUDGET_2027")
+    budget.before_submit()
+    same = _doc(module, name="GER-2099-12-EUR-CHF-Closing-ACTUAL-02", rate_set="ACTUAL")
+    try:
+        same.before_submit()
+    except Refused as e:
+        assert actual["name"] in str(e) and "ACTUAL" in str(e), str(e)
+    else:
+        raise AssertionError("a second approved rate in the same set must be refused")
+    locking = [q for q in record["sql"] if "FOR UPDATE" in q]
+    assert locking and all("rate_set = %s" in q for q in locking), locking
+
+
+def test_a_correction_supersedes_within_its_own_set_only():
+    approved = {"GER-X": dict(to_currency="CHF", from_currency="EUR", fiscal_year=2099, fiscal_period=12,
+                              rate_type="Closing", rate_set="ACTUAL", docstatus=1)}
+    module, _ = _controller(amended=approved)
+    other_set = _doc(module, rate_set="BUDGET_2027", supersedes="GER-X", change_reason="budget rate")
+    assert _refused(other_set._validate_supersedes), "a budget rate cannot supersede the actuals rate"
+    same_set = _doc(module, rate_set="ACTUAL", supersedes="GER-X", change_reason="corrected")
+    assert not _refused(same_set._validate_supersedes)
+
+
+def test_the_grain_index_follows_the_set_and_a_stale_index_is_rebuilt():
+    """frappe.db.add_index skips an index whose NAME exists, so the five-column
+    "grain" index on an upgraded site would stay as it is and the locking read
+    would scan the whole key without the set. on_doctype_update asks what the
+    index holds and drops a stale one first."""
+    old = ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"]
+    for existing, dropped in ((old, 1), (old + ["rate_set"], 0), ([], 0)):
+        module, record = _controller()
+        frappe = module.frappe
+        original = frappe.db.sql
+
+        def sql(query, params=(), *a, existing=existing, **k):
+            if "SHOW INDEX" in query:
+                return [{"Column_name": c, "Seq_in_index": i} for i, c in enumerate(existing, 1)]
+            return original(query, params, *a, **k)
+        frappe.db.sql = sql
+        frappe.db.sql_ddl = lambda q, *a, **k: record.setdefault("ddl", []).append(q)
+        module.on_doctype_update()
+        assert len(record.get("ddl", [])) == dropped, (existing, record.get("ddl"))
+        if dropped:
+            assert "DROP INDEX grain" in record["ddl"][0] and "tabGroup Exchange Rate" in record["ddl"][0]
+        assert record["index"][-1][0][1] == list(module.GRAIN) and record["index"][-1][1] == {"index_name": "grain"}
+
+
+def test_actuals_readers_select_the_flagged_set_and_refuse_when_none_is_flagged():
+    record = {}
+    r = _rules_module(_frappe(record))
+    assert r.actuals_rate_set() == "ACTUAL"
+    r._approved_keys(2024, 3)
+    reads = [q for q in record["sql"] if "tabGroup Exchange Rate" in q]
+    assert reads and all("rate_set = %s" in q for q in reads), reads
+    # none flagged: nothing is assumed, and the close is refused by name
+    r = _rules_module(_frappe({}, actuals=None))
+    assert _refused(r.actuals_rate_set)
+    missing, error, blockers = r.rate_gate(2024, 3)
+    assert missing is None and "Is Actuals" in error and blockers == [], (missing, error, blockers)
+    try:
+        r.assert_rates_complete(2024, 3)
+    except Refused as e:
+        assert "Is Actuals" in str(e) and "Rate Set" in str(e), str(e)
+    else:
+        raise AssertionError("a close with no actuals set must be refused")
+    frappe = _frappe({}, actuals=None)
+    frappe.only_for = lambda roles: None
+    assert _refused(_rules_module(frappe).prefill_from_erp, "2024", "3"), "the pre-fill proposes actuals"
+    # two flagged (a patch or a race got past the controller): refuse, naming both
+    r = _rules_module(_frappe({}, actuals=("ACTUAL", "ZZ_OTHER")))
+    try:
+        r.actuals_rate_set()
+    except Refused as e:
+        assert "ACTUAL" in str(e) and "ZZ_OTHER" in str(e), str(e)
+    else:
+        raise AssertionError("two flagged sets must be refused")
