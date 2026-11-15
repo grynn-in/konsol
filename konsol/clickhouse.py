@@ -1616,6 +1616,8 @@ def _reconcile_tables():
             # resync_staging() for exactly this call. A doctype at 0 records
             # still syncs — TRUNCATE+INSERT of nothing empties the table,
             # which is the point.
+            # Cost Allocation Run's resync_staging writes nothing here: it
+            # queues its locked resync job and returns "queued" (RF9).
             if getattr(cls, "resync_staging", None):
                 _record(synced, cls.CH_STAGING_TABLE, cls.resync_staging(force=True))
             elif getattr(cls, "CH_STAGING_TABLE", None) and getattr(cls, "CH_STAGING_FIELD_MAP", None):

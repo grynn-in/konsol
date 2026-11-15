@@ -668,7 +668,9 @@ def _k8(world):
     fr.db.after_commit = types.SimpleNamespace(add=world.commit_callbacks.append)
     fr.cache = _FakeRedis(world)
     fr.logger = lambda *a, **k: types.SimpleNamespace(
-        info=lambda msg, *x, **y: world.events.append(("log", msg)))
+        info=lambda msg, *x, **y: world.events.append(("log", msg)),
+        warning=lambda msg, *x, **y: world.events.append(("warning", msg)),
+        error=lambda msg, *x, **y: world.events.append(("error", msg)))
     fr.log_error = lambda *a, **k: world.logged.append((a, k))
     fr._dict = lambda **k: types.SimpleNamespace(**k)
     module.frappe = fr
@@ -927,7 +929,7 @@ def test_lifecycle_coefficient_resync_rebuilds_exact_rows_from_stored_driver_val
         {"name": "CAR-00001", "method": "Step-Down", "modified": datetime(2026, 11, 13, 9, 0, 0)}]
     w.get_all_data["Cost Allocation Run Weight"] = _stored_weights()
     m = _k8(w)
-    written = m.CostAllocationRun.resync_staging(force=True)
+    written = m.CostAllocationRun._write_coefficients(force=True)
     (table, columns, rows, kw), = w.sync_table_calls
     assert table == "epm_staging.cost_allocation_coefficients"
     assert columns == ["run", "origin_member", "step", "sender_member", "receiver_member",
@@ -948,7 +950,7 @@ def test_lifecycle_coefficient_resync_rebuilds_exact_rows_from_stored_driver_val
 def test_lifecycle_coefficient_resync_with_no_submitted_runs_empties_the_table():
     w = _World()
     m = _k8(w)
-    m.CostAllocationRun.resync_staging()
+    m.CostAllocationRun._write_coefficients()
     (table, columns, rows, kw), = w.sync_table_calls
     assert rows == [] and kw["force"] is False
 
@@ -964,7 +966,7 @@ def test_lifecycle_coefficient_resync_reads_submitted_runs_only():
         return orig(doctype, filters=filters, **k)
 
     m.frappe.get_all = spy
-    m.CostAllocationRun.resync_staging()
+    m.CostAllocationRun._write_coefficients()
     assert ("Cost Allocation Run", {"docstatus": 1}) in seen
 
 
@@ -1354,7 +1356,7 @@ def test_rc4_coefficient_resync_for_reciprocal_carries_hop_kind_and_the_models_r
         {"name": "CAR-00001", "method": "Reciprocal", "modified": datetime(2026, 11, 13, 9, 0, 0)}]
     w.get_all_data["Cost Allocation Run Weight"] = _recip_stored()
     m = _k8(w)
-    m.CostAllocationRun.resync_staging(force=True)
+    m.CostAllocationRun._write_coefficients(force=True)
     (table, columns, rows, kw), = w.sync_table_calls
     assert columns == list(model.COEFFICIENT_COLUMNS) and "hop_kind" in columns
     steps = model.build_steps(
@@ -1757,6 +1759,7 @@ def test_rf9_reconcile_and_the_job_take_the_same_lock():
     m = _k8(w)
     _stub_writer(w, m)
     _commit(w, m, "CAR-00001")
+    w.jobs[w.enqueued[0][1]["job_id"]] = "started"   # else reconcile reuses it
     _with_rq(w, lambda: m.CostAllocationRun.resync_staging(force=True))
     w.jobs.clear()
     for _args, kw in list(w.enqueued):
@@ -1820,6 +1823,10 @@ def test_rf9_the_callback_with_redis_down_logs_and_does_not_raise():
         (args, kw), = w.logged
         text = " ".join(str(x) for x in list(args) + list(kw.values()))
         assert "CAR-00042" in text, broken
+        # after the commit an inserted Error Log would never be committed
+        assert kw.get("defer_insert") is True, broken
+        assert any(e[0] == "error" and "CAR-00042" in e[1]
+                   for e in w.events if isinstance(e, tuple)), broken
 
 
 def test_rf9_a_commit_survives_a_failing_callback():

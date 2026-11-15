@@ -121,6 +121,11 @@ add_to_apps_screen = [
 # ---------------
 
 scheduler_events = {
+    # RF9 (konsol#269): a coefficients resync lost to a killed worker or a
+    # flushed Redis is found and re-queued.
+    "hourly": [
+        "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.check_coefficients_staging",
+    ],
     "daily": [
         # F8: rows landed by a submission that crashed before claiming its
         # batch are invisible to bronze forever; age them out.
