@@ -824,6 +824,7 @@ def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
         w.syncs.clear()
         w.once.clear()
         w.enqueued.clear()
+        w.jobs.clear()                 # no resync job on the site before this hook
         getattr(_k8_run(m, docstatus=1), hook)()
         assert [(s[0], s[1]) for s in w.syncs] == [
             ("Cost Allocation Run", "epm_staging.cost_allocation_runs"),
@@ -835,7 +836,7 @@ def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
         # callback decides, after the commit, whether to enqueue
         assert w.enqueued == [], hook
         assert len(w.commit_callbacks) == 1, hook
-        w.commit_callbacks.pop()()
+        _with_rq(w, w.commit_callbacks.pop())
         (args, kw), = w.enqueued
         assert args == ("konsol.epm.doctype.cost_allocation_run.cost_allocation_run."
                         "resync_coefficients_job",), hook
