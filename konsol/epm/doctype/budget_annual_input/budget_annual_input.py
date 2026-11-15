@@ -26,6 +26,8 @@ FIXED_FIELD_MAP = {
     "scenario_id": "scenario_id",
     "data_area_id": "data_area_id",
     "fiscal_year": "fiscal_year",
+    # Budget S3 (K6/B3k, QB4 a): the row's Budget Cycle, the round for a forecast
+    "cycle": "cycle",
     "main_account": "main_account",
     # Budget S2 (A7): both required on the doctype (A5)
     "layer": "layer",

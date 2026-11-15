@@ -772,11 +772,15 @@ _REFERENCE_TABLE_DDL = {
     #
     # Budget S2 (A7, Q13-a): the layer and the currency of the row, after
     # main_account as on the doctype, both required there so neither has a
-    # DEFAULT. Identical to konsolidat's clickhouse/init-db.sql (S2-R6;
+    # DEFAULT. Budget S3 (B3k, QB4 a): the row's Budget Cycle after
+    # fiscal_year, as on the doctype (K6) and as epm_raw.budget_entries
+    # carries it; required there, so no DEFAULT. The sorting key is unchanged:
+    # two rounds of one pair share a key, and MergeTree keeps both rows.
+    # Identical to konsolidat's clickhouse/init-db.sql (S2-R6, S3 B3w;
     # test_budget_annual_input_ddl.py pins it). Added to an existing table by
     # _POSITIONED_COLUMNS below.
     "epm_gold.budget_annual_input": (
-        "(scenario_id String, data_area_id String, fiscal_year UInt16, "
+        "(scenario_id String, data_area_id String, fiscal_year UInt16, cycle String, "
         "main_account String, layer String, currency String, "
         "annual_amount Decimal(18,2), spread_profile_id String, "
         "submitted_by String) "
@@ -1194,8 +1198,10 @@ _POSITIONED_COLUMNS = {
         ("link_owner_data_area_id", "String", "link_owner_group"),
     ],
     # Budget S2 (A7, Q13-a): AFTER main_account, not last, because the site's
-    # dim_* budget columns are already appended to an existing table
+    # dim_* budget columns are already appended to an existing table. Budget
+    # S3 (B3k, QB4 a): the Cycle AFTER fiscal_year, first here (CREATE order).
     "epm_gold.budget_annual_input": [
+        ("cycle", "String", "fiscal_year"),
         ("layer", "String", "main_account"),
         ("currency", "String", "layer"),
     ],
