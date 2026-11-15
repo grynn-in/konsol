@@ -976,10 +976,10 @@ def test_new_ger_does_not_lock_a_year_in_check_if_latest():
 APPROVED = [
     types.SimpleNamespace(name="GER-2099-12-JPY-USD-Closing-01", to_currency="USD", from_currency="JPY",
                           fiscal_year=2099, fiscal_period=12, rate_type="Closing", quote=0.6607, quoted_per="100",
-                          modified=datetime.datetime(2099, 12, 31, 9, 0, 0)),
+                          rate_set="ACTUAL", modified=datetime.datetime(2099, 12, 31, 9, 0, 0)),
     types.SimpleNamespace(name="GER-2099-12-VND-USD-Closing-01", to_currency="USD", from_currency="VND",
                           fiscal_year=2099, fiscal_period=12, rate_type="Closing", quote=0.394, quoted_per="10000",
-                          modified=None)]
+                          rate_set="BUDGET_2027", modified=None)]
 
 
 def _publisher(lock=1, fail_at=None, flags=None):
@@ -1045,8 +1045,12 @@ def test_a_publish_swaps_the_whole_set_in_one_at_a_time():
                      f"EXCHANGE TABLES {main} AND {shadow}", f"DROP TABLE IF EXISTS {shadow}"]
     assert not any(q.startswith(("TRUNCATE", f"INSERT INTO {main} ")) for q in record["ch"])
     insert = record["ch"][2]
-    assert "('USD', 'JPY', 2099, 12, 'Closing', 0.006607, 'GER-2099-12-JPY-USD-Closing-01')" in insert
-    assert "('USD', 'VND', 2099, 12, 'Closing', 3.94e-05, 'GER-2099-12-VND-USD-Closing-01')" in insert
+    # konsol#348: the set is published LAST, where init-db.sql puts the column
+    assert "('USD', 'JPY', 2099, 12, 'Closing', 0.006607, 'GER-2099-12-JPY-USD-Closing-01', 'ACTUAL')" in insert
+    assert "('USD', 'VND', 2099, 12, 'Closing', 3.94e-05, 'GER-2099-12-VND-USD-Closing-01', 'BUDGET_2027')" in insert
+    assert insert.startswith(f"INSERT INTO {shadow} (to_currency, from_currency, fiscal_year, fiscal_period, "
+                             "rate_type, rate, document, rate_set) VALUES "), insert
+    assert "rate_set" in read, "the approved rates are read with their set"
     assert record["stamped"] == [(main, 2, "2099-12-31 09:00:00")]
 
 
@@ -1113,8 +1117,8 @@ def test_approve_and_cancel_republish_after_the_commit():
         assert module.GroupExchangeRate.resync_staging(force=True) == 7
     assert published == [True]
     assert rules.published_rows(APPROVED) == [
-        ["USD", "JPY", 2099, 12, "Closing", 0.006607, "GER-2099-12-JPY-USD-Closing-01"],
-        ["USD", "VND", 2099, 12, "Closing", 0.0000394, "GER-2099-12-VND-USD-Closing-01"]]
+        ["USD", "JPY", 2099, 12, "Closing", 0.006607, "GER-2099-12-JPY-USD-Closing-01", "ACTUAL"],
+        ["USD", "VND", 2099, 12, "Closing", 0.0000394, "GER-2099-12-VND-USD-Closing-01", "BUDGET_2027"]]
     module.on_doctype_update()
     assert record["index"][0][0][1] == ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
                                         "rate_set"]
@@ -1140,16 +1144,22 @@ def _ddl():
 
 
 def test_the_staging_ddl_is_the_true_rate():
-    """Keep in step with konsolidat's clickhouse/init-db.sql, character for character."""
+    """Keep in step with konsolidat's clickhouse/init-db.sql, character for
+    character. konsol#348: rate_set is the LAST column, added to an existing
+    table by _ADDED_COLUMNS (the table shipped before it), so a fresh and an
+    upgraded table agree; the publish's CREATE TABLE shadow AS live copies
+    the live shape, so the live table must have the column before the first
+    publish (ensure_reference_tables runs before reconcile_all)."""
     body = _ddl()["_REFERENCE_TABLE_DDL"]["epm_staging.group_exchange_rates"]
     assert body == (
         "(to_currency String, from_currency String, fiscal_year UInt16, "
-        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String, rate_set String) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)")
     module, _ = _controller()
     cols = [c.strip().split()[0] for c in body[1:body.index(")")].split(",")]
     assert cols == module.GroupExchangeRate.CH_STAGING_COLUMNS
-    assert "epm_staging.group_exchange_rates" not in _ddl()["_ADDED_COLUMNS"], "nothing shipped to upgrade"
+    assert tuple(cols) == _rules().PUBLISH_COLUMNS
+    assert _ddl()["_ADDED_COLUMNS"]["epm_staging.group_exchange_rates"] == [("rate_set", "String")]
 
 
 def test_the_currencies_ddl_carries_the_reference():
