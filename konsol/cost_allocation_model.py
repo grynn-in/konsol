@@ -16,7 +16,9 @@ row is flagged.
 """
 import csv
 import io
+import math
 import re
+from collections import deque
 from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -238,7 +240,7 @@ COEFFICIENT_PLACES = 12
 _SCALE = 10 ** COEFFICIENT_PLACES
 _QUANTUM = Decimal(1).scaleb(-COEFFICIENT_PLACES)
 COEFFICIENT_COLUMNS = ("run", "origin_member", "step", "sender_member", "receiver_member",
-                       "driver", "pool_coefficient", "coefficient")
+                       "driver", "hop_kind", "pool_coefficient", "coefficient")
 
 
 def _weight(weights, st, recv):
@@ -429,8 +431,9 @@ def round_coefficients(exact_rows, weights):
     exactly 1. Each rounded value is within (number of hops) * 1e-12 of exact.
     hop_kind is carried through unchanged; an `own` hop has pool exactly 1.
 
-    Direct and Step-Down only: a `pass` hop at the origin (Reciprocal) raises
-    NotImplementedError until RC2.
+    Direct and Step-Down only: cost never returns to its origin, so pools can
+    be rounded in step order. A `pass` hop at the origin (Reciprocal) raises
+    ValueError; those rows go through round_reciprocal_coefficients.
     """
     out, held, pending, hop = [], {}, [], None
 
@@ -442,7 +445,8 @@ def round_coefficients(exact_rows, weights):
         if r0["hop_kind"] == OWN:
             units = _SCALE
         elif r0["sender_member"] == o:
-            raise NotImplementedError("RC2: rounding of Reciprocal coefficients")
+            raise ValueError("Cost returns to origin %s (Reciprocal); "
+                             "use round_reciprocal_coefficients." % o)
         else:
             units = held.get((o, r0["sender_member"]), 0)
         w = {r["receiver_member"]: weights[(r["step"], r["receiver_member"])] for r in pending}
@@ -465,21 +469,128 @@ def round_coefficients(exact_rows, weights):
     return out
 
 
+def _units(v):
+    return Decimal(v).scaleb(-COEFFICIENT_PLACES).quantize(_QUANTUM)
+
+
+def round_reciprocal_coefficients(exact_rows):
+    """Round reciprocal_coefficients rows to 12 dp, as Decimals, exactly.
+
+    Cost goes round in cycles, so pools cannot be rounded in step order. The
+    rows of one origin O are instead rounded together, as a flow, in integer
+    units of 1e-12. Nodes: a source; O's own node (`own` rows leave it); one
+    `pass` node per sender (every coefficient a sender receives arrives there,
+    its `pass` rows leave it); one node per final receiver. Edges: source ->
+    own(O) carrying 10^12 units; one edge per row, carrying 10^12 * its exact
+    coefficient; final receiver -> source carrying what it receives. The
+    exact values balance every node, so this is a circulation.
+
+    Rounding: while some edge is fractional, take the smallest fractional
+    edge (by node names), close a cycle of fractional edges through it (a
+    breadth-first search, neighbours in name order) and push flow round the
+    cycle until one of its edges is a whole number, in whichever direction
+    needs the smaller push (forward on a tie). Such a cycle always exists: a
+    node's fractional edges cannot number exactly one (its whole-number edges
+    and its balance are integers), and a fractional edge cannot be a bridge
+    of the fractional graph (the flow across the cut it alone would cross is
+    zero, so it would be whole). A push keeps every node balanced and never
+    moves an edge past an integer, so each edge stops at floor or ceil of its
+    exact value. Hence, exactly, per origin:
+      - the `own` hop's pool is 1 (the source edge is 10^12, never touched);
+      - every sender's `own` + `pass` outflow equals what it received from O
+        (+1 at O), so a service department nets to exactly 0;
+      - the final receivers get exactly 1;
+      - per hop (origin, sender, hop_kind), pool_coefficient is defined as the
+        sum of its coefficients;
+      - no coefficient is negative, and each is strictly within 1e-12 of the
+        exact Fraction (equal when the exact value has <= 12 places); a pool
+        is within (its receiver count) x 1e-12.
+    A sender whose only exits are other service departments needs no special
+    case: there is no per-sender remainder, only balanced nodes, and its
+    node is balanced like any other. Deterministic: only member names, kinds
+    and exact values are used, never step numbers or declaration order.
+    Rows keep their order and every column; zero-weight rows stay at zero.
+    """
+    senders = {r["sender_member"] for r in exact_rows}
+    by_origin = {}
+    for r in exact_rows:
+        by_origin.setdefault(r["origin_member"], []).append(r)
+    units = {}
+    for o, rows in by_origin.items():
+        units.update(_round_circulation(o, rows, senders))
+    pools = {}
+    for r in exact_rows:
+        k = (r["origin_member"], r["sender_member"], r["hop_kind"])
+        pools[k] = pools.get(k, 0) + units[id(r)]
+    return [dict(r, pool_coefficient=_units(pools[(r["origin_member"], r["sender_member"], r["hop_kind"])]),
+                 coefficient=_units(units[id(r)])) for r in exact_rows]
+
+
+def _round_circulation(origin, rows, senders):
+    """{id(row): integer units} for one origin's rows; see round_reciprocal_coefficients."""
+    src = ("0 source", "")
+    node_in = lambda m: ("2 pass", m) if m in senders else ("3 final", m)
+    flow, edge_of = {(src, ("1 own", origin)): Fraction(_SCALE)}, {}
+    for r in rows:
+        tail = ("1 own", origin) if r["hop_kind"] == OWN else ("2 pass", r["sender_member"])
+        e = (tail, node_in(r["receiver_member"]))
+        if e in flow:
+            raise CostAllocationError("Duplicate coefficient row for origin %s, %s to %s."
+                                      % (origin, r["sender_member"], r["receiver_member"]))
+        flow[e] = Fraction(r["coefficient"]) * _SCALE
+        edge_of[id(r)] = e
+        if e[1][0] == "3 final":
+            back = (e[1], src)
+            flow[back] = flow.get(back, Fraction(0)) + flow[e]
+    frac = {e for e, v in flow.items() if v.denominator != 1}
+    while frac:
+        start = min(frac)
+        adj = {}
+        for e in sorted(frac - {start}):
+            adj.setdefault(e[0], []).append((e[1], e, 1))
+            adj.setdefault(e[1], []).append((e[0], e, -1))
+        # Path from start's head back to its tail over the other fractional edges.
+        goal, prev, queue = start[0], {start[1]: None}, deque([start[1]])
+        while queue and goal not in prev:
+            u = queue.popleft()
+            for v, e, d in adj.get(u, ()):
+                if v not in prev:
+                    prev[v] = (u, e, d)
+                    queue.append(v)
+        if goal not in prev:  # impossible for a balanced flow; never round silently
+            raise CostAllocationError("Reciprocal rounding found unbalanced coefficients "
+                                      "for origin %s." % origin)
+        cycle, v = [(start, 1)], goal
+        while prev[v] is not None:
+            u, e, d = prev[v]
+            cycle.append((e, d))
+            v = u
+        up = min((math.ceil(flow[e]) - flow[e]) if d > 0 else (flow[e] - math.floor(flow[e]))
+                 for e, d in cycle)
+        down = min((flow[e] - math.floor(flow[e])) if d > 0 else (math.ceil(flow[e]) - flow[e])
+                   for e, d in cycle)
+        t = up if up <= down else -down
+        for e, d in cycle:
+            flow[e] += t * d
+            if flow[e].denominator == 1:
+                frac.discard(e)
+    return {rid: int(flow[e]) for rid, e in edge_of.items()}
+
+
 def coefficient_rows(run_name, steps, weights, method):
     """Rows for epm_staging.cost_allocation_coefficients, 12-dp Decimals.
 
-    Columns, in order: run, origin_member, step, sender_member,
-    receiver_member, driver, pool_coefficient, coefficient. Invariants (the
-    warehouse tests rely on them):
-      T5  per (run, origin, step, sender): sum(coefficient) == pool_coefficient;
-      own per origin: pool_coefficient == 1 at the origin's own step;
-      pass per origin and later sender S: pool_coefficient at S == sum of the
-          coefficients S received from that origin (all at earlier steps);
+    Columns, in order: COEFFICIENT_COLUMNS (run, origin_member, step,
+    sender_member, receiver_member, driver, hop_kind, pool_coefficient,
+    coefficient). Invariants, every method (the warehouse tests rely on them):
+      T5  per (run, origin, sender, hop_kind): sum(coefficient) == pool_coefficient;
+      own per origin: one `own` hop, at the origin, pool_coefficient == 1;
+      pass per origin and sender S: S's `own` + `pass` outflow == the
+          coefficients S received from that origin (+1 at the origin);
       T1  per origin: sum(coefficient) over receivers that are not senders == 1.
     All exact in Decimal, so origin_amount * coefficient conserves to the cent.
-
-    Direct and Step-Down only for now: Reciprocal raises
-    NotImplementedError("RC2") (its rounding and the hop_kind column are RC2).
+    Direct and Step-Down round hop by hop in step order (round_coefficients);
+    Reciprocal rounds each origin as one flow (round_reciprocal_coefficients).
     """
     errs = []
     for st in steps:
@@ -493,11 +604,12 @@ def coefficient_rows(run_name, steps, weights, method):
     elif method == STEP_DOWN:
         exact = step_down_coefficients(steps, weights)
     elif method == RECIPROCAL:
-        raise NotImplementedError("RC2: rounding of Reciprocal coefficients")
+        exact = reciprocal_coefficients(steps, weights)
     else:
         raise CostAllocationError("Method must be one of %s, not %r." % (", ".join(METHODS), method))
-    return [{"run": run_name, **{c: r[c] for c in COEFFICIENT_COLUMNS[1:]}}
-            for r in round_coefficients(exact, weights)]
+    rounded = round_reciprocal_coefficients(exact) if method == RECIPROCAL \
+        else round_coefficients(exact, weights)
+    return [{"run": run_name, **{c: r[c] for c in COEFFICIENT_COLUMNS[1:]}} for r in rounded]
 
 
 # -- statistic CSV (K5b) -------------------------------------------------------
