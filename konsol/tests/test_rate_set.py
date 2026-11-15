@@ -396,6 +396,19 @@ def _site(flagged=("ACTUAL",), sets=1, blank_ger=3, her_rows=()):
     return m, record, frappe
 
 
+RATE_SET_MODULE = "konsol.consolidation.doctype.rate_set.rate_set"
+
+
+def test_the_site_stub_leaves_sys_modules_as_it_found_them():
+    """_site serves the patch a stub rate_set module under the real import
+    name. It must be gone when the test is: left behind, every later test in
+    the process that imports the real module gets the stub (review of
+    konsol#546)."""
+    before = sys.modules.get(RATE_SET_MODULE)
+    _site()
+    assert sys.modules.get(RATE_SET_MODULE) is before, "test_rate_set leaked its stub into sys.modules"
+
+
 def test_the_patch_stamps_every_blank_rate_with_the_flagged_set_and_logs_counts():
     digest_name = _digest_name()
     old = digest_name("HER", ["ZZGRP", "ZZNL", "ZZ3000", "2024-01-01", "EUR"])
