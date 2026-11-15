@@ -220,6 +220,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # Budget S2 (I3): the raw budget landing table, one row per Budget
         # Entry Line (test_budget_raw_ddl.py)
         "epm_raw.budget_entries",
+        # konsol#348 S4-Q2 (a): the approved Budget Cycles, one row each, so
+        # the warehouse reads a Cycle's Rate Set (test_budget_cycle_write_through.py)
+        "epm_staging.budget_cycles",
         # konsol#110: the entity registry, so a connector-less entity has a
         # currency the consolidation can join on
         "epm_staging.entities",
