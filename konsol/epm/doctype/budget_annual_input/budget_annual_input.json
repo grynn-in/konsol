@@ -90,6 +90,7 @@
    "fieldname": "annual_amount",
    "fieldtype": "Currency",
    "label": "Annual Amount",
+   "description": "The year's budget for the account, signed like the actuals: debit positive, credit negative. Enter revenue and liabilities as negative amounts, expenses and assets as positive. The spread period amounts carry the same sign.",
    "reqd": 1,
    "in_list_view": 1
   },
