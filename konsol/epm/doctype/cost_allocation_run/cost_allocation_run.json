@@ -104,7 +104,7 @@
    "fieldname": "method",
    "fieldtype": "Select",
    "label": "Method",
-   "options": "Direct\nStep-Down",
+   "options": "Direct\nStep-Down\nReciprocal",
    "read_only": 1,
    "description": "Snapshot of the rule set's method, taken when the weights are computed."
   },

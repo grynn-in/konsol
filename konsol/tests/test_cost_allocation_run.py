@@ -128,10 +128,28 @@ def test_doctype_run_link_and_select_options():
     assert fields["accounts"]["options"] == "Cost Allocation Run Account"
     assert fields["status"]["options"] == "Draft\nPending Approval\nApproved\nCancelled"
     assert fields["status"]["default"] == "Draft"
-    assert fields["method"]["options"] == "Direct\nStep-Down"
+    assert fields["method"]["options"] == "Direct\nStep-Down\nReciprocal"
     assert fields["receiver_account_mode"]["options"] == (
         "Sender's Own Accounts\nDeclared Allocation Account")
     assert fields["amounts_after_approval"]["options"] == "Follow Latest Data\nFreeze at Approval"
+
+
+def test_run_select_options_equal_model_constants():
+    """The Run copies the rule set's method and receiver account mode, so its
+    options must be the model's constants. A narrower list refuses a valid
+    run on save (konsol#269 RF1: Reciprocal was refused)."""
+    from konsol import cost_allocation_model as model
+    fields = _by_name(RUN)
+    assert fields["method"]["options"].split("\n") == list(model.METHODS)
+    assert fields["receiver_account_mode"]["options"].split("\n") == list(model.ACCOUNT_MODES)
+
+
+def test_run_amounts_after_approval_options_equal_rule_set():
+    """No model constant exists for this choice, so the Run must offer exactly
+    the rule set's options: the copied value is refused on save otherwise."""
+    run_options = _by_name(RUN)["amounts_after_approval"]["options"]
+    rule_set_options = _by_name("cost_allocation_rule_set")["amounts_after_approval"]["options"]
+    assert run_options.split("\n") == rule_set_options.split("\n")
 
 
 def test_doctype_declared_account_is_shown_only_when_declared():
