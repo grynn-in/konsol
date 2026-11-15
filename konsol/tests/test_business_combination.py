@@ -115,6 +115,7 @@ def _load():
     ps.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
     gr = types.ModuleType("konsol.group_rates")
     gr.true_rate = lambda quote, per: float(Decimal(str(quote or 0)) / int(per or 1))
+    gr.actuals_rate_set = lambda: "ACTUAL"
 
     stubs = {"frappe": frappe, "frappe.model": model, "frappe.model.document": document,
              "frappe.utils": utils, "konsol.clickhouse": ch, "konsol.period_status": ps,
@@ -386,6 +387,7 @@ class _Site:
             return [_Row(name=n, chart_of_accounts=self._chart(n)) for n in names]
         assert doctype == "Group Exchange Rate", doctype
         assert filters.get("docstatus") == 1 and filters.get("rate_type") == "Closing", filters
+        assert filters.get("rate_set") == "ACTUAL", "konsol#348: a deal translates at the actuals rate"
         key = (filters["from_currency"], filters["to_currency"], filters["fiscal_year"], filters["fiscal_period"])
         if key not in self.rates:
             return []

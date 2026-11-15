@@ -143,7 +143,7 @@ def _ger(name, frm, to, rate_type, quote, docstatus, owner=ANALYST, quoted_per="
             "docstatus": docstatus, "owner": owner,
             "modified": modified or datetime(2025, 7, 31, 10, 0, 0),
             "change_reason": change_reason, "source": source,
-            "fiscal_year": 2025, "fiscal_period": 7, "supersedes": supersedes}
+            "fiscal_year": 2025, "fiscal_period": 7, "supersedes": supersedes, "rate_set": "ACTUAL"}
 
 
 def _earlier(name, frm, to, rate_type, quote, fy, fp, quoted_per="1"):
@@ -331,19 +331,20 @@ def _frappe(site):
             # rows, answered from site.docs on the five grain values.
             assert as_dict, "the key's rates are read as_dict"
             site.locking_values.append(tuple(values))
-            to, frm, fy, fp, rate_type = values
+            to, frm, fy, fp, rate_type, rate_set = values   # konsol#348: the set is in the key
             grain = {"to_currency": to, "from_currency": frm, "fiscal_year": fy,
-                     "fiscal_period": fp, "rate_type": rate_type}
+                     "fiscal_period": fp, "rate_type": rate_type, "rate_set": rate_set}
             return [{"name": r["name"], "docstatus": r["docstatus"],
                      "supersedes": r.get("supersedes")}
                     for r in site.docs if _match(r, grain) and r["docstatus"] in (0, 1)]
         assert "docstatus = 1" in query, query
         assert as_dict, "the earlier approved rates are read as_dict"
-        fy, fy2, fp = values
-        assert fy == fy2
+        assert "rate_set = %s" in query, "konsol#348: earlier rates of the actuals set only"
+        rate_set, fy, fy2, fp = values
+        assert fy == fy2 and rate_set == "ACTUAL"
         return [dict(r) for r in site.earlier
-                if r["docstatus"] == 1 and (r["fiscal_year"] < fy
-                                            or (r["fiscal_year"] == fy and r["fiscal_period"] < fp))]
+                if r["docstatus"] == 1 and r.get("rate_set", "ACTUAL") == rate_set
+                and (r["fiscal_year"] < fy or (r["fiscal_year"] == fy and r["fiscal_period"] < fp))]
 
     def get_single_value(doctype, field, **k):
         site.reads.append(("single", doctype, field))
@@ -457,6 +458,9 @@ def _group_rates(site):
     gr.PREFILL_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
     gr.true_rate = lambda q, p: float(decimal.Decimal(str(q or 0)) / int(p or 1))
     gr.ch_error_names = lambda e: set()
+    # konsol#348: the Rates screen is the actuals screen; it reads and writes
+    # the one Rate Set flagged Is Actuals
+    gr.actuals_rate_set = lambda: site.reads.append(("actuals_rate_set",)) or "ACTUAL"
 
     def translation_gaps(fy, fp):
         # (pairs, groups with no reporting currency, entities with no functional currency)
@@ -3670,3 +3674,25 @@ def test_117f_change_choices_list_one_item_per_holding():
         ("ZZ5B1", O63_SUB, "CG-ZZ_SUBGROUP-", "OP-ZZ5B1-SUB"),
         ("ZZ5B3", O55_GROUP, "CG-ECL_GROUP-", "OP-ZZ5B3-1"),
     ]
+
+
+# ---- the Rates screen is the actuals screen (konsol#348) ------------------------
+
+def test_the_screen_shows_and_writes_the_actuals_set_only():
+    """A budget set's rate for the same key is not this screen's business: it is
+    neither shown as the period's rate nor counted as the existing draft, and a
+    rate saved here is an actuals rate."""
+    site = _Site()
+    budget = _ger("GER-B", "EUR", "GBP", "Closing", 0.80, 1)
+    budget["rate_set"] = "BUDGET_2027"
+    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1), budget]
+    api = _api(site)
+    out = api.get_rates(2025, 7)
+    shown = {c["name"] for row in out["rows"] + out["unrequired"] for c in (row["closing"], row["average"])
+             if c.get("name")}
+    assert "GER-1" in shown and "GER-B" not in shown, shown
+    assert ("actuals_rate_set",) in site.reads
+    api.save_rate(2025, 7, "EUR", "GBP", "Average", 0.84, "1")
+    doc = site.new_docs[0]
+    assert doc["rate_set"] == "ACTUAL", dict(doc)
+    assert site.locking_values[-1][-1] == "ACTUAL", site.locking_values

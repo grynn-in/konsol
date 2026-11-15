@@ -84,7 +84,11 @@ class _Site:
                                        reporting_currency="GBP")],
             "Group Exchange Rate": [_D(from_currency="EUR", to_currency="USD",
                                        rate_type="Closing", fiscal_year=2025, fiscal_period=9,
-                                       docstatus=1)],
+                                       docstatus=1, rate_set="ACTUAL"),
+                                    # konsol#348: a budget set's rate is not the period's rate
+                                    _D(from_currency="JPY", to_currency="USD",
+                                       rate_type="Closing", fiscal_year=2025, fiscal_period=9,
+                                       docstatus=1, rate_set="BUDGET_2027")],
         }
         self.rate_result = ([], None, [])
         self.rate_calls = []
@@ -237,6 +241,7 @@ def _load_api(site):
         return site.rate_result
 
     group_rates.rate_gate = rate_gate
+    group_rates.actuals_rate_set = lambda: "ACTUAL"
     entity_permissions = types.ModuleType("konsol.entity_permissions")
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
     period_status = types.ModuleType("konsol.period_status")
@@ -472,6 +477,14 @@ def test_a_draft_rate_in_the_missing_list_reads_awaiting_approval():
     site.rate_result = ([("EUR", "USD", "Closing"), ("EUR", "USD", "Average")], None, [])
     rows = {r["entity"]: r for r in _call(site)["rows"]}
     assert rows["ZZA"]["rate"] == {"tone": "blocking", "label": "Awaiting approval"}
+
+
+def test_the_grid_reads_the_actuals_set_only():
+    """konsol#348: a budget set's approved Closing rate (JPY -> USD in _Site)
+    is not the period's actuals rate, so the grid never shows it as approved."""
+    site = _Site()
+    rates = _load_api(site)._rates((2025, 9))
+    assert ("EUR", "USD") in rates["approved"] and ("JPY", "USD") not in rates["approved"], rates
 
 
 def test_the_query_count_does_not_grow_with_the_entities():
