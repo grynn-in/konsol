@@ -1189,19 +1189,71 @@ def test_reciprocal_rounding_hop_kind_column_for_every_method():
         assert {r["hop_kind"] for r in rows} <= {"own", "pass"}
 
 
+#: Direct and Step-Down coefficients as origin/main rounded them before
+#: Reciprocal existed (konsol#269 review finding 4), for _random_case seeds:
+#: (origin, step, sender, receiver, pool_coefficient, coefficient).
+_MAIN_ROUNDED = [
+    ('Step-Down', 41, [
+        ('S0', 1, 'S0', 'F1', '1.000000000000', '0.736842105263'),
+        ('S0', 1, 'S0', 'S1', '1.000000000000', '0.263157894737'),
+        ('S0', 2, 'S1', 'S2', '0.263157894737', '0E-12'),
+        ('S0', 2, 'S1', 'F0', '0.263157894737', '0.012531328321'),
+        ('S0', 2, 'S1', 'S3', '0.263157894737', '0.250626566416'),
+        ('S0', 4, 'S3', 'F2', '0.250626566416', '0.250626566416'),
+        ('S1', 2, 'S1', 'S2', '1.000000000000', '0E-12'),
+        ('S1', 2, 'S1', 'F0', '1.000000000000', '0.047619047619'),
+        ('S1', 2, 'S1', 'S3', '1.000000000000', '0.952380952381'),
+        ('S1', 4, 'S3', 'F2', '0.952380952381', '0.952380952381'),
+        ('S2', 3, 'S2', 'F2', '1.000000000000', '1.000000000000'),
+        ('S2', 3, 'S2', 'F0', '1.000000000000', '0E-12'),
+        ('S3', 4, 'S3', 'F2', '1.000000000000', '1.000000000000'),
+    ]),
+    ('Step-Down', 47, [
+        ('S0', 1, 'S0', 'S2', '1.000000000000', '0.611111111111'),
+        ('S0', 1, 'S0', 'S1', '1.000000000000', '0.388888888889'),
+        ('S0', 2, 'S1', 'S2', '0.388888888889', '0.388888888889'),
+        ('S0', 2, 'S1', 'F0', '0.388888888889', '0E-12'),
+        ('S0', 3, 'S2', 'F0', '1.000000000000', '1.000000000000'),
+        ('S1', 2, 'S1', 'S2', '1.000000000000', '1.000000000000'),
+        ('S1', 2, 'S1', 'F0', '1.000000000000', '0E-12'),
+        ('S1', 3, 'S2', 'F0', '1.000000000000', '1.000000000000'),
+        ('S2', 3, 'S2', 'F0', '1.000000000000', '1.000000000000'),
+    ]),
+    ('Direct', 10000, [
+        ('S0', 1, 'S0', 'F2', '1.000000000000', '1.000000000000'),
+        ('S1', 2, 'S1', 'F0', '1.000000000000', '0.161290322581'),
+        ('S1', 2, 'S1', 'F2', '1.000000000000', '0.709677419355'),
+        ('S1', 2, 'S1', 'F1', '1.000000000000', '0.129032258064'),
+        ('S2', 3, 'S2', 'F2', '1.000000000000', '1.000000000000'),
+        ('S3', 4, 'S3', 'F1', '1.000000000000', '1.000000000000'),
+        ('S4', 5, 'S4', 'F0', '1.000000000000', '0.583333333334'),
+        ('S4', 5, 'S4', 'F2', '1.000000000000', '0.208333333333'),
+        ('S4', 5, 'S4', 'F1', '1.000000000000', '0.208333333333'),
+    ]),
+    ('Direct', 10011, [
+        ('S0', 1, 'S0', 'F2', '1.000000000000', '0.353697749196'),
+        ('S0', 1, 'S0', 'F4', '1.000000000000', '0E-12'),
+        ('S0', 1, 'S0', 'F1', '1.000000000000', '0.225080385852'),
+        ('S0', 1, 'S0', 'F0', '1.000000000000', '0.003215434084'),
+        ('S0', 1, 'S0', 'F3', '1.000000000000', '0.418006430868'),
+        ('S1', 2, 'S1', 'F4', '1.000000000000', '0.151515151515'),
+        ('S1', 2, 'S1', 'F3', '1.000000000000', '0.424242424242'),
+        ('S1', 2, 'S1', 'F1', '1.000000000000', '0.424242424243'),
+    ]),
+]
+
+
 def test_reciprocal_rounding_direct_and_step_down_unchanged_apart_from_hop_kind():
-    # The rounded numbers equal the pre-RC2 hop-by-hop rounding of the exact rows.
-    for seed in range(100):
-        for method, base in (("Step-Down", 0), ("Direct", 10_000)):
-            steps, w = _random_case(random.Random(base + seed), method)
-            exact = M.step_down_coefficients(steps, w) if method == "Step-Down" \
-                else M.direct_coefficients(steps, w)
-            rows = M.coefficient_rows("ZZRUN", steps, w, method)
-            old = M.round_coefficients(exact, w)
-            assert [(_key(r), r["hop_kind"], r["pool_coefficient"], r["coefficient"]) for r in rows] == \
-                [(_key(r), r["hop_kind"], r["pool_coefficient"], r["coefficient"]) for r in old]
-            for r in rows:
-                assert r["hop_kind"] == ("own" if r["sender_member"] == r["origin_member"] else "pass")
+    # Pinned from origin/main's cost_allocation_model.py, not from this code.
+    for method, seed, expected in _MAIN_ROUNDED:
+        steps, w = _random_case(random.Random(seed), method)
+        rows = M.coefficient_rows("ZZRUN", steps, w, method)
+        got = [(r["origin_member"], r["step"], r["sender_member"], r["receiver_member"],
+                r["pool_coefficient"], r["coefficient"]) for r in rows]
+        assert got == [(o, st, s, rc, Decimal(p), Decimal(c)) for o, st, s, rc, p, c in expected], \
+            (method, seed)
+        for r in rows:
+            assert r["hop_kind"] == ("own" if r["sender_member"] == r["origin_member"] else "pass")
 
 
 def test_reciprocal_rounding_round_coefficients_refuses_reciprocal_rows():
@@ -1209,3 +1261,116 @@ def test_reciprocal_rounding_round_coefficients_refuses_reciprocal_rows():
     with raises(ValueError) as ei:
         M.round_coefficients(M.reciprocal_coefficients(steps, w), w)
     assert "round_reciprocal_coefficients" in str(ei.value)
+
+
+# -- RF3: near-linear reciprocal rounding, identical output -------------------
+
+import math
+import time
+from collections import deque
+
+
+def _round_circulation_reference(origin, rows, senders):
+    """RC2's _round_circulation, verbatim: the reference RF3 must equal."""
+    src = ("0 source", "")
+    node_in = lambda m: ("2 pass", m) if m in senders else ("3 final", m)
+    flow, edge_of = {(src, ("1 own", origin)): Fraction(M._SCALE)}, {}
+    for r in rows:
+        tail = ("1 own", origin) if r["hop_kind"] == M.OWN else ("2 pass", r["sender_member"])
+        e = (tail, node_in(r["receiver_member"]))
+        if e in flow:
+            raise M.CostAllocationError("Duplicate coefficient row for origin %s, %s to %s."
+                                        % (origin, r["sender_member"], r["receiver_member"]))
+        flow[e] = Fraction(r["coefficient"]) * M._SCALE
+        edge_of[id(r)] = e
+        if e[1][0] == "3 final":
+            back = (e[1], src)
+            flow[back] = flow.get(back, Fraction(0)) + flow[e]
+    frac = {e for e, v in flow.items() if v.denominator != 1}
+    while frac:
+        start = min(frac)
+        adj = {}
+        for e in sorted(frac - {start}):
+            adj.setdefault(e[0], []).append((e[1], e, 1))
+            adj.setdefault(e[1], []).append((e[0], e, -1))
+        goal, prev, queue = start[0], {start[1]: None}, deque([start[1]])
+        while queue and goal not in prev:
+            u = queue.popleft()
+            for v, e, d in adj.get(u, ()):
+                if v not in prev:
+                    prev[v] = (u, e, d)
+                    queue.append(v)
+        if goal not in prev:
+            raise M.CostAllocationError("Reciprocal rounding found unbalanced coefficients "
+                                        "for origin %s." % origin)
+        cycle, v = [(start, 1)], goal
+        while prev[v] is not None:
+            u, e, d = prev[v]
+            cycle.append((e, d))
+            v = u
+        up = min((math.ceil(flow[e]) - flow[e]) if d > 0 else (flow[e] - math.floor(flow[e]))
+                 for e, d in cycle)
+        down = min((flow[e] - math.floor(flow[e])) if d > 0 else (math.ceil(flow[e]) - flow[e])
+                   for e, d in cycle)
+        t = up if up <= down else -down
+        for e, d in cycle:
+            flow[e] += t * d
+            if flow[e].denominator == 1:
+                frac.discard(e)
+    return {rid: int(flow[e]) for rid, e in edge_of.items()}
+
+
+def _dense_reciprocal(rng, n_send, n_final, density=0.3):
+    """n_send senders, each to every final and to ~density of the other senders."""
+    senders = ["S%02d" % i for i in range(n_send)]
+    finals = ["F%03d" % i for i in range(n_final)]
+    steps, w = [], {}
+    for i, s in enumerate(senders):
+        recv = [r for r in senders + finals if r != s and (r in finals or rng.random() < density)]
+        vals = [rng.randint(1, 97) for _ in recv]
+        tot = sum(vals)
+        for r, v in zip(recv, vals):
+            w[(10 * (i + 1), r)] = Fraction(v, tot)
+        steps.append(M.Step(10 * (i + 1), s, "D", recv))
+    return steps, w
+
+
+def _assert_rounding_equals_reference(exact):
+    senders = {r["sender_member"] for r in exact}
+    by_origin = {}
+    for r in exact:
+        by_origin.setdefault(r["origin_member"], []).append(r)
+    for o, rows in by_origin.items():
+        assert M._round_circulation(o, rows, senders) == _round_circulation_reference(o, rows, senders), o
+
+
+def test_reciprocal_rounding_equals_rc2_reference_random_graphs():
+    checked = 0
+    for seed in range(300):
+        steps, w = _random_reciprocal(random.Random(40_000 + seed))
+        if {s.sender_member for s in steps} != _exits(steps, w):
+            continue
+        _assert_rounding_equals_reference(M.reciprocal_coefficients(steps, w))
+        checked += 1
+    assert checked > 100, checked
+
+
+def test_reciprocal_rounding_equals_rc2_reference_dense_graphs():
+    # Long cycles through many pass and final nodes, where the cycle chosen matters.
+    for seed in range(4):
+        rng = random.Random(60_000 + seed)
+        steps, w = _dense_reciprocal(rng, rng.randint(4, 8), rng.randint(10, 30), density=0.5)
+        _assert_rounding_equals_reference(M.reciprocal_coefficients(steps, w))
+
+
+def test_reciprocal_rounding_performance_20_senders_200_finals():
+    # Performance guard (review finding 2): RC2 took ~160 s here; bound is
+    # generous for CI. The exact solve is excluded; only the rounding is timed.
+    steps, w = _dense_reciprocal(random.Random(3), 20, 200)
+    exact = M.reciprocal_coefficients(steps, w)
+    assert len(exact) > 80_000, len(exact)
+    t = time.perf_counter()
+    rows = M.round_reciprocal_coefficients(exact)
+    took = time.perf_counter() - t
+    assert len(rows) == len(exact)
+    assert took < 15, "rounding %d rows took %.1f s" % (len(exact), took)
