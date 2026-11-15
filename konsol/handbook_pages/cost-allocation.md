@@ -19,18 +19,18 @@ Everything lives in **Planning → Allocation**.
 
 ## Methods
 
-- **Direct**: each sender gives its cost straight to the receivers. A sender may not receive.
-- **Step-Down**: senders go in step order. A sender passes on its own cost plus whatever earlier steps gave it, and receives nothing after its own step.
+- **Direct**: each sender gives its cost straight to the departments it serves. A sender may not receive, so service departments are never charged for each other.
+- **Step-Down**: use it when one service department also uses another's services (HR uses IT). Senders go in step order: put the department that serves the others first. A sender passes on its own cost plus whatever earlier steps gave it, and receives nothing after its own step.
 
 ## A worked example
 
-One entity. IT and HR serve two divisions, Sales and Ops.
+One entity. IT supports everyone with a laptop, including HR's own staff. HR serves the two divisions, Sales and Ops.
 
 ```
 Company
 ├─ Shared Services
-│  ├─ IT     cost 1,000   (account 6000)
-│  └─ HR     cost   400   (account 6000)
+│  ├─ IT     cost 1,000   (account 6000)   serves HR, Sales, Ops
+│  └─ HR     cost   400   (account 6000)   serves Sales, Ops
 └─ Divisions
    ├─ Sales
    └─ Ops
@@ -53,7 +53,7 @@ After approval, the allocation lines are:
 | 2 | HR → Sales | HR −375 | Sales +375 |
 | 2 | HR → Ops | HR −225 | Ops +225 |
 
-HR passes on 600: its own 400 plus the 200 it received from IT.
+HR receives 200 of IT's cost because IT supports HR's 2 people too. Step-Down charges HR for that first, and HR then passes on 600: its own 400 plus the 200 from IT. If IT served only Sales and Ops, you would leave HR off IT's receivers, which is the Direct method.
 
 | department | before | after |
 |---|---|---|
