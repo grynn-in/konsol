@@ -156,9 +156,12 @@ def test_the_ddl_is_pinned_and_the_table_ships_whole():
 def test_an_unset_as_of_date_is_a_declared_sentinel_never_1970():
     """A budget Cycle has no round. The column declares its default on a
     Date32, so an unset date is 1900-01-01 by declaration, not a Date's
-    silent 1970-01-01, and konsolidat can read 'no round' by name."""
-    assert "as_of_date Date32 DEFAULT '1900-01-01'" in DDL
-    assert "1970" not in DDL
+    silent 1970-01-01, and konsolidat can read 'no round' by name. Read from
+    clickhouse.py, the way the pin is: asserting on this file's own DDL literal
+    could not fail when the source changed (review of konsol#546)."""
+    shipped = _literal("_REFERENCE_TABLE_DDL")[TABLE]
+    assert "as_of_date Date32 DEFAULT '1900-01-01'" in shipped
+    assert "1970" not in shipped
 
 
 def test_the_controller_names_the_table_and_its_columns_in_ddl_order(env):
