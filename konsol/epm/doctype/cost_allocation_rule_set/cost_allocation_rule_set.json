@@ -51,10 +51,10 @@
       "fieldname": "method",
       "fieldtype": "Select",
       "label": "Method",
-      "options": "Direct\nStep-Down",
+      "options": "Direct\nStep-Down\nReciprocal",
       "reqd": 1,
       "in_list_view": 1,
-      "description": "Direct: receivers are never senders. Step-Down: cost flows only to later senders."
+      "description": "Direct: senders give only to non-senders. Step-Down: senders give in step order; a sender receives nothing after its step. Reciprocal: service departments may serve each other; solved exactly, so step order does not matter; a department may not serve itself."
     },
     {
       "fieldname": "status",
