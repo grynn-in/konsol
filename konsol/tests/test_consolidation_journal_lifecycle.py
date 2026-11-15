@@ -12,7 +12,6 @@ import types
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CJ = os.path.join(APP_DIR, "consolidation", "doctype", "consolidation_journal", "consolidation_journal.py")
 JOURNAL_MODEL = os.path.join(APP_DIR, "close", "journal_model.py")
-WORKFLOWS_PY = os.path.join(APP_DIR, "workflows.py")
 APPROVAL_API = os.path.join(APP_DIR, "close", "approval_api.py")
 WF = [("Draft", 0), ("Pending Approval", 0), ("Approved", 1), ("Reversed", 2)]
 
@@ -131,9 +130,7 @@ def _load(states=None, period_open=True, declared=True,
     def assert_declared(fiscal_year, fiscal_period):
         if not declared:
             raise Refused(f"FY{fiscal_year} P{fiscal_period} not declared")
-    wf = types.SimpleNamespace(
-        name="CJ Workflow", workflow_state_field="status",
-        states=[types.SimpleNamespace(state=s, doc_status=str(d)) for s, d in states]) if states else None
+    wf = types.SimpleNamespace(states=[types.SimpleNamespace(state=s, doc_status=str(d)) for s, d in states]) if states else None
 
     def throw(msg, *args, **kwargs):
         raise Refused(msg)
@@ -157,28 +154,21 @@ def _load(states=None, period_open=True, declared=True,
 
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.model.workflow", "frappe.utils",
-        "konsol", "konsol.clickhouse", "konsol.period_status")}
+        "konsol", "konsol.clickhouse", "konsol.period_status", "konsol.workflows")}
     frappe = mods["frappe"]
+    # konsol#529: other controllers set the docstatus-2 state through this
+    # helper (test_cancelled_workflow_state.py); the journal keeps J06 and does
+    # not import it, so a no-op stands in should it ever be imported here.
+    mods["konsol.workflows"].set_cancelled_state = lambda doc: None
     frappe._ = lambda s: s
     frappe.throw = throw
     frappe.flags = {}
     frappe.session = types.SimpleNamespace(user="approver@example.com")
     frappe.get_cached_doc = lambda doctype, name: wf
-    _get_value = _get_value_stub(root, nodes, accounts)
-
-    def get_value(doctype, filters=None, fieldname=None, *a, **k):
-        # konsol.workflows.cancel_target asks for the active Workflow's name
-        if doctype == "Workflow":
-            return wf.name if wf and filters == {"document_type": "Consolidation Journal", "is_active": 1} else None
-        return _get_value(doctype, filters, fieldname, *a, **k)
     frappe.db = types.SimpleNamespace(
         after_commit=types.SimpleNamespace(add=lambda fn: None, _functions=[]),
-        get_value=get_value,
+        get_value=_get_value_stub(root, nodes, accounts),
     )
-    # konsol#529: the real helper, loaded by path against this frappe, so the
-    # cancel tests below exercise what before_cancel does on a site.
-    wf_spec = importlib.util.spec_from_file_location("konsol.workflows", WORKFLOWS_PY)
-    mods["konsol.workflows"] = importlib.util.module_from_spec(wf_spec)
     mods["frappe.model.document"].Document = Document
     mods["frappe.model.workflow"].get_workflow_name = lambda doctype: "CJ Workflow" if wf else None
     mods["frappe.utils"].cint = lambda v: int(v or 0)
@@ -209,7 +199,6 @@ def _load(states=None, period_open=True, declared=True,
     saved = {name: sys.modules.get(name) for name in mods}
     sys.modules.update(mods)
     try:
-        wf_spec.loader.exec_module(mods["konsol.workflows"])
         spec = importlib.util.spec_from_file_location("cj_under_test", CJ)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -268,17 +257,10 @@ def test_reverse_in_an_open_period():
     d.before_cancel()
     assert d.status == "Reversed"
     module, _ = _load(WF)
-    d = _doc(module, status="Approved", docstatus=1)   # a direct cancel lands the docstatus-2 state (konsol#529 b)
+    assert _refused(_doc(module, status="Approved", docstatus=1).before_cancel)   # a direct cancel
+    d = _doc(module, status="Reversed", docstatus=1)                               # the workflow's Reverse
     d.before_cancel()
     assert d.status == "Reversed"
-    d = _doc(module, status="Reversed", docstatus=1)   # the workflow's Reverse set it already
-    d.before_cancel()
-    assert d.status == "Reversed"
-    # the state is the site's, read from its workflow: a renamed one is what lands
-    module, _ = _load([("Entwurf", 0), ("Genehmigt", 1), ("Storniert", 2)])
-    d = _doc(module, status="Genehmigt", docstatus=1)
-    d.before_cancel()
-    assert d.status == "Storniert"
 
 
 def test_a_draft_cannot_be_saved_into_a_submitted_state():
@@ -315,9 +297,8 @@ def test_the_period_gates_and_refusals_name_the_journal():
     assert actions == ["approve a consolidation journal", "reverse a consolidation journal"], actions
 
     module, _ = _load(WF)
-    # before_cancel is not here: under a workflow a direct cancel is no longer
-    # refused, it lands the docstatus-2 state (konsol#529 b, tested above).
     for fn in (_doc(module, status="Draft").before_submit,
+               _doc(module, status="Approved", docstatus=1).before_cancel,
                _doc(module, status="Approved", docstatus=0).validate):
         try:
             fn()

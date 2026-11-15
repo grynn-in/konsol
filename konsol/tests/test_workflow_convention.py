@@ -75,11 +75,19 @@ def test_a_workflow_on_a_non_submittable_doctype_never_submits_or_cancels():
         assert not bad, f"{name}: non-submittable doctype, states not doc_status 0: {bad}"
 
 
-#: Submittable doctypes whose workflow may have no docstatus-2 state, or whose
-#: cancel path need not set it. Empty: every shipped one sets it (konsol#529).
-#: Build Approval is not here: it is not submittable, so it is never cancelled,
-#: and the test above keeps all its states at doc_status 0.
-CANCEL_STATE_EXEMPT = frozenset()
+#: Submittable doctypes whose controller does not call set_cancelled_state,
+#: with the reason. An exempt doctype's workflow must still reach its
+#: docstatus-2 state by a transition (checked below): apply_workflow sets the
+#: next state before it calls cancel(). Build Approval is not here: it is not
+#: submittable, so it is never cancelled, and the test above keeps all its
+#: states at doc_status 0.
+CANCEL_STATE_EXEMPT = {
+    # J06 (konsol#305) is kept (coordinator, 15 Nov 2026, on #529): the Reverse
+    # transition is the governed path and sets Reversed; before_cancel refuses a
+    # direct cancel whose status is not a docstatus-2 state, so a script's
+    # doc.cancel() never lands an approved state at docstatus 2.
+    "Consolidation Journal": "J06: a direct cancel is refused; the Reverse transition sets Reversed",
+}
 
 
 def _controller_for(document_type):
@@ -105,11 +113,15 @@ def test_a_submittable_workflow_has_a_docstatus_2_state_that_the_cancel_sets():
     checked = 0
     for name, wf in _workflows():
         doctype = wf["document_type"]
-        if not _is_submittable(doctype) or doctype in CANCEL_STATE_EXEMPT:
+        if not _is_submittable(doctype):
             continue
         checked += 1
         cancelled = [s["state"] for s in wf["states"] if str(s["doc_status"]) == "2"]
         assert cancelled, f"{name}: no docstatus-2 state; a cancelled document would keep its approved state"
+        if doctype in CANCEL_STATE_EXEMPT:
+            assert any(t["next_state"] in cancelled for t in wf["transitions"]), (
+                f"{name}: exempt from set_cancelled_state, so a transition must reach {cancelled}")
+            continue
         path, src, cls = _controller_for(doctype)
         assert "from konsol.workflows import set_cancelled_state" in src, f"{path}: import the shared helper"
         before_cancel = next((n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "before_cancel"), None)
@@ -121,7 +133,8 @@ def test_a_submittable_workflow_has_a_docstatus_2_state_that_the_cancel_sets():
 
 def test_cancel_state_exemptions_name_a_real_submittable_workflow():
     workflow_doctypes = {wf["document_type"] for _, wf in _workflows() if _is_submittable(wf["document_type"])}
-    assert CANCEL_STATE_EXEMPT <= workflow_doctypes, CANCEL_STATE_EXEMPT - workflow_doctypes
+    assert set(CANCEL_STATE_EXEMPT) <= workflow_doctypes, set(CANCEL_STATE_EXEMPT) - workflow_doctypes
+    assert all(CANCEL_STATE_EXEMPT.values()), "every exemption carries its reason"
 
 
 def _controllers():
@@ -204,12 +217,8 @@ def test_a_journal_cannot_skip_the_workflow_or_carry_an_approval_into_a_draft():
         methods = {n.name: ast.unparse(n) for n in cls.body if isinstance(n, ast.FunctionDef)}
         assert "approved_by = self.approved_at = None" in methods["before_insert"]
         assert "_states(0)" in methods["validate"] and "frappe.throw" in methods["validate"]
-        assert "_states(1)" in methods["before_submit"] and "get_workflow_name" in methods["before_submit"]
-        # konsol#529 (b): the cancel sets the installed docstatus-2 state (the
-        # Reverse transition already did; a programmatic cancel gets it here)
-        # and keeps the built-in name only when no workflow is installed.
-        assert "set_cancelled_state(self)" in methods["before_cancel"], methods["before_cancel"]
-        assert "get_workflow_name" in methods["before_cancel"]
+        for hook, docstatus in (("before_submit", 1), ("before_cancel", 2)):
+            assert f"_states({docstatus})" in methods[hook] and "get_workflow_name" in methods[hook], hook
         # after_delete drives the warehouse sync (#120); on_trash would re-send the row
         assert "on_trash" not in methods
         return
