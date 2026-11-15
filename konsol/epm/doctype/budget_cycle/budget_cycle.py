@@ -28,6 +28,11 @@ the as-of date it is not part of the Cycle's identity or name, and a draft's
 set may be corrected before anyone approves it; never allow_on_submit, because
 the Input Fingerprint stamped at Approve covers the set and its rates.
 
+An approved Cycle is one row of ``epm_staging.budget_cycles`` (S4 K6, S4-Q2 a):
+it enters on submit and leaves on cancel, after the commit, so the warehouse
+reads the Rate Set, the scenario and the round of the ``cycle`` its fact rows
+name; reconcile_all repairs the table like every other.
+
 Interim rule until S6 (posted on #348, 15 Nov 2026): a forecast pair holds at
 most ONE approved round, because the readers still sum rounds across the
 cycle. before_submit refuses the second Approve by name
@@ -42,6 +47,22 @@ from konsol.epm.budget_grain import digest_name
 
 
 class BudgetCycle(Document):
+    #: S4 K6 (S4-Q2 a): the approved Cycles, one row each, so the warehouse
+    #: reads a Cycle's Rate Set, scenario and round by the `cycle` name on its
+    #: fact rows. Submitted only, by the doctype's is_submittable
+    #: (resolve_sync_filters). Keys in the DDL's column order
+    #: (clickhouse._REFERENCE_TABLE_DDL, identical to konsolidat's init-db.sql).
+    CH_TABLE = "epm_staging.budget_cycles"
+    CH_FIELD_MAP = {
+        "name": "name",
+        "scenario_id": "scenario_id",
+        "scenario_type": "scenario_type",
+        "fiscal_year": "fiscal_year",
+        "rate_set": "rate_set",
+        "as_of_date": "as_of_date",
+        "horizon_periods": "horizon_periods",
+    }
+
     def validate(self):
         """Reject 'actual' scenarios.
 
@@ -218,7 +239,8 @@ class BudgetCycle(Document):
                 frappe.ValidationError)
 
     def on_submit(self):
-        """Approved: the Cycle's rows enter the warehouse, after the commit."""
+        """Approved: the Cycle and its rows enter the warehouse, after the commit."""
+        self._resync_cycle()
         self._resync_annual_input()
         self._resync_entries()
 
@@ -230,9 +252,21 @@ class BudgetCycle(Document):
         assert_year_not_closed(self.fiscal_year, _("cancel Budget Cycle {0}").format(self.name))
 
     def on_cancel(self):
-        """Cancelled: the Cycle's rows leave the warehouse, after the commit."""
+        """Cancelled: the Cycle and its rows leave the warehouse, after the commit."""
+        self._resync_cycle()
         self._resync_annual_input()
         self._resync_entries()
+
+    def _resync_cycle(self):
+        """Queue the Budget Cycle sync, once per transaction, after the commit
+        (S4 K6). The sync replaces the whole table with the submitted Cycles,
+        so one covers every Cycle in the transaction; a draft save queues
+        nothing, because a draft is not in the table either way. Imported
+        here, as the two syncs below import theirs: the controller is loaded
+        under test without clickhouse.py."""
+        from konsol.clickhouse import sync_doctype_after_commit
+
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     @staticmethod
     def _resync_annual_input():

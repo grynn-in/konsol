@@ -788,6 +788,22 @@ _REFERENCE_TABLE_DDL = {
         "submitted_by String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, main_account)"
     ),
+    # konsol#348 S4-Q2 (a), chosen under the standing rule (15 Nov 2026): the
+    # approved Budget Cycles, one row each (docstatus 1 only, by the doctype's
+    # is_submittable), so the warehouse reads a Cycle's Rate Set (K5), its
+    # scenario and its forecast round by the `cycle` name its fact rows carry;
+    # S6's latest-estimate read needs the same table. Stamping the rate set on
+    # every budget row was rejected. A budget Cycle has no round: as_of_date is
+    # then unset, written as DEFAULT, and the column declares that default as
+    # 1900-01-01 on a Date32, never a Date's silent 1970-01-01 (a Date clamps
+    # there). horizon_periods unset is 0. Identical to konsolidat's
+    # clickhouse/init-db.sql; keep them identical
+    # (test_budget_cycle_write_through.py pins it).
+    "epm_staging.budget_cycles": (
+        "(name String, scenario_id String, scenario_type String, fiscal_year UInt16, "
+        "rate_set String, as_of_date Date32 DEFAULT '1900-01-01', horizon_periods UInt16) "
+        "ENGINE = MergeTree ORDER BY name"
+    ),
     # Budget S2 (I3): the raw budget landing table, one row per Budget Entry
     # Line (konsol#348, D0 Q1-b2), written through while its Budget Cycle is
     # approved. Debit and credit (Q3-a); amount_basis required, never
