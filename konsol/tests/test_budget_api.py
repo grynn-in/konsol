@@ -825,3 +825,61 @@ def test_a_single_cell_save_keeps_the_per_entry_check(cell):
     with pytest.raises(_Thrown, match="but not 1"):
         cell.post(amount_basis=YTD, fiscal_period=3)
     assert not cell.state.entries
+
+
+# --- S3 K5 (QB5 a): a forecast cell names its round by as_of_date -------------------
+
+def _forecast(cell, *rounds):
+    cell.data["Scenario"].append({"name": "FC", "scenario_type": "forecast", "is_active": 1})
+    for suffix, docstatus, as_of in rounds:
+        cell.data["Budget Cycle"].append(
+            {"name": f"BCYC-FC-2027-{suffix}", "scenario_id": "FC", "fiscal_year": 2027,
+             "docstatus": docstatus, "as_of_date": as_of})
+
+
+def test_a_forecast_cell_lands_in_the_round_its_as_of_date_names(cell):
+    _forecast(cell, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    out = cell.post(scenario_id="FC", as_of_date="2027-06-30")
+    assert out["status"] == "ok", out
+    entry = _only_entry(cell)
+    assert entry["cycle"] == "BCYC-FC-2027-Q2"
+    assert cell.state.cycle_locks == ["BCYC-FC-2027-Q2"]
+
+
+def test_a_forecast_cell_without_an_as_of_date_is_refused_and_saves_nothing(cell):
+    _forecast(cell, ("Q1", 0, "2027-03-31"))
+    with pytest.raises(_Thrown) as raised:
+        cell.post(scenario_id="FC")
+    assert "as_of_date" in str(raised.value) and "forecast" in str(raised.value), raised.value
+    assert not cell.state.entries and cell.state.cycle_locks == []
+
+
+def test_a_forecast_cell_for_a_round_that_does_not_exist_is_refused_naming_it(cell):
+    _forecast(cell, ("Q1", 0, "2027-03-31"))
+    with pytest.raises(_Thrown) as raised:
+        cell.post(scenario_id="FC", as_of_date="2027-09-30")
+    assert "FC 2027" in str(raised.value) and "2027-09-30" in str(raised.value), raised.value
+    assert "Create" in str(raised.value), raised.value
+    assert not cell.state.entries
+
+
+def test_a_budget_cell_with_an_as_of_date_is_refused(cell):
+    with pytest.raises(_Thrown) as raised:
+        cell.post(as_of_date="2027-03-31")
+    assert "no forecast round" in str(raised.value), raised.value
+    assert not cell.state.entries
+
+
+def test_budget_save_hands_its_as_of_date_to_every_period(cell):
+    _forecast(cell, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    out = cell.save(scenario_id="FC", as_of_date="2027-03-31",
+                    periods=[{"period": 1, "amount": 1}, {"period": 2, "amount": 2}])
+    assert len(out["entries"]) == 2
+    assert {e["cycle"] for e in cell.state.entries.values()} == {"BCYC-FC-2027-Q1"}
+
+
+def test_budget_cell_save_documents_as_of_date():
+    with open(API_PATH) as f:
+        content = f.read()
+    doc = content.split("def budget_cell_save")[1].split('"""')[1]
+    assert "as_of_date" in doc and "forecast" in doc

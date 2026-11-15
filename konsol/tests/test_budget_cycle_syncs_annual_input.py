@@ -52,6 +52,10 @@ def env(monkeypatch):
         def __init__(self, **kw):
             self.__dict__.update(kw)
 
+        def get(self, key, default=None):
+            # As frappe's Document: validate reads the round fields through it (S3 K3).
+            return self.__dict__.get(key, default)
+
     frappe = types.ModuleType("frappe")
     frappe._ = lambda s: s
     frappe.session = types.SimpleNamespace(user="Administrator")

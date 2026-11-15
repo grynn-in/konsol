@@ -16,10 +16,17 @@ What it does, in order:
    Layers, the active Scenarios and the Budget Cycles. Every list read states
    its order (Frappe v16 sorts by creation otherwise).
 3. Runs budget_bulk_model.check_group on each group, then adds:
-   - the Cycle: a (scenario, year) with no Budget Cycle is refused, naming the
-     Cycle to create; nothing is created here (Q6-b). A Cycle that is not a
-     draft (docstatus 0) is refused, and so is a draft past its workflow's
-     first state, Pending Approval as installed (V2, Q17-b: cycle_workflow).
+   - the round (S3 K5, QB5 a): a forecast row names its round by
+     ``as_of_date``, from the file's column or the writer's form value, and
+     the round is the pair's Cycle with that as-of date; a forecast row
+     without one is refused, and so is a row of any other scenario type
+     with one (budget_bulk_model.as_of_problems). Nothing is inferred from
+     the drafts that exist.
+   - the Cycle: a round (a (scenario, year) pair, or (scenario, year, as-of
+     date) for a forecast) with no Budget Cycle is refused, naming the Cycle
+     to create; nothing is created here (Q6-b). A Cycle that is not a draft
+     (docstatus 0) is refused, and so is a draft past its workflow's first
+     state, Pending Approval as installed (V2, Q17-b: cycle_workflow).
    - duplicate rows: the same account and dim_* values twice in one group
      (one entity, period and layer) is refused, naming both lines. T1 refuses
      the same on save; this names the file lines.
@@ -33,7 +40,8 @@ What it does, in order:
      two periods of one layer that give two bases are both refused, each
      naming the other.
    - one writer per grain (Q16-c): a row on a grain a saved Budget Annual
-     Input gives is refused, naming it. A report read, not a lock: the save
+     Input of the SAME Cycle gives is refused, naming it (S3 K6: a figure of
+     another round is another round's). A report read, not a lock: the save
      judges it again under the Cycle lock (assert_no_annual_input), so the
      check does not call ready a slice the load would refuse.
 
@@ -104,7 +112,7 @@ def ensure_lock_indexes():
         add_lock_index(doctype)
 
 
-def plan(table, *, form_basis, name_lines, whole_slices):
+def plan(table, *, form_basis, form_as_of, name_lines, whole_slices):
     """Judge a budget table for the current user. Returns
 
         {"groups": {BudgetKey: [rows]}, "report": [item per group], "ok": bool}
@@ -112,9 +120,10 @@ def plan(table, *, form_basis, name_lines, whole_slices):
     ``groups`` is in file order. Each report item is budget_bulk_model's
     check_group row {scenario, fiscal_year, entity, layer, fiscal_period, rows,
     errors, ok} plus ``cycle`` (the Budget Cycle's name, or None), ``currency``
-    (the entity's functional currency) and ``amount_basis`` (resolved from the
-    file or `form_basis`, '' when none). A group with any error is not ready;
-    a writer writes nothing for it.
+    (the entity's functional currency), ``amount_basis`` (resolved from the
+    file or `form_basis`, '' when none) and ``as_of_date`` (the round's as-of
+    key, 'YYYY-MM-DD', from the rows or `form_as_of`; '' when none). A group
+    with any error is not ready; a writer writes nothing for it.
 
     ``denials`` lists the access refusals among ``errors``: the layer's writer
     role and _assert_budget_write_access on each row. They are also in
@@ -123,6 +132,11 @@ def plan(table, *, form_basis, name_lines, whole_slices):
 
     `form_basis` is the upload's Amount Basis ('' when it has none); it has no
     default, so a writer states what it means.
+
+    `form_as_of` is the upload's As-of Date ('' or None when it has none),
+    for every row without its own as_of_date; a row's own value wins. A
+    writer whose rows carry the date themselves (an Excel cell, an API row,
+    a Desk save) passes ''. No default: the round is never inferred.
 
     `name_lines` says whether a problem names its file line ("Line 3: ...").
     A file writer (the CSV check and load) passes True. A writer whose rows
@@ -157,17 +171,25 @@ def plan(table, *, form_basis, name_lines, whole_slices):
             chart=facts["chart"], functional_currency=currency,
             minor_unit=facts["minor_units"].get(currency), form_basis=form_basis,
             from_file=name_lines)
+        scenario = facts["scenarios"].get(key.scenario)
+        scenario_type = scenario["scenario_type"] if scenario else None
+        as_of, as_of_problem = M.group_as_of(rows)
+        as_of = as_of or M.as_of_key(form_as_of)
+        round_problems = ([as_of_problem] if as_of_problem else []) + M.as_of_problems(
+            key.scenario, scenario_type, as_of)
         cycle, cycle_problem = _cycle(facts["cycles"].get((key.scenario, key.fiscal_year), ()), key,
-                                      facts["workflow"])
+                                      facts["workflow"], scenario_type, as_of)
         item["cycle"] = cycle
         item["currency"] = currency or ""
         basis, _ = M.resolve_basis(M.group_basis(rows), form_basis)
         item["amount_basis"] = basis or ""
+        item["as_of_date"] = as_of
         errors = item["errors"]
+        errors.extend(round_problems)
         if cycle_problem:
             errors.append(cycle_problem)
         errors.extend(_duplicates(rows))
-        errors.extend(_annual_clashes(key, rows, facts["annual"]))
+        errors.extend(_annual_clashes(key, rows, facts["annual"], cycle))
         # The layer's writer role is an access rule: a refusal is a denial.
         denials = _role_problems(key.layer, facts["layers"].get(key.layer), bypass, roles, user)
         for row in rows:
@@ -187,16 +209,24 @@ def plan(table, *, form_basis, name_lines, whole_slices):
     return {"groups": groups, "report": report, "ok": all(i["ok"] for i in report)}
 
 
+def slice_key(item):
+    """A report item's slice, the (Cycle, entity, layer) a Budget Upload
+    replaces whole: (scenario, year, as-of key, entity, layer). The as-of
+    key keeps two forecast rounds of one pair apart (S3 K5); it is '' on a
+    budget. The Cycle's name is not used: a refused group has none."""
+    return (item["scenario"], int(item["fiscal_year"]), item.get("as_of_date") or "", item["entity"],
+            item["layer"])
+
+
 def _refuse_mixed_bases(report):
-    """One amount basis per (scenario, year, entity, layer) within the table
-    (Q15-c). A group whose basis differs from another period's of its layer is
-    refused, naming that period and its basis. A group with no basis is
-    refused already, so it is left out."""
+    """One amount basis per (scenario, year, round, entity, layer) within the
+    table (Q15-c). A group whose basis differs from another period's of its
+    layer is refused, naming that period and its basis. A group with no basis
+    is refused already, so it is left out."""
     by_slice = {}
     for item in report:
         if item["amount_basis"]:
-            slice_key = (item["scenario"], item["fiscal_year"], item["entity"], item["layer"])
-            by_slice.setdefault(slice_key, []).append(item)
+            by_slice.setdefault(slice_key(item), []).append(item)
     for items in by_slice.values():
         for item in items:
             other = next((o for o in items if o["amount_basis"] != item["amount_basis"]), None)
@@ -244,8 +274,7 @@ def _refuse_ytd_gaps(report):
     by_slice = {}
     for item in report:
         if item["amount_basis"] == YTD_BASIS:
-            slice_key = (item["scenario"], item["fiscal_year"], item["entity"], item["layer"])
-            by_slice.setdefault(slice_key, []).append(item)
+            by_slice.setdefault(slice_key(item), []).append(item)
     for items in by_slice.values():
         stated = {int(i["fiscal_period"]) for i in items}
         message = _ytd_gap_message(items[0]["entity"], items[0]["layer"], stated)
@@ -344,9 +373,11 @@ def judge_one(table, *, form_basis):
     ready; otherwise raises with every problem the plan found, as
     frappe.PermissionError when it found an access denial (HTTP 403: a denial
     wins, the other problems are not for a user who may not write the rows),
-    else frappe.ValidationError. Writes nothing."""
+    else frappe.ValidationError. Writes nothing. The rows carry their own
+    as_of_date column when the write is for a forecast round (S3 K5); there
+    is no form value."""
     try:
-        result = plan(table, form_basis=form_basis, name_lines=False, whole_slices=False)
+        result = plan(table, form_basis=form_basis, form_as_of="", name_lines=False, whole_slices=False)
     except ValueError as error:
         frappe.throw(str(error), frappe.ValidationError)
     if len(result["report"]) != 1:
@@ -443,14 +474,19 @@ def annual_check(row):
 
 def lock_cycles(scenario_id, fiscal_year, *, wait=True):
     """Lock every Budget Cycle row of (scenario, year), in name order, and
-    return each as {name, docstatus, workflow_state}, read by the lock itself: under
-    REPEATABLE READ a plain read would serve the snapshot and miss a Cycle
-    approved while this writer waited on it. A Budget Annual Input derives its
-    Cycle from the pair rather than linking one, and an amended pair holds
-    more than one. The Annual Input writers take this first, the lock order
-    every budget writer keeps (the Cycle row before the record it saves). No
-    Cycle, nothing locked: then no Budget Entry of the pair exists to conflict
-    with. Skipped in install and migrate, as assert_cycle_draft is.
+    return each as {name, docstatus, workflow_state, as_of_date}, read by the
+    lock itself: under REPEATABLE READ a plain read would serve the snapshot
+    and miss a Cycle approved while this writer waited on it. An amended
+    pair holds more than one Cycle, and a forecast pair holds one live Cycle
+    per ROUND (S3 K3, Q23 a), so a Budget Annual Input finds its own linked
+    Cycle among the rows (S3 K6): ``as_of_date`` comes back as the round key
+    (budget_bulk_model.as_of_key: 'YYYY-MM-DD', '' on a budget Cycle) so the
+    Cycle's own rule can judge the round under the lock. The lock stays on
+    the whole pair (QB9 a): the rounds of one pair serialise. The Annual
+    Input writers take this first, the lock order every budget writer keeps
+    (the Cycle row before the record it saves). No Cycle, nothing locked:
+    then no Budget Entry of the pair exists to conflict with. Skipped in
+    install and migrate, as assert_cycle_draft is.
 
     A delete cannot keep that order: Frappe locks the row before on_trash. It
     passes ``wait=False``: the lock is taken NOWAIT and a Cycle another writer
@@ -461,7 +497,7 @@ def lock_cycles(scenario_id, fiscal_year, *, wait=True):
         return []
     try:
         rows = frappe.db.get_values("Budget Cycle", {"scenario_id": scenario_id, "fiscal_year": fiscal_year},
-                                    ["name", "docstatus", "workflow_state"], as_dict=True,
+                                    ["name", "docstatus", "workflow_state", "as_of_date"], as_dict=True,
                                     order_by="name asc", for_update=True, wait=wait)
     except (frappe.QueryTimeoutError, frappe.QueryDeadlockError) as error:
         if wait:
@@ -469,7 +505,8 @@ def lock_cycles(scenario_id, fiscal_year, *, wait=True):
         # Keep the type: a deadlock has already rolled the transaction back.
         frappe.throw(f"The Budget Cycle of {scenario_id} {fiscal_year} is being changed by another user, so "
                      "this annual figure cannot be deleted right now. Try again in a moment.", type(error))
-    return [{"name": r.name, "docstatus": int(r.docstatus or 0), "workflow_state": r.workflow_state or ""}
+    return [{"name": r.name, "docstatus": int(r.docstatus or 0), "workflow_state": r.workflow_state or "",
+             "as_of_date": M.as_of_key(r.as_of_date)}
             for r in rows]
 
 
@@ -532,13 +569,17 @@ def _named_dims(dims, key):
     return f" with {named}" if named else ""
 
 
-def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, entry, period):
-    """Refuse a Budget Entry line on a grain a Budget Annual Input already
-    gives (Q16-c): a grain (scenario, year, entity, layer, account, dim_*
-    values) takes its numbers from one writer. `lines` are dicts with
-    main_account and the dim_* values; `entry` and `period` name the entry
-    being saved. Raises frappe.ValidationError naming the Annual Input and the
-    way out. A locking read (the caller holds the Cycle lock). Writes nothing."""
+def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, cycle, entry, period):
+    """Refuse a Budget Entry line on a grain a Budget Annual Input of the same
+    Cycle already gives (Q16-c): a grain (Cycle, entity, layer, account, dim_*
+    values) takes its numbers from one writer. `cycle` is the entry's Cycle
+    (S3 K6, QB4 a: the Annual Input links its Cycle, and another round's
+    figure is not this entry's); `lines` are dicts with main_account and the
+    dim_* values; `entry` and `period` name the entry being saved. Raises
+    frappe.ValidationError naming the Annual Input and the way out. A locking
+    read on the lock index's columns (scenario, year, entity, layer, account),
+    with the Cycle as a further equality (the caller holds the Cycle lock).
+    Writes nothing."""
     accounts = sorted({line.get("main_account") for line in lines if line.get("main_account")})
     if not accounts:
         return
@@ -547,7 +588,7 @@ def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, en
     rows = frappe.db.get_values(
         "Budget Annual Input",
         {"scenario_id": scenario_id, "fiscal_year": fiscal_year, "data_area_id": entity, "layer": layer,
-         "main_account": ["in", accounts]},
+         "main_account": ["in", accounts], "cycle": cycle},
         ["name", "main_account", *sorted(annual_dims)], as_dict=True, order_by="name asc", for_update=True)
     annual = {}
     for row in rows:
@@ -558,26 +599,28 @@ def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, en
             name = annual[key]
             frappe.throw(
                 f"Budget Annual Input {name} already gives account {key[0]}{_named_dims(dims, key)} for "
-                f"{scenario_id} {fiscal_year}, entity {entity}, layer {layer} as an annual figure, so "
-                f"Budget Entry {entry} (period {period}) cannot give it too: a budget line takes its "
-                f"numbers from one writer. Delete Budget Annual Input {name}, or enter the year as "
+                f"{scenario_id} {fiscal_year} (Cycle {cycle}), entity {entity}, layer {layer} as an annual "
+                f"figure, so Budget Entry {entry} (period {period}) cannot give it too: a budget line takes "
+                f"its numbers from one writer. Delete Budget Annual Input {name}, or enter the year as "
                 "monthly entries.",
                 SecondWriterError,
             )
 
 
 def assert_no_entry_lines(row, *, name):
-    """Refuse a Budget Annual Input on a grain a Budget Entry line already
-    gives, in any period (Q16-c). `row` holds scenario_id, fiscal_year,
-    data_area_id, layer, main_account and the dim_* values; `name` is the
-    Annual Input. Raises frappe.ValidationError naming the entry and period.
-    A locking read (the caller holds the Cycle lock). Writes nothing.
+    """Refuse a Budget Annual Input on a grain a Budget Entry line of the same
+    Cycle already gives, in any period (Q16-c). `row` holds scenario_id,
+    fiscal_year, cycle, data_area_id, layer, main_account and the dim_*
+    values; `name` is the Annual Input. Raises frappe.ValidationError naming
+    the entry and period. A locking read on the lock index's columns, with
+    the row's Cycle as a further equality (the caller holds the Cycle lock).
+    Writes nothing.
 
-    Only lines under a Cycle that is not cancelled count (19-b): under an
-    amended pair the cancelled original's entries stay as the audit trail,
-    out of the warehouse, and do not block. (The other direction needs no
-    filter: a Budget Entry is saved only under a draft Cycle of its pair, so
-    an Annual Input of that pair always counts against it.)"""
+    S3 K6 (QB4 a): the row names its Cycle, so only that Cycle's lines are
+    read. That keeps 19-b (a cancelled original's lines, under an amended
+    pair, do not block the amendment's figure) and keeps the rounds of a
+    forecast pair apart, with no second read of the Cycles: the row's Cycle
+    is a draft (the writable guard), so every line of it counts."""
     if not row.get("main_account"):
         return
     line_dims = _dim_fields("Budget Entry Line")
@@ -586,17 +629,12 @@ def assert_no_entry_lines(row, *, name):
         "Budget Entry Line",
         {"parenttype": "Budget Entry", "scenario_id": row.get("scenario_id"),
          "fiscal_year": row.get("fiscal_year"), "data_area_id": row.get("data_area_id"),
-         "layer": row.get("layer"), "main_account": row.get("main_account")},
+         "layer": row.get("layer"), "main_account": row.get("main_account"), "cycle": row.get("cycle")},
         ["parent", "cycle", "fiscal_period", "main_account", *sorted(line_dims)], as_dict=True,
         order_by="fiscal_period asc, parent asc", for_update=True)
     key = _grain_key(row.get("main_account"), row, dims)
-    lines = [line for line in lines if _grain_key(line.main_account, line, dims) == key]
-    cycles = sorted({line.cycle for line in lines})
-    live = {c.name for c in frappe.db.get_values(
-        "Budget Cycle", {"name": ["in", cycles]}, ["name", "docstatus"], as_dict=True,
-        order_by="name asc", for_update=True) if int(c.docstatus) in (0, 1)} if cycles else set()
     for line in lines:
-        if line.cycle in live:
+        if _grain_key(line.main_account, line, dims) == key:
             frappe.throw(
                 f"Budget Entry {line.parent} (period {line.fiscal_period}) already gives account "
                 f"{key[0]}{_named_dims(dims, key)} for {row.get('scenario_id')} {row.get('fiscal_year')}, "
@@ -630,7 +668,8 @@ def _facts(groups):
     cycles = {}
     for c in frappe.get_all("Budget Cycle",
                             filters={"scenario_id": ["in", scenarios], "fiscal_year": ["in", years]},
-                            fields=["name", "scenario_id", "fiscal_year", "docstatus", "workflow_state"],
+                            fields=["name", "scenario_id", "fiscal_year", "docstatus", "workflow_state",
+                                    "as_of_date"],
                             order_by="creation asc, name asc", limit_page_length=0):
         cycles.setdefault((c.scenario_id, int(c.fiscal_year)), []).append(c)
     workflow = workflow_for([_cycle_row(c) for found in cycles.values() for c in found])
@@ -662,19 +701,23 @@ def _annual_inputs(scenarios, years, entities):
         "Budget Annual Input",
         filters={"scenario_id": ["in", scenarios], "fiscal_year": ["in", years],
                  "data_area_id": ["in", entities]},
-        fields=["name", "scenario_id", "fiscal_year", "data_area_id", "layer", "main_account", *dims],
+        fields=["name", "scenario_id", "fiscal_year", "cycle", "data_area_id", "layer", "main_account", *dims],
         order_by="name asc", limit_page_length=0)
     return dims, rows
 
 
-def _annual_clashes(key, rows, annual):
+def _annual_clashes(key, rows, annual, cycle):
     """One sentence per row of this group on a grain a saved Budget Annual
-    Input gives (Q16-c), naming it and the way out. A blank dimension and an
-    unset one are the same value, as the save's check reads them."""
+    Input of the group's Cycle gives (Q16-c; S3 K6: `cycle` is the round the
+    plan picked, and another round's figure is not this group's), naming it
+    and the way out. A group with no Cycle has nothing to clash with. A blank
+    dimension and an unset one are the same value, as the save's check reads
+    them."""
     annual_dims, annual_rows = annual
+    if not cycle:
+        return []
     mine = [r for r in annual_rows
-            if (r.scenario_id, int(r.fiscal_year), r.data_area_id, r.layer)
-            == (key.scenario, int(key.fiscal_year), key.data_area_id, key.layer)]
+            if (r.cycle, r.data_area_id, r.layer) == (cycle, key.data_area_id, key.layer)]
     if not mine:
         return []
     dims = sorted(set(annual_dims) | {k for row in rows for k in row if k.startswith("dim_")})
@@ -688,9 +731,10 @@ def _annual_clashes(key, rows, annual):
             name = given[grain]
             out.append(_at_line(row, (
                 f"Budget Annual Input {name} already gives account {grain[0]}{_named_dims(dims, grain)} for "
-                f"{key.scenario} {key.fiscal_year}, entity {key.data_area_id}, layer {key.layer} as an annual "
-                "figure, so it cannot be given as a monthly figure too: a budget line takes its numbers from "
-                f"one writer. Delete Budget Annual Input {name}, or leave the account out of these rows.")))
+                f"{key.scenario} {key.fiscal_year} (Cycle {cycle}), entity {key.data_area_id}, layer {key.layer} "
+                "as an annual figure, so it cannot be given as a monthly figure too: a budget line takes its "
+                f"numbers from one writer. Delete Budget Annual Input {name}, or leave the account out of these "
+                "rows.")))
     return out
 
 
@@ -702,21 +746,44 @@ def _period(year, period):
         return None
 
 
-def _cycle(found, key, workflow):
-    """(cycle name or None, problem or None) for one (scenario, year). A draft
-    is taken when there is one, and refused while it is past its workflow's
-    first state (V2); otherwise the latest is named and refused."""
+def _cycle(found, key, workflow, scenario_type, as_of):
+    """(cycle name or None, problem or None) for one group. `found` are the
+    pair's Cycles in creation order; `as_of` is the group's as-of key ('' for
+    none). A forecast without a date has no round to find and gets no Cycle
+    (as_of_problems refused it); a budget with a date is refused for the
+    date, and its pair's Cycle is still judged and named.
+
+    The round (S3 K5, QB5 a): for a forecast, the pair's Cycles with the
+    group's as-of date (budget_bulk_model.in_round); for any other type, the
+    pair. The round's draft is taken when there is one, and refused while it
+    is past its workflow's first state (V2). No Cycle in the round: refused,
+    naming the round to create. No draft: the round's approved Cycle is named
+    and refused, else its latest cancelled one. A round with two drafts is a
+    fault (the Cycle holds one live Cycle per round) and is refused naming
+    both: a write never picks one by accident."""
+    if scenario_type == M.FORECAST:
+        if not as_of:
+            return None, None  # as_of_problems named the missing date
+        found = [c for c in found if M.in_round(scenario_type, c, as_of)]
+        label, noun = f"{key.scenario} {key.fiscal_year} as of {as_of}", "round"
+    else:
+        label, noun = f"{key.scenario} {key.fiscal_year}", "Cycle"
     drafts = [c for c in found if int(c.docstatus) == 0]
+    if len(drafts) > 1:
+        named = " and ".join(c.name for c in drafts)
+        return None, (f"Budget Cycles {named} are all draft Cycles of {label}: a {noun} holds one live Cycle, so "
+                      "this write cannot tell which it is for. Cancel the one that should not exist.")
     if drafts:
         return drafts[0].name, M.cycle_pending_refusal(_cycle_row(drafts[0]), workflow)
     if not found:
-        return None, (f"No Budget Cycle for scenario {key.scenario}, fiscal year {key.fiscal_year}. "
-                      f"Create the Budget Cycle for {key.scenario} {key.fiscal_year} first: a budget "
-                      "write never creates one.")
-    latest = found[-1]
-    state = _CYCLE_STATE.get(int(latest.docstatus), f"docstatus {latest.docstatus}")
-    return latest.name, (f"Budget Cycle {latest.name} ({key.scenario} {key.fiscal_year}) is {state}: "
-                         "a budget is written only while its Cycle is a draft.")
+        return None, (f"No Budget Cycle for scenario {key.scenario}, fiscal year {key.fiscal_year}"
+                      + (f" as of {as_of}" if noun == "round" else "") + ". "
+                      f"Create the Budget Cycle ({noun}) for {label} first: a budget write never creates one.")
+    live = [c for c in found if int(c.docstatus) == 1]
+    named = live[0] if live else found[-1]
+    state = _CYCLE_STATE.get(int(named.docstatus), f"docstatus {named.docstatus}")
+    return named.name, (f"Budget Cycle {named.name} ({label}) is {state}: "
+                        "a budget is written only while its Cycle is a draft.")
 
 
 def _duplicates(rows):

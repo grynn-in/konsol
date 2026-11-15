@@ -343,9 +343,26 @@ function requiredSaveArgs(currency, amountBasis) {
   }
 }
 
-function epmSave(amount, entity, year, period, account, scenarioId, layer, dimensions, hierarchy, node, currency, amountBasis) {
+// EPMSAVE's asOfDate (konsol#348 S3 K5, QB5 a): the forecast round the cell
+// is for, as YYYY-MM-DD. The server requires it for a forecast scenario and
+// refuses it for any other, so it is sent as given and never filled in here.
+// A date cell reaches a string parameter as its Excel serial number; that is
+// turned into the ISO date, since "a round as of 46568" names nothing.
+function asOfDateText(value) {
+  var text = cellText(Array.isArray(value) ? value[0] && value[0][0] : value);
+  if (!text) return "";
+  if (/^\d+(\.\d+)?$/.test(text)) {
+    var serial = Math.floor(Number(text));
+    var ms = Date.UTC(1899, 11, 30) + serial * 86400000;
+    return new Date(ms).toISOString().slice(0, 10);
+  }
+  return text;
+}
+
+function epmSave(amount, entity, year, period, account, scenarioId, layer, dimensions, hierarchy, node, currency, amountBasis, asOfDate) {
   checkArity(arguments, epmSave, "EPMSAVE");
   requiredSaveArgs(currency, amountBasis);
+  var asOf = asOfDateText(asOfDate);
   var amt = Number(amount);
 
   if (!isFinite(amt) || !isFinite(Number(year)) || !isFinite(Number(period))) {
@@ -357,7 +374,7 @@ function epmSave(amount, entity, year, period, account, scenarioId, layer, dimen
   var dims = parseDimensions(dimensions);
   var key = [scenarioId, entity, year, period, account, layer,
              dimensionsKey(dims), hierarchy || "", node || "",
-             String(currency), String(amountBasis)].join("|");
+             String(currency), String(amountBasis), asOf].join("|");
   if (saveCache[key] === amt) {
     return amt;
   }
@@ -376,6 +393,7 @@ function epmSave(amount, entity, year, period, account, scenarioId, layer, dimen
   if (dims) data.dimensions = dims;
   if (hierarchy) data.hierarchy = String(hierarchy);
   if (node) data.hierarchy_node = String(node);
+  if (asOf) data.as_of_date = asOf;
 
   // A refused write shows the server's reason in the cell. It used to return
   // the amount whatever happened, so a refusal looked like a save.
