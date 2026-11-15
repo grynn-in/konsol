@@ -9,6 +9,8 @@ frappe at top level. The frappe/CH-bound ``get_fx_rates`` API is guarded with
 ``importorskip``.
 """
 import os
+import sys
+import types
 
 import pytest
 
@@ -175,6 +177,7 @@ def test_normalize_fx_rows_shaping():
             "as_of": "2026-01-31",
             "type": "Spot",
             "source": "d365",
+            "rate_set": None,
         }
     ]
 
@@ -202,9 +205,9 @@ def test_normalize_fx_rows_multiple():
     out = fx.normalize_fx_rows(rows, cols)
     assert len(out) == 2
     assert out[1]["from"] == "JPY"
-    # every record carries all six canonical keys
+    # every record carries all seven canonical keys (rate_set since konsol#348)
     for rec in out:
-        assert set(rec) == {"from", "to", "rate", "as_of", "type", "source"}
+        assert set(rec) == {"from", "to", "rate", "as_of", "type", "source", "rate_set"}
 
 
 # ---- frappe/CH-bound API (guarded) -----------------------------------------

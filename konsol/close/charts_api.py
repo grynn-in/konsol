@@ -237,8 +237,9 @@ def closing_vs_average_rate(chart_name=None, filters=None, refresh=None, time_in
         rows = []
         for row in frappe.get_list(
                 "Group Exchange Rate",
+                # konsol#348: the actuals set's rates
                 filters={"docstatus": 1, "fiscal_year": key[0], "to_currency": currency,
-                         "from_currency": ["in", top]},
+                         "from_currency": ["in", top], "rate_set": group_rates.actuals_rate_set()},
                 fields=["from_currency", "rate_type", "fiscal_year", "fiscal_period",
                         "quote", "quoted_per"],
                 limit_page_length=0, order_by="name asc"):

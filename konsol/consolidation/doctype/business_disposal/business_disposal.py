@@ -54,7 +54,7 @@ from konsol.consolidation_policy_model import (
     account_problems,
     required_accounts,
 )
-from konsol.group_rates import true_rate
+from konsol.group_rates import actuals_rate_set, true_rate
 from konsol.period_status import PeriodNotDeclared, assert_open
 
 #: A blank Link is stored as NULL: match both spellings (see Ownership Period).
@@ -344,9 +344,10 @@ class BusinessDisposal(Document):
                 return 1.0
             rows = frappe.get_all(
                 "Group Exchange Rate",
+                # konsol#348: a deal is actuals, translated at the actuals set's rate
                 filters={"docstatus": 1, "from_currency": currency, "to_currency": group_currency,
                          "fiscal_year": period["fiscal_year"], "fiscal_period": period["fiscal_period"],
-                         "rate_type": "Closing"},
+                         "rate_type": "Closing", "rate_set": actuals_rate_set()},
                 fields=["quote", "quoted_per"],
                 limit_page_length=1,
                 order_by="modified desc",

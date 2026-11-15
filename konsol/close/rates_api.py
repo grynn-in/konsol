@@ -202,10 +202,12 @@ def _required(fy, fp):
         + [f"Entity {e} has no functional currency" for e in entities])
 
 
-def _docs(fy, fp):
+def _docs(fy, fp, rate_set):
+    """The period's drafts and approved rates in ``rate_set`` (konsol#348: the
+    screen is the actuals screen; a budget set's rate is not shown)."""
     docs = frappe.get_all(
         GER,
-        filters={"fiscal_year": fy, "fiscal_period": fp, "docstatus": ["in", [0, 1]]},
+        filters={"fiscal_year": fy, "fiscal_period": fp, "docstatus": ["in", [0, 1]], "rate_set": rate_set},
         fields=DOC_FIELDS,
         limit_page_length=0,
         order_by="modified desc",
@@ -222,12 +224,13 @@ def _docs(fy, fp):
     return out
 
 
-def _earlier(fy, fp):
+def _earlier(fy, fp, rate_set):
     rows = frappe.db.sql(
         "SELECT name, from_currency, to_currency, rate_type, quote, quoted_per, "
         "fiscal_year, fiscal_period FROM `tabGroup Exchange Rate` "
-        "WHERE docstatus = 1 AND (fiscal_year < %s OR (fiscal_year = %s AND fiscal_period < %s))",
-        (fy, fy, fp),
+        "WHERE docstatus = 1 AND rate_set = %s "
+        "AND (fiscal_year < %s OR (fiscal_year = %s AND fiscal_period < %s))",
+        (rate_set, fy, fy, fp),
         as_dict=True,
     )
     out = []
@@ -246,9 +249,10 @@ def get_rates(fiscal_year, fiscal_period):
     period = _period_row(key)
     fy, fp = key
 
+    rate_set = group_rates.actuals_rate_set()   # konsol#348: refuses by name while none is flagged
     required, pairs_error, blockers = _required(fy, fp)
-    docs = _docs(fy, fp)
-    earlier = _earlier(fy, fp)
+    docs = _docs(fy, fp, rate_set)
+    earlier = _earlier(fy, fp, rate_set)
     threshold = group_rates.move_threshold()
     threshold_pct = threshold * 100 if threshold is not None else None
     policy = frappe.db.get_single_value("Close Settings", "self_approval")
@@ -349,6 +353,7 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
                      "closes (reopen it first).")
     reason = _reason(change_reason)
     supersedes = _reason(supersedes)  # stripped; blank is no correction
+    rate_set = group_rates.actuals_rate_set()   # konsol#348: the screen writes actuals
 
     if not name:
         # FR3 (review-d2fu N8): a locking read on the grain index (REPEATABLE
@@ -359,14 +364,14 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
         existing = frappe.db.sql(
             "SELECT name, docstatus, supersedes FROM `tabGroup Exchange Rate` "
             "WHERE to_currency = %s AND from_currency = %s AND fiscal_year = %s "
-            "AND fiscal_period = %s AND rate_type = %s AND docstatus IN (0, 1) "
+            "AND fiscal_period = %s AND rate_type = %s AND rate_set = %s AND docstatus IN (0, 1) "
             "ORDER BY modified DESC FOR UPDATE",
-            (to_currency, from_currency, fy, fp, rate_type), as_dict=True)
+            (to_currency, from_currency, fy, fp, rate_type, rate_set), as_dict=True)
         approved = [r["name"] for r in existing if r["docstatus"] == 1]
         drafts = [r for r in existing if r["docstatus"] == 0]
-        values = {"doctype": GER, "to_currency": to_currency, "from_currency": from_currency,
-                  "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp,
-                  "quote": quote, "quoted_per": quoted_per, "change_reason": reason}
+        values = {"doctype": GER, "rate_set": rate_set, "to_currency": to_currency,
+                  "from_currency": from_currency, "rate_type": rate_type, "fiscal_year": fy,
+                  "fiscal_period": fp, "quote": quote, "quoted_per": quoted_per, "change_reason": reason}
         if supersedes:
             refusal = _correction_refusal(
                 supersedes, approved, drafts,
@@ -400,6 +405,9 @@ def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type,
         if theirs != asked:
             frappe.throw(f"{name} is the {_grain_text(*theirs)} rate, not "
                          f"{_grain_text(*asked)}: save it under its own key.")
+        if doc.get("rate_set") != rate_set:
+            frappe.throw(f"{name} belongs to Rate Set {doc.get('rate_set')}, not the actuals set "
+                         f"{rate_set}: this screen edits actuals rates only (konsol#348).")
         doc.quote = quote
         doc.quoted_per = quoted_per
         doc.change_reason = reason

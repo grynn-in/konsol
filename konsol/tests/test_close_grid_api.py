@@ -468,11 +468,11 @@ def test_a_draft_rate_in_the_missing_list_reads_awaiting_approval():
     site = _Site()
     site.data["Group Exchange Rate"] = [
         _D(from_currency="EUR", to_currency="USD", rate_type="Closing", fiscal_year=2025,
-           fiscal_period=9, docstatus=0),
+           fiscal_period=9, docstatus=0, rate_set="ACTUAL"),
         _D(from_currency="EUR", to_currency="USD", rate_type="Closing", fiscal_year=2025,
-           fiscal_period=9, docstatus=2),
+           fiscal_period=9, docstatus=2, rate_set="ACTUAL"),
         _D(from_currency="EUR", to_currency="USD", rate_type="Average", fiscal_year=2025,
-           fiscal_period=9, docstatus=1),
+           fiscal_period=9, docstatus=1, rate_set="ACTUAL"),
     ]
     site.rate_result = ([("EUR", "USD", "Closing"), ("EUR", "USD", "Average")], None, [])
     rows = {r["entity"]: r for r in _call(site)["rows"]}
