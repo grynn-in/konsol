@@ -88,6 +88,7 @@ def env(monkeypatch):
     spec.loader.exec_module(mod)
 
     def cycle(name=None, scenario_id="ZZFC", **kw):
+        kw.setdefault("rate_set", "ZZRS")  # S4 K5: every Cycle names its Rate Set
         return mod.BudgetCycle(name=name, scenario_id=scenario_id, fiscal_year=2027, doctype="Budget Cycle",
                                **kw)
 
@@ -132,6 +133,25 @@ def test_a_budget_cycle_with_a_round_field_is_refused_naming_the_type(env):
         env.cycle("B-A", scenario_id="ZZB", horizon_periods=3).validate()
     assert "leave Horizon blank" in str(raised.value)
     env.cycle("B-A", scenario_id="ZZB").validate()  # blank both: accepted
+
+
+def test_a_cycle_without_a_rate_set_is_refused_by_name(env):
+    """S4 K5 (BUD-3): the set a Cycle is translated at is declared on it, for
+    a budget and for a forecast alike; nothing defaults it."""
+    env.kind[0] = "budget"
+    with pytest.raises(_Thrown) as raised:
+        env.cycle("B-A", scenario_id="ZZB", rate_set=None).validate()
+    assert "Rate Set" in str(raised.value) and "budget" in str(raised.value)
+    assert env.locked == [], "refused before the pair is locked"
+    env.kind[0] = "forecast"
+    with pytest.raises(_Thrown) as raised:
+        env.cycle("FC-A", as_of_date="2027-03-31", horizon_periods=12, rate_set="").validate()
+    assert "Rate Set" in str(raised.value) and "forecast" in str(raised.value)
+    # told together with the round problems, so the form is fixed once
+    with pytest.raises(_Thrown) as raised:
+        env.cycle("FC-A", rate_set="").validate()
+    message = str(raised.value)
+    assert "As-of Date" in message and "Horizon" in message and "Rate Set" in message
 
 
 def test_the_round_rule_runs_before_the_live_cycle_rule(env):

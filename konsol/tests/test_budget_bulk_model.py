@@ -622,3 +622,29 @@ def test_an_undeclared_scenario_is_not_judged_for_its_round():
     # scenario_problems already refuses it; its type is unknown.
     assert B.as_of_problems("NOPE", None, "2026-03-31") == []
     assert B.as_of_problems("NOPE", None, "") == []
+
+
+# ---- S4 K5 (BUD-3): a Cycle declares its Rate Set; nothing defaults it ---------------
+
+def test_a_cycle_without_a_rate_set_is_refused_naming_the_field_and_the_type():
+    (problem,) = B.cycle_rate_set_problems("budget", None)
+    assert "Rate Set" in problem and "budget" in problem and "default" in problem.lower()
+    (problem,) = B.cycle_rate_set_problems(B.FORECAST, "  ")
+    assert "Rate Set" in problem and "forecast" in problem
+
+
+def test_a_cycle_that_names_its_rate_set_passes_whatever_set_it_names():
+    # The actuals set is a legitimate choice (a budget at actual rates); the
+    # rule is that the Cycle says so, never that konsol picks for it.
+    assert B.cycle_rate_set_problems("budget", "BUDGET_2027") == []
+    assert B.cycle_rate_set_problems(B.FORECAST, "ACTUAL") == []
+    assert B.cycle_rate_set_problems("strategic", "STRAT") == []
+
+
+def test_an_actual_cycle_is_refused_here_too():
+    """An actual-type Cycle cannot exist (validate refuses it first); were it
+    to reach this rule, it is refused rather than given the flagged set."""
+    (problem,) = B.cycle_rate_set_problems(B.ACTUAL, "ACTUAL")
+    assert "actual" in problem and "Is Actuals" in problem
+    (problem,) = B.cycle_rate_set_problems(B.ACTUAL, None)
+    assert "actual" in problem
