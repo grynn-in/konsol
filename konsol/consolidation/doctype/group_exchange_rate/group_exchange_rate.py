@@ -36,6 +36,15 @@ Decided by the user on 13 Sep 2026:
   pending, #312-S3-3 keep the plain cancel and reword the messages. Accepted
   trade-off: a rate entered by mistake is corrected, never removed.
 
+konsol#348 (S4-Q1 option c, chosen under the standing rule, 15 Nov 2026):
+every rate names its **Rate Set**, and the set is part of the grain. The set
+flagged Is Actuals is the one the actuals translation, the close gate, the
+pre-fill and the adoption read (``group_rates.actuals_rate_set``, which
+refuses by name while none is flagged); a budget or forecast names its own set
+on its Budget Cycle. Each set holds its own approved rate per key, a
+correction supersedes within its set, and the name carries the set. Existing
+names (no set) stay valid; a patch stamped them with the actuals set.
+
 A rate is entered as a **quote per a unit**: ``quote`` units of the group
 currency per ``quoted_per`` (1, 10, 100, 1,000 or 10,000) units of the
 from-currency, so its direction never flips: 0.6607 USD per 100 JPY. MariaDB
@@ -53,7 +62,9 @@ RATE_TYPES = ("Closing", "Average")
 ADOPTION_SOURCE = "Adoption"
 PREFILL_SOURCE = "ERP pre-fill"
 MANUAL_SOURCE = "Manual"
-GRAIN = ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type")
+GRAIN = ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type", "rate_set")
+#: The WHERE of a read on exactly one grain, in GRAIN order.
+_GRAIN_WHERE = " AND ".join(f"{f} = %s" for f in GRAIN)
 
 
 class GroupExchangeRate(Document):
@@ -80,7 +91,7 @@ class GroupExchangeRate(Document):
 
         self.name = make_autoname(
             f"GER-{int(self.fiscal_year)}-{int(self.fiscal_period):02d}-"
-            f"{self.from_currency}-{self.to_currency}-{self.rate_type}-.##",
+            f"{self.from_currency}-{self.to_currency}-{self.rate_type}-{self.rate_set}-.##",
             doc=self,
         )
 
@@ -159,6 +170,13 @@ class GroupExchangeRate(Document):
         return group_rates.true_rate(self.quote, self._per())
 
     def _validate_grain(self):
+        if not self.rate_set:
+            # reqd covers the form; a REST write or a patch with ignore_mandatory
+            # reaches here, and a rate must never fall into a set by default.
+            frappe.throw(
+                "Rate Set is required: the set this rate belongs to (the one flagged Is Actuals "
+                "for actuals, a budget's own set for a budget). Nothing is assumed (konsol#348).",
+                frappe.MandatoryError)
         if self.rate_type not in RATE_TYPES:
             frappe.throw(f"Rate Type must be one of {', '.join(RATE_TYPES)}.", frappe.ValidationError)
         if self.from_currency and self.from_currency == self.to_currency:
@@ -259,7 +277,7 @@ class GroupExchangeRate(Document):
 
     def _key_label(self):
         return (f"{self.rate_type} rate {self.from_currency} → {self.to_currency} "
-                f"for FY{self.fiscal_year} P{self.fiscal_period}")
+                f"for FY{self.fiscal_year} P{self.fiscal_period} in Rate Set {self.rate_set}")
 
     def _validate_supersedes(self):
         """A correction names the approved rate of its own key (#312-3). Read
@@ -296,7 +314,8 @@ class GroupExchangeRate(Document):
         if self._adopting():
             return  # the rate a period was already translated at; the note says so
         previous = group_rates.previous_approved(
-            self.to_currency, self.from_currency, self.rate_type, self.fiscal_year, self.fiscal_period)
+            self.to_currency, self.from_currency, self.rate_type, self.fiscal_year, self.fiscal_period,
+            self.rate_set)
         erp = group_rates.true_rate(self.erp_quote, self._per()) if self.erp_quote else None
         problem = group_rates.move_problem(self._rate(), previous, erp,
                                            unit=f"{self.to_currency} per {self.from_currency}",
@@ -362,8 +381,7 @@ class GroupExchangeRate(Document):
         cancels it in this transaction. It must still be approved now; the
         lock holds it so until the cancel."""
         approved = [row[0] for row in frappe.db.sql(
-            "SELECT name FROM `tabGroup Exchange Rate` WHERE to_currency = %s AND from_currency = %s "
-            "AND fiscal_year = %s AND fiscal_period = %s AND rate_type = %s AND docstatus = 1 "
+            f"SELECT name FROM `tabGroup Exchange Rate` WHERE {_GRAIN_WHERE} AND docstatus = 1 "
             "AND name != %s FOR UPDATE",
             tuple(self.get(f) for f in GRAIN) + (self.name,),
         )]
@@ -441,5 +459,16 @@ class GroupExchangeRate(Document):
 
 def on_doctype_update():
     """The grain's index: the approval check's locking read uses it, and the
-    translation's lookups follow the same key."""
+    translation's lookups follow the same key.
+
+    frappe.db.add_index skips an index whose NAME already exists, so when the
+    grain grew (konsol#348 added rate_set) an upgraded site would keep the old
+    five-column index for ever. Ask what "grain" holds and drop a stale one
+    first; a fresh site, or one already rebuilt, issues no DDL.
+    """
+    table = "`tabGroup Exchange Rate`"
+    rows = frappe.db.sql(f"SHOW INDEX FROM {table} WHERE Key_name = 'grain'", as_dict=True)
+    have = [r["Column_name"] for r in sorted(rows, key=lambda r: int(r["Seq_in_index"]))]
+    if have and have != list(GRAIN):
+        frappe.db.sql_ddl(f"ALTER TABLE {table} DROP INDEX grain")
     frappe.db.add_index("Group Exchange Rate", list(GRAIN), index_name="grain")

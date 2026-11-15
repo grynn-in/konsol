@@ -246,7 +246,7 @@ def _controller(**kw):
 def _doc(module, **fields):
     base = dict(doctype="Group Exchange Rate", name="GER-2099-12-EUR-CHF-Closing-01", docstatus=0,
                 to_currency="CHF", from_currency="EUR", rate_type="Closing", fiscal_year=2099,
-                fiscal_period=12, quote=0.9478, quoted_per="1", source="Manual")
+                fiscal_period=12, quote=0.9478, quoted_per="1", source="Manual", rate_set="ACTUAL")
     return module.GroupExchangeRate(**dict(base, **fields))
 
 
@@ -636,7 +636,7 @@ def test_a_second_approved_rate_for_one_key_is_refused():
     else:
         msg = None
     assert msg == ("GER-2099-12-EUR-CHF-Closing-01 is already the approved Closing rate EUR → CHF "
-                   "for FY2099 P12. Correct it with a Reason for Change instead."), msg
+                   "for FY2099 P12 in Rate Set ACTUAL. Correct it with a Reason for Change instead."), msg
 
 
 def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
@@ -666,7 +666,8 @@ def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
 R1 = "GER-2099-12-EUR-CHF-Closing-01"
 R2 = "GER-2099-12-EUR-CHF-Closing-02"
 R3 = "GER-2099-12-EUR-CHF-Closing-03"
-KEY = dict(to_currency="CHF", from_currency="EUR", rate_type="Closing", fiscal_year=2099, fiscal_period=12)
+KEY = dict(to_currency="CHF", from_currency="EUR", rate_type="Closing", fiscal_year=2099, fiscal_period=12,
+           rate_set="ACTUAL")
 
 
 def _stored(name, docstatus=1, **fields):
@@ -760,7 +761,7 @@ def test_a_correction_must_say_why():
 
 def test_a_correction_supersedes_only_the_approved_rate_of_its_own_key():
     expected = (f"{{0}} cannot be superseded by this rate: a correction supersedes the approved "
-                f"Closing rate EUR → CHF for FY2099 P12.")
+                f"Closing rate EUR → CHF for FY2099 P12 in Rate Set ACTUAL.")
     other_key = "GER-2099-12-EUR-CHF-Average-01"
     cases = {
         "another rate type": ({other_key: dict(_stored(other_key), rate_type="Average")}, other_key),
@@ -817,7 +818,7 @@ def test_a_correction_still_refuses_a_third_approved_rate():
         msg = str(e)
     else:
         msg = None
-    assert msg == (f"{R3} is already the approved Closing rate EUR → CHF for FY2099 P12. "
+    assert msg == (f"{R3} is already the approved Closing rate EUR → CHF for FY2099 P12 in Rate Set ACTUAL. "
                    "Correct it with a Reason for Change instead."), msg
     assert record["cancels"] == []
 
@@ -835,7 +836,7 @@ def test_approving_a_correction_whose_rate_is_no_longer_approved_is_refused():
     else:
         msg = None
     assert msg == (f"{R1} is no longer approved, and the key has no approved Closing rate EUR → CHF "
-                   f"for FY2099 P12, so this correction has nothing to replace. Delete it and draft "
+                   f"for FY2099 P12 in Rate Set ACTUAL, so this correction has nothing to replace. Delete it and draft "
                    f"a new rate for the key."), msg
 
 
@@ -869,7 +870,7 @@ def _plain_cancel(module, record, **fields):
 def test_an_approved_rate_is_never_plain_cancelled():
     """No correction, a rate that replaced another, an open or a closed period:
     the same sentence, before the period gate (reopening would not change it)."""
-    expected = ("{0} is the approved Closing rate EUR → CHF for FY2099 P12: an approved rate "
+    expected = ("{0} is the approved Closing rate EUR → CHF for FY2099 P12 in Rate Set ACTUAL: an approved rate "
                 "cannot be cancelled. Correct it with a Reason for Change instead.")
     for label, ctx, fields in (
         ("a rate that replaced nothing", {}, dict(name=R1)),
@@ -1115,7 +1116,8 @@ def test_approve_and_cancel_republish_after_the_commit():
         ["USD", "JPY", 2099, 12, "Closing", 0.006607, "GER-2099-12-JPY-USD-Closing-01"],
         ["USD", "VND", 2099, 12, "Closing", 0.0000394, "GER-2099-12-VND-USD-Closing-01"]]
     module.on_doctype_update()
-    assert record["index"][0][0][1] == ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"]
+    assert record["index"][0][0][1] == ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
+                                        "rate_set"]
 
 
 def test_reconcile_publishes_through_the_same_path():
@@ -2036,12 +2038,10 @@ def test_two_sets_may_each_approve_the_same_key_and_one_set_may_not_twice():
 
 
 def test_a_correction_supersedes_within_its_own_set_only():
-    approved = {"GER-X": dict(to_currency="CHF", from_currency="EUR", fiscal_year=2099, fiscal_period=12,
-                              rate_type="Closing", rate_set="ACTUAL", docstatus=1)}
-    module, _ = _controller(amended=approved)
-    other_set = _doc(module, rate_set="BUDGET_2027", supersedes="GER-X", change_reason="budget rate")
+    module, _, _ = _supersede_site({R1: _stored(R1)})   # R1 is approved in ACTUAL
+    other_set = _doc(module, name=R2, rate_set="BUDGET_2027", supersedes=R1, change_reason="budget rate")
     assert _refused(other_set._validate_supersedes), "a budget rate cannot supersede the actuals rate"
-    same_set = _doc(module, rate_set="ACTUAL", supersedes="GER-X", change_reason="corrected")
+    same_set = _doc(module, name=R2, rate_set="ACTUAL", supersedes=R1, change_reason="corrected")
     assert not _refused(same_set._validate_supersedes)
 
 
