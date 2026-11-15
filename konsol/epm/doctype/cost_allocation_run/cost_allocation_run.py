@@ -164,6 +164,13 @@ def compute_weights_on(run):
         frappe.throw("<br>".join(exc.errors))
 
     weights = weight_rows(resolved, step_weights, names)
+    # RF4: build the coefficient rows now and discard them, so a configuration
+    # the model cannot solve (a loop whose exit edges all have zero statistics)
+    # is refused here with the model's message, not first at submit.
+    try:
+        _coefficient_rows(run.name, rs.method, weights)
+    except model.CostAllocationError as exc:
+        frappe.throw("<br>".join(exc.errors))
     accounts = account_rows([r["main_account"] for r in _rows(rs.accounts)], _descendants)
     carried = sum(1 for w in weights if w["carried_forward"])
 
@@ -437,12 +444,18 @@ class CostAllocationRun(Document):
         self._sync()
 
     def _sync(self):
-        """Header and children, then the coefficients, once, after the commit."""
+        """Header and children after the commit; the coefficients as ONE job
+        after the commit (RF4), which then requests the allocation build."""
         clickhouse.sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
         for doctype, controller in self.CHILD_CONTROLLERS.items():
             clickhouse.sync_doctype_after_commit(
                 doctype, controller.CH_TABLE, controller.CH_FIELD_MAP)
-        clickhouse.after_commit_once(("cost_allocation_run_coefficients",), type(self).resync_staging)
+        # The job id is per site and deduplicated: a burst of submits queues one
+        # rebuild. The resync reads every submitted run, so one job covers them.
+        frappe.enqueue(
+            "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.resync_coefficients_job",
+            queue="long", enqueue_after_commit=True,
+            job_id=f"cost_allocation_coefficients::{frappe.local.site}", deduplicate=True)
 
     @classmethod
     def resync_staging(cls, force=False):
@@ -482,6 +495,23 @@ class CostAllocationRun(Document):
         return clickhouse.sync_table(
             cls.CH_STAGING_TABLE, columns, [[r[c] for c in columns] for r in rows],
             source_max_modified=source_max_modified, force=force)
+
+
+def resync_coefficients_job():
+    """RQ job queued by CostAllocationRun._sync after the commit (RF4).
+
+    Rebuilds the coefficients, then requests the allocation build, in that
+    order: the build reads the staging table, so it must not start before the
+    rows are in. The hook on the doctype is gone for that reason. A failure is
+    logged and raised, so RQ records it and no build is requested over stale
+    coefficients."""
+    try:
+        CostAllocationRun.resync_staging()
+    except Exception:
+        frappe.log_error(title="Cost Allocation coefficients resync failed")
+        raise
+    from konsol.tasks import request_consolidation_build
+    request_consolidation_build("Cost Allocation Run", "coefficients", "coefficients_resync")
 
 
 def _nine(value):

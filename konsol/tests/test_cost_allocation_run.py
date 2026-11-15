@@ -1316,8 +1316,8 @@ def test_rc4_submit_accepts_a_reciprocal_run_and_refuses_a_closed_loop():
 
 def _job_tasks_stub(calls):
     tasks = types.ModuleType("konsol.tasks")
-    tasks.on_consolidation_doc_update = lambda doc, method: calls.append(
-        (doc.doctype, doc.name, method))
+    tasks.request_consolidation_build = lambda doctype, name, trigger_method: calls.append(
+        (doctype, name, trigger_method))
     return tasks
 
 
