@@ -30,10 +30,11 @@ OLD_SIDEBAR = ("Sidebar", "Konsol")
 
 
 class _Site:
-    def __init__(self, records):
+    def __init__(self, records, users=()):
         # (doctype, name) -> the row's module
         self.records = dict(records)
         self.deleted = []
+        self.users = dict(users)  # user -> default_workspace
 
     def frappe(self):
         site = self
@@ -52,8 +53,18 @@ class _Site:
             site.deleted.append((doctype, name))
             del site.records[(doctype, name)]
 
-        frappe.db = types.SimpleNamespace(exists=exists, get_value=get_value)
+        def get_all(doctype, filters=None, pluck=None, order_by=None, **k):
+            assert doctype == "User" and pluck == "name" and order_by, (doctype, pluck, order_by)
+            return [u for u, ws in site.users.items() if ws == filters["default_workspace"]]
+
+        def set_value(doctype, dn, field, value, *a, update_modified=True, **k):
+            assert (doctype, field, value, update_modified) == ("User", "default_workspace", None, False)
+            for user in dn["name"][1]:
+                site.users[user] = None
+
+        frappe.db = types.SimpleNamespace(exists=exists, get_value=get_value, set_value=set_value)
         frappe.delete_doc = delete_doc
+        frappe.get_all = get_all
         return frappe
 
 
@@ -111,3 +122,18 @@ def test_after_migrate_no_longer_rebuilds_the_konsolidat_workspace():
     called = {ast.unparse(n.func) for n in ast.walk(body) if isinstance(n, ast.Call)}
     assert "_setup_dashboard" not in called, "after_migrate still rebuilds Konsolidat"
     assert _function(install, "_setup_dashboard") is None
+
+
+def test_users_pointing_at_the_deleted_workspace_are_cleared_first():
+    """Otherwise any save of such a User fails with LinkValidationError (#530)."""
+    site = _run(_Site({KONSOLIDAT: "EPM", ("Workspace", "Close"): "EPM"},
+                      users={"a@example.com": "Konsolidat", "b@example.com": "Konsolidat",
+                             "c@example.com": "Close", "d@example.com": None}))
+    assert KONSOLIDAT in site.deleted
+    assert site.users == {"a@example.com": None, "b@example.com": None,
+                          "c@example.com": "Close", "d@example.com": None}
+
+
+def test_users_are_kept_when_the_workspace_is_not_konsols():
+    site = _run(_Site({KONSOLIDAT: "Selling"}, users={"a@example.com": "Konsolidat"}))
+    assert site.users == {"a@example.com": "Konsolidat"}
