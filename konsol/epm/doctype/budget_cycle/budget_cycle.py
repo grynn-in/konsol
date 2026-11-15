@@ -57,11 +57,12 @@ class BudgetCycle(Document):
     #: fact rows. Submitted only, by the doctype's is_submittable
     #: (resolve_sync_filters). Keys in the DDL's column order
     #: (clickhouse._REFERENCE_TABLE_DDL, identical to konsolidat's init-db.sql).
+    #: Not scenario_type: the warehouse reads it from scenario_definitions by
+    #: scenario_id; a copy here would be a second source of truth.
     CH_TABLE = "epm_staging.budget_cycles"
     CH_FIELD_MAP = {
         "name": "name",
         "scenario_id": "scenario_id",
-        "scenario_type": "scenario_type",
         "fiscal_year": "fiscal_year",
         "rate_set": "rate_set",
         "as_of_date": "as_of_date",

@@ -793,14 +793,16 @@ _REFERENCE_TABLE_DDL = {
     # is_submittable), so the warehouse reads a Cycle's Rate Set (K5), its
     # scenario and its forecast round by the `cycle` name its fact rows carry;
     # S6's latest-estimate read needs the same table. Stamping the rate set on
-    # every budget row was rejected. A budget Cycle has no round: as_of_date is
+    # every budget row was rejected. No scenario_type: epm_gold
+    # .scenario_definitions holds it by scenario_id, and a second copy would be
+    # two sources of truth. A budget Cycle has no round: as_of_date is
     # then unset, written as DEFAULT, and the column declares that default as
     # 1900-01-01 on a Date32, never a Date's silent 1970-01-01 (a Date clamps
     # there). horizon_periods unset is 0. Identical to konsolidat's
     # clickhouse/init-db.sql; keep them identical
     # (test_budget_cycle_write_through.py pins it).
     "epm_staging.budget_cycles": (
-        "(name String, scenario_id String, scenario_type String, fiscal_year UInt16, "
+        "(name String, scenario_id String, fiscal_year UInt16, "
         "rate_set String, as_of_date Date32 DEFAULT '1900-01-01', horizon_periods UInt16) "
         "ENGINE = MergeTree ORDER BY name"
     ),
