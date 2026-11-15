@@ -11,12 +11,27 @@ The deadline is a target date; nothing locks at it. A cancel is refused once
 every period of the year is closed (period_status.assert_year_not_closed); a
 cancelled Cycle leaves the warehouse and stays as the audit trail, and its
 amendment carries the pair on.
+
+A Cycle of a forecast scenario is one ROUND, keyed by (scenario, fiscal year,
+as-of date) (#348 S3, Q23 a): it needs ``as_of_date`` and ``horizon_periods``,
+which a Cycle of any other type refuses (QB8 a: only forecasts have rounds;
+the rule is budget_bulk_model.cycle_round_problems). The one-live-Cycle rule
+holds per round, so the rounds of one pair live side by side, and its name
+carries the as-of date. A rolling round that crosses the year end is one
+Cycle per fiscal year, sharing the as-of date (Q24 a).
+
+Interim rule until S6 (posted on #348, 15 Nov 2026): a forecast pair holds at
+most ONE approved round, because the readers still sum rounds across the
+cycle. before_submit refuses the second Approve by name
+(_refuse_second_approved_forecast_round); S6 removes it.
 """
 import frappe
 from frappe import _
 from frappe.model.document import Document
 
+from konsol import budget_bulk_model as M
 from konsol.epm.budget_grain import digest_name
+from konsol.workflows import set_cancelled_state
 
 
 class BudgetCycle(Document):
@@ -48,24 +63,53 @@ class BudgetCycle(Document):
                 ),
                 title=_("Invalid Scenario"),
             )
+        self._refuse_bad_round()
         self._refuse_second_live_cycle()
 
+    def _refuse_bad_round(self):
+        """S3 K3: a forecast Cycle needs its round (as-of date, horizon of 1 or
+        more); any other type refuses the round fields (Q23 a, QB8 a). Every
+        problem is told together, before the pair is locked: a Cycle whose
+        round is not stated cannot be judged against the pair's rounds."""
+        problems = M.cycle_round_problems(self.scenario_type, self.get("as_of_date"),
+                                          self.get("horizon_periods"))
+        if problems:
+            frappe.throw("\n".join(problems), frappe.ValidationError)
+
     def autoname(self):
-        """Collision-safe name for the (scenario, fiscal_year) grain.
+        """Collision-safe name for the round: (scenario, fiscal_year), plus the
+        as-of date for a forecast (S3 K4), so two rounds of one pair get
+        different base names and neither reads as the other's amendment.
 
         Digest-suffixed so long scenario codes can't truncate two cycles onto
         one 140-char name (see budget_grain.digest_name). The digest when it
         is free, else the first free ``<digest>-N`` (#524): a cancelled Cycle
-        keeps its name as the audit trail, and the next Cycle of its pair
+        keeps its name as the audit trail, and the next Cycle of its round
         must not collide with it. Every Cycle is named here, an amendment
         too: set_new_name below makes sure of it. Nothing finds a Cycle by
-        this name: every writer finds the pair's live Cycle by docstatus."""
-        base = digest_name("BCYC", [self.scenario_id, self.fiscal_year])
+        this name: every writer finds the round's live Cycle by docstatus."""
+        base = digest_name("BCYC", self._name_parts())
         name, n = base, 0
         while frappe.db.exists("Budget Cycle", name):
             n += 1
             name = f"{base}-{n}"
         self.name = name
+
+    def _name_parts(self):
+        """The key the name digests: (scenario, year) for every type, and the
+        as-of date too for a forecast (its round). The type is the Scenario's,
+        read when the fetched copy is not on the document yet (an API insert
+        reaches autoname before validate copies it); a date on a non-forecast
+        is left out, because validate refuses it anyway."""
+        kind = self.get("scenario_type")
+        if not kind:
+            from konsol.epm.doctype.scenario.scenario import locked_scenario_type
+
+            kind = locked_scenario_type(self.scenario_id)
+        parts = [self.scenario_id, self.fiscal_year]
+        if kind == M.FORECAST:
+            parts.append(M.as_of_key(self.get("as_of_date")))
+        return parts
 
     def set_new_name(self, *args, **kwargs):
         """The Cycle owns its name, under any site naming setting.
@@ -89,29 +133,79 @@ class BudgetCycle(Document):
             self.autoname()
 
     def _refuse_second_live_cycle(self):
-        """A (scenario, year) holds one live Cycle (docstatus 0 or 1): every
-        budget writer takes the pair's draft, and the warehouse would add two
-        approved Cycles of one pair together. A cancelled Cycle does not
-        count (19-b), so a cancelled pair can be amended (#524). Read under
-        the lock budget_intake.lock_cycles takes, the Cycle-first order every
-        budget writer keeps, so two inserts for one pair cannot both pass.
-        Install and migrate skip it, as lock_cycles does."""
+        """A round holds one live Cycle (docstatus 0 or 1): every budget
+        writer takes the round's draft, and the warehouse would add two
+        approved Cycles of one round together. The round is the (scenario,
+        year) pair for a budget, and (scenario, year, as-of date) for a
+        forecast (S3 K3, Q23 a: budget_bulk_model.in_round), so the rounds of
+        one forecast pair live side by side. A cancelled Cycle does not count
+        (19-b), so a cancelled round can be amended (#524). Read under the
+        lock budget_intake.lock_cycles takes on the whole pair (QB9 a), the
+        Cycle-first order every budget writer keeps, so two inserts for one
+        round cannot both pass. Install and migrate skip it, as lock_cycles
+        does."""
         from konsol import budget_intake
 
         states = {0: "draft", 1: "approved"}
+        as_of = self.get("as_of_date")
         for c in budget_intake.lock_cycles(self.scenario_id, self.fiscal_year):
-            if c["name"] != self.name and c["docstatus"] in states:
-                frappe.throw(
-                    _("Budget Cycle {0} is already the {1} Cycle of {2} {3}. A scenario and year hold one "
-                      "live Cycle: work in it, or cancel it and amend it.").format(
-                        c["name"], states[c["docstatus"]], self.scenario_id, self.fiscal_year),
-                    frappe.ValidationError,
-                )
+            if c["name"] == self.name or c["docstatus"] not in states:
+                continue
+            if not M.in_round(self.scenario_type, c, as_of):
+                continue
+            if self.scenario_type == M.FORECAST:
+                message = _("Budget Cycle {0} is already the {1} Cycle of {2} {3} as of {4}. A forecast "
+                            "scenario, year and as-of date hold one live Cycle: work in it, or cancel it "
+                            "and amend it.").format(c["name"], states[c["docstatus"]], self.scenario_id,
+                                                    self.fiscal_year, M.as_of_key(as_of))
+            else:
+                message = _("Budget Cycle {0} is already the {1} Cycle of {2} {3}. A scenario and year hold "
+                            "one live Cycle: work in it, or cancel it and amend it.").format(
+                    c["name"], states[c["docstatus"]], self.scenario_id, self.fiscal_year)
+            frappe.throw(message, frappe.ValidationError)
 
     def onload(self):
         """Entries change without a Cycle save, so the form counts them when
         it opens."""
         self.entry_count = self._count_entries()
+
+    def before_submit(self):
+        """Approve is the submit (the workflow's Approve calls doc.submit(),
+        frappe/model/workflow.py), so the interim rule runs here, after
+        validate and before anything is written."""
+        self._refuse_second_approved_forecast_round()
+
+    def _refuse_second_approved_forecast_round(self):
+        """INTERIM RULE, REMOVED IN S6 (konsol#348, review of #540 /
+        konsolidat#362, 15 Nov 2026): a forecast (scenario, year) holds at most
+        ONE approved round. Four readers sum a forecast's rounds across
+        ``cycle``: gold_scenario_trial_balance, the cost-allocation pool
+        (cost_allocation_run.py), the ``forecast_input`` Dataset
+        (defaults/dataset.json) and ``hierarchy_query``. Until the
+        latest-estimate read picks the round (S6, FC-2-1), approving a second
+        round would add two forecasts together silently, so the second Approve
+        is refused by name: cancel the approved round first. Draft rounds are
+        not limited, and a cancelled round does not count. A budget pair is not
+        read here: one live Cycle per pair already holds it.
+
+        Read under the pair lock budget_intake.lock_cycles takes (a locking
+        read: under REPEATABLE READ a plain read would miss a round approved
+        while this one waited), so two Approves of one pair serialise and the
+        second sees the first. The warehouse backstop is konsolidat's
+        assert_forecast_one_approved_round_until_s6; both go in S6, with
+        test_budget_cycle_one_approved_round.py."""
+        if self.scenario_type != M.FORECAST:
+            return
+        from konsol import budget_intake
+
+        for c in budget_intake.lock_cycles(self.scenario_id, self.fiscal_year):
+            if c["name"] == self.name or c["docstatus"] != 1:
+                continue
+            frappe.throw(
+                _("Budget Cycle {0} (as of {1}) is already the approved round of {2} {3}. Until the "
+                  "latest-estimate read is built (S6), cancel it before approving another round.").format(
+                    c["name"], c["as_of_date"], self.scenario_id, self.fiscal_year),
+                frappe.ValidationError)
 
     def on_submit(self):
         """Approved: the Cycle's rows enter the warehouse, after the commit."""
@@ -124,6 +218,8 @@ class BudgetCycle(Document):
         from konsol.period_status import assert_year_not_closed
 
         assert_year_not_closed(self.fiscal_year, _("cancel Budget Cycle {0}").format(self.name))
+        # After the gate: the installed workflow's docstatus-2 state (#529).
+        set_cancelled_state(self)
 
     def on_cancel(self):
         """Cancelled: the Cycle's rows leave the warehouse, after the commit."""

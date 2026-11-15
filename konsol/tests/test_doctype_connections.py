@@ -22,7 +22,8 @@ def _items(data):
 
 def test_budget_cycle_links_entries():
     data = _load_dashboard("epm/doctype/budget_cycle/budget_cycle_dashboard.py")
-    assert _items(data) == ["Budget Entry"]
+    # S3 K6 (QB4 a): the annual figures link their Cycle too.
+    assert _items(data) == ["Budget Entry", "Budget Annual Input"]
     assert data["fieldname"] == "cycle"
 
 

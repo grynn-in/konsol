@@ -56,6 +56,7 @@ from konsol.consolidation_policy_model import (
 )
 from konsol.group_rates import true_rate
 from konsol.period_status import PeriodNotDeclared, assert_open
+from konsol.workflows import set_cancelled_state
 
 #: A blank Link is stored as NULL: match both spellings (see Ownership Period).
 _BLANK = ["is", "not set"]
@@ -161,6 +162,8 @@ class BusinessDisposal(Document):
         assert_open(period["fiscal_year"], period["fiscal_period"],
                     action="cancel a business disposal")
         self._assert_no_later_ownership_period()
+        # After the gates: the installed workflow's docstatus-2 state (#529).
+        set_cancelled_state(self)
 
     def on_cancel(self):
         self._reopen_ownership_period()

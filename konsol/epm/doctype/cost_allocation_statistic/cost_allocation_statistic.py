@@ -12,6 +12,7 @@ from frappe.model.document import Document
 from konsol import period_status
 from konsol.cost_allocation_model import CostAllocationError, parse_statistic_csv
 from konsol.clickhouse import sync_doctype_after_commit
+from konsol.workflows import set_cancelled_state
 from konsol.epm.doctype.cost_allocation_statistic_value.cost_allocation_statistic_value import (
     CostAllocationStatisticValue,
 )
@@ -126,11 +127,12 @@ class CostAllocationStatistic(Document):
     def before_cancel(self):
         self._refuse_while_cited()
         # Actual-only closed-period gate (Deepak Pai, 14 Nov 2026, konsol#269).
-        if frappe.db.get_value("Scenario", self.scenario, "scenario_type") != "actual":
-            return
-        for period in sorted({int(r.fiscal_period) for r in self.get("values") or []}):
-            period_status.assert_open(
-                self.fiscal_year, period, action=f"cancel statistic {self.name}")
+        if frappe.db.get_value("Scenario", self.scenario, "scenario_type") == "actual":
+            for period in sorted({int(r.fiscal_period) for r in self.get("values") or []}):
+                period_status.assert_open(
+                    self.fiscal_year, period, action=f"cancel statistic {self.name}")
+        # After the gates: the installed workflow's docstatus-2 state (#529).
+        set_cancelled_state(self)
 
     def _refuse_while_cited(self):
         """A submitted run's weights carry values read from this statistic;

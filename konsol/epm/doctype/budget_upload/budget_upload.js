@@ -55,7 +55,7 @@ function konsol_budget_check(frm) {
 	frappe.call({
 		method: "konsol.budget_bulk.check_upload",
 		type: "POST",
-		args: { name: frm.doc.name, amount_basis: frm.doc.amount_basis || null },
+		args: { name: frm.doc.name, amount_basis: frm.doc.amount_basis || null, as_of_date: frm.doc.as_of_date || null },
 		freeze: true,
 		freeze_message: __("Checking the file…"),
 		callback(r) {
@@ -74,7 +74,7 @@ function konsol_budget_load(frm, skip_invalid) {
 	frappe.call({
 		method: "konsol.budget_bulk.load",
 		type: "POST",
-		args: { name: frm.doc.name, skip_invalid: skip_invalid ? 1 : 0 },
+		args: { name: frm.doc.name, skip_invalid: skip_invalid ? 1 : 0, amount_basis: frm.doc.amount_basis || null, as_of_date: frm.doc.as_of_date || null },
 		freeze: true,
 		freeze_message: __("Starting the load…"),
 		callback(r) {

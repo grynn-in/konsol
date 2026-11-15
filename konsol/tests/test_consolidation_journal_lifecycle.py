@@ -154,8 +154,12 @@ def _load(states=None, period_open=True, declared=True,
 
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.model.workflow", "frappe.utils",
-        "konsol", "konsol.clickhouse", "konsol.period_status")}
+        "konsol", "konsol.clickhouse", "konsol.period_status", "konsol.workflows")}
     frappe = mods["frappe"]
+    # konsol#529: other controllers set the docstatus-2 state through this
+    # helper (test_cancelled_workflow_state.py); the journal keeps J06 and does
+    # not import it, so a no-op stands in should it ever be imported here.
+    mods["konsol.workflows"].set_cancelled_state = lambda doc: None
     frappe._ = lambda s: s
     frappe.throw = throw
     frappe.flags = {}

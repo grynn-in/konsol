@@ -188,7 +188,7 @@ class _Row(types.SimpleNamespace):
 @pytest.fixture
 def env(monkeypatch):
     cycles = {"BCYC-1": {"scenario_id": "budget", "fiscal_year": 2027, "docstatus": 0,
-                         "workflow_state": "Draft"}}
+                         "workflow_state": "Draft", "as_of_date": None}}
     entries = {}  # name -> key dict
     dims = ["dim_cost_center", "dim_project"]
 
@@ -322,10 +322,12 @@ def env(monkeypatch):
     intake.refuse_delete = None
     intake.refuse_basis = None
     grain_checks = []
+    grain_cycles = []   # S3 K6: the Cycle each grain check was keyed by
 
-    def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, entry, period):
+    def assert_no_annual_input(scenario_id, fiscal_year, entity, layer, lines, *, cycle, entry, period):
         locks.append(("grain check", scenario_id))
         grain_checks.append((scenario_id, fiscal_year, entity, layer, [dict(r) for r in lines], entry, period))
+        grain_cycles.append(cycle)
         if intake.refuse_grain:
             frappe.throw(intake.refuse_grain, Thrown)
     intake.assert_no_annual_input = assert_no_annual_input
@@ -350,7 +352,7 @@ def env(monkeypatch):
                                  grain=loaded["konsol.epm.budget_grain"], sql=sql_calls,
                                  judged=judged, intake=intake, locks=locks, removed=removed,
                                  held_elsewhere=held_elsewhere, basis_checks=basis_checks, ytd_checks=ytd_checks, delete_checks=delete_checks,
-                                 grain_checks=grain_checks)
+                                 grain_checks=grain_checks, grain_cycles=grain_cycles)
 
 
 def _entry(env, lines=(), **kw):
@@ -791,3 +793,33 @@ def test_with_no_active_workflow_a_draft_cycle_in_any_state_takes_the_save(env):
     env.cycles["BCYC-1"]["workflow_state"] = "Pending Approval"
     _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)]).validate()
     _entry(env, name="BENT-ME").on_trash()
+
+
+# ---- S3 K5 (QB5 a): a Desk save of a forecast entry hands the intake its round ------
+# The intake requires as_of_date for a forecast scenario; a Budget Entry has
+# its Cycle already, so the Cycle's as-of date goes into the judged table.
+
+def test_a_forecast_entrys_lines_are_judged_with_its_cycles_as_of_date(env):
+    env.cycles["BCYC-FC"] = {"scenario_id": "FC", "fiscal_year": 2027, "docstatus": 0,
+                             "workflow_state": "Draft", "as_of_date": "2027-06-30"}
+    doc = _entry(env, cycle="BCYC-FC", lines=[dict(main_account="4000", debit=1, credit=0)])
+    doc.validate()
+    ((table, _basis),) = env.judged
+    header, *rows = table
+    assert header[-1] == "as_of_date"
+    assert [dict(zip(header, r))["as_of_date"] for r in rows] == ["2027-06-30"]
+    assert doc.scenario_id == "FC"
+
+
+def test_a_budget_entrys_lines_are_judged_without_an_as_of_date_column(env):
+    doc = _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)])
+    doc.validate()
+    ((table, _basis),) = env.judged
+    assert "as_of_date" not in table[0]
+
+
+# ---- S3 K6 (QB4 a): the one-writer check is keyed by the entry's Cycle ----------------
+
+def test_the_grain_check_is_keyed_by_the_entrys_cycle(env):
+    _entry(env, lines=[dict(main_account="4000", debit=1, credit=0)]).validate()
+    assert env.grain_cycles == ["BCYC-1"]

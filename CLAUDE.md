@@ -150,6 +150,13 @@ Frappe never runs natively on the Mac. konsol targets **Frappe v16** (Python
 4. **Always:**
    - Never `self.save()` inside `on_submit` / `on_cancel`. Set status in
      `before_submit` / `before_cancel`, or let the Workflow set it.
+   - `before_cancel` ends with `konsol.workflows.set_cancelled_state(self)`:
+     Frappe's plain Cancel sets docstatus 2 and no workflow state, so without
+     it a cancelled document shows "Approved" (#529). The helper reads the
+     docstatus-2 state from the site's Workflow; `test_workflow_convention.py`
+     requires the call on every submittable workflow doctype, or a named
+     exemption. Consolidation Journal is exempt and keeps J06: its Reverse
+     transition sets Reversed, and a direct cancel is refused.
    - Sync on `on_submit` and `on_cancel`, after the commit; never on a draft
      `on_update`.
    - Walk every workflow transition in a live test, including the refused
@@ -166,6 +173,11 @@ konsol#292 rather than brought in line).
   `NOT IN`.
 - An alias that matches a column read by a sibling aggregate raises
   CYCLIC_ALIASES. `anyIf` over no rows returns the type default.
+- **Never `count()` over `EXCEPT` or `INTERSECT`** (ClickHouse 24.8, analyzer on): the analyzer
+  prunes the compared columns first, so `SELECT count() FROM (a EXCEPT b)` returns 0 over real
+  differences (konsolidat#361). A/B proofs use a UNION ALL + GROUP BY multiset diff, with one
+  planted change to show the check can fail. A dbt singular test never has `EXCEPT` as its
+  top-level query, because dbt wraps it in `count(*)`.
 - `x IN (col, …)` in `JOIN ON` is refused; `AND` non-equalities and `OR` work.
 - `Date` holds 1970-01-01…2149-06-06 and clamps silently; write unset
   values as `DEFAULT`.

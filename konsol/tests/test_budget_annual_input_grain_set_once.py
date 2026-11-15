@@ -8,7 +8,9 @@ import os
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE = os.path.join(APP_DIR, "epm", "doctype", "budget_annual_input")
 
-GRAIN = ["scenario_id", "fiscal_year", "data_area_id", "layer", "main_account"]
+# S3 K6 (QB4 a): the Cycle (a forecast's round) is part of the grain, so two
+# rounds may each give the same account its annual figure.
+GRAIN = ["scenario_id", "fiscal_year", "cycle", "data_area_id", "layer", "main_account"]
 
 
 def _fields():

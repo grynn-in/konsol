@@ -362,7 +362,11 @@ def _exec_run_module(alias):
     globals they care about."""
     ch = types.ModuleType("konsol.clickhouse")
     ps = types.ModuleType("konsol.period_status")
-    stubs = {"konsol.clickhouse": ch, "konsol.period_status": ps}
+    # konsol#529: before_cancel sets the workflow's docstatus-2 state through
+    # this helper; it has its own tests (test_cancelled_workflow_state.py).
+    wfs = types.ModuleType("konsol.workflows")
+    wfs.set_cancelled_state = lambda doc: None
+    stubs = {"konsol.clickhouse": ch, "konsol.period_status": ps, "konsol.workflows": wfs}
     saved = {k: sys.modules.get(k) for k in stubs}
     sys.modules.update(stubs)
     try:

@@ -233,6 +233,13 @@ class BudgetEntry(Document):
                  line.get("main_account"), _amount(line.get("debit")), _amount(line.get("credit")),
                  self.currency or ""] + [line.get(d) or "" for d in dims]
                 for line in lines]
+        # A forecast round's as-of date, from the Cycle (S3 K5): the intake
+        # requires it to pick the round, and the round here is this entry's Cycle.
+        as_of = getattr(self, "_cycle_as_of", "")
+        if as_of:
+            header.append("as_of_date")
+            for row in rows:
+                row.append(as_of)
         budget_intake.judge_one([header] + rows, form_basis=self.amount_basis or "")
 
     def _refuse_second_writer(self):
@@ -255,7 +262,7 @@ class BudgetEntry(Document):
             self.scenario_id, self.fiscal_year, self.data_area_id, self.layer,
             [{"main_account": line.get("main_account"), **{d: line.get(d) or "" for d in dims}}
              for line in self.get("lines") or []],
-            entry=self.name, period=self.fiscal_period)
+            cycle=self.cycle, entry=self.name, period=self.fiscal_period)
 
     def _judge_removed_lines(self, budget_intake, lines):
         before = self.get_doc_before_save()
@@ -270,11 +277,16 @@ class BudgetEntry(Document):
                 for line in removed])
 
     def _fetch_from_cycle(self):
-        """Scenario and year are the Cycle's, whatever the entry held."""
-        values = frappe.db.get_value("Budget Cycle", self.cycle, ["scenario_id", "fiscal_year"])
+        """Scenario and year are the Cycle's, whatever the entry held. The
+        Cycle's as-of date (a forecast round's key, S3 K5) is kept for
+        _judge_lines on the instance only: it is not a field of the entry."""
+        from konsol.budget_bulk_model import as_of_key
+
+        values = frappe.db.get_value("Budget Cycle", self.cycle, ["scenario_id", "fiscal_year", "as_of_date"])
         if not values:
             frappe.throw(f"Budget Cycle {self.cycle} does not exist.", frappe.ValidationError)
-        self.scenario_id, self.fiscal_year = values
+        self.scenario_id, self.fiscal_year, as_of = values
+        self._cycle_as_of = as_of_key(as_of)
 
     def _refuse_duplicate_key(self):
         """One entry per key, refused by name before the insert would fail on

@@ -25,6 +25,7 @@ from frappe.model.document import Document
 
 from konsol import clickhouse, period_status
 from konsol import cost_allocation_model as model
+from konsol.workflows import set_cancelled_state
 from konsol.epm.doctype.cost_allocation_run_account.cost_allocation_run_account import (
     CostAllocationRunAccount,
 )
@@ -431,10 +432,11 @@ class CostAllocationRun(Document):
         """Cancel only while the period is open, and only for an actual scenario
         (Deepak Pai, 13 Nov 2026, konsol#269 Q4)."""
         scenario = frappe.db.get_value("Scenario", self.scenario, "scenario_type")
-        if scenario != "actual":
-            return
-        period_status.assert_open(self.fiscal_year, self.fiscal_period,
-                                  action=f"cancel cost allocation run {self.name}")
+        if scenario == "actual":
+            period_status.assert_open(self.fiscal_year, self.fiscal_period,
+                                      action=f"cancel cost allocation run {self.name}")
+        # After the gate: the installed workflow's docstatus-2 state (#529).
+        set_cancelled_state(self)
 
     # -- warehouse -----------------------------------------------------------
 

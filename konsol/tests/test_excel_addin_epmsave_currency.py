@@ -19,15 +19,15 @@ _ARGS = (100, "ZZE", 2026, 1, "ZZ6100", "ZZ_PLAN", "base")
 _OK = {"message": {"status": "ok", "value": 100}}
 
 
-def test_epmsave_declares_currency_and_amount_basis_last():
+def test_epmsave_declares_currency_and_amount_basis_after_node():
     params = _metadata()["EPMSAVE"]["parameters"]
     names = [p["name"] for p in params]
-    assert names[-2:] == ["currency", "amountBasis"], names
-    for p in params[-2:]:
+    assert names[10:12] == ["currency", "amountBasis"], names
+    for p in params[10:12]:
         assert p["type"] == "string", p
         assert "required" in p["description"].lower(), p
-    assert "Movement" in params[-1]["description"]
-    assert "Year-to-date" in params[-1]["description"]
+    assert "Movement" in params[11]["description"]
+    assert "Year-to-date" in params[11]["description"]
 
 
 def test_epmsave_sends_currency_and_amount_basis():
@@ -80,7 +80,7 @@ def test_handbook_documents_the_new_arguments():
                         "handbook_pages", "excel-addin.md")
     text = open(page).read()
     assert ("=K.EPMSAVE(amount, entity, year, period, account, scenarioId, layer, "
-            "[dimensions], [hierarchy], [node], currency, amountBasis)") in text
+            "[dimensions], [hierarchy], [node], currency, amountBasis, [asOfDate])") in text
 
 
 def test_a_403_denial_shows_the_servers_reason_in_the_cell():
@@ -99,3 +99,60 @@ def test_a_403_denial_shows_the_servers_reason_in_the_cell():
 def test_a_bare_403_still_asks_to_sign_in():
     out = _call("EPMSAVE", *_ARGS, None, None, None, "EUR", "Movement", reply={}, status=403)
     assert out["error"]["message"].startswith("Not logged in"), out
+
+
+# ---- S3 K5 (QB5 a): a forecast write names its round by asOfDate -----------------
+# budget_cell_save requires as_of_date for a forecast scenario and refuses it
+# for any other, so the add-in sends it as given and never fills it in. It is
+# the 13th argument, after amountBasis, so no existing argument moves.
+
+def test_epmsave_declares_as_of_date_last_and_optional():
+    params = _metadata()["EPMSAVE"]["parameters"]
+    assert params[-1]["name"] == "asOfDate", [p["name"] for p in params]
+    assert params[-1].get("optional") is True
+    assert "forecast" in params[-1]["description"] and "YYYY-MM-DD" in params[-1]["description"]
+    assert "round" in params[-1]["description"]
+
+
+def test_epmsave_sends_the_as_of_date_as_given():
+    out = _call("EPMSAVE", *_ARGS, None, None, None, "EUR", "Movement", "2027-06-30", reply=_OK)
+    assert out["error"] is None, out
+    (req,) = out["requests"]
+    assert req["body"]["as_of_date"] == "2027-06-30"
+
+
+def test_epmsave_without_an_as_of_date_sends_none_the_server_judges_the_scenario():
+    for blank in (None, "", [[""]]):
+        out = _call("EPMSAVE", *_ARGS, None, None, None, "EUR", "Movement", blank, reply=_OK)
+        assert out["error"] is None, (blank, out)
+        assert "as_of_date" not in out["requests"][0]["body"], blank
+
+
+def test_epmsave_turns_an_excel_date_serial_into_the_iso_date():
+    # A date cell reaches a string parameter as its serial number; the server
+    # would otherwise be asked for a round "as of 46568".
+    import datetime
+    serial = (datetime.date(2027, 6, 30) - datetime.date(1899, 12, 30)).days
+    out = _call("EPMSAVE", *_ARGS, None, None, None, "EUR", "Movement", serial, reply=_OK)
+    assert out["error"] is None, out
+    assert out["requests"][0]["body"]["as_of_date"] == "2027-06-30"
+    out = _call("EPMSAVE", *_ARGS, None, None, None, "EUR", "Movement", str(serial), reply=_OK)
+    assert out["requests"][0]["body"]["as_of_date"] == "2027-06-30"
+
+
+def test_a_different_as_of_date_is_a_different_save_not_a_cache_hit():
+    # EPMSAVE skips a write whose arguments are unchanged; the round is an argument.
+    out = _call("EPMSAVE", *_ARGS, None, None, None, "EUR", "Movement", "2027-03-31", reply=_OK)
+    assert out["error"] is None and len(out["requests"]) == 1, out
+    js = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "public", "excel-addin", "functions.js")).read()
+    body = js.split("function epmSave(")[1].split("\nfunction ")[0]
+    key_expr = body.split("var key = ")[1].split(";")[0]
+    assert "asOfDate" in key_expr or "asOf" in key_expr, key_expr
+
+
+def test_the_handbook_explains_the_as_of_date_argument():
+    page = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "handbook_pages", "excel-addin.md")
+    text = open(page).read()
+    assert "asOfDate" in text and "forecast" in text and "2.0.4.0" in text

@@ -270,8 +270,12 @@ def _load(world):
 
     ps.assert_open = assert_open
     ps.assert_declared = assert_declared
+    # konsol#529: before_cancel sets the workflow's docstatus-2 state through
+    # this helper; it has its own tests (test_cancelled_workflow_state.py).
+    wfs = types.ModuleType("konsol.workflows")
+    wfs.set_cancelled_state = lambda doc: None
     stubs = {"frappe": frappe, "frappe.model": model, "frappe.model.document": document,
-             "konsol.clickhouse": ch, "konsol.period_status": ps}
+             "konsol.clickhouse": ch, "konsol.period_status": ps, "konsol.workflows": wfs}
     konsol_pkg = sys.modules.get("konsol")
     if konsol_pkg is None or not hasattr(konsol_pkg, "__path__"):
         stubs["konsol"] = types.ModuleType("konsol")
