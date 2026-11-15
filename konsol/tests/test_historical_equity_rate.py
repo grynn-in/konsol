@@ -142,10 +142,15 @@ def _frappe(groups=(), entities=None, accounts=()):
     return frappe
 
 
-def _controller(**registries):
+def _controller(digest=None, record=None, **registries):
     """The real controller, loaded by path against stubs: frappe and the konsol
-    modules it imports at module level need a live site otherwise."""
+    modules it imports at module level need a live site otherwise. ``digest``
+    replaces the stub digest_name (prefix only); ``record`` collects the
+    before_cancel reads when given."""
     frappe = _frappe(**registries)
+    if record is not None:
+        frappe.db.get_value = lambda doctype, filters=None, fieldname=None, **k: (
+            record.setdefault("get_value", []).append((doctype, filters, fieldname, k)) or None)
 
     class Document:
         def __init__(self, **fields):
@@ -166,9 +171,10 @@ def _controller(**registries):
     mods["frappe.model.document"].Document = Document
     mods["konsol.clickhouse"].sync_doctype_after_commit = lambda *a, **k: None
     mods["konsol.clickhouse"].after_commit_once = lambda *a, **k: None
-    mods["konsol.period_status"].assert_open_between = lambda *a, **k: None
+    mods["konsol.period_status"].assert_open_between = (
+        lambda *a, **k: (record or {}).setdefault("gates", []).append((a, k)))
     mods["konsol.period_status"].first_period_affected = lambda *a, **k: None
-    mods["konsol.epm.budget_grain"].digest_name = lambda prefix, keys: prefix
+    mods["konsol.epm.budget_grain"].digest_name = digest or (lambda prefix, keys: prefix)
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
     try:
@@ -189,7 +195,7 @@ def _validate(**fields):
     module = _controller(groups=GROUPS, entities=ENTITIES, accounts=ACCOUNTS)
     base = dict(doctype="Historical Equity Rate", consolidation_group=GROUPS[0],
                 data_area_id=ENTITY, main_account=ACCOUNTS[0],
-                rate_date="2026-01-31", historical_rate=0.92, to_currency="USD")
+                rate_date="2026-01-31", historical_rate=0.92, to_currency="USD", rate_set="ACTUAL")
     doc = module.HistoricalEquityRate(**dict(base, **fields))
     try:
         doc.validate()
@@ -349,3 +355,57 @@ def test_still_syncs_only_submitted_to_clickhouse():
     for hook in ("on_submit", "on_cancel", "after_delete"):
         assert f"def {hook}" in src
     assert "def on_trash" not in src
+
+
+# ---- the rate set (konsol#348, S4-Q1 option c, 15 Nov 2026) ------------------
+#
+# A tranche's historical rate belongs to a Rate Set like a group rate does: the
+# actuals set for the actuals translation, a budget's own set for a budget. The
+# set is in the key (the digest name, the warehouse sort key) and in the
+# cancel's next-tranche search, so a budget tranche never shadows an actuals one.
+
+def test_a_historical_rate_names_its_set():
+    f = _fields()["rate_set"]
+    assert (f["fieldtype"], f["options"], f["reqd"], f["in_list_view"]) == ("Link", "Rate Set", 1, 1)
+    assert f.get("description") and "Actuals" in f["description"], "say which set the actuals read"
+    names = [x["fieldname"] for x in _json()["fields"]]
+    assert names.index("rate_set") == names.index("to_currency") + 1, "beside the currency it keys with"
+
+
+def test_a_blank_set_is_refused_not_defaulted():
+    refused, msg = _validate(rate_set=None)
+    assert refused and "Rate Set" in msg, msg
+    assert _validate(rate_set="BUDGET_2027") == (False, None)
+
+
+def test_two_tranches_with_one_key_in_different_sets_get_distinct_names():
+    module = _controller(digest=lambda prefix, keys: prefix + "|" + "|".join(str(k) for k in keys))
+    base = dict(consolidation_group="ZZGRP", data_area_id="ZZNL", main_account="ZZ3000",
+                rate_date="2024-01-01", to_currency="EUR")
+    actual = module.HistoricalEquityRate(**base, rate_set="ACTUAL")
+    budget = module.HistoricalEquityRate(**base, rate_set="BUDGET_2027")
+    actual.autoname()
+    budget.autoname()
+    assert actual.name != budget.name
+    assert actual.name.endswith("|EUR|ACTUAL") and budget.name.endswith("|EUR|BUDGET_2027"), (actual.name, budget.name)
+
+
+def test_cancel_finds_the_next_tranche_within_its_own_set():
+    record = {}
+    module = _controller(record=record)
+    doc = module.HistoricalEquityRate(
+        name="HER-X", consolidation_group="ZZGRP", data_area_id="ZZNL", main_account="ZZ3000",
+        rate_date="2024-01-01", to_currency="EUR", rate_set="BUDGET_2027", docstatus=1)
+    doc.before_cancel()
+    [(doctype, filters, fieldname, _k)] = record["get_value"]
+    assert doctype == "Historical Equity Rate" and fieldname == "rate_date"
+    assert filters["rate_set"] == "BUDGET_2027" and filters["to_currency"] == "EUR", filters
+    assert filters["docstatus"] == 1 and filters["rate_date"] == [">", "2024-01-01"]
+    assert record["gates"], "the period gate still runs"
+
+
+def test_the_set_is_written_through_last():
+    module = _controller()
+    field_map = module.HistoricalEquityRate.CH_FIELD_MAP
+    assert list(field_map)[-2:] == ["to_currency", "rate_set"], list(field_map)
+    assert field_map["rate_set"] == "rate_set"
