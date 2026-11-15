@@ -542,38 +542,89 @@ def _round_circulation(origin, rows, senders):
         if e[1][0] == "3 final":
             back = (e[1], src)
             flow[back] = flow.get(back, Fraction(0)) + flow[e]
-    frac = {e for e, v in flow.items() if v.denominator != 1}
-    while frac:
-        start = min(frac)
-        adj = {}
-        for e in sorted(frac - {start}):
-            adj.setdefault(e[0], []).append((e[1], e, 1))
-            adj.setdefault(e[1], []).append((e[0], e, -1))
+    # RF3: the same cycle as RC2, without RC2's work. RC2 re-sorted every
+    # fractional edge and ran a fresh breadth-first search each pass. Here the
+    # adjacency is built once: edges only ever leave the fractional set, so the
+    # name order of the fractional edges, and of each node's incident edges,
+    # never changes; edges and nodes are numbered in that order, and an edge
+    # that has become whole is dropped from a node's list when the list is next
+    # read. The search visits nodes in RC2's queue order and stops at the first
+    # node it reaches that is adjacent to the goal. RC2's search would give the
+    # goal that node as its parent: no node reached earlier is adjacent to the
+    # goal, and the nodes of one level are reached in queue order. The edge is
+    # the lowest-numbered one between them, the first in that node's list. No
+    # other parent on the path depends on what RC2 found after that point, so
+    # the cycle and the output are identical
+    # (test_reciprocal_rounding_equals_rc2_reference_*).
+    order = sorted(e for e, v in flow.items() if v.denominator != 1)
+    node_id = {}
+    for e in order:
+        node_id.setdefault(e[0], len(node_id))
+        node_id.setdefault(e[1], len(node_id))
+    tails = [node_id[e[0]] for e in order]
+    heads = [node_id[e[1]] for e in order]
+    # Flows as integer numerators over one common denominator: the same
+    # exact arithmetic as Fractions, without their cost.
+    den = math.lcm(*(flow[e].denominator for e in order)) if order else 1
+    val = [flow[e].numerator * (den // flow[e].denominator) for e in order]
+    live = bytearray(b"\x01") * len(order)
+    adj = [[] for _ in node_id]
+    for i in range(len(order)):
+        adj[tails[i]].append((heads[i], i, 1))
+        adj[heads[i]].append((tails[i], i, -1))
+
+    def live_list(u):
+        near = adj[u]
+        ok = [x for x in near if live[x[1]]]
+        if len(ok) != len(near):
+            adj[u] = ok
+        return ok
+
+    seen = [-1] * len(node_id)   # pass number in which a node was reached
+    prev = [None] * len(node_id)
+    first, left, stamp = 0, len(order), 0
+    while left:
+        while not live[first]:
+            first += 1
+        start = first  # the smallest fractional edge by node names
+        stamp += 1
         # Path from start's head back to its tail over the other fractional edges.
-        goal, prev, queue = start[0], {start[1]: None}, deque([start[1]])
-        while queue and goal not in prev:
+        goal, h = tails[start], heads[start]
+        into_goal = {}  # neighbour -> (lowest edge to the goal, direction from the neighbour)
+        for v, i, d in live_list(goal):
+            if i != start and v not in into_goal:
+                into_goal[v] = (i, -d)
+        seen[h], prev[h] = stamp, None
+        queue, found = deque([h]), h if h in into_goal else None
+        while queue and found is None:
             u = queue.popleft()
-            for v, e, d in adj.get(u, ()):
-                if v not in prev:
-                    prev[v] = (u, e, d)
+            for v, i, d in live_list(u):
+                if i != start and seen[v] != stamp:
+                    seen[v], prev[v] = stamp, (u, i, d)
+                    if v in into_goal:
+                        found = v
+                        break
                     queue.append(v)
-        if goal not in prev:  # impossible for a balanced flow; never round silently
+        if found is None:  # impossible for a balanced flow; never round silently
             raise CostAllocationError("Reciprocal rounding found unbalanced coefficients "
                                       "for origin %s." % origin)
+        prev[goal] = (found,) + into_goal[found]
         cycle, v = [(start, 1)], goal
         while prev[v] is not None:
-            u, e, d = prev[v]
-            cycle.append((e, d))
+            u, i, d = prev[v]
+            cycle.append((i, d))
             v = u
-        up = min((math.ceil(flow[e]) - flow[e]) if d > 0 else (flow[e] - math.floor(flow[e]))
-                 for e, d in cycle)
-        down = min((flow[e] - math.floor(flow[e])) if d > 0 else (math.ceil(flow[e]) - flow[e])
-                   for e, d in cycle)
+        # Every edge on the cycle is fractional: 0 < val % den < den.
+        up = min((den - val[i] % den) if d > 0 else (val[i] % den) for i, d in cycle)
+        down = min((val[i] % den) if d > 0 else (den - val[i] % den) for i, d in cycle)
         t = up if up <= down else -down
-        for e, d in cycle:
-            flow[e] += t * d
-            if flow[e].denominator == 1:
-                frac.discard(e)
+        for i, d in cycle:
+            val[i] += t * d
+            if val[i] % den == 0:
+                live[i] = 0
+                left -= 1
+    for e, v in zip(order, val):
+        flow[e] = Fraction(v // den)
     return {rid: int(flow[e]) for rid, e in edge_of.items()}
 
 
