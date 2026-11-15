@@ -237,28 +237,73 @@ def test_doctype_is_installed_as_a_workflow():
 # --- K7: Compute Weights (stubbed frappe) -------------------------------------
 
 import importlib.util
+import inspect
 import sys
 import types
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
+import threading
+import time
 
 RUN_PY = os.path.join(EPM_DOCTYPES, RUN, "cost_allocation_run.py")
 RUN_JS = os.path.join(EPM_DOCTYPES, RUN, "cost_allocation_run.js")
 
 
-class _FakeCache:
-    """Redis-like: incr and get over a shared dict; get returns bytes."""
+class _FakeLock:
+    """redis-py Lock over a real threading.Lock: acquire() waits up to
+    blocking_timeout and returns False on timeout, as redis-py does."""
 
-    def __init__(self, store):
-        self.store = store
+    def __init__(self, world, name, timeout, blocking_timeout):
+        self.world, self.name = world, name
+        self.timeout, self.blocking_timeout = timeout, blocking_timeout
+        self.inner = world.locks.setdefault(name, threading.Lock())
 
-    def incr(self, key, amount=1):
-        self.store[key] = self.store.get(key, 0) + amount
-        return self.store[key]
+    def acquire(self):
+        self.world.lock_requests.append((self.name, self.timeout, self.blocking_timeout))
+        if self.world.lock_never_free:
+            return False
+        got = self.inner.acquire(timeout=self.blocking_timeout)
+        if got:
+            self.world.events.append("lock")
+        return got
+
+    def release(self):
+        self.world.events.append("unlock")
+        self.inner.release()
+
+
+class _FakeRedis:
+    """frappe.cache in v16: raw get/set (get returns bytes) and redis-py lock()."""
+
+    def __init__(self, world):
+        self.world = world
 
     def get(self, key):
-        return None if key not in self.store else str(self.store[key]).encode()
+        value = self.world.redis.get(key)
+        return None if value is None else str(value).encode()
+
+    def set(self, key, value, ex=None):
+        self.world.redis[key] = value
+
+    def lock(self, name, timeout=None, blocking_timeout=None):
+        return _FakeLock(self.world, name, timeout, blocking_timeout)
+
+
+class _FakeJob:
+    def __init__(self, status):
+        self.status = status
+
+    def get_status(self, refresh=True):
+        return self.status
+
+
+def _fake_background_jobs(world):
+    """frappe.utils.background_jobs.get_job over world.jobs (un-namespaced id ->
+    RQ status string); None when RQ has no such job (expired or never made)."""
+    bj = types.ModuleType("frappe.utils.background_jobs")
+    bj.get_job = lambda job_id: (_FakeJob(world.jobs[job_id]) if job_id in world.jobs else None)
+    return bj
 
 
 class _Refused(Exception):
@@ -552,7 +597,12 @@ class _World:
         self.syncs = []
         self.once = []
         self.enqueued = []
-        self.counter = {}
+        self.redis = {}
+        self.jobs = {}
+        self.locks = {}
+        self.lock_requests = []
+        self.lock_never_free = False
+        self.events = []
         self.commit_callbacks = []
         self.logged = []
         self.sync_table_calls = []
@@ -606,12 +656,19 @@ def _k8(world):
 
     fr.throw = throw
     fr.whitelist = lambda *a, **k: (lambda fn: fn)
-    fr.db = types.SimpleNamespace(get_value=get_value, sql=sql)
+    fr.db = types.SimpleNamespace(get_value=get_value, sql=sql,
+                                  rollback=lambda: world.events.append("rollback"))
     fr.get_all = get_all
-    fr.enqueue = lambda *a, **k: world.enqueued.append((a, k))
+    def enqueue(*a, **k):
+        world.enqueued.append((a, k))
+        world.jobs[k.get("job_id")] = "queued"     # RQ sets QUEUED at enqueue
+
+    fr.enqueue = enqueue
     fr.local = types.SimpleNamespace(site="zz.local")
     fr.db.after_commit = types.SimpleNamespace(add=world.commit_callbacks.append)
-    fr.cache = lambda: _FakeCache(world.counter)
+    fr.cache = _FakeRedis(world)
+    fr.logger = lambda *a, **k: types.SimpleNamespace(
+        info=lambda msg, *x, **y: world.events.append(("log", msg)))
     fr.log_error = lambda *a, **k: world.logged.append((a, k))
     fr._dict = lambda **k: types.SimpleNamespace(**k)
     module.frappe = fr
@@ -767,6 +824,7 @@ def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
         w.syncs.clear()
         w.once.clear()
         w.enqueued.clear()
+        w.jobs.clear()                 # no resync job on the site before this hook
         getattr(_k8_run(m, docstatus=1), hook)()
         assert [(s[0], s[1]) for s in w.syncs] == [
             ("Cost Allocation Run", "epm_staging.cost_allocation_runs"),
@@ -774,12 +832,15 @@ def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
             ("Cost Allocation Run Weight", "epm_staging.cost_allocation_run_weights")], hook
         assert w.once == [], hook      # RF4: the coefficients are a job, not an after-commit callback
         assert w.sync_table_calls == [], hook
+        # RF7: nothing is enqueued inside the transaction; one after-commit
+        # callback decides, after the commit, whether to enqueue
+        assert w.enqueued == [], hook
+        assert len(w.commit_callbacks) == 1, hook
+        _with_rq(w, w.commit_callbacks.pop())
         (args, kw), = w.enqueued
         assert args == ("konsol.epm.doctype.cost_allocation_run.cost_allocation_run."
                         "resync_coefficients_job",), hook
-        assert kw == {"queue": "long", "enqueue_after_commit": True,
-                      "job_id": "cost_allocation_coefficients::zz.local",
-                      "deduplicate": True}, hook
+        assert kw["run"] == "CAR-00001", hook
 
 
 def test_lifecycle_no_sync_on_a_draft_save_or_validate():
@@ -1348,13 +1409,13 @@ def test_rf4_job_resyncs_then_requests_the_allocation_build():
     saved = sys.modules.get("konsol.tasks")
     sys.modules["konsol.tasks"] = tasks
     try:
-        m.resync_coefficients_job()
+        m.resync_coefficients_job(run="CAR-00001")
     finally:
         if saved is None:
             sys.modules.pop("konsol.tasks", None)
         else:
             sys.modules["konsol.tasks"] = saved
-    assert order == ["resync", ("Cost Allocation Run", "coefficients", "coefficients_resync")]
+    assert order == ["resync", ("Cost Allocation Run", "CAR-00001", "coefficients_resync")]
 
 
 def test_rf4_a_failing_job_raises_logs_and_requests_no_build():
@@ -1370,7 +1431,7 @@ def test_rf4_a_failing_job_raises_logs_and_requests_no_build():
     sys.modules["konsol.tasks"] = _job_tasks_stub(calls)
     try:
         try:
-            m.resync_coefficients_job()
+            m.resync_coefficients_job(run="CAR-00001")
         except RuntimeError as exc:
             assert "clickhouse down" in str(exc)
         else:
@@ -1417,18 +1478,124 @@ def test_rf4_compute_refuses_a_reciprocal_loop_whose_exit_edges_have_zero_statis
     assert run.saved == 0
 
 
-# --- RF6: the resync job re-runs until no change arrived while it ran ----------------
+# --- RF7: after-commit enqueue, one job at a time, fresh read --------------------
 
-GEN_KEY = "cost_allocation_coefficients_generation::zz.local"
+JOB = "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.resync_coefficients_job"
+#: frappe.enqueue's own parameters (Frappe v16 background_jobs.enqueue), which
+#: can never reach the job as kwargs
+ENQUEUE_OWN = {"method", "queue", "timeout", "event", "is_async", "async", "job_name", "now",
+               "enqueue_after_commit", "on_success", "on_failure", "at_front", "job_id",
+               "deduplicate", "at_front_when_starved"}
 
 
-def _run_job(m, resync):
-    calls = []
-    m.CostAllocationRun.resync_staging = classmethod(resync)
-    saved = sys.modules.get("konsol.tasks")
-    sys.modules["konsol.tasks"] = _job_tasks_stub(calls)
+def _with_rq(w, fn):
+    saved = sys.modules.get("frappe.utils.background_jobs")
+    sys.modules["frappe.utils.background_jobs"] = _fake_background_jobs(w)
     try:
-        m.resync_coefficients_job()
+        return fn()
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe.utils.background_jobs", None)
+        else:
+            sys.modules["frappe.utils.background_jobs"] = saved
+
+
+def _commit(w, m, name, hook="on_submit"):
+    """The hook runs, then the transaction commits and its callbacks fire."""
+    w.commit_callbacks.clear()
+    getattr(_k8_run(m, name=name, docstatus=1), hook)()
+    for callback in list(w.commit_callbacks):
+        _with_rq(w, callback)
+
+
+def test_rf7_no_job_on_the_site_enqueues_one_after_the_commit():
+    w = _World()
+    m = _k8(w)
+    _commit(w, m, "CAR-00001")
+    (args, kw), = w.enqueued
+    assert args == (JOB,) and kw["run"] == "CAR-00001" and kw["queue"] == "long"
+
+
+def test_rf7_a_queued_job_is_reused_because_it_has_not_read_yet():
+    w = _World()
+    m = _k8(w)
+    _commit(w, m, "CAR-00001")
+    _commit(w, m, "CAR-00002")             # job 1 still QUEUED: it reads after this commit
+    assert len(w.enqueued) == 1
+
+
+def test_rf7_rc8b_race_a_started_job_does_not_cover_a_later_commit():
+    """RC8b: run B committed ~0.86 s after its on_submit while job A ran, and
+    B was lost. A STARTED job may have read already, so B gets its own job."""
+    w = _World()
+    m = _k8(w)
+    _commit(w, m, "CAR-00009")
+    first = w.enqueued[0][1]["job_id"]
+    w.jobs[first] = "started"              # the worker picked job A up
+    _commit(w, m, "CAR-00011")             # B commits while A runs
+    assert len(w.enqueued) == 2
+    second = w.enqueued[1][1]["job_id"]
+    assert second != first                 # never the id of the STARTED job
+    assert w.enqueued[1][1]["run"] == "CAR-00011"
+
+
+def test_rf7_a_finished_failed_or_expired_job_does_not_cover_a_commit():
+    for status in ("finished", "failed", "stopped", "canceled", None):
+        w = _World()
+        m = _k8(w)
+        _commit(w, m, "CAR-00001")
+        first = w.enqueued[0][1]["job_id"]
+        if status is None:
+            del w.jobs[first]              # RQ result TTL expired
+        else:
+            w.jobs[first] = status
+        _commit(w, m, "CAR-00002")
+        assert len(w.enqueued) == 2, status
+
+
+def test_rf7_cancel_and_delete_take_the_same_path():
+    for hook in ("on_cancel", "after_delete"):
+        w = _World()
+        m = _k8(w)
+        _commit(w, m, "CAR-00003", hook=hook)
+        assert [kw["run"] for _a, kw in w.enqueued] == ["CAR-00003"], hook
+
+
+def test_rf7_enqueue_kwargs_avoid_enqueues_own_parameters_and_its_dedupe():
+    w = _World()
+    m = _k8(w)
+    _commit(w, m, "CAR-00001")
+    (_args, kw), = w.enqueued
+    job_kwargs = set(kw) - {"queue", "job_id"}
+    assert job_kwargs == {"run"}
+    assert not job_kwargs & ENQUEUE_OWN
+    assert "deduplicate" not in kw and "enqueue_after_commit" not in kw
+    assert "run" in inspect.signature(m.resync_coefficients_job).parameters
+
+
+def test_rf7_the_generation_counter_is_gone():
+    with open(RUN_PY) as f:
+        src = f.read()
+    for gone in ("_bump_generation", "_generation", "MAX_RESYNC_PASSES", "deduplicate=True"):
+        assert gone not in src, gone
+
+
+def _job(w, m, run="CAR-00001", resync=None, calls=None):
+    calls = [] if calls is None else calls
+
+    def default(cls, force=False):
+        w.events.append(("resync", force))
+        return 7
+
+    m.CostAllocationRun.resync_staging = classmethod(resync or default)
+    tasks = _job_tasks_stub(calls)
+    tasks.request_consolidation_build = lambda doctype, name, trigger_method: (
+        calls.append((doctype, name, trigger_method)),
+        w.events.append(("build", name)))
+    saved = sys.modules.get("konsol.tasks")
+    sys.modules["konsol.tasks"] = tasks
+    try:
+        m.resync_coefficients_job(run=run)
     finally:
         if saved is None:
             sys.modules.pop("konsol.tasks", None)
@@ -1437,64 +1604,112 @@ def _run_job(m, resync):
     return calls
 
 
-def test_rf6_a_change_during_the_resync_makes_a_second_pass_before_the_build():
+def test_rf7_job_locks_rolls_back_resyncs_forced_then_requests_the_build_for_the_run():
     w = _World()
     m = _k8(w)
-    passes = []
-
-    def resync(cls, force=False):
-        passes.append(1)
-        if len(passes) == 1:
-            w.counter[GEN_KEY] = w.counter.get(GEN_KEY, 0) + 1   # run B commits mid-pass
-
-    calls = _run_job(m, resync)
-    assert len(passes) == 2
-    assert calls == [("Cost Allocation Run", "coefficients", "coefficients_resync")]
+    calls = _job(w, m, run="CAR-00011")
+    steps = [e for e in w.events if not (isinstance(e, tuple) and e[0] == "log")]
+    assert steps == ["lock", "rollback", ("resync", True), ("build", "CAR-00011"), "unlock"]
+    assert calls == [("Cost Allocation Run", "CAR-00011", "coefficients_resync")]
+    (name, timeout, wait), = w.lock_requests
+    assert name.endswith("zz.local") and timeout and wait
 
 
-def test_rf6_no_change_during_the_run_is_one_pass():
+def test_rf7_job_logs_one_line_with_run_rows_and_duration():
     w = _World()
     m = _k8(w)
-    passes = []
-    calls = _run_job(m, lambda cls, force=False: passes.append(1))
-    assert len(passes) == 1
-    assert len(calls) == 1
+    _job(w, m, run="CAR-00011")
+    logs = [e[1] for e in w.events if isinstance(e, tuple) and e[0] == "log"]
+    assert len(logs) == 1
+    assert "CAR-00011" in logs[0] and "7 rows" in logs[0] and re.search(r"\d+\.\d+ ?s", logs[0])
 
 
-def test_rf6_the_cap_logs_and_raises_and_requests_no_build():
+def test_rf7_a_clickhouse_failure_raises_logs_and_requests_no_build():
     w = _World()
     m = _k8(w)
-    passes = []
 
-    def resync(cls, force=False):
-        passes.append(1)
-        w.counter[GEN_KEY] = w.counter.get(GEN_KEY, 0) + 1   # always changing
+    def boom(cls, force=False):
+        assert force is True
+        raise RuntimeError("clickhouse down")
 
     calls = []
-    saved = sys.modules.get("konsol.tasks")
-    sys.modules["konsol.tasks"] = _job_tasks_stub(calls)
-    m.CostAllocationRun.resync_staging = classmethod(resync)
     try:
-        try:
-            m.resync_coefficients_job()
-        except Exception:
-            pass
-        else:
-            raise AssertionError("the job exited silently with stale data")
+        _job(w, m, resync=boom, calls=calls)
+    except RuntimeError as exc:
+        assert "clickhouse down" in str(exc)
+    else:
+        raise AssertionError("the job swallowed the failure")
+    assert calls == [] and len(w.logged) == 1
+    assert w.events[-1] == "unlock"        # the lock is released on failure
+
+
+def test_rf7_a_lock_timeout_raises_and_reads_nothing():
+    w = _World()
+    w.lock_never_free = True
+    m = _k8(w)
+    calls = []
+    try:
+        _job(w, m, calls=calls)
+    except Exception as exc:
+        assert "lock" in str(exc).lower()
+    else:
+        raise AssertionError("the job ran without the lock")
+    assert calls == [] and "rollback" not in w.events and len(w.logged) == 1
+
+
+def test_rf7_two_jobs_serialise_on_the_lock():
+    w = _World()
+    m = _k8(w)
+    release_a = threading.Event()
+    entered = []
+
+    def resync(cls, force=False):
+        me = threading.current_thread().name
+        entered.append(("in", me))
+        if me == "A":
+            release_a.wait(5)
+        entered.append(("out", me))
+        return 1
+
+    m.CostAllocationRun.resync_staging = classmethod(resync)
+    saved = sys.modules.get("konsol.tasks")
+    sys.modules["konsol.tasks"] = _job_tasks_stub([])
+    try:
+        a = threading.Thread(target=m.resync_coefficients_job, kwargs={"run": "CAR-1"}, name="A",
+                             daemon=True)
+        b = threading.Thread(target=m.resync_coefficients_job, kwargs={"run": "CAR-2"}, name="B",
+                             daemon=True)
+        a.start()
+        deadline = time.monotonic() + 5
+        while ("in", "A") not in entered:
+            assert time.monotonic() < deadline, "job A never reached the resync"
+            time.sleep(0.005)
+        b.start()
+        time.sleep(0.1)
+        held = ("in", "B") not in entered   # B waits on the lock while A holds it
+        release_a.set()
+        a.join(5)
+        b.join(5)
     finally:
         if saved is None:
             sys.modules.pop("konsol.tasks", None)
         else:
             sys.modules["konsol.tasks"] = saved
-    assert len(passes) == 5
-    assert calls == [] and len(w.logged) == 1
+    assert held
+    assert entered == [("in", "A"), ("out", "A"), ("in", "B"), ("out", "B")]
 
 
-def test_rf6_the_generation_is_bumped_only_through_the_after_commit_path():
+def test_rf7_job_without_a_run_names_the_latest_submitted_or_cancelled_run():
     w = _World()
     m = _k8(w)
-    _k8_run(m, docstatus=1).on_submit()
-    assert w.counter == {}                      # nothing bumped in the transaction
-    assert len(w.commit_callbacks) == 1
-    w.commit_callbacks[0]()                     # the commit happens
-    assert w.counter == {GEN_KEY: 1}
+    seen = {}
+
+    def get_all(doctype, filters=None, fields=None, pluck=None, order_by=None, **k):
+        seen.update(doctype=doctype, filters=filters, order_by=order_by, limit=k.get("limit"))
+        return ["CAR-00007"]
+
+    m.frappe.get_all = get_all
+    calls = _job(w, m, run=None)
+    assert calls == [("Cost Allocation Run", "CAR-00007", "coefficients_resync")]
+    assert seen["filters"] == {"docstatus": ["in", [1, 2]]}
+    assert seen["order_by"] == "modified desc" and seen["limit"] == 1
