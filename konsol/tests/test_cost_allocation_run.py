@@ -247,6 +247,20 @@ RUN_PY = os.path.join(EPM_DOCTYPES, RUN, "cost_allocation_run.py")
 RUN_JS = os.path.join(EPM_DOCTYPES, RUN, "cost_allocation_run.js")
 
 
+class _FakeCache:
+    """Redis-like: incr and get over a shared dict; get returns bytes."""
+
+    def __init__(self, store):
+        self.store = store
+
+    def incr(self, key, amount=1):
+        self.store[key] = self.store.get(key, 0) + amount
+        return self.store[key]
+
+    def get(self, key):
+        return None if key not in self.store else str(self.store[key]).encode()
+
+
 class _Refused(Exception):
     pass
 
@@ -538,6 +552,8 @@ class _World:
         self.syncs = []
         self.once = []
         self.enqueued = []
+        self.counter = {}
+        self.commit_callbacks = []
         self.logged = []
         self.sync_table_calls = []
         self.get_all_data = {}
@@ -594,6 +610,8 @@ def _k8(world):
     fr.get_all = get_all
     fr.enqueue = lambda *a, **k: world.enqueued.append((a, k))
     fr.local = types.SimpleNamespace(site="zz.local")
+    fr.db.after_commit = types.SimpleNamespace(add=world.commit_callbacks.append)
+    fr.cache = lambda: _FakeCache(world.counter)
     fr.log_error = lambda *a, **k: world.logged.append((a, k))
     fr._dict = lambda **k: types.SimpleNamespace(**k)
     module.frappe = fr
@@ -1397,3 +1415,86 @@ def test_rf4_compute_refuses_a_reciprocal_loop_whose_exit_edges_have_zero_statis
     else:
         raise AssertionError("Compute accepted a loop whose cost can never leave")
     assert run.saved == 0
+
+
+# --- RF6: the resync job re-runs until no change arrived while it ran ----------------
+
+GEN_KEY = "cost_allocation_coefficients_generation::zz.local"
+
+
+def _run_job(m, resync):
+    calls = []
+    m.CostAllocationRun.resync_staging = classmethod(resync)
+    saved = sys.modules.get("konsol.tasks")
+    sys.modules["konsol.tasks"] = _job_tasks_stub(calls)
+    try:
+        m.resync_coefficients_job()
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.tasks", None)
+        else:
+            sys.modules["konsol.tasks"] = saved
+    return calls
+
+
+def test_rf6_a_change_during_the_resync_makes_a_second_pass_before_the_build():
+    w = _World()
+    m = _k8(w)
+    passes = []
+
+    def resync(cls, force=False):
+        passes.append(1)
+        if len(passes) == 1:
+            w.counter[GEN_KEY] = w.counter.get(GEN_KEY, 0) + 1   # run B commits mid-pass
+
+    calls = _run_job(m, resync)
+    assert len(passes) == 2
+    assert calls == [("Cost Allocation Run", "coefficients", "coefficients_resync")]
+
+
+def test_rf6_no_change_during_the_run_is_one_pass():
+    w = _World()
+    m = _k8(w)
+    passes = []
+    calls = _run_job(m, lambda cls, force=False: passes.append(1))
+    assert len(passes) == 1
+    assert len(calls) == 1
+
+
+def test_rf6_the_cap_logs_and_raises_and_requests_no_build():
+    w = _World()
+    m = _k8(w)
+    passes = []
+
+    def resync(cls, force=False):
+        passes.append(1)
+        w.counter[GEN_KEY] = w.counter.get(GEN_KEY, 0) + 1   # always changing
+
+    calls = []
+    saved = sys.modules.get("konsol.tasks")
+    sys.modules["konsol.tasks"] = _job_tasks_stub(calls)
+    m.CostAllocationRun.resync_staging = classmethod(resync)
+    try:
+        try:
+            m.resync_coefficients_job()
+        except Exception:
+            pass
+        else:
+            raise AssertionError("the job exited silently with stale data")
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.tasks", None)
+        else:
+            sys.modules["konsol.tasks"] = saved
+    assert len(passes) == 5
+    assert calls == [] and len(w.logged) == 1
+
+
+def test_rf6_the_generation_is_bumped_only_through_the_after_commit_path():
+    w = _World()
+    m = _k8(w)
+    _k8_run(m, docstatus=1).on_submit()
+    assert w.counter == {}                      # nothing bumped in the transaction
+    assert len(w.commit_callbacks) == 1
+    w.commit_callbacks[0]()                     # the commit happens
+    assert w.counter == {GEN_KEY: 1}
