@@ -902,6 +902,18 @@ _REFERENCE_TABLE_DDL = {
         "fiscal_period UInt8, rate_type String, rate Float64, document String, rate_set String) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)"
     ),
+    # konsol#348 S4-Q7 (a), chosen under the standing rule (15 Nov 2026): the
+    # Rate Sets, from the Rate Set doctype (every row; the doctype is neither
+    # submittable nor governed). The warehouse reads which set is flagged
+    # is_actuals here, the way it reads every reference table, and its
+    # consolidation filters both rate tables by that set; a dbt var konsol
+    # regenerates was rejected as a second copy of the flag that goes stale.
+    # Identical to konsolidat's clickhouse/init-db.sql; keep them identical
+    # (test_rate_set.py pins it).
+    "epm_staging.rate_sets": (
+        "(rate_set String, label String, is_actuals UInt8) "
+        "ENGINE = MergeTree ORDER BY rate_set"
+    ),
     # konsol#182: the group chart of accounts, from Main Account (Published
     # rows, groups included). silver_main_accounts reads only this: there is no
     # ERP chart fallback (decided 13 Sep 2026). Identical to konsolidat's

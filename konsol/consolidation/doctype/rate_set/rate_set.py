@@ -15,9 +15,17 @@ Not a fixture: fixtures are reference data re-imported on every migrate
 A fresh site gets ACTUAL from after_install (``ensure_actual_set``); an
 existing site from patches/stamp_rate_set_actual.py, which also stamps every
 rate it already holds.
+
+The sets write through to ``epm_staging.rate_sets`` (S4-Q7 a, chosen under the
+standing rule on 15 Nov 2026; a dbt var konsol regenerates was rejected as a
+second copy of the flag that goes stale): every row, after the commit, on save
+and on delete, so the warehouse reads which set is flagged Is Actuals the way
+it reads every reference table, and ``reconcile_all`` repairs the table.
 """
 import frappe
 from frappe.model.document import Document
+
+from konsol.clickhouse import sync_doctype_after_commit
 
 DOCTYPE = "Rate Set"
 #: The set a fresh site starts with, flagged Is Actuals. A name, not a rule:
@@ -31,8 +39,27 @@ ACTUALS_DESCRIPTION = (
 
 
 class RateSet(Document):
+    #: Identical to the DDL in konsol.clickhouse._REFERENCE_TABLE_DDL and
+    #: konsolidat's clickhouse/init-db.sql; keys in column order.
+    CH_TABLE = "epm_staging.rate_sets"
+    CH_FIELD_MAP = {
+        "rate_set": "rate_set",
+        "label": "label",
+        "is_actuals": "is_actuals",
+    }
+
     def validate(self):
         self._refuse_second_actuals()
+
+    def on_update(self):
+        """Every set reaches the warehouse, after the commit, once per
+        transaction (konsol#124)."""
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+
+    def after_delete(self):
+        """after_delete, not on_trash: on_trash runs before the row is gone, so
+        the full-table re-send put it straight back (#120)."""
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     def _refuse_second_actuals(self):
         """At most one set is flagged Is Actuals. A locking read, so two flags
