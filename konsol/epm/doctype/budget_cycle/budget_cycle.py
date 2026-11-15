@@ -20,6 +20,14 @@ holds per round, so the rounds of one pair live side by side, and its name
 carries the as-of date. A rolling round that crosses the year end is one
 Cycle per fiscal year, sharing the as-of date (Q24 a).
 
+Every Cycle names the Rate Set its budget is translated at (S4 K5, BUD-3:
+declared per Cycle, no default; the rule is budget_bulk_model
+.cycle_rate_set_problems). It is editable while the Cycle is a draft and
+frozen by the submit: not set-once, because unlike the scenario, the year and
+the as-of date it is not part of the Cycle's identity or name, and a draft's
+set may be corrected before anyone approves it; never allow_on_submit, because
+the Input Fingerprint stamped at Approve covers the set and its rates.
+
 Interim rule until S6 (posted on #348, 15 Nov 2026): a forecast pair holds at
 most ONE approved round, because the readers still sum rounds across the
 cycle. before_submit refuses the second Approve by name
@@ -67,11 +75,14 @@ class BudgetCycle(Document):
 
     def _refuse_bad_round(self):
         """S3 K3: a forecast Cycle needs its round (as-of date, horizon of 1 or
-        more); any other type refuses the round fields (Q23 a, QB8 a). Every
-        problem is told together, before the pair is locked: a Cycle whose
-        round is not stated cannot be judged against the pair's rounds."""
+        more); any other type refuses the round fields (Q23 a, QB8 a). S4 K5
+        (BUD-3): every Cycle names the Rate Set it is translated at; nothing
+        defaults it (budget_bulk_model.cycle_rate_set_problems). Every problem
+        is told together, before the pair is locked: a Cycle whose round is
+        not stated cannot be judged against the pair's rounds."""
         problems = M.cycle_round_problems(self.scenario_type, self.get("as_of_date"),
                                           self.get("horizon_periods"))
+        problems += M.cycle_rate_set_problems(self.scenario_type, self.get("rate_set"))
         if problems:
             frappe.throw("\n".join(problems), frappe.ValidationError)
 

@@ -48,6 +48,16 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "rate_set",
+      "fieldtype": "Link",
+      "label": "Rate Set",
+      "options": "Rate Set",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "description": "The Rate Set this Cycle's budget is translated at: the approved Group Exchange Rates and Historical Equity Rates of that set, for this fiscal year (konsol#348 S4). Declared per Cycle, never defaulted (BUD-3): choose the set flagged Is Actuals to budget at actual rates, or a set of your own for planning rates. Editable while the Cycle is a draft; Approve freezes it, and the Input Fingerprint stamped then covers the set and its rates."
+    },
+    {
       "fieldname": "as_of_date",
       "set_only_once": 1,
       "fieldtype": "Date",
@@ -170,5 +180,5 @@
       "export": 1
     }
   ],
-  "search_fields": "scenario_id,fiscal_year,as_of_date"
+  "search_fields": "scenario_id,fiscal_year,as_of_date,rate_set"
 }

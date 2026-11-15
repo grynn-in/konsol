@@ -109,7 +109,7 @@ def test_the_round_fields_sit_in_the_cycle_section_after_the_year():
 
 
 def test_as_of_date_is_searchable():
-    assert _doctype()["search_fields"] == "scenario_id,fiscal_year,as_of_date"
+    assert _doctype()["search_fields"].split(",")[:3] == ["scenario_id", "fiscal_year", "as_of_date"]
 
 
 def test_tabs_per_the_part_2_table():
