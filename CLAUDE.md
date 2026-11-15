@@ -150,6 +150,11 @@ Frappe never runs natively on the Mac. konsol targets **Frappe v16** (Python
 4. **Always:**
    - Never `self.save()` inside `on_submit` / `on_cancel`. Set status in
      `before_submit` / `before_cancel`, or let the Workflow set it.
+   - `before_cancel` ends with `konsol.workflows.set_cancelled_state(self)`:
+     Frappe's plain Cancel sets docstatus 2 and no workflow state, so without
+     it a cancelled document shows "Approved" (#529). The helper reads the
+     docstatus-2 state from the site's Workflow; `test_workflow_convention.py`
+     requires the call on every submittable workflow doctype.
    - Sync on `on_submit` and `on_cancel`, after the commit; never on a draft
      `on_update`.
    - Walk every workflow transition in a live test, including the refused

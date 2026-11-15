@@ -18,6 +18,7 @@ from frappe.utils import cint, now_datetime
 from konsol import clickhouse, currency_references
 from konsol.close import journal_model
 from konsol.period_status import assert_declared, assert_open
+from konsol.workflows import set_cancelled_state
 
 #: A blank Link is stored as NULL: match both spellings (business_combination.py:68).
 _BLANK = ["is", "not set"]
@@ -244,8 +245,10 @@ class ConsolidationJournal(Document):
                     "it before reversing this journal."
                 )
         if get_workflow_name(self.doctype):
-            if self.status not in _states(2):
-                frappe.throw(_("Reverse the journal through its workflow."))
+            # The Reverse transition set the docstatus-2 state before it called
+            # cancel(); a programmatic cancel gets it set here, from the
+            # workflow as installed (konsol#529, option b).
+            set_cancelled_state(self)
         else:
             self.status = "Reversed"
 
