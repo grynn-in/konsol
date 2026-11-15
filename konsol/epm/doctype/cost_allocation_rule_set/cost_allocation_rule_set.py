@@ -93,7 +93,8 @@ class CostAllocationRuleSet(Document):
         a receiver is reachable depends on weights only through "positive", so
         equal weights decide it with no statistics: if even those cannot exit,
         no statistic can. A loop that only zero statistics close is refused at
-        Compute and at submit."""
+        Compute (compute_weights_on builds the coefficient rows) and again at
+        submit."""
         steps = model.build_steps(rules, receivers)
         weights = {(st.step, r): Fraction(1, len(st.receivers)) for st in steps for r in st.receivers}
         try:
