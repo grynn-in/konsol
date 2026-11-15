@@ -5,7 +5,9 @@ Plain data in, plain data out. Imports nothing from frappe or konsol.
 A rule set has ordered steps. Each step has one sender (a member of the rule
 set's dimension), one driver and one or more receivers. Direct: no receiver is
 a sender. Step-Down: a receiver at step i may not be a sender at step <= i, so
-cost only flows forward.
+cost only flows forward. Reciprocal: a receiver may be any other sender, and
+the mutual exchange is solved exactly (``reciprocal_coefficients``); step
+numbers are then only rule ids.
 
 Driver values are never defaulted. A missing value refuses, in one error that
 lists every missing (step, receiver, period), unless the driver declares
@@ -22,7 +24,12 @@ from fractions import Fraction
 
 DIRECT = "Direct"
 STEP_DOWN = "Step-Down"
-METHODS = (DIRECT, STEP_DOWN)
+RECIPROCAL = "Reciprocal"
+METHODS = (DIRECT, STEP_DOWN, RECIPROCAL)
+#: hop_kind: OWN is the origin's own unit leaving it; PASS is cost a sender
+#: received (from the origin, directly or through others) and passes on.
+OWN, PASS = "own", "pass"
+HOP_KINDS = (OWN, PASS)
 OWN_ACCOUNTS = "Sender's Own Accounts"
 DECLARED_ACCOUNT = "Declared Allocation Account"
 ACCOUNT_MODES = (OWN_ACCOUNTS, DECLARED_ACCOUNT)
@@ -133,6 +140,7 @@ def validate(rs):
                     errs.append("%s receives at step %s but is a sender at step %s; "
                                 "Step-Down cost only flows to later senders."
                                 % (m, s, sender_step[m]))
+                # RECIPROCAL: any other sender may receive.
     return list(dict.fromkeys(errs))
 
 
@@ -219,7 +227,12 @@ def weights(rows):
 # A coefficient row says: of one unit of ORIGIN's pool, SENDER holds
 # pool_coefficient at its step and gives `coefficient` of it to RECEIVER.
 # dbt multiplies: x = origin_amount * coefficient, `sent` -x at the sender,
-# `received` +x at the receiver.
+# `received` +x at the receiver. hop_kind says whose cost the hop carries:
+# `own` is the origin's own unit leaving the origin; `pass` is cost a sender
+# received and passes on. Direct and Step-Down: `own` at the origin's hop,
+# `pass` everywhere else. Reciprocal: cost can come back to the origin, so the
+# origin's hop has an `own` row and, if anything came back, a `pass` row too.
+# Never identify own cost by sender_member == origin_member.
 
 COEFFICIENT_PLACES = 12
 _SCALE = 10 ** COEFFICIENT_PLACES
@@ -235,10 +248,12 @@ def _weight(weights, st, recv):
         raise CostAllocationError("No weight for step %s, receiver %s." % (st.step, recv))
 
 
-def _hop(origin, st, pool, weights):
+def _hop(origin, st, pool, weights, hop_kind=None):
+    if hop_kind is None:
+        hop_kind = OWN if st.sender_member == origin else PASS
     return [{
         "origin_member": origin, "step": st.step, "sender_member": st.sender_member,
-        "receiver_member": recv, "driver": st.driver,
+        "receiver_member": recv, "driver": st.driver, "hop_kind": hop_kind,
         "pool_coefficient": pool, "coefficient": pool * _weight(weights, st, recv),
     } for recv in st.receivers]
 
@@ -247,7 +262,7 @@ def direct_coefficients(steps, weights):
     """Exact Fraction rows for Direct allocation.
 
     Each sender is an origin and gives its whole unit pool to its receivers by
-    weight; pool_coefficient is 1 on every row. Refuses a receiver that is a
+    weight; pool_coefficient is 1 and hop_kind is `own` on every row. Refuses a receiver that is a
     sender (Direct cost never passes through a second sender).
     """
     senders = {st.sender_member for st in steps}
@@ -269,7 +284,8 @@ def step_down_coefficients(steps, weights):
     a later sender S holds the sum of the coefficients it received from O at
     earlier steps, and gives that times its weights. A sender that holds
     nothing of O emits no rows for O. A sender receives nothing at or after its
-    own step (refused): cost only flows forward.
+    own step (refused): cost only flows forward. hop_kind is `own` at O's own
+    step and `pass` at every later sender.
     """
     ordered = sorted(steps, key=lambda s: s.step)
     sender_step = {st.sender_member: st.step for st in ordered}
@@ -290,6 +306,97 @@ def step_down_coefficients(steps, weights):
             for r in _hop(origin, st, pool, weights):
                 held[r["receiver_member"]] = held.get(r["receiver_member"], Fraction(0)) + r["coefficient"]
                 rows.append(r)
+    return rows
+
+
+def _sender_names(names):
+    return ", ".join(sorted(names))
+
+
+def reciprocal_coefficients(steps, weights):
+    """Exact Fraction rows for Reciprocal allocation.
+
+    For each origin O (every sender), x_S is the share of O's unit that sender
+    S holds and passes on, the exact solution of
+
+        x_S = [S == O] + sum over senders T of w(T -> S) * x_T
+
+    over the sender set, by Gaussian elimination in Fraction (no iteration, no
+    tolerance). Rows have the step_down_coefficients shape plus hop_kind:
+      - at O's own step, per receiver R: `own` with pool 1 and coefficient
+        w(O -> R); and, if x_O > 1, `pass` with pool x_O - 1 and coefficient
+        (x_O - 1) * w(O -> R) (the cost that came back to O);
+      - at every other sender S with x_S > 0, per receiver R: `pass` with pool
+        x_S and coefficient x_S * w(S -> R).
+    A zero-weight receiver still gets its (zero) row, as in Step-Down.
+
+    Invariants, exact, for every origin O:
+      - sum of `own` pool_coefficient == 1 (one own hop, at O);
+      - every sender S: outflow (`own` + `pass` coefficients sent by S) ==
+        inflow (coefficients S receives) + [S == O];
+      - per hop (origin, sender, hop_kind): sum(coefficient) == pool_coefficient;
+      - the coefficients reaching final receivers (non-senders) sum to 1.
+
+    Refuses a sender that receives its own allocation, and every set of
+    senders with no positive-weight path to a final receiver (their cost could
+    never leave, so the system has no solution), naming those senders.
+    """
+    ordered = sorted(steps, key=lambda s: s.step)
+    senders = [st.sender_member for st in ordered]
+    index = {m: i for i, m in enumerate(senders)}
+    bad = ["%s cannot receive its own allocation (step %s)." % (st.sender_member, st.step)
+           for st in ordered if st.sender_member in st.receivers]
+    if bad:
+        raise CostAllocationError(bad)
+    w = {(st.sender_member, r): _weight(weights, st, r) for st in ordered for r in st.receivers}
+
+    exits, changed = set(), True
+    while changed:
+        changed = False
+        for st in ordered:
+            s = st.sender_member
+            if s not in exits and any(w[(s, r)] > 0 and (r not in index or r in exits)
+                                      for r in st.receivers):
+                exits.add(s)
+                changed = True
+    stuck = [m for m in senders if m not in exits]
+    if stuck:
+        raise CostAllocationError(
+            "Reciprocal cost can never reach a final receiver from: %s. "
+            "Give at least one of them a receiver that is not a sender." % _sender_names(stuck))
+
+    # (I - A) X = I, A[s][t] = w(t -> s); column o of X is origin o's x.
+    n = len(senders)
+    mat = [[Fraction(int(i == j)) for j in range(n)] + [Fraction(int(i == k)) for k in range(n)]
+           for i in range(n)]
+    for (t, s), v in w.items():
+        if s in index:
+            mat[index[s]][index[t]] -= v
+    for c in range(n):
+        p = next((r for r in range(c, n) if mat[r][c] != 0), None)
+        if p is None:
+            raise CostAllocationError(
+                "The reciprocal system has no unique solution for: %s." % _sender_names(senders))
+        mat[c], mat[p] = mat[p], mat[c]
+        piv = mat[c][c]
+        mat[c] = [v / piv for v in mat[c]]
+        for r in range(n):
+            if r != c and mat[r][c] != 0:
+                f = mat[r][c]
+                mat[r] = [a - f * b for a, b in zip(mat[r], mat[c])]
+
+    rows = []
+    for st_o in ordered:
+        o = st_o.sender_member
+        x = {m: mat[index[m]][n + index[o]] for m in senders}
+        for st in ordered:
+            xs = x[st.sender_member]
+            if st.sender_member == o:
+                rows.extend(_hop(o, st, Fraction(1), weights, OWN))
+                if xs > 1:
+                    rows.extend(_hop(o, st, xs - 1, weights, PASS))
+            elif xs > 0:
+                rows.extend(_hop(o, st, xs, weights, PASS))
     return rows
 
 
@@ -320,6 +427,10 @@ def round_coefficients(exact_rows, weights):
         pool * weight, so the receiver coefficients sum exactly to the pool.
     Hence, per origin, the rounded coefficients reaching non-senders sum to
     exactly 1. Each rounded value is within (number of hops) * 1e-12 of exact.
+    hop_kind is carried through unchanged; an `own` hop has pool exactly 1.
+
+    Direct and Step-Down only: a `pass` hop at the origin (Reciprocal) raises
+    NotImplementedError until RC2.
     """
     out, held, pending, hop = [], {}, [], None
 
@@ -328,8 +439,10 @@ def round_coefficients(exact_rows, weights):
             return
         r0 = pending[0]
         o = r0["origin_member"]
-        if r0["sender_member"] == o:
+        if r0["hop_kind"] == OWN:
             units = _SCALE
+        elif r0["sender_member"] == o:
+            raise NotImplementedError("RC2: rounding of Reciprocal coefficients")
         else:
             units = held.get((o, r0["sender_member"]), 0)
         w = {r["receiver_member"]: weights[(r["step"], r["receiver_member"])] for r in pending}
@@ -343,7 +456,7 @@ def round_coefficients(exact_rows, weights):
         pending.clear()
 
     for r in exact_rows:
-        key = (r["origin_member"], r["step"], r["sender_member"])
+        key = (r["origin_member"], r["step"], r["sender_member"], r["hop_kind"])
         if key != hop:
             flush()
             hop = key
@@ -364,6 +477,9 @@ def coefficient_rows(run_name, steps, weights, method):
           coefficients S received from that origin (all at earlier steps);
       T1  per origin: sum(coefficient) over receivers that are not senders == 1.
     All exact in Decimal, so origin_amount * coefficient conserves to the cent.
+
+    Direct and Step-Down only for now: Reciprocal raises
+    NotImplementedError("RC2") (its rounding and the hop_kind column are RC2).
     """
     errs = []
     for st in steps:
@@ -376,6 +492,8 @@ def coefficient_rows(run_name, steps, weights, method):
         exact = direct_coefficients(steps, weights)
     elif method == STEP_DOWN:
         exact = step_down_coefficients(steps, weights)
+    elif method == RECIPROCAL:
+        raise NotImplementedError("RC2: rounding of Reciprocal coefficients")
     else:
         raise CostAllocationError("Method must be one of %s, not %r." % (", ".join(METHODS), method))
     return [{"run": run_name, **{c: r[c] for c in COEFFICIENT_COLUMNS[1:]}}
