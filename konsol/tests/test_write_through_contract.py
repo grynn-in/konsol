@@ -226,6 +226,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # konsol#103: the governed group exchange rates; translation reads
         # only these, so the table must exist before the first approval syncs
         "epm_staging.group_exchange_rates",
+        # konsol#348 S4-Q7 (a): which Rate Set is the actuals set, read by the
+        # warehouse the way it reads every reference table (test_rate_set.py)
+        "epm_staging.rate_sets",
         # konsol#159: the intercompany flag on the group chart
         "epm_staging.intercompany_accounts",
         # konsol#182: the group chart of accounts (Main Account)

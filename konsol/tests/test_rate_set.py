@@ -12,8 +12,16 @@ test_fixtures_reference_only.py): a fresh site gets ACTUAL from after_install,
 an existing site from the stamping patch, and a site that renames or re-flags
 its sets is never overwritten.
 
+S4-Q7 (a), chosen under the standing rule on 15 Nov 2026 (option (b), a dbt var
+konsol regenerates, was rejected as a second copy of the flag that goes stale):
+the sets write through to ``epm_staging.rate_sets`` (rate_set, label,
+is_actuals), after the commit, on save and on delete, so the warehouse reads
+which set is the actuals set the way it reads every reference table and
+``reconcile_all`` repairs it. The DDL is pinned here; konsolidat copies it.
+
 The controller, the install helper and the patch run here against a stub frappe.
 """
+import ast
 import importlib.util
 import json
 import os
@@ -24,6 +32,11 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RS_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "rate_set")
 GER_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "group_exchange_rate")
 PATCH = os.path.join(APP_DIR, "patches", "stamp_rate_set_actual.py")
+CH_PATH = os.path.join(APP_DIR, "clickhouse.py")
+
+TABLE = "epm_staging.rate_sets"
+#: Identical to konsolidat's clickhouse/init-db.sql; keep them identical.
+DDL = "(rate_set String, label String, is_actuals UInt8) ENGINE = MergeTree ORDER BY rate_set"
 
 
 def _digest_name():
@@ -142,8 +155,15 @@ def _controller(flagged=(), count=0):
         def get(self, name, default=None):
             return self.__dict__.get(name, default)
 
+    # KR: the write-through goes through konsol.clickhouse's after-commit
+    # sync, recorded here as (doctype, table, field map).
+    record["synced"] = []
+    clickhouse = types.ModuleType("konsol.clickhouse")
+    clickhouse.sync_doctype_after_commit = lambda dt, table, fm: record["synced"].append((dt, table, dict(fm)))
+
     mods = {n: types.ModuleType(n) for n in ("frappe.model", "frappe.model.document")}
     mods["frappe"] = frappe
+    mods["konsol.clickhouse"] = clickhouse
     mods["frappe.model.document"].Document = Document
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
@@ -197,6 +217,50 @@ def test_a_fresh_install_creates_the_set():
     after_install = src.split("after_install = [", 1)[1].split("]", 1)[0]
     assert "konsol.consolidation.doctype.rate_set.rate_set.ensure_actual_set" in after_install
     assert after_install.index("create_roles") < after_install.index("ensure_actual_set")
+
+
+# -- KR (S4-Q7 a): the sets write through to epm_staging.rate_sets -------------------
+
+def _literal(name):
+    with open(CH_PATH) as f:
+        tree = ast.parse(f.read())
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", None) == name)
+
+
+def test_the_warehouse_table_ddl_is_pinned_and_ships_whole():
+    """konsolidat copies this string into clickhouse/init-db.sql; a new table
+    ships complete, never through _ADDED_COLUMNS, and is not retired."""
+    assert _literal("_REFERENCE_TABLE_DDL")[TABLE] == DDL
+    assert TABLE not in _literal("_ADDED_COLUMNS")
+    assert TABLE not in _literal("_RETIRED_TABLES")
+
+
+def test_the_controller_names_the_table_and_its_columns_in_ddl_order():
+    module, _ = _controller()
+    assert module.RateSet.CH_TABLE == TABLE
+    columns = [c.strip().split()[0] for c in DDL.split("(", 1)[1].split(")", 1)[0].split(",")]
+    assert list(module.RateSet.CH_FIELD_MAP) == columns == ["rate_set", "label", "is_actuals"]
+    assert module.RateSet.CH_FIELD_MAP == {c: c for c in columns}
+    # Not submittable and not governed: every set reaches the warehouse, so
+    # the flag can be read there. No CH_SYNC_FILTERS, which would hide rows.
+    assert not hasattr(module.RateSet, "CH_SYNC_FILTERS")
+
+
+def test_a_save_and_a_delete_each_sync_after_the_commit():
+    """on_update and after_delete (never on_trash: #120, the row is still
+    there and the full-table re-send would put it straight back)."""
+    module, record = _controller()
+    doc = module.RateSet(doctype="Rate Set", name="BUDGET_2027", rate_set="BUDGET_2027", label="Budget 2027")
+    doc.on_update()
+    assert record["synced"] == [("Rate Set", TABLE, module.RateSet.CH_FIELD_MAP)]
+    doc.after_delete()
+    assert len(record["synced"]) == 2 and record["synced"][1][1] == TABLE
+    assert not hasattr(module.RateSet, "on_trash")
+    with open(os.path.join(RS_DIR, "rate_set.py")) as f:
+        src = f.read()
+    assert "sync_doctype_after_commit" in src and "sync_table(" not in src and "execute(" not in src, (
+        "a document hook syncs after the commit, never in the transaction")
 
 
 # -- the patch: existing rates are stamped ACTUAL -------------------------------------
