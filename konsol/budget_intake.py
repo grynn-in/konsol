@@ -476,10 +476,10 @@ def lock_cycles(scenario_id, fiscal_year, *, wait=True):
     """Lock every Budget Cycle row of (scenario, year), in name order, and
     return each as {name, docstatus, workflow_state, as_of_date}, read by the
     lock itself: under REPEATABLE READ a plain read would serve the snapshot
-    and miss a Cycle approved while this writer waited on it. A Budget Annual
-    Input derives its Cycle from the pair rather than linking one, an amended
-    pair holds more than one, and a forecast pair holds one live Cycle per
-    ROUND (S3 K3, Q23 a): ``as_of_date`` comes back as the round key
+    and miss a Cycle approved while this writer waited on it. An amended
+    pair holds more than one Cycle, and a forecast pair holds one live Cycle
+    per ROUND (S3 K3, Q23 a), so a Budget Annual Input finds its own linked
+    Cycle among the rows (S3 K6): ``as_of_date`` comes back as the round key
     (budget_bulk_model.as_of_key: 'YYYY-MM-DD', '' on a budget Cycle) so the
     Cycle's own rule can judge the round under the lock. The lock stays on
     the whole pair (QB9 a): the rounds of one pair serialise. The Annual
