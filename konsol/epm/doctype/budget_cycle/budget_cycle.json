@@ -99,6 +99,14 @@
       "description": "Set by the installed Budget Cycle workflow: Draft, Pending Approval, Approved. Approve is the submit."
     },
     {
+      "fieldname": "input_fingerprint",
+      "fieldtype": "Data",
+      "label": "Input Fingerprint",
+      "read_only": 1,
+      "no_copy": 1,
+      "description": "Stamped at Approve: a hash of the inputs this Cycle approved (its annual figures, entry lines, the spread weights they use, and the approved rates of its Rate Set for this year). Recomputed on request (konsol.epm.budget_fingerprint.check_input_fingerprint): a mismatch means an input changed after approval. It reports; what follows is the approver's call (BUD-11-3)."
+    },
+    {
       "fieldname": "amended_from",
       "fieldtype": "Link",
       "label": "Amended From",

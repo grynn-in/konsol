@@ -33,6 +33,11 @@ it enters on submit and leaves on cancel, after the commit, so the warehouse
 reads the Rate Set, the scenario and the round of the ``cycle`` its fact rows
 name; reconcile_all repairs the table like every other.
 
+Approve stamps ``input_fingerprint`` (S4 K8, S4-Q5 a; BUD-11-3): the hash of
+the inputs approved (konsol.epm.budget_fingerprint), read-only and frozen by
+the submit. ``check_input_fingerprint`` recomputes it on request and reports a
+mismatch; it decides nothing.
+
 Interim rule until S6 (posted on #348, 15 Nov 2026): a forecast pair holds at
 most ONE approved round, because the readers still sum rounds across the
 cycle. before_submit refuses the second Approve by name
@@ -203,8 +208,14 @@ class BudgetCycle(Document):
     def before_submit(self):
         """Approve is the submit (the workflow's Approve calls doc.submit(),
         frappe/model/workflow.py), so the interim rule runs here, after
-        validate and before anything is written."""
+        validate and before anything is written; then the input fingerprint
+        is stamped (S4 K8, S4-Q5 a): the hash of the inputs being approved,
+        set here so it lands with the approval and nothing saves in on_submit.
+        Imported here: the controller is loaded under test without it."""
         self._refuse_second_approved_forecast_round()
+        from konsol.epm.budget_fingerprint import compute
+
+        self.input_fingerprint = compute(self)
 
     def _refuse_second_approved_forecast_round(self):
         """INTERIM RULE, REMOVED IN S6 (konsol#348, review of #540 /
