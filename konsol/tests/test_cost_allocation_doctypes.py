@@ -273,16 +273,14 @@ def test_rule_set_scope_fields():
     assert "Published" in f["description"] and "In Budget" in f["description"]
     assert _rs_field("column")["fieldtype"] in ("Column Break", "Data")
     f = _rs_field("method")
-    assert (f["fieldtype"], f["options"], f["reqd"]) == ("Select", "Direct\nStep-Down", 1)
+    assert (f["fieldtype"], f["options"], f["reqd"]) == ("Select", "Direct\nStep-Down\nReciprocal", 1)
     f = _rs_field("status")
     assert (f["fieldtype"], f["options"], f["reqd"]) == ("Select", "Draft\nActive\nInactive", 1)
 
 
 def test_rule_set_select_options_equal_model_constants():
     from konsol import cost_allocation_model as m
-    # Reciprocal is in the model from RC1 but reaches the form only in RC4,
-    # after RC2 rounds it (konsol#269 phase 2a). RC4: compare to m.METHODS again.
-    assert _rs_field("method")["options"].split("\n") == [x for x in m.METHODS if x != m.RECIPROCAL]
+    assert _rs_field("method")["options"].split("\n") == list(m.METHODS)
     assert m.RECIPROCAL in m.METHODS
     assert _rs_field("receiver_account_mode")["options"].split("\n") == list(m.ACCOUNT_MODES)
 
@@ -415,6 +413,46 @@ def test_rule_set_controller_refuses_each_model_error():
     for needle, over in cases.items():
         msg = _refusal(_rs_doc(m, **over))
         assert msg and needle in msg, (needle, msg)
+
+
+def test_rule_set_method_help_names_all_three_methods():
+    from konsol import cost_allocation_model as m
+    text = _rs_field("method")["description"]
+    for method in m.METHODS:
+        assert method + ":" in text, (method, text)
+    assert "step order does not matter" in text and "serve itself" in text
+
+
+def _mutual_rules():
+    return dict(
+        method="Reciprocal",
+        rules=[_Row(step=1, sender_member="IT", driver="ZZ Head"),
+               _Row(step=2, sender_member="HR", driver="ZZ Head")],
+        receivers=[_Row(step=1, receiver_member="HR"), _Row(step=1, receiver_member="Sales"),
+                   _Row(step=2, receiver_member="IT"), _Row(step=2, receiver_member="Sales")])
+
+
+def test_rule_set_reciprocal_saves_when_two_departments_serve_each_other():
+    m = _rs_module(members=("IT", "HR", "Sales"))
+    assert _refusal(_rs_doc(m, **_mutual_rules())) is None
+    # the same rule set is refused as Step-Down and as Direct
+    for method in ("Step-Down", "Direct"):
+        assert _refusal(_rs_doc(m, **{**_mutual_rules(), "method": method}))
+
+
+def test_rule_set_reciprocal_refuses_a_closed_loop_at_save_naming_both():
+    m = _rs_module(members=("IT", "HR", "Sales"))
+    loop = dict(_mutual_rules(), receivers=[_Row(step=1, receiver_member="HR"),
+                                            _Row(step=2, receiver_member="IT")])
+    msg = _refusal(_rs_doc(m, **loop))
+    assert msg and "IT" in msg and "HR" in msg and "never reach a final receiver" in msg
+
+
+def test_rule_set_reciprocal_still_refuses_a_department_serving_itself():
+    m = _rs_module(members=("IT", "HR", "Sales"))
+    over = dict(_mutual_rules(), receivers=_mutual_rules()["receivers"] + [_Row(step=1, receiver_member="IT")])
+    msg = _refusal(_rs_doc(m, **over))
+    assert msg and "cannot receive its own" in msg
 
 
 def test_rule_set_controller_refuses_driver_on_other_dimension():
