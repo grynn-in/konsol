@@ -452,6 +452,9 @@ class CostAllocationRun(Document):
                 doctype, controller.CH_TABLE, controller.CH_FIELD_MAP)
         # The job id is per site and deduplicated: a burst of submits queues one
         # rebuild. The resync reads every submitted run, so one job covers them.
+        # A dropped enqueue is safe: the generation is bumped after the commit,
+        # and a running job re-runs when it sees the bump (RF6).
+        frappe.db.after_commit.add(_bump_generation)
         frappe.enqueue(
             "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.resync_coefficients_job",
             queue="long", enqueue_after_commit=True,
@@ -497,21 +500,51 @@ class CostAllocationRun(Document):
             source_max_modified=source_max_modified, force=force)
 
 
+def _generation_key():
+    return f"cost_allocation_coefficients_generation::{frappe.local.site}"
+
+
+def _bump_generation():
+    """Runs after the commit, so a rolled-back transaction does not bump it."""
+    frappe.cache().incr(_generation_key())
+
+
+def _generation():
+    return int(frappe.cache().get(_generation_key()) or 0)
+
+
+#: passes the job makes before it gives up; each pass means a run changed mid-resync
+MAX_RESYNC_PASSES = 5
+
+
 def resync_coefficients_job():
     """RQ job queued by CostAllocationRun._sync after the commit (RF4).
 
     Rebuilds the coefficients, then requests the allocation build, in that
     order: the build reads the staging table, so it must not start before the
-    rows are in. The hook on the doctype is gone for that reason. A failure is
-    logged and raised, so RQ records it and no build is requested over stale
-    coefficients."""
-    try:
-        CostAllocationRun.resync_staging()
-    except Exception:
-        frappe.log_error(title="Cost Allocation coefficients resync failed")
-        raise
-    from konsol.tasks import request_consolidation_build
-    request_consolidation_build("Cost Allocation Run", "coefficients", "coefficients_resync")
+    rows are in. A failure is logged and raised, so RQ records it and no build
+    is requested over stale coefficients.
+
+    The enqueue is deduplicated, so a submit made while this job runs queues
+    nothing. Each submit bumps a per-site generation after its commit instead
+    (RF6): the job reads it before the resync and repeats if it moved, so a run
+    committed mid-resync is never lost. After MAX_RESYNC_PASSES it raises."""
+    for _ in range(MAX_RESYNC_PASSES):
+        generation = _generation()
+        try:
+            CostAllocationRun.resync_staging()
+        except Exception:
+            frappe.log_error(title="Cost Allocation coefficients resync failed")
+            raise
+        if _generation() == generation:
+            from konsol.tasks import request_consolidation_build
+            request_consolidation_build(
+                "Cost Allocation Run", "coefficients", "coefficients_resync")
+            return
+    message = (f"Cost Allocation coefficients resync: runs kept changing for "
+               f"{MAX_RESYNC_PASSES} passes; the staging table may be stale")
+    frappe.log_error(title="Cost Allocation coefficients resync did not settle", message=message)
+    raise RuntimeError(message)
 
 
 def _nine(value):
