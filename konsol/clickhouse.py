@@ -1199,6 +1199,8 @@ _POSITIONED_COLUMNS = {
         ("layer", "String", "main_account"),
         ("currency", "String", "layer"),
     ],
+    # konsol#269 RC3: the reciprocal method's own/pass hop, after driver (as in the CREATE)
+    "epm_staging.cost_allocation_coefficients": [("hop_kind", "String", "driver")],
 }
 
 
