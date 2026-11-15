@@ -1197,3 +1197,85 @@ def test_kf3_compute_without_a_workflow_checks_docstatus_only():
         pass
     else:
         raise AssertionError("expected a refusal")
+
+
+# --- RC4 (konsol#269 phase 2a): Reciprocal through Compute, submit and the sync ----
+
+def _recip_rule_set():
+    return _rule_set(
+        method="Reciprocal",
+        rules=[_Row(step=1, sender_member="IT", driver="Tickets"),
+               _Row(step=2, sender_member="HR", driver="Headcount")],
+        receivers=[_Row(step=1, receiver_member="HR"), _Row(step=1, receiver_member="Sales"),
+                   _Row(step=1, receiver_member="Ops"), _Row(step=2, receiver_member="IT"),
+                   _Row(step=2, receiver_member="Sales"), _Row(step=2, receiver_member="Ops")])
+
+
+def _recip_stats():
+    return [_stat("CAS-00001", 3, "HR", 5, "Tickets"), _stat("CAS-00001", 3, "Sales", 3, "Tickets"),
+            _stat("CAS-00001", 3, "Ops", 2, "Tickets"), _stat("CAS-00002", 3, "IT", 4, "Headcount"),
+            _stat("CAS-00002", 3, "Sales", 4, "Headcount"), _stat("CAS-00002", 3, "Ops", 2, "Headcount")]
+
+
+def _recip_stored():
+    rows = [(1, "IT", "HR", 5, "Tickets"), (1, "IT", "Sales", 3, "Tickets"), (1, "IT", "Ops", 2, "Tickets"),
+            (2, "HR", "IT", 4, "Headcount"), (2, "HR", "Sales", 4, "Headcount"),
+            (2, "HR", "Ops", 2, "Headcount")]
+    return [{"parent": "CAR-00001", "idx": i + 1, "step": s, "sender_member": snd,
+             "receiver_member": rcv, "driver": drv, "driver_value": v}
+            for i, (s, snd, rcv, v, drv) in enumerate(rows)]
+
+
+def test_rc4_compute_snapshots_reciprocal_and_the_weights_build_exact_rows():
+    from konsol import cost_allocation_model as model
+    m = _run_module(rule_set=_recip_rule_set(), stats=_recip_stats())
+    run = _Run()
+    m.compute_weights_on(run)
+    assert run.method == "Reciprocal" and run.saved == 1
+    stored = [{**w, "driver_value": w["driver_value"]} for w in run.weights]
+    rows = m._coefficient_rows("CAR-00001", "Reciprocal", stored)
+    assert rows and {r["hop_kind"] for r in rows} == {"own", "pass"}
+
+
+def test_rc4_coefficient_resync_for_reciprocal_carries_hop_kind_and_the_models_rows():
+    from konsol import cost_allocation_model as model
+    w = _World()
+    w.get_all_data["Cost Allocation Run"] = [
+        {"name": "CAR-00001", "method": "Reciprocal", "modified": datetime(2026, 11, 13, 9, 0, 0)}]
+    w.get_all_data["Cost Allocation Run Weight"] = _recip_stored()
+    m = _k8(w)
+    m.CostAllocationRun.resync_staging(force=True)
+    (table, columns, rows, kw), = w.sync_table_calls
+    assert columns == list(model.COEFFICIENT_COLUMNS) and "hop_kind" in columns
+    steps = model.build_steps(
+        [{"step": 1, "sender_member": "IT", "driver": "Tickets"},
+         {"step": 2, "sender_member": "HR", "driver": "Headcount"}],
+        [{"step": 1, "receiver_member": r} for r in ("HR", "Sales", "Ops")]
+        + [{"step": 2, "receiver_member": r} for r in ("IT", "Sales", "Ops")])
+    exact = {(1, "HR"): Fraction(5, 10), (1, "Sales"): Fraction(3, 10), (1, "Ops"): Fraction(2, 10),
+             (2, "IT"): Fraction(4, 10), (2, "Sales"): Fraction(4, 10), (2, "Ops"): Fraction(2, 10)}
+    expected = model.coefficient_rows("CAR-00001", steps, exact, "Reciprocal")
+    assert rows == [[r[c] for c in columns] for r in expected]
+    kinds = {r[columns.index("hop_kind")] for r in rows}
+    assert kinds == {"own", "pass"}
+
+
+def test_rc4_submit_accepts_a_reciprocal_run_and_refuses_a_closed_loop():
+    w = _World()
+    w.stat_rows = [{"statistic": r["statistic"], "docstatus": 1, "fiscal_period": 3,
+                    "member": r["member"], "value": r["value"]} for r in _recip_stats()]
+    stored = [_Row(step=x["step"], sender_member=x["sender_member"], receiver_member=x["receiver_member"],
+                   driver=x["driver"], statistic="CAS-00001" if x["step"] == 1 else "CAS-00002",
+                   value_period=3, driver_value=x["driver_value"]) for x in _recip_stored()]
+    _k8_run(_k8(w), method="Reciprocal", weights=stored).before_submit()
+    loop = [_Row(step=1, sender_member="IT", receiver_member="HR", driver="Tickets",
+                 statistic="CAS-00001", value_period=3, driver_value=5),
+            _Row(step=2, sender_member="HR", receiver_member="IT", driver="Headcount",
+                 statistic="CAS-00002", value_period=3, driver_value=4)]
+    w2 = _World()
+    w2.stat_rows = [{"statistic": "CAS-00001", "docstatus": 1, "fiscal_period": 3,
+                     "member": "HR", "value": 5},
+                    {"statistic": "CAS-00002", "docstatus": 1, "fiscal_period": 3,
+                     "member": "IT", "value": 4}]
+    msg = _refused(_k8_run(_k8(w2), method="Reciprocal", weights=loop).before_submit)
+    assert "IT" in msg and "HR" in msg and "final receiver" in msg
