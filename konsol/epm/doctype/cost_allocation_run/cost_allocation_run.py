@@ -11,7 +11,8 @@ shaping is pure.
 K8: submit is the approval. The gates run in before_submit / before_cancel and
 the warehouse sync is queued after the commit (header, accounts, weights).
 The coefficients table, rebuilt from every submitted run, is a job queued
-after the commit (RF4, RF7: see resync_coefficients_job).
+after the commit (RF4, RF7: see resync_coefficients_job), with one locked
+writer and an hourly check (RF9: _locked_resync, check_coefficients_staging).
 """
 import functools
 import re
@@ -460,8 +461,27 @@ class CostAllocationRun(Document):
 
     @classmethod
     def resync_staging(cls, force=False):
+        """reconcile_all's entry for the coefficients table (RF9). It writes
+        nothing: it enqueues the locked resync job, with no build request.
+
+        Not the lock and the rollback here: reconcile_all runs inside
+        after_migrate, whose transaction still holds uncommitted work (roles,
+        seeds, dimension Custom Fields; the migrate commits later), so a
+        rollback would discard it, and a migrate must not wait on the lock.
+        The job reads after its own rollback, so it sees every committed run.
+
+        Returns "queued" when a job is queued (reconcile records that instead
+        of a row count), or None when the enqueue failed (logged; reconcile
+        reports the table as not synced and the hourly check repairs it).
+        """
+        job = _queue_coefficient_resync(None, request_build=False)
+        return "queued" if job else None
+
+    @classmethod
+    def _write_coefficients(cls, force=False):
         """Rebuild epm_staging.cost_allocation_coefficients from every submitted
-        run (TRUNCATE+INSERT).
+        run (TRUNCATE+INSERT). Called only by _locked_resync, under the lock
+        and after the rollback: never call it directly.
 
         The exact weights are rebuilt from the stored ``driver_value`` column
         with ``model.weights()``, which turns each value into a Fraction through
@@ -498,16 +518,33 @@ class CostAllocationRun(Document):
             source_max_modified=source_max_modified, force=force)
 
 
-# -- coefficient resync job (RF4, RF7) ------------------------------------------
+# -- coefficient resync job (RF4, RF7, RF9) -------------------------------------
 
 RESYNC_JOB = "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.resync_coefficients_job"
-#: the long queue's default RQ timeout; the lock expires with a job RQ killed
-RESYNC_LOCK_SECONDS = 1500
-#: how long a job waits for the job ahead of it before it raises
+#: The job's timeouts (RF9, R4). They satisfy
+#:   RESYNC_WAIT_SECONDS + RESYNC_RUN_SECONDS <= RESYNC_JOB_TIMEOUT <= RESYNC_LOCK_SECONDS
+#: - RESYNC_JOB_TIMEOUT is passed to enqueue explicitly, so a job that waited
+#:   its full RESYNC_WAIT_SECONDS still has RESYNC_RUN_SECONDS to run.
+#: - A job takes the lock only after it started, and RQ kills it at
+#:   RESYNC_JOB_TIMEOUT after the start, so a live holder never outlives its
+#:   lock. The extra 60 s cover RQ's kill latency.
+#: - A waiter cannot also outwait a dead holder's lock: that would need
+#:   WAIT >= LOCK >= JOB >= WAIT + RUN. A waiter that times out re-enqueues
+#:   instead (resync_coefficients_job), so the chain of waiters outlasts the
+#:   dead holder's lock and no change is dropped.
 RESYNC_WAIT_SECONDS = 600
+RESYNC_RUN_SECONDS = 900
+RESYNC_JOB_TIMEOUT = RESYNC_WAIT_SECONDS + RESYNC_RUN_SECONDS
+RESYNC_LOCK_SECONDS = RESYNC_JOB_TIMEOUT + 60
 #: the queued marker outlives any QUEUED job; once it expires, the next
 #: commit simply enqueues
 RESYNC_MARKER_SECONDS = 86400
+
+
+#: _locked_resync's result when another resync held the lock for
+#: RESYNC_WAIT_SECONDS (a sentinel, not an exception class: the controller
+#: module defines one class)
+_NO_LOCK = object()
 
 
 def _queued_marker_key():
@@ -530,8 +567,20 @@ def _job_status(job_id):
     return getattr(status, "value", status)
 
 
-def _queue_coefficient_resync(run_name):
-    """After-commit callback of CostAllocationRun._sync (RF7).
+def _marker_status():
+    """(marker job id, its RQ status), or (None, None) without a marker."""
+    marker = frappe.cache.get(_queued_marker_key())
+    if not marker:
+        return None, None
+    marker = marker.decode()
+    return marker, _job_status(marker)
+
+
+def _queue_coefficient_resync(run_name, request_build=True):
+    """After-commit callback of CostAllocationRun._sync (RF7), and the one
+    enqueue path of reconcile, the lock-timeout retry and the hourly check
+    (RF9). Returns the id of the job that will read after this point, or None
+    when the enqueue failed.
 
     Skips only when the last job it enqueued is still QUEUED: RQ sets STARTED
     in prepare_job_execution, before execute_job runs the body, so a QUEUED
@@ -542,13 +591,59 @@ def _queue_coefficient_resync(run_name):
     latest one. A stable id would make RQ overwrite the hash of a STARTED
     job with the same id, and Frappe's own ``deduplicate`` would refuse to
     enqueue while that job is STARTED (the RC8b loss). Two commits racing
-    here can both enqueue: that costs one extra job, never a lost change."""
-    marker = frappe.cache.get(_queued_marker_key())
-    if marker and _job_status(marker.decode()) == "queued":
-        return
-    job_id = f"cost_allocation_coefficients|{uuid.uuid4().hex}"
-    frappe.enqueue(RESYNC_JOB, queue="long", job_id=job_id, run=run_name)
-    frappe.cache.set(_queued_marker_key(), job_id, ex=RESYNC_MARKER_SECONDS)
+    here can both enqueue: that costs one extra job, never a lost change.
+
+    ``request_build=False`` (reconcile) does not set the marker: a later
+    commit must not skip behind a job that requests no build.
+
+    Guarded (R3): Frappe runs after-commit callbacks unguarded, so a Redis
+    outage here would raise out of the commit. A failure is logged, naming the
+    run, and the hourly check_coefficients_staging repairs the table."""
+    try:
+        marker, status = _marker_status()
+        if marker and status == "queued":
+            return marker
+        job_id = f"cost_allocation_coefficients|{uuid.uuid4().hex}"
+        kwargs = {} if request_build else {"request_build": False}
+        frappe.enqueue(RESYNC_JOB, queue="long", timeout=RESYNC_JOB_TIMEOUT, job_id=job_id,
+                       run=run_name, **kwargs)
+        if request_build:
+            frappe.cache.set(_queued_marker_key(), job_id, ex=RESYNC_MARKER_SECONDS)
+        return job_id
+    except Exception:  # noqa: BLE001 — never raise out of a commit
+        message = (f"Run {run_name}: the coefficients resync job could not be queued. "
+                   "The hourly check resyncs the coefficients.")
+        # The file log always lands. The Error Log is a deferred insert: an
+        # insert made after the request's commit would never be committed.
+        frappe.logger().error(message, exc_info=True)
+        try:
+            frappe.log_error(title="Cost Allocation coefficients resync not queued",
+                             message=message, defer_insert=True)
+        except Exception:  # noqa: BLE001 — Redis cache down too: the file log has it
+            pass
+        return None
+
+
+def _locked_resync(force=True):
+    """The one writer of epm_staging.cost_allocation_coefficients (RF9, R2).
+
+    Takes the site-scoped coefficient lock, rolls back (so under REPEATABLE
+    READ the read opens a fresh snapshot after every commit before it), then
+    rebuilds the table. Returns the rows written, or _NO_LOCK when the lock
+    stays held for RESYNC_WAIT_SECONDS."""
+    lock = frappe.cache.lock(_resync_lock_key(), timeout=RESYNC_LOCK_SECONDS,
+                             blocking_timeout=RESYNC_WAIT_SECONDS)
+    if not lock.acquire():
+        return _NO_LOCK
+    try:
+        frappe.db.rollback()
+        return CostAllocationRun._write_coefficients(force=force)
+    finally:
+        try:
+            lock.release()
+        except Exception:  # noqa: BLE001 — expired after RESYNC_LOCK_SECONDS: keep the real error
+            frappe.logger().warning(
+                f"Cost Allocation coefficients resync: lock {_resync_lock_key()} had expired")
 
 
 def _latest_run():
@@ -560,52 +655,91 @@ def _latest_run():
     return names[0] if names else None
 
 
-def resync_coefficients_job(run=None):
-    """RQ job queued by _queue_coefficient_resync after a run's commit (RF4, RF7).
+def resync_coefficients_job(run=None, request_build=True):
+    """RQ job queued by _queue_coefficient_resync (RF4, RF7, RF9).
 
-    Under a site-scoped Redis lock: roll back (drop any snapshot), rebuild the
-    coefficients with force (a ClickHouse failure raises), then request the
-    allocation build naming ``run``. The build reads the staging table, so it
-    is requested only after the rows are in. A failure is logged and raised,
-    and no build is requested. A job that cannot get the lock within
-    RESYNC_WAIT_SECONDS raises.
+    _locked_resync rebuilds the coefficients under the lock with force (a
+    ClickHouse failure raises). Then, unless ``request_build`` is False
+    (reconcile), the job requests the allocation build naming ``run``, or the
+    latest submitted or cancelled run; with neither (R6) it requests no
+    build. A failure is logged and raised, and no build is requested.
+
+    A job that cannot get the lock within RESYNC_WAIT_SECONDS re-enqueues
+    itself through the guarded path (a new id, the marker updated) and logs
+    it, so the change it carries is not dropped (R1).
 
     Why no committed change C is lost: C's after-commit callback either
     enqueued a job J, or saw J QUEUED. RQ marks a job STARTED before the body
     runs, so in both cases J's body starts after C committed. J takes the lock
     and rolls back before reading, so under REPEATABLE READ its snapshot opens
-    after C's commit and contains C. The lock serialises jobs, so each job
-    reads and writes the full table after the one before it finished: a later
-    job's write is never overwritten by an earlier job's stale read."""
+    after C's commit and contains C. The lock serialises every writer (jobs
+    and reconcile's job alike), so each reads and writes the full table after
+    the one before it finished. A job that dies before it reads, or a callback
+    that could not enqueue, is caught by the hourly check_coefficients_staging."""
     started = time.monotonic()
-    lock = frappe.cache.lock(_resync_lock_key(), timeout=RESYNC_LOCK_SECONDS,
-                             blocking_timeout=RESYNC_WAIT_SECONDS)
-    if not lock.acquire():
-        message = (f"Cost Allocation coefficients resync for {run}: another resync held "
-                   f"the lock for {RESYNC_WAIT_SECONDS}s. No build requested; the next "
-                   "submit or a reconcile resyncs the coefficients.")
-        frappe.log_error(title="Cost Allocation coefficients resync: lock timeout",
-                         message=message)
-        raise RuntimeError(message)
     try:
-        frappe.db.rollback()
-        try:
-            written = CostAllocationRun.resync_staging(force=True)
-        except Exception:
-            frappe.log_error(title="Cost Allocation coefficients resync failed")
-            raise
-        trigger = run or _latest_run()
+        written = _locked_resync(force=True)
+    except Exception:
+        frappe.log_error(title="Cost Allocation coefficients resync failed",
+                         message=f"Run {run}: the coefficients resync failed; no build requested.")
+        raise
+    if written is _NO_LOCK:
+        retry = _queue_coefficient_resync(run, request_build=request_build)
+        frappe.log_error(
+            title="Cost Allocation coefficients resync: lock timeout",
+            message=(f"Run {run}: another resync held the lock for {RESYNC_WAIT_SECONDS}s. "
+                     f"Re-queued as {retry}."))
+        return
+    trigger = run or _latest_run()
+    if not request_build:
+        outcome = "no build requested (reconcile)"
+    elif trigger is None:
+        outcome = "no build requested: no submitted or cancelled run"
+    else:
         from konsol.tasks import request_consolidation_build
         request_consolidation_build("Cost Allocation Run", trigger, "coefficients_resync")
-    finally:
-        try:
-            lock.release()
-        except Exception:  # noqa: BLE001 — expired after RESYNC_LOCK_SECONDS: keep the real error
-            frappe.logger().warning(
-                f"Cost Allocation coefficients resync: lock {_resync_lock_key()} had expired")
+        outcome = "build requested"
     frappe.logger().info(
         f"Cost Allocation coefficients resync: run {trigger}, {written} rows, "
-        f"{time.monotonic() - started:.2f}s")
+        f"{time.monotonic() - started:.2f}s, {outcome}")
+
+
+def check_coefficients_staging():
+    """Hourly safety net (RF9, R1): a resync lost to a killed worker, a flushed
+    Redis or a failed enqueue becomes visible and is repaired.
+
+    Compares the set of submitted run names with the distinct runs in
+    epm_staging.cost_allocation_coefficients. That is exact: a submitted
+    run's weights cannot change (no field is allow_on_submit), submit refuses
+    a run without weights, and every weight yields at least its sender's
+    `own` row. So the table is a function of that set, and the comparison
+    costs one Frappe read and one ClickHouse GROUP BY.
+
+    On a match it does nothing. While a resync is queued or running it waits
+    for the next hour (that job reads after the commit it was queued for). On
+    a mismatch it logs one Error Log line naming the missing and extra runs
+    and enqueues the resync through the guarded path, naming the first
+    missing run (None when only extra runs remain)."""
+    try:
+        expected = set(frappe.get_all("Cost Allocation Run", filters={"docstatus": 1},
+                                      pluck="name", limit_page_length=0))
+        out = clickhouse.execute(
+            f"SELECT DISTINCT run FROM {CostAllocationRun.CH_STAGING_TABLE} FORMAT TSV")
+        held = {line for line in out.splitlines() if line}
+    except Exception:  # noqa: BLE001 — unreachable ClickHouse: check again next hour
+        frappe.logger().warning("Cost Allocation coefficients check skipped", exc_info=True)
+        return
+    if held == expected:
+        return
+    _marker, status = _marker_status()
+    if status in ("queued", "started"):
+        return
+    missing, extra = sorted(expected - held), sorted(held - expected)
+    retry = _queue_coefficient_resync(missing[0] if missing else None)
+    frappe.log_error(
+        title="Cost Allocation coefficients out of step with submitted runs",
+        message=(f"Missing: {', '.join(missing) or 'none'}; extra: {', '.join(extra) or 'none'}; "
+                 f"resync queued as {retry}."))
 
 
 def _nine(value):
