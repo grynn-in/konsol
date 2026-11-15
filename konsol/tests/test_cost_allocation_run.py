@@ -821,17 +821,17 @@ def test_lifecycle_coefficient_resync_rebuilds_exact_rows_from_stored_driver_val
     (table, columns, rows, kw), = w.sync_table_calls
     assert table == "epm_staging.cost_allocation_coefficients"
     assert columns == ["run", "origin_member", "step", "sender_member", "receiver_member",
-                       "driver", "pool_coefficient", "coefficient"]
+                       "driver", "hop_kind", "pool_coefficient", "coefficient"]
     assert kw["force"] is True and written == len(rows)
     expected = [[r[c] for c in columns] for r in _expected_rows()]
     assert rows == expected
     by = {(r[1], r[2], r[4]): r for r in rows}
     # IT's pool reaches P1 directly (1/3) and through HR (1/6 * 1/4): exact
-    assert by[("IT", 2, "P1")][6] == Decimal("0.166666666667")
+    assert by[("IT", 2, "P1")][7] == Decimal("0.166666666667")
     # every hop's receivers sum exactly to the hop's pool coefficient
     hops = {}
     for r in rows:
-        hops.setdefault((r[1], r[2], r[3]), [r[6], Decimal(0)])[1] += r[7]
+        hops.setdefault((r[1], r[2], r[3]), [r[7], Decimal(0)])[1] += r[8]
     assert all(pool == total for pool, total in hops.values())
 
 
