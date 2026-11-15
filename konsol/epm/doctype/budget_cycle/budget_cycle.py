@@ -19,6 +19,11 @@ the rule is budget_bulk_model.cycle_round_problems). The one-live-Cycle rule
 holds per round, so the rounds of one pair live side by side, and its name
 carries the as-of date. A rolling round that crosses the year end is one
 Cycle per fiscal year, sharing the as-of date (Q24 a).
+
+Interim rule until S6 (posted on #348, 15 Nov 2026): a forecast pair holds at
+most ONE approved round, because the readers still sum rounds across the
+cycle. before_submit refuses the second Approve by name
+(_refuse_second_approved_forecast_round); S6 removes it.
 """
 import frappe
 from frappe import _
@@ -162,6 +167,44 @@ class BudgetCycle(Document):
         """Entries change without a Cycle save, so the form counts them when
         it opens."""
         self.entry_count = self._count_entries()
+
+    def before_submit(self):
+        """Approve is the submit (the workflow's Approve calls doc.submit(),
+        frappe/model/workflow.py), so the interim rule runs here, after
+        validate and before anything is written."""
+        self._refuse_second_approved_forecast_round()
+
+    def _refuse_second_approved_forecast_round(self):
+        """INTERIM RULE, REMOVED IN S6 (konsol#348, review of #540 /
+        konsolidat#362, 15 Nov 2026): a forecast (scenario, year) holds at most
+        ONE approved round. Four readers sum a forecast's rounds across
+        ``cycle``: gold_scenario_trial_balance, the cost-allocation pool
+        (cost_allocation_run.py), the ``forecast_input`` Dataset
+        (defaults/dataset.json) and ``hierarchy_query``. Until the
+        latest-estimate read picks the round (S6, FC-2-1), approving a second
+        round would add two forecasts together silently, so the second Approve
+        is refused by name: cancel the approved round first. Draft rounds are
+        not limited, and a cancelled round does not count. A budget pair is not
+        read here: one live Cycle per pair already holds it.
+
+        Read under the pair lock budget_intake.lock_cycles takes (a locking
+        read: under REPEATABLE READ a plain read would miss a round approved
+        while this one waited), so two Approves of one pair serialise and the
+        second sees the first. The warehouse backstop is konsolidat's
+        assert_forecast_one_approved_round_until_s6; both go in S6, with
+        test_budget_cycle_one_approved_round.py."""
+        if self.scenario_type != M.FORECAST:
+            return
+        from konsol import budget_intake
+
+        for c in budget_intake.lock_cycles(self.scenario_id, self.fiscal_year):
+            if c["name"] == self.name or c["docstatus"] != 1:
+                continue
+            frappe.throw(
+                _("Budget Cycle {0} (as of {1}) is already the approved round of {2} {3}. Until the "
+                  "latest-estimate read is built (S6), cancel it before approving another round.").format(
+                    c["name"], c["as_of_date"], self.scenario_id, self.fiscal_year),
+                frappe.ValidationError)
 
     def on_submit(self):
         """Approved: the Cycle's rows enter the warehouse, after the commit."""
