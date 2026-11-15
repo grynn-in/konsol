@@ -25,6 +25,7 @@ import ast
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 
@@ -33,6 +34,13 @@ RS_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "rate_set")
 GER_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "group_exchange_rate")
 PATCH = os.path.join(APP_DIR, "patches", "stamp_rate_set_actual.py")
 CH_PATH = os.path.join(APP_DIR, "clickhouse.py")
+FX_PATH = os.path.join(APP_DIR, "orchestrator", "fx.py")
+
+#: The code's declared rule (review of konsol#546, 15 Nov 2026). Group Exchange
+#: Rate embeds the code in its naming series, where `.` is a separator and is
+#: lost, and orchestrator/fx passes the actuals set through _TOKEN_RE before
+#: interpolating it; a code that passes this rule passes both.
+CODE_RULE = r"^[A-Z0-9_-]{1,40}$"
 
 TABLE = "epm_staging.rate_sets"
 #: Identical to konsolidat's clickhouse/init-db.sql; keep them identical.
@@ -199,6 +207,43 @@ def test_the_flagged_set_itself_and_an_unflagged_set_pass():
     module.RateSet(doctype="Rate Set", name="ACTUAL", rate_set="ACTUAL", label="Actual", is_actuals=1).validate()
     module.RateSet(doctype="Rate Set", name="BUDGET_2027", rate_set="BUDGET_2027", label="Budget 2027",
                    is_actuals=0).validate()
+
+
+# -- the code is a declared rule, not free text ---------------------------------------
+
+def _fx_token_re():
+    """The real _TOKEN_RE from orchestrator/fx.py (which imports frappe), by AST."""
+    with open(FX_PATH) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == "_TOKEN_RE":
+            return re.compile(ast.literal_eval(node.value.args[0]))
+    raise AssertionError("orchestrator/fx.py declares _TOKEN_RE")
+
+
+def test_the_code_rule_is_declared_and_every_code_that_passes_it_fits_its_readers():
+    module, _ = _controller()
+    assert module.CODE_RE.pattern == CODE_RULE
+    fx_token = _fx_token_re()
+    for code in ("ACTUAL", "BUDGET_2027", "ZZRS", "ZZACT", "FC-2027-Q2", "A" * 40):
+        assert module.CODE_RE.match(code), code
+        assert fx_token.match(code) and "." not in code, f"{code} would not survive its readers"
+        module.RateSet(doctype="Rate Set", name=code, rate_set=code, label="x").validate()
+    help_text = _fields()["rate_set"]["description"]
+    assert "A-Z" in help_text and "0-9" in help_text and "40" in help_text, help_text
+
+
+def test_a_code_outside_the_rule_is_refused_naming_the_code_and_the_rule():
+    module, record = _controller()
+    for code in ("Actual (IFRS)", "actual", "FY.2027", "ACT UAL", "A" * 41, "ACTUAL\u00e9"):
+        doc = module.RateSet(doctype="Rate Set", name=code, rate_set=code, label="x")
+        try:
+            doc.validate()
+        except Refused as e:
+            assert code in str(e) and CODE_RULE in str(e), (code, str(e))
+        else:
+            raise AssertionError(f"{code!r} must be refused")
+    assert set(record["thrown"]) == {"ValidationError"}
 
 
 def test_a_fresh_site_gets_actual_flagged_and_a_site_with_sets_is_left_alone():
