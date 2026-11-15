@@ -129,18 +129,18 @@ def test_budget_cycle_sends_only_its_declared_columns():
     """Until 15 Nov 2026 this pinned that Budget Cycle had no warehouse table.
     konsol#348 S4-Q2 (a), chosen under the standing rule, gives the approved
     Cycle one row in ``epm_staging.budget_cycles`` (test_budget_cycle_write_through.py),
-    and its columns include the Cycle's copy of the type: frozen by the
-    submit, and Scenario refuses a type change while a Cycle names it, so the
-    copy cannot drift from ``epm_gold.scenario_definitions``. What stays
-    pinned: the map is exactly the declared columns, so no other field, and
-    nothing from Budget Annual Input, reaches the warehouse through it."""
+    without the Cycle's copy of the type: the warehouse has it in
+    ``epm_gold.scenario_definitions`` by scenario_id, and a second copy would
+    be two sources of truth (coordinator, 15 Nov 2026). What stays pinned: the
+    map is exactly the declared columns, so neither scenario_type nor any
+    other field reaches the warehouse through it."""
     src = _src("epm", "doctype", "budget_cycle", "budget_cycle.py")
     tree = ast.parse(src)
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "BudgetCycle")
     field_map = next(ast.literal_eval(n.value) for n in cls.body if isinstance(n, ast.Assign)
                      and getattr(n.targets[0], "id", None) == "CH_FIELD_MAP")
-    assert list(field_map) == ["name", "scenario_id", "scenario_type", "fiscal_year", "rate_set",
-                               "as_of_date", "horizon_periods"]
+    assert list(field_map) == ["name", "scenario_id", "fiscal_year", "rate_set", "as_of_date", "horizon_periods"]
+    assert "scenario_type" not in field_map and "scenario_type" not in field_map.values()
 
 
 def test_the_budget_input_table_has_no_scenario_type_column():

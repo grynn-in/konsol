@@ -6,8 +6,10 @@ nothing there could read the Cycle's Rate Set (K5), its scenario or its round.
 Option (b), stamping the rate set on every budget row, was rejected: two more
 positioned columns and the value repeated on every row.
 
-The row is one per Cycle: name, scenario_id, scenario_type, fiscal_year,
-rate_set, as_of_date, horizon_periods. Submitted Cycles only (docstatus 1,
+The row is one per Cycle: name, scenario_id, fiscal_year, rate_set,
+as_of_date, horizon_periods. Not scenario_type: the warehouse already holds it
+in ``epm_gold.scenario_definitions``, keyed by scenario_id, and a second copy
+would be two sources of truth (coordinator, 15 Nov 2026). Submitted Cycles only (docstatus 1,
 through resolve_sync_filters' submittable rule, never a declared filter): the
 row enters on submit and leaves on cancel, after the commit, once per
 transaction, in the pattern the Cycle already uses for the Annual Input and
@@ -44,11 +46,11 @@ TABLE = "epm_staging.budget_cycles"
 KEY = ("sync_doctype", "Budget Cycle", TABLE)
 #: Identical to konsolidat's clickhouse/init-db.sql; keep them identical.
 DDL = (
-    "(name String, scenario_id String, scenario_type String, fiscal_year UInt16, "
+    "(name String, scenario_id String, fiscal_year UInt16, "
     "rate_set String, as_of_date Date32 DEFAULT '1900-01-01', horizon_periods UInt16) "
     "ENGINE = MergeTree ORDER BY name"
 )
-COLUMNS = ["name", "scenario_id", "scenario_type", "fiscal_year", "rate_set", "as_of_date", "horizon_periods"]
+COLUMNS = ["name", "scenario_id", "fiscal_year", "rate_set", "as_of_date", "horizon_periods"]
 
 
 def _literal(name):
@@ -215,6 +217,6 @@ def test_no_hook_writes_clickhouse_in_the_transaction():
 def test_an_unset_round_is_written_as_default_not_a_1970_date(env):
     """_sql_value renders an unset field as the DEFAULT keyword, so the Date32
     column's declared 1900-01-01 is what lands; a literal would clamp."""
-    row = [env.ch._sql_value(v) for v in ("BCYC-ZZB-2027", "ZZB", "budget", 2027, "ZZRS", None, None)]
-    assert row == ["'BCYC-ZZB-2027'", "'ZZB'", "'budget'", "2027", "'ZZRS'", "DEFAULT", "DEFAULT"]
+    row = [env.ch._sql_value(v) for v in ("BCYC-ZZB-2027", "ZZB", 2027, "ZZRS", None, None)]
+    assert row == ["'BCYC-ZZB-2027'", "'ZZB'", "2027", "'ZZRS'", "DEFAULT", "DEFAULT"]
     assert env.ch._sql_value(date(2027, 3, 31)) == "'2027-03-31'"
