@@ -4,6 +4,35 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (15 Nov 2026): #189 PR3 and budget S3 merged; #525 fixed.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s3.md`. This round was built on Fable at Deepak Pai's request.
+
+**Merged**
+- **#189 PR3** (konsolidat#360, a389808a): the warehouse dates everything from the declared fiscal periods. The month macro is gone, and the ERP GL branch and `silver_fiscal_periods` are deleted (the first konsolidat#221 removal).
+  - Live A/B: every gold table identical.
+  - FY2023 Closing rows in `silver_gl_entries` take their declared date.
+- **Budget S3** (konsol#540, 6c0d9afb + konsolidat#362, 1299f46e):
+  - forecast rounds on Budget Cycle (`as_of_date`, `horizon_periods`; Q23-a, Q24-a);
+  - every forecast write names its round (CSV, REST, `EPMSAVE` 13th argument; add-in 2.0.4.0);
+  - Annual Input belongs to a Cycle;
+  - the budget fact carries `cycle` and `currency`;
+  - variance compares like currency with like;
+  - favourability follows the account's normal balance, so more revenue is favourable again;
+  - no budget model reads an ERP model.
+  - Live test: every step passes.
+- **Interim rule until S6:** a forecast scenario-year holds at most one **approved** round. konsol refuses the second approval, and a warehouse ERROR test backs it up. Four readers still sum rounds (#348 comment 6892322044).
+- **#525** (konsol#533 + konsolidat#359): an unknown spread profile is refused at entry, with a warehouse ERROR test behind it.
+- **konsolidat#364**: `assert_staging_not_stale` counts `epm_raw` tables. Before this, every build failed once a budget line was approved.
+
+**Decisions** (#348, taken under the standing rule): Q21–Q24 and QA1–QB10 (comments 6875869375, 6884621529, 6884763697). Q18-b, keep the Connector write-back parts, is Deepak Pai's own decision.
+
+**Testing:** live tests on the local stacks go only through the session **konsolidat-tester**; send it requests.
+
+**Open**
+- The local stack's dbt project checkout is 14 commits behind main, so a Desk build fails on `gold_spread_budget` until it moves. This waits on Deepak.
+- konsolidat#361: ClickHouse `EXCEPT` returned 0 over real differences; re-check earlier A/B proofs.
+- #527 (copy entries into an amended Cycle), #529 (workflows never reach their cancelled state), #530 (stale default workspace).
+- Next for the epic: S4 (translated and consolidated budget, BUD-12 rate set), then S5 (reports) and S6 (forecast reads, accuracy).
+
 **Update (14 Nov 2026, late night): cost allocation phase 1 merged. konsol#523 (2a13dbe) and konsolidat#354 (76bc77f) merged together.** Issue #269; task file `.claude/memory/active/tasks-cost-allocation.md`.
 
 **What landed**
