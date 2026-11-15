@@ -75,6 +75,14 @@ def test_reference_ddl_carries_the_six_w1_bodies():
         assert _normalise(ddl[table]) == _normalise(body), (table, ddl[table])
 
 
+def test_an_existing_coefficients_table_gains_hop_kind_after_driver():
+    """An existing stack gets hop_kind by ALTER ... AFTER driver, the same place
+    the CREATE puts it (_POSITIONED_COLUMNS, asked from system.columns first)."""
+    positioned = _literal("_POSITIONED_COLUMNS")
+    assert positioned["epm_staging.cost_allocation_coefficients"] == [
+        ("hop_kind", "String", "driver")]
+
+
 def test_the_six_names_are_not_retired():
     retired_tables = set(_literal("_RETIRED_TABLES"))
     retired_databases = set(_literal("_RETIRED_DATABASES"))
