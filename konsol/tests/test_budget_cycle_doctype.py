@@ -178,3 +178,21 @@ def test_rate_set_sits_in_the_cycle_section_after_the_year_before_the_round():
 
 def test_rate_set_is_searchable():
     assert "rate_set" in _doctype()["search_fields"].split(",")
+
+
+# ---- S4 K8 (S4-Q5 a): the fingerprint of the inputs the Cycle approved -----------------
+
+def test_input_fingerprint_is_read_only_stamped_at_approve_and_not_copied():
+    f = _fields()["input_fingerprint"]
+    assert f["fieldtype"] == "Data"
+    assert f.get("read_only") == 1
+    assert f.get("no_copy") == 1, "an amendment is approved on its own inputs"
+    assert not f.get("allow_on_submit"), "stamped in before_submit, frozen by the submit"
+    assert not f.get("reqd")
+    assert "Approve" in f["description"] and "mismatch" in f["description"].lower(), f["description"]
+    assert f["label"] == "Input Fingerprint"
+
+
+def test_input_fingerprint_sits_in_the_cycle_tab_after_the_state():
+    order = [f["fieldname"] for f in _doctype()["fields"]]
+    assert order.index("workflow_state") < order.index("input_fingerprint") < order.index("entries_tab")

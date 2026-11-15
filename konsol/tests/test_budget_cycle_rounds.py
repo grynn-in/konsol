@@ -76,10 +76,14 @@ def env(monkeypatch):
         return list(pair)
 
     intake.lock_cycles = lock_cycles
+    # S4 K8: before_submit stamps the input fingerprint through this reader;
+    # its own tests are test_budget_cycle_input_fingerprint.py.
+    fingerprint = types.ModuleType("konsol.epm.budget_fingerprint")
+    fingerprint.compute = lambda doc: "v1:stub"
     for name, mod in {
         "frappe": frappe, "frappe.model": model, "frappe.model.document": docmod,
         "konsol.epm.budget_grain": grain, "konsol.epm.doctype.scenario.scenario": scenario,
-        "konsol.budget_intake": intake,
+        "konsol.budget_intake": intake, "konsol.epm.budget_fingerprint": fingerprint,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
     monkeypatch.setattr(sys.modules["konsol"], "budget_intake", intake, raising=False)
