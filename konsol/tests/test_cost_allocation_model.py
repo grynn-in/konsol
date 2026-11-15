@@ -426,7 +426,8 @@ def test_coefficients_row_shape_matches_staging_table():
     steps, w = _hand_steps()
     rows = M.coefficient_rows("ZZRUN-1", steps, w, "Step-Down")
     cols = ["run", "origin_member", "step", "sender_member", "receiver_member",
-            "driver", "pool_coefficient", "coefficient"]
+            "driver", "hop_kind", "pool_coefficient", "coefficient"]
+    assert list(M.COEFFICIENT_COLUMNS) == cols
     assert all(list(r) == cols for r in rows)
 
 
@@ -863,13 +864,6 @@ def test_reciprocal_no_pass_row_when_nothing_comes_back():
     assert strip(rows) == strip(M.direct_coefficients(steps, w))
 
 
-def test_reciprocal_coefficient_rows_not_rounded_until_rc2():
-    steps, w = _worked_example()
-    with raises(NotImplementedError) as ei:
-        M.coefficient_rows("ZZRUN", steps, w, "Reciprocal")
-    assert "RC2" in str(ei.value)
-
-
 def test_reciprocal_hop_kind_direct_all_own():
     steps = [M.Step(1, "IT", "H", ["P1", "P2"]), M.Step(2, "HR", "H", ["P1"])]
     w = {(1, "P1"): Fraction(1, 3), (1, "P2"): Fraction(2, 3), (2, "P1"): Fraction(1)}
@@ -886,7 +880,7 @@ def test_reciprocal_hop_kind_step_down_own_then_pass_numbers_unchanged():
     by = {_key(r): r for r in rows}
     assert by[("IT", 2, "HR", "P3")]["coefficient"] == Fraction(1, 15)
     assert by[("IT", 2, "HR", "P3")]["pool_coefficient"] == Fraction(1, 5)
-    # Rounded rows keep their numbers; the staging columns are unchanged until RC2/RC4.
+    # Rounded rows keep their numbers and carry hop_kind (RC2).
     rounded = {_key(r): r for r in M.coefficient_rows("ZZRUN-1", steps, w, "Step-Down")}
     assert rounded[("IT", 2, "HR", "P3")]["coefficient"] == Decimal("0.066666666666")
     rr = M.round_coefficients(rows, w)
@@ -1014,3 +1008,204 @@ def test_reciprocal_property_amounts_satisfy_totals_equation():
         finals = sum(amount[r["origin_member"]] * r["coefficient"] for r in rows
                      if r["receiver_member"] not in senders)
         assert finals == sum(amount.values())
+
+
+# -- RC2: 12-dp rounding for Reciprocal ----------------------------------------
+
+def _check_reciprocal_rounded(steps, w, rows):
+    """Every RC2 invariant, exactly, in 12-dp Decimal; returns the rows by key."""
+    exact = M.reciprocal_coefficients(steps, w)
+    assert [_rkey(r) for r in rows] == [_rkey(r) for r in exact]
+    senders = {s.sender_member for s in steps}
+    step_of = {s.sender_member: s for s in steps}
+    hops = {}
+    for r, x in zip(rows, exact):
+        assert list(r) == list(M.COEFFICIENT_COLUMNS)
+        assert r["run"] == "ZZRUN"
+        for c in ("origin_member", "step", "sender_member", "receiver_member", "driver", "hop_kind"):
+            assert r[c] == x[c], c
+        for c in ("coefficient", "pool_coefficient"):
+            assert isinstance(r[c], Decimal) and r[c].as_tuple().exponent == -12, c
+        assert r["coefficient"] >= 0 and r["pool_coefficient"] >= 0
+        # Bound: every coefficient is the exact value rounded down or up, so
+        # strictly within one unit of 1e-12.
+        assert abs(Fraction(r["coefficient"]) - x["coefficient"]) < _UNIT, (_rkey(r), r, x)
+        hops.setdefault((r["origin_member"], r["sender_member"], r["hop_kind"]), []).append((r, x))
+    # 2. per hop: one pool, and the coefficients sum exactly to it.
+    for (o, s, k), hop in hops.items():
+        pools = {r["pool_coefficient"] for r, _ in hop}
+        assert len(pools) == 1, (o, s, k, pools)
+        assert sum(r["coefficient"] for r, _ in hop) == hop[0][0]["pool_coefficient"]
+        # A pool is a sum of its receivers' coefficients: within (receivers) units.
+        assert abs(Fraction(hop[0][0]["pool_coefficient"]) - hop[0][1]["pool_coefficient"]) \
+            < len(step_of[s].receivers) * _UNIT
+    for o in sorted(senders):
+        mine = [r for r in rows if r["origin_member"] == o]
+        # 1. one own hop, at O, pool exactly 1.
+        own = [k for k in hops if k[0] == o and k[2] == "own"]
+        assert own == [(o, o, "own")]
+        assert hops[(o, o, "own")][0][0]["pool_coefficient"] == Decimal(1)
+        # 3. every sender passes on exactly what it received (+1 at the origin).
+        for s in senders:
+            outflow = sum((r["coefficient"] for r in mine if r["sender_member"] == s), Decimal(0))
+            inflow = sum((r["coefficient"] for r in mine if r["receiver_member"] == s), Decimal(0))
+            assert outflow == inflow + (1 if s == o else 0), (o, s, outflow, inflow)
+            pools = sum((h[0][0]["pool_coefficient"] for (oo, ss, _), h in hops.items()
+                         if (oo, ss) == (o, s)), Decimal(0))
+            assert pools == outflow
+        # 4. final receivers get exactly 1.
+        assert sum(r["coefficient"] for r in mine if r["receiver_member"] not in senders) == 1
+    return {_rkey(r): r for r in rows}
+
+
+def test_reciprocal_rounding_worked_example_equals_exact():
+    steps, w = _worked_example()
+    rows = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal")
+    by = _check_reciprocal_rounded(steps, w, rows)
+    exact = M.reciprocal_coefficients(steps, w)
+    assert len(rows) == 18
+    for x in exact:
+        r = by[_rkey(x)]
+        # The worked example terminates in decimal: rounding changes nothing.
+        assert Fraction(r["coefficient"]) == x["coefficient"]
+        assert Fraction(r["pool_coefficient"]) == x["pool_coefficient"]
+    assert by[("IT", "IT", "pass", "HR")]["pool_coefficient"] == Decimal("0.250000000000")
+    assert by[("IT", "HR", "pass", "Sales")]["coefficient"] == Decimal("0.250000000000")
+    amount = {"IT": 1000, "HR": 400}
+    got = {}
+    for r in rows:
+        got[r["receiver_member"]] = got.get(r["receiver_member"], 0) + amount[r["origin_member"]] * r["coefficient"]
+    assert (got["Sales"], got["Ops"]) == (885, 515)
+
+
+def test_reciprocal_rounding_cycle_of_thirds_and_sevenths():
+    # A -> B 1/3, F1 2/3; B -> A 1/7, C 2/7, F2 4/7; C -> A 1/3, B 1/3, F1 1/3.
+    steps = [M.Step(1, "A", "D", ["B", "F1"]), M.Step(2, "B", "D", ["A", "C", "F2"]),
+             M.Step(3, "C", "D", ["A", "B", "F1"])]
+    w = {(1, "B"): Fraction(1, 3), (1, "F1"): Fraction(2, 3),
+         (2, "A"): Fraction(1, 7), (2, "C"): Fraction(2, 7), (2, "F2"): Fraction(4, 7),
+         (3, "A"): Fraction(1, 3), (3, "B"): Fraction(1, 3), (3, "F1"): Fraction(1, 3)}
+    rows = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal")
+    by = _check_reciprocal_rounded(steps, w, rows)
+    exact = {_rkey(r): r for r in M.reciprocal_coefficients(steps, w)}
+    # Nothing terminates, so rounding must actually happen somewhere.
+    assert any(Fraction(r["coefficient"]) != exact[k]["coefficient"] for k, r in by.items())
+
+
+def test_reciprocal_rounding_sender_exits_only_through_other_senders():
+    # A sends only to service departments (B, C); B and C exit to F.
+    steps = [M.Step(1, "A", "D", ["B", "C"]), M.Step(2, "B", "D", ["A", "F"]),
+             M.Step(3, "C", "D", ["B", "F"])]
+    w = {(1, "B"): Fraction(1, 3), (1, "C"): Fraction(2, 3),
+         (2, "A"): Fraction(1, 7), (2, "F"): Fraction(6, 7),
+         (3, "B"): Fraction(1, 3), (3, "F"): Fraction(2, 3)}
+    rows = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal")
+    by = _check_reciprocal_rounded(steps, w, rows)
+    # A has no final receiver, yet it nets to exactly zero for every origin.
+    for o in ("A", "B", "C"):
+        out = sum(r["coefficient"] for k, r in by.items() if k[0] == o and k[1] == "A")
+        inn = sum(r["coefficient"] for k, r in by.items() if k[0] == o and k[3] == "A")
+        assert out - inn == (1 if o == "A" else 0)
+    # The simplest case: A -> B only; B -> A 1/3, F 2/3.
+    steps2 = [M.Step(1, "A", "D", ["B"]), M.Step(2, "B", "D", ["A", "F"])]
+    w2 = {(1, "B"): Fraction(1), (2, "A"): Fraction(1, 3), (2, "F"): Fraction(2, 3)}
+    by2 = _check_reciprocal_rounded(steps2, w2, M.coefficient_rows("ZZRUN", steps2, w2, "Reciprocal"))
+    assert by2[("A", "A", "own", "B")]["coefficient"] == 1
+    assert by2[("A", "B", "pass", "F")]["coefficient"] == 1
+
+
+def test_reciprocal_rounding_zero_weight_receivers_keep_rows():
+    steps = [M.Step(1, "A", "D", ["B", "F", "G"]), M.Step(2, "B", "D", ["A", "F"])]
+    w = {(1, "B"): Fraction(1, 3), (1, "F"): Fraction(2, 3), (1, "G"): Fraction(0),
+         (2, "A"): Fraction(1, 7), (2, "F"): Fraction(6, 7)}
+    by = _check_reciprocal_rounded(steps, w, M.coefficient_rows("ZZRUN", steps, w, "Reciprocal"))
+    assert by[("A", "A", "own", "G")]["coefficient"] == 0
+    assert by[("B", "A", "pass", "G")]["coefficient"] == 0
+
+
+def _renumber(steps, w, rng):
+    """The same rule set declared in another order, with other step numbers."""
+    nums = rng.sample(range(1, 500), len(steps))
+    remap = {s.step: n for s, n in zip(steps, nums)}
+    new = [M.Step(remap[s.step], s.sender_member, s.driver, rng.sample(s.receivers, len(s.receivers)))
+           for s in steps]
+    rng.shuffle(new)
+    return new, {(remap[st], m): v for (st, m), v in w.items()}
+
+
+def test_reciprocal_rounding_property_random_graphs():
+    checked = rounded = 0
+    for seed in range(300):
+        rng = random.Random(40_000 + seed)
+        steps, w = _random_reciprocal(rng)
+        senders = {s.sender_member for s in steps}
+        if senders != _exits(steps, w):
+            continue
+        rows = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal")
+        by = _check_reciprocal_rounded(steps, w, rows)
+        exact = {_rkey(r): r["coefficient"] for r in M.reciprocal_coefficients(steps, w)}
+        rounded += any(Fraction(r["coefficient"]) != exact[k] for k, r in by.items())
+        # Deterministic, and independent of declaration order and step numbers.
+        steps2, w2 = _renumber(steps, w, rng)
+        again = M.coefficient_rows("ZZRUN", steps2, w2, "Reciprocal")
+        strip = lambda rs: {_rkey(r): {c: v for c, v in r.items() if c != "step"} for r in rs}
+        assert strip(again) == strip(rows), seed
+        assert M.coefficient_rows("ZZRUN", steps, w, "Reciprocal") == rows
+        checked += 1
+    assert checked > 100 and rounded > 30, (checked, rounded)
+
+
+def test_reciprocal_rounding_property_amounts_conserve_to_the_cent():
+    for seed in range(60):
+        rng = random.Random(50_000 + seed)
+        steps, w = _random_reciprocal(rng)
+        senders = {s.sender_member for s in steps}
+        if senders != _exits(steps, w):
+            continue
+        amount = {s: Decimal(rng.randint(0, 10 ** 9)) / 100 for s in senders}
+        rows = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal")
+        net = {}
+        for r in rows:
+            x = amount[r["origin_member"]] * r["coefficient"]
+            net[r["sender_member"]] = net.get(r["sender_member"], 0) - x
+            net[r["receiver_member"]] = net.get(r["receiver_member"], 0) + x
+        for s in senders:
+            assert net.get(s, 0) == -amount[s], (seed, s)
+        assert sum(v for m, v in net.items() if m not in senders) == sum(amount.values())
+
+
+def test_reciprocal_rounding_hop_kind_column_for_every_method():
+    steps, w = _hand_steps()
+    for method in ("Direct", "Step-Down", "Reciprocal"):
+        if method == "Direct":
+            steps_m = [M.Step(1, "IT", "H", ["P1", "P2"])]
+            w_m = {(1, "P1"): Fraction(1, 3), (1, "P2"): Fraction(2, 3)}
+        else:
+            steps_m, w_m = steps, w
+        rows = M.coefficient_rows("ZZRUN", steps_m, w_m, method)
+        assert rows and all(list(r) == list(M.COEFFICIENT_COLUMNS) for r in rows)
+        assert M.COEFFICIENT_COLUMNS.index("hop_kind") == M.COEFFICIENT_COLUMNS.index("driver") + 1
+        assert M.COEFFICIENT_COLUMNS[M.COEFFICIENT_COLUMNS.index("hop_kind") + 1] == "pool_coefficient"
+        assert {r["hop_kind"] for r in rows} <= {"own", "pass"}
+
+
+def test_reciprocal_rounding_direct_and_step_down_unchanged_apart_from_hop_kind():
+    # The rounded numbers equal the pre-RC2 hop-by-hop rounding of the exact rows.
+    for seed in range(100):
+        for method, base in (("Step-Down", 0), ("Direct", 10_000)):
+            steps, w = _random_case(random.Random(base + seed), method)
+            exact = M.step_down_coefficients(steps, w) if method == "Step-Down" \
+                else M.direct_coefficients(steps, w)
+            rows = M.coefficient_rows("ZZRUN", steps, w, method)
+            old = M.round_coefficients(exact, w)
+            assert [(_key(r), r["hop_kind"], r["pool_coefficient"], r["coefficient"]) for r in rows] == \
+                [(_key(r), r["hop_kind"], r["pool_coefficient"], r["coefficient"]) for r in old]
+            for r in rows:
+                assert r["hop_kind"] == ("own" if r["sender_member"] == r["origin_member"] else "pass")
+
+
+def test_reciprocal_rounding_round_coefficients_refuses_reciprocal_rows():
+    steps, w = _worked_example()
+    with raises(ValueError) as ei:
+        M.round_coefficients(M.reciprocal_coefficients(steps, w), w)
+    assert "round_reciprocal_coefficients" in str(ei.value)
