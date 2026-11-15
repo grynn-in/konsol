@@ -1,0 +1,111 @@
+{
+ "name": "Rate Set",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "field:rate_set",
+ "title_field": "label",
+ "search_fields": "label",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "description": "The set a governed rate belongs to (konsol#348). Every Group Exchange Rate and Historical Equity Rate names its set. Exactly one set is flagged Is Actuals: the actuals translation and the close gate read that set alone, and refuse by name while none is flagged. A budget or forecast names its own set on its Budget Cycle, so actual, budget and forecast rates for one currency pair and period never collide.",
+ "modified": "2026-11-15 12:00:00.000000",
+ "fields": [
+  {
+   "fieldname": "set_tab",
+   "fieldtype": "Tab Break",
+   "label": "Rate Set"
+  },
+  {
+   "fieldname": "set_section",
+   "fieldtype": "Section Break",
+   "label": "Rate Set"
+  },
+  {
+   "fieldname": "rate_set",
+   "fieldtype": "Data",
+   "label": "Rate Set",
+   "reqd": 1,
+   "unique": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The code, and the document name: what a rate, a Budget Cycle and the warehouse's rate_set column carry. Never changed for you."
+  },
+  {
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "label": "Label",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "is_actuals",
+   "fieldtype": "Check",
+   "label": "Is Actuals",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The one set the actuals translation, the close gate, Pre-fill from ERP and the rates screens read. At most one Rate Set may carry it; a second is refused by name. While none is flagged, every actuals reader refuses rather than assume a set."
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "Entity Accountant",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  }
+ ]
+}

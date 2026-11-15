@@ -95,6 +95,7 @@ SIDEBARS = {
         ("Section", "Rates"),
         ("DocType", "Group Exchange Rate"),
         ("DocType", "Historical Equity Rate"),
+        ("DocType", "Rate Set"),
         ("Section", "Intercompany"),
         ("DocType", "IC Balance"),
         ("Section", "Adjustments"),

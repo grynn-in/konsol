@@ -73,7 +73,7 @@ def test_the_shape():
         assert f[name]["in_list_view"] == 1, name
     for name in ("rate_set", "is_actuals"):
         assert f[name].get("description"), f"{name} needs help text"
-    assert "Actuals" in f["is_actuals"]["description"] and "one" in f["is_actuals"]["description"]
+    assert "actuals" in f["is_actuals"]["description"].lower() and "one" in f["is_actuals"]["description"]
     for field in d["fields"]:
         if field.get("label"):
             assert field["label"] == field["label"].title() or field["label"] == "Is Actuals", field["label"]
@@ -279,6 +279,11 @@ def _site(flagged=("ACTUAL",), sets=1, blank_ger=3, her_rows=()):
         exists=lambda dt, name: False)
     m = _patch_module(frappe)
     m.print = lambda *a, **k: record["printed"].append(" ".join(str(x) for x in a))
+    # the patch imports the real ensure_actual_set at call time; serve it the
+    # real controller module, bound to this site's stub frappe
+    rate_set_module, _ = _controller(count=sets)
+    rate_set_module.frappe = frappe
+    sys.modules["konsol.consolidation.doctype.rate_set.rate_set"] = rate_set_module
     return m, record, frappe
 
 
