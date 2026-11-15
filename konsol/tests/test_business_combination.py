@@ -115,10 +115,14 @@ def _load():
     ps.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
     gr = types.ModuleType("konsol.group_rates")
     gr.true_rate = lambda quote, per: float(Decimal(str(quote or 0)) / int(per or 1))
+    # konsol#529: before_cancel sets the workflow's docstatus-2 state through
+    # this helper; it has its own tests (test_cancelled_workflow_state.py).
+    wfs = types.ModuleType("konsol.workflows")
+    wfs.set_cancelled_state = lambda doc: None
 
     stubs = {"frappe": frappe, "frappe.model": model, "frappe.model.document": document,
              "frappe.utils": utils, "konsol.clickhouse": ch, "konsol.period_status": ps,
-             "konsol.group_rates": gr,
+             "konsol.group_rates": gr, "konsol.workflows": wfs,
              # konsol#310: the reject-reason rule has its own tests
              # (test_deal_reject_reason.py); here it lets every save through.
              "konsol.close.reject_reason": _reject_reason_stub()}
