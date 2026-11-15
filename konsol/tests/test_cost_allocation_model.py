@@ -778,8 +778,8 @@ def test_reciprocal_worked_example_exact():
         assert r["step"] == {"IT": 1, "HR": 2}[r["sender_member"]]
         assert r["driver"] == {"IT": "Tickets", "HR": "Headcount"}[r["sender_member"]]
         assert isinstance(r["coefficient"], Fraction)
-    # 12 rows: 2 origins x (own + pass at the origin + pass at the other) x 3 receivers.
-    assert len(rows) == 12
+    # 18 rows: 2 origins x 3 hops (own, pass at the origin, pass at the other) x 3 receivers.
+    assert len(rows) == 18
 
     amount = {"IT": Fraction(1000), "HR": Fraction(400)}
     sent = {}
@@ -826,7 +826,7 @@ def test_reciprocal_zero_weight_exit_is_no_exit():
          (2, "A"): Fraction(1), (2, "F"): Fraction(0)}
     rows = M.reciprocal_coefficients(steps, w)   # B exits through A: accepted
     _check_reciprocal(steps, w, rows)
-    w2 = dict(w, **{(1, "B"): Fraction(1), (1, "F"): Fraction(0)})
+    w2 = {**w, (1, "B"): Fraction(1), (1, "F"): Fraction(0)}
     with raises(M.CostAllocationError) as ei:
         M.reciprocal_coefficients(steps, w2)
     assert "A, B" in str(ei.value)

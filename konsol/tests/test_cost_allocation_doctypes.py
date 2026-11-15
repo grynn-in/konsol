@@ -280,7 +280,10 @@ def test_rule_set_scope_fields():
 
 def test_rule_set_select_options_equal_model_constants():
     from konsol import cost_allocation_model as m
-    assert _rs_field("method")["options"].split("\n") == list(m.METHODS)
+    # Reciprocal is in the model from RC1 but reaches the form only in RC4,
+    # after RC2 rounds it (konsol#269 phase 2a). RC4: compare to m.METHODS again.
+    assert _rs_field("method")["options"].split("\n") == [x for x in m.METHODS if x != m.RECIPROCAL]
+    assert m.RECIPROCAL in m.METHODS
     assert _rs_field("receiver_account_mode")["options"].split("\n") == list(m.ACCOUNT_MODES)
 
 
