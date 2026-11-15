@@ -12,7 +12,7 @@
  "sort_field": "modified",
  "sort_order": "DESC",
  "description": "The set a governed rate belongs to (konsol#348). Every Group Exchange Rate and Historical Equity Rate names its set. Exactly one set is flagged Is Actuals: the actuals translation and the close gate read that set alone, and refuse by name while none is flagged. A budget or forecast names its own set on its Budget Cycle, so actual, budget and forecast rates for one currency pair and period never collide.",
- "modified": "2026-11-15 12:00:00.000000",
+ "modified": "2026-11-15 18:00:00.000000",
  "fields": [
   {
    "fieldname": "set_tab",
@@ -32,7 +32,7 @@
    "unique": 1,
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "description": "The code, and the document name: what a rate, a Budget Cycle and the warehouse's rate_set column carry. Never changed for you."
+   "description": "The code, and the document name: what a rate, a Budget Cycle and the warehouse's rate_set column carry. Upper-case letters, digits, _ and - only, 1 to 40 characters (A-Z, 0-9, _, -): it is embedded in every Group Exchange Rate's name. Never changed for you."
   },
   {
    "fieldname": "label",

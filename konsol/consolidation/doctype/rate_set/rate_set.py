@@ -22,12 +22,22 @@ second copy of the flag that goes stale): every row, after the commit, on save
 and on delete, so the warehouse reads which set is flagged Is Actuals the way
 it reads every reference table, and ``reconcile_all`` repairs the table.
 """
+import re
+
 import frappe
 from frappe.model.document import Document
 
 from konsol.clickhouse import sync_doctype_after_commit
 
 DOCTYPE = "Rate Set"
+#: The code's rule, declared on the field's help text: upper-case letters,
+#: digits, _ and -, 1 to 40 characters. Not free text, because two readers
+#: embed the code: Group Exchange Rate's autoname puts it in a naming series
+#: (group_exchange_rate.py), where `.` is a separator and is lost, and
+#: orchestrator/fx passes the actuals set through _TOKEN_RE before it is
+#: interpolated into a query, so a code with `(` made every rates read raise.
+#: Every code that passes this rule passes both (test_rate_set.py).
+CODE_RE = re.compile(r"^[A-Z0-9_-]{1,40}$")
 #: The set a fresh site starts with, flagged Is Actuals. A name, not a rule:
 #: a site may rename it or flag another; readers follow the flag.
 ACTUALS_NAME = "ACTUAL"
@@ -49,6 +59,7 @@ class RateSet(Document):
     }
 
     def validate(self):
+        self._validate_code()
         self._refuse_second_actuals()
 
     def on_update(self):
@@ -60,6 +71,18 @@ class RateSet(Document):
         """after_delete, not on_trash: on_trash runs before the row is gone, so
         the full-table re-send put it straight back (#120)."""
         sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
+
+    def _validate_code(self):
+        """The code names the set in every rate's document name and in the
+        warehouse's rate_set column: it follows CODE_RE, and a code that does
+        not is refused by name and rule."""
+        code = self.rate_set or ""
+        if not CODE_RE.match(code):
+            frappe.throw(
+                f"Rate Set code {code!r} does not match the rule {CODE_RE.pattern}: upper-case letters, "
+                "digits, _ and -, 1 to 40 characters. The code is embedded in every Group Exchange Rate's "
+                "name and passed to the warehouse, so it is restricted to characters both carry whole.",
+                frappe.ValidationError)
 
     def _refuse_second_actuals(self):
         """At most one set is flagged Is Actuals. A locking read, so two flags
