@@ -29,6 +29,8 @@ import re
 import sys
 import types
 
+import pytest
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RS_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "rate_set")
 GER_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "group_exchange_rate")
@@ -352,7 +354,12 @@ def test_plan_stamps_blank_rows_and_renames_each_tranche_to_its_new_key():
     assert m.duplicate_targets([(old, "ACTUAL", new), ("HER-x", "ACTUAL", new)]) == {new: [old, "HER-x"]}
 
 
-def _site(flagged=("ACTUAL",), sets=1, blank_ger=3, her_rows=()):
+RATE_SET_MODULE = "konsol.consolidation.doctype.rate_set.rate_set"
+
+
+def _site(monkeypatch, flagged=("ACTUAL",), sets=1, blank_ger=3, her_rows=()):
+    """The patch against a stub site. The stub rate_set module is served
+    through monkeypatch, so it is gone when the test is."""
     record = {"sql": [], "set_value": [], "renamed": [], "reloaded": [], "printed": []}
     frappe = types.ModuleType("frappe")
     frappe.ValidationError = type("ValidationError", (Exception,), {})
@@ -392,11 +399,8 @@ def _site(flagged=("ACTUAL",), sets=1, blank_ger=3, her_rows=()):
     # real controller module, bound to this site's stub frappe
     rate_set_module, _ = _controller(count=sets)
     rate_set_module.frappe = frappe
-    sys.modules["konsol.consolidation.doctype.rate_set.rate_set"] = rate_set_module
+    monkeypatch.setitem(sys.modules, RATE_SET_MODULE, rate_set_module)
     return m, record, frappe
-
-
-RATE_SET_MODULE = "konsol.consolidation.doctype.rate_set.rate_set"
 
 
 def test_the_site_stub_leaves_sys_modules_as_it_found_them():
@@ -405,14 +409,16 @@ def test_the_site_stub_leaves_sys_modules_as_it_found_them():
     the process that imports the real module gets the stub (review of
     konsol#546)."""
     before = sys.modules.get(RATE_SET_MODULE)
-    _site()
+    with pytest.MonkeyPatch.context() as mp:
+        _site(mp)
+        assert sys.modules[RATE_SET_MODULE] is not before, "the stub is served while the patch runs"
     assert sys.modules.get(RATE_SET_MODULE) is before, "test_rate_set leaked its stub into sys.modules"
 
 
-def test_the_patch_stamps_every_blank_rate_with_the_flagged_set_and_logs_counts():
+def test_the_patch_stamps_every_blank_rate_with_the_flagged_set_and_logs_counts(monkeypatch):
     digest_name = _digest_name()
     old = digest_name("HER", ["ZZGRP", "ZZNL", "ZZ3000", "2024-01-01", "EUR"])
-    m, record, _ = _site(blank_ger=3, her_rows=[_her(old)])
+    m, record, _ = _site(monkeypatch, blank_ger=3, her_rows=[_her(old)])
     m.execute()
     updates = [(q, p) for q, p in record["sql"] if q.lstrip().upper().startswith("UPDATE")]
     [(ger_update, params)] = updates
@@ -426,8 +432,8 @@ def test_the_patch_stamps_every_blank_rate_with_the_flagged_set_and_logs_counts(
     assert [a[2] for a in record["reloaded"]] == ["rate_set", "group_exchange_rate", "historical_equity_rate"]
 
 
-def test_the_patch_creates_actual_on_a_site_with_no_set_and_is_idempotent():
-    m, record, frappe = _site(flagged=(), sets=0, blank_ger=2)
+def test_the_patch_creates_actual_on_a_site_with_no_set_and_is_idempotent(monkeypatch):
+    m, record, frappe = _site(monkeypatch, flagged=(), sets=0, blank_ger=2)
     created = []
     frappe.get_doc = lambda d: types.SimpleNamespace(insert=lambda ignore_permissions=False: created.append(d))
     m.execute()
@@ -435,13 +441,13 @@ def test_the_patch_creates_actual_on_a_site_with_no_set_and_is_idempotent():
     assert (row["rate_set"], row["is_actuals"]) == ("ACTUAL", 1)
     assert any("UPDATE" in q for q, _ in record["sql"])
     # second run: everything stamped, a flagged set exists; nothing written
-    m, record, _ = _site(blank_ger=0, her_rows=[])
+    m, record, _ = _site(monkeypatch, blank_ger=0, her_rows=[])
     m.execute()
     assert not [q for q, _ in record["sql"] if "UPDATE" in q] and record["renamed"] == []
 
 
-def test_the_patch_refuses_rather_than_guess_when_sets_exist_but_none_is_flagged():
-    m, record, _ = _site(flagged=(), sets=2, blank_ger=1)
+def test_the_patch_refuses_rather_than_guess_when_sets_exist_but_none_is_flagged(monkeypatch):
+    m, record, _ = _site(monkeypatch, flagged=(), sets=2, blank_ger=1)
     try:
         m.execute()
     except Refused as e:
@@ -451,10 +457,10 @@ def test_the_patch_refuses_rather_than_guess_when_sets_exist_but_none_is_flagged
     assert not [q for q, _ in record["sql"] if "UPDATE" in q]
 
 
-def test_the_patch_refuses_a_rename_onto_an_existing_tranche():
+def test_the_patch_refuses_a_rename_onto_an_existing_tranche(monkeypatch):
     digest_name = _digest_name()
     old = digest_name("HER", ["ZZGRP", "ZZNL", "ZZ3000", "2024-01-01", "EUR"])
-    m, record, frappe = _site(blank_ger=0, her_rows=[_her(old)])
+    m, record, frappe = _site(monkeypatch, blank_ger=0, her_rows=[_her(old)])
     frappe.db.exists = lambda dt, name: True
     try:
         m.execute()
