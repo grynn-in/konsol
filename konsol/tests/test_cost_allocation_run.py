@@ -128,7 +128,7 @@ def test_doctype_run_link_and_select_options():
     assert fields["accounts"]["options"] == "Cost Allocation Run Account"
     assert fields["status"]["options"] == "Draft\nPending Approval\nApproved\nCancelled"
     assert fields["status"]["default"] == "Draft"
-    assert fields["method"]["options"] == "Direct\nStep-Down"
+    assert fields["method"]["options"] == "Direct\nStep-Down\nReciprocal"
     assert fields["receiver_account_mode"]["options"] == (
         "Sender's Own Accounts\nDeclared Allocation Account")
     assert fields["amounts_after_approval"]["options"] == "Follow Latest Data\nFreeze at Approval"
