@@ -72,7 +72,7 @@ class GroupExchangeRate(Document):
     #: the true rate, computed from quote / quoted_per.
     CH_STAGING_TABLE = "epm_staging.group_exchange_rates"
     CH_STAGING_COLUMNS = ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
-                          "rate", "document"]
+                          "rate", "document", "rate_set"]
 
     @classmethod
     def resync_staging(cls, force=False):

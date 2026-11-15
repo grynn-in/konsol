@@ -152,11 +152,12 @@ def quote_label(quote, quoted_per, from_currency, to_currency):
 
 def published_rows(docs):
     """epm_staging.group_exchange_rates rows for approved rates: (to, from,
-    fiscal year, fiscal period, rate type, TRUE rate, document). The one place
-    a quote becomes a rate; Float64 in the warehouse keeps what MariaDB's 9
-    decimal places can't."""
+    fiscal year, fiscal period, rate type, TRUE rate, document, rate set). The
+    one place a quote becomes a rate; Float64 in the warehouse keeps what
+    MariaDB's 9 decimal places can't. Every set is published; the warehouse
+    selects by rate_set (konsol#348)."""
     return [[d.to_currency, d.from_currency, int(d.fiscal_year), int(d.fiscal_period), d.rate_type,
-             true_rate(d.quote, d.quoted_per), d.name] for d in docs]
+             true_rate(d.quote, d.quoted_per), d.name, d.rate_set] for d in docs]
 
 
 def usd_references(codes):
@@ -580,7 +581,7 @@ def erp_quote_rows(as_of):
 #: approved rate, `rate` the TRUE rate (units of to per 1 from).
 PUBLISH_TABLE = "epm_staging.group_exchange_rates"
 PUBLISH_COLUMNS = ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type", "rate",
-                   "document")
+                   "document", "rate_set")
 #: Seconds a publish waits for another one to finish before it gives up and
 #: logs (the next approval, or the reconcile after a migrate, republishes).
 PUBLISH_LOCK_WAIT = 120
@@ -595,7 +596,7 @@ def _ch_literal(value):
 
 
 _APPROVED_SQL = ("SELECT name, to_currency, from_currency, fiscal_year, fiscal_period, rate_type, quote, "
-                 "quoted_per, modified FROM `tabGroup Exchange Rate` WHERE docstatus = 1 ORDER BY name")
+                 "quoted_per, rate_set, modified FROM `tabGroup Exchange Rate` WHERE docstatus = 1 ORDER BY name")
 
 
 def _fresh_db():

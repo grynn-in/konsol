@@ -725,7 +725,9 @@ _REFERENCE_TABLE_DDL = {
     # konsol#374 (option b; Deepak Pai, 7 Nov 2026): a Historical Equity Rate
     # converts into ONE presentation currency, and to_currency is in the sort
     # key so the EUR and the USD rate of one tranche are two rows, not one
-    # that ReplacingMergeTree collapses on merge. Last in ORDER BY and with no
+    # that ReplacingMergeTree collapses on merge. konsol#348 (S4-Q1 c, 15 Nov
+    # 2026): rate_set likewise, so the actuals and the budget rate of one
+    # tranche are two rows. Each is last in ORDER BY when added and has no
     # DEFAULT: an existing table is upgraded by _HISTORICAL_RATE_UPGRADE, and
     # ClickHouse appends to a sorting key only the column that ALTER adds,
     # without a default expression (konsolidat#246 measured it on 24.8). Owned
@@ -734,9 +736,9 @@ _REFERENCE_TABLE_DDL = {
     "epm_staging.historical_equity_rates": (
         "(consolidation_group String, data_area_id String, main_account String, "
         "rate_date Date, historical_rate Decimal(18,6), to_currency LowCardinality(String), "
-        "updated_at DateTime DEFAULT now()) "
+        "rate_set String, updated_at DateTime DEFAULT now()) "
         "ENGINE = ReplacingMergeTree(updated_at) "
-        "ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency)"
+        "ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency, rate_set)"
     ),
     # F2: the flat tree. Listed here because _RETIRED_COLUMNS ALTERs it — on a
     # stack that has never run dbt the table would not exist, the ALTER would
@@ -889,10 +891,15 @@ _REFERENCE_TABLE_DDL = {
     # `rate` is the TRUE rate, units of to_currency per 1 from_currency, as
     # Float64: konsol computes it once (quote / quoted_per) when it publishes,
     # and the warehouse never scales or inverts it. One source of truth for FX
-    # rates (decided 13 Sep 2026).
+    # rates (decided 13 Sep 2026). konsol#348: `rate_set` names the Rate Set
+    # the rate belongs to (the one flagged Is Actuals for actuals, a budget's
+    # own set for its budget); LAST, here and in _ADDED_COLUMNS, so a fresh
+    # table and an upgraded one agree. Not in ORDER BY: the publish swaps the
+    # whole set in, so nothing dedupes on the key. Identical to konsolidat's
+    # clickhouse/init-db.sql; keep them identical.
     "epm_staging.group_exchange_rates": (
         "(to_currency String, from_currency String, fiscal_year UInt16, "
-        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String, rate_set String) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)"
     ),
     # konsol#182: the group chart of accounts, from Main Account (Published
@@ -1178,6 +1185,11 @@ _ADDED_COLUMNS = {
         ("reverse_fiscal_year", "UInt16 DEFAULT 0"),
         ("reverse_fiscal_period", "UInt8 DEFAULT 0"),
     ],
+    # konsol#348: the Rate Set a group rate belongs to. The publish's CREATE
+    # TABLE shadow AS live copies the live shape, so the live table must have
+    # the column before the first publish: ensure_reference_tables runs in
+    # after_migrate before reconcile_all republishes.
+    "epm_staging.group_exchange_rates": [("rate_set", "String")],
 }
 
 # Columns a later release added in the MIDDLE of a table that already exists on
@@ -1313,15 +1325,20 @@ def _widened_column_ddl():
 
 
 #: konsol#374: the one ALTER that gives an existing rates table the currency
-#: column AND the key. The two clauses must be one statement: MODIFY ORDER BY
-#: may only name a column the same ALTER adds. AFTER historical_rate puts the
-#: column where init-db.sql declares it, so a fresh and an upgraded table read
-#: the same.
+#: column AND the key; konsol#348 extends it with the Rate Set. The clauses
+#: must be one statement: MODIFY ORDER BY may only name an existing column or
+#: one the same ALTER adds, and ADD COLUMN IF NOT EXISTS skips a column the
+#: table already has, so a table from before #374 gains both columns and one
+#: from before #348 gains the set alone. AFTER historical_rate / AFTER
+#: to_currency put each column where init-db.sql declares it, so a fresh and
+#: an upgraded table read the same. Issued while rate_set is not yet in the
+#: key (_sorting_key_upgrade_ddl).
 _HISTORICAL_RATE_TABLE = "epm_staging.historical_equity_rates"
 _HISTORICAL_RATE_UPGRADE = (
     f"ALTER TABLE {_HISTORICAL_RATE_TABLE} "
     "ADD COLUMN IF NOT EXISTS to_currency LowCardinality(String) AFTER historical_rate, "
-    "MODIFY ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency)"
+    "ADD COLUMN IF NOT EXISTS rate_set String AFTER to_currency, "
+    "MODIFY ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency, rate_set)"
 )
 
 
@@ -1347,10 +1364,12 @@ _OWNERSHIP_PERIODS_UPGRADE = (
 #: ALTER best-effort, so if it failed, a sync into the old key would let
 #: ReplacingMergeTree collapse the EUR and the USD rate of one tranche into
 #: one row: a wrong number, silently. sync_table asks system.tables first and
-#: refuses with SortingKeyStale instead. konsol#117: the periods table's owner
-#: likewise, or two owners' links into one node collapse into one.
+#: refuses with SortingKeyStale instead. konsol#348: the set is the last
+#: column the upgrade adds to that key, so a key that has it has the currency
+#: too. konsol#117: the periods table's owner likewise, or two owners' links
+#: into one node collapse into one.
 _REQUIRED_SORTING_KEY_COLUMNS = {
-    _HISTORICAL_RATE_TABLE: "to_currency",
+    _HISTORICAL_RATE_TABLE: "rate_set",
     _OWNERSHIP_PERIODS_TABLE: "owner_group",
 }
 
@@ -1442,10 +1461,11 @@ def ensure_reference_tables():
         # CREATEs run; an existing ancestry table gets path_id and the link
         # owner where init-db.sql puts them, a missing one is created whole.
         *_positioned_column_ddl(),
-        # konsol#374: an existing rates table gets to_currency in its key by
-        # one ALTER, after the CREATE above has given a missing one the new
-        # shape, and before reconcile_all re-sends the rows with the column.
-        *_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "to_currency", _HISTORICAL_RATE_UPGRADE),
+        # konsol#374 / #348: an existing rates table gets to_currency and
+        # rate_set in its key by one ALTER, after the CREATE above has given a
+        # missing one the new shape, and before reconcile_all re-sends the
+        # rows with the columns.
+        *_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "rate_set", _HISTORICAL_RATE_UPGRADE),
         # konsol#117 (task C): the periods table's owner joins its key the
         # same way, before reconcile_all re-sends the links with their owner.
         *_sorting_key_upgrade_ddl(_OWNERSHIP_PERIODS_TABLE, "owner_group", _OWNERSHIP_PERIODS_UPGRADE),
