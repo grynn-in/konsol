@@ -537,6 +537,8 @@ class _World:
         self.undeclared = set()
         self.syncs = []
         self.once = []
+        self.enqueued = []
+        self.logged = []
         self.sync_table_calls = []
         self.get_all_data = {}
 
@@ -590,6 +592,10 @@ def _k8(world):
     fr.whitelist = lambda *a, **k: (lambda fn: fn)
     fr.db = types.SimpleNamespace(get_value=get_value, sql=sql)
     fr.get_all = get_all
+    fr.enqueue = lambda *a, **k: world.enqueued.append((a, k))
+    fr.local = types.SimpleNamespace(site="zz.local")
+    fr.log_error = lambda *a, **k: world.logged.append((a, k))
+    fr._dict = lambda **k: types.SimpleNamespace(**k)
     module.frappe = fr
 
     ps = types.SimpleNamespace()
@@ -742,13 +748,20 @@ def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
     for hook in ("on_submit", "on_cancel", "after_delete"):
         w.syncs.clear()
         w.once.clear()
+        w.enqueued.clear()
         getattr(_k8_run(m, docstatus=1), hook)()
         assert [(s[0], s[1]) for s in w.syncs] == [
             ("Cost Allocation Run", "epm_staging.cost_allocation_runs"),
             ("Cost Allocation Run Account", "epm_staging.cost_allocation_run_accounts"),
             ("Cost Allocation Run Weight", "epm_staging.cost_allocation_run_weights")], hook
-        assert [k for k, _fn in w.once] == [("cost_allocation_run_coefficients",)], hook
+        assert w.once == [], hook      # RF4: the coefficients are a job, not an after-commit callback
         assert w.sync_table_calls == [], hook
+        (args, kw), = w.enqueued
+        assert args == ("konsol.epm.doctype.cost_allocation_run.cost_allocation_run."
+                        "resync_coefficients_job",), hook
+        assert kw == {"queue": "long", "enqueue_after_commit": True,
+                      "job_id": "cost_allocation_coefficients::zz.local",
+                      "deduplicate": True}, hook
 
 
 def test_lifecycle_no_sync_on_a_draft_save_or_validate():
@@ -1297,3 +1310,90 @@ def test_rc4_submit_accepts_a_reciprocal_run_and_refuses_a_closed_loop():
                      "member": "IT", "value": 4}]
     msg = _refused(_k8_run(_k8(w2), method="Reciprocal", weights=loop).before_submit)
     assert "IT" in msg and "HR" in msg and "final receiver" in msg
+
+
+# --- RF4: coefficients resync as a job; Compute reports an unsolvable loop ----------
+
+def _job_tasks_stub(calls):
+    tasks = types.ModuleType("konsol.tasks")
+    tasks.on_consolidation_doc_update = lambda doc, method: calls.append(
+        (doc.doctype, doc.name, method))
+    return tasks
+
+
+def test_rf4_job_resyncs_then_requests_the_allocation_build():
+    w = _World()
+    m = _k8(w)
+    order = []
+    m.CostAllocationRun.resync_staging = classmethod(lambda cls, force=False: order.append("resync"))
+    tasks = _job_tasks_stub(order)
+    saved = sys.modules.get("konsol.tasks")
+    sys.modules["konsol.tasks"] = tasks
+    try:
+        m.resync_coefficients_job()
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.tasks", None)
+        else:
+            sys.modules["konsol.tasks"] = saved
+    assert order == ["resync", ("Cost Allocation Run", "coefficients", "coefficients_resync")]
+
+
+def test_rf4_a_failing_job_raises_logs_and_requests_no_build():
+    w = _World()
+    m = _k8(w)
+    calls = []
+
+    def boom(cls, force=False):
+        raise RuntimeError("clickhouse down")
+
+    m.CostAllocationRun.resync_staging = classmethod(boom)
+    saved = sys.modules.get("konsol.tasks")
+    sys.modules["konsol.tasks"] = _job_tasks_stub(calls)
+    try:
+        try:
+            m.resync_coefficients_job()
+        except RuntimeError as exc:
+            assert "clickhouse down" in str(exc)
+        else:
+            raise AssertionError("the job swallowed the failure")
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.tasks", None)
+        else:
+            sys.modules["konsol.tasks"] = saved
+    assert calls == [] and len(w.logged) == 1
+
+
+def test_rf4_the_run_trigger_is_not_a_doc_event_any_more():
+    """The job requests the allocation build after the resync; a doc-event
+    trigger would race it (the build could read stale coefficients)."""
+    with open(os.path.join(os.path.dirname(RUN_PY), "..", "..", "..", "hooks.py")) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "_dbt_trigger_doctypes" for t in node.targets):
+            names = [e.value for e in node.value.elts if isinstance(e, ast.Constant)]
+            assert "Cost Allocation Run" not in names
+            return
+    raise AssertionError("_dbt_trigger_doctypes not found")
+
+
+def test_rf4_compute_refuses_a_reciprocal_loop_whose_exit_edges_have_zero_statistics():
+    rs = _rule_set(
+        method="Reciprocal",
+        rules=[_Row(step=1, sender_member="IT", driver="ZZ Head"),
+               _Row(step=2, sender_member="HR", driver="ZZ Head")],
+        receivers=[_Row(step=1, receiver_member="HR"), _Row(step=1, receiver_member="P1"),
+                   _Row(step=2, receiver_member="IT"), _Row(step=2, receiver_member="P1")])
+    stats = [_stat("CAS-00001", 3, "HR", 10), _stat("CAS-00001", 3, "IT", 10),
+             _stat("CAS-00001", 3, "P1", 0)]
+    m = _run_module(rule_set=rs, stats=stats)
+    run = _Run()
+    try:
+        m.compute_weights_on(run)
+    except _Refused as exc:
+        assert str(exc)
+    else:
+        raise AssertionError("Compute accepted a loop whose cost can never leave")
+    assert run.saved == 0
