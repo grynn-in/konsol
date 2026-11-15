@@ -170,7 +170,7 @@ def _load(path, period_open):
     mods = {name: types.ModuleType(name) for name in (
         "frappe", "frappe.model", "frappe.model.document", "frappe.model.workflow", "frappe.utils",
         "konsol", "konsol.clickhouse", "konsol.period_status", "konsol.schema_lifecycle",
-        "konsol.tb_dimension", "konsol.epm", "konsol.epm.budget_grain")}
+        "konsol.tb_dimension", "konsol.epm", "konsol.epm.budget_grain", "konsol.workflows")}
     frappe = mods["frappe"]
     frappe._ = lambda s: s
     frappe.throw = throw
@@ -208,6 +208,9 @@ def _load(path, period_open):
     mods["konsol.period_status"].assert_postable = assert_declared
     mods["konsol.period_status"].first_period_affected = lambda d: d
     mods["konsol.schema_lifecycle"].request_governed_rebuild = request_governed_rebuild
+    # konsol#529: before_cancel sets the workflow's docstatus-2 state through
+    # this helper; it has its own tests (test_cancelled_workflow_state.py).
+    mods["konsol.workflows"].set_cancelled_state = lambda doc: None
     mods["konsol.epm.budget_grain"].digest_name = lambda *a, **k: "ZZ"
     # konsol#255: the controller reads the site's Dimension records before it
     # parses a file. That reader binds frappe, so it is stubbed here; a site

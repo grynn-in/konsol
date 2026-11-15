@@ -49,6 +49,7 @@ from frappe.model.document import Document
 
 from konsol import budget_bulk_model as M
 from konsol.epm.budget_grain import digest_name
+from konsol.workflows import set_cancelled_state
 
 
 class BudgetCycle(Document):
@@ -262,6 +263,8 @@ class BudgetCycle(Document):
         from konsol.period_status import assert_year_not_closed
 
         assert_year_not_closed(self.fiscal_year, _("cancel Budget Cycle {0}").format(self.name))
+        # After the gate: the installed workflow's docstatus-2 state (#529).
+        set_cancelled_state(self)
 
     def on_cancel(self):
         """Cancelled: the Cycle and its rows leave the warehouse, after the commit."""
