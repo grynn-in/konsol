@@ -1602,7 +1602,9 @@ def _judge_budget_cell(data, dims, debit, credit):
 
     Currency and amount basis come from the request and are never defaulted
     (Q2-c, the TB's declared-currency rule): a request without them is
-    refused by the intake, by name.
+    refused by the intake, by name. So does ``as_of_date`` (S3 K5, QB5 a),
+    the forecast round the cell is for: given, it is a column of the one-row
+    table; the intake requires it for a forecast and refuses it otherwise.
     """
     from konsol import budget_intake
 
@@ -1613,6 +1615,9 @@ def _judge_budget_cell(data, dims, debit, credit):
            data.get("fiscal_year"), data.get("fiscal_period"), data.get("main_account"),
            format(debit, "f"), format(credit, "f"), data.get("currency") or ""]
     row += [data[d] for d in given]
+    if data.get("as_of_date") not in (None, ""):
+        header.append("as_of_date")
+        row.append(str(data["as_of_date"]))
     # A cell is not a file line: its refusal names no "Line 2", and a batch
     # names its own row. The one judge every non-file writer shares.
     item, (judged,) = budget_intake.judge_one([header, row], form_basis=data.get("amount_basis") or "")
@@ -1799,7 +1804,11 @@ def budget_cell_save():
 
     Excel sends a signed ``amount``; it is stored as a debit when positive and
     a credit of its absolute value when negative (Q3-a). ``currency`` and
-    ``amount_basis`` are required: neither is defaulted.
+    ``amount_basis`` are required: neither is defaulted. ``as_of_date``
+    (YYYY-MM-DD) names the forecast round the cell is for (S3 K5, QB5 a): the
+    pair's Budget Cycle with that as-of date. It is required when the
+    scenario is a forecast and refused for any other scenario type; a round
+    with no Cycle is refused by name, never created.
 
     The cell finds or creates the Budget Entry for (cycle, entity, layer,
     period) and upserts the one line for its account and dimension values.
@@ -2234,7 +2243,7 @@ FISCAL_PERIODS_DEDUP_SQL = (
 
 @frappe.whitelist()
 def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, fiscal_year=None,
-             fiscal_period=None, limit=500):
+             fiscal_period=None, limit=500, rate_set=None):
     """Read-only: the group's governed exchange rates, the ones translation uses.
 
     One source of truth (decided 13 Sep 2026): the approved Group Exchange
@@ -2248,6 +2257,8 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
       fiscal_year / fiscal_period  one year, one period
       as_of                        periods starting on/before this date (YYYY-MM-DD)
       limit                        row cap (1..5000, default 500)
+      rate_set                     one Rate Set by name; omitted, the set flagged Is
+                                   Actuals (konsol#348; refused by name while none is)
 
     Filter values are bound as ClickHouse HTTP query parameters: ``{name:Type}``
     in the SQL and ``param_<name>`` on the wire (#175: a bare name is read as a
@@ -2257,9 +2268,10 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
     import json
 
     from konsol.clickhouse import execute
+    from konsol.group_rates import actuals_rate_set
 
-    conds = []
-    params = {}
+    conds = ["rate_set = {rs:String}"]
+    params = {"rs": str(rate_set) if rate_set else actuals_rate_set()}
     if from_currency:
         params["fc"] = str(from_currency).upper()
         conds.append("from_currency = {fc:String}")
@@ -2288,7 +2300,7 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
     where = (" WHERE " + " AND ".join(conds)) if conds else ""
     sql = (
         "SELECT from_currency, to_currency, rate_type, fiscal_year, fiscal_period, "
-        "toString(fp.start_date) AS period_start, rate, document "
+        "toString(fp.start_date) AS period_start, rate, document, rate_set "
         f"FROM {GOVERNED_FX_TABLE} "
         f"INNER JOIN {FISCAL_PERIODS_DEDUP_SQL} AS fp USING (fiscal_year, fiscal_period)"
         f"{where} "

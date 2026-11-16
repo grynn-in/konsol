@@ -16,5 +16,9 @@ def get_data():
                 "label": "Budget",
                 "items": ["Budget Entry"],
             },
+            {
+                "label": "Allocation",
+                "items": ["Cost Allocation Run"],
+            },
         ],
     }

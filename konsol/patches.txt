@@ -63,3 +63,6 @@ konsol.patches.drop_d365_budget_writeback_settings
 konsol.patches.retire_budget_sheet_line
 konsol.patches.drop_budget_monthly_input
 konsol.patches.retire_budget_roles
+konsol.patches.clear_stale_default_workspace
+konsol.patches.set_cancelled_workflow_state
+konsol.patches.stamp_rate_set_actual

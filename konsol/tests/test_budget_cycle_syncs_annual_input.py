@@ -52,6 +52,10 @@ def env(monkeypatch):
         def __init__(self, **kw):
             self.__dict__.update(kw)
 
+        def get(self, key, default=None):
+            # As frappe's Document: validate reads the round fields through it (S3 K3).
+            return self.__dict__.get(key, default)
+
     frappe = types.ModuleType("frappe")
     frappe._ = lambda s: s
     frappe.session = types.SimpleNamespace(user="Administrator")
@@ -94,7 +98,8 @@ def env(monkeypatch):
     spec.loader.exec_module(mod)
 
     def cycle(name="BCYC-ZZB-2026"):
-        doc = mod.BudgetCycle(name=name, scenario_id="ZZB", fiscal_year="2026", doctype="Budget Cycle")
+        doc = mod.BudgetCycle(name=name, scenario_id="ZZB", fiscal_year="2026", rate_set="ZZRS",
+                              doctype="Budget Cycle")
         doc.save = lambda *a, **k: pytest.fail("on_submit/on_cancel must not save")
         return doc
 

@@ -63,8 +63,9 @@ from konsol.consolidation_policy_model import (
     account_problems,
     required_accounts,
 )
-from konsol.group_rates import true_rate
+from konsol.group_rates import actuals_rate_set, true_rate
 from konsol.period_status import PeriodNotDeclared, assert_open, assert_open_between
+from konsol.workflows import set_cancelled_state
 
 #: The Result fields ``validate`` fills from the model, in the form's order.
 RESULT_FIELDS = (
@@ -232,6 +233,8 @@ class BusinessCombination(Document):
                     action="cancel a business combination")
         self._assert_not_sold()
         self._assert_holding_span_open()
+        # After the gates: the installed workflow's docstatus-2 state (#529).
+        set_cancelled_state(self)
 
     def _assert_holding_span_open(self):
         """Undoing the approval cancels or clears the Ownership Period it
@@ -456,9 +459,10 @@ class BusinessCombination(Document):
                 return 1.0
             rows = frappe.get_all(
                 "Group Exchange Rate",
+                # konsol#348: a deal is actuals, translated at the actuals set's rate
                 filters={"docstatus": 1, "from_currency": currency, "to_currency": group_currency,
                          "fiscal_year": period["fiscal_year"], "fiscal_period": period["fiscal_period"],
-                         "rate_type": "Closing"},
+                         "rate_type": "Closing", "rate_set": actuals_rate_set()},
                 fields=["quote", "quoted_per"],
                 limit_page_length=1,
                 order_by="modified desc",

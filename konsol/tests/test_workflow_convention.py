@@ -75,6 +75,68 @@ def test_a_workflow_on_a_non_submittable_doctype_never_submits_or_cancels():
         assert not bad, f"{name}: non-submittable doctype, states not doc_status 0: {bad}"
 
 
+#: Submittable doctypes whose controller does not call set_cancelled_state,
+#: with the reason. An exempt doctype's workflow must still reach its
+#: docstatus-2 state by a transition (checked below): apply_workflow sets the
+#: next state before it calls cancel(). Build Approval is not here: it is not
+#: submittable, so it is never cancelled, and the test above keeps all its
+#: states at doc_status 0.
+CANCEL_STATE_EXEMPT = {
+    # J06 (konsol#305) is kept (coordinator, 15 Nov 2026, on #529): the Reverse
+    # transition is the governed path and sets Reversed; before_cancel refuses a
+    # direct cancel whose status is not a docstatus-2 state, so a script's
+    # doc.cancel() never lands an approved state at docstatus 2.
+    "Consolidation Journal": "J06: a direct cancel is refused; the Reverse transition sets Reversed",
+}
+
+
+def _controller_for(document_type):
+    snake = document_type.lower().replace(" ", "_")
+    found = glob.glob(os.path.join(APP_DIR, "*", "doctype", snake, f"{snake}.py"))
+    assert len(found) == 1, f"{document_type}: expected one controller, found {found}"
+    with open(found[0]) as f:
+        src = f.read()
+    tree = ast.parse(src)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef)
+               and n.name == document_type.replace(" ", ""))
+    return os.path.relpath(found[0], APP_DIR), src, cls
+
+
+def test_a_submittable_workflow_has_a_docstatus_2_state_that_the_cancel_sets():
+    """konsol#529, option (b): Frappe's plain Cancel sets docstatus 2 and no
+    workflow state, and no shipped workflow had a transition into its
+    docstatus-2 state, so a cancelled document showed "Approved". Every
+    submittable workflow has a docstatus-2 state, and its controller's
+    before_cancel calls konsol.workflows.set_cancelled_state(self), which
+    reads that state from the Workflow as the site has it. A doctype that
+    may skip this is named in CANCEL_STATE_EXEMPT, with its reason."""
+    checked = 0
+    for name, wf in _workflows():
+        doctype = wf["document_type"]
+        if not _is_submittable(doctype):
+            continue
+        checked += 1
+        cancelled = [s["state"] for s in wf["states"] if str(s["doc_status"]) == "2"]
+        assert cancelled, f"{name}: no docstatus-2 state; a cancelled document would keep its approved state"
+        if doctype in CANCEL_STATE_EXEMPT:
+            assert any(t["next_state"] in cancelled for t in wf["transitions"]), (
+                f"{name}: exempt from set_cancelled_state, so a transition must reach {cancelled}")
+            continue
+        path, src, cls = _controller_for(doctype)
+        assert "from konsol.workflows import set_cancelled_state" in src, f"{path}: import the shared helper"
+        before_cancel = next((n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "before_cancel"), None)
+        assert before_cancel is not None, f"{path}: {cls.name} has no before_cancel"
+        assert "set_cancelled_state(self)" in ast.unparse(before_cancel), (
+            f"{path}: {cls.name}.before_cancel does not set the docstatus-2 state")
+    assert checked, "no submittable workflow checked — the test would be vacuous"
+
+
+def test_cancel_state_exemptions_name_a_real_submittable_workflow():
+    workflow_doctypes = {wf["document_type"] for _, wf in _workflows() if _is_submittable(wf["document_type"])}
+    assert set(CANCEL_STATE_EXEMPT) <= workflow_doctypes, set(CANCEL_STATE_EXEMPT) - workflow_doctypes
+    assert all(CANCEL_STATE_EXEMPT.values()), "every exemption carries its reason"
+
+
 def _controllers():
     for py in glob.glob(os.path.join(APP_DIR, "*", "doctype", "*", "*.py")):
         if py.endswith("__init__.py") or "/tests/" in py:

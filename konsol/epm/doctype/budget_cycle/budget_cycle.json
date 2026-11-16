@@ -48,6 +48,35 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "rate_set",
+      "fieldtype": "Link",
+      "label": "Rate Set",
+      "options": "Rate Set",
+      "reqd": 1,
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "description": "The Rate Set this Cycle's budget is translated at: the approved Group Exchange Rates and Historical Equity Rates of that set, for this fiscal year (konsol#348 S4). Declared per Cycle, never defaulted (BUD-3): choose the set flagged Is Actuals to budget at actual rates, or a set of your own for planning rates. Editable while the Cycle is a draft; Approve freezes it, and the Input Fingerprint stamped then covers the set and its rates."
+    },
+    {
+      "fieldname": "as_of_date",
+      "set_only_once": 1,
+      "fieldtype": "Date",
+      "label": "As-of Date",
+      "in_list_view": 1,
+      "in_standard_filter": 1,
+      "depends_on": "eval:doc.scenario_type=='forecast'",
+      "mandatory_depends_on": "eval:doc.scenario_type=='forecast'",
+      "description": "The forecast round's as-of date: the actuals cut-off the round forecasts from. Only a forecast scenario has rounds (#348 QB8): required there, where Scenario, Fiscal Year and As-of Date identify the round and each round holds one live Cycle; refused on every other scenario type. A rolling round that crosses the year end is one Cycle per fiscal year, all with this date (Q24). Set once: it is part of the Cycle's name."
+    },
+    {
+      "fieldname": "horizon_periods",
+      "fieldtype": "Int",
+      "label": "Horizon (Periods)",
+      "depends_on": "eval:doc.scenario_type=='forecast'",
+      "mandatory_depends_on": "eval:doc.scenario_type=='forecast'",
+      "description": "How many periods the forecast round covers from its as-of date, 1 or more. Required on a forecast scenario, refused on every other type. The horizon may run past this fiscal year: the next year's part is its own Cycle with the same As-of Date (Q24)."
+    },
+    {
       "fieldname": "col_break_1",
       "fieldtype": "Column Break"
     },
@@ -68,6 +97,14 @@
       "in_list_view": 1,
       "in_standard_filter": 1,
       "description": "Set by the installed Budget Cycle workflow: Draft, Pending Approval, Approved. Approve is the submit."
+    },
+    {
+      "fieldname": "input_fingerprint",
+      "fieldtype": "Data",
+      "label": "Input Fingerprint",
+      "read_only": 1,
+      "no_copy": 1,
+      "description": "Stamped at Approve: a hash of the inputs this Cycle approved (its annual figures, entry lines, the spread weights they use, and the approved rates of its Rate Set for this year). Recomputed on request (konsol.epm.budget_fingerprint.check_input_fingerprint): a mismatch means an input changed after approval. It reports; what follows is the approver's call (BUD-11-3)."
     },
     {
       "fieldname": "amended_from",
@@ -151,5 +188,5 @@
       "export": 1
     }
   ],
-  "search_fields": "scenario_id,fiscal_year"
+  "search_fields": "scenario_id,fiscal_year,as_of_date,rate_set"
 }

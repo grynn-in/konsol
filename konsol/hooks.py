@@ -44,6 +44,9 @@ fixtures = [
 # regenerate_dbt_vars last: install_defaults' Measures apply nothing under
 # in_install (#351 review), so the vars are written once, after the seeding.
 after_install = ["konsol.install.create_roles", "konsol.workflows.install_workflows",
+                 # konsol#348: the Rate Set a fresh site's actuals rates name; a patch
+                 # does the same for an existing site (fresh installs skip patches)
+                 "konsol.consolidation.doctype.rate_set.rate_set.ensure_actual_set",
                  "konsol.defaults.install_defaults", "konsol.desk_blocks.install_custom_blocks",
                  "konsol.brand.set_default_if_blank", "konsol.install.regenerate_dbt_vars"]
 # Fills a fresh site's warehouse (#142): queues reconcile_all as a job after
@@ -187,6 +190,10 @@ _dbt_trigger_doctypes = [
     # on_submit / on_cancel request the build.
     "Business Combination",
     "Business Disposal",
+    # K9b (konsol#269): a submitted Cost Allocation Run requests the isolated
+    # allocation build (DOCTYPE_BUILD_MAP). Not a consolidation input: its
+    # build never reaches gold_fully_consolidated_tb.
+    "Cost Allocation Run",
     # NOT "Entity" (konsol#110). Its build is requested from the controller,
     # and only when a field the warehouse reads changes — listing it here would
     # ask an EPM Admin to approve a consolidation rebuild for a renamed

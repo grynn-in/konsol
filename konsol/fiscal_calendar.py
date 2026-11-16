@@ -24,6 +24,7 @@ _PERIOD_DATA = {
     "Assertion Run": False,
     "TB Exception": True,
     "Budget Entry": False,
+    "Cost Allocation Run": True,
 }
 
 #: Doctypes whose documents carry a fiscal year + period that must be declared.

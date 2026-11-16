@@ -27,11 +27,14 @@ def _fx_rates(execute):
     exec(compile(ast.Module(body=keep, type_ignores=[]), API, "exec"), ns)
     ch = types.ModuleType("konsol.clickhouse")
     ch.execute = execute
+    gr = types.ModuleType("konsol.group_rates")
+    gr.actuals_rate_set = lambda: "ACTUAL"   # konsol#348: the set flagged Is Actuals
     fn = ns["fx_rates"]
 
     def call(**kw):
-        saved = {n: sys.modules.get(n) for n in ("konsol", "konsol.clickhouse")}
+        saved = {n: sys.modules.get(n) for n in ("konsol", "konsol.clickhouse", "konsol.group_rates")}
         sys.modules["konsol.clickhouse"] = ch
+        sys.modules["konsol.group_rates"] = gr
         sys.modules.setdefault("konsol", types.ModuleType("konsol"))
         try:
             return fn(**kw)
@@ -96,20 +99,26 @@ def test_filters_are_bound_as_param_prefixed_http_parameters():
                    fiscal_period=12, as_of="2099-12-31", limit="9999")
     [(sql, params)] = calls
     assert params == {"param_fc": "JPY", "param_tc": "USD", "param_rt": "Closing", "param_fy": 2099,
-                      "param_fp": 12, "param_asof": "2099-12-31"}
-    for bound in ("{fc:String}", "{tc:String}", "{rt:String}", "{fy:UInt16}", "{fp:UInt8}", "{asof:Date}"):
+                      "param_fp": 12, "param_asof": "2099-12-31", "param_rs": "ACTUAL"}
+    for bound in ("{fc:String}", "{tc:String}", "{rt:String}", "{fy:UInt16}", "{fp:UInt8}", "{asof:Date}",
+                  "{rs:String}"):
         assert bound in sql, bound
     assert ("FROM epm_staging.group_exchange_rates INNER JOIN (SELECT fiscal_year, "
             "fiscal_period, min(start_date) AS start_date FROM epm_staging.fiscal_periods "
             "GROUP BY fiscal_year, fiscal_period) AS fp USING (fiscal_year, fiscal_period) "
             "WHERE" in sql)
     assert "LIMIT 5000 " in sql
-    assert " rate, document " in sql, "the true rate, as published"
+    assert " rate, document, rate_set " in sql, "the true rate, as published, with its set"
     assert "silver_exchange_rates" not in sql and "exchange_rate_type" not in sql, "never the ERP feed"
     assert out == {"rows": [{"from_currency": "JPY", "rate": 0.006607}], "count": 1}
+    # konsol#348: no filter still means the actuals set, never every set; another
+    # set is read by name
     calls.clear()
     fx_rates()
-    assert calls[0][1] == {} and " WHERE " not in calls[0][0]
+    assert calls[0][1] == {"param_rs": "ACTUAL"} and " WHERE rate_set = {rs:String} " in calls[0][0], calls[0]
+    calls.clear()
+    fx_rates(rate_set="BUDGET_2027")
+    assert calls[0][1] == {"param_rs": "BUDGET_2027"}
 
 
 def test_fx_rates_uses_execute_helper():

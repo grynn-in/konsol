@@ -57,11 +57,12 @@ SIGNATURES = {
     "EPM_CREDIT": ["entity", "year", "period", "account", "dimensions",
                    "hierarchy", "node"],
     "EPMSAVE": ["amount", "entity", "year", "period", "account", "scenarioId",
-                "layer", "dimensions", "hierarchy", "node", "currency", "amountBasis"],
+                "layer", "dimensions", "hierarchy", "node", "currency", "amountBasis", "asOfDate"],
 }
 
-#: EPMSAVE's last two arguments, which the server requires and never
-#: defaults (S2-X3). Appended so that no existing argument moves.
+#: EPMSAVE's currency and amount basis, which the server requires and never
+#: defaults (S2-X3). Appended so that no existing argument moves; asOfDate
+#: (S3 K5) follows them, optional for every scenario but a forecast.
 _SAVE_TAIL = ["EUR", "Movement"]
 
 
@@ -70,7 +71,8 @@ def _filled(fn, n, pad):
     EPMSAVE also gets its currency and amount basis in their own slots."""
     args = ([100] if fn == "EPMSAVE" else []) + list(_READ)
     if fn == "EPMSAVE":
-        return args + [pad] * (len(n) - len(args) - len(_SAVE_TAIL)) + _SAVE_TAIL
+        at = n.index("currency")
+        return args + [pad] * (at - len(args)) + _SAVE_TAIL + [pad] * (len(n) - at - len(_SAVE_TAIL))
     return args + [pad] * (len(n) - len(args))
 
 

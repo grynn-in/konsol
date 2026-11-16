@@ -22,9 +22,10 @@ WORKSPACE = ("Workspace", "Budget")
 
 
 class _Site:
-    def __init__(self, records):
+    def __init__(self, records, users=()):
         self.records = dict(records)  # (doctype, name) -> module
         self.deleted = []
+        self.users = dict(users)  # user -> default_workspace
 
     def frappe(self):
         site = self
@@ -43,8 +44,18 @@ class _Site:
             site.deleted.append((doctype, name))
             del site.records[(doctype, name)]
 
-        frappe.db = types.SimpleNamespace(exists=exists, get_value=get_value)
+        def get_all(doctype, filters=None, pluck=None, order_by=None, **k):
+            assert doctype == "User" and pluck == "name" and order_by, (doctype, pluck, order_by)
+            return [u for u, ws in site.users.items() if ws == filters["default_workspace"]]
+
+        def set_value(doctype, dn, field, value, *a, update_modified=True, **k):
+            assert (doctype, field, value, update_modified) == ("User", "default_workspace", None, False)
+            for user in dn["name"][1]:
+                site.users[user] = None
+
+        frappe.db = types.SimpleNamespace(exists=exists, get_value=get_value, set_value=set_value)
         frappe.delete_doc = delete_doc
+        frappe.get_all = get_all
         return frappe
 
 
@@ -84,3 +95,16 @@ def test_a_record_of_the_same_name_from_another_module_is_kept():
     """Only konsol's own copies go: a site's own Budget workspace elsewhere is the site's."""
     site = _run(_Site({SIDEBAR: "Accounts", WORKSPACE: "Accounts"}))
     assert site.deleted == []
+
+
+def test_users_pointing_at_the_deleted_workspace_are_cleared_first():
+    """Otherwise any save of such a User fails with LinkValidationError (#530)."""
+    site = _run(_Site({SIDEBAR: "EPM", WORKSPACE: "EPM", ("Workspace", "Close"): "EPM"},
+                      users={"a@example.com": "Budget", "c@example.com": "Close", "d@example.com": None}))
+    assert WORKSPACE in site.deleted
+    assert site.users == {"a@example.com": None, "c@example.com": "Close", "d@example.com": None}
+
+
+def test_users_are_kept_when_the_workspace_is_not_konsols():
+    site = _run(_Site({SIDEBAR: "Accounts", WORKSPACE: "Accounts"}, users={"a@example.com": "Budget"}))
+    assert site.users == {"a@example.com": "Budget"}

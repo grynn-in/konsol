@@ -48,3 +48,20 @@ def test_layer_and_currency_follow_main_account():
         names = [f["fieldname"] for f in json.load(f)["fields"]]
     i = names.index("main_account")
     assert names[i + 1 : i + 3] == ["layer", "currency"]
+
+
+# ---- S3 K6 (QB4 a): the row names its Budget Cycle, the round it belongs to -----------
+
+def test_cycle_is_a_required_link_to_budget_cycle_set_once():
+    field = _field("cycle")
+    assert field["fieldtype"] == "Link" and field["options"] == "Budget Cycle"
+    assert field["label"] == "Budget Cycle"
+    assert field["reqd"] == 1 and field["set_only_once"] == 1
+    assert field.get("in_list_view") == 1
+    assert "round" in field["description"] and "forecast" in field["description"]
+
+
+def test_cycle_follows_fiscal_year():
+    with open(BAI_JSON) as f:
+        names = [f["fieldname"] for f in json.load(f)["fields"]]
+    assert names[names.index("fiscal_year") + 1] == "cycle"
