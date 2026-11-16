@@ -379,6 +379,26 @@ def cycle_round_problems(scenario_type, as_of_date, horizon_periods):
     return problems
 
 
+def cycle_rate_set_problems(scenario_type, rate_set):
+    """Why a Budget Cycle's Rate Set is refused, one sentence, or [] (S4 K5,
+    BUD-3: the rate policy is declared per Cycle, with no default).
+
+    The set names the Group Exchange Rates and Historical Equity Rates the
+    Cycle's budget is translated at (S4-Q1 c). Any set the site holds is a
+    legitimate choice, the actuals set included: the rule is that the Cycle
+    says so. A blank is refused naming the field and the type. An actual-type
+    Cycle cannot exist (the controller refuses it first); were one judged
+    here, it is refused too, never handed the set flagged Is Actuals."""
+    if scenario_type == ACTUAL:
+        return [f"A {ACTUAL} Cycle has no Rate Set to declare: actuals are translated at the Rate Set "
+                "flagged Is Actuals, and a Budget Cycle never targets an actual scenario."]
+    if not (rate_set or "").strip():
+        return [f"A {scenario_type} Cycle needs a Rate Set: the Group Exchange Rates and Historical Equity "
+                "Rates its budget is translated at. Name the set (BUD-3: declared per Cycle, never "
+                "defaulted), or create one under Rate Set first."]
+    return []
+
+
 def in_round(scenario_type, cycle, as_of_date):
     """Whether `cycle`, a Cycle row of the pair as konsol.budget_intake.lock_cycles
     returns it ({name, docstatus, workflow_state, as_of_date}), is in the round

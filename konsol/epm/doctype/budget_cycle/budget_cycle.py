@@ -20,6 +20,24 @@ holds per round, so the rounds of one pair live side by side, and its name
 carries the as-of date. A rolling round that crosses the year end is one
 Cycle per fiscal year, sharing the as-of date (Q24 a).
 
+Every Cycle names the Rate Set its budget is translated at (S4 K5, BUD-3:
+declared per Cycle, no default; the rule is budget_bulk_model
+.cycle_rate_set_problems). It is editable while the Cycle is a draft and
+frozen by the submit: not set-once, because unlike the scenario, the year and
+the as-of date it is not part of the Cycle's identity or name, and a draft's
+set may be corrected before anyone approves it; never allow_on_submit, because
+the Input Fingerprint stamped at Approve covers the set and its rates.
+
+An approved Cycle is one row of ``epm_staging.budget_cycles`` (S4 K6, S4-Q2 a):
+it enters on submit and leaves on cancel, after the commit, so the warehouse
+reads the Rate Set, the scenario and the round of the ``cycle`` its fact rows
+name; reconcile_all repairs the table like every other.
+
+Approve stamps ``input_fingerprint`` (S4 K8, S4-Q5 a; BUD-11-3): the hash of
+the inputs approved (konsol.epm.budget_fingerprint), read-only and frozen by
+the submit. ``check_input_fingerprint`` recomputes it on request and reports a
+mismatch; it decides nothing.
+
 Interim rule until S6 (posted on #348, 15 Nov 2026): a forecast pair holds at
 most ONE approved round, because the readers still sum rounds across the
 cycle. before_submit refuses the second Approve by name
@@ -35,6 +53,23 @@ from konsol.workflows import set_cancelled_state
 
 
 class BudgetCycle(Document):
+    #: S4 K6 (S4-Q2 a): the approved Cycles, one row each, so the warehouse
+    #: reads a Cycle's Rate Set, scenario and round by the `cycle` name on its
+    #: fact rows. Submitted only, by the doctype's is_submittable
+    #: (resolve_sync_filters). Keys in the DDL's column order
+    #: (clickhouse._REFERENCE_TABLE_DDL, identical to konsolidat's init-db.sql).
+    #: Not scenario_type: the warehouse reads it from scenario_definitions by
+    #: scenario_id; a copy here would be a second source of truth.
+    CH_TABLE = "epm_staging.budget_cycles"
+    CH_FIELD_MAP = {
+        "name": "name",
+        "scenario_id": "scenario_id",
+        "fiscal_year": "fiscal_year",
+        "rate_set": "rate_set",
+        "as_of_date": "as_of_date",
+        "horizon_periods": "horizon_periods",
+    }
+
     def validate(self):
         """Reject 'actual' scenarios.
 
@@ -68,11 +103,14 @@ class BudgetCycle(Document):
 
     def _refuse_bad_round(self):
         """S3 K3: a forecast Cycle needs its round (as-of date, horizon of 1 or
-        more); any other type refuses the round fields (Q23 a, QB8 a). Every
-        problem is told together, before the pair is locked: a Cycle whose
-        round is not stated cannot be judged against the pair's rounds."""
+        more); any other type refuses the round fields (Q23 a, QB8 a). S4 K5
+        (BUD-3): every Cycle names the Rate Set it is translated at; nothing
+        defaults it (budget_bulk_model.cycle_rate_set_problems). Every problem
+        is told together, before the pair is locked: a Cycle whose round is
+        not stated cannot be judged against the pair's rounds."""
         problems = M.cycle_round_problems(self.scenario_type, self.get("as_of_date"),
                                           self.get("horizon_periods"))
+        problems += M.cycle_rate_set_problems(self.scenario_type, self.get("rate_set"))
         if problems:
             frappe.throw("\n".join(problems), frappe.ValidationError)
 
@@ -172,8 +210,14 @@ class BudgetCycle(Document):
     def before_submit(self):
         """Approve is the submit (the workflow's Approve calls doc.submit(),
         frappe/model/workflow.py), so the interim rule runs here, after
-        validate and before anything is written."""
+        validate and before anything is written; then the input fingerprint
+        is stamped (S4 K8, S4-Q5 a): the hash of the inputs being approved,
+        set here so it lands with the approval and nothing saves in on_submit.
+        Imported here: the controller is loaded under test without it."""
         self._refuse_second_approved_forecast_round()
+        from konsol.epm.budget_fingerprint import compute
+
+        self.input_fingerprint = compute(self)
 
     def _refuse_second_approved_forecast_round(self):
         """INTERIM RULE, REMOVED IN S6 (konsol#348, review of #540 /
@@ -208,7 +252,8 @@ class BudgetCycle(Document):
                 frappe.ValidationError)
 
     def on_submit(self):
-        """Approved: the Cycle's rows enter the warehouse, after the commit."""
+        """Approved: the Cycle and its rows enter the warehouse, after the commit."""
+        self._resync_cycle()
         self._resync_annual_input()
         self._resync_entries()
 
@@ -222,9 +267,21 @@ class BudgetCycle(Document):
         set_cancelled_state(self)
 
     def on_cancel(self):
-        """Cancelled: the Cycle's rows leave the warehouse, after the commit."""
+        """Cancelled: the Cycle and its rows leave the warehouse, after the commit."""
+        self._resync_cycle()
         self._resync_annual_input()
         self._resync_entries()
+
+    def _resync_cycle(self):
+        """Queue the Budget Cycle sync, once per transaction, after the commit
+        (S4 K6). The sync replaces the whole table with the submitted Cycles,
+        so one covers every Cycle in the transaction; a draft save queues
+        nothing, because a draft is not in the table either way. Imported
+        here, as the two syncs below import theirs: the controller is loaded
+        under test without clickhouse.py."""
+        from konsol.clickhouse import sync_doctype_after_commit
+
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     @staticmethod
     def _resync_annual_input():

@@ -27,6 +27,7 @@ LABELS = {
     # --- Close: rates ----------------------------------------------------
     "Group Exchange Rate": "Group Exchange Rates",
     "Historical Equity Rate": "Historical Equity Rates",
+    "Rate Set": "Rate Sets",
     # --- Close: intercompany ---------------------------------------------
     "IC Balance": "IC Balances",
     # --- Close: adjustments ----------------------------------------------

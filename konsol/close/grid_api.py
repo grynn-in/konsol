@@ -157,8 +157,9 @@ def _rates(key):
     approved, drafts = set(), set()
     for r in frappe.get_all(
         "Group Exchange Rate",
+        # konsol#348: the actuals set's rates; a budget set's are not the period's
         filters={"fiscal_year": key[0], "fiscal_period": key[1], "rate_type": CLOSING,
-                 "docstatus": ["<", 2]},
+                 "docstatus": ["<", 2], "rate_set": group_rates.actuals_rate_set()},
         fields=["from_currency", "to_currency", "docstatus"], limit_page_length=0,
     ):
         (approved if int(r["docstatus"]) == 1 else drafts).add(

@@ -10,8 +10,10 @@ shown as "the rates" anywhere; it is only an input to Pre-fill from ERP.
 
 - :func:`build_fx_query` is the **pure testable core**. It builds an
   injection-safe ``SELECT`` over the governed table, filterable by from/to
-  currency, as-of date (a period applies from its first day), rate type and
-  source. Currency codes are validated against ``^[A-Z]{3}$`` and every other
+  currency, as-of date (a period applies from its first day), rate type,
+  source and rate set (konsol#348: every rate names its Rate Set; the SPA's
+  "the rates" are the set flagged Is Actuals, which :func:`get_fx_rates`
+  fills in when no set is asked for). Currency codes are validated against ``^[A-Z]{3}$`` and every other
   filter against a strict allow-list pattern, so no caller-supplied value
   reaches the SQL string unchecked.
 - :func:`normalize_fx_rows` shapes raw ClickHouse result rows (tuples + a
@@ -127,8 +129,12 @@ def build_fx_query(filters: Optional[Dict] = None) -> str:
     if src:
         where.append(f"source = '{_validate_token(src, 'source')}'")
 
+    rs = filters.get("rate_set")
+    if rs:
+        where.append(f"rate_set = '{_validate_token(rs, 'rate set')}'")
+
     sql = (
-        "SELECT from_currency, to_currency, rate, as_of, rate_type, source\n"
+        "SELECT from_currency, to_currency, rate, as_of, rate_type, source, rate_set\n"
         "FROM (\n"
         "    SELECT\n"
         "        from_currency,\n"
@@ -136,7 +142,8 @@ def build_fx_query(filters: Optional[Dict] = None) -> str:
         "        rate,\n"
         "        fp.start_date AS as_of,\n"
         "        rate_type,\n"
-        f"        '{GOVERNED_SOURCE}' AS source\n"
+        f"        '{GOVERNED_SOURCE}' AS source,\n"
+        "        rate_set\n"
         f"    FROM {FX_TABLE}\n"
         f"    INNER JOIN {FISCAL_PERIODS_DEDUP_SQL} AS fp\n"
         "        USING (fiscal_year, fiscal_period)\n"
@@ -159,8 +166,9 @@ _NORMALIZE_MAP = {
     "rate_type": "type",
     "exchange_rate_type": "type",
     "source": "source",
+    "rate_set": "rate_set",
 }
-_OUT_KEYS = ("from", "to", "rate", "as_of", "type", "source")
+_OUT_KEYS = ("from", "to", "rate", "as_of", "type", "source", "rate_set")
 
 
 def normalize_fx_rows(rows: Optional[Sequence], cols: Optional[Sequence]) -> List[Dict]:
@@ -192,9 +200,16 @@ def get_fx_rates(**filters) -> List[Dict]:
     (``konsol.clickhouse.execute``, function-local import so the host core stays
     frappe-free) with ``TabSeparatedWithNames`` so the header gives us the
     column names, then shapes the rows via :func:`normalize_fx_rows`.
+
+    konsol#348: with no ``rate_set`` asked for, the rates are the set flagged
+    Is Actuals (refused by name while none is flagged); never every set.
     """
     from konsol.clickhouse import execute
+    from konsol.group_rates import actuals_rate_set
 
+    filters = dict(filters or {})
+    if not filters.get("rate_set"):
+        filters["rate_set"] = actuals_rate_set()
     sql = build_fx_query(filters)
     raw = execute(sql + "\nFORMAT TabSeparatedWithNames")
     lines = (raw or "").splitlines()

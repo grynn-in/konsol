@@ -11,6 +11,13 @@ warehouse matches a rate on (owning group, entity, account, to_currency)
 against each consolidating group's reporting currency. Rejected: one
 presentation currency per tree (refuses a common structure) and a warning on
 the form only (leaves a wrong rate at one level).
+
+konsol#348 (S4-Q1 option c, 15 Nov 2026): a rate names its ``rate_set`` and
+the set is part of the key, so one tranche carries one rate per set (the
+actuals set for the actuals translation, a budget's own set for its budget).
+The name digests it, the cancel's next-tranche search filters on it, the
+warehouse sorts on it (last in ORDER BY), and a blank set is refused. A patch
+stamped every existing rate with the set flagged Is Actuals and renamed it.
 """
 import frappe
 from frappe.model.document import Document
@@ -73,6 +80,7 @@ class HistoricalEquityRate(Document):
         "rate_date": "rate_date",
         "historical_rate": "historical_rate",
         "to_currency": "to_currency",
+        "rate_set": "rate_set",
     }
 
     # The From currency, for the form (Deepak Pai, 5 Nov 2026: the form
@@ -90,25 +98,37 @@ class HistoricalEquityRate(Document):
         return frappe.db.get_value("Entity", self.data_area_id, "functional_currency")
 
     def autoname(self):
-        """Collision-safe name for the (group, entity, account, date, to_currency) grain.
+        """Collision-safe name for the (group, entity, account, date, to_currency, rate_set) grain.
 
         The keys are free text and were packed into a `format:` name that
         could blow Frappe's 140-char cap and silently truncate/collide
         (grynn-in/konsolidat#92, finding #6). digest_name keeps a readable head
         and appends a hash of the exact key tuple so distinct grains never
         collide. to_currency is in the tuple (konsol#374): the EUR and the USD
-        rate for one tranche are two documents.
+        rate for one tranche are two documents; so is rate_set (konsol#348):
+        the actuals and the budget rate for one tranche are two documents.
         """
         self.name = digest_name(
             "HER",
             [self.consolidation_group, self.data_area_id,
-             self.main_account, self.rate_date, self.to_currency],
+             self.main_account, self.rate_date, self.to_currency, self.rate_set],
         )
 
     def validate(self):
+        self._validate_rate_set()
         self._validate_positive_rate()
         self._validate_references()
         self._validate_to_currency()
+
+    def _validate_rate_set(self):
+        """Blank is refused (konsol#348): the field is reqd, but a patch, an
+        import or ignore_mandatory skips that, and a rate must never fall into
+        a set by default. Which set is right is the user's declaration."""
+        if not self.rate_set:
+            frappe.throw(
+                "Rate Set is required: the set this rate belongs to (the one flagged Is Actuals "
+                "for actuals, a budget's own set for a budget). Nothing is assumed (konsol#348).",
+                frappe.MandatoryError)
 
     def _validate_positive_rate(self):
         """Reject a non-positive historical rate (#92, finding #4).
@@ -247,12 +267,14 @@ class HistoricalEquityRate(Document):
     def before_cancel(self):
         """Cancel only while every period the rate applies to is open (#136).
         A rate applies from the first period its date affects until the next
-        rate for the same group, entity, account and To currency (one series
-        per presentation currency, konsol#374), or indefinitely."""
+        rate for the same group, entity, account, To currency and Rate Set
+        (one series per presentation currency, konsol#374, and per set,
+        konsol#348), or indefinitely."""
         next_rate = frappe.db.get_value(
             "Historical Equity Rate",
             {"consolidation_group": self.consolidation_group, "data_area_id": self.data_area_id,
-             "main_account": self.main_account, "to_currency": self.to_currency, "docstatus": 1,
+             "main_account": self.main_account, "to_currency": self.to_currency,
+             "rate_set": self.rate_set, "docstatus": 1,
              "rate_date": [">", self.rate_date], "name": ["!=", self.name]},
             "rate_date", order_by="rate_date asc")
         assert_open_between(self.rate_date, first_period_affected(next_rate) if next_rate else None,

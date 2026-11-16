@@ -9,6 +9,8 @@ frappe at top level. The frappe/CH-bound ``get_fx_rates`` API is guarded with
 ``importorskip``.
 """
 import os
+import sys
+import types
 
 import pytest
 
@@ -175,6 +177,7 @@ def test_normalize_fx_rows_shaping():
             "as_of": "2026-01-31",
             "type": "Spot",
             "source": "d365",
+            "rate_set": None,
         }
     ]
 
@@ -202,9 +205,9 @@ def test_normalize_fx_rows_multiple():
     out = fx.normalize_fx_rows(rows, cols)
     assert len(out) == 2
     assert out[1]["from"] == "JPY"
-    # every record carries all six canonical keys
+    # every record carries all seven canonical keys (rate_set since konsol#348)
     for rec in out:
-        assert set(rec) == {"from", "to", "rate", "as_of", "type", "source"}
+        assert set(rec) == {"from", "to", "rate", "as_of", "type", "source", "rate_set"}
 
 
 # ---- frappe/CH-bound API (guarded) -----------------------------------------
@@ -218,3 +221,35 @@ def test_get_fx_rates_exists_and_callable():
 def test_get_fx_rates_smoke():
     frappe = pytest.importorskip("frappe")  # noqa: F841 - skips on host
     assert callable(fx.get_fx_rates)
+
+
+# ---- the rate set (konsol#348) ----------------------------------------------
+
+def test_build_fx_query_selects_and_filters_the_rate_set():
+    sql = fx.build_fx_query({"rate_set": "BUDGET_2027"})
+    assert "rate_set = 'BUDGET_2027'" in sql
+    assert "rate_set" in sql.split("FROM")[0], "the set is in the output columns"
+    with pytest.raises(ValueError):
+        fx.build_fx_query({"rate_set": "x'; DROP TABLE y; --"})
+
+
+def test_get_fx_rates_reads_the_actuals_set_unless_told_otherwise():
+    """The SPA asks for 'the rates': those are the actuals set's. Another set is
+    read only by name; no set is never 'every set'."""
+    calls = []
+    ch = types.ModuleType("konsol.clickhouse")
+    ch.execute = lambda sql, *a, **k: calls.append(sql) or ""
+    gr = types.ModuleType("konsol.group_rates")
+    gr.actuals_rate_set = lambda: "ACTUAL"
+    saved = {n: sys.modules.get(n) for n in ("konsol.clickhouse", "konsol.group_rates")}
+    sys.modules.update({"konsol.clickhouse": ch, "konsol.group_rates": gr})
+    try:
+        assert fx.get_fx_rates() == []
+        assert fx.get_fx_rates(rate_set="BUDGET_2027") == []
+    finally:
+        for n, old in saved.items():
+            if old is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = old
+    assert "rate_set = 'ACTUAL'" in calls[0] and "rate_set = 'BUDGET_2027'" in calls[1], calls

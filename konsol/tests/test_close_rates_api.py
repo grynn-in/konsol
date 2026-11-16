@@ -143,7 +143,7 @@ def _ger(name, frm, to, rate_type, quote, docstatus, owner=ANALYST, quoted_per="
             "docstatus": docstatus, "owner": owner,
             "modified": modified or datetime(2025, 7, 31, 10, 0, 0),
             "change_reason": change_reason, "source": source,
-            "fiscal_year": 2025, "fiscal_period": 7, "supersedes": supersedes}
+            "fiscal_year": 2025, "fiscal_period": 7, "supersedes": supersedes, "rate_set": "ACTUAL"}
 
 
 def _earlier(name, frm, to, rate_type, quote, fy, fp, quoted_per="1"):
@@ -331,19 +331,20 @@ def _frappe(site):
             # rows, answered from site.docs on the five grain values.
             assert as_dict, "the key's rates are read as_dict"
             site.locking_values.append(tuple(values))
-            to, frm, fy, fp, rate_type = values
+            to, frm, fy, fp, rate_type, rate_set = values   # konsol#348: the set is in the key
             grain = {"to_currency": to, "from_currency": frm, "fiscal_year": fy,
-                     "fiscal_period": fp, "rate_type": rate_type}
+                     "fiscal_period": fp, "rate_type": rate_type, "rate_set": rate_set}
             return [{"name": r["name"], "docstatus": r["docstatus"],
                      "supersedes": r.get("supersedes")}
                     for r in site.docs if _match(r, grain) and r["docstatus"] in (0, 1)]
         assert "docstatus = 1" in query, query
         assert as_dict, "the earlier approved rates are read as_dict"
-        fy, fy2, fp = values
-        assert fy == fy2
+        assert "rate_set = %s" in query, "konsol#348: earlier rates of the actuals set only"
+        rate_set, fy, fy2, fp = values
+        assert fy == fy2 and rate_set == "ACTUAL"
         return [dict(r) for r in site.earlier
-                if r["docstatus"] == 1 and (r["fiscal_year"] < fy
-                                            or (r["fiscal_year"] == fy and r["fiscal_period"] < fp))]
+                if r["docstatus"] == 1 and r.get("rate_set", "ACTUAL") == rate_set
+                and (r["fiscal_year"] < fy or (r["fiscal_year"] == fy and r["fiscal_period"] < fp))]
 
     def get_single_value(doctype, field, **k):
         site.reads.append(("single", doctype, field))
@@ -457,6 +458,9 @@ def _group_rates(site):
     gr.PREFILL_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
     gr.true_rate = lambda q, p: float(decimal.Decimal(str(q or 0)) / int(p or 1))
     gr.ch_error_names = lambda e: set()
+    # konsol#348: the Rates screen is the actuals screen; it reads and writes
+    # the one Rate Set flagged Is Actuals
+    gr.actuals_rate_set = lambda: "ACTUAL"
 
     def translation_gaps(fy, fp):
         # (pairs, groups with no reporting currency, entities with no functional currency)
@@ -873,7 +877,8 @@ def test_a_changed_meta_changes_the_quoted_per_options_payload():
 
 SAVE_PARAMS = ["fiscal_year", "fiscal_period", "from_currency", "to_currency", "rate_type",
                "quote", "quoted_per", "change_reason", "name", "supersedes"]
-NEW_KEYS = {"doctype", "to_currency", "from_currency", "rate_type", "fiscal_year",
+# konsol#348: the draft names its set (the actuals set), so ten keys
+NEW_KEYS = {"doctype", "rate_set", "to_currency", "from_currency", "rate_type", "fiscal_year",
             "fiscal_period", "quote", "quoted_per", "change_reason"}
 FORGED = ("docstatus", "source", "erp_quote", "source_note", "owner", "amended_from")
 
@@ -926,7 +931,7 @@ def test_save_rate_creates_a_new_draft_through_insert_with_only_the_nine_keys():
 FR3_LOCKING_READ = (
     "SELECT name, docstatus, supersedes FROM `tabGroup Exchange Rate` "
     "WHERE to_currency = %s AND from_currency = %s AND fiscal_year = %s "
-    "AND fiscal_period = %s AND rate_type = %s AND docstatus IN (0, 1) "
+    "AND fiscal_period = %s AND rate_type = %s AND rate_set = %s AND docstatus IN (0, 1) "
     "ORDER BY modified DESC FOR UPDATE")
 
 
@@ -990,7 +995,7 @@ def _named(site, name="GER-2", **kw):
             "to_currency": "GBP", "rate_type": "Average", "fiscal_year": 2025,
             "fiscal_period": 7, "quote": 0.84, "quoted_per": "1", "change_reason": "old",
             "docstatus": 0, "owner": ANALYST, "source": "ERP pre-fill", "erp_quote": 0.83,
-            "source_note": None, "amended_from": None, "quote_label": "x"}
+            "source_note": None, "amended_from": None, "quote_label": "x", "rate_set": "ACTUAL"}
     data.update(kw)
     doc = _FakeDoc(data)
     site.named[name] = doc
@@ -2962,7 +2967,7 @@ def test_f11_correct_an_approved_rate_saves_a_draft_that_supersedes_it():
     result = _save(site, from_currency="EUR", quote=0.86, change_reason="  " + F11_REASON + " ",
                    supersedes="GER-1")
     dicts = [c for c in site.get_doc_calls if isinstance(c, dict)]
-    assert dicts == [{"doctype": "Group Exchange Rate", "to_currency": "GBP",
+    assert dicts == [{"doctype": "Group Exchange Rate", "rate_set": "ACTUAL", "to_currency": "GBP",
                       "from_currency": "EUR", "rate_type": "Closing", "fiscal_year": 2025,
                       "fiscal_period": 7, "quote": 0.86, "quoted_per": "1",
                       "change_reason": F11_REASON, "supersedes": "GER-1"}], dicts
@@ -3492,7 +3497,7 @@ def test_fr3_a_new_draft_reads_the_key_once_with_a_locking_read_on_the_grain():
     for field in ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"):
         assert ("%s = %%s" % field) in query, (field, query)
     assert "docstatus IN (0, 1)" in query, query
-    assert site.locking_values == [("GBP", "USD", 2025, 7, "Closing")], site.locking_values
+    assert site.locking_values == [("GBP", "USD", 2025, 7, "Closing", "ACTUAL")], site.locking_values
     assert ("get_all", "Group Exchange Rate") not in site.reads, site.reads
 
 
@@ -3502,7 +3507,7 @@ def test_fr3_a_correction_reads_the_key_with_the_locking_read_too():
                    supersedes="GER-1")
     assert result["name"] == "GER-NEW"
     assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
-    assert site.locking_values == [("GBP", "EUR", 2025, 7, "Closing")], site.locking_values
+    assert site.locking_values == [("GBP", "EUR", 2025, 7, "Closing", "ACTUAL")], site.locking_values
 
 
 def test_fr3_failure_path_the_second_correction_is_refused_on_what_the_locking_read_returns():
@@ -3670,3 +3675,27 @@ def test_117f_change_choices_list_one_item_per_holding():
         ("ZZ5B1", O63_SUB, "CG-ZZ_SUBGROUP-", "OP-ZZ5B1-SUB"),
         ("ZZ5B3", O55_GROUP, "CG-ECL_GROUP-", "OP-ZZ5B3-1"),
     ]
+
+
+# ---- the Rates screen is the actuals screen (konsol#348) ------------------------
+
+def test_the_screen_shows_and_writes_the_actuals_set_only():
+    """A budget set's rate for the same key is not this screen's business: it is
+    neither shown as the period's rate nor counted as the existing draft, and a
+    rate saved here is an actuals rate."""
+    site = _Site()
+    budget = _ger("GER-B", "EUR", "GBP", "Closing", 0.80, 1)
+    budget["rate_set"] = "BUDGET_2027"
+    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1), budget]
+    out = _call(site)
+    shown = {c["name"] for row in out["rows"] + out["unrequired"] for c in (row["closing"], row["average"])
+             if c.get("name")}
+    assert "GER-1" in shown and "GER-B" not in shown, shown
+    _save(site, from_currency="EUR", rate_type="Average", quote=0.84)
+    [values] = [c for c in site.get_doc_calls if isinstance(c, dict)]
+    assert values["rate_set"] == "ACTUAL", values
+    assert site.locking_values[-1][-1] == "ACTUAL", site.locking_values
+    # a budget set's draft is not edited from here
+    _named(site, "GER-B2", rate_set="BUDGET_2027", from_currency="USD", rate_type="Closing")
+    with pytest.raises(Exception, match="BUDGET_2027"):
+        _save(site, name="GER-B2")

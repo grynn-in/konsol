@@ -31,17 +31,21 @@ except ModuleNotFoundError:  # host runner without requests — runner skips
 TABLE = "epm_staging.historical_equity_rates"
 #: konsolidat clickhouse/init-db.sql, verbatim (tests/test_historical_equity_rates_ddl.py
 #: there pins the same string).
+#: konsol#348: rate_set follows to_currency and closes the key, with no
+#: DEFAULT (the Replacing-table rule, konsolidat#246). One ALTER still: a table
+#: from before #374 gains both columns, one from before #348 gains the set.
 BODY = (
     "(consolidation_group String, data_area_id String, main_account String, "
     "rate_date Date, historical_rate Decimal(18,6), to_currency LowCardinality(String), "
-    "updated_at DateTime DEFAULT now()) "
+    "rate_set String, updated_at DateTime DEFAULT now()) "
     "ENGINE = ReplacingMergeTree(updated_at) "
-    "ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency)"
+    "ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency, rate_set)"
 )
 UPGRADE = (
     f"ALTER TABLE {TABLE} "
     "ADD COLUMN IF NOT EXISTS to_currency LowCardinality(String) AFTER historical_rate, "
-    "MODIFY ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency)"
+    "ADD COLUMN IF NOT EXISTS rate_set String AFTER to_currency, "
+    "MODIFY ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency, rate_set)"
 )
 
 
@@ -105,19 +109,26 @@ def test_konsol_creates_the_table_with_konsolidats_shape():
     assert f"CREATE TABLE IF NOT EXISTS {TABLE} {BODY}" in statements, statements
 
 
-def test_an_old_table_gains_the_column_and_the_key_in_one_alter():
-    statements = _probe("consolidation_group, data_area_id, main_account, rate_date")
-    alters = [s for s in statements if s.startswith(f"ALTER TABLE {TABLE}")]
-    assert alters == [UPGRADE], alters
+def test_an_old_table_gains_the_columns_and_the_key_in_one_alter():
+    """A table from before konsol#374 (no currency) and one from before
+    konsol#348 (currency, no set) both reach the same key with the one ALTER:
+    ADD COLUMN IF NOT EXISTS skips a column that exists, and MODIFY ORDER BY
+    may name an existing column plus what this ALTER adds."""
+    for key in ("consolidation_group, data_area_id, main_account, rate_date",
+                "consolidation_group, data_area_id, main_account, rate_date, to_currency"):
+        statements = _probe(key)
+        alters = [s for s in statements if s.startswith(f"ALTER TABLE {TABLE}")]
+        assert alters == [UPGRADE], (key, alters)
+        create = next(i for i, s in enumerate(statements) if s.startswith("CREATE TABLE"))
+        assert create < statements.index(UPGRADE), "CREATE IF NOT EXISTS first, then the ALTER"
     assert "DEFAULT" not in UPGRADE
-    create = next(i for i, s in enumerate(statements) if s.startswith("CREATE TABLE"))
-    assert create < statements.index(UPGRADE), "CREATE IF NOT EXISTS first, then the ALTER"
+    assert UPGRADE.index("rate_set String AFTER to_currency") < UPGRADE.index("MODIFY ORDER BY")
 
 
 def test_an_upgraded_table_is_not_altered_again():
     """An ALTER that changes nothing still rewrites metadata_modification_time
     (measured on 24.8): ask first, as the watermark upgrade does."""
-    statements = _probe("consolidation_group, data_area_id, main_account, rate_date, to_currency")
+    statements = _probe("consolidation_group, data_area_id, main_account, rate_date, to_currency, rate_set")
     assert not [s for s in statements if s.startswith("ALTER TABLE")], statements
 
 
@@ -135,7 +146,7 @@ def test_an_unreachable_server_defers_the_upgrade_to_the_next_migrate():
         return ""
 
     m.execute = execute
-    assert m._sorting_key_upgrade_ddl(TABLE, "to_currency", UPGRADE) == []
+    assert m._sorting_key_upgrade_ddl(TABLE, "rate_set", UPGRADE) == []
 
 
 def test_one_helper_serves_the_rates_table_and_the_watermark():
@@ -149,18 +160,21 @@ def test_one_helper_serves_the_rates_table_and_the_watermark():
     # through the same helper (test_ownership_graph_ddl.py)
     assert src.count("_sorting_key_upgrade_ddl(") == 4, "the definition and three call sites"
     assert '_sorting_key_upgrade_ddl(_WATERMARK_TABLE, "reconcile_run_id", _WATERMARK_UPGRADE)' in src
-    assert '_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "to_currency", _HISTORICAL_RATE_UPGRADE)' in src
+    assert '_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "rate_set", _HISTORICAL_RATE_UPGRADE)' in src
+    assert m._REQUIRED_SORTING_KEY_COLUMNS[TABLE] == "rate_set", "a sync into a key without the set is refused"
     assert '_sorting_key_upgrade_ddl(_OWNERSHIP_PERIODS_TABLE, "owner_group", _OWNERSHIP_PERIODS_UPGRADE)' in src
 
 
 # --- a failed upgrade must not let a sync collapse the two currencies ----------
 
-OLD_KEY = "consolidation_group, data_area_id, main_account, rate_date"
-NEW_KEY = OLD_KEY + ", to_currency"
+#: konsol#348: the key a stack from before the set has (to_currency in, rate_set
+#: out), and the two rows that would collapse into one without the set.
+OLD_KEY = "consolidation_group, data_area_id, main_account, rate_date, to_currency"
+NEW_KEY = OLD_KEY + ", rate_set"
 COLUMNS = ["consolidation_group", "data_area_id", "main_account", "rate_date",
-           "historical_rate", "to_currency"]
-ROWS = [["ZZGRP", "ZZNL", "ZZ3000", "2024-01-01", 1.1, "EUR"],
-        ["ZZGRP", "ZZNL", "ZZ3000", "2024-01-01", 1.2, "USD"]]
+           "historical_rate", "to_currency", "rate_set"]
+ROWS = [["ZZGRP", "ZZNL", "ZZ3000", "2024-01-01", 1.1, "EUR", "ACTUAL"],
+        ["ZZGRP", "ZZNL", "ZZ3000", "2024-01-01", 1.2, "EUR", "BUDGET_2027"]]
 
 
 def _stuck_stack(alter_error=RuntimeError("Cannot modify sorting key")):
@@ -194,8 +208,8 @@ def test_a_sync_into_the_old_key_is_refused_by_name_not_merged_silently():
     try:
         m.sync_table(TABLE, COLUMNS, ROWS, force=True)
     except m.SortingKeyStale as e:
-        assert e.table == TABLE and e.column == "to_currency" and e.key == OLD_KEY
-        assert TABLE in str(e) and "to_currency" in str(e)
+        assert e.table == TABLE and e.column == "rate_set" and e.key == OLD_KEY
+        assert TABLE in str(e) and "rate_set" in str(e)
     else:
         raise AssertionError("a sync into the old sorting key must be refused")
     written = [s for s in sql[before:] if s.startswith(("INSERT", "EXCHANGE", "CREATE TABLE", "DROP"))]

@@ -358,7 +358,8 @@ def _api(site):
     modules = {
         "frappe": frappe,
         "konsol": _module("konsol", group_rates=_module(
-            "gr", true_rate=lambda q, per: float(q) / int(per))),
+            "gr", true_rate=lambda q, per: float(q) / int(per),
+            actuals_rate_set=lambda: "ACTUAL")),
         "konsol.close": close,
         "konsol.entity_permissions": _module("e", allowed_entity_codes=lambda: site.allowed),
     }
@@ -433,6 +434,7 @@ def test_closing_vs_average_rate_reads_submitted_rates_into_the_group_currency()
     (filters,) = [f for dt, f in site.calls if dt == "Group Exchange Rate"]
     assert filters["docstatus"] == 1 and filters["to_currency"] == "USD"
     assert filters["fiscal_year"] == 2025
+    assert filters["rate_set"] == "ACTUAL", "konsol#348: the chart shows the actuals set"
 
 
 def test_closing_vs_average_rate_with_no_foreign_currency_in_view_is_a_note():

@@ -12,8 +12,9 @@
  "title_field": "",
  "sort_field": "modified",
  "sort_order": "DESC",
- "description": "The group's governed exchange rates (konsol#103): one Closing and one Average rate per fiscal period, from each currency into a group reporting currency. Group finance enters or pre-fills them from the ERP; submitting is the approval. Translation reads only these.",
+ "description": "The group's governed exchange rates (konsol#103): one Closing and one Average rate per fiscal period, from each currency into a group reporting currency, per Rate Set (konsol#348: the set flagged Is Actuals for actuals, a named set for each budget or forecast). Group finance enters or pre-fills them from the ERP; submitting is the approval. Translation reads only these.",
  "field_order": [
+  "rate_set",
   "to_currency",
   "from_currency",
   "rate_type",
@@ -33,6 +34,17 @@
   "amended_from"
  ],
  "fields": [
+  {
+   "fieldname": "rate_set",
+   "fieldtype": "Link",
+   "options": "Rate Set",
+   "label": "Rate Set",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "description": "The set this rate belongs to (konsol#348). The set flagged Is Actuals is the one the actuals translation, the close gate and Pre-fill from ERP read; a budget or forecast names its own set on its Budget Cycle. Each set holds its own approved rate per key, so a budget rate never collides with the actuals rate. Never assumed: a rate without a set is refused."
+  },
   {
    "fieldname": "to_currency",
    "fieldtype": "Link",

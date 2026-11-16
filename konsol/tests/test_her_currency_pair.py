@@ -88,6 +88,8 @@ def test_the_field_map_carries_to_currency():
         "rate_date": "rate_date",
         "historical_rate": "historical_rate",
         "to_currency": "to_currency",
+        # konsol#348: the set, last, where init-db.sql's ORDER BY now ends
+        "rate_set": "rate_set",
     }
 
 
@@ -222,7 +224,7 @@ EXISTS = {
 
 def _rate(mod, **kw):
     base = dict(consolidation_group="ZZSUB", data_area_id="ZZNL", main_account="ZZ3000",
-                rate_date="2024-01-01", historical_rate=1.2, to_currency="USD",
+                rate_date="2024-01-01", historical_rate=1.2, to_currency="USD", rate_set="ACTUAL",
                 docstatus=0, name=None)
     base.update(kw)
     return mod.HistoricalEquityRate(**base)
@@ -329,8 +331,9 @@ def test_two_rates_for_two_presentation_currencies_get_distinct_names():
     # digest_name slugs the readable head (the date's dashes become
     # underscores) and appends the hash of the exact tuple.
     assert eur.name.startswith("HER-ZZSUB-ZZNL-ZZ3000-2024_01_01-EUR-"), eur.name
+    # konsol#348: the set closes the tuple
     expected = hashlib.sha1("\x1f".join(
-        ["ZZSUB", "ZZNL", "ZZ3000", "2024-01-01", "EUR"]).encode()).hexdigest()[:8]
+        ["ZZSUB", "ZZNL", "ZZ3000", "2024-01-01", "EUR", "ACTUAL"]).encode()).hexdigest()[:8]
     assert eur.name.endswith("-" + expected), eur.name
 
 
