@@ -49,6 +49,12 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_consolidated_budget_tb",
+  "model_name": "gold_consolidated_budget_tb",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_consolidated_cash_flow",
   "model_name": "gold_consolidated_cash_flow",
   "build_domain": "consolidation"
@@ -118,6 +124,12 @@
   "name": "gold_equity_method_associates",
   "model_name": "gold_equity_method_associates",
   "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_fully_consolidated_budget",
+  "model_name": "gold_fully_consolidated_budget",
+  "build_domain": "scenarios"
  },
  {
   "doctype": "Build Model",
