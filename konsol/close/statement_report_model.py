@@ -50,9 +50,12 @@ exactly what the Close app's Numbers screen shows.
   (P&L lines only). A Balance Sheet budget value is the year's budgeted
   movements to date, not a balance (a budget has Regular-period rows only;
   S5-Q4 a), so a Balance Sheet line has no variance to budget (S5 F1), and
-  ``message`` says both. The budget's own "Unbalanced budget"
-  line (S5-Q3 a), which the actuals never carry, is laid out before the
-  residual with blank actuals. A line absent from the budget, a non-ok
+  ``message`` says both. A non-heading budget line the actuals lack (a
+  section's "No heading", "Not in the group chart", or the budget's own
+  "Unbalanced budget" plug, S5-Q3 a) is laid out as its own row with blank
+  actuals where the actuals' line would stand (before the P&L net result,
+  before the BS residual; PR #554 review M1), so the Budget column foots
+  on screen. A line absent from the budget, a non-ok
   budget (its sentence goes in the message), a section header and a
   residual explanation row are blank, never 0. The columns are "before
   eliminations": the consolidated budget has no intercompany eliminations
@@ -315,25 +318,50 @@ def _with_budget(row, section, line, budget_items, minor_unit, include=None, var
 UNBALANCED_CODE = "UNBALANCED"
 
 
-def _budget_only_unbalanced(section, lines, budget_items, currency, drill_group=None):
-    """The budget's "Unbalanced budget (no balancing entry)" line (S5-Q3 a)
-    as a row with blank actuals, when the budget carries one and the
-    actuals of ``section`` do not (actuals never carry the plug): the
-    budget balance sheet is seen to foot. ``None`` otherwise. The row's
-    ``code`` is ``UNBALANCED_CODE`` and it carries ``drill_group``, so its
-    Budget cell can open the plug's own drill (S5 K10b); it has no
-    ``consolidation_group`` or commentary keys, so its label is no heading
-    link."""
+#: The non-heading budget line kinds laid out as budget-only rows when the
+#: actuals lack them (PR #554 review M1), in statement_model's line order:
+#: before the P&L net result, and before the BS residual.
+_BUDGET_ONLY_KINDS = {
+    "Profit and Loss": ("no_heading",),
+    "Balance Sheet": ("no_heading", "not_in_chart", "unbalanced"),
+}
+
+
+def _budget_only_rows(section, lines, budget_items, currency, drill_group=None):
+    """The budget's non-heading lines of ``section`` that the actuals'
+    ``lines`` lack, each as a row with blank actuals and the budget's
+    ``current`` (and ``ytd`` where the line carries one), in
+    statement_model's order (PR #554 review M1): a "No heading" line (a leaf
+    the chart gives no parent), a "Not in the group chart" line (its codes
+    in the label, as the actuals' own) and the "Unbalanced budget (no
+    balancing entry)" plug (S5-Q3 a; actuals never carry it). Laid out where
+    the actuals' line would stand, so the Budget column foots on screen: the
+    P&L Net result equals its headings plus No heading, and the budget
+    balance sheet is seen to foot. No variance to budget: there is no actual
+    to compare with. Only the plug's row carries a code (``UNBALANCED_CODE``)
+    and ``drill_group``, so its Budget cell can open the plug's own drill
+    (S5 K10b); none carries ``consolidation_group`` or commentary keys, so
+    no label is a heading link. ``[]`` when there is no ok budget."""
     if budget_items is None:
-        return None
-    item = budget_items.get((section, "unbalanced"))
-    if item is None or any(line.get("kind") == "unbalanced" for line in lines):
-        return None
-    row = _row(item["label"], currency, None, code=UNBALANCED_CODE)
-    row["budget"] = _zero(item.get("current"))
-    row["drill_group"] = drill_group
-    row["drill_budget"] = 1 if row["budget"] is not None and drill_group else 0
-    return row
+        return []
+    present = {line.get("kind") for line in lines}
+    out = []
+    for kind in _BUDGET_ONLY_KINDS[section]:
+        item = budget_items.get((section, kind))
+        if item is None or kind in present:
+            continue
+        label = item["label"]
+        if kind == "not_in_chart" and item.get("codes"):
+            label = f"{label} ({', '.join(item['codes'])})"
+        row = _row(label, currency, None, code=UNBALANCED_CODE if kind == "unbalanced" else None)
+        row["budget"] = _zero(item.get("current"))
+        if item.get("ytd") is not None:
+            row["budget_ytd"] = _zero(item["ytd"])
+        if kind == "unbalanced":
+            row["drill_group"] = drill_group
+            row["drill_budget"] = 1 if row["budget"] is not None and drill_group else 0
+        out.append(row)
+    return out
 
 
 def rows(payload, prior=None, drill_group=None, budget=None):
@@ -375,6 +403,10 @@ def rows(payload, prior=None, drill_group=None, budget=None):
             elif kind in ("no_heading", "net_result", "unbalanced"):
                 # ``unbalanced``: the budget's plug line (S5-Q3 a), net-debit
                 # terms like the BS no_heading line; actuals never carry it.
+                if kind == "net_result":
+                    # Budget-only P&L lines (No heading) stand before the net
+                    # result they count in (review M1).
+                    out.extend(_budget_only_rows(name, section["lines"], budget_items, currency, drill_group))
                 out.append(merged(
                     _row(line["label"], currency, line, bold=int(kind == "net_result")),
                     name, line))
@@ -383,10 +415,9 @@ def rows(payload, prior=None, drill_group=None, budget=None):
                 label = f"{line['label']} ({codes})" if codes else line["label"]
                 out.append(merged(_row(label, currency, line), name, line))
             elif kind == "residual":
-                budget_only = _budget_only_unbalanced(name, section["lines"], budget_items, currency,
-                                                      drill_group)
-                if budget_only is not None:
-                    out.append(budget_only)
+                # Budget-only BS lines (No heading, Not in the group chart, the
+                # plug) stand before the residual they count in (review M1).
+                out.extend(_budget_only_rows(name, section["lines"], budget_items, currency, drill_group))
                 out.append(merged(
                     _row(line["label"], currency, line,
                          fields=("current", "comparison"), bold=1),

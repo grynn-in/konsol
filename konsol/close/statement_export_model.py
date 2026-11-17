@@ -33,9 +33,12 @@ period's ``current`` minus it on a Profit and Loss line only (S5 F1: on the
 Balance Sheet a budgeted movement set against an actual balance is not a
 variance, so the cell is blank); Budget year to date is the budget's ``ytd``
 (Profit and Loss only). A cell is blank, never 0, where the budget is
-absent, not ok, or lacks the line; the residual takes no variance. The
-budget's own "Unbalanced budget (no balancing entry)" line is written before
-the residual, its actuals blank, when the actuals carry no such line. One
+absent, not ok, or lacks the line; the residual takes no variance. A
+non-heading budget line the actuals lack (a section's "No heading", "Not in
+the group chart", or the budget's own "Unbalanced budget (no balancing
+entry)" plug) is written where the actuals' line would stand (before the P&L
+net result, before the BS residual), its actuals blank, so the Budget column
+foots on the sheet (PR #554 review M1). One
 note line follows the other notes: for an ok budget its own sentence plus the
 limits and the Balance Sheet basis; otherwise "Budget columns are blank: ...".
 The "Budget drill" sheet is the Drill sheet's layout plus "Declared method
@@ -107,6 +110,13 @@ BUDGET_LIMITS = "before intercompany eliminations and without group-level adjust
 BUDGET_BS_BASIS = ("the balance sheet budget column shows the budgeted movements year to date, not balances, "
                    "so there is no variance to budget on the balance sheet")
 UNBALANCED = "unbalanced"
+#: statement_report_model._BUDGET_ONLY_KINDS (PR #554 review M1): the
+#: non-heading budget lines written with blank actuals when the actuals lack
+#: them, in statement_model's order.
+_BUDGET_ONLY_KINDS = {
+    PL: ("no_heading",),
+    BS: ("no_heading", "not_in_chart", UNBALANCED),
+}
 
 #: numbers.js ``SIGNOFF_LABEL`` texts.
 SIGNOFF_LABEL = {
@@ -342,6 +352,25 @@ def _section_rows(section, commentary, comparison_note, budget=None, minor_unit=
             return []
         return _budget_cells(name, line, budget_items, minor_unit, include, variance)
 
+    def budget_only(section):
+        """The budget's non-heading lines the actuals lack, actuals blank
+        (statement_report_model._budget_only_rows; PR #554 review M1)."""
+        if budget_items is None:
+            return []
+        present = {ln.get("kind") for ln in section["lines"]}
+        rows = []
+        for kind in _BUDGET_ONLY_KINDS[name]:
+            item = budget_items.get((name, kind))
+            if item is None or kind in present:
+                continue
+            label = item["label"]
+            if kind == "not_in_chart" and item.get("codes"):
+                label = "%s (%s)" % (label, ", ".join(item["codes"]))
+            ytd = _amount(item["ytd"], label + " ytd") if item.get("ytd") is not None else None
+            rows.append(([label, None] + [None] * len(columns)
+                         + [_amount(item.get("current"), label), None, ytd], None))
+        return rows
+
     def amounts(line, what, fields=None):
         return [
             (_cell(line, _FIELD[c], comparison_note, what)
@@ -363,17 +392,14 @@ def _section_rows(section, commentary, comparison_note, budget=None, minor_unit=
                             + budgeted(line, include), None))
         elif kind in ("no_heading", "net_result", UNBALANCED):
             font = _BOLD if kind == "net_result" else None
+            if kind == "net_result":
+                out.extend(budget_only(section))  # before the net result they count in (review M1)
             out.append(([line["label"], None] + amounts(line, line["label"]) + budgeted(line), font))
         elif kind == "not_in_chart":
             label = "%s (%s)" % (line["label"], ", ".join(line.get("codes") or []))
             out.append(([label, None] + amounts(line, line["label"]) + budgeted(line), None))
         elif kind == "residual":
-            item = (budget_items or {}).get((name, UNBALANCED))
-            if item is not None and not any(ln.get("kind") == UNBALANCED for ln in section["lines"]):
-                # The budget's plug, actuals blank (statement_report_model.
-                # _budget_only_unbalanced): the budget balance sheet foots.
-                out.append(([item["label"], None] + [None] * len(columns)
-                            + [_amount(item.get("current"), item["label"]), None, None], None))
+            out.extend(budget_only(section))  # before the residual they count in (review M1)
             out.append(([line["label"], None] + amounts(line, line["label"], ("current",))
                         + budgeted(line, variance=False), _BOLD))
             if line.get("current"):
