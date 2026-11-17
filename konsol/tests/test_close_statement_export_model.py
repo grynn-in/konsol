@@ -537,3 +537,184 @@ def test_a_statement_with_no_minor_unit_is_refused_never_read_as_cents(minor_uni
         del payload["statement"]["minor_unit"]
     with pytest.raises(ValueError, match="minor unit"):
         M.workbook(payload, drills)
+
+
+# --- the budget columns, note and Budget drill sheet (konsol#348 S5 K11) ------
+
+def _load_by_path(name, *parts):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(APP_DIR, *parts))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_F = _load_by_path("close_statement_model_fixtures_k11", "tests", "test_close_statement_model.py")
+_SM = _F.M
+_REPORT = _load_by_path("statement_report_model_k11", "close", "statement_report_model.py")
+_DM = _load_by_path("drill_model_k11", "close", "drill_model.py")
+
+_BUDGET_SENTENCE = ("Approved budget for ZZ_GROUP FY2025: Budget Cycle BCYC-ZZB-2025-abc12345, all "
+                    "layers (base, board), Rate Set ZZRS (Approved Budget APB-CG-ZZ_GROUP--2025-0f0f0f0f, "
+                    "approved by lead@example.com on 2026-11-17).")
+_BUDGET_LABELS = ["Budget (before eliminations)", "Variance to budget", "Budget year to date"]
+
+
+def _budget(state="ok", message=_BUDGET_SENTENCE, rows=None):
+    """FCB shape: revenue budget 1,000, cash budget 300, plug +700."""
+    rows = rows if rows is not None else [
+        _F._row("4100", -1000.0, adjustment_type="entity"),
+        _F._row("1110", 300.0, adjustment_type="entity"),
+        _F._row("UNBALANCED", 700.0, adjustment_type="unbalanced"),
+    ]
+    stmt = (_SM.statement(rows, _F._s_accounts(), _F._S_CALENDAR, _F._S_KEY, _F._s_declared(),
+                          minor_unit=2) if state == "ok" else None)
+    return {"state": state, "message": message, "statement": stmt,
+            "meta": {"cycle": "BCYC-ZZB-2025-abc12345", "layers": ["base", "board"],
+                     "rate_set": "ZZRS", "scenario_id": "ZZB",
+                     "declaration": "APB-CG-ZZ_GROUP--2025-0f0f0f0f"}}
+
+
+def _bline(budget, section, **match):
+    lines = budget["statement"]["sections"][section]["lines"]
+    found = [ln for ln in lines if all(ln.get(k) == v for k, v in match.items())]
+    assert len(found) == 1, match
+    return found[0]
+
+
+def _budget_book(budget, budget_drills=None, payload=None):
+    data = M.workbook(payload or _payload(), _drills(), budget, budget_drills)
+    return load_workbook(io.BytesIO(data))
+
+
+def _budget_drills(budget):
+    """The golden drill with rates, shaped by drill_model.with_rates."""
+    with open(FIXTURE_DRILL) as fh:
+        drill = json.load(fh)["drill"]
+    rate_rows = [
+        {"data_area_id": e, "main_account": "1110", "fx_method": "closing",
+         "translation_rate": 1.1, "rate_set": "ZZRS"} for e in ("ZZA", "ZZB", "ZZC")]
+    rate_rows.append({"data_area_id": "ZZA", "main_account": "1110", "fx_method": "average",
+                      "translation_rate": 1.05, "rate_set": "ZZRS2"})
+    _DM.with_rates(drill, rate_rows, "BCYC-ZZB-2025-abc12345")
+    return {"1": drill}
+
+
+def test_budget_columns_are_their_own_constant_and_the_actuals_columns_are_untouched():
+    assert M.BUDGET_COLUMNS == {"Profit and Loss": _BUDGET_LABELS, "Balance Sheet": _BUDGET_LABELS}
+    assert M.COLUMNS["Profit and Loss"] == ["This period", "Comparison", "Variance", "Year to date"]
+    assert M.COLUMNS["Balance Sheet"] == ["This period", "Comparison", "Variance"]
+    assert M.BUDGET_COLUMNS["Profit and Loss"][0] == _REPORT.BUDGET_COLUMN_LABEL
+
+
+def test_the_note_texts_equal_the_report_models():
+    assert M.BUDGET_LIMITS == _REPORT.BUDGET_LIMITS
+    assert M.BUDGET_BS_BASIS == _REPORT.BUDGET_BS_BASIS
+
+
+def test_header_carries_the_three_budget_columns_after_the_actuals_columns():
+    rows = _rows(_budget_book(_budget())["Statement"])
+    pl = _section_block(rows, "Profit and Loss")
+    bs = _section_block(rows, "Balance Sheet")
+    assert pl[0][:11] == ["Line", "Code", "This period", "Comparison", "Variance", "Year to date",
+                          *_BUDGET_LABELS, "Commentary", "By"]
+    assert bs[0][:10] == ["Line", "Code", "This period", "Comparison", "Variance",
+                          *_BUDGET_LABELS, "Commentary", "By"]
+
+
+def test_a_pl_line_has_budget_variance_to_budget_and_budget_ytd():
+    payload, budget = _payload(), _budget()
+    pl = _section_block(_rows(_budget_book(budget, payload=payload)["Statement"]), "Profit and Loss")
+    row = _row_starting(pl, "COST OF SALES", "4")
+    actual = next(ln for ln in payload["statement"]["sections"][0]["lines"] if ln.get("heading") == "4")
+    bline = _bline(budget, 0, heading="4")
+    assert row[6] == bline["current"] == 1000.0
+    assert row[7] == round(actual["current"] - bline["current"], 2)
+    assert row[8] == bline["ytd"]
+    net = _row_starting(pl, "Net result")
+    assert net[6] == _bline(budget, 0, kind="net_result")["current"]
+    assert net[7] == round(241.43 - net[6], 2)
+
+
+def test_a_bs_line_has_the_budget_and_no_variance_and_no_budget_ytd():
+    """S5 F1: a budgeted movement against an actual balance is not a variance."""
+    budget = _budget()
+    bs = _section_block(_rows(_budget_book(budget)["Statement"]), "Balance Sheet")
+    row = _row_starting(bs, "ASSETS", "1")
+    assert row[5] == _bline(budget, 1, heading="1")["current"] == 300.0
+    assert row[6] is None and row[7] is None
+
+
+def test_the_residual_takes_the_budget_but_no_variance():
+    budget = _budget()
+    bs = _section_block(_rows(_budget_book(budget)["Statement"]), "Balance Sheet")
+    residual = _row_starting(bs, "Unmatched residual")
+    assert residual[5] == _bline(budget, 1, kind="residual")["current"]
+    assert residual[6] is None
+
+
+def test_the_budgets_unbalanced_line_precedes_the_residual_with_blank_actuals():
+    budget = _budget()
+    bs = _section_block(_rows(_budget_book(budget)["Statement"]), "Balance Sheet")
+    label = _bline(budget, 1, kind="unbalanced")["label"]
+    index = next(i for i, r in enumerate(bs) if r[0] == label)
+    assert bs[index + 1][0] == "Unmatched residual"
+    row = bs[index]
+    assert row[2] is None and row[3] is None and row[4] is None
+    assert row[5] == 700.0 and row[6] is None and row[7] is None
+
+
+def test_a_line_absent_from_the_budget_is_blank_never_zero():
+    budget = _budget(rows=[_F._row("1110", 300.0, adjustment_type="entity")])
+    pl = _section_block(_rows(_budget_book(budget)["Statement"]), "Profit and Loss")
+    row = _row_starting(pl, "COST OF SALES", "4")
+    assert row[6] is None and row[7] is None and row[8] is None
+
+
+def test_without_a_budget_there_are_no_budget_columns_and_no_note():
+    rows = _rows(_book()["Statement"])
+    assert not any(isinstance(c, str) and "udget" in c for r in rows for c in r)
+
+
+def test_without_a_budget_the_two_argument_call_has_no_budget_drill_sheet():
+    assert _book().sheetnames == ["Statement", "Drill", "Journals"]
+
+
+def test_an_ok_budget_note_names_the_cycle_the_limits_and_the_bs_basis():
+    rows = _rows(_budget_book(_budget())["Statement"])
+    notes = [r[0] for r in rows if r[0] and r[0].startswith("Approved budget")]
+    assert len(notes) == 1
+    assert "BCYC-ZZB-2025-abc12345" in notes[0]
+    assert "before intercompany eliminations" in notes[0]
+    assert "no variance to budget on the balance sheet" in notes[0]
+
+
+def test_a_non_ok_budget_gives_blank_cells_and_its_sentence_as_the_note():
+    budget = _budget(state="no_approved_budget", message="No approved budget for FY2025.")
+    book = _budget_book(budget)
+    rows = _rows(book["Statement"])
+    assert "Budget columns are blank: No approved budget for FY2025." in [r[0] for r in rows]
+    pl = _section_block(rows, "Profit and Loss")
+    assert pl[0][6:9] == _BUDGET_LABELS
+    row = _row_starting(pl, "COST OF SALES", "4")
+    assert row[6] is None and row[7] is None and row[8] is None
+    assert book.sheetnames == ["Statement", "Drill", "Journals"]
+
+
+def test_a_budget_drill_sheet_exists_only_when_budget_drills_are_given():
+    budget = _budget()
+    book = _budget_book(budget, _budget_drills(budget))
+    assert book.sheetnames == ["Statement", "Drill", "Journals", "Budget drill"]
+    assert _budget_book(budget).sheetnames == ["Statement", "Drill", "Journals"]
+
+
+def test_budget_drill_sheet_has_rate_and_rate_set_columns_per_entity_account():
+    budget = _budget()
+    rows = _rows(_budget_book(budget, _budget_drills(budget))["Budget drill"])
+    header = next(r for r in rows if r[0] == "Section")
+    assert header[:8] == M.DRILL_HEADER and header[8:10] == ["Rate", "Rate Set"]
+    zza = next(r for r in rows if r[4] == "ZZA" and r[5] == "1110")
+    assert zza[8] == "average 1.05; closing 1.1" and zza[9] == "ZZRS; ZZRS2"
+    zzb = next(r for r in rows if r[4] == "ZZB" and r[5] == "1110")
+    assert zzb[8] == "closing 1.1" and zzb[9] == "ZZRS"
+    cta = next(r for r in rows if r[3] == "Currency translation (CTA)")
+    assert cta[8] is None and cta[9] is None
