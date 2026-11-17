@@ -743,8 +743,9 @@ def _requests():
     list of (doctype, name, method) build requests made."""
     made = []
     tasks = types.ModuleType("konsol.tasks")
-    tasks.queue_consolidation_build = lambda doc, method: made.append(
-        (doc.doctype, doc.name, method))
+    tasks.queue_consolidation_build = lambda doc, method, scope=None: made.append(
+        (doc.doctype, doc.name, method) if scope is None
+        else (doc.doctype, doc.name, method, scope))
     ch = types.ModuleType("konsol.clickhouse")
     ch.after_commit_once = lambda key, fn: None
     saved = {n: sys.modules.get(n) for n in ("konsol.tasks", "konsol.clickhouse")}
@@ -806,18 +807,59 @@ def test_a_calendar_change_requests_one_full_build_per_save():
     assert build_map.get("EPM Fiscal Year") == {"scope": "full", "risk": "high"}, build_map
 
 
-def test_a_status_move_or_an_unchanged_save_requests_no_build():
-    """Close, Lock and Reopen move only `status` (and closed_by/on, not
-    published): no model reads it, so no build. Nor does a save that changes
-    nothing published once normalised as fiscal_period_rows() publishes it
-    (a date posted as a string, a blank label that falls back to the code, a
-    blank quarter), an empty year declared or deleted."""
-    with _load() as module:
-        doc = _edit(module, _saved(module))
+#: konsol#561 review M3: gold_forecast_accuracy and gold_forecast_accuracy_group
+#: read fiscal_periods.status IN ('Closed', 'Locked') and are tagged
+#: domain:scenarios, so a Close, Lock or Reopen requests a scenarios build.
+STATUS_BUILD = [("EPM Fiscal Year", "2025", "on_update", "scenarios")]
+
+
+def test_a_status_move_requests_one_scenarios_build():
+    """Close, Lock and Reopen move only `status` (and closed_by/on). The
+    accuracy models read it, so each requests exactly one build of the
+    scenarios domain, through queue_consolidation_build, never the full one."""
+    def close_year(doc):
         doc.status = "Closed"
         doc.closed_by = "admin@example.com"
         for r in doc.periods:
-            r.status = "Locked"
+            r.status = "Closed"
+
+    def lock_p03(doc):
+        doc.periods[3].status = "Locked"
+
+    def reopen_p03(doc):
+        doc.periods[3].status = "Open"
+
+    with _load() as module:
+        for change, start in ((close_year, "Open"), (lock_p03, "Closed"), (reopen_p03, "Closed")):
+            saved = _saved(module)
+            for r in saved.periods:
+                r.status = start
+            doc = _edit(module, saved)
+            change(doc)
+            with _requests() as made:
+                doc.on_update()
+            assert made == STATUS_BUILD, (change.__name__, made)
+
+
+def test_a_structural_change_with_a_status_move_requests_the_full_build_only():
+    """The full build covers the scenarios domain: one request, as before."""
+    with _load() as module:
+        doc = _edit(module, _saved(module))
+        doc.periods[3].period_label = "March (restated)"
+        doc.periods[3].status = "Closed"
+        with _requests() as made:
+            doc.on_update()
+        assert made == [("EPM Fiscal Year", "2025", "on_update")], made
+
+
+def test_an_unchanged_save_requests_no_build():
+    """A save that changes nothing published once normalised as
+    fiscal_period_rows() publishes it (a date posted as a string, a blank
+    label that falls back to the code, a blank quarter), a note, the same
+    status saved again, an empty year declared or deleted: no build."""
+    with _load() as module:
+        doc = _edit(module, _saved(module))
+        doc.closing_note = "a note"
         with _requests() as made:
             doc.on_update()
         assert made == [], made
@@ -844,6 +886,10 @@ def test_a_status_move_or_an_unchanged_save_requests_no_build():
 
 
 # --- konsol#340: a calendar change stamps calendar_changed_at; a status move does not ---
+# (konsol#561 review M3: a status move now requests a scenarios build, and
+# still does not stamp. Freshness judges an EPM Fiscal Year change against
+# its DOCTYPE_BUILD_MAP scope, "full"; stamped, a Close would read stale until
+# a full build ran, which the scenarios build it requests never is.)
 # Freshness reads EPM Fiscal Year's calendar_changed_at, not `modified`: every
 # Close, Lock and Reopen bumps `modified`, and no build would ever clear it.
 # The stamp is set where #337 decides to request the build, so the two agree:
@@ -889,7 +935,7 @@ def test_a_status_move_or_an_unchanged_save_does_not_stamp():
         sys.modules["frappe"].events.clear()
         with _requests() as made:
             doc.on_update()
-        assert made == [] and _stamps() == [], (made, _stamps())
+        assert made == STATUS_BUILD and _stamps() == [], (made, _stamps())
         assert doc.calendar_changed_at is None
 
 
