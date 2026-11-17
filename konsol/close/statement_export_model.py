@@ -22,9 +22,13 @@ drill is given):
   journals" drill row, with their basis (posted in this period).
 
 **Budget (konsol#348 S5 K11).** ``workbook(payload, drills, budget=None,
-budget_drills=None)``. With a budget payload, the three ``BUDGET_COLUMNS``
+budget_drills=None)``. With an OK budget payload, the three ``BUDGET_COLUMNS``
 ("Budget (before eliminations)", "Variance to budget", "Budget year to date")
-follow the actuals columns in each section's header. S5-Q6 a: they are a
+follow the actuals columns in each section's header. BUD-4-2 (Deepak Pai,
+7 Nov 2026: "a visible 'no approved budget' state, never a blank column";
+PR #554 review D1): a budget that is not ok adds NO column, so the sheet keeps
+the actuals' layout (Commentary and By in their usual cells) and the state's
+sentence is the note. S5-Q6 a: they are a
 SEPARATE constant, so ``COLUMNS`` and its numbers.js pin do not change. Lines
 are matched to the budget exactly as ``statement_report_model`` matches them
 (a heading by its code, an include by its heading and kind, any other line by
@@ -33,14 +37,14 @@ period's ``current`` minus it on a Profit and Loss line only (S5 F1: on the
 Balance Sheet a budgeted movement set against an actual balance is not a
 variance, so the cell is blank); Budget year to date is the budget's ``ytd``
 (Profit and Loss only). A cell is blank, never 0, where the budget is
-absent, not ok, or lacks the line; the residual takes no variance. A
+absent or lacks the line; the residual takes no variance. A
 non-heading budget line the actuals lack (a section's "No heading", "Not in
 the group chart", or the budget's own "Unbalanced budget (no balancing
 entry)" plug) is written where the actuals' line would stand (before the P&L
 net result, before the BS residual), its actuals blank, so the Budget column
 foots on the sheet (PR #554 review M1). One
 note line follows the other notes: for an ok budget its own sentence plus the
-limits and the Balance Sheet basis; otherwise "Budget columns are blank: ...".
+limits and the Balance Sheet basis; otherwise "Budget columns not shown: ...".
 The "Budget drill" sheet is the Drill sheet's layout plus "Declared method
 and rate" and "Rate Set" columns, from ``drill_model.with_rates``: the
 method is the chart's declared Translation Method as recorded at build time,
@@ -322,28 +326,31 @@ def _budget_cells(section, line, budget_items, minor_unit, include=None, varianc
 
 def _budget_note(budget):
     """The Statement sheet's budget line: for an ok budget its own sentence
-    with the columns' limits and the Balance Sheet basis; otherwise why the
-    columns are blank; ``None`` when no budget was asked for."""
+    with the columns' limits and the Balance Sheet basis; otherwise the
+    state's sentence, prefixed "Budget columns not shown:", which is the
+    visible state BUD-4-2 asks for (no budget column is written then);
+    ``None`` when no budget was asked for."""
     if budget is None:
         return None
     if _budget_items(budget) is not None:
         own = (budget.get("message") or "").rstrip(".")
         return "%s. The budget columns are %s; %s." % (own, BUDGET_LIMITS, BUDGET_BS_BASIS)
     reason = budget.get("message") or "the budget is not available (state: %s)" % budget.get("state")
-    return "Budget columns are blank: %s" % reason
+    return "Budget columns not shown: %s" % reason
 
 
 def _section_rows(section, commentary, comparison_note, budget=None, minor_unit=None):
     """``[(values, font)]`` for one section's table: header row, then each
     line (and a heading's "of which" rows, and a residual's explanation).
-    With a ``budget`` payload each row carries the three budget cells after
-    the actuals."""
+    With an OK ``budget`` payload each row carries the three budget cells
+    after the actuals; a non-ok budget adds no column (BUD-4-2, Deepak Pai,
+    7 Nov 2026: a visible state, never a blank column; PR #554 review D1)."""
     name = section["section"]
     if name not in COLUMNS:
         raise ValueError(f"unknown statement section: {name}")
     columns = COLUMNS[name]
-    with_budget = budget is not None
     budget_items = _budget_items(budget)
+    with_budget = budget_items is not None
     out = [(["Line", "Code"] + columns + (BUDGET_COLUMNS[name] if with_budget else [])
             + ["Commentary", "By"], _BOLD)]
 
@@ -428,17 +435,19 @@ def _statement_sheet(ws, payload, budget=None):
     sheet.blank()
 
     commentary = payload.get("commentary") or {}
+    # BUD-4-2 / review D1: the budget columns exist only for an ok budget.
+    with_budget = _budget_items(budget) is not None
     for section in statement["sections"]:
         sheet.write([section["section"]], _BOLD)
         cols = _amount_cols(3, len(COLUMNS.get(section["section"], ()))
-                            + (len(BUDGET_COLUMNS.get(section["section"], ())) if budget is not None else 0))
+                            + (len(BUDGET_COLUMNS.get(section["section"], ())) if with_budget else 0))
         for values, font in _section_rows(section, commentary, comparison_note, budget,
                                           _minor_unit(statement)):
             sheet.write(values, font, cols)
         sheet.blank()
 
     ws.column_dimensions["A"].width = 44
-    amount_columns = 4 + (3 if budget is not None else 0)
+    amount_columns = 4 + (3 if with_budget else 0)
     for col in range(3, 3 + amount_columns):
         ws.column_dimensions[chr(ord("A") + col - 1)].width = 16
     ws.column_dimensions[chr(ord("A") + 2 + amount_columns)].width = 48

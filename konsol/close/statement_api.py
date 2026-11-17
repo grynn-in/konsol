@@ -1312,8 +1312,8 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
     statement's one, then ``_export_budget``'s entity-grain and rates
     reads, konsol#348 S5 K12). The budget columns, note and "Budget drill"
     sheet come from the budget payload (K11); a budget that is not ok, or
-    whose drill faults, leaves the columns blank with the reason in the
-    note and never fails the actuals' file.
+    whose drill faults, adds no budget column, puts the reason in the note
+    (BUD-4-2) and never fails the actuals' file.
 
     ``basis="Entity"`` (konsol#495) exports one entity's own statement
     (``_entity_statement``, ``entity`` required): the drills come from the
@@ -1372,7 +1372,8 @@ def _export_budget(payload, reads):
     scenario_id, cycle and layers.
 
     A budget that is not ok comes back as is with ``None`` drills: the
-    workbook writes blank columns and the state's sentence. A warehouse
+    workbook writes no budget column and the state's sentence as the note
+    (BUD-4-2). A warehouse
     failure on the budget reads, a drill/line mismatch or a missing rate row
     becomes a non-ok budget naming it (``not_built`` / ``error``), never a
     refused actuals' file and never a partial budget sheet."""

@@ -68,9 +68,9 @@ def test_module_imports_nothing_from_frappe_or_konsol():
 
 
 def test_columns_are_label_code_four_amounts_and_currency():
+    # Without a budget payload there is no budget column (BUD-4-2; review D1).
     fieldnames = [c["fieldname"] for c in R.columns()]
     assert fieldnames == ["label", "code", "current", "comparison", "variance", "ytd",
-                          "budget", "variance_to_budget", "budget_ytd",
                           "prior_year", "prior_year_change", "currency", "commentary"]
     for column in R.columns():
         if column["fieldname"] in ("current", "comparison", "variance", "ytd"):
@@ -257,7 +257,7 @@ def _line(payload, section, match):
 
 def test_columns_add_prior_year_and_change_after_ytd():
     fieldnames = [c["fieldname"] for c in R.columns()]
-    assert fieldnames[fieldnames.index("budget_ytd") + 1:] == [
+    assert fieldnames[fieldnames.index("ytd") + 1:] == [
         "prior_year", "prior_year_change", "currency", "commentary"]
     by_name = {c["fieldname"]: c for c in R.columns()}
     assert by_name["prior_year"]["label"] == "Prior year"

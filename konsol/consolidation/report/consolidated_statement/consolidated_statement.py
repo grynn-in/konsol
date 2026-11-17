@@ -15,8 +15,9 @@ The Budget columns (konsol#348 S5 K7) read the approved budget of the
 statement's own group and year (``statement_api.budget_payload``), on the
 Group basis only (the entity budget is S6). A budget that is not ok (no
 approved budget, a cancelled Cycle, changed inputs, a missing layer, no
-rows, a refused or faulty read) leaves the columns blank and the message
-says why — it never fails the report either. When it is ok, the model
+rows, a refused or faulty read) renders no budget column at all and the
+message says why (BUD-4-2, Deepak Pai, 7 Nov 2026: a visible state, never a
+blank column) — it never fails the report either. When it is ok, the model
 marks the heading rows and the plug's row with ``drill_budget`` (S5 K10b):
 their Budget cell opens Statement Drill on the Budget basis.
 """
@@ -54,7 +55,8 @@ def execute(filters=None):
         message = statement_report_model.message(payload, prior, budget=budget)
     except ValueError as e:
         frappe.throw(str(e))
-    return statement_report_model.columns(payload["statement"]["minor_unit"]), data, message
+    # BUD-4-2 / review D1: the budget columns exist only when the budget is ok.
+    return statement_report_model.columns(payload["statement"]["minor_unit"], budget=budget), data, message
 
 
 def _drill_group(value, payload):
@@ -98,8 +100,8 @@ def _budget(fiscal_year, fiscal_period, payload):
     the Budget columns (konsol#348 S5 K7). ``None`` when the statement is
     not ok (nothing to put a budget beside; the report refuses on the
     actuals' own message). A refused read (``frappe.throw``) or any fault
-    in the read becomes a non-ok budget payload naming it, so the columns
-    are blank with the reason in the legend and the actuals still render:
+    in the read becomes a non-ok budget payload naming it, so no budget
+    column renders, the reason is in the legend and the actuals still render:
     a budget fault never fails the statement. A fault (anything but a
     refusal) is a bug, so it is also written to the Error Log with its
     traceback (S5 G2): the legend alone depends on a user reporting it.

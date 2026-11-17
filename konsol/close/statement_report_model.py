@@ -55,9 +55,12 @@ exactly what the Close app's Numbers screen shows.
   "Unbalanced budget" plug, S5-Q3 a) is laid out as its own row with blank
   actuals where the actuals' line would stand (before the P&L net result,
   before the BS residual; PR #554 review M1), so the Budget column foots
-  on screen. A line absent from the budget, a non-ok
-  budget (its sentence goes in the message), a section header and a
-  residual explanation row are blank, never 0. The columns are "before
+  on screen. A line absent from the budget, a section header and a
+  residual explanation row are blank, never 0. A budget that is not ok
+  renders NO budget column (``columns(minor_unit, budget)``), and
+  ``message`` carries its state's sentence: BUD-4-2 (Deepak Pai, 7 Nov
+  2026), "Numbers shows a visible 'no approved budget' state, never a
+  blank column" (PR #554 review D1). The columns are "before
   eliminations": the consolidated budget has no intercompany eliminations
   and no group-level adjustments yet.
 
@@ -104,11 +107,15 @@ BUDGET_BS_BASIS = ("the balance sheet budget column shows the budgeted movements
 _BUDGET_VARIANCE_SECTION = "Profit and Loss"
 
 
-def columns(minor_unit=None):
+def columns(minor_unit=None, budget=None):
     """The report columns: line, code, the Numbers screen's four amount
     columns (``statement_export_model.COLUMNS``), the three budget columns
-    (S5 K6; the export's own ``BUDGET_COLUMNS`` mirrors them, S5-Q6 a), the
-    prior-year pair and the currency.
+    when ``budget`` is an OK budget payload (S5 K6; the export's own
+    ``BUDGET_COLUMNS`` mirrors them, S5-Q6 a), the prior-year pair and the
+    currency. BUD-4-2 (Deepak Pai, 7 Nov 2026: "Numbers shows a visible 'no
+    approved budget' state, never a blank column"; PR #554 review D1): with
+    no budget, or a budget that is not ok, there is no budget column at all;
+    ``message`` carries the state's sentence.
 
     ``minor_unit`` is the statement's own (the reporting currency's ISO
     minor unit, konsol#354): the amount columns show that many places.
@@ -120,6 +127,11 @@ def columns(minor_unit=None):
             column["precision"] = minor_unit
         return column
 
+    budget_columns = [
+        amount("budget", BUDGET_COLUMN_LABEL),
+        amount("variance_to_budget", "Variance to budget"),
+        amount("budget_ytd", "Budget year to date"),
+    ] if _budget_items(budget) is not None else []
     return [
         {"fieldname": "label", "label": "Line", "fieldtype": "Data", "width": 320},
         {"fieldname": "code", "label": "Code", "fieldtype": "Data", "width": 80},
@@ -127,9 +139,7 @@ def columns(minor_unit=None):
         amount("comparison", "Comparison"),
         amount("variance", "Variance"),
         amount("ytd", "Year to date"),
-        amount("budget", BUDGET_COLUMN_LABEL),
-        amount("variance_to_budget", "Variance to budget"),
-        amount("budget_ytd", "Budget year to date"),
+    ] + budget_columns + [
         amount("prior_year", "Prior year"),
         amount("prior_year_change", "Change vs prior year"),
         {"fieldname": "currency", "label": "Currency", "fieldtype": "Link",
@@ -474,15 +484,17 @@ def _budget_text(budget):
     """The message's budget line (S5 K6): for an ok budget its own sentence
     (approved_budget_model: the Cycle, layers, Rate Set, declaration and
     approver) with the columns' limits and the Balance Sheet basis (S5-Q4
-    a); for any other state the state's sentence, so the blank columns are
-    explained; nothing when no budget was asked for (the Entity basis)."""
+    a); for any other state "Budget columns not shown: " and the state's
+    sentence, the visible state BUD-4-2 asks for (``columns`` renders no
+    budget column then; PR #554 review D1); nothing when no budget was
+    asked for (the Entity basis)."""
     if budget is None:
         return None
     if _budget_items(budget) is not None:
         own = (budget.get("message") or "").rstrip(".")
         return "%s. The budget columns are %s; %s." % (own, BUDGET_LIMITS, BUDGET_BS_BASIS)
     reason = budget.get("message") or "the budget is not available (state: %s)" % budget.get("state")
-    return "Budget columns are blank: %s" % reason
+    return "Budget columns not shown: %s" % reason
 
 
 def message(payload, prior=None, budget=None):
