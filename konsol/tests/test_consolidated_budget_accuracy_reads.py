@@ -46,6 +46,9 @@ _spec.loader.exec_module(read_path_stub)
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SCENARIOS = [("ZZ_ACT", "actual"), ("ZZ_BUD", "budget"), ("ZZ_FC", "forecast")]
+#: Budget Cycles as (scenario_id, fiscal_year): a budget scenario belongs to
+#: the years of its Cycles (the variance read's rule, konsol#214).
+CYCLES = [("ZZ_BUD", 2026)]
 #: Submitted Current Forecasts as (scenario_id, fiscal_year, budget_cycle).
 DECLARED = [("ZZ_FC", 2026, "ZZ-R2")]
 
@@ -58,6 +61,8 @@ ACC_GROUP_TABLE = "epm_gold.gold_forecast_accuracy_group"
 _CB = [
     {"scenario_id": "ZZ_BUD", "cycle": "ZZ-BUD-2026", "fiscal_year": 2026, "value": -50.0},
     {"scenario_id": "ZZ_FC", "cycle": "ZZ-R2", "fiscal_year": 2026, "value": -110.0},
+    # a second budget scenario, read only where it has a Cycle (review M1)
+    {"scenario_id": "ZZ_BUD2", "cycle": "ZZ-BUD2-2026", "fiscal_year": 2026, "value": -70.0},
 ]
 #: The accuracy models: every approved round, side by side.
 _ACC = [
@@ -110,20 +115,23 @@ class _Throw(Exception):
     pass
 
 
-def _frappe(scenarios, declared, lookups):
+def _frappe(scenarios, declared, lookups, cycles=CYCLES):
     def get_all(doctype, filters=None, pluck=None, fields=None, **kw):
         filters = dict(filters or {})
         lookups.append((doctype, filters, tuple(fields or ())))
         if doctype == "Scenario":
             return sorted(sid for sid, kind in scenarios
-                          if all({"scenario_id": sid, "scenario_type": kind}[k] == v
+                          if all({"scenario_id": sid, "scenario_type": kind,
+                                  "is_active": 1}[k] == v
                                  for k, v in filters.items()))
         if doctype == "Current Forecast":
             assert filters == {"docstatus": 1}, filters
             return [{"scenario_id": s, "fiscal_year": y, "budget_cycle": c}
                     for s, y, c in declared]
         if doctype == "Budget Cycle":
-            return []
+            assert filters["docstatus"] == ["<", 2], filters
+            wanted = set(filters["scenario_id"][1])
+            return [{"scenario_id": s, "fiscal_year": y} for s, y in cycles if s in wanted]
         raise AssertionError(doctype)
 
     fake = types.ModuleType("frappe")
@@ -140,12 +148,12 @@ def _frappe(scenarios, declared, lookups):
     return fake, utils
 
 
-def flat(rows, scenarios=SCENARIOS, declared=DECLARED):
+def flat(rows, scenarios=SCENARIOS, declared=DECLARED, cycles=CYCLES):
     """api._batch_query_clickhouse over ``rows`` (overrides of a default
     consolidated_budget request, FY2026 P7, group ZZG, account ZZ4000).
     Returns (result, [sql, ...], lookups)."""
     queries, lookups = [], []
-    fake, utils = _frappe(scenarios, declared, lookups)
+    fake, utils = _frappe(scenarios, declared, lookups, cycles)
     stubs = {
         "frappe": fake, "frappe.utils": utils,
         "konsol.clickhouse": types.SimpleNamespace(
@@ -219,13 +227,39 @@ def test_consolidated_budget_named_budget_scenario_reads_its_rows():
 
 def test_consolidated_budget_without_scenario_reads_the_budgets_only():
     """Before: -160 (the budget plus the forecast's current round). After:
-    the budget only; a forecast is read by naming it (#106 A)."""
+    the budget only; a forecast is read by naming it (#106 A). The one budget
+    scenario of the year is resolved the way the variance read resolves it
+    (choose_budget_scenario), and bound by name."""
     for fact in ("consolidated_budget", "zz_cb"):
         result, queries, _ = flat([{"fact": fact}])
         assert not result.get("errors"), (fact, result)
         assert result["values"] == [-50.0], fact
         (sql,) = queries
-        assert "AND scenario_id IN (" in sql, fact
+        assert "AND scenario_id = {sid:String}" in sql, fact
+
+
+def test_consolidated_budget_without_scenario_and_two_budgets_is_refused():
+    """konsol#561 review M1. Two budget scenarios with Cycles in FY2026.
+    Before: -120 (ZZ_BUD's -50 plus ZZ_BUD2's -70, two budgets added
+    together). After: refused, naming both, in the variance read's words."""
+    scenarios = SCENARIOS + [("ZZ_BUD2", "budget")]
+    cycles = CYCLES + [("ZZ_BUD2", 2026)]
+    for fact in ("consolidated_budget", "zz_cb"):
+        result, queries, _ = flat([{"fact": fact}], scenarios=scenarios, cycles=cycles)
+        assert queries == [], (fact, queries)
+        assert result["values"] == [None], (fact, result)
+        assert result["errors"] == [
+            "Several active budget scenarios belong to FY2026 (ZZ_BUD, ZZ_BUD2); "
+            "choose one."], fact
+
+
+def test_consolidated_budget_without_scenario_takes_the_years_own_budget():
+    """A second budget scenario whose Cycle is another year is not read."""
+    scenarios = SCENARIOS + [("ZZ_BUD2", "budget")]
+    cycles = CYCLES + [("ZZ_BUD2", 2027)]
+    result, _, _ = flat([{}], scenarios=scenarios, cycles=cycles)
+    assert not result.get("errors"), result
+    assert result["values"] == [-50.0]
 
 
 def test_consolidated_budget_named_forecast_reads_its_declared_round():
@@ -250,8 +284,8 @@ def test_consolidated_budget_without_scenario_and_only_forecasts_is_refused():
     result, queries, _ = flat([{}], scenarios=[("ZZ_FC", "forecast")])
     assert queries == []
     assert result["errors"] == [
-        "Every Scenario is a forecast, so there is no budget to read. "
-        "Read a forecast with the 'forecast' scenario or 'latest_estimate'."]
+        "No active budget scenario belongs to FY2026, so there is no budget "
+        "to read. Name scenario_id to read a forecast."]
 
 
 # ── forecast_accuracy / forecast_accuracy_group ─────────────────────────────
