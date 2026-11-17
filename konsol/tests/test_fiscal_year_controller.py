@@ -727,15 +727,16 @@ def test_new_year_with_named_rows_not_foreign():
         assert msg is None or "another fiscal year" not in msg, msg
 
 
-# --- konsol#337: a calendar change requests a full build; a status move does not ---
+# --- konsol#337: a calendar change requests a full build; a status move a scenarios one ---
 # epm_staging.fiscal_periods is TRUNCATE+INSERTed on every save, and dbt reads
 # it (measured 6 Oct 2026, konsolidat main e292abb): silver_tb_movements,
 # governed_rates.sql and seven gold models read it as a source, and the issue
 # counts 16 gold models downstream that +tag:domain:consolidation does not
-# reach. Every column they read is structural; none reads `status`
-# (_staging__sources.yml: "the warehouse does not filter on it"). So a
-# Close/Lock/Reopen republishes the table but changes nothing gold computes,
-# and must not ask an EPM Admin to approve a full rebuild.
+# reach. Those read only the structural columns, so a calendar change asks
+# for the full build. Since konsol#348 FC-4-2, gold_forecast_accuracy and
+# gold_forecast_accuracy_group read `status` (IN ('Closed', 'Locked')) and are
+# tagged domain:scenarios: a Close/Lock/Reopen asks for a scenarios build,
+# never the full one (konsol#561 review M3).
 
 @contextlib.contextmanager
 def _requests():
