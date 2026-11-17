@@ -35,10 +35,16 @@ from frappe import _
 from frappe.model.document import Document
 
 from konsol.epm.budget_grain import digest_name
+from konsol.workflows import set_cancelled_state
 
 ALL_LAYERS = "All layers"
 ONE_LAYER = "One layer"
 BUDGET = "budget"
+
+#: The index validate's FOR UPDATE read runs on (S5 K2; PR #522 review: an
+#: unindexed locking read scans the table and next-key-locks every row).
+LIVE_INDEX = ("consolidation_group", "fiscal_year", "docstatus")
+LIVE_INDEX_NAME = "approved_budget_live"
 
 
 class ApprovedBudget(Document):
@@ -145,6 +151,37 @@ class ApprovedBudget(Document):
                     row.name, states[int(row.docstatus)], self.consolidation_group, self.fiscal_year),
                 frappe.ValidationError)
 
+    def before_submit(self):
+        """Submit is the approval (S5-Q1 a). The declaration takes a copy of
+        the Cycle's ``input_fingerprint`` (S5 K2; BUD-11-3): the hash of the
+        inputs approved HERE, frozen by the submit, which the statement
+        compares with the Cycle's recomputed hash at every read (S5-Q2 a).
+        Set in before_submit so it lands with the approval and nothing saves
+        in on_submit. A Cycle with no stamp (approved before S4 K8) is refused
+        by name: a blank copy would never match anything."""
+        cycle = self._cycle_row()
+        self._refuse_bad_cycle(cycle)
+        if not cycle.input_fingerprint:
+            frappe.throw(
+                _("Budget Cycle {0} has no input fingerprint stamped (it was approved before fingerprints "
+                  "were). Cancel and amend the Cycle so Approve stamps one, then declare it.").format(
+                    self.budget_cycle),
+                frappe.ValidationError)
+        self.input_fingerprint = cycle.input_fingerprint
+
+    def before_cancel(self):
+        """Cancel only while the year has an open period (the Budget Cycle
+        rule, BUD-9-3): a fully closed year's budget is history. Nothing
+        changes before the gate. No workflow ships for this doctype (S5-Q1
+        a); the shared helper sets a docstatus-2 state only when a site has
+        installed one of its own. A cancelled declaration leaves the
+        statement in its "no approved budget" state and stays as the audit
+        trail; a correction is an amendment."""
+        from konsol.period_status import assert_year_not_closed
+
+        assert_year_not_closed(self.fiscal_year, _("cancel Approved Budget {0}").format(self.name))
+        set_cancelled_state(self)
+
     def autoname(self):
         """``APB-<group>-<year>-<sha8>`` (budget_grain.digest_name: collision-
         safe, length-capped; never ``format:{#####}``, #535), or the first
@@ -171,3 +208,12 @@ class ApprovedBudget(Document):
         super().set_new_name(*args, **kwargs)
         if not named and not set_name:
             self.autoname()
+
+
+def on_doctype_update():
+    """The index validate's locking read runs on (S5 K2): (group, year,
+    docstatus), equality on the first two and IN on the last. Its own index,
+    not budget_intake.LOCK_INDEXES: that map is the intake's reads, and
+    test_budget_intake pins it to them. add_index checks first, so this is
+    idempotent."""
+    frappe.db.add_index("Approved Budget", list(LIVE_INDEX), index_name=LIVE_INDEX_NAME)
