@@ -30,6 +30,23 @@ journal row links its Consolidation Journal (``journal_id`` is the
 journal's name, journal_model.py). The CTA row's TB source names no entity,
 so it links nothing. An unknown ``source.kind`` raises, naming it.
 
+The Budget basis (``payload["basis"] == "Budget"``, konsol#348 S5 K10a;
+``statement_api.get_budget_drill``): the drill is ``drill_model.with_rates``
+over a heading, or ``unbalanced_drill``. The source ``kind`` ``cycle`` is
+accepted: an entity row links its Budget Cycle, and carries
+``budget_entries_filters`` (``{"cycle", "data_area_id"}``, the Budget Entry
+list the Desk JS opens); every other row carries ``None``. Every row gains
+``rate`` and ``rate_set`` text: each ``{fx_method, rate}`` of the row's
+``rates`` as ``"<fx_method> <rate>"`` joined by "; ", the rate as the payload
+gives it, never rounded. A blank ``fx_method`` reads ``"chart default
+<rate>"``: the Main Account left the Translation Method blank, so the
+warehouse applied the chart's default (which one is not derived here).
+``rate_set`` is the distinct Rate Sets in order. Rows without ``rates``
+(CTA, NCI, outside-scope aggregate, Total, the unbalanced entity rows) show
+both as None; an entity row with accounts but no ``rates`` raises
+``ValueError`` naming the entity: the rate is never shown blank. The other
+bases gain none of these keys.
+
 A non-ok payload raises ``ValueError`` with its own message: the report
 refuses, it never shows an empty breakdown.
 
@@ -55,17 +72,27 @@ period_name = _load_period_name()
 
 TB_DOCTYPE = "Trial Balance Submission"
 JOURNAL_DOCTYPE = "Consolidation Journal"
-_SOURCE_KINDS = ("tb", "journals")
+CYCLE_DOCTYPE = "Budget Cycle"
+BUDGET = "Budget"
+_SOURCE_KINDS = ("tb", "journals", "cycle")
 
 
-def columns(minor_unit=None):
+def columns(minor_unit=None, basis=None):
     """``minor_unit`` is the drill's own (the reporting currency's ISO minor
     unit, konsol#354): the Amount column shows that many places. ``None``
-    (no drill) sets no precision, never a guessed 2."""
+    (no drill) sets no precision, never a guessed 2. ``basis`` ``Budget``
+    adds the Rate and Rate Set columns after Amount."""
     amount = {"fieldname": "amount", "label": "Amount", "fieldtype": "Currency",
               "options": "currency", "width": 170}
     if minor_unit is not None:
         amount["precision"] = minor_unit
+    budget = []
+    if basis == BUDGET:
+        budget = [
+            {"fieldname": "rate", "label": "Rate", "fieldtype": "Data", "width": 160},
+            {"fieldname": "rate_set", "label": "Rate Set", "fieldtype": "Link",
+             "options": "Rate Set", "width": 110},
+        ]
     return [
         {"fieldname": "label", "label": "Layer / account", "fieldtype": "Data", "width": 380},
         {"fieldname": "entity", "label": "Entity", "fieldtype": "Link", "options": "Entity",
@@ -73,6 +100,7 @@ def columns(minor_unit=None):
         {"fieldname": "main_account", "label": "Account", "fieldtype": "Link",
          "options": "Main Account", "width": 110},
         amount,
+    ] + budget + [
         {"fieldname": "source_doctype", "label": "Source type", "fieldtype": "Data",
          "hidden": 1},
         {"fieldname": "source", "label": "Source", "fieldtype": "Dynamic Link",
@@ -114,6 +142,8 @@ def _source(source, by_key):
         names = by_key.get(_tb_key(source)) or []
         if len(names) == 1:
             return TB_DOCTYPE, names[0]
+    if kind == "cycle" and source.get("cycle"):
+        return CYCLE_DOCTYPE, source["cycle"]
     # "journals": the journals are their own rows below the layer.
     return None, None
 
@@ -137,6 +167,20 @@ def _journal_label(journal):
     return label
 
 
+def _rate_texts(item):
+    """``(rate, rate_set)`` text for a drill row or account, or two Nones."""
+    rates = item.get("rates")
+    if not rates:
+        return None, None
+    rate = "; ".join(
+        f"{r.get('fx_method') or 'chart default'} {r.get('rate')}" for r in rates)
+    sets = []
+    for r in rates:
+        if r.get("rate_set") and r["rate_set"] not in sets:
+            sets.append(r["rate_set"])
+    return rate, ("; ".join(sets) or None)
+
+
 def rows(payload, currency, submissions=()):
     """The report rows for ``payload`` (see the module docstring).
     ``submissions`` are the submitted Trial Balance Submissions
@@ -145,23 +189,40 @@ def rows(payload, currency, submissions=()):
     _refuse_unless_ok(payload)
     drill = payload["drill"]
     by_key = _submissions_by_key(submissions)
+    budget = payload.get("basis") == BUDGET
     out = []
+
+    def extra(item=None, filters=None):
+        if not budget:
+            return {}
+        rate, rate_set = _rate_texts(item or {})
+        return {"rate": rate, "rate_set": rate_set, "budget_entries_filters": filters}
+
     for item in drill["rows"]:
+        source = _source(item.get("source"), by_key)
+        filters = None
+        if budget:
+            if item.get("accounts") and not item.get("rates"):
+                raise ValueError(
+                    f"{item.get('entity')}: the budget drill row has accounts but no translation "
+                    "rate; the rate is never shown blank")
+            if source[0] == CYCLE_DOCTYPE:
+                filters = {"cycle": source[1], "data_area_id": item.get("entity")}
         out.append(_row(item.get("label") or item.get("entity"), currency, item["amount"],
-                        entity=item.get("entity"), source=_source(item.get("source"), by_key),
-                        layer=item["layer"], bold=1))
+                        entity=item.get("entity"), source=source,
+                        layer=item["layer"], bold=1, **extra(item, filters)))
         for account in item.get("accounts") or []:
             name = account.get("account_name")
             label = f"{account['main_account']} {name}" if name else account["main_account"]
             out.append(_row(label, currency, account["amount"], indent=1,
-                            main_account=account["main_account"]))
+                            main_account=account["main_account"], **extra(account)))
         if "journals" in item:
             out.append(_row(f"Journals {item.get('journals_basis') or ''}".strip(), currency,
-                            indent=1, is_journals=1))
+                            indent=1, is_journals=1, **extra()))
             for journal in item["journals"]:
                 out.append(_row(_journal_label(journal), currency, journal["amount"], indent=2,
-                                source=(JOURNAL_DOCTYPE, journal["journal_id"])))
-    out.append(_row("Total", currency, drill["total"], bold=1, is_total=1))
+                                source=(JOURNAL_DOCTYPE, journal["journal_id"]), **extra()))
+    out.append(_row("Total", currency, drill["total"], bold=1, is_total=1, **extra()))
     return out
 
 
@@ -184,7 +245,8 @@ def _ambiguous_text(payload, submissions):
 
 def message(payload, submissions=()):
     """The report message: ``Statement drill · FY2025 P07 · <group> ·
-    <heading> <name> (<section>)`` (entity basis: ``Basis: Entity · <code>
+    <heading> <name> (<section>)`` (Budget basis: ``Budget`` before the
+    group, then a Budget Cycle / layers / Rate Set line; entity basis: ``Basis: Entity · <code>
     <name>`` in place of the group), the dimensions note, and any ambiguous
     trial balance, each escaped, joined by ``<br>`` (Desk renders the
     message as HTML)."""
@@ -195,7 +257,9 @@ def message(payload, submissions=()):
                                    drill.get("heading_name")) if p)
     if drill.get("section"):
         heading += f" ({drill['section']})"
-    if payload.get("basis") == "Entity":
+    if payload.get("basis") == BUDGET:
+        scope = [BUDGET, payload.get("consolidation_group")]
+    elif payload.get("basis") == "Entity":
         # #495: the entity basis names the entity, never a group.
         who = " ".join(p for p in (payload.get("entity"), payload.get("entity_name")) if p)
         scope = ["Basis: Entity", who]
@@ -204,5 +268,12 @@ def message(payload, submissions=()):
     header = " · ".join(
         ["Statement drill", period_name(period["fiscal_year"], period["fiscal_period"])]
         + [p for p in scope + [heading] if p])
-    lines = [header, drill.get("dimensions_note")] + _ambiguous_text(payload, submissions)
+    lines = [header]
+    if payload.get("basis") == BUDGET:
+        meta = payload.get("meta") or {}
+        lines.append(
+            f"Budget Cycle {meta.get('cycle')}, {', '.join(meta.get('layers') or [])}, "
+            f"Rate Set {meta.get('rate_set')}; before intercompany eliminations and without "
+            "group-level adjustments")
+    lines += [drill.get("dimensions_note")] + _ambiguous_text(payload, submissions)
     return "<br>".join(_html.escape(line) for line in lines if line)
