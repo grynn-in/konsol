@@ -1359,24 +1359,55 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
                    entity=None, budget=budget, budget_drills=budget_drills)
 
 
+def _budget_unavailable(message):
+    """A non-ok budget payload naming why (``_export_budget``'s guard)."""
+    return {"state": "error", "message": message, "statement": None, "meta": {}}
+
+
 def _export_budget(payload, reads):
     """``(budget, budget_drills)`` for the group export (konsol#348 S5 K12):
-    the approved budget's payload (``_budget_statement``, the actuals'
-    chart, periods, declared accounts and currency) and, when it is ok,
-    ``{heading: drill_model.with_rates(drill), "UNBALANCED":
-    unbalanced_drill}`` for every statement heading from ONE entity-grain
-    read (``_BUDGET_DRILL_SQL``, the heading leaves plus the UNBALANCED
-    literal, so the plug's drill needs no read of its own; the CTA branch
-    when the CTA heading is on the statement) and ONE rates read
+    ``_read_export_budget`` guarded as ``consolidated_statement._budget``
+    is (PR #554 review M2), so no fault in the budget read ever fails the
+    actuals' file:
+
+    - a ``frappe.ValidationError`` (a refusal: ``frappe.throw`` anywhere in
+      the read, e.g. ``_budget_line``'s "no budget statement line") is
+      state ``error`` with its own message, and the queued message is
+      cleared so no dialog follows the download;
+    - any other exception is a bug: it is written to the Error Log
+      ("Consolidated Statement export budget read", with the traceback) and
+      is state ``error`` naming the exception.
+
+    Both come back as ``(budget, None)``: the workbook writes no budget
+    column and the state's sentence as the note (BUD-4-2), the event records
+    ``budget: null``, and the actuals' file is produced."""
+    try:
+        return _read_export_budget(payload, reads)
+    except frappe.ValidationError as e:
+        frappe.clear_last_message()
+        return _budget_unavailable(str(e)), None
+    except Exception as e:  # noqa: BLE001 — visible in the note, never a failed actuals' file
+        frappe.log_error(title="Consolidated Statement export budget read", message=frappe.get_traceback())
+        return _budget_unavailable(f"{type(e).__name__}: {e}"), None
+
+
+def _read_export_budget(payload, reads):
+    """``_export_budget``'s read, unguarded: the approved budget's payload
+    (``_budget_statement``, the actuals' chart, periods, declared accounts
+    and currency) and, when it is ok, ``{heading:
+    drill_model.with_rates(drill), "UNBALANCED": unbalanced_drill}`` for
+    every statement heading from ONE entity-grain read
+    (``_BUDGET_DRILL_SQL``, the heading leaves plus the UNBALANCED literal,
+    so the plug's drill needs no read of its own; the CTA branch when the
+    CTA heading is on the statement) and ONE rates read
     (``_BUDGET_RATES_SQL``), the ``_drill_reads`` pattern. Every read binds
     scenario_id, cycle and layers.
 
-    A budget that is not ok comes back as is with ``None`` drills: the
-    workbook writes no budget column and the state's sentence as the note
-    (BUD-4-2). A warehouse
-    failure on the budget reads, a drill/line mismatch or a missing rate row
-    becomes a non-ok budget naming it (``not_built`` / ``error``), never a
-    refused actuals' file and never a partial budget sheet."""
+    A budget that is not ok comes back as is with ``None`` drills. A
+    warehouse failure on the budget reads, a drill/line mismatch or a
+    missing rate row becomes a non-ok budget naming it (``not_built`` /
+    ``error``), never a partial budget sheet; anything else raises into
+    ``_export_budget``'s guard."""
     key, accounts, declared = reads["key"], reads["accounts"], reads["declared"]
     group = payload["consolidation_group"]
     budget = _budget_statement(key, reads["period_rows"], declared, accounts,
