@@ -10,6 +10,13 @@ its own message, never shown as an empty table.
 The Prior year column reads the same period and group a year earlier; a
 prior year that is not available leaves the column blank and the report
 message says why — it never fails the report.
+
+The Budget columns (konsol#348 S5 K7) read the approved budget of the
+statement's own group and year (``statement_api.budget_payload``), on the
+Group basis only (the entity budget is S6). A budget that is not ok (no
+approved budget, a cancelled Cycle, changed inputs, a missing layer, no
+rows, a refused or faulty read) leaves the columns blank and the message
+says why — it never fails the report either.
 """
 import frappe
 
@@ -33,14 +40,16 @@ def execute(filters=None):
         payload = statement_api.get_entity_statement(filters.fiscal_year, filters.fiscal_period, entity)
         prior = _prior_year(filters.fiscal_year, filters.fiscal_period, None, entity=entity)
         drill_group = None
+        budget = None
     else:
         group = _group_code(filters.get("consolidation_group"))
         payload = statement_api.get_statement(filters.fiscal_year, filters.fiscal_period, group)
         prior = _prior_year(filters.fiscal_year, filters.fiscal_period, group)
         drill_group = _drill_group(filters.get("consolidation_group"), payload)
+        budget = _budget(filters.fiscal_year, filters.fiscal_period, payload)
     try:
-        data = statement_report_model.rows(payload, prior, drill_group=drill_group)
-        message = statement_report_model.message(payload, prior)
+        data = statement_report_model.rows(payload, prior, drill_group=drill_group, budget=budget)
+        message = statement_report_model.message(payload, prior, budget=budget)
     except ValueError as e:
         frappe.throw(str(e))
     return statement_report_model.columns(payload["statement"]["minor_unit"]), data, message
@@ -79,3 +88,23 @@ def _prior_year(fiscal_year, fiscal_period, group, entity=None):
         # The refusal is shown in the report message, not as a dialog too.
         frappe.clear_last_message()
         return {"state": "error", "message": str(e), "statement": None}
+
+
+def _budget(fiscal_year, fiscal_period, payload):
+    """The approved budget's payload for the statement's own group (the
+    group ``get_statement`` chose, so a blank filter still finds it), for
+    the Budget columns (konsol#348 S5 K7). ``None`` when the statement is
+    not ok (nothing to put a budget beside; the report refuses on the
+    actuals' own message). A refused read (``frappe.throw``) or any fault
+    in the read becomes a non-ok budget payload naming it, so the columns
+    are blank with the reason in the legend and the actuals still render:
+    a budget fault never fails the statement."""
+    if payload.get("state") != "ok" or not payload.get("consolidation_group"):
+        return None
+    try:
+        return statement_api.budget_payload(fiscal_year, fiscal_period, payload["consolidation_group"])
+    except frappe.ValidationError as e:
+        frappe.clear_last_message()
+        return {"state": "error", "message": str(e), "statement": None, "meta": {}}
+    except Exception as e:  # noqa: BLE001 — visible in the legend, never a failed statement
+        return {"state": "error", "message": f"{type(e).__name__}: {e}", "statement": None, "meta": {}}
