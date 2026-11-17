@@ -55,7 +55,12 @@ exactly what the Close app's Numbers screen shows.
   "Unbalanced budget" plug, S5-Q3 a) is laid out as its own row with blank
   actuals where the actuals' line would stand (before the P&L net result,
   before the BS residual; PR #554 review M1), so the Budget column foots
-  on screen. A line absent from the budget, a section header and a
+  on screen. A heading or the net result absent from an ok budget is
+  budgeted at 0 (Deepak Pai, 17 Nov 2026, konsol#348 comment 6956694095:
+  unbudgeted is budget zero, the 22 Sep 2026 rule): on the P&L Budget and
+  Budget year to date 0.00, the actual as the variance and favourability by
+  its normal balance; on the BS Budget 0.00 and no variance; no budget
+  drill. Any other line absent from the budget, a section header and a
   residual explanation row are blank, never 0.
   ``favourability`` (konsol#348 S6 KB3; S6-Q3 a, BUD-7-a) is a TEXT on a
   Profit and Loss heading row and the net result, never a number: the
@@ -119,6 +124,12 @@ FAVOURABILITY_RULE = (
     "to budget above zero is Favourable and below zero Unfavourable (income and costs are both shown "
     "income-positive, so Debit and Credit read the same way), zero is On budget; a heading with no "
     "declared normal balance reads n/a. The net result is favourable when there is more profit than budgeted")
+
+#: Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
+#: 6956694095; the 22 Sep 2026 rule). Said in the legend, in words.
+UNBUDGETED_RULE = ("A heading or net result with no budget line is budgeted at zero, so on the profit and loss "
+                   "its variance to budget is the actual: unbudgeted spend is Unfavourable and unbudgeted "
+                   "revenue Favourable")
 
 #: konsol#348 S5 K6 (declared sub-rule): the consolidated budget is before
 #: intercompany eliminations and without group-level adjustments. Said in
@@ -190,7 +201,7 @@ def _shown(text):
     return text[:COMMENTARY_SHOWN - 1] + "…"
 
 
-def _with_commentary(row, payload, heading, drill_group):
+def _with_commentary(row, payload, heading, drill_group, budgeted=True):
     """A heading row with its commentary, the payload's ``can_comment`` and
     the keys that open its drill (module docstring)."""
     entry = payload["commentary"].get(heading)
@@ -204,8 +215,9 @@ def _with_commentary(row, payload, heading, drill_group):
     row["drill_entity"] = payload.get("entity") if payload.get("basis") == "Entity" else None
     # S5 K10b: the Budget cell opens the budget drill when the budget is ok
     # and has this line (a value; a non-ok budget leaves it None) and a
-    # group is known to drill on.
-    row["drill_budget"] = 1 if row.get("budget") is not None and drill_group else 0
+    # group is known to drill on. An unbudgeted heading's 0.00 (17 Nov 2026
+    # rule, ``_with_budget``) has no budget line to drill: ``budgeted`` False.
+    row["drill_budget"] = 1 if row.get("budget") is not None and drill_group and budgeted else 0
     return row
 
 
@@ -322,6 +334,15 @@ def _budget_items(budget):
     return items
 
 
+def _has_budget_line(budget_items, section, line):
+    """True when an ok budget carries ``line`` with a value (a drillable
+    budget line), False for an unbudgeted one shown at 0.00."""
+    if budget_items is None:
+        return False
+    item = budget_items.get(next(_line_keys(section, line))[0])
+    return item is not None and item.get("current") is not None
+
+
 def favourability(variance_to_budget, side):
     """The favourability text for a display-signed variance and the heading's
     declared side (konsol#348 S6 KB3): ``n/a`` unless ``side`` is Debit or
@@ -354,8 +375,9 @@ def _with_budget(row, section, line, budget_items, minor_unit, include=None, var
     variance to budget on a Profit and Loss line only (this period's
     ``current`` minus it, same display sign, rounded once to ``minor_unit``),
     its favourability on a P&L heading or the net result (``favourability``;
-    S6 KB3) and the budget's year to date on a P&L line. Absent from the
-    budget: left blank, never 0. A Balance Sheet line has no variance (S5 F1:
+    S6 KB3) and the budget's year to date on a P&L line. A heading or the
+    net result absent from the ok budget is budgeted at 0 (17 Nov 2026
+    rule, below); any other line absent from it is left blank, never 0. A Balance Sheet line has no variance (S5 F1:
     a budgeted movement against an actual balance is not a variance; the
     message says so). ``variance`` False leaves the variance blank (the
     residual: two near-zeros compared would say nothing)."""
@@ -364,11 +386,19 @@ def _with_budget(row, section, line, budget_items, minor_unit, include=None, var
     key, item = ((section, "include", line["heading"], include.get("kind")), include) \
         if include is not None else next(_line_keys(section, line))
     budget_item = budget_items.get(key)
-    if budget_item is None:
-        return row
-    budget_value = budget_item.get("current")
+    budget_value = budget_item.get("current") if budget_item is not None else None
     if budget_value is None:
-        return row
+        # Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348
+        # comment 6956694095; the 22 Sep 2026 rule, as gold_variance_analysis's
+        # coalesce(budget_amount, 0)): with an ok budget, a heading or the net
+        # result the budget lacks is budgeted at 0, so a P&L one shows Budget
+        # and Budget YTD 0.00, the actual as its variance and favourability by
+        # its normal balance; a BS heading shows Budget 0.00 and, as S5 F1, no
+        # variance. Includes and other lines stay blank.
+        if include is not None or line.get("kind") not in ("heading", "net_result"):
+            return row
+        budget_item = {"current": 0.0, "ytd": 0.0} if section == _BUDGET_VARIANCE_SECTION else {"current": 0.0}
+        budget_value = 0.0
     row["budget"] = _zero(budget_value)
     this = item.get("current")
     if variance and section == _BUDGET_VARIANCE_SECTION and this is not None:
@@ -468,7 +498,8 @@ def rows(payload, prior=None, drill_group=None, budget=None):
                 out.append(_with_commentary(merged(
                     _row(line.get("heading_name") or line["heading"], currency, line,
                          code=line["heading"]),
-                    name, line), payload, line["heading"], drill_group))
+                    name, line), payload, line["heading"], drill_group,
+                    budgeted=_has_budget_line(budget_items, name, line)))
                 for include in line.get("includes") or []:
                     out.append(merged(
                         _row(include["label"], currency, include,
@@ -556,8 +587,8 @@ def _budget_text(budget):
         return None
     if _budget_items(budget) is not None:
         own = (budget.get("message") or "").rstrip(".")
-        return "%s. The budget columns are %s; %s. %s." % (own, BUDGET_LIMITS, BUDGET_BS_BASIS,
-                                                          FAVOURABILITY_RULE)
+        return "%s. The budget columns are %s; %s. %s. %s." % (own, BUDGET_LIMITS, BUDGET_BS_BASIS,
+                                                              FAVOURABILITY_RULE, UNBUDGETED_RULE)
     reason = budget.get("message") or "the budget is not available (state: %s)" % budget.get("state")
     return "Budget columns not shown: %s" % reason
 

@@ -40,7 +40,7 @@ The Favourability column reads the variance to budget of a profit and loss headi
 
 The rule depends on the heading's **normal balance** (Debit or Credit, on the Main Account). Debit and Credit read the same way: the statement shows income and costs both income-positive, so a cost above budget is already a negative variance, and income above budget a positive one. A heading whose main account leaves the normal balance blank reads **n/a**: the statement does not guess a direction for it. Set the normal balance on the Main Account to give it one.
 
-The net result is Favourable when there is more profit than budgeted. Balance sheet lines have no favourability, as they have no variance to budget. A heading that has actuals but no line in the approved budget shows blank budget cells, so it has no favourability either.
+The net result is Favourable when there is more profit than budgeted. Balance sheet lines have no favourability, as they have no variance to budget. A heading that has actuals but no line in the approved budget is budgeted at zero: on the profit and loss its Budget and Budget year to date are 0.00 and its variance is the actual, so unbudgeted spend is Unfavourable and unbudgeted revenue Favourable. On the balance sheet it shows Budget 0.00 and no variance.
 
 The legend under the statement states the rule, and the Excel export carries the same column.
 
@@ -80,6 +80,8 @@ The Entity basis has no group filter, so the root group decides which approved b
 | The entity is a member of no consolidation group | Add it to a root Consolidation Group, and declare that group's Approved Budget. |
 
 Any other reason (no approved budget, a cancelled Cycle, changed inputs) reads as on the group statement.
+
+**Export to Excel** on the Entity basis carries the same budget columns and legend line. It has no **Budget drill** sheet, as the Entity basis has no budget drill; the legend says so.
 
 ## Cancelling a Cycle
 

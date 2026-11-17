@@ -1494,7 +1494,7 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
 
     ``basis="Entity"`` (konsol#495) exports one entity's own statement
     (``_entity_statement``, ``entity`` required): the drills come from the
-    statement's own trial-balance rows, so ClickHouse is read ONCE in total.
+    statement's own trial-balance rows, so ClickHouse is read ONCE for the actuals.
     A blank basis or ``"Group"`` is the group export above, unchanged; any
     other basis is refused.
 
@@ -1503,7 +1503,9 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
     workbook is built, in the request's own transaction (no commit here; a
     GET would roll it back, hence POST). A refusal records nothing. The
     detail's ``budget`` is ``{cycle, layers, rate_set}`` for the ok budget
-    the file carries, else ``None`` (the entity export always)."""
+    the file carries, else ``None``. The Entity export carries the entity
+    budget (``entity_budget_payload``, S6 KB8: one more ClickHouse read when
+    it is ok) with its columns and note, and no "Budget drill" sheet."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     if basis not in (None, "", "Group", "Entity"):
         frappe.throw(f"Basis {basis} is not one of Group, Entity.")
@@ -1515,8 +1517,12 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
             drills = _entity_drills(payload, reads)
         except ValueError as e:
             frappe.throw(str(e))
+        # The entity budget (konsol#348 S6 KB8) goes to the workbook as on the
+        # Desk report (KB9); the Entity basis has no budget drill sheet.
+        budget = _export_entity_budget(fiscal_year, fiscal_period, payload["entity"])
         _send_workbook(payload, drills, _filename(payload["period"], None, entity=entity),
-                       basis="Entity", consolidation_group=None, entity=payload["entity"])
+                       basis="Entity", consolidation_group=None, entity=payload["entity"],
+                       budget=budget)
         return
     payload, reads = _statement(fiscal_year, fiscal_period, group_code(consolidation_group))
     if payload["state"] != "ok":
@@ -1539,6 +1545,23 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
 def _budget_unavailable(message):
     """A non-ok budget payload naming why (``_export_budget``'s guard)."""
     return {"state": "error", "message": message, "statement": None, "meta": {}}
+
+
+def _export_entity_budget(fiscal_year, fiscal_period, entity):
+    """The entity budget payload for the Entity export (``entity_budget_payload``,
+    konsol#348 S6 KB8), guarded as ``_export_budget`` is: a refusal becomes
+    state "error" with its own message (no log, the queued message cleared),
+    any other fault state "error" naming it plus one Error Log. Either way
+    the workbook writes no budget column and the note says why; the
+    actuals' file is produced."""
+    try:
+        return entity_budget_payload(fiscal_year, fiscal_period, entity)
+    except frappe.ValidationError as e:
+        frappe.clear_last_message()
+        return _budget_unavailable(str(e))
+    except Exception as e:  # noqa: BLE001 — a budget fault never fails the actuals' file
+        frappe.log_error(title="Consolidated Statement export entity budget read", message=frappe.get_traceback())
+        return _budget_unavailable(f"{type(e).__name__}: {e}")
 
 
 def _export_budget(payload, reads):
