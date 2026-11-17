@@ -136,6 +136,7 @@ def test_permissions_per_the_field_table():
         "System Manager": "rwcdsxa",
         "EPM Admin": "rwcsxa",   # approves (submits), cancels; amend inserts, so create
         "EPM Analyst": "rwc",
+        "Entity Accountant": "r",   # reads the declaration behind the Budget columns, as Budget Cycle (S5 F2)
         "EPM User": "r",
     }
     assert not [r for r in _perms() if r.startswith("Budget ")]
