@@ -73,7 +73,7 @@ def test_no_transition_leads_into_cancelled():
 # count; once the declaration is cancelled the Cycle cancels as before. The
 # period gate (assert_year_not_closed) still runs first, and nothing is
 # assigned before either gate. The controller is loaded by path against a
-# stub frappe whose get_all serves the Approved Budget rows.
+# stub frappe whose db.get_values serves the Approved Budget rows.
 
 import contextlib
 import importlib.util
@@ -94,9 +94,9 @@ class _Thrown(Exception):
 def _cycle_env(approved_budgets, closed_years=()):
     """The Budget Cycle controller against a stub frappe, installed for the
     whole block (before_cancel imports konsol.period_status at call time).
-    Yields ``(doc, seen)``: ``seen`` records the get_all filters, the period
+    Yields ``(doc, seen)``: ``seen`` records the Approved Budget reads, the period
     gate calls and set_cancelled_state calls."""
-    seen = {"get_all": [], "gate": [], "cancelled": []}
+    seen = {"read": [], "gate": [], "cancelled": []}
 
     class Document:
         def __init__(self, **kw):
@@ -108,19 +108,18 @@ def _cycle_env(approved_budgets, closed_years=()):
     def throw(msg, exc=None, *a, **k):
         raise _Thrown(msg)
 
-    def get_all(doctype, filters=None, fields=None, order_by=None, limit_page_length=None, **k):
-        seen["get_all"].append((doctype, dict(filters or {}), list(fields or []), order_by))
-        assert doctype == "Approved Budget"
+    def get_values(doctype, filters=None, fieldname=None, as_dict=False, order_by=None, for_update=False, **k):
+        seen["read"].append((doctype, dict(filters or {}), list(fieldname or []), order_by, for_update))
+        assert doctype == "Approved Budget" and as_dict
         rows = [r for r in approved_budgets
                 if r["budget_cycle"] == filters["budget_cycle"] and r["docstatus"] == filters["docstatus"]]
-        return [types.SimpleNamespace(**{f: r.get(f) for f in fields}) for r in rows]
+        return [types.SimpleNamespace(**{f: r.get(f) for f in fieldname}) for r in rows]
 
     frappe = types.ModuleType("frappe")
     frappe._ = lambda s: s
     frappe.throw = throw
     frappe.ValidationError = _Thrown
-    frappe.get_all = get_all
-    frappe.db = types.SimpleNamespace()
+    frappe.db = types.SimpleNamespace(get_values=get_values)
     docmod = types.ModuleType("frappe.model.document")
     docmod.Document = Document
 
@@ -171,9 +170,22 @@ def test_cancel_is_refused_by_name_while_a_submitted_approved_budget_names_the_c
     assert CYCLE_NAME in message and "APB-CG-ZZGRP--2027-0f0f0f0f" in message, message
     assert "Approved Budget" in message and "cancel" in message.lower()
     assert seen["cancelled"] == [], "nothing changes before the gate"
-    (doctype, filters, fields, order_by), = seen["get_all"]
+    (doctype, filters, fields, order_by, for_update), = seen["read"]
     assert filters == {"budget_cycle": CYCLE_NAME, "docstatus": 1}, "submitted declarations only"
     assert order_by, "a deterministic order (v16 sorts by creation otherwise)"
+
+
+def test_the_approved_budget_read_is_a_locking_read():
+    """PR #554 re-review: a declaration's submit locks the Cycle row
+    (ApprovedBudget._cycle_row for_update). A cancel that waited on that lock
+    must not then read the declarations from its REPEATABLE READ snapshot,
+    taken before the submit committed, or it misses the new declaration and
+    both commit. A locking read sees the latest committed rows. v16's
+    frappe.get_all takes no for_update, so the read is frappe.db.get_values."""
+    with _cycle_env([]) as (doc, seen):
+        doc.before_cancel()
+    (_doctype, _filters, _fields, _order_by, for_update), = seen["read"]
+    assert for_update is True, "the cancel gate must read the declarations FOR UPDATE"
 
 
 def test_cancel_is_allowed_once_the_declaration_is_cancelled_or_was_never_submitted():
@@ -189,5 +201,5 @@ def test_the_period_gate_still_runs_first():
     with _cycle_env([_declaration()], closed_years={2027}) as (doc, seen):
         with pytest.raises(_Thrown, match="FY2027"):
             doc.before_cancel()
-    assert seen["get_all"] == [], "the closed year refuses before the Approved Budget read"
+    assert seen["read"] == [], "the closed year refuses before the Approved Budget read"
     assert seen["cancelled"] == []
