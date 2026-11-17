@@ -483,3 +483,77 @@ def test_js_export_button_is_added_and_removed_in_after_datatable_render():
     assert "page.remove_inner_button(EXPORT_TO_EXCEL)" in hook
     assert "page.add_inner_button(EXPORT_TO_EXCEL, export_to_excel)" in hook
     assert "has_statement()" in hook
+
+
+# --- the formatter's links, run in node (PR #554 review m3, m4) ----------------
+
+_FORMAT_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+const [, , script, report, rowsJson] = process.argv;
+global.__ = (s) => s;
+global.frappe = {
+  query_reports: {},
+  router: { make_url: (parts) => "/app/" + parts.map((p) => p.toLowerCase().replace(/ /g, "-")).join("/") },
+  utils: { escape_html: (s) => s },
+  ui: {},
+  query_report: { data: [], get_filter_value: (name) => ({ fiscal_year: 2024, fiscal_period: 12 })[name] || "" },
+};
+global.konsol = { period_reports: { setup: () => Promise.resolve() } };
+vm.runInThisContext(fs.readFileSync(script, "utf8"));
+const def = frappe.query_reports[report];
+const out = [];
+for (const data of JSON.parse(rowsJson)) {
+  const cell = (fieldname) => def.formatter(data[fieldname], {}, { fieldname }, data, (v) => String(v));
+  out.push({ label: cell("label"), budget: cell("budget") });
+}
+console.log(JSON.stringify(out));
+"""
+
+
+def _format_rows(rows):
+    import json
+    import shutil
+    import subprocess
+
+    assert shutil.which("node"), "node is needed to run the report script"
+    out = subprocess.run(["node", "-", PATH.replace(".py", ".js"), "Consolidated Statement", json.dumps(rows)],
+                         input=_FORMAT_HARNESS, capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+_HEADING_ROW = {"label": "REVENUE", "code": "4", "drill_group": "CG-ZZG-", "consolidation_group": "ZZG",
+                "budget": 100.0, "drill_budget": 1}
+_PLUG_ROW = {"label": "Unbalanced budget (no balancing entry)", "code": "UNBALANCED", "drill_group": "CG-ZZG-",
+             "budget": 700.0, "drill_budget": 1}
+_ENTITY_ROW = {"label": "REVENUE", "code": "4", "drill_entity": "ZZA", "budget": None, "drill_budget": 0}
+
+
+def _href(cell):
+    import re
+    found = re.search(r'href="([^"]+)"', cell)
+    return found.group(1) if found else None
+
+
+def test_js_the_plug_rows_label_is_no_actuals_drill_link_but_its_budget_cell_is():
+    """PR #554 review m3: the "Unbalanced budget" row has no actuals line
+    behind it (statement_report_model.UNBALANCED_CODE is no chart heading),
+    so its label must not open the actuals' drill; its Budget cell keeps the
+    budget drill (basis Budget, heading UNBALANCED). A heading row keeps both."""
+    heading, plug = _format_rows([_HEADING_ROW, _PLUG_ROW])
+    assert "<a " not in plug["label"], plug["label"]
+    assert "<a " in plug["budget"] and "basis=Budget" in _href(plug["budget"]) \
+        and "heading=UNBALANCED" in _href(plug["budget"]), plug["budget"]
+    assert "<a " in heading["label"] and "heading=4" in _href(heading["label"])
+    assert "<a " in heading["budget"] and "basis=Budget" in _href(heading["budget"])
+
+
+def test_js_drill_url_sets_the_group_basis_explicitly():
+    """PR #554 review m4: the heading's actuals link names basis=Group, so the
+    drill opens on the Group basis whatever the user's remembered Basis
+    filter; the entity row's link names basis=Entity as before."""
+    heading, entity = _format_rows([_HEADING_ROW, _ENTITY_ROW])
+    assert "basis=Group" in _href(heading["label"]) and "consolidation_group=CG-ZZG-" in _href(heading["label"])
+    assert "basis=Entity" in _href(entity["label"]) and "entity=ZZA" in _href(entity["label"])
+    assert "basis=Group" not in _href(entity["label"])
+    assert "<a " not in entity["budget"], "a blank budget cell is no link"
