@@ -43,10 +43,15 @@ def _real_group_code(frappe):
 
 
 def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, periods=None,
-            group_names=None, disabled=(), **kwargs):
+            group_names=None, disabled=(), approved_budgets=None, **kwargs):
     """``readable``: the reports whose Report.is_permitted() is True; the rest
-    are denied. ``doctype_ok``: frappe.has_permission(ref_doctype, "report")."""
-    calls = {"sql": [], "params": [], "kwargs": [], "has_permission": [], "only_for": 0}
+    are denied. ``doctype_ok``: frappe.has_permission(ref_doctype, "report").
+    ``ch_rows`` / ``ch_error`` serve the actuals' reads
+    (gold_fully_consolidated_tb). ``approved_budgets`` are the Approved Budget
+    rows MariaDB holds (``name, consolidation_group, fiscal_year, docstatus``;
+    konsol#348 S5 K15, PR #554 review m7b); ``group_names`` maps every root
+    Consolidation Group document name to its code."""
+    calls = {"sql": [], "params": [], "kwargs": [], "has_permission": [], "only_for": 0, "get_all": []}
     frappe = types.ModuleType("frappe")
     frappe.whitelist = lambda **kw: (lambda fn: fn)
     frappe.PermissionError = PermissionError
@@ -79,6 +84,30 @@ def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, peri
         return types.SimpleNamespace(consolidation_group=groups[name], data_area_id=None)
 
     frappe.db = types.SimpleNamespace(get_value=get_value)
+
+    def get_all(doctype, filters=None, fields=None, limit_page_length=None, **kw):
+        calls["get_all"].append((doctype, dict(filters or {}), list(fields or []), kw))
+        filters = dict(filters or {})
+        if doctype == "Consolidation Group":
+            assert filters.pop("data_area_id") == ["is", "not set"], "root rows only"
+            code = filters.pop("consolidation_group")
+            assert not filters, filters
+            rows = [{"name": name} for name, c in groups.items() if c == code]
+        elif doctype == "Approved Budget":
+            rows = list(approved_budgets or [])
+            if "docstatus" in filters:
+                docstatus = filters.pop("docstatus")
+                rows = [r for r in rows if r["docstatus"] == docstatus]
+            if "consolidation_group" in filters:
+                op, names = filters.pop("consolidation_group")
+                assert op == "in", op
+                rows = [r for r in rows if r["consolidation_group"] in names]
+            assert not filters, filters
+        else:
+            raise AssertionError("unexpected get_all on %s" % doctype)
+        return [{f: r.get(f) for f in fields} for r in rows]
+
+    frappe.get_all = get_all
     cs = types.ModuleType(_CS_MODULE)
     cs._group_code = _real_group_code(frappe)
     frappe.has_permission = has_permission
@@ -94,6 +123,9 @@ def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, peri
         calls["sql"].append(sql)
         calls["params"].append(params)
         calls["kwargs"].append({"settings": settings, "timeout": timeout})
+        # PR #554 review m7b: the budget years come from the declarations in
+        # MariaDB, never from the warehouse (which holds every approved Cycle).
+        assert "gold_fully_consolidated_budget" not in sql, sql
         if ch_error is not None:
             raise ch_error
         return ch_rows or []
@@ -126,7 +158,9 @@ def test_latest_with_data_from_one_warehouse_read():
     info, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}])
     assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 5}
     assert info["years"] == [2024, 2025]
-    assert len(calls["sql"]) == 2 and all("gold_fully_consolidated_tb" in q for q in calls["sql"])
+    # Two actuals reads (periods, years); the budget years are a MariaDB read (S5 K15, m7b).
+    assert len(calls["sql"]) == 2
+    assert all("gold_fully_consolidated_tb" in q for q in calls["sql"])
 
 
 def test_failed_read_falls_back_to_latest_regular_and_does_not_raise():
@@ -243,3 +277,64 @@ def test_a_disabled_report_does_not_grant_the_strips():
         _invoke(disabled=REPORTS)
     info, _ = _invoke(disabled=REPORTS[:2])  # the third still opens
     assert info["years"] == [2024, 2025]
+
+
+# --- a budget-only year is marked on the Year strip (konsol#348 S5 K15; PR #554 review m7b)
+#
+# data_years is the UNION of the years with actuals (gold_fully_consolidated_tb)
+# and the fiscal years of the SUBMITTED Approved Budgets (MariaDB, docstatus 1),
+# for the root group document(s) of the group's code when one is given, else
+# every group. The warehouse table holds every approved Cycle's rows, whatever
+# any declaration says, so it is not read for this: the mark says "an approved
+# budget is declared", not "budget data exists". ``latest`` (the period a first
+# visit opens on) stays the actuals': the Consolidated Statement refuses a
+# period with no actuals rows. A failed actuals read leaves the declarations'
+# years; a MariaDB failure is not swallowed (it is a site fault, not "can't say").
+
+def _declaration(year, group="CG-X-", docstatus=1):
+    return {"name": "APB-%s-%d" % (group, year), "consolidation_group": group, "fiscal_year": year,
+            "docstatus": docstatus}
+
+
+def test_a_year_with_a_submitted_approved_budget_is_marked_on_the_year_strip():
+    info, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}],
+                          approved_budgets=[_declaration(2026)])
+    assert info["data_years"] == [2025, 2026]
+    assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 5}, "the actuals' latest"
+    assert all("gold_fully_consolidated_budget" not in q for q in calls["sql"]), "MariaDB, not the warehouse"
+    reads = [c for c in calls["get_all"] if c[0] == "Approved Budget"]
+    assert len(reads) == 1 and reads[0][1] == {"docstatus": 1} and "fiscal_year" in reads[0][2]
+
+
+def test_a_draft_or_cancelled_declaration_marks_no_year():
+    info, _ = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}],
+                      approved_budgets=[_declaration(2026, docstatus=0), _declaration(2027, docstatus=2)])
+    assert info["data_years"] == [2025]
+
+
+def test_the_budget_years_are_the_groups_when_one_is_given_else_every_groups():
+    budgets = [_declaration(2026, "CG-X-"), _declaration(2027, "CG-Y-")]
+    names = {"CG-X-": "X", "CG-Y-": "Y"}
+    info, calls = _invoke(ch_rows=[], approved_budgets=budgets, consolidation_group="CG-X-", group_names=names)
+    assert info["data_years"] == [2026]
+    read = next(c for c in calls["get_all"] if c[0] == "Approved Budget")
+    assert read[1] == {"docstatus": 1, "consolidation_group": ["in", ["CG-X-"]]}
+    # A bare code resolves to the same root document(s).
+    info, _ = _invoke(ch_rows=[], approved_budgets=budgets, consolidation_group="X", group_names=names)
+    assert info["data_years"] == [2026]
+    # No group: every group's declarations.
+    info, calls = _invoke(ch_rows=[], approved_budgets=budgets, group_names=names)
+    assert info["data_years"] == [2026, 2027]
+    assert not [c for c in calls["get_all"] if c[0] == "Consolidation Group"]
+
+
+def test_a_failed_actuals_read_still_returns_the_budget_years():
+    info, _ = _invoke(ch_error=RuntimeError("UNKNOWN_TABLE"), approved_budgets=[_declaration(2026)])
+    assert info["data_years"] == [2026]
+    assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 12}, "the fallback: latest declared Regular"
+
+
+def test_budget_years_are_distinct_and_sorted_with_the_actuals():
+    info, _ = _invoke(ch_rows=[{"fiscal_year": 2026, "fiscal_period": 1}],
+                      approved_budgets=[_declaration(2026), _declaration(2024, "CG-Y-")])
+    assert info["data_years"] == [2024, 2026]

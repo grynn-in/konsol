@@ -389,6 +389,22 @@ def test_statement_exported_is_accepted_at_a_regular_period_without_a_reason():
     assert M.event_problems(event) == []
 
 
+def test_statement_exported_detail_documents_and_accepts_the_budget_key():
+    """konsol#348 S5 K12: the export's detail carries ``budget``
+    ({cycle, layers, rate_set} for an ok approved budget, else null). The
+    model's kind comment names the key, and both shapes are accepted."""
+    import os
+    source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "close",
+                               "close_event_model.py")).read()
+    kinds = source[source.index('"statement_exported"') - 400:source.index('"statement_exported"')]
+    assert "budget" in kinds and "cycle" in kinds and "rate_set" in kinds, kinds
+    base = {"basis": "Group", "consolidation_group": "G1", "entity": None,
+            "filename": "numbers-FY2025P07-G1.xlsx", "label": "Provisional"}
+    for budget in ({"cycle": "BCYC-ZZB-2025-abc12345", "layers": ["base", "board"], "rate_set": "ZZRS"}, None):
+        event = _event(kind="statement_exported", fiscal_period=7, detail=dict(base, budget=budget))
+        assert M.event_problems(event) == [], budget
+
+
 def test_statement_exported_is_accepted_at_fiscal_period_zero():
     """P0 (opening balances) downloads are recorded (Q1, 9 Nov 2026)."""
     assert M.event_problems(_event(kind="statement_exported", fiscal_period=0)) == []

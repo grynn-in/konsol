@@ -24,6 +24,8 @@ GATED = {
     "GroupExchangeRate": "assert_open",
     # BUD-9-3: a Cycle cancels only while its year is not fully closed
     "BudgetCycle": "assert_year_not_closed",
+    # konsol#348 S5 K2: the declaration cancels while its year has an open period
+    "ApprovedBudget": "assert_year_not_closed",
 }
 
 

@@ -62,6 +62,13 @@ PL = "Profit and Loss"
 BS = "Balance Sheet"
 SECTIONS = (PL, BS)
 
+#: The budget's balancing plug: ``adjustment_type`` of the one row per
+#: (entity, period) that gold_fully_consolidated_budget writes so a budget
+#: with no balancing entry foots (konsolidat; its ``main_account`` is the
+#: literal 'UNBALANCED'). Decided konsol#348 S5-Q3 (a): its own bucket and
+#: Balance Sheet line, counted in the residual. Actuals rows never carry it.
+UNBALANCED = "unbalanced"
+
 
 def _dec(amount):
     return Decimal(str(amount))
@@ -145,24 +152,29 @@ def heading_amounts(rows, accounts, keys, minor_unit):
     included. ``keys`` is an iterable of ``(fiscal_year, fiscal_period)``.
 
     Returns ``{"headings", "no_heading", "not_in_chart", "cta",
-    "pl_total"}``:
+    "unbalanced", "pl_total"}``:
       - ``headings``: ``{heading_code: amount}`` — a leaf's heading is its
         ``parent_account``.
       - ``no_heading``: ``{section: amount}`` — a Published leaf with a
         blank ``parent_account`` (live: ``99 NET INCOME``, P&L).
       - ``not_in_chart``: ``{code: amount}`` — a code not in ``accounts``,
-        or posted to a heading (``is_group``); CTA rows are excluded from
-        this bucket even when ``main_account`` is the literal ``"CTA"``,
-        which is never a chart code.
+        or posted to a heading (``is_group``); CTA and unbalanced rows are
+        excluded from this bucket even though their ``main_account`` is the
+        literal ``"CTA"`` / ``"UNBALANCED"``, which is never a chart code.
       - ``cta``: the sum of rows with ``adjustment_type == "cta"``.
+      - ``unbalanced``: the sum of rows with ``adjustment_type ==
+        "unbalanced"`` — the budget's balancing plug
+        (gold_fully_consolidated_budget writes one per entity and period;
+        konsol#348 S5-Q3 a). Actuals rows never carry it, so it is 0 there.
       - ``pl_total``: the Profit and Loss section sum (headings +
         no_heading), used by N49 for the current-year result.
 
     A row with ``null_rows`` truthy, or ``amount is None``, raises
     ``ValueError`` naming the account and period — it is never read as 0.
     No row whose key is in ``keys`` is ever dropped: it lands in exactly
-    one bucket (``cta`` and the other buckets are mutually exclusive).
-    Amounts are rounded to ``minor_unit`` decimal places (``places``).
+    one bucket (``cta``, ``unbalanced`` and the other buckets are mutually
+    exclusive). Amounts are rounded to ``minor_unit`` decimal places
+    (``places``).
     """
     minor_unit = places(minor_unit)
     keys = set(keys)
@@ -171,6 +183,7 @@ def heading_amounts(rows, accounts, keys, minor_unit):
     no_heading = {}
     not_in_chart = {}
     cta_total = Decimal("0")
+    unbalanced_total = Decimal("0")
 
     for row in rows:
         key = (row["fiscal_year"], row["fiscal_period"])
@@ -192,6 +205,9 @@ def heading_amounts(rows, accounts, keys, minor_unit):
 
         if row.get("adjustment_type") == "cta":
             cta_total += amount
+            continue
+        if row.get("adjustment_type") == UNBALANCED:
+            unbalanced_total += amount
             continue
 
         entry = accounts.get(code)
@@ -217,6 +233,7 @@ def heading_amounts(rows, accounts, keys, minor_unit):
         "no_heading": {k: _round(v, minor_unit) for k, v in no_heading.items()},
         "not_in_chart": {k: _round(v, minor_unit) for k, v in not_in_chart.items()},
         "cta": _round(cta_total, minor_unit),
+        "unbalanced": _round(unbalanced_total, minor_unit),
         "pl_total": _round(pl_total, minor_unit),
         # The same totals unrounded, for sums that must be rounded once at
         # the end (the residual): summing the rounded parts above turned up
@@ -226,6 +243,7 @@ def heading_amounts(rows, accounts, keys, minor_unit):
             "no_heading": dict(no_heading),
             "not_in_chart": dict(not_in_chart),
             "cta": cta_total,
+            "unbalanced": unbalanced_total,
             "pl_total": pl_total,
         },
     }
@@ -262,6 +280,11 @@ STATEMENT_HEADING_SIDE_UNDECLARED = "statement_heading_side_undeclared"
 NET_RESULT_LABEL = "Net result"
 _NO_HEADING_LABEL = "No heading"
 _NOT_IN_CHART_LABEL = "Not in the group chart"
+#: konsol#348 S5-Q3 (a): the budget's plug, shown as its own line in
+#: net-debit terms and counted in the residual, so a budget balance sheet
+#: with no balancing entry foots to a residual of 0 and a plug that is wrong
+#: still shows as a residual.
+UNBALANCED_LABEL = "Unbalanced budget (no balancing entry)"
 _RESIDUAL_LABEL = "Unmatched residual"
 #: The cent by which separately rounded parts miss the rounded residual:
 #: shown as its own line so the breakdown foots, never called unexplained.
@@ -314,12 +337,14 @@ def _heading_exact(ha_cum, code, mult, with_cta, result, minor_unit):
 
 def _residual_exact(ha_cum, bs_order, result_exact, cta_placed, result_placed):
     """The BS residual, net debit, as an UNROUNDED Decimal (round it once):
-    every BS heading, BS rows with no heading, rows not in the chart, plus
-    the CTA and the current-year result when each is placed."""
+    every BS heading, BS rows with no heading, rows not in the chart, the
+    budget's unbalanced plug (konsol#348 S5-Q3 a; 0 on actuals), plus the
+    CTA and the current-year result when each is placed."""
     exact = ha_cum["exact"]
     total = sum((exact["headings"].get(code, Decimal("0")) for code in bs_order), Decimal("0"))
     total += exact["no_heading"].get(BS, Decimal("0"))
     total += sum(exact["not_in_chart"].values(), Decimal("0"))
+    total += exact["unbalanced"]
     if cta_placed:
         total += exact["cta"]
     if result_placed:
@@ -546,6 +571,23 @@ def statement(rows, accounts, period_rows, key, declared, minor_unit):
             "codes": sorted(not_in_chart_cur),
             "current": total_cur, "comparison": total_comp,
             "variance": round(total_cur - total_comp, minor_unit) if total_comp is not None else None,
+        })
+
+    # -- the budget's unbalanced plug: its own line, net-debit terms (S5-Q3 a)
+    # Shown only when it is non-zero in a loaded period; actuals rows carry
+    # no ``unbalanced`` adjustment_type, so their statement has no such line.
+    unbalanced_cur = ha_cum_current["unbalanced"]
+    unbalanced_comp = ha_cum_comparison["unbalanced"] if ha_cum_comparison else None
+    if unbalanced_cur or unbalanced_comp:
+        bs_lines.append({
+            "kind": UNBALANCED, "label": UNBALANCED_LABEL,
+            "current": round(unbalanced_cur, minor_unit),
+            "comparison": round(unbalanced_comp, minor_unit) if unbalanced_comp is not None else None,
+            "variance": (round(unbalanced_cur - unbalanced_comp, minor_unit)
+                         if unbalanced_comp is not None else None),
+            # Net-debit terms, unflipped, like the BS no_heading line and the
+            # residual it is counted in — declared, not merely absent.
+            "sign": 1,
         })
 
     # -- residual: the sum of the BS lines, net-debit terms, unflipped -----

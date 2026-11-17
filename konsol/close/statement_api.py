@@ -61,6 +61,24 @@ read once, early, and carried through every state — including
 ``choose_group`` and ``no_chart``, so the Numbers screen can show them
 before a group or a chart exists.
 
+``budget_payload(fiscal_year, fiscal_period, consolidation_group)`` (not
+whitelisted; konsol#348 S5 K4) is the Consolidated Statement's third
+payload, the approved budget's statement for the Group basis:
+``{state, message, statement, meta}`` with ``meta`` = ``{cycle, layers,
+rate_set, scenario_id, declaration}``. The state is
+``approved_budget_model.budget_state`` over the live Approved Budget of
+the (group, year), the Budget Cycle it names, the Cycle's input
+fingerprint recomputed at this read (S5-Q2 a) and the Budget Layers;
+only an ``ok`` state reads ClickHouse, ONCE (``_BUDGET_TB_SQL`` over
+``gold_fully_consolidated_budget``), and that read binds the group,
+``scenario_id``, ``cycle`` AND ``layer``: a reader that misses one sums a
+budget with a reforecast. The statement is the same
+``statement_model.statement`` over the budget rows (``_build_statement``),
+so one sign rule serves both; no rows for the year is ``no_rows``. Every
+failure is a state with its sentence, never a raise into the actuals:
+``get_statement`` itself reads no budget (the Desk report asks for it
+separately, K7).
+
 Query count is constant in the number of headings and entities: MariaDB
 reads are periods 1, groups 1, declared-accounts (Close Settings 2 +
 Main Account <= 1, inside ``signoff_gate.statement_accounts``), the
@@ -107,6 +125,21 @@ def _load_has_rows_through():
 
 
 has_rows_through = _load_has_rows_through()
+
+
+def _load_approved_budget_model():
+    """konsol/close/approved_budget_model.py (pure, S5 K3) loaded by path,
+    the two loads above's precedent: reachable under every host test's stub
+    ``konsol.close`` package (test_tb_worksheet_api's ``_CLOSE_SIBLINGS``
+    broke on a package import of it, 38 ImportErrors, 17 Nov 2026)."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "approved_budget_model.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_approved_budget_model", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+approved_budget_model = _load_approved_budget_model()
 
 #: Who reads the Numbers screen (Close Lead, Group Accountant, Viewer;
 #: the Entity Accountant never gets the `numbers` slug, W4-E20).
@@ -157,6 +190,21 @@ _ENTITY_TB_SQL = (
     "WHERE data_area_id = {entity:String} AND fiscal_year <= {fy:UInt32} "
     "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account"
 )
+#: konsol#348 S5 K4: the approved budget's ONE read, ``_TB_SQL``'s shape over
+#: ``gold_fully_consolidated_budget``. Bound to the group, the declaration's
+#: ``scenario_id``, its ``cycle`` and its layers (``layers`` is
+#: ``_sql_array``'s literal, like ``accounts`` below): the table holds every
+#: Cycle of every budget and forecast scenario, and a filter that misses one
+#: of the three adds another round or a reforecast to the budget. Aliased
+#: ``amt`` (N53).
+_BUDGET_TB_SQL = (
+    "SELECT fiscal_year, fiscal_period, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_budget "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "GROUP BY fiscal_year, fiscal_period, main_account, adjustment_type"
+)
 _ENTITY_SQL = (
     "SELECT DISTINCT data_area_id FROM epm_gold.gold_fully_consolidated_tb "
     "WHERE consolidation_group = {group:String} AND fiscal_year = {fy:UInt32} "
@@ -204,6 +252,62 @@ _DRILL_JOURNALS_SQL = (
     "WHERE consolidation_group = {group:String} AND fiscal_year = {fy:UInt32} "
     "AND fiscal_period = {fp:UInt16} AND main_account IN {accounts:Array(String)} "
     "GROUP BY journal_id, adjustment_type, data_area_id, main_account"
+)
+
+#: konsol#348 S5 K9: the budget drill's reads, ``_DRILL_SQL``'s shape over
+#: ``gold_fully_consolidated_budget``, each bound to the declaration's
+#: scenario_id, cycle and layers like ``_BUDGET_TB_SQL`` (never one without
+#: the three). The CTA branch as for the actuals; ``_BUDGET_UNBALANCED_SQL``
+#: is the plug's own drill (S5-Q3 a): the rows carrying the literal
+#: ``main_account 'UNBALANCED'``, which no heading's leaves ever name.
+_BUDGET_DRILL_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_budget "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "AND (main_account IN {accounts:Array(String)}) "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type"
+)
+_BUDGET_DRILL_SQL_WITH_CTA = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_budget "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "AND (main_account IN {accounts:Array(String)} OR adjustment_type = 'cta') "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type"
+)
+_BUDGET_UNBALANCED_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_budget "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "AND adjustment_type = 'unbalanced' "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type"
+)
+#: S5-Q7 (a): the rate each budget account was translated at, per (entity,
+#: account, period) of the heading's leaves, from the translated budget
+#: (``gold_consolidated_budget_tb``; ``fx_method`` and ``rate_set`` are
+#: carried on every row, S5 G1). The periods come back too, so Python keeps
+#: the statement window's rows (the current period for a P&L heading, every
+#: key up to it for a Balance Sheet one) without a second SQL shape.
+#: ``fx_method`` is the chart's DECLARED Translation Method as the warehouse
+#: recorded it at build time (PR #554 review m6), never the chart of today
+#: (a chart changed since the build would misname the rate) and not the
+#: method the core applied: the core translates an undeclared account ('')
+#: at closing, and applies closing before a historical account's first
+#: tranche. The drill labels it "Declared method". A warehouse without the
+#: column fails this read by name (``state "error"``), so the konsolidat
+#: change ships with this one.
+_BUDGET_RATES_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, fx_method, translation_rate, rate_set "
+    "FROM epm_gold.gold_consolidated_budget_tb "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "AND main_account IN {accounts:Array(String)} "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, fx_method, translation_rate, rate_set"
 )
 
 
@@ -594,6 +698,129 @@ def _group_statement(key, period_rows, group, declared, accounts_map, reporting_
     return out
 
 
+#: The Approved Budget columns the budget read needs (approved_budget_model.
+#: budget_state's ``declaration``).
+_APPROVED_BUDGET_FIELDS = ["name", "docstatus", "consolidation_group", "fiscal_year", "budget_cycle",
+                           "scenario_id", "rate_set", "layer_policy", "layer", "input_fingerprint",
+                           # PR #554 review m1: the submitter and the submit time, stamped in
+                           # before_submit; never owner/modified (the drafter, the last save).
+                           "approved_by", "approved_on"]
+
+
+def _approved_budget(group, fiscal_year):
+    """``approved_budget_model.budget_state`` for the (group code, year),
+    plus the declaration's ``cycle``, ``rate_set``, ``scenario_id`` and
+    ``declaration`` name (None each when there is no declaration): the
+    reader's half of the state model (konsol#348 S5 K4).
+
+    Reads, in order, stopping at the first that decides: the root
+    Consolidation Group document name(s) of the code (an Approved Budget
+    links the document, not the code) and the live Approved Budget rows for
+    them (docstatus 0 or 1; a submitted one wins over a draft); the named
+    Budget Cycle's row; ``budget_fingerprint.check_input_fingerprint`` on
+    an approved Cycle (S5-Q2 a: recomputed at every read); every Budget
+    Layer. No ClickHouse here."""
+    names = [row["name"] for row in frappe.get_all(
+        "Consolidation Group", filters=dict(_ROOT_FILTER, consolidation_group=group),
+        fields=["name"], limit_page_length=0)]
+    declaration = None
+    if names:
+        live = frappe.get_all(
+            "Approved Budget",
+            filters={"consolidation_group": ["in", names], "fiscal_year": int(fiscal_year),
+                     "docstatus": ["in", [0, 1]]},
+            fields=_APPROVED_BUDGET_FIELDS, limit_page_length=0, order_by="docstatus desc, modified desc")
+        declaration = dict(live[0]) if live else None
+
+    cycle_row, fingerprint, layer_rows = None, None, []
+    if declaration is not None and int(declaration.get("docstatus") or 0) == 1:
+        cycles = frappe.get_all(
+            "Budget Cycle", filters={"name": declaration["budget_cycle"]},
+            fields=["name", "docstatus", "input_fingerprint"], limit_page_length=0)
+        cycle_row = dict(cycles[0]) if cycles else None
+        if cycle_row is not None and int(cycle_row.get("docstatus") or 0) == 1:
+            # Lazy, like _signoff_state: this module imports with no bench.
+            from konsol.epm.budget_fingerprint import check_input_fingerprint
+
+            fingerprint = check_input_fingerprint(cycle_row["name"])
+            layer_rows = frappe.get_all(
+                "Budget Layer", fields=["layer_code", "sort_order"], limit_page_length=0,
+                order_by="sort_order asc, layer_code asc")
+
+    state = approved_budget_model.budget_state(group, int(fiscal_year), declaration, cycle_row,
+                                               fingerprint, layer_rows)
+    declared = declaration if (declaration is not None and int(declaration.get("docstatus") or 0) == 1) else {}
+    state.update({
+        "cycle": declared.get("budget_cycle"),
+        "rate_set": declared.get("rate_set"),
+        "scenario_id": declared.get("scenario_id"),
+        "declaration": declared.get("name"),
+    })
+    return state
+
+
+def _budget_statement(key, period_rows, declared, accounts_map, currency, group):
+    """The approved budget's statement payload for the Group basis
+    (``statement_report_model.rows(budget=)``'s shape, konsol#348 S5 K6):
+    ``{"state", "message", "statement", "meta"}``.
+
+    ``_approved_budget`` decides the state first; only ``ok`` reads
+    ClickHouse, once (``_BUDGET_TB_SQL``), through ``_build_statement``
+    with the actuals' chart, periods, declared accounts and the group's
+    reporting currency, so the budget statement is the same statement over
+    budget rows (same minor unit, same display sign, the budget's own
+    ``unbalanced`` line, S5-Q3 a). No budget row in the year up to the
+    period is ``no_rows`` naming the Cycle, never a column of zeros. On
+    ``ok`` the message is the approved-budget sentence (Cycle, layers, Rate
+    Set, declaration, approver); on any other state, that state's sentence."""
+    approved = _approved_budget(group, key[0])
+    meta = {"cycle": approved["cycle"], "layers": approved["layers"], "rate_set": approved["rate_set"],
+            "scenario_id": approved["scenario_id"], "declaration": approved["declaration"]}
+    out = {"state": approved["state"], "message": approved["message"], "statement": None, "meta": meta}
+    if approved["state"] != approved_budget_model.OK:
+        return out
+
+    def currency_gap(currency):
+        return (
+            f"{statement_model.STATEMENT_CURRENCY_PRECISION_UNDECLARED}: the reporting currency "
+            f"{currency or '(none)'} of {group} has no ISO Currency, so its minor unit "
+            "is undeclared. Add it to ISO Currency, or set the group's reporting currency.")
+
+    def read():
+        return {"tb_rows": [
+            _tb_row(r) for r in ch_read.rows(_BUDGET_TB_SQL, {
+                "group": group, "scenario": approved["scenario_id"], "cycle": approved["cycle"],
+                "layers": _sql_array(approved["layers"]), "fy": key[0]})
+        ]}
+
+    built = _build_statement(
+        key, period_rows, declared, accounts_map, currency, currency_gap, read,
+        no_rows_message=(f"No budget rows in the warehouse for Budget Cycle {approved['cycle']} up to "
+                         f"{period_name(*key)}: build the budget."))
+    if built["state"] != "ok":
+        out.update(state=built["state"], message=built["message"])
+        return out
+    out["statement"] = built["statement"]
+    return out
+
+
+def budget_payload(fiscal_year, fiscal_period, consolidation_group):
+    """``_budget_statement`` from the request's own values (module
+    docstring): the period (refused when undeclared), the root group by
+    code (refused when unknown), the declared accounts and the chart, read
+    here as ``_statement`` reads them. Not whitelisted: the Desk report
+    (K7) and the drill (K9) call it after their own ``frappe.only_for``."""
+    key = _period_key(fiscal_year, fiscal_period)
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    _find_period(key, period_rows)
+    groups = {g["consolidation_group"]: g for g in root_groups()}
+    if not consolidation_group or consolidation_group not in groups:
+        frappe.throw(f"{consolidation_group} is not a consolidation group.")
+    declared = signoff_gate.statement_accounts()
+    return _budget_statement(key, period_rows, declared, _chart(),
+                             groups[consolidation_group].get("reporting_currency"), consolidation_group)
+
+
 @frappe.whitelist(methods=["GET"])
 def get_entity_statement(fiscal_year, fiscal_period, entity):
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
@@ -932,6 +1159,145 @@ def get_entity_drill(fiscal_year, fiscal_period, entity, heading):
     return result
 
 
+def _rate_rows_for(rows, keys):
+    """``drill_model.with_rates``'s rate rows from ``_BUDGET_RATES_SQL``'s:
+    the statement window's periods only (``keys``), ``translation_rate`` as
+    a float, and ``fx_method`` as the warehouse carries it (S5 G1): the
+    chart's declared method as recorded at build time. A blank method (an
+    account the chart did not declare at build time) stays blank, and the
+    Statement Drill report reads it "closing (undeclared)" (review m6: the
+    core translates it at closing); nothing here fills it from today's chart."""
+    out = []
+    for row in rows:
+        if (int(row["fiscal_year"]), int(row["fiscal_period"])) not in keys:
+            continue
+        rate = row.get("translation_rate")
+        out.append({
+            "data_area_id": row.get("data_area_id"), "main_account": row.get("main_account"),
+            "fx_method": row.get("fx_method") or "",
+            "translation_rate": None if rate is None else float(rate),
+            "rate_set": row.get("rate_set"),
+        })
+    return out
+
+
+def _budget_line(stmt, kind=None, heading=None):
+    """The budget statement's line of ``kind`` (the ``unbalanced`` plug,
+    shown only when non-zero: None when absent) or of ``heading``."""
+    for section in stmt["sections"]:
+        for line in section["lines"]:
+            if heading is not None and line.get("heading") == heading:
+                return line
+            if kind is not None and line.get("kind") == kind:
+                return line
+    if heading is not None:
+        frappe.throw(f"{heading} has no budget statement line (a bug).")
+    return None
+
+
+@frappe.whitelist(methods=["GET"])
+def get_budget_drill(fiscal_year, fiscal_period, consolidation_group, heading):
+    """One statement heading's drill on the approved budget (konsol#348 S5
+    K9; S5-Q7 a): ``get_drill``'s payload shape with ``basis "Budget"`` and
+    the budget's ``meta`` (``cycle, layers, rate_set, scenario_id,
+    declaration``).
+
+    The budget statement (``_budget_statement``, K4) decides the state: a
+    non-ok budget comes back as its own state and sentence with ``drill``
+    None, and reads nothing more (no declaration reads nothing at all). On
+    ok, a heading's entity-grain rows (``_BUDGET_DRILL_SQL``, the CTA branch
+    for the CTA heading) go through ``drill_model.drill`` against the budget
+    statement's own line, and ``with_rates`` attaches each account's
+    distinct translation rates and Rate Set over the window
+    (``_BUDGET_RATES_SQL``, ``_rate_rows_for``), the source becoming the
+    Budget Cycle. ``heading == "UNBALANCED"`` is the plug's own drill by
+    entity (``drill_model.unbalanced_drill``, no rates: the plug has no
+    account). Every read binds scenario_id, cycle and layers. ClickHouse is
+    read three times for a heading, twice for UNBALANCED, 0 when the budget
+    is not ok. Same roles and entity scope as ``get_drill``; a drill/line
+    mismatch, a NULL amount or a missing rate row is ``state "error"``
+    naming it, never a silent breakdown."""
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    key = _period_key(fiscal_year, fiscal_period)
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    period_row = _find_period(key, period_rows)
+
+    groups = {g["consolidation_group"]: g for g in root_groups()}
+    if not consolidation_group or consolidation_group not in groups:
+        frappe.throw(f"{consolidation_group} is not a consolidation group.")
+
+    accounts = frappe.get_all(
+        "Main Account", filters={"status": "Published"},
+        fields=ACCOUNT_FIELDS, limit_page_length=0,
+    )
+    accounts_map = {a["name"]: a for a in accounts}
+    unbalanced = heading == drill_model.UNBALANCED_HEADING
+    entry = accounts_map.get(heading)
+    if not unbalanced and (entry is None or not entry.get("is_group")):
+        frappe.throw(f"{heading} is not a statement heading of the group chart.")
+
+    declared = signoff_gate.statement_accounts()
+    currency = groups[consolidation_group].get("reporting_currency")
+    budget = _budget_statement(key, period_rows, declared, accounts_map, currency, consolidation_group)
+
+    result = {
+        "period": {
+            "fiscal_year": key[0], "fiscal_period": key[1],
+            "code": period_row.get("period_code"), "status": period_row.get("status"),
+            "period_type": period_row.get("period_type"),
+        },
+        "consolidation_group": consolidation_group,
+        "heading": heading,
+        "basis": "Budget",
+        "meta": budget["meta"],
+        "state": budget["state"],
+        "message": budget["message"],
+        "drill": None,
+    }
+    if budget["state"] != "ok":
+        return result
+
+    stmt = budget["statement"]
+    meta = budget["meta"]
+    binds = {"group": consolidation_group, "scenario": meta["scenario_id"], "cycle": meta["cycle"],
+             "layers": _sql_array(meta["layers"]), "fy": key[0]}
+    section = statement_model.BS if unbalanced else entry.get("statement_section")
+    keys = _drill_keys(period_rows, key, section)
+    allowed = allowed_entity_codes()
+    try:
+        if unbalanced:
+            drill_rows = [_drill_row(r) for r in ch_read.rows(_BUDGET_UNBALANCED_SQL, binds)]
+            rate_rows = None
+        else:
+            cta_heading = _heading_of(declared.get("cta_account"), accounts_map)
+            drill_sql = _BUDGET_DRILL_SQL_WITH_CTA if heading == cta_heading else _BUDGET_DRILL_SQL
+            binds["accounts"] = _sql_array(_leaf_codes(heading, accounts_map))
+            drill_rows = [_drill_row(r) for r in ch_read.rows(drill_sql, binds)]
+            rate_rows = _rate_rows_for(ch_read.rows(_BUDGET_RATES_SQL, binds), keys)
+    except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
+        result["state"] = "not_built" if ch_read.not_built(e) else "error"
+        result["message"] = _error_message(e)
+        return result
+
+    try:
+        if unbalanced:
+            drill = drill_model.unbalanced_drill(
+                drill_rows, keys, allowed, stmt["minor_unit"], cycle=meta["cycle"],
+                statement_line=_budget_line(stmt, kind=statement_model.UNBALANCED))
+        else:
+            drill = drill_model.drill(
+                drill_rows, [], accounts_map, heading, keys, declared, allowed,
+                _budget_line(stmt, heading=heading), stmt["minor_unit"])
+            drill = drill_model.with_rates(drill, rate_rows, meta["cycle"])
+    except ValueError as e:
+        result["state"] = "error"
+        result["message"] = str(e)
+        return result
+
+    result["drill"] = drill
+    return result
+
+
 @frappe.whitelist(methods=["POST"])
 def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis=None, entity=None):
     """The Numbers statement as a downloaded .xlsx (konsol#305 story 8.5,
@@ -942,7 +1308,12 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
     ``setup_gap``) or a failed drill is refused with the server's own
     sentence — never an empty file. ClickHouse is read four times
     (``get_statement``'s two, one drill read, one journals read), whatever
-    the number of headings.
+    the number of headings; with an ok approved budget, seven (the budget
+    statement's one, then ``_export_budget``'s entity-grain and rates
+    reads, konsol#348 S5 K12). The budget columns, note and "Budget drill"
+    sheet come from the budget payload (K11); a budget that is not ok, or
+    whose drill faults, adds no budget column, puts the reason in the note
+    (BUD-4-2) and never fails the actuals' file.
 
     ``basis="Entity"`` (konsol#495) exports one entity's own statement
     (``_entity_statement``, ``entity`` required): the drills come from the
@@ -953,7 +1324,9 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
     Every download is recorded (konsol#496, Q1 = A, Deepak Pai 9 Nov 2026):
     one Close Event ``statement_exported`` per file, written after the
     workbook is built, in the request's own transaction (no commit here; a
-    GET would roll it back, hence POST). A refusal records nothing."""
+    GET would roll it back, hence POST). A refusal records nothing. The
+    detail's ``budget`` is ``{cycle, layers, rate_set}`` for the ok budget
+    the file carries, else ``None`` (the entity export always)."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     if basis not in (None, "", "Group", "Entity"):
         frappe.throw(f"Basis {basis} is not one of Group, Entity.")
@@ -979,20 +1352,127 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
         drills = _all_drills(payload, reads, drill_rows, journal_rows)
     except ValueError as e:
         frappe.throw(str(e))
+    budget, budget_drills = _export_budget(payload, reads)
     _send_workbook(payload, drills,
                    _filename(payload["period"], payload["consolidation_group"]),
                    basis="Group", consolidation_group=payload["consolidation_group"],
-                   entity=None)
+                   entity=None, budget=budget, budget_drills=budget_drills)
 
 
-def _send_workbook(payload, drills, filename, basis, consolidation_group, entity):
+def _budget_unavailable(message):
+    """A non-ok budget payload naming why (``_export_budget``'s guard)."""
+    return {"state": "error", "message": message, "statement": None, "meta": {}}
+
+
+def _export_budget(payload, reads):
+    """``(budget, budget_drills)`` for the group export (konsol#348 S5 K12):
+    ``_read_export_budget`` guarded as ``consolidated_statement._budget``
+    is (PR #554 review M2), so no fault in the budget read ever fails the
+    actuals' file:
+
+    - a ``frappe.ValidationError`` (a refusal: ``frappe.throw`` anywhere in
+      the read, e.g. ``_budget_line``'s "no budget statement line") is
+      state ``error`` with its own message, and the queued message is
+      cleared so no dialog follows the download;
+    - any other exception is a bug: it is written to the Error Log
+      ("Consolidated Statement export budget read", with the traceback) and
+      is state ``error`` naming the exception.
+
+    Both come back as ``(budget, None)``: the workbook writes no budget
+    column and the state's sentence as the note (BUD-4-2), the event records
+    ``budget: null``, and the actuals' file is produced."""
+    try:
+        return _read_export_budget(payload, reads)
+    except frappe.ValidationError as e:
+        frappe.clear_last_message()
+        return _budget_unavailable(str(e)), None
+    except Exception as e:  # noqa: BLE001 — visible in the note, never a failed actuals' file
+        frappe.log_error(title="Consolidated Statement export budget read", message=frappe.get_traceback())
+        return _budget_unavailable(f"{type(e).__name__}: {e}"), None
+
+
+def _read_export_budget(payload, reads):
+    """``_export_budget``'s read, unguarded: the approved budget's payload
+    (``_budget_statement``, the actuals' chart, periods, declared accounts
+    and currency) and, when it is ok, ``{heading:
+    drill_model.with_rates(drill), "UNBALANCED": unbalanced_drill}`` for
+    every statement heading from ONE entity-grain read
+    (``_BUDGET_DRILL_SQL``, the heading leaves plus the UNBALANCED literal,
+    so the plug's drill needs no read of its own; the CTA branch when the
+    CTA heading is on the statement) and ONE rates read
+    (``_BUDGET_RATES_SQL``), the ``_drill_reads`` pattern. Every read binds
+    scenario_id, cycle and layers.
+
+    A budget that is not ok comes back as is with ``None`` drills. A
+    warehouse failure on the budget reads, a drill/line mismatch or a
+    missing rate row becomes a non-ok budget naming it (``not_built`` /
+    ``error``), never a partial budget sheet; anything else raises into
+    ``_export_budget``'s guard."""
+    key, accounts, declared = reads["key"], reads["accounts"], reads["declared"]
+    group = payload["consolidation_group"]
+    budget = _budget_statement(key, reads["period_rows"], declared, accounts,
+                               payload.get("reporting_currency"), group)
+    if budget["state"] != "ok":
+        return budget, None
+
+    stmt, meta = budget["statement"], budget["meta"]
+    headings = _statement_headings(stmt)
+    leaf_codes = sorted({code for heading in headings for code in _leaf_codes(heading, accounts)})
+    cta_heading = _heading_of(declared.get("cta_account"), accounts)
+    drill_sql = _BUDGET_DRILL_SQL_WITH_CTA if cta_heading in headings else _BUDGET_DRILL_SQL
+    binds = {"group": group, "scenario": meta["scenario_id"], "cycle": meta["cycle"],
+             "layers": _sql_array(meta["layers"]), "fy": key[0],
+             "accounts": _sql_array(leaf_codes + [drill_model.UNBALANCED_HEADING])}
+
+    def failed(state, message):
+        return dict(budget, state=state, message=message, statement=None), None
+
+    try:
+        drill_rows = [_drill_row(r) for r in ch_read.rows(drill_sql, binds)]
+        rate_rows = ch_read.rows(_BUDGET_RATES_SQL, binds)
+    except Exception as e:  # noqa: BLE001 — "can't say" is a state, never 0 rows
+        return failed("not_built" if ch_read.not_built(e) else "error", _error_message(e))
+
+    allowed = allowed_entity_codes()
+    drills = {}
+    try:
+        for heading in headings:
+            keys = _drill_keys(reads["period_rows"], key, accounts[heading].get("statement_section"))
+            drill = drill_model.drill(
+                drill_rows, [], accounts, heading, keys, declared, allowed,
+                _budget_line(stmt, heading=heading), stmt["minor_unit"])
+            drills[heading] = drill_model.with_rates(drill, _rate_rows_for(rate_rows, keys), meta["cycle"])
+        plug = _budget_line(stmt, kind=statement_model.UNBALANCED)
+        if plug is not None:
+            keys = _drill_keys(reads["period_rows"], key, statement_model.BS)
+            drills[drill_model.UNBALANCED_HEADING] = drill_model.unbalanced_drill(
+                drill_rows, keys, allowed, stmt["minor_unit"], cycle=meta["cycle"], statement_line=plug)
+    except ValueError as e:
+        return failed("error", str(e))
+    return budget, drills
+
+
+def _budget_detail(budget):
+    """The Close Event detail's ``budget``: the ok budget's Cycle, layers
+    and Rate Set the file carries, else ``None``."""
+    if not budget or budget.get("state") != "ok":
+        return None
+    meta = budget.get("meta") or {}
+    return {"cycle": meta.get("cycle"), "layers": list(meta.get("layers") or []),
+            "rate_set": meta.get("rate_set")}
+
+
+def _send_workbook(payload, drills, filename, basis, consolidation_group, entity,
+                   budget=None, budget_drills=None):
     """Build the workbook, record the download, then hand the file back
     (konsol#496 row 10A-2). The workbook is built first, so a build failure
     records nothing; the event is inserted in the caller's transaction by
-    ``close_event.record`` (never committed here)."""
+    ``close_event.record`` (never committed here). ``budget`` and
+    ``budget_drills`` (S5 K12, the group export) go to the workbook as they
+    are; the detail's ``budget`` names the ok budget the file carries."""
     from konsol.close import close_event  # lazy: the remind_api precedent
 
-    content = statement_export_model.workbook(payload, drills)
+    content = statement_export_model.workbook(payload, drills, budget=budget, budget_drills=budget_drills)
     period = payload["period"]
     close_event.record(
         "statement_exported", int(period["fiscal_year"]), int(period["fiscal_period"]),
@@ -1002,6 +1482,7 @@ def _send_workbook(payload, drills, filename, basis, consolidation_group, entity
             "entity": entity,
             "filename": filename,
             "label": statement_export_model._label(payload.get("signoff")),
+            "budget": _budget_detail(budget),
         },
         entity=entity,
     )

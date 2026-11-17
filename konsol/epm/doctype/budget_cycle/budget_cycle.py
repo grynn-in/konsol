@@ -8,9 +8,10 @@ draft, and reach the warehouse while it is approved (docstatus 1): the
 submit and the cancel queue their syncs, after the commit.
 
 The deadline is a target date; nothing locks at it. A cancel is refused once
-every period of the year is closed (period_status.assert_year_not_closed); a
-cancelled Cycle leaves the warehouse and stays as the audit trail, and its
-amendment carries the pair on.
+every period of the year is closed (period_status.assert_year_not_closed), and
+while a submitted Approved Budget names the Cycle (konsol#348 S5 K16, S5-Q5 a:
+cancel the declaration first); a cancelled Cycle leaves the warehouse and
+stays as the audit trail, and its amendment carries the pair on.
 
 A Cycle of a forecast scenario is one ROUND, keyed by (scenario, fiscal year,
 as-of date) (#348 S3, Q23 a): it needs ``as_of_date`` and ``horizon_periods``,
@@ -258,13 +259,46 @@ class BudgetCycle(Document):
         self._resync_entries()
 
     def before_cancel(self):
-        """BUD-9-3: cancel only while the year has an open period. Nothing
-        changes before the gate."""
+        """BUD-9-3: cancel only while the year has an open period, and (S5
+        K16, S5-Q5 a) never while a submitted Approved Budget names this
+        Cycle. Nothing changes before the gates."""
         from konsol.period_status import assert_year_not_closed
 
         assert_year_not_closed(self.fiscal_year, _("cancel Budget Cycle {0}").format(self.name))
-        # After the gate: the installed workflow's docstatus-2 state (#529).
+        self._refuse_cancel_under_an_approved_budget()
+        # After the gates: the installed workflow's docstatus-2 state (#529).
         set_cancelled_state(self)
+
+    def _refuse_cancel_under_an_approved_budget(self):
+        """konsol#348 S5 K16 (S5-Q5 a): a submitted Approved Budget names the
+        Cycle whose rows the Consolidated Statement's Budget columns read.
+        Cancelling the Cycle under it would turn that budget into a
+        read-time state ("the approved Cycle is cancelled") with nothing
+        refused, so the cancel is refused here, naming the declaration to
+        cancel first. A draft declaration declares nothing yet and a
+        cancelled one is history: neither counts. Submitted rows only
+        (docstatus 1), in name order.
+
+        A LOCKING read (PR #554 re-review): a declaration's submit locks this
+        Cycle's row (ApprovedBudget._cycle_row), so a cancel that waited on
+        that lock reads here after the submit committed; a plain read would
+        use this request's REPEATABLE READ snapshot, miss the new declaration
+        and let both commit. FOR UPDATE reads the latest committed rows.
+        frappe.get_all takes no for_update on v16, hence db.get_values."""
+        live = frappe.db.get_values(
+            "Approved Budget", {"budget_cycle": self.name, "docstatus": 1},
+            ["name", "consolidation_group", "fiscal_year"], as_dict=True,
+            order_by="name asc", for_update=True)
+        if not live:
+            return
+        named = ", ".join(
+            _("Approved Budget {0} ({1} FY{2})").format(r.name, r.consolidation_group, r.fiscal_year)
+            for r in live)
+        frappe.throw(
+            _("Cannot cancel Budget Cycle {0}: {1} names it as the group's approved budget, and the "
+              "Consolidated Statement's Budget columns read it. Cancel that Approved Budget first "
+              "(a period of its year must be open), then the Cycle.").format(self.name, named),
+            frappe.ValidationError)
 
     def on_cancel(self):
         """Cancelled: the Cycle and its rows leave the warehouse, after the commit."""
