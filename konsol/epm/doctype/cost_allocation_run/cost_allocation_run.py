@@ -10,14 +10,14 @@ shaping is pure.
 
 K8: submit is the approval. The gates run in before_submit / before_cancel and
 the warehouse sync is queued after the commit (header, accounts, weights).
-The coefficients table, rebuilt from every submitted run, is a job queued
-after the commit (RF4, RF7: see resync_coefficients_job), with one locked
-writer and an hourly check (RF9: _locked_resync, check_coefficients_staging).
+The coefficients table is written per run after the commit (RF10, option B,
+Deepak Pai, 17 Nov 2026: _sync_run_coefficients); reconcile rebuilds it
+whole (resync_staging), and an hourly check repairs any run out of step
+(check_coefficients_staging).
 """
 import functools
+import json
 import re
-import time
-import uuid
 from decimal import Decimal
 
 import frappe
@@ -451,39 +451,22 @@ class CostAllocationRun(Document):
         self._sync()
 
     def _sync(self):
-        """Header and children after the commit; the coefficients as ONE job
-        after the commit (RF4), which then requests the allocation build."""
+        """Header and children after the commit; the run's own coefficient
+        rows once per transaction after the commit (RF10)."""
         clickhouse.sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
         for doctype, controller in self.CHILD_CONTROLLERS.items():
             clickhouse.sync_doctype_after_commit(
                 doctype, controller.CH_TABLE, controller.CH_FIELD_MAP)
-        # RF7: one callback after the commit decides whether to enqueue, so the
-        # decision sees the queue as it is once this change is committed.
-        frappe.db.after_commit.add(functools.partial(_queue_coefficient_resync, self.name))
+        clickhouse.after_commit_once(("cost_allocation_coefficients", self.name),
+                                     functools.partial(_sync_run_coefficients, self.name))
 
     @classmethod
     def resync_staging(cls, force=False):
-        """reconcile_all's entry for the coefficients table (RF9). It writes
-        nothing: it enqueues the locked resync job, with no build request.
-
-        Not the lock and the rollback here: reconcile_all runs inside
-        after_migrate, whose transaction still holds uncommitted work (roles,
-        seeds, dimension Custom Fields; the migrate commits later), so a
-        rollback would discard it, and a migrate must not wait on the lock.
-        The job reads after its own rollback, so it sees every committed run.
-
-        Returns "queued" when a job is queued (reconcile records that instead
-        of a row count), or None when the enqueue failed (logged; reconcile
-        reports the table as not synced and the hourly check repairs it).
-        """
-        job = _queue_coefficient_resync(None, request_build=False)
-        return "queued" if job else None
-
-    @classmethod
-    def _write_coefficients(cls, force=False):
-        """Rebuild epm_staging.cost_allocation_coefficients from every submitted
-        run (TRUNCATE+INSERT). Called only by _locked_resync, under the lock
-        and after the rollback: never call it directly.
+        """reconcile_all's entry: rebuild epm_staging.cost_allocation_coefficients
+        from every submitted run, synchronously (TRUNCATE+INSERT through
+        sync_table, which stamps the reconcile run id on the watermark). It
+        requests no build. Returns the rows written (None when an unforced
+        sync failed).
 
         The exact weights are rebuilt from the stored ``driver_value`` column
         with ``model.weights()``, which turns each value into a Fraction through
@@ -491,257 +474,181 @@ class CostAllocationRun(Document):
         read: a float cannot hold 1/3 and its steps would not sum to exactly 1,
         which the coefficient rounding refuses.
         """
-        runs = frappe.get_all(
-            "Cost Allocation Run", filters={"docstatus": 1},
-            fields=["name", "method", "modified"], order_by="name", limit_page_length=0)
-        stored = []
-        if runs:
-            stored = frappe.get_all(
-                "Cost Allocation Run Weight",
-                filters={"parent": ["in", [r["name"] for r in runs]]},
-                fields=["parent", "idx", "step", "sender_member", "receiver_member",
-                        "driver", "driver_value"],
-                parent_doctype="Cost Allocation Run", order_by="parent, idx",
-                limit_page_length=0)
-        by_run = {}
-        for w in stored:
-            by_run.setdefault(w["parent"], []).append(w)
+        runs = _submitted_coefficients()
         columns = list(model.COEFFICIENT_COLUMNS)
-        rows = []
-        for run in runs:
-            try:
-                rows.extend(_coefficient_rows(run["name"], run["method"], by_run.get(run["name"], [])))
-            except model.CostAllocationError as exc:
-                frappe.throw(f"{_PREFIX}{run['name']}: " + "<br>".join(exc.errors))
-        modified = [r["modified"] for r in runs if r.get("modified")]
-        source_max_modified = max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None
+        rows = [[r[c] for c in columns] for _run, run_rows in runs for r in run_rows]
         return clickhouse.sync_table(
-            cls.CH_STAGING_TABLE, columns, [[r[c] for c in columns] for r in rows],
-            source_max_modified=source_max_modified, force=force)
+            cls.CH_STAGING_TABLE, columns, rows,
+            source_max_modified=_stamp_time([run for run, _rows in runs]), force=force)
 
 
-# -- coefficient resync job (RF4, RF7, RF9) -------------------------------------
+# -- coefficient writes per run (RF10) ------------------------------------------
+#
+# Each submit, cancel or delete writes ITS OWN run's rows after the commit
+# (Deepak Pai, 17 Nov 2026, PR #541 option B; rejected: A, the background
+# resync job with its marker, lock and timeouts). Frappe's commit runs COMMIT,
+# then START TRANSACTION, then the after-commit callbacks
+# (frappe/database/database.py, Database.commit), so the callback's first read
+# opens a fresh REPEATABLE READ snapshot that holds this commit.
+#
+# Residual windows, both repaired by the hourly check_coefficients_staging:
+# - two callbacks for the same run race (a submit, then a fast cancel in
+#   another request): each deletes and writes from its own committed read, and
+#   the last write wins. If the submit's insert lands after the cancel's
+#   delete, the cancelled run's rows stay until the next hourly check.
+# - a reconcile rebuild races a per-run write: the rebuild swaps in the
+#   snapshot it read, which can drop a per-run write made after that read (or
+#   keep rows the per-run write deleted). The hourly check repairs the run.
 
-RESYNC_JOB = "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.resync_coefficients_job"
-#: The job's timeouts (RF9, R4). They satisfy
-#:   RESYNC_WAIT_SECONDS + RESYNC_RUN_SECONDS <= RESYNC_JOB_TIMEOUT <= RESYNC_LOCK_SECONDS
-#: - RESYNC_JOB_TIMEOUT is passed to enqueue explicitly, so a job that waited
-#:   its full RESYNC_WAIT_SECONDS still has RESYNC_RUN_SECONDS to run.
-#: - A job takes the lock only after it started, and RQ kills it at
-#:   RESYNC_JOB_TIMEOUT after the start, so a live holder never outlives its
-#:   lock. The extra 60 s cover RQ's kill latency.
-#: - A waiter cannot also outwait a dead holder's lock: that would need
-#:   WAIT >= LOCK >= JOB >= WAIT + RUN. A waiter that times out re-enqueues
-#:   instead (resync_coefficients_job), so the chain of waiters outlasts the
-#:   dead holder's lock and no change is dropped.
-RESYNC_WAIT_SECONDS = 600
-RESYNC_RUN_SECONDS = 900
-RESYNC_JOB_TIMEOUT = RESYNC_WAIT_SECONDS + RESYNC_RUN_SECONDS
-RESYNC_LOCK_SECONDS = RESYNC_JOB_TIMEOUT + 60
-#: the queued marker outlives any QUEUED job; once it expires, the next
-#: commit simply enqueues
-RESYNC_MARKER_SECONDS = 86400
+BUILD_REQUEST = "konsol.tasks.request_consolidation_build"
 
 
-#: _locked_resync's result when another resync held the lock for
-#: RESYNC_WAIT_SECONDS (a sentinel, not an exception class: the controller
-#: module defines one class)
-_NO_LOCK = object()
+def _submitted_coefficients(names=None):
+    """[(run, its coefficient rows)] for every submitted run, or for the
+    submitted runs among ``names``, in name order. Pure reads and the model:
+    it writes nothing. A run the model refuses raises with its name."""
+    filters = {"docstatus": 1}
+    if names is not None:
+        filters["name"] = ["in", list(names)]
+    runs = frappe.get_all("Cost Allocation Run", filters=filters,
+                          fields=["name", "method", "modified"], order_by="name",
+                          limit_page_length=0)
+    stored = []
+    if runs:
+        stored = frappe.get_all(
+            "Cost Allocation Run Weight",
+            filters={"parent": ["in", [r["name"] for r in runs]]},
+            fields=["parent", "idx", "step", "sender_member", "receiver_member",
+                    "driver", "driver_value"],
+            parent_doctype="Cost Allocation Run", order_by="parent, idx",
+            limit_page_length=0)
+    by_run = {}
+    for w in stored:
+        by_run.setdefault(w["parent"], []).append(w)
+    out = []
+    for run in runs:
+        try:
+            out.append((run, _coefficient_rows(run["name"], run["method"],
+                                               by_run.get(run["name"], []))))
+        except model.CostAllocationError as exc:
+            frappe.throw(f"{_PREFIX}{run['name']}: " + "<br>".join(exc.errors))
+    return out
 
 
-def _queued_marker_key():
-    return f"cost_allocation_coefficients_queued::{frappe.local.site}"
+def _stamp_time(runs):
+    """The newest ``modified`` of ``runs``, as the watermark stores it."""
+    modified = [r["modified"] for r in runs if r.get("modified")]
+    return max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None
 
 
-def _resync_lock_key():
-    return f"konsol:cost_allocation_coefficients_resync:{frappe.local.site}"
+def _json_value(value):
+    return str(value) if isinstance(value, Decimal) else value
 
 
-def _job_status(job_id):
-    """The RQ status of a job enqueued by _queue_coefficient_resync, as a
-    plain string ('queued', 'started', ...), or None when RQ no longer has it."""
-    from frappe.utils.background_jobs import get_job
+def _replace_run_rows(run_name, rows):
+    """Delete the run's rows, then insert ``rows``. Returns the table's row
+    count afterwards, for the watermark. Raises on any ClickHouse failure.
+    Idempotent: run twice, it leaves the same rows.
 
-    job = get_job(job_id)
-    if job is None:
-        return None
-    status = job.get_status(refresh=False)     # fetched just now: current
-    return getattr(status, "value", status)
+    The delete is a lightweight DELETE with lightweight_deletes_sync = 2, so
+    it returns only once the rows are masked (ClickHouse 24.8). The run name
+    is a query parameter, and the rows travel as JSONEachRow data, so no
+    value is formatted into the SQL. One INSERT is one block, so a run's rows
+    land together."""
+    table = CostAllocationRun.CH_STAGING_TABLE
+    clickhouse.execute(
+        f"DELETE FROM {table} WHERE run = {{run:String}} SETTINGS lightweight_deletes_sync = 2",
+        {"param_run": run_name})
+    if rows:
+        columns = list(model.COEFFICIENT_COLUMNS)
+        body = "\n".join(json.dumps({c: _json_value(r[c]) for c in columns}) for r in rows)
+        clickhouse.execute(f"INSERT INTO {table} ({', '.join(columns)}) FORMAT JSONEachRow\n{body}")
+    total = int(clickhouse.execute(f"SELECT count() FROM {table}") or 0)
+    return total
 
 
-def _marker_status():
-    """(marker job id, its RQ status), or (None, None) without a marker."""
-    marker = frappe.cache.get(_queued_marker_key())
-    if not marker:
-        return None, None
-    marker = marker.decode()
-    return marker, _job_status(marker)
+def _sync_run_coefficients(run_name):
+    """After-commit callback of CostAllocationRun._sync, and the hourly
+    check's repair. Reads the run's committed state: submitted, it replaces
+    the run's coefficient rows; cancelled, deleted or missing, it deletes
+    them. Only after a successful write does it request the allocation build,
+    naming the run.
 
-
-def _queue_coefficient_resync(run_name, request_build=True):
-    """After-commit callback of CostAllocationRun._sync (RF7), and the one
-    enqueue path of reconcile, the lock-timeout retry and the hourly check
-    (RF9). Returns the id of the job that will read after this point, or None
-    when the enqueue failed.
-
-    Skips only when the last job it enqueued is still QUEUED: RQ sets STARTED
-    in prepare_job_execution, before execute_job runs the body, so a QUEUED
-    job has not reached its read yet and will see this commit. Any other
-    state (STARTED, FINISHED, FAILED, expired) enqueues a new job.
-
-    Job ids: each enqueue gets a fresh id, and a Redis marker remembers the
-    latest one. A stable id would make RQ overwrite the hash of a STARTED
-    job with the same id, and Frappe's own ``deduplicate`` would refuse to
-    enqueue while that job is STARTED (the RC8b loss). Two commits racing
-    here can both enqueue: that costs one extra job, never a lost change.
-
-    ``request_build=False`` (reconcile) does not set the marker: a later
-    commit must not skip behind a job that requests no build.
-
-    Guarded (R3): Frappe runs after-commit callbacks unguarded, so a Redis
-    outage here would raise out of the commit. A failure is logged, naming the
-    run, and the hourly check_coefficients_staging repairs the table."""
+    Guarded: a failure is logged to file and as a deferred Error Log naming the
+    run (an insert made after the request's commit would never be committed),
+    nothing is raised out of the commit, and no build is requested. The
+    hourly check repairs the run. Returns the run's rows written, or None."""
     try:
-        marker, status = _marker_status()
-        if marker and status == "queued":
-            return marker
-        job_id = f"cost_allocation_coefficients|{uuid.uuid4().hex}"
-        kwargs = {} if request_build else {"request_build": False}
-        frappe.enqueue(RESYNC_JOB, queue="long", timeout=RESYNC_JOB_TIMEOUT, job_id=job_id,
-                       run=run_name, **kwargs)
-        if request_build:
-            frappe.cache.set(_queued_marker_key(), job_id, ex=RESYNC_MARKER_SECONDS)
-        return job_id
+        found = _submitted_coefficients([run_name])
+        run, rows = found[0] if found else (None, [])
+        total = _replace_run_rows(run_name, rows)
+        clickhouse._stamp_watermark(CostAllocationRun.CH_STAGING_TABLE, total,
+                                    _stamp_time([run] if run else []))
     except Exception:  # noqa: BLE001 — never raise out of a commit
-        message = (f"Run {run_name}: the coefficients resync job could not be queued. "
-                   "The hourly check resyncs the coefficients.")
-        # The file log always lands. The Error Log is a deferred insert: an
-        # insert made after the request's commit would never be committed.
-        frappe.logger().error(message, exc_info=True)
-        try:
-            frappe.log_error(title="Cost Allocation coefficients resync not queued",
-                             message=message, defer_insert=True)
-        except Exception:  # noqa: BLE001 — Redis cache down too: the file log has it
-            pass
+        _log_failure(run_name, "Cost Allocation coefficients not written",
+                     f"Run {run_name}: its coefficient rows could not be written to staging; "
+                     "no build requested. The hourly check repairs it.")
         return None
+    _request_build(run_name)
+    return len(rows)
 
 
-def _locked_resync(force=True):
-    """The one writer of epm_staging.cost_allocation_coefficients (RF9, R2).
-
-    Takes the site-scoped coefficient lock, rolls back (so under REPEATABLE
-    READ the read opens a fresh snapshot after every commit before it), then
-    rebuilds the table. Returns the rows written, or _NO_LOCK when the lock
-    stays held for RESYNC_WAIT_SECONDS."""
-    lock = frappe.cache.lock(_resync_lock_key(), timeout=RESYNC_LOCK_SECONDS,
-                             blocking_timeout=RESYNC_WAIT_SECONDS)
-    if not lock.acquire():
-        return _NO_LOCK
+def _request_build(run_name):
+    """Queue the allocation build request naming the run. Already after the
+    commit, so no enqueue_after_commit; no deduplicate, which would drop this
+    request behind a started job with the same id. The job's build request
+    debounces the builds themselves (konsol.tasks)."""
     try:
-        frappe.db.rollback()
-        return CostAllocationRun._write_coefficients(force=force)
-    finally:
-        try:
-            lock.release()
-        except Exception:  # noqa: BLE001 — expired after RESYNC_LOCK_SECONDS: keep the real error
-            frappe.logger().warning(
-                f"Cost Allocation coefficients resync: lock {_resync_lock_key()} had expired")
+        frappe.enqueue(BUILD_REQUEST, queue="default", doctype="Cost Allocation Run",
+                       name=run_name, trigger_method="coefficients_sync")
+    except Exception:  # noqa: BLE001 — never raise out of a commit
+        _log_failure(run_name, "Cost Allocation build not requested",
+                     f"Run {run_name}: the coefficients were written, but the allocation "
+                     "build could not be requested.")
 
 
-def _latest_run():
-    """The trigger for a job started without a run (by hand): the most
-    recently modified submitted or cancelled run, the last change the
-    coefficients reflect. None when the site has no such run."""
-    names = frappe.get_all("Cost Allocation Run", filters={"docstatus": ["in", [1, 2]]},
-                           pluck="name", order_by="modified desc", limit=1)
-    return names[0] if names else None
-
-
-def resync_coefficients_job(run=None, request_build=True):
-    """RQ job queued by _queue_coefficient_resync (RF4, RF7, RF9).
-
-    _locked_resync rebuilds the coefficients under the lock with force (a
-    ClickHouse failure raises). Then, unless ``request_build`` is False
-    (reconcile), the job requests the allocation build naming ``run``, or the
-    latest submitted or cancelled run; with neither (R6) it requests no
-    build. A failure is logged and raised, and no build is requested.
-
-    A job that cannot get the lock within RESYNC_WAIT_SECONDS re-enqueues
-    itself through the guarded path (a new id, the marker updated) and logs
-    it, so the change it carries is not dropped (R1).
-
-    Why no committed change C is lost: C's after-commit callback either
-    enqueued a job J, or saw J QUEUED. RQ marks a job STARTED before the body
-    runs, so in both cases J's body starts after C committed. J takes the lock
-    and rolls back before reading, so under REPEATABLE READ its snapshot opens
-    after C's commit and contains C. The lock serialises every writer (jobs
-    and reconcile's job alike), so each reads and writes the full table after
-    the one before it finished. A job that dies before it reads, or a callback
-    that could not enqueue, is caught by the hourly check_coefficients_staging."""
-    started = time.monotonic()
+def _log_failure(run_name, title, message):
+    frappe.logger().error(message, exc_info=True)
     try:
-        written = _locked_resync(force=True)
-    except Exception:
-        frappe.log_error(title="Cost Allocation coefficients resync failed",
-                         message=f"Run {run}: the coefficients resync failed; no build requested.")
-        raise
-    if written is _NO_LOCK:
-        retry = _queue_coefficient_resync(run, request_build=request_build)
-        frappe.log_error(
-            title="Cost Allocation coefficients resync: lock timeout",
-            message=(f"Run {run}: another resync held the lock for {RESYNC_WAIT_SECONDS}s. "
-                     f"Re-queued as {retry}."))
-        return
-    trigger = run or _latest_run()
-    if not request_build:
-        outcome = "no build requested (reconcile)"
-    elif trigger is None:
-        outcome = "no build requested: no submitted or cancelled run"
-    else:
-        from konsol.tasks import request_consolidation_build
-        request_consolidation_build("Cost Allocation Run", trigger, "coefficients_resync")
-        outcome = "build requested"
-    frappe.logger().info(
-        f"Cost Allocation coefficients resync: run {trigger}, {written} rows, "
-        f"{time.monotonic() - started:.2f}s, {outcome}")
+        frappe.log_error(title=title, message=message, defer_insert=True)
+    except Exception:  # noqa: BLE001 — Redis down too: the file log has it
+        pass
 
 
 def check_coefficients_staging():
-    """Hourly safety net (RF9, R1): a resync lost to a killed worker, a flushed
-    Redis or a failed enqueue becomes visible and is repaired.
+    """Hourly safety net (RF9, RF10). Compares, per run, the submitted runs'
+    expected row counts (computed from the stored weights through the model,
+    nothing written) with ``SELECT run, count() ... GROUP BY run`` in staging.
 
-    Compares the set of submitted run names with the distinct runs in
-    epm_staging.cost_allocation_coefficients. That is exact: a submitted
-    run's weights cannot change (no field is allow_on_submit), submit refuses
-    a run without weights, and every weight yields at least its sender's
-    `own` row. So the table is a function of that set, and the comparison
-    costs one Frappe read and one ClickHouse GROUP BY.
-
-    On a match it does nothing. While a resync is queued or running it waits
-    for the next hour (that job reads after the commit it was queued for). On
-    a mismatch it logs one Error Log line naming the missing and extra runs
-    and enqueues the resync through the guarded path, naming the first
-    missing run (None when only extra runs remain)."""
+    Each run missing, extra or with the wrong count is repaired with
+    _sync_run_coefficients, which also requests that run's build (F4, F5).
+    One Error Log line lists the runs repaired. On a match it does nothing.
+    An unreachable ClickHouse is a file-log warning only: the next hour checks
+    again."""
+    expected = {run["name"]: len(rows) for run, rows in _submitted_coefficients()}
     try:
-        expected = set(frappe.get_all("Cost Allocation Run", filters={"docstatus": 1},
-                                      pluck="name", limit_page_length=0))
         out = clickhouse.execute(
-            f"SELECT DISTINCT run FROM {CostAllocationRun.CH_STAGING_TABLE} FORMAT TSV")
-        held = {line for line in out.splitlines() if line}
+            f"SELECT run, count() FROM {CostAllocationRun.CH_STAGING_TABLE} "
+            "GROUP BY run FORMAT TSV")
     except Exception:  # noqa: BLE001 — unreachable ClickHouse: check again next hour
         frappe.logger().warning("Cost Allocation coefficients check skipped", exc_info=True)
         return
-    if held == expected:
+    held = {}
+    for line in out.splitlines():
+        if line:
+            run, count = line.rsplit("\t", 1)
+            held[run] = int(count)
+    mismatched = sorted(r for r in set(expected) | set(held) if expected.get(r) != held.get(r))
+    if not mismatched:
         return
-    _marker, status = _marker_status()
-    if status in ("queued", "started"):
-        return
-    missing, extra = sorted(expected - held), sorted(held - expected)
-    retry = _queue_coefficient_resync(missing[0] if missing else None)
+    repaired, failed = [], []
+    for run in mismatched:
+        (repaired if _sync_run_coefficients(run) is not None else failed).append(
+            f"{run} (expected {expected.get(run, 0)}, held {held.get(run, 0)})")
     frappe.log_error(
         title="Cost Allocation coefficients out of step with submitted runs",
-        message=(f"Missing: {', '.join(missing) or 'none'}; extra: {', '.join(extra) or 'none'}; "
-                 f"resync queued as {retry}."))
+        message=(f"Repaired: {', '.join(repaired) or 'none'}; "
+                 f"not repaired: {', '.join(failed) or 'none'}."))
 
 
 def _nine(value):

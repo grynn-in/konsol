@@ -121,8 +121,9 @@ add_to_apps_screen = [
 # ---------------
 
 scheduler_events = {
-    # RF9 (konsol#269): a coefficients resync lost to a killed worker or a
-    # flushed Redis is found and re-queued.
+    # RF9, RF10 (konsol#269): a run whose coefficient rows in staging are out
+    # of step with its committed state (a failed after-commit write, a race)
+    # is found and repaired, and its build requested.
     "hourly": [
         "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.check_coefficients_staging",
     ],
@@ -192,10 +193,10 @@ _dbt_trigger_doctypes = [
     # on_submit / on_cancel request the build.
     "Business Combination",
     "Business Disposal",
-    # NOT "Cost Allocation Run" (konsol#269, RF4): its coefficient resync job
-    # requests the isolated allocation build once the coefficients are in
-    # staging; a doc-event trigger would race it. DOCTYPE_BUILD_MAP carries
-    # the scope.
+    # NOT "Cost Allocation Run" (konsol#269, RF4, RF10): its after-commit
+    # coefficient write requests the isolated allocation build once the run's
+    # coefficients are in staging; a doc-event trigger would race it.
+    # DOCTYPE_BUILD_MAP carries the scope.
     # NOT "Entity" (konsol#110). Its build is requested from the controller,
     # and only when a field the warehouse reads changes — listing it here would
     # ask an EPM Admin to approve a consolidation rebuild for a renamed
