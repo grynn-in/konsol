@@ -277,12 +277,18 @@ class BudgetCycle(Document):
         refused, so the cancel is refused here, naming the declaration to
         cancel first. A draft declaration declares nothing yet and a
         cancelled one is history: neither counts. Submitted rows only
-        (docstatus 1), in name order (v16 get_all sorts by creation
-        otherwise)."""
-        live = frappe.get_all(
-            "Approved Budget", filters={"budget_cycle": self.name, "docstatus": 1},
-            fields=["name", "consolidation_group", "fiscal_year"], order_by="name asc",
-            limit_page_length=0)
+        (docstatus 1), in name order.
+
+        A LOCKING read (PR #554 re-review): a declaration's submit locks this
+        Cycle's row (ApprovedBudget._cycle_row), so a cancel that waited on
+        that lock reads here after the submit committed; a plain read would
+        use this request's REPEATABLE READ snapshot, miss the new declaration
+        and let both commit. FOR UPDATE reads the latest committed rows.
+        frappe.get_all takes no for_update on v16, hence db.get_values."""
+        live = frappe.db.get_values(
+            "Approved Budget", {"budget_cycle": self.name, "docstatus": 1},
+            ["name", "consolidation_group", "fiscal_year"], as_dict=True,
+            order_by="name asc", for_update=True)
         if not live:
             return
         named = ", ".join(

@@ -84,8 +84,12 @@ class ApprovedBudget(Document):
         declarations that name the Cycle, and this submit reads the Cycle's
         docstatus; without a lock the two could each read before the other
         wrote (write skew under REPEATABLE READ) and leave a submitted
-        declaration naming a cancelled Cycle. The lock makes the second wait
-        for the first's commit, so it sees the row."""
+        declaration naming a cancelled Cycle. If the cancel commits first,
+        this locking read sees its docstatus 2 and refuses. If this submit
+        locks first, the cancel waits for its commit and then reads the
+        declarations FOR UPDATE itself (BudgetCycle
+        ._refuse_cancel_under_an_approved_budget), so it sees this one. Both
+        reads must lock; either alone leaves one ordering open."""
         row = frappe.db.get_value(
             "Budget Cycle", self.budget_cycle,
             ["docstatus", "scenario_id", "scenario_type", "fiscal_year", "rate_set", "input_fingerprint"],
