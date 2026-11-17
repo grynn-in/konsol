@@ -40,14 +40,14 @@ CLICKHOUSE = os.path.join(APP_DIR, "clickhouse.py")
 #: S6 KA2: the write-through table. Identical to konsolidat's clickhouse/init-db.sql
 #: (its tests/test_current_forecasts_ddl.py pins the same body); keep them identical.
 TABLE = "epm_staging.current_forecasts"
+#: No as_of_date: the warehouse reads the round's as-of from budget_cycles by
+#: `cycle`, its one source (S6 pair A review m4).
 DDL = (
-    "(scenario_id String, fiscal_year UInt16, cycle String, "
-    "as_of_date Date32 DEFAULT '1900-01-01') "
+    "(scenario_id String, fiscal_year UInt16, cycle String) "
     "ENGINE = MergeTree ORDER BY (scenario_id, fiscal_year)"
 )
 #: ClickHouse column -> Frappe field, in the DDL's column order.
-FIELD_MAP = {"scenario_id": "scenario_id", "fiscal_year": "fiscal_year", "cycle": "budget_cycle",
-             "as_of_date": "as_of_date"}
+FIELD_MAP = {"scenario_id": "scenario_id", "fiscal_year": "fiscal_year", "cycle": "budget_cycle"}
 SYNC_KEY = ("sync_doctype", "Current Forecast", TABLE)
 FLAGS = {"r": "read", "w": "write", "c": "create", "d": "delete", "s": "submit", "x": "cancel", "a": "amend"}
 
@@ -573,13 +573,19 @@ def test_the_ddl_is_pinned_and_the_table_ships_whole():
     assert TABLE not in _literal("_RETIRED_TABLES")
 
 
-def test_an_unset_as_of_date_is_a_declared_sentinel_never_1970():
-    """Read from clickhouse.py, the way the pin is: asserting on this file's
-    own DDL literal could not fail when the source changed (review of #546)."""
+def test_the_round_is_written_by_name_and_its_as_of_is_not_copied():
+    """The warehouse reads the round's as_of_date, horizon and rate set from
+    epm_staging.budget_cycles by `cycle`; a copy here would be a second source
+    of truth (S6 pair A review m4). The form keeps as_of_date, read-only and
+    fetched from the Cycle. Read from clickhouse.py, the way the pin is:
+    asserting on this file's own DDL literal could not fail when the source
+    changed (review of #546)."""
     shipped = _literal("_REFERENCE_TABLE_DDL")[TABLE]
-    assert "as_of_date Date32 DEFAULT '1900-01-01'" in shipped
-    assert "1970" not in shipped
+    for copy in ("as_of_date", "horizon_periods", "rate_set"):
+        assert copy not in shipped, copy
     assert shipped.endswith("ORDER BY (scenario_id, fiscal_year)"), "the key the readers join on"
+    as_of = next(f for f in _doctype()["fields"] if f["fieldname"] == "as_of_date")
+    assert as_of["read_only"] == 1 and as_of["fetch_from"] == "budget_cycle.as_of_date"
 
 
 def test_the_controller_names_the_table_and_its_columns_in_ddl_order(env):
