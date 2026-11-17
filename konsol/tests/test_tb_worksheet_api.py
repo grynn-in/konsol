@@ -828,7 +828,7 @@ def test_refusal_messages_name_the_failed_check():
 
 def test_no_sql_constant_has_an_alias_column_collision():
     constants = _sql_constants()
-    assert set(constants) == {"_WORKSHEET_SQL"}, (
+    assert set(constants) == {"_WORKSHEET_SQL", "_BUDGET_WORKSHEET_SQL"}, (
         "a *_SQL constant was added or removed: update this test's expected set")
     for name, sql in constants.items():
         assert _alias_collision(sql) is None, name
@@ -935,9 +935,14 @@ def test_budget_basis_ok_reads_the_budget_once_bound_to_scenario_cycle_and_layer
     assert params == {"group": "G1", "fy": 2025, "scenario": "ZZB", "cycle": CYCLE, "layers": "['base','board']"}
     assert "dim_" not in sql
     assert ("fingerprint", CYCLE) in site.reads, "S5-Q2 a: the fingerprint is checked at the read"
+    # The worksheet's own message stays None on ok; the approved-budget
+    # sentence rides in ``budget`` for the legend.
+    assert result["message"] is None
+    sentence = result["budget"].pop("message")
     assert result["budget"] == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS",
-                                "scenario_id": "ZZB", "declaration": DECLARATION, "message": result["message"]}
-    assert CYCLE in result["message"] and "base, board" in result["message"]
+                                "scenario_id": "ZZB", "declaration": DECLARATION}
+    for word in (CYCLE, "base, board", "ZZRS", DECLARATION, "zz-lead@example.com", "2026-11-17"):
+        assert word in sentence, word
 
 
 def test_budget_basis_lays_out_the_plug_in_a_labelled_column_and_foots():
