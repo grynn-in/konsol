@@ -740,7 +740,11 @@ def check_coefficients_staging():
     if mismatched:
         # End the snapshot: the re-reads below see every commit made since.
         frappe.db.rollback()
-        corrections, stored = {}, {}
+        # Keep the first read's legacy-count corrections for the runs that
+        # matched; only the mismatched runs are re-read (tester CA-1 bug 1:
+        # dropping them ran the model path every hour while any run mismatched).
+        corrections = {r: n for r, n in corrections.items() if r not in mismatched}
+        stored = {r: n for r, n in stored.items() if r not in mismatched}
         expected = _submitted_counts(failed, mismatched, corrections, stored)
         try:
             held = _held_counts()
