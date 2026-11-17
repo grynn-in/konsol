@@ -2033,6 +2033,23 @@ def test_rf12_a_legacy_run_with_a_stored_zero_gets_its_count_written_back():
     assert model_calls == ["CAR-00001"] and len(w.set_values) == 1
 
 
+def test_rf13_a_legacy_count_is_stored_even_when_another_run_is_out_of_step():
+    """Tester CA-1 bug 1: a mismatch on another run discarded the first-read
+    correction of a matching legacy run, so its model path ran every hour."""
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1})
+    w.get_all_data["Cost Allocation Run"][0]["coefficient_row_count"] = 0   # legacy
+    _staged(w, {"CAR-00001": n, "CAR-00002": n - 2})                         # 2 out of step
+    m = _k8(w)
+    model_calls = _count_model_calls(m)
+    m.check_coefficients_staging()
+    assert _count_set(w, "CAR-00001", n) in w.set_values
+    calls = len(model_calls)
+    m.check_coefficients_staging()                               # the model path ran once
+    assert len(model_calls) == calls
+
+
 def test_rf12_after_a_rebuild_the_counts_are_backfilled_from_the_rows_written():
     w = _World()
     n = len(_expected_rows())
