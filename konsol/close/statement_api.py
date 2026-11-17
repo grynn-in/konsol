@@ -1301,7 +1301,12 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
     ``setup_gap``) or a failed drill is refused with the server's own
     sentence — never an empty file. ClickHouse is read four times
     (``get_statement``'s two, one drill read, one journals read), whatever
-    the number of headings.
+    the number of headings; with an ok approved budget, seven (the budget
+    statement's one, then ``_export_budget``'s entity-grain and rates
+    reads, konsol#348 S5 K12). The budget columns, note and "Budget drill"
+    sheet come from the budget payload (K11); a budget that is not ok, or
+    whose drill faults, leaves the columns blank with the reason in the
+    note and never fails the actuals' file.
 
     ``basis="Entity"`` (konsol#495) exports one entity's own statement
     (``_entity_statement``, ``entity`` required): the drills come from the
@@ -1312,7 +1317,9 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
     Every download is recorded (konsol#496, Q1 = A, Deepak Pai 9 Nov 2026):
     one Close Event ``statement_exported`` per file, written after the
     workbook is built, in the request's own transaction (no commit here; a
-    GET would roll it back, hence POST). A refusal records nothing."""
+    GET would roll it back, hence POST). A refusal records nothing. The
+    detail's ``budget`` is ``{cycle, layers, rate_set}`` for the ok budget
+    the file carries, else ``None`` (the entity export always)."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     if basis not in (None, "", "Group", "Entity"):
         frappe.throw(f"Basis {basis} is not one of Group, Entity.")
@@ -1338,20 +1345,95 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
         drills = _all_drills(payload, reads, drill_rows, journal_rows)
     except ValueError as e:
         frappe.throw(str(e))
+    budget, budget_drills = _export_budget(payload, reads)
     _send_workbook(payload, drills,
                    _filename(payload["period"], payload["consolidation_group"]),
                    basis="Group", consolidation_group=payload["consolidation_group"],
-                   entity=None)
+                   entity=None, budget=budget, budget_drills=budget_drills)
 
 
-def _send_workbook(payload, drills, filename, basis, consolidation_group, entity):
+def _export_budget(payload, reads):
+    """``(budget, budget_drills)`` for the group export (konsol#348 S5 K12):
+    the approved budget's payload (``_budget_statement``, the actuals'
+    chart, periods, declared accounts and currency) and, when it is ok,
+    ``{heading: drill_model.with_rates(drill), "UNBALANCED":
+    unbalanced_drill}`` for every statement heading from ONE entity-grain
+    read (``_BUDGET_DRILL_SQL``, the heading leaves plus the UNBALANCED
+    literal, so the plug's drill needs no read of its own; the CTA branch
+    when the CTA heading is on the statement) and ONE rates read
+    (``_BUDGET_RATES_SQL``), the ``_drill_reads`` pattern. Every read binds
+    scenario_id, cycle and layers.
+
+    A budget that is not ok comes back as is with ``None`` drills: the
+    workbook writes blank columns and the state's sentence. A warehouse
+    failure on the budget reads, a drill/line mismatch or a missing rate row
+    becomes a non-ok budget naming it (``not_built`` / ``error``), never a
+    refused actuals' file and never a partial budget sheet."""
+    key, accounts, declared = reads["key"], reads["accounts"], reads["declared"]
+    group = payload["consolidation_group"]
+    budget = _budget_statement(key, reads["period_rows"], declared, accounts,
+                               payload.get("reporting_currency"), group)
+    if budget["state"] != "ok":
+        return budget, None
+
+    stmt, meta = budget["statement"], budget["meta"]
+    headings = _statement_headings(stmt)
+    leaf_codes = sorted({code for heading in headings for code in _leaf_codes(heading, accounts)})
+    cta_heading = _heading_of(declared.get("cta_account"), accounts)
+    drill_sql = _BUDGET_DRILL_SQL_WITH_CTA if cta_heading in headings else _BUDGET_DRILL_SQL
+    binds = {"group": group, "scenario": meta["scenario_id"], "cycle": meta["cycle"],
+             "layers": _sql_array(meta["layers"]), "fy": key[0],
+             "accounts": _sql_array(leaf_codes + [drill_model.UNBALANCED_HEADING])}
+
+    def failed(state, message):
+        return dict(budget, state=state, message=message, statement=None), None
+
+    try:
+        drill_rows = [_drill_row(r) for r in ch_read.rows(drill_sql, binds)]
+        rate_rows = ch_read.rows(_BUDGET_RATES_SQL, binds)
+    except Exception as e:  # noqa: BLE001 — "can't say" is a state, never 0 rows
+        return failed("not_built" if ch_read.not_built(e) else "error", _error_message(e))
+
+    allowed = allowed_entity_codes()
+    drills = {}
+    try:
+        for heading in headings:
+            keys = _drill_keys(reads["period_rows"], key, accounts[heading].get("statement_section"))
+            drill = drill_model.drill(
+                drill_rows, [], accounts, heading, keys, declared, allowed,
+                _budget_line(stmt, heading=heading), stmt["minor_unit"])
+            drills[heading] = drill_model.with_rates(drill, _rate_rows_for(rate_rows, keys), meta["cycle"])
+        plug = _budget_line(stmt, kind=statement_model.UNBALANCED)
+        if plug is not None:
+            keys = _drill_keys(reads["period_rows"], key, statement_model.BS)
+            drills[drill_model.UNBALANCED_HEADING] = drill_model.unbalanced_drill(
+                drill_rows, keys, allowed, stmt["minor_unit"], cycle=meta["cycle"], statement_line=plug)
+    except ValueError as e:
+        return failed("error", str(e))
+    return budget, drills
+
+
+def _budget_detail(budget):
+    """The Close Event detail's ``budget``: the ok budget's Cycle, layers
+    and Rate Set the file carries, else ``None``."""
+    if not budget or budget.get("state") != "ok":
+        return None
+    meta = budget.get("meta") or {}
+    return {"cycle": meta.get("cycle"), "layers": list(meta.get("layers") or []),
+            "rate_set": meta.get("rate_set")}
+
+
+def _send_workbook(payload, drills, filename, basis, consolidation_group, entity,
+                   budget=None, budget_drills=None):
     """Build the workbook, record the download, then hand the file back
     (konsol#496 row 10A-2). The workbook is built first, so a build failure
     records nothing; the event is inserted in the caller's transaction by
-    ``close_event.record`` (never committed here)."""
+    ``close_event.record`` (never committed here). ``budget`` and
+    ``budget_drills`` (S5 K12, the group export) go to the workbook as they
+    are; the detail's ``budget`` names the ok budget the file carries."""
     from konsol.close import close_event  # lazy: the remind_api precedent
 
-    content = statement_export_model.workbook(payload, drills)
+    content = statement_export_model.workbook(payload, drills, budget=budget, budget_drills=budget_drills)
     period = payload["period"]
     close_event.record(
         "statement_exported", int(period["fiscal_year"]), int(period["fiscal_period"]),
@@ -1361,6 +1443,7 @@ def _send_workbook(payload, drills, filename, basis, consolidation_group, entity
             "entity": entity,
             "filename": filename,
             "label": statement_export_model._label(payload.get("signoff")),
+            "budget": _budget_detail(budget),
         },
         entity=entity,
     )

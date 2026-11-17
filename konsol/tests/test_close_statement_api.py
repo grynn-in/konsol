@@ -1122,8 +1122,12 @@ def test_export_statement_sheet_matches_the_golden_payload():
             if line["kind"] == "heading":
                 assert by_code[line["heading"]][0] == line["heading_name"]
                 assert by_code[line["heading"]][2] == line["current"]
-    assert by_code["4"][6] == golden["commentary"]["4"]["text"]
-    assert by_code["4"][7].startswith(golden["commentary"]["4"]["by"] + " · ")
+    # S5 K12: the group export always carries the three budget columns (blank
+    # here: no declaration), so Commentary and By sit three columns further.
+    assert rows[8][6:9] == ["Budget (before eliminations)", "Variance to budget", "Budget year to date"]
+    assert by_code["4"][9] == golden["commentary"]["4"]["text"]
+    assert by_code["4"][10].startswith(golden["commentary"]["4"]["by"] + " · ")
+    assert by_code["4"][6] is None and by_code["4"][7] is None and by_code["4"][8] is None
 
 
 def test_export_drill_sheet_totals_equal_every_golden_heading():
@@ -1748,6 +1752,7 @@ def test_group_export_records_one_statement_exported_event():
         "detail": {
             "basis": "Group", "consolidation_group": "G1", "entity": None,
             "filename": response["filename"], "label": "Provisional",
+            "budget": None,   # S5 K12: no approved budget declared here
         },
     }]
     assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
@@ -1830,7 +1835,7 @@ def test_export_records_only_after_the_workbook_is_built():
         site = make_site()
 
         def run(api, call=call):
-            def boom(payload, drills):
+            def boom(payload, drills, **kwargs):
                 raise RuntimeError("workbook failed")
             api.statement_export_model = types.SimpleNamespace(workbook=boom)
             return call(api)
@@ -2310,13 +2315,13 @@ def test_export_with_an_approved_budget_writes_the_budget_sheet_and_records_the_
     site = _export_budget_site()
     book = _export_book(site)
     assert book.sheetnames == ["Statement", "Drill", "Journals", "Budget drill"]
-    header = [c.value for c in book["Statement"][2]] + [c.value for c in book["Statement"][1]]
-    text = " ".join(str(v) for v in header if v)
-    assert "Budget" in text, text
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "Budget (before eliminations)" in text and "Variance to budget" in text
+    assert f"Approved budget for G1 FY2025: Budget Cycle {CYCLE}" in text, "the ok budget's own sentence"
     assert _budget_event_detail(site) == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS"}
-    budget_sheet = book["Budget drill"]
-    labels = [row[0] for row in budget_sheet.iter_rows(values_only=True)]
-    assert any(v == "UNBALANCED" or (isinstance(v, str) and "Unbalanced" in v) for v in labels), labels
+    values = {v for row in book["Budget drill"].iter_rows(values_only=True) for v in row if v is not None}
+    assert "UNBALANCED" in values, "the plug's own drill is on the sheet"
+    assert "ZZRS" in values and any(isinstance(v, str) and "closing 1.1" in v for v in values), values
 
 
 def test_export_with_a_budget_reads_clickhouse_seven_times_each_budget_read_bound():
@@ -2359,5 +2364,5 @@ def test_export_with_a_budget_drill_fault_keeps_the_actuals_file_and_records_bud
     assert book.sheetnames == ["Statement", "Drill", "Journals"]
     assert _budget_event_detail(site) is None
     text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
-    assert "ZZA" in text and "1110" in text, "the note names the fault"
+    assert "Budget columns are blank: ZZA 4100: no translation rate row" in text, "the note names the fault"
     assert "filecontent" in site.response

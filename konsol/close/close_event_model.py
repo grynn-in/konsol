@@ -34,7 +34,9 @@ KINDS = (
     # from its file; a period kind, no reason. Detail {batch_id, row_count, why}.
     "tb_relanded",
     # konsol#496 row 10A-1: a Numbers statement downloaded; a period kind, no
-    # reason. Detail {basis, consolidation_group, entity, filename, label}.
+    # reason. Detail {basis, consolidation_group, entity, filename, label,
+    # budget}: budget is {cycle, layers, rate_set} for the ok approved budget
+    # the file carries (konsol#348 S5 K12, the group export), else null.
     "statement_exported",
 )
 YEAR_KINDS = ("year_closed", "year_locked", "year_reopened")
