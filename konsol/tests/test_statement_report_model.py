@@ -705,12 +705,86 @@ def test_an_actuals_unbalanced_line_is_laid_out_and_takes_the_budgets_by_kind():
     assert _by_label(R.rows(_payload(rows=_budget_rows())), UNBALANCED_LABEL)["current"] == 700.0
 
 
-def test_a_heading_absent_from_the_budget_has_a_blank_budget_not_zero():
-    budget = _budget()
-    bs_lines = budget["statement"]["sections"][1]["lines"]
-    bs_lines[:] = [line for line in bs_lines if line.get("heading") != "2"]
+# --- Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
+# 6956694095; the 22 Sep 2026 rule, gold_variance_analysis's
+# coalesce(budget_amount, 0)) -----------------------------------------------
+#
+# With an ok budget, a P&L heading (and the net result) the actuals carry but
+# the budget lacks shows Budget 0.00 and Budget YTD 0.00, a variance equal to
+# the actual, and favourability by the heading's normal balance: unbudgeted
+# spend is Unfavourable, unbudgeted revenue Favourable. A Balance Sheet
+# heading keeps S5: Budget 0.00 (the year's budgeted movement), variance
+# blank. Without an ok budget there is still no budget column (BUD-4-2).
+
+def _without_heading(budget, section, heading):
+    lines = budget["statement"]["sections"][section]["lines"]
+    lines[:] = [line for line in lines if line.get("heading") != heading]
+    return budget
+
+
+def test_an_unbudgeted_bs_heading_shows_budget_zero_and_a_blank_variance():
+    budget = _without_heading(_budget(), 1, "2")
     row = _by_label(R.rows(_payload(), budget=budget), "LIABILITIES")
-    assert row["budget"] is None and row["variance_to_budget"] is None
+    assert row["budget"] == 0.0 and row["variance_to_budget"] is None
+    assert row["budget_ytd"] is None and row["favourability"] is None
+
+
+def test_an_unbudgeted_pl_revenue_heading_is_budget_zero_and_favourable():
+    budget = _without_heading(_budget(heading_sides=_sides(**{"4": "Credit"})), 0, "4")
+    payload = _payload()
+    row = _by_label(R.rows(payload, budget=budget), "COST OF SALES")
+    this_line = _line(payload, 0, {"heading": "4"})
+    assert row["budget"] == 0.0 and row["budget_ytd"] == 0.0
+    assert row["variance_to_budget"] == this_line["current"] == 241.43
+    assert row["favourability"] == "Favourable", "unbudgeted revenue"
+
+
+def test_an_unbudgeted_pl_cost_heading_is_budget_zero_and_unfavourable():
+    accounts = F._s_accounts()
+    accounts["4"]["normal_balance"] = "Debit"
+    rows = F._s_rows()[:-1] + [F._row("4100", 300.0)]            # costs 300 (display -300)
+    stmt = SM.statement(rows, accounts, F._S_CALENDAR, F._S_KEY, F._s_declared(), minor_unit=2)
+    budget = _without_heading(_budget(heading_sides=_sides(**{"4": "Debit"})), 0, "4")
+    row = _by_label(R.rows(_payload(statement=stmt), budget=budget), "COST OF SALES")
+    assert row["budget"] == 0.0 and row["budget_ytd"] == 0.0
+    assert row["variance_to_budget"] == -300.0
+    assert row["favourability"] == "Unfavourable", "unbudgeted spend"
+
+
+def test_an_unbudgeted_heading_with_no_declared_side_reads_n_a():
+    budget = _without_heading(_budget(), 0, "4")   # heading 4 declares no side here
+    row = _by_label(R.rows(_payload(), budget=budget), "COST OF SALES")
+    assert row["budget"] == 0.0 and row["favourability"] == "n/a"
+
+
+def test_an_unbudgeted_net_result_is_budget_zero_and_reads_by_profit():
+    budget = _budget()
+    lines = budget["statement"]["sections"][0]["lines"]
+    lines[:] = [line for line in lines if line.get("kind") != "net_result"]
+    row = _by_label(R.rows(_payload(), budget=budget), SM.NET_RESULT_LABEL)
+    assert row["budget"] == 0.0 and row["budget_ytd"] == 0.0
+    assert row["variance_to_budget"] == row["current"] == 241.43
+    assert row["favourability"] == "Favourable", "profit with none budgeted"
+
+
+def test_an_unbudgeted_heading_opens_no_budget_drill():
+    """The budget has no line for it, so get_budget_drill would refuse: the
+    Budget cell is a plain 0.00, never a drill link."""
+    budget = _without_heading(_budget(), 0, "4")
+    row = _by_label(R.rows(_payload(), drill_group="CG-ZZG-", budget=budget), "COST OF SALES")
+    assert row["budget"] == 0.0 and row["drill_budget"] == 0
+
+
+def test_without_an_ok_budget_an_unbudgeted_heading_stays_blank():
+    for budget in (None, _budget(state="no_approved_budget", message="No approved budget.")):
+        row = _by_label(R.rows(_payload(), budget=budget), "COST OF SALES")
+        assert row["budget"] is None and row["variance_to_budget"] is None
+        assert row["favourability"] is None and row["budget_ytd"] is None
+
+
+def test_message_states_that_an_unbudgeted_line_is_budget_zero():
+    assert R.UNBUDGETED_RULE in R.message(_payload(), budget=_budget())
+    assert "zero" in R.UNBUDGETED_RULE and "#" not in R.UNBUDGETED_RULE
 
 
 def test_section_headers_and_residual_explanations_carry_no_budget():

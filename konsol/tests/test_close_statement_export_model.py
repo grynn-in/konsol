@@ -674,13 +674,55 @@ def test_the_budgets_unbalanced_line_precedes_the_residual_with_blank_actuals():
     assert row[5] == 700.0 and row[6] is None and row[7] is None
 
 
-def test_a_line_absent_from_the_budget_is_blank_never_zero():
+def test_an_unbudgeted_pl_heading_is_budget_zero_with_the_actual_as_variance():
+    """Deepak Pai, 17 Nov 2026 (konsol#348 comment 6956694095; the 22 Sep
+    2026 rule): an unbudgeted P&L heading is budget zero, as on the Desk
+    report (statement_report_model._with_budget)."""
     budget = _budget()
     lines = budget["statement"]["sections"][0]["lines"]
     lines[:] = [ln for ln in lines if ln.get("heading") != "4"]
     pl = _section_block(_rows(_budget_book(budget)["Statement"]), "Profit and Loss")
     row = _row_starting(pl, "COST OF SALES", "4")
-    assert row[6] is None and row[7] is None and row[8] is None and row[9] is None
+    assert row[6] == 0 and row[9] == 0
+    assert row[7] == row[2] == 241.43
+    assert row[8] == "Favourable"
+
+
+def test_an_unbudgeted_net_result_is_budget_zero():
+    budget = _budget()
+    lines = budget["statement"]["sections"][0]["lines"]
+    lines[:] = [ln for ln in lines if ln.get("kind") != "net_result"]
+    row = _row_starting(_pl(budget), "Net result")
+    assert row[6] == 0 and row[9] == 0 and row[7] == row[2] and row[8] == "Favourable"
+
+
+def test_an_unbudgeted_bs_heading_is_budget_zero_with_a_blank_variance():
+    budget = _budget()
+    lines = budget["statement"]["sections"][1]["lines"]
+    lines[:] = [ln for ln in lines if ln.get("heading") != "2"]
+    bs = _section_block(_rows(_budget_book(budget)["Statement"]), "Balance Sheet")
+    row = _row_starting(bs, "LIABILITIES", "2")
+    assert row[5] == 0 and row[6] is None and row[7] is None and row[8] is None
+
+
+def test_the_unbudgeted_rule_equals_the_report_models_and_is_in_the_note():
+    assert M.UNBUDGETED_RULE == _REPORT.UNBUDGETED_RULE
+    rows = _rows(_budget_book(_budget())["Statement"])
+    note = next(r[0] for r in rows if r[0] and r[0].startswith("Approved budget"))
+    assert M.UNBUDGETED_RULE in note
+
+
+def test_an_entity_basis_note_says_there_is_no_budget_drill_sheet():
+    payload = _payload()
+    group_note = next(r[0] for r in _rows(_budget_book(_budget())["Statement"])
+                      if r[0] and r[0].startswith("Approved budget"))
+    assert M.ENTITY_NO_BUDGET_DRILL not in group_note
+    payload["basis"] = "Entity"
+    payload["entity"], payload["entity_name"] = "ZZA", "Zz Entity A"
+    book = _budget_book(_budget(), payload=payload)
+    note = next(r[0] for r in _rows(book["Statement"]) if r[0] and r[0].startswith("Approved budget"))
+    assert M.ENTITY_NO_BUDGET_DRILL in note and "budget drill" in M.ENTITY_NO_BUDGET_DRILL.lower()
+    assert "Budget drill" not in book.sheetnames
 
 
 def test_without_a_budget_there_are_no_budget_columns_and_no_note():
@@ -858,11 +900,17 @@ def test_favourability_is_text_and_blank_on_balance_sheet_and_budget_only_rows()
     assert all(r[7] is None for r in bs[1:])
 
 
-def test_a_heading_absent_from_the_budget_has_no_favourability():
+def test_a_heading_absent_from_the_budget_reads_by_its_normal_balance():
+    """Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026): the variance is
+    the actual, read by the heading's side: with no side it reads n/a; given
+    one, it reads."""
     budget = _budget()
     lines = budget["statement"]["sections"][0]["lines"]
     lines[:] = [ln for ln in lines if ln.get("heading") != "4"]
-    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] is None
+    del budget["meta"]["heading_sides"]["4"]
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "n/a"
+    budget["meta"]["heading_sides"]["4"] = "Credit"
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "Favourable"
 
 
 def test_the_ok_budget_note_carries_the_favourability_rule():

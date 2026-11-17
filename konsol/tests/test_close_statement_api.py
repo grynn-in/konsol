@@ -1838,7 +1838,7 @@ def test_entity_export_records_one_statement_exported_event_scoped_to_the_entity
         "detail": {
             "basis": "Entity", "consolidation_group": None, "entity": "ZZA",
             "filename": "numbers-FY2025P07-entity-ZZA.xlsx", "label": "Provisional",
-            "budget": None,   # S5 K12: the entity budget is S6
+            "budget": None,   # ZZA is in no consolidation group: no entity budget
         },
     }]
     assert response["filename"] == "numbers-FY2025P07-entity-ZZA.xlsx"
@@ -2043,6 +2043,20 @@ def test_ok_budget_meta_carries_the_heading_sides_from_the_chart():
     # The live chart's P&L heading declares no side: kept blank, not defaulted.
     assert _call_budget(_budget_site())["meta"]["heading_sides"]["4"] == ""
     assert _call_budget(_Site())["meta"]["heading_sides"] is None
+
+
+def test_heading_sides_cover_a_chart_heading_the_budget_lacks():
+    """Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
+    6956694095): the report reads an unbudgeted P&L heading's favourability
+    by its normal balance, so the side map covers every heading of the
+    chart, not only those the budget statement carries."""
+    site = _budget_site()
+    site.accounts["4"]["normal_balance"] = "Credit"
+    site.budget_tb_rows = [_tb_row("1110", 300.0, adjustment_type="entity"),
+                           _tb_row("UNBALANCED", -300.0, adjustment_type="unbalanced")]
+    result = _call_budget(site)
+    assert result["state"] == "ok", result["message"]
+    assert result["meta"]["heading_sides"]["4"] == "Credit"
 
 
 def test_no_declaration_is_no_approved_budget_with_no_clickhouse_and_no_fingerprint_read():
@@ -2481,6 +2495,63 @@ def test_export_with_a_refused_budget_line_keeps_the_actuals_file_without_a_log(
     assert "Budget columns not shown: 4 has no budget statement line (a bug)." in text, text
     assert _budget_event_detail(site) is None
     assert site.error_logs == [] and site.cleared_messages == 1
+
+
+# --- the Entity-basis export carries the entity budget (konsol#348 S6) -----------
+#
+# export_statement(basis="Entity") passes entity_budget_payload (KB8) to the
+# workbook, so the Entity export has the Desk report's budget columns and note
+# (KB9). The Entity basis has no budget drill: no "Budget drill" sheet, and the
+# note says so. A budget fault never fails the actuals' file.
+
+def _entity_export_budget_site(groups=("G1",)):
+    site = _entity_budget_site(groups=groups)
+    site.entity_tb_rows = _entity_site().entity_tb_rows
+    return site
+
+
+def _sheet_text(book):
+    return " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+
+
+def test_entity_export_with_an_entity_budget_writes_the_budget_columns_and_note():
+    site = _entity_export_budget_site()
+    book = _entity_book(site)
+    assert book.sheetnames == ["Statement", "Drill", "Journals"], "no budget drill on the Entity basis"
+    text = _sheet_text(book)
+    assert "Budget (before eliminations)" in text and "Favourability" in text
+    assert "Entity budget for ZZA in JPY" in text, "the entity budget's own sentence"
+    M = _load_path("statement_export_model_for_entity_budget_test",
+                   os.path.join(CLOSE_DIR, "statement_export_model.py"))
+    assert M.ENTITY_NO_BUDGET_DRILL in text
+    rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
+    by_code = {r[1]: r for r in rows if r[1]}
+    assert by_code["4"][6] == 1000.0, "the entity budget's P&L heading"
+    assert len(site.ch_calls) == 2, [sql[:70] for sql, _ in site.ch_calls]
+    assert _budget_event_detail(site) == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS"}
+
+
+def test_entity_export_without_an_entity_budget_names_the_state_and_adds_no_column():
+    site = _entity_export_budget_site(groups=())
+    book = _entity_book(site)
+    text = _sheet_text(book)
+    assert "Budget columns not shown: ZZA is a member of no consolidation group" in text, text
+    assert "Budget (before eliminations)" not in text
+    assert _budget_event_detail(site) is None
+    assert len(site.ch_calls) == 1
+
+
+def test_entity_export_with_a_faulty_entity_budget_keeps_the_file_and_logs_the_fault():
+    site = _entity_export_budget_site()
+    site.fingerprint_error = RuntimeError("fingerprint table is gone")
+    book = _entity_book(site)
+    assert "filecontent" in site.response
+    text = _sheet_text(book)
+    assert "Budget columns not shown: RuntimeError: fingerprint table is gone" in text, text
+    assert "Budget (before eliminations)" not in text
+    assert _budget_event_detail(site) is None
+    assert site.error_logs == [{"title": "Consolidated Statement export entity budget read",
+                                "message": "Traceback (stub)"}]
 
 
 # --- the entity budget (konsol#348 S6 KB8; S6-Q6 a) -------------------------------
