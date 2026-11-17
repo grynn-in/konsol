@@ -199,3 +199,17 @@ def test_ownership_exit_journal_is_a_consolidation_build_model():
     assert row is not None
     assert row["model_name"] == "gold_ownership_exit_journal"
     assert row["build_domain"] == "consolidation"
+
+
+def test_ownership_exits_is_an_actuals_build_model():
+    """gold_ownership_exits (konsolidat#335, X22) materialises the exit events
+    once; the actuals scope rebuilds gold_consolidated_trial_balance by tag
+    only, and the CTB reads it, so it must be in the actuals domain."""
+    import json
+    path = os.path.join(APP_DIR, "fixtures", "build_model.json")
+    with open(path) as f:
+        rows = {r["name"]: r for r in json.load(f)}
+    row = rows.get("gold_ownership_exits")
+    assert row is not None
+    assert row["model_name"] == "gold_ownership_exits"
+    assert row["build_domain"] == "actuals"
