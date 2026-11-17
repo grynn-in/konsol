@@ -645,6 +645,20 @@ def test_a_budget_only_unbalanced_line_is_laid_out_before_the_residual():
     assert residual["budget"] == 0.0
 
 
+def test_the_budget_only_unbalanced_row_carries_the_plugs_code_and_the_drill_group():
+    """S5 K10b: the plug's own drill (get_budget_drill, heading
+    "UNBALANCED") opens from the row's Budget cell, so the row carries the
+    warehouse's literal main_account as its code and the group the drill
+    takes; the label is not a heading link (no chart heading behind it)."""
+    data = R.rows(_payload(), drill_group="CG-ZZG-", budget=_budget())
+    row = _by_label(data, UNBALANCED_LABEL)
+    assert row["code"] == "UNBALANCED"
+    assert row["drill_group"] == "CG-ZZG-"
+    assert R.UNBALANCED_CODE == "UNBALANCED"
+    # Heading rows are unchanged: code is the chart heading, drill_group the group.
+    assert _by_label(data, "LIABILITIES")["code"] == "2"
+
+
 def test_an_actuals_unbalanced_line_is_laid_out_and_takes_the_budgets_by_kind():
     data = R.rows(_payload(rows=_budget_rows()), budget=_budget())
     row = _by_label(data, UNBALANCED_LABEL)
