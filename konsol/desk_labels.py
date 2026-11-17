@@ -58,6 +58,7 @@ LABELS = {
     "Current Forecast": "Current Forecasts",
     # konsol#348 S6 KA9 (QB10 b, S6-Q9 a): is every period of a round's horizon approved?
     "Forecast Horizon Coverage": "Forecast Horizon Coverage",
+    "Forecast Accuracy": "Forecast Accuracy",   # konsol#348 S6 KC3
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
     "Budget Layer": "Budget Layers",

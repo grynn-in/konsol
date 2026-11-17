@@ -106,7 +106,10 @@ class _Site:
                              ("cycle", "cycle"), ("lag", "lag")):
                 if key in params:
                     out = [r for r in out if str(r[col]) == str(params[key])]
-            return [dict(r) for r in out]
+            # the SELECT's aliases (the report sums the dimensions away)
+            alias = {"as_of_date": "as_of", "forecast_amount": "fc", "actual_amount": "act",
+                     "forecast_error": "err", "forecast_abs_error": "abs_err"}
+            return [{alias.get(k, k): v for k, v in r.items()} for r in out]
 
         ch_read = types.ModuleType("konsol.close.ch_read")
         ch_read.rows = rows

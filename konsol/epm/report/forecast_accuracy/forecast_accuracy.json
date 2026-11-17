@@ -1,0 +1,29 @@
+{
+ "add_total_row": 0,
+ "creation": "2026-11-18 00:00:00",
+ "disabled": 0,
+ "doctype": "Report",
+ "is_standard": "Yes",
+ "modified": "2026-11-18 09:00:00.000000",
+ "module": "EPM",
+ "name": "Forecast Accuracy",
+ "owner": "Administrator",
+ "prepared_report": 0,
+ "ref_doctype": "Budget Cycle",
+ "report_name": "Forecast Accuracy",
+ "report_type": "Script Report",
+ "roles": [
+  {
+   "role": "EPM Admin"
+  },
+  {
+   "role": "EPM Analyst"
+  },
+  {
+   "role": "EPM User"
+  },
+  {
+   "role": "Entity Accountant"
+  }
+ ]
+}
