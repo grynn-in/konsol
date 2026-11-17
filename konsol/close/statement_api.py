@@ -61,6 +61,24 @@ read once, early, and carried through every state — including
 ``choose_group`` and ``no_chart``, so the Numbers screen can show them
 before a group or a chart exists.
 
+``budget_payload(fiscal_year, fiscal_period, consolidation_group)`` (not
+whitelisted; konsol#348 S5 K4) is the Consolidated Statement's third
+payload, the approved budget's statement for the Group basis:
+``{state, message, statement, meta}`` with ``meta`` = ``{cycle, layers,
+rate_set, scenario_id, declaration}``. The state is
+``approved_budget_model.budget_state`` over the live Approved Budget of
+the (group, year), the Budget Cycle it names, the Cycle's input
+fingerprint recomputed at this read (S5-Q2 a) and the Budget Layers;
+only an ``ok`` state reads ClickHouse, ONCE (``_BUDGET_TB_SQL`` over
+``gold_fully_consolidated_budget``), and that read binds the group,
+``scenario_id``, ``cycle`` AND ``layer``: a reader that misses one sums a
+budget with a reforecast. The statement is the same
+``statement_model.statement`` over the budget rows (``_build_statement``),
+so one sign rule serves both; no rows for the year is ``no_rows``. Every
+failure is a state with its sentence, never a raise into the actuals:
+``get_statement`` itself reads no budget (the Desk report asks for it
+separately, K7).
+
 Query count is constant in the number of headings and entities: MariaDB
 reads are periods 1, groups 1, declared-accounts (Close Settings 2 +
 Main Account <= 1, inside ``signoff_gate.statement_accounts``), the
@@ -73,8 +91,8 @@ import frappe
 
 from konsol import fiscal_calendar
 from konsol.close import (
-    ch_read, commentary_model, drill_model, signoff_gate, statement_export_model,
-    statement_model)
+    approved_budget_model, ch_read, commentary_model, drill_model, signoff_gate,
+    statement_export_model, statement_model)
 from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes, assert_entity_access
 
@@ -156,6 +174,21 @@ _ENTITY_TB_SQL = (
     "FROM epm_gold.gold_trial_balance "
     "WHERE data_area_id = {entity:String} AND fiscal_year <= {fy:UInt32} "
     "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account"
+)
+#: konsol#348 S5 K4: the approved budget's ONE read, ``_TB_SQL``'s shape over
+#: ``gold_fully_consolidated_budget``. Bound to the group, the declaration's
+#: ``scenario_id``, its ``cycle`` and its layers (``layers`` is
+#: ``_sql_array``'s literal, like ``accounts`` below): the table holds every
+#: Cycle of every budget and forecast scenario, and a filter that misses one
+#: of the three adds another round or a reforecast to the budget. Aliased
+#: ``amt`` (N53).
+_BUDGET_TB_SQL = (
+    "SELECT fiscal_year, fiscal_period, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_budget "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "GROUP BY fiscal_year, fiscal_period, main_account, adjustment_type"
 )
 _ENTITY_SQL = (
     "SELECT DISTINCT data_area_id FROM epm_gold.gold_fully_consolidated_tb "
@@ -592,6 +625,127 @@ def _group_statement(key, period_rows, group, declared, accounts_map, reporting_
     out.update(_build_statement(key, period_rows, declared, accounts_map, reporting_currency,
                                 currency_gap, read))
     return out
+
+
+#: The Approved Budget columns the budget read needs (approved_budget_model.
+#: budget_state's ``declaration``).
+_APPROVED_BUDGET_FIELDS = ["name", "docstatus", "consolidation_group", "fiscal_year", "budget_cycle",
+                           "scenario_id", "rate_set", "layer_policy", "layer", "input_fingerprint",
+                           "owner", "modified"]
+
+
+def _approved_budget(group, fiscal_year):
+    """``approved_budget_model.budget_state`` for the (group code, year),
+    plus the declaration's ``cycle``, ``rate_set``, ``scenario_id`` and
+    ``declaration`` name (None each when there is no declaration): the
+    reader's half of the state model (konsol#348 S5 K4).
+
+    Reads, in order, stopping at the first that decides: the root
+    Consolidation Group document name(s) of the code (an Approved Budget
+    links the document, not the code) and the live Approved Budget rows for
+    them (docstatus 0 or 1; a submitted one wins over a draft); the named
+    Budget Cycle's row; ``budget_fingerprint.check_input_fingerprint`` on
+    an approved Cycle (S5-Q2 a: recomputed at every read); every Budget
+    Layer. No ClickHouse here."""
+    names = [row["name"] for row in frappe.get_all(
+        "Consolidation Group", filters=dict(_ROOT_FILTER, consolidation_group=group),
+        fields=["name"], limit_page_length=0)]
+    declaration = None
+    if names:
+        live = frappe.get_all(
+            "Approved Budget",
+            filters={"consolidation_group": ["in", names], "fiscal_year": int(fiscal_year),
+                     "docstatus": ["in", [0, 1]]},
+            fields=_APPROVED_BUDGET_FIELDS, limit_page_length=0, order_by="docstatus desc, modified desc")
+        declaration = dict(live[0]) if live else None
+
+    cycle_row, fingerprint, layer_rows = None, None, []
+    if declaration is not None and int(declaration.get("docstatus") or 0) == 1:
+        cycles = frappe.get_all(
+            "Budget Cycle", filters={"name": declaration["budget_cycle"]},
+            fields=["name", "docstatus", "input_fingerprint"], limit_page_length=0)
+        cycle_row = dict(cycles[0]) if cycles else None
+        if cycle_row is not None and int(cycle_row.get("docstatus") or 0) == 1:
+            # Lazy, like _signoff_state: this module imports with no bench.
+            from konsol.epm.budget_fingerprint import check_input_fingerprint
+
+            fingerprint = check_input_fingerprint(cycle_row["name"])
+            layer_rows = frappe.get_all(
+                "Budget Layer", fields=["layer_code", "sort_order"], limit_page_length=0,
+                order_by="sort_order asc, layer_code asc")
+
+    state = approved_budget_model.budget_state(group, int(fiscal_year), declaration, cycle_row,
+                                               fingerprint, layer_rows)
+    declared = declaration if (declaration is not None and int(declaration.get("docstatus") or 0) == 1) else {}
+    state.update({
+        "cycle": declared.get("budget_cycle"),
+        "rate_set": declared.get("rate_set"),
+        "scenario_id": declared.get("scenario_id"),
+        "declaration": declared.get("name"),
+    })
+    return state
+
+
+def _budget_statement(key, period_rows, declared, accounts_map, currency, group):
+    """The approved budget's statement payload for the Group basis
+    (``statement_report_model.rows(budget=)``'s shape, konsol#348 S5 K6):
+    ``{"state", "message", "statement", "meta"}``.
+
+    ``_approved_budget`` decides the state first; only ``ok`` reads
+    ClickHouse, once (``_BUDGET_TB_SQL``), through ``_build_statement``
+    with the actuals' chart, periods, declared accounts and the group's
+    reporting currency, so the budget statement is the same statement over
+    budget rows (same minor unit, same display sign, the budget's own
+    ``unbalanced`` line, S5-Q3 a). No budget row in the year up to the
+    period is ``no_rows`` naming the Cycle, never a column of zeros. On
+    ``ok`` the message is the approved-budget sentence (Cycle, layers, Rate
+    Set, declaration, approver); on any other state, that state's sentence."""
+    approved = _approved_budget(group, key[0])
+    meta = {"cycle": approved["cycle"], "layers": approved["layers"], "rate_set": approved["rate_set"],
+            "scenario_id": approved["scenario_id"], "declaration": approved["declaration"]}
+    out = {"state": approved["state"], "message": approved["message"], "statement": None, "meta": meta}
+    if approved["state"] != approved_budget_model.OK:
+        return out
+
+    def currency_gap(currency):
+        return (
+            f"{statement_model.STATEMENT_CURRENCY_PRECISION_UNDECLARED}: the reporting currency "
+            f"{currency or '(none)'} of {group} has no ISO Currency, so its minor unit "
+            "is undeclared. Add it to ISO Currency, or set the group's reporting currency.")
+
+    def read():
+        return {"tb_rows": [
+            _tb_row(r) for r in ch_read.rows(_BUDGET_TB_SQL, {
+                "group": group, "scenario": approved["scenario_id"], "cycle": approved["cycle"],
+                "layers": _sql_array(approved["layers"]), "fy": key[0]})
+        ]}
+
+    built = _build_statement(
+        key, period_rows, declared, accounts_map, currency, currency_gap, read,
+        no_rows_message=(f"No budget rows in the warehouse for Budget Cycle {approved['cycle']} up to "
+                         f"{period_name(*key)}: build the budget."))
+    if built["state"] != "ok":
+        out.update(state=built["state"], message=built["message"])
+        return out
+    out["statement"] = built["statement"]
+    return out
+
+
+def budget_payload(fiscal_year, fiscal_period, consolidation_group):
+    """``_budget_statement`` from the request's own values (module
+    docstring): the period (refused when undeclared), the root group by
+    code (refused when unknown), the declared accounts and the chart, read
+    here as ``_statement`` reads them. Not whitelisted: the Desk report
+    (K7) and the drill (K9) call it after their own ``frappe.only_for``."""
+    key = _period_key(fiscal_year, fiscal_period)
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    _find_period(key, period_rows)
+    groups = {g["consolidation_group"]: g for g in root_groups()}
+    if not consolidation_group or consolidation_group not in groups:
+        frappe.throw(f"{consolidation_group} is not a consolidation group.")
+    declared = signoff_gate.statement_accounts()
+    return _budget_statement(key, period_rows, declared, _chart(),
+                             groups[consolidation_group].get("reporting_currency"), consolidation_group)
 
 
 @frappe.whitelist(methods=["GET"])
