@@ -13,12 +13,14 @@ else would).
 1. The ``variance_analysis`` Dataset's child row naming the Measure is
    deleted (the shipped Dataset; a direct row delete, so no Dataset hook
    runs inside the patch).
-2. If no other Dataset names the Measure, it is unpublished (status
+2. If no other Dataset uses the Measure (a Dataset Measure row, or a
+   Dataset's ``default_measure``, a Link to it), it is unpublished (status
    Inactive, the transition Measure.unpublish makes) and deleted. Under
    ``frappe.flags.in_patch`` the Measure's own schema apply does not run;
    ``install.regenerate_dbt_vars`` rewrites the dbt vars once at the end of
    the migrate, from the Measures that remain.
-3. If a site-made Dataset still names it, the Measure stays and the Datasets
+3. If a Dataset still uses it (a site-made Dataset's row, or any Dataset's
+   ``default_measure``), the Measure stays and the Datasets
    are logged by name: a site's own semantic model is never edited silently
    (konsol#230). Reading the Measure afterwards errors by name in the
    warehouse (no such column), which is the visible failure, never a 0.
@@ -49,11 +51,16 @@ def execute():
     if not frappe.db.exists("Measure", MEASURE):
         return
 
+    # A row naming it, or a default_measure Link to it (PR #558 review m3):
+    # deleting the Measure would leave either pointing at nothing.
     others = sorted({row.parent for row in frappe.get_all(
-        "Dataset Measure", filters={"measure": MEASURE}, fields=["name", "parent"])})
+        "Dataset Measure", filters={"measure": MEASURE}, fields=["name", "parent"])}
+        | {row.name for row in frappe.get_all(
+            "Dataset", filters={"default_measure": MEASURE}, fields=["name"])})
     if others:
         log.warning(f"konsol#348 S6 KB1: Measure {MEASURE} is kept because Dataset(s) "
-                    f"{', '.join(others)} still name it; it reads a column the warehouse no longer has "
+                    f"{', '.join(others)} still name it (as a measure or the default measure); it reads "
+                    f"a column the warehouse no longer has "
                     f"(gold_variance_analysis.variance_favourability is a text, not a measure). "
                     "Remove it from those Datasets, then delete the Measure.")
         return
