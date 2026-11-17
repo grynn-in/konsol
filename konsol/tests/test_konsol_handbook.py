@@ -314,6 +314,20 @@ def test_the_forecast_rounds_page_explains_accuracy_and_the_excel_words():
     assert not re.search(r"#\d+", text), "no issue numbers in user text"
 
 
+def test_excel_error_percent_is_computed_in_the_sheet():
+    """konsol#561 review M2: K.EPM has no forecast_error_pct. Both pages say
+    the sheet computes it as forecast_error / ABS(actual_amount) and the
+    Forecast Accuracy report shows it per row; neither offers the measure."""
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    for slug in ("forecast-rounds", "excel-addin"):
+        text = pages[slug]["markdown"]
+        assert "forecast_error / ABS(actual_amount)" in text, slug
+        assert "Forecast Accuracy report" in text, slug
+        assert "forecast_error_pct" not in text, slug
+    rounds = pages["forecast-rounds"]["markdown"]
+    assert "averages the rows" not in rounds
+
+
 def test_the_excel_page_lists_the_planning_words():
     """konsol#348 S6 KC4: the add-in page names the S6 scenario words."""
     pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}

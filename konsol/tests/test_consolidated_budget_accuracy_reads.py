@@ -72,8 +72,7 @@ _ACC = [
 TABLES = {CB_TABLE: _CB, ACC_TABLE: _ACC, ACC_GROUP_TABLE: _ACC}
 
 MEASURES = dict(read_path_stub.DEFAULT_MEASURES, forecast_error="sum",
-                forecast_abs_error="sum", forecast_amount="sum",
-                forecast_error_pct="avg")
+                forecast_abs_error="sum", forecast_amount="sum")
 
 
 def _fact(fact_name, scenario_key, table, measures, has_layer):
@@ -146,6 +145,39 @@ def _frappe(scenarios, declared, lookups, cycles=CYCLES):
     utils.now_datetime = lambda: None
     fake.utils = utils
     return fake, utils
+
+
+def _load_api(scenarios=SCENARIOS, declared=DECLARED, cycles=CYCLES):
+    """api.py on the stub frappe, and a function that restores sys.modules."""
+    lookups = []
+    fake, utils = _frappe(scenarios, declared, lookups, cycles)
+    stubs = {
+        "frappe": fake, "frappe.utils": utils,
+        "konsol.clickhouse": types.SimpleNamespace(
+            connection_url=lambda s: "", get_connection=lambda: {}),
+    }
+    saved = {k: sys.modules.get(k) for k in stubs}
+    before = set(sys.modules)
+    sys.modules.update(stubs)
+
+    def restore():
+        for key in set(sys.modules) - before:
+            if key.split(".")[0] in ("frappe", "konsol"):
+                del sys.modules[key]
+        for k, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
+
+    try:
+        spec = importlib.util.spec_from_file_location("_host_api_s6_m2", os.path.join(APP_DIR, "api.py"))
+        api = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(api)
+    except BaseException:
+        restore()
+        raise
+    return api, restore
 
 
 def flat(rows, scenarios=SCENARIOS, declared=DECLARED, cycles=CYCLES):
@@ -370,3 +402,40 @@ def test_entity_accuracy_read_still_binds_the_entity():
     (sql,) = queries
     assert "WHERE (data_area_id, fiscal_year, main_account) IN (" in sql
     assert "consolidation_group" not in sql
+
+
+# ── konsol#561 review M2: no forecast_error_pct measure ─────────────────────
+#
+# forecast_error_pct read through K.EPM averaged the rows' percentages,
+# unweighted, and a period with none read 0: not error / |actual|. The
+# shipped accuracy Datasets no longer carry it, so a read of it is refused by
+# name. Excel computes the % in the sheet: forecast_error / ABS(actual_amount).
+
+def _shipped(filename):
+    import json
+    with open(os.path.join(APP_DIR, "defaults", filename), encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_accuracy_read_of_forecast_error_pct_is_refused_by_name():
+    import json
+    published = {m["measure_name"] for m in _shipped("measure.json")
+                 if m.get("status") == "Published"}
+    datasets = {d["name"]: d for d in _shipped("dataset.json")}
+    for fact in ("forecast_accuracy", "forecast_accuracy_group"):
+        ds = datasets[fact]
+        row = types.SimpleNamespace(
+            fact_name=fact, default_measure=ds["default_measure"],
+            measures=json.dumps([m["measure"] for m in ds["fact_measures"]]),
+            dimensions="[]")
+        api, restore = _load_api()
+        try:
+            api._get_fact = lambda fact=None, scenario=None: row
+            api._published_measures = lambda: published
+            fact_doc, err = api._resolve_and_validate(fact, fact, "forecast_error_pct", [])
+        finally:
+            restore()
+        assert fact_doc is None, fact
+        assert err == (f"Invalid measure 'forecast_error_pct' for fact '{fact}'. "
+                       "Allowed: actual_amount, forecast_abs_error, forecast_amount, "
+                       "forecast_error"), err

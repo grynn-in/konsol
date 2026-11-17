@@ -152,8 +152,12 @@ def test_patch_is_registered():
 # site lacks, so existing sites receive them with no patch.
 
 MEASURES = os.path.join(APP_DIR, "defaults", "measure.json")
+#: No forecast_error_pct (konsol#561 review M2): a read averaged the rows'
+#: percentages, unweighted, with a period that had none read as 0, so it was
+#: not error / |actual|. Excel computes the % in the sheet; the Forecast
+#: Accuracy report shows it per row.
 ACCURACY_MEASURES = ["forecast_amount", "actual_amount", "forecast_error",
-                     "forecast_abs_error", "forecast_error_pct"]
+                     "forecast_abs_error"]
 
 
 def _measures():
@@ -197,8 +201,7 @@ def test_accuracy_measures_are_seeded_with_their_aggregation():
         assert m["doctype"] == "Measure" and m["measure_name"] == name
         assert m["expression"] == f"sum({name})" and m["cube_type"] == "sum", m
         assert m["status"] == "Published"
-    pct = measures["forecast_error_pct"]
-    assert pct["expression"] == "avg(forecast_error_pct)" and pct["cube_type"] == "avg", pct
+    assert "forecast_error_pct" not in measures, "nothing reads it (konsol#561 review M2)"
 
 
 def test_every_seeded_dataset_measure_is_a_seeded_measure():
@@ -209,3 +212,147 @@ def test_every_seeded_dataset_measure_is_a_seeded_measure():
         for row in json.load(fh):
             for m in row.get("fact_measures", []):
                 assert m["measure"] in measures, (row["name"], m["measure"])
+
+
+# --- konsol#561 review M2: retire forecast_error_pct on an existing site ------
+#
+# install_defaults is create-if-missing, so a site seeded with the accuracy
+# Datasets keeps their forecast_error_pct row and the Measure. The patch
+# removes the row from the two shipped Datasets, then the Measure if nothing
+# else names it and it still holds the shipped expression.
+
+RETIRE_PY = os.path.join(APP_DIR, "patches", "retire_forecast_error_pct_measure.py")
+PCT = "forecast_error_pct"
+_KEPT = ["actual_amount", "forecast_abs_error", "forecast_amount", "forecast_error"]
+
+
+class _PctSite:
+    """Datasets {name: {"default_measure", "rows": [measure, ...], "measures": json}}
+    and Measures {name: expression}."""
+
+    def __init__(self, datasets, measures):
+        self.datasets = {k: dict(v, rows=list(v["rows"])) for k, v in datasets.items()}
+        self.measures = dict(measures)
+        self.writes = []
+        self.printed = []
+
+    def stub(self):
+        site = self
+        frappe = types.ModuleType("frappe")
+
+        def _match(ds, row, filters):
+            return all({"parent": ds, "parenttype": "Dataset", "measure": row}[k] == v
+                       for k, v in filters.items())
+
+        class DB:
+            def exists(self, doctype, name):
+                return name in {"Dataset": site.datasets, "Measure": site.measures}[doctype]
+
+            def get_value(self, doctype, name, fields, as_dict=False):
+                if doctype == "Measure":
+                    assert fields == "expression", fields
+                    return site.measures.get(name)
+                assert doctype == "Dataset", doctype
+                d = site.datasets[name]
+                return types.SimpleNamespace(**{f: d[f] for f in fields})
+
+            def count(self, doctype, filters):
+                assert doctype == "Dataset Measure", doctype
+                return sum(1 for ds, d in site.datasets.items() for r in d["rows"]
+                           if _match(ds, r, filters))
+
+            def delete(self, doctype, filters):
+                site.writes.append(("delete", doctype, dict(filters)))
+                if doctype == "Measure":
+                    site.measures.pop(filters["name"], None)
+                    return
+                assert doctype == "Dataset Measure", doctype
+                for ds, d in site.datasets.items():
+                    d["rows"] = [r for r in d["rows"] if not _match(ds, r, filters)]
+
+            def set_value(self, doctype, name, field, value, update_modified=True):
+                assert doctype == "Dataset" and update_modified is False
+                site.writes.append(("set", name, field, value))
+                site.datasets[name][field] = value
+
+        frappe.db = DB()
+        return frappe
+
+    def run(self):
+        frappe = self.stub()
+        saved = sys.modules.get("frappe")
+        sys.modules["frappe"] = frappe
+        import builtins
+        real_print = builtins.print
+        builtins.print = lambda *a, **k: self.printed.append(" ".join(str(x) for x in a))
+        try:
+            spec = importlib.util.spec_from_file_location("retire_forecast_error_pct_t", RETIRE_PY)
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            m.execute()
+        finally:
+            builtins.print = real_print
+            if saved is None:
+                sys.modules.pop("frappe", None)
+            else:
+                sys.modules["frappe"] = saved
+        return self
+
+
+def _seeded(default="forecast_error", extra=None):
+    rows = _KEPT + [PCT]
+    datasets = {name: {"default_measure": default, "rows": list(rows),
+                       "measures": json.dumps(sorted(rows))}
+                for name in ("forecast_accuracy", "forecast_accuracy_group")}
+    datasets.update(extra or {})
+    return datasets
+
+
+def test_retire_pct_patch_removes_the_row_and_the_measure_once():
+    site = _PctSite(_seeded(), {PCT: "avg(forecast_error_pct)"}).run()
+    for name in ("forecast_accuracy", "forecast_accuracy_group"):
+        d = site.datasets[name]
+        assert d["rows"] == _KEPT, name
+        assert json.loads(d["measures"]) == _KEPT, name
+    assert PCT not in site.measures
+    assert any(PCT in p for p in site.printed), site.printed
+    site.writes.clear()
+    site.run()
+    assert site.writes == []
+
+
+def test_retire_pct_patch_leaves_a_dataset_whose_default_is_the_pct():
+    datasets = _seeded()
+    datasets["forecast_accuracy"]["default_measure"] = PCT
+    site = _PctSite(datasets, {PCT: "avg(forecast_error_pct)"}).run()
+    assert PCT in site.datasets["forecast_accuracy"]["rows"]
+    assert PCT not in site.datasets["forecast_accuracy_group"]["rows"]
+    assert PCT in site.measures  # still named by forecast_accuracy
+    msg = " ".join(site.printed)
+    assert "forecast_accuracy" in msg and "default" in msg.lower(), msg
+
+
+def test_retire_pct_patch_keeps_a_measure_another_dataset_names():
+    extra = {"zz_site_acc": {"default_measure": "forecast_error", "rows": [PCT],
+                             "measures": json.dumps([PCT])}}
+    site = _PctSite(_seeded(extra=extra), {PCT: "avg(forecast_error_pct)"}).run()
+    assert site.datasets["zz_site_acc"]["rows"] == [PCT]
+    assert PCT in site.measures
+    assert "zz_site_acc" not in [w[1] for w in site.writes if w[0] == "set"]
+
+
+def test_retire_pct_patch_keeps_a_measure_the_site_redefined():
+    site = _PctSite(_seeded(), {PCT: "sum(forecast_error) / sum(abs(actual_amount))"}).run()
+    assert PCT in site.measures
+    assert site.datasets["forecast_accuracy"]["rows"] == _KEPT
+
+
+def test_retire_pct_patch_does_nothing_on_a_site_without_them():
+    site = _PctSite({}, {}).run()
+    assert site.writes == []
+
+
+def test_retire_pct_patch_is_registered():
+    with open(PATCHES_TXT, encoding="utf-8") as fh:
+        lines = [l.strip() for l in fh]
+    assert "konsol.patches.retire_forecast_error_pct_measure" in lines
