@@ -534,7 +534,7 @@ def _invoke(site, run):
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
              "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
-             "konsol.close.statement_export_model", "konsol.close.approved_budget_model",
+             "konsol.close.statement_export_model",
              "konsol.close.commentary_model", "konsol.close.close_event",
              "konsol.epm", "konsol.epm.budget_fingerprint",
              "konsol.consolidation", "konsol.consolidation.doctype",
@@ -565,8 +565,6 @@ def _invoke(site, run):
             os.path.join(CLOSE_DIR, "statement_export_model.py"))
         close.commentary_model = _load_path(
             "konsol.close.commentary_model", os.path.join(CLOSE_DIR, "commentary_model.py"))
-        close.approved_budget_model = _load_path(
-            "konsol.close.approved_budget_model", os.path.join(CLOSE_DIR, "approved_budget_model.py"))
         api = _load_path("close_statement_api_under_test", API_PY)
         return run(api)
     finally:

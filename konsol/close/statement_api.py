@@ -91,8 +91,8 @@ import frappe
 
 from konsol import fiscal_calendar
 from konsol.close import (
-    approved_budget_model, ch_read, commentary_model, drill_model, signoff_gate,
-    statement_export_model, statement_model)
+    ch_read, commentary_model, drill_model, signoff_gate, statement_export_model,
+    statement_model)
 from konsol.close.timefmt import zoned_iso
 from konsol.entity_permissions import allowed_entity_codes, assert_entity_access
 
@@ -125,6 +125,21 @@ def _load_has_rows_through():
 
 
 has_rows_through = _load_has_rows_through()
+
+
+def _load_approved_budget_model():
+    """konsol/close/approved_budget_model.py (pure, S5 K3) loaded by path,
+    the two loads above's precedent: reachable under every host test's stub
+    ``konsol.close`` package (test_tb_worksheet_api's ``_CLOSE_SIBLINGS``
+    broke on a package import of it, 38 ImportErrors, 17 Nov 2026)."""
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "approved_budget_model.py")
+    spec = _importlib_util.spec_from_file_location("konsol_close_approved_budget_model", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+approved_budget_model = _load_approved_budget_model()
 
 #: Who reads the Numbers screen (Close Lead, Group Accountant, Viewer;
 #: the Entity Accountant never gets the `numbers` slug, W4-E20).
