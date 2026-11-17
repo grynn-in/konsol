@@ -21,7 +21,9 @@ DBT_CONFIG_PATH = os.path.join(APP_DIR, "dbt_config.py")
 BUDGET_MODELS = ("gold_budget_entity_ownership", "gold_consolidated_budget_tb", "gold_fully_consolidated_budget",
                  # konsol#348 S6 KA7 (pair A): the forecast rounds' relations
                  "gold_forecast_current_round", "gold_forecast_current", "gold_forecast_current_at_hierarchy_node",
-                 "gold_latest_estimate", "gold_latest_estimate_current")
+                 "gold_latest_estimate", "gold_latest_estimate_current",
+                 # konsol#348 S6 KC2 (pair C): the consolidated budget fact and accuracy
+                 "gold_consolidated_budget_fact", "gold_forecast_accuracy", "gold_forecast_accuracy_group")
 
 # What konsol writes between the managed markers for the scenarios group once
 # both rows exist: alphabetical within the domain, 6-space indent, one tags line.
@@ -29,7 +31,15 @@ EXPECTED_SCENARIOS_LINES = [
     "      # --- Domain: scenarios ---",
     "      gold_budget_entity_ownership:",
     "        +tags: ['gold', 'domain:scenarios']",
+    # konsol#348 S6 KC2: the consolidated budget fact (K.EPM consolidated_budget)
+    "      gold_consolidated_budget_fact:",
+    "        +tags: ['gold', 'domain:scenarios']",
     "      gold_consolidated_budget_tb:",
+    "        +tags: ['gold', 'domain:scenarios']",
+    # konsol#348 S6 KC2: forecast accuracy (FC-4-2)
+    "      gold_forecast_accuracy:",
+    "        +tags: ['gold', 'domain:scenarios']",
+    "      gold_forecast_accuracy_group:",
     "        +tags: ['gold', 'domain:scenarios']",
     # konsol#348 S6 KA7: the declared current round and its readers
     "      gold_forecast_current:",
