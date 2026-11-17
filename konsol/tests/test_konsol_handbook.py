@@ -273,6 +273,24 @@ def test_the_shipped_guide_has_the_budget_against_actuals_page():
     assert "cells are blank" not in text and "columns are blank" not in text
 
 
+def test_budget_vs_actual_page_covers_favourability_the_worksheet_and_the_entity_basis():
+    """konsol#348 S6 KB5: the favourability rule (S6-Q3 a, BUD-7-a), the
+    worksheet's Budget basis (S6-Q5 a) and the entity budget (S6-Q6 a), in
+    the words the reports use."""
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    text = pages["budget-vs-actual"]["markdown"]
+    for phrase in (
+        "## Favourability", "Favourable", "Unfavourable", "On budget", "n/a", "normal balance",
+        "Debit and Credit read the same way", "more profit",
+        "## The worksheet on the Budget basis", "Consolidation Worksheet", "Basis", "Unbalanced budget",
+        "## The entity basis", "functional currency", "several root consolidation groups",
+        "no consolidation group",
+        "four budget columns",
+    ):
+        assert phrase in text, phrase
+    assert "three budget columns and the legend" not in text, "the export now has four"
+
+
 def test_the_shipped_guide_names_no_customer():
     """Generic examples only (E1, ZZ01, "Group"): the repo is public."""
     text = " ".join(_read(os.path.join(PAGES, f)) for f in os.listdir(PAGES)).lower()
