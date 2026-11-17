@@ -240,8 +240,25 @@ def env(monkeypatch):
     docmod.Document = Document
     grain = types.ModuleType("konsol.epm.budget_grain")
     grain.digest_name = lambda prefix, parts: prefix + "-" + "-".join(str(p) for p in parts)
+    # S5 K2: the year gate and the workflow helper, recorded.
+    closed_years = set()
+    gate_calls = []
+
+    def assert_year_not_closed(fiscal_year, action="run"):
+        gate_calls.append((fiscal_year, action))
+        if fiscal_year in closed_years:
+            raise _Thrown(f"Cannot {action}: every period of FY{fiscal_year} is closed.")
+
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.assert_year_not_closed = assert_year_not_closed
+    cancelled = []
+    workflows = types.ModuleType("konsol.workflows")
+    workflows.set_cancelled_state = lambda doc: cancelled.append(doc) or None
+    added_indexes = []
+    frappe.db.add_index = lambda dt, fields, index_name=None: added_indexes.append((dt, list(fields), index_name))
     for name, mod in {"frappe": frappe, "frappe.model": model, "frappe.model.document": docmod,
-                      "konsol.epm.budget_grain": grain}.items():
+                      "konsol.epm.budget_grain": grain, "konsol.period_status": period_status,
+                      "konsol.workflows": workflows}.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
     spec = importlib.util.spec_from_file_location("_approved_budget_under_test", CONTROLLER)
@@ -256,7 +273,9 @@ def env(monkeypatch):
         d.save = lambda *a, **k: pytest.fail("a hook must not save")
         return d
 
-    return types.SimpleNamespace(doc=doc, tables=tables, asked=asked, mod=mod, frappe=frappe)
+    return types.SimpleNamespace(doc=doc, tables=tables, asked=asked, mod=mod, frappe=frappe,
+                                 closed_years=closed_years, gate_calls=gate_calls, cancelled=cancelled,
+                                 added_indexes=added_indexes)
 
 
 def test_a_valid_declaration_copies_the_cycles_scenario_and_rate_set_and_titles_itself(env):
@@ -363,3 +382,61 @@ def test_the_controller_never_commits_or_saves_in_a_hook():
         src = f.read()
     for forbidden in ("db.commit", "self.save(", "self.submit("):
         assert forbidden not in src, forbidden
+
+
+# ---- S5 K2: submit copies the fingerprint; cancel is gated on the year; the index ----------
+
+def test_submit_copies_the_cycles_input_fingerprint_without_a_save(env):
+    """BUD-11-3: the declaration carries the hash of the inputs it approved,
+    frozen by the submit; the statement compares it at every read (S5-Q2 a)."""
+    d = env.doc()
+    d.validate()
+    assert not d.get("input_fingerprint")
+    d.before_submit()
+    assert d.input_fingerprint == "v1:deadbeef"
+
+
+def test_submit_refuses_a_cycle_with_no_fingerprint_stamped(env):
+    """Never a blank fingerprint on an approved declaration: a Cycle approved
+    before S4 K8 has none, and the read-time check would then never match."""
+    env.tables["Budget Cycle"][CYCLE]["input_fingerprint"] = None
+    with pytest.raises(_Thrown, match=rf"{CYCLE}.*fingerprint"):
+        env.doc().before_submit()
+
+
+def test_cancel_is_refused_when_every_period_of_the_year_is_closed(env):
+    env.closed_years.add(2027)
+    d = env.doc(docstatus=1)
+    with pytest.raises(_Thrown, match=r"FY2027.*closed"):
+        d.before_cancel()
+    assert env.gate_calls == [(2027, "cancel Approved Budget None")] or env.gate_calls[0][0] == 2027
+    assert env.cancelled == [], "nothing changes before the gate"
+
+
+def test_cancel_is_allowed_with_one_open_period_and_sets_the_cancelled_state(env):
+    d = env.doc(name="APB-CG-ZZGRP--2027", docstatus=1)
+    d.before_cancel()
+    assert env.gate_calls[0] == (2027, "cancel Approved Budget APB-CG-ZZGRP--2027")
+    # A site may install a workflow of its own on the doctype (none ships,
+    # S5-Q1 a): the shared helper sets its docstatus-2 state when there is one.
+    assert env.cancelled == [d]
+
+
+def test_on_doctype_update_adds_the_live_declaration_index(env):
+    """The FOR UPDATE read in validate filters on (group, year, docstatus);
+    without an index it scans and next-key-locks the table (PR #522 review)."""
+    env.mod.on_doctype_update()
+    assert env.added_indexes == [("Approved Budget", ["consolidation_group", "fiscal_year", "docstatus"],
+                                  "approved_budget_live")]
+
+
+def test_nothing_is_assigned_before_the_cancel_gate():
+    """test_cancel_period_gate's rule, pinned here too for the one doctype."""
+    with open(CONTROLLER) as f:
+        tree = ast.parse(f.read())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "ApprovedBudget")
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "before_cancel")
+    calls = [c for c in ast.walk(fn) if isinstance(c, ast.Call)]
+    gate = next(c.lineno for c in calls if getattr(c.func, "id", getattr(c.func, "attr", None)) == "assert_year_not_closed")
+    early = [n for n in ast.walk(fn) if isinstance(n, ast.Assign) and n.lineno < gate]
+    assert not early
