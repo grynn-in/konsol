@@ -27,8 +27,15 @@ HIERARCHY_SCENARIO_CONFIG = {
         "has_scenario_id": True,
         "has_layer": True,
     },
+    # konsol#348 S6-Q1 (b), decided by Deepak Pai, 17 Nov 2026: a forecast
+    # scenario holds several approved rounds per year side by side (by
+    # `cycle`), and this read binds scenario_id and layer but never cycle, so
+    # over the budget rollup it added the rounds. Rounds never sum: the
+    # forecast reads the rollup narrowed to the DECLARED current round (the
+    # Current Forecast; a year with no declaration reads nothing). Budget
+    # keeps the rollup: one Cycle per (scenario, year) by rule.
     "forecast": {
-        "table": "epm_gold.gold_budget_at_hierarchy_node",
+        "table": "epm_gold.gold_forecast_current_at_hierarchy_node",
         "measures": {"period_amount", "annual_amount"},
         "has_scenario_id": True,
         "has_layer": True,
