@@ -424,3 +424,145 @@ def test_a_heading_with_no_rows_drills_to_zero_with_no_rows():
     result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
     assert result["rows"] == []
     assert result["total"] == 0.0
+
+
+# --- the budget drill (konsol#348 S5 K8; S5-Q3 a, S5-Q7 a) ------------------
+#
+# gold_fully_consolidated_budget rows have the FCTB shape plus a one-per-
+# (entity, period) ``UNBALANCED`` plug (adjustment_type "unbalanced") and a
+# ``CTA`` row. A heading drill over them must skip the plug (a code whose
+# leaf is not under the heading is skipped, drill_model.py) and still match
+# its statement line; ``_LAYER_LABELS`` must never gain an ``unbalanced``
+# entry, or the plug would land under headings and break their totals. The
+# "Unbalanced budget" line has its own drill, one row per entity, and the
+# budget drill carries the rate each account was translated at (S5-Q7 a).
+
+UNBALANCED_LABEL = "Unbalanced budget (no balancing entry)"
+CYCLE = "BCYC-ZZB-2025-abc12345"
+
+
+def _budget_rows():
+    """Two entities; each (entity, period) sums to 0 with its plug."""
+    return [
+        _row("1110", 300.0, "entity", "ZZA"),
+        _row("1110", 200.0, "entity", "ZZB"),
+        _row("4100", -1000.0, "entity", "ZZA"),
+        _row("CTA", -5.0, "cta", "ZZA"),
+        _row("UNBALANCED", 705.0, "unbalanced", "ZZA"),
+        _row("UNBALANCED", -200.0, "unbalanced", "ZZB"),
+    ]
+
+
+def _rate(entity, account, fx_method, rate, rate_set="ZZRS"):
+    return {"data_area_id": entity, "main_account": account, "fx_method": fx_method,
+            "translation_rate": rate, "rate_set": rate_set}
+
+
+_RATES = [
+    _rate("ZZA", "1110", "closing", 1.10),
+    _rate("ZZA", "1110", "closing", 1.12),      # another period of the window
+    _rate("ZZA", "1110", "closing", 1.10),      # a duplicate: distinct pairs only
+    _rate("ZZB", "1110", "closing", 1.10),
+    _rate("ZZA", "4100", "average", 1.08),      # not under heading 1
+]
+
+
+def test_the_layer_labels_never_gain_an_unbalanced_entry():
+    assert "unbalanced" not in M._LAYER_LABELS
+    assert "unbalanced" not in M._LAYER_KEY_BY_LABEL.values()
+
+
+def test_a_heading_drill_over_budget_rows_skips_the_plug_and_matches_its_line():
+    rows = _budget_rows()
+    line = _statement_line(rows, "1")
+    result = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
+    assert result["total"] == line["current"] == 500.0
+    assert [r["layer"] for r in result["rows"]] == ["entity", "entity"]
+    assert not any("UNBALANCED" in str(r) for r in result["rows"])
+    # The CTA heading too: the plug is not a CTA either.
+    line3 = _statement_line(rows, "3")
+    result3 = M.drill(rows, [], _accounts(), "3", _KEYS, _declared(), None, line3, minor_unit=2)
+    assert result3["total"] == line3["current"] == 1005.0   # result 1000 + CTA 5, Credit side
+    assert _by_layer(result3, "cta")[0]["amount"] == 5.0
+
+
+def _unbalanced_line(rows):
+    result = SM.statement(rows, _accounts(), _CALENDAR, _KEY, _declared(), minor_unit=2)
+    return next(line for line in result["sections"][1]["lines"] if line["kind"] == "unbalanced")
+
+
+def test_unbalanced_drill_is_one_row_per_entity_in_net_debit_terms():
+    rows = _budget_rows()
+    result = M.unbalanced_drill(rows, _KEYS, None, minor_unit=2, cycle=CYCLE)
+    assert result["heading"] == "UNBALANCED"
+    assert result["heading_name"] == UNBALANCED_LABEL
+    assert result["section"] == SM.BS
+    assert [(r["layer"], r["entity"], r["amount"], r["accounts"]) for r in result["rows"]] == [
+        ("entity", "ZZA", 705.0, []), ("entity", "ZZB", -200.0, [])]
+    assert result["rows"][0]["source"] == {"kind": "cycle", "cycle": CYCLE, "entity": "ZZA"}
+    assert result["total"] == 505.0
+    assert result["minor_unit"] == 2 and result["dimensions_note"] == M.DIMENSIONS_NOTE
+
+
+def test_unbalanced_drill_total_matches_the_statements_unbalanced_line_or_raises():
+    rows = _budget_rows()
+    line = _unbalanced_line(rows)
+    assert line["current"] == 505.0
+    assert M.unbalanced_drill(rows, _KEYS, None, 2, cycle=CYCLE, statement_line=line)["total"] == 505.0
+    rows.append(_row("UNBALANCED", 1.0, "unbalanced", "ZZB"))
+    with pytest.raises(ValueError, match="UNBALANCED"):
+        M.unbalanced_drill(rows, _KEYS, None, 2, cycle=CYCLE, statement_line=line)
+
+
+def test_unbalanced_drill_cuts_to_scope_without_naming_the_other_entity():
+    result = M.unbalanced_drill(_budget_rows(), _KEYS, {"ZZA"}, 2, cycle=CYCLE)
+    assert [(r["entity"], r["label"], r["amount"]) for r in result["rows"]] == [
+        ("ZZA", None, 705.0), (None, "1 entities outside your scope", -200.0)]
+    assert "ZZB" not in str(result)
+    assert result["total"] == 505.0
+
+
+def test_unbalanced_drill_refuses_null_rows_and_ignores_other_layers_and_keys():
+    rows = _budget_rows() + [_row("UNBALANCED", 99.0, "unbalanced", "ZZA", fiscal_year=2026, fiscal_period=1)]
+    assert M.unbalanced_drill(rows, _KEYS, None, 2)["total"] == 505.0
+    with pytest.raises(ValueError, match="UNBALANCED"):
+        M.unbalanced_drill([_row("UNBALANCED", None, "unbalanced", "ZZA")], _KEYS, None, 2)
+
+
+def test_with_rates_attaches_distinct_rates_per_account_and_the_cycle_source():
+    rows = _budget_rows()
+    line = _statement_line(rows, "1")
+    drill = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
+    out = M.with_rates(drill, _RATES, CYCLE)
+    zza = next(r for r in out["rows"] if r["entity"] == "ZZA")
+    assert zza["accounts"][0]["rates"] == [
+        {"fx_method": "closing", "rate": 1.10, "rate_set": "ZZRS"},
+        {"fx_method": "closing", "rate": 1.12, "rate_set": "ZZRS"},
+    ]
+    assert zza["rates"] == zza["accounts"][0]["rates"]
+    assert zza["source"] == {"kind": "cycle", "cycle": CYCLE, "entity": "ZZA"}
+    zzb = next(r for r in out["rows"] if r["entity"] == "ZZB")
+    assert zzb["rates"] == [{"fx_method": "closing", "rate": 1.10, "rate_set": "ZZRS"}]
+    assert out["total"] == 500.0, "rates change no amount"
+
+
+def test_with_rates_refuses_an_entity_account_with_no_rate_row_never_blank():
+    rows = _budget_rows()
+    line = _statement_line(rows, "1")
+    drill = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), None, line, minor_unit=2)
+    with pytest.raises(ValueError, match=r"ZZB.*1110"):
+        M.with_rates(drill, [r for r in _RATES if r["data_area_id"] != "ZZB"], CYCLE)
+
+
+def test_with_rates_leaves_non_entity_rows_and_the_scope_aggregate_alone():
+    rows = _budget_rows()
+    line3 = _statement_line(rows, "3")
+    drill3 = M.drill(rows, [], _accounts(), "3", _KEYS, _declared(), None, line3, minor_unit=2)
+    out = M.with_rates(drill3, _RATES, CYCLE)
+    for row in out["rows"]:
+        assert row["layer"] != "entity" and "rates" not in row
+    line = _statement_line(rows, "1")
+    scoped = M.drill(rows, [], _accounts(), "1", _KEYS, _declared(), {"ZZA"}, line, minor_unit=2)
+    out = M.with_rates(scoped, _RATES, CYCLE)
+    outside = next(r for r in out["rows"] if r["entity"] is None)
+    assert "rates" not in outside and outside["source"] is None
