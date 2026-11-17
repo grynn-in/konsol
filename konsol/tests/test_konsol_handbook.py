@@ -296,6 +296,32 @@ def test_the_shipped_guide_has_the_forecast_rounds_page():
     assert not re.search(r"#\d+", text), "no issue numbers in user text"
 
 
+def test_the_forecast_rounds_page_explains_accuracy_and_the_excel_words():
+    """konsol#348 S6 KC4 (FC-4-2): the accuracy section (lag, error sign,
+    bias read by filtering, restated actuals, n/a for a zero actual, every
+    round in the report and the declared round in Excel) and the Excel
+    words (consolidated_budget, forecast_accuracy)."""
+    import re
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    text = pages["forecast-rounds"]["markdown"]
+    for phrase in (
+        "## Forecast accuracy", "Forecast Accuracy", "closed", "lag", "forecast minus actual",
+        "bias", "restated", "n/a", "every round",
+        "## Forecast reads in Excel", "consolidated_budget", "forecast_accuracy",
+        "forecast_accuracy_group", "latest_estimate",
+    ):
+        assert phrase in text, phrase
+    assert not re.search(r"#\d+", text), "no issue numbers in user text"
+
+
+def test_the_excel_page_lists_the_planning_words():
+    """konsol#348 S6 KC4: the add-in page names the S6 scenario words."""
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    text = pages["excel-addin"]["markdown"]
+    for word in ("consolidated_budget", "latest_estimate", "forecast_accuracy", "Forecast rounds"):
+        assert word in text, word
+
+
 def test_the_shipped_guide_names_no_customer():
     """Generic examples only (E1, ZZ01, "Group"): the repo is public."""
     text = " ".join(_read(os.path.join(PAGES, f)) for f in os.listdir(PAGES)).lower()
