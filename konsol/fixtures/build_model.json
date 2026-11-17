@@ -25,6 +25,12 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_budget_entity_ownership",
+  "model_name": "gold_budget_entity_ownership",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_business_combination_journal",
   "model_name": "gold_business_combination_journal",
   "build_domain": "consolidation"
