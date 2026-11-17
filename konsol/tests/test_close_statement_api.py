@@ -2077,6 +2077,71 @@ def test_an_unbudgeted_pl_heading_from_the_s5_path_is_budget_zero_and_its_drill_
     assert drill["drill"]["rows"] == [] and drill["drill"]["total"] == 0.0
 
 
+def _unbudgeted_export_site(side, actual_4100):
+    """A site whose budget has NO row under P&L heading 4 or BS heading 1,
+    with heading 4 declaring ``side`` and an actual of ``actual_4100`` on
+    4100 (actuals and the entity-grain drill agree, so the export is ok)."""
+    site = _export_budget_site()
+    site.accounts["4"]["normal_balance"] = side
+    site.tb_rows = [_tb_row("4100", actual_4100) if r["main_account"] == "4100" else r
+                    for r in site.tb_rows]
+    site.drill_tb_rows = [_drill_tb_row("4100", actual_4100, "entity", "ZZA")
+                          if r["main_account"] == "4100" else r for r in site.drill_tb_rows]
+    site.budget_tb_rows = [_tb_row("2100", -50.0, adjustment_type="entity"),
+                           _tb_row("UNBALANCED", 50.0, adjustment_type="unbalanced")]
+    site.budget_drill_rows = [_drill_tb_row("2100", -50.0, "entity", "ZZA"),
+                              _drill_tb_row("UNBALANCED", 50.0, "unbalanced", "ZZA")]
+    site.budget_rate_rows = [_rate_row("ZZA", "2100", 1.10)]
+    return site
+
+
+def _export_row(book, code):
+    """(budget, variance, favourability, budget ytd) cells of the Statement
+    sheet row whose code column is ``code``, found by the header labels."""
+    rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
+    at = next(i for i, r in enumerate(rows) if r[1] == code)
+    head = next(r for r in reversed(rows[:at]) if "Budget (before eliminations)" in r)
+    start = head.index("Budget (before eliminations)")
+    return rows[at][start:start + 4]
+
+
+@pytest.mark.parametrize("code, side, actual, budget_value, variance, favourability", [
+    # Credit heading, revenue actual 241.43, no budget: variance is the actual.
+    ("4", "Credit", -241.43, 0.0, 241.43, "Favourable"),
+    # Debit (cost) heading, a cost of 241.43 against budget 0: Unfavourable.
+    ("4", "Debit", 241.43, 0.0, -241.43, "Unfavourable"),
+    # No declared normal balance: reported "n/a", never given a direction.
+    ("4", "", -241.43, 0.0, 241.43, "n/a"),
+    # Balance Sheet heading 1: Budget 0.0, no variance, no favourability.
+    ("1", "Debit", -241.43, 0.0, None, None),
+])
+def test_unbudgeted_heading_is_budget_zero_with_favourability_by_normal_balance(
+        code, side, actual, budget_value, variance, favourability):
+    """Unbudgeted is budget zero (Deepak Pai, 22 Sep and 17 Nov 2026, konsol#348):
+    while the budget is ok a heading with no budget rows shows Budget 0.00 and
+    Variance = actual, and Favourability follows the heading's normal balance,
+    so unbudgeted cost is Unfavourable. Restores the hand-payload cases that
+    the PR #558 fix range deleted (review m1), through the real
+    _budget_statement path, then the report model rows and the .xlsx cells."""
+    site = _unbudgeted_export_site(side if code == "4" else "", actual)
+    budget = _call_budget(site)
+    assert budget["state"] == "ok", budget["message"]
+    section = "Profit and Loss" if code == "4" else "Balance Sheet"
+    assert _line(budget, section, "heading", code)["current"] == 0.0, "emitted at 0"
+    actual_payload = _call(site, group="G1")
+    R = _load_path("statement_report_model_for_unbudgeted_cases",
+                   os.path.join(CLOSE_DIR, "statement_report_model.py"))
+    [row] = [r for r in R.rows(actual_payload, drill_group="CG-G1-", budget=budget) if r["code"] == code]
+    assert row["budget"] == budget_value
+    assert row["variance_to_budget"] == variance
+    assert row.get("favourability") == favourability
+
+    cells = _export_row(_export_book(site, group="G1"), code)
+    assert cells[0] == budget_value
+    assert cells[1] == variance
+    assert cells[2] == favourability
+
+
 def test_no_declaration_is_no_approved_budget_with_no_clickhouse_and_no_fingerprint_read():
     site = _Site()
     result = _call_budget(site)
