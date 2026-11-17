@@ -444,9 +444,23 @@ def _load_hq():
 
 
 def test_budget_and_forecast_still_filter_scenario_id():
-    for sc in ("budget", "forecast"):
-        # measure named per scenario: variance_abs is not a budget measure,
-        # and a direct call carries its own measure (konsol#105).
+    # measure named per scenario: variance_abs is not a budget measure,
+    # and a direct call carries its own measure (konsol#105).
+    result, queries, lookups = _run_hierarchy(
+        [{"scenario": "budget", "scenario_id": "ZZ_PLAN", "measure": "period_amount"}],
+        scenarios=[("ZZ_PLAN", "budget", 1)])
+    assert not result.get("errors")
+    (sql, params), = queries
+    assert "AND scenario_id = {sid:String}" in sql
+    assert "budget_scenario_id" not in sql
+    assert params["param_sid"] == "ZZ_PLAN"
+    # asked whether the named id exists (konsol#287 review) and whether it is
+    # a forecast, which a budget read refuses (konsol#348 S6 review B1)
+    assert lookups == [{}, {"scenario_type": "forecast"}]
+    # A budget read with no scenario named no longer reads all of the table:
+    # it excludes the forecasts (konsol#348 S6 review B1;
+    # test_budget_read_forecast_rounds.py).
+    for sc in ("forecast",):
         result, queries, lookups = _run_hierarchy(
             [{"scenario": sc, "scenario_id": "ZZ_PLAN", "measure": "period_amount"}],
             scenarios=[("ZZ_PLAN", "budget", 1)])
