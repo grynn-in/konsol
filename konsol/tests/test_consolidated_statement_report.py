@@ -153,9 +153,15 @@ def _execute_with(statement, entity_statement=None, budget=None):
     class _Dict(dict):
         __getattr__ = dict.get
 
+    seen["error_logs"] = []
+
+    def log_error(title=None, message=None, **kwargs):
+        seen["error_logs"].append({"title": title, "message": message, **kwargs})
+
     frappe = types.SimpleNamespace(
         _dict=_Dict, throw=throw, ValidationError=_ValidationError,
         clear_last_message=lambda: None,
+        log_error=log_error, get_traceback=lambda *a, **k: "Traceback (stub)\nKeyError: 'input_fingerprint'",
         db=types.SimpleNamespace(get_value=lambda *a, **k: None))
     def _entity_statement(fy, fp, entity):
         seen["entity_calls"].append((fy, fp, entity))
@@ -256,6 +262,32 @@ def test_a_refused_budget_read_never_fails_the_report():
     execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "ZZG"})
     assert seen["budget"]["state"] == "error"
     assert "KeyError" in seen["budget"]["message"] and "input_fingerprint" in seen["budget"]["message"]
+
+
+def test_a_faulty_budget_read_is_logged_as_well_as_shown():
+    """S5 G2: a fault in the budget read (anything but a ValidationError) is
+    a bug. The legend still shows it (above), and one Error Log records it
+    with the traceback, so it is found without a user reporting the legend.
+    A refusal (frappe.throw) is the user's to read, so it is not logged.
+    Nothing commits here: the request does."""
+    def faulty(fy, fp, group):
+        raise KeyError("input_fingerprint")
+
+    execute, seen = _execute_with(lambda fy, fp, group: _ok_group(int(fy), [_tb(int(fy), 12)]), budget=faulty)
+    execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "ZZG"})
+    assert seen["budget"]["state"] == "error"
+    assert seen["error_logs"] == [{"title": "Consolidated Statement budget read",
+                                   "message": "Traceback (stub)\nKeyError: 'input_fingerprint'"}]
+
+    def refused(fy, fp, group):
+        raise _ValidationError("Not permitted to read Budget Cycle B.")
+
+    execute, seen = _execute_with(lambda fy, fp, group: _ok_group(int(fy), [_tb(int(fy), 12)]), budget=refused)
+    execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "ZZG"})
+    assert seen["budget"]["state"] == "error" and seen["error_logs"] == []
+
+    source = open(PATH).read()
+    assert "frappe.db.commit" not in source, "never commit inside a request's report"
 
 
 def test_a_non_ok_statement_reads_no_budget():
