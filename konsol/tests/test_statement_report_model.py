@@ -532,7 +532,10 @@ def test_has_rows_through_is_one_year_and_up_to_the_period():
 
 UNBALANCED_LABEL = "Unbalanced budget (no balancing entry)"
 _BUDGET_META = {"cycle": "BCYC-ZZB-2025-abc12345", "layers": ["base", "board"], "rate_set": "ZZRS",
-                "scenario_id": "ZZB", "declaration": "APB-CG-ZZ_GROUP--2025-0f0f0f0f"}
+                "scenario_id": "ZZB", "declaration": "APB-CG-ZZ_GROUP--2025-0f0f0f0f",
+                # S6 KB2: the chart's normal balance per heading; the P&L heading
+                # 4 declares none in the live-shaped chart (S3: 6 of 88 blank).
+                "heading_sides": {"1": "Debit", "2": "Credit", "3": "Credit", "4": ""}}
 _BUDGET_OK_SENTENCE = ("Approved budget for ZZ_GROUP FY2025: Budget Cycle BCYC-ZZB-2025-abc12345, all layers "
                        "(base, board), Rate Set ZZRS (Approved Budget APB-CG-ZZ_GROUP--2025-0f0f0f0f, approved by "
                        "lead@example.com on 2026-11-17).")
@@ -829,3 +832,121 @@ def test_a_budget_only_line_is_not_added_when_the_actuals_carry_it():
     assert no_heading["variance_to_budget"] == -40.0
     not_in_chart = _by_label(data, "Not in the group chart (9999)")
     assert not_in_chart["current"] == 5.0 and not_in_chart["budget"] == 120.0
+
+
+# --- Favourability (konsol#348 S6 KB3; S6-Q3 a, BUD-7-a) ------------------------
+#
+# A text attribute of a Profit and Loss heading row and the net result, never a
+# number (konsolidat#214: a flag that sums is wrong on the report too). The
+# budget payload's meta.heading_sides (KB2) carries the chart's normal balance
+# per heading. Amounts are display-signed (income positive, costs in brackets),
+# so for a declared side, Credit or Debit alike, a variance to budget above
+# zero is Favourable and below zero Unfavourable; zero is On budget; a heading
+# with no declared side reads n/a (BUD-7-a: reported, never refused, never
+# guessed). The net result is favourable when profit is higher (a declared
+# sub-rule, in the legend). Balance Sheet lines carry none (no variance there,
+# S5 F1).
+
+def _sides(**sides):
+    return {**_BUDGET_META["heading_sides"], **sides}
+
+
+def test_columns_add_favourability_as_text_after_variance_to_budget_only_for_an_ok_budget():
+    fieldnames = [c["fieldname"] for c in R.columns(minor_unit=2, budget=_budget())]
+    assert fieldnames[fieldnames.index("ytd") + 1:fieldnames.index("prior_year")] == [
+        "budget", "variance_to_budget", "favourability", "budget_ytd"]
+    column = next(c for c in R.columns(minor_unit=2, budget=_budget()) if c["fieldname"] == "favourability")
+    assert column["label"] == "Favourability" and column["fieldtype"] == "Data"
+    assert "precision" not in column and column.get("options") is None
+    assert "favourability" not in [c["fieldname"] for c in R.columns(minor_unit=2)]
+    assert "favourability" not in [c["fieldname"] for c in R.columns(minor_unit=2, budget=_budget(state="no_rows"))]
+
+
+def test_a_declared_credit_heading_reads_by_the_sign_of_the_variance():
+    # COST OF SALES (heading 4) holds revenue leaf 4100: actual 241.43 (display)
+    # against a budget of 1,000: less income than budgeted -> Unfavourable.
+    row = _by_label(R.rows(_payload(), budget=_budget(heading_sides=_sides(**{"4": "Credit"}))), "COST OF SALES")
+    assert row["variance_to_budget"] < 0 and row["favourability"] == R.UNFAVOURABLE == "Unfavourable"
+    # A budget of 200: more income than budgeted -> Favourable.
+    small = [F._row("4100", -200.0, adjustment_type="entity"), F._row("1110", 200.0, adjustment_type="entity")]
+    row = _by_label(R.rows(_payload(), budget=_budget(rows=small, heading_sides=_sides(**{"4": "Credit"}))),
+                    "COST OF SALES")
+    assert row["variance_to_budget"] > 0 and row["favourability"] == R.FAVOURABLE == "Favourable"
+
+
+def test_a_declared_debit_heading_reads_the_same_way_under_display_signs():
+    """Debit and Credit read alike: display signs already put income positive
+    and costs negative, so "above budget is favourable" holds for both. A cost
+    heading whose costs exceed the budget shows a negative variance."""
+    accounts = F._s_accounts()
+    accounts["4"]["normal_balance"] = "Debit"
+    rows = F._s_rows()[:-1] + [F._row("4100", 300.0)]            # costs 300 (display -300)
+    stmt = SM.statement(rows, accounts, F._S_CALENDAR, F._S_KEY, F._s_declared(), minor_unit=2)
+    budget_rows = [F._row("4100", 250.0, adjustment_type="entity"), F._row("1110", -250.0, adjustment_type="entity")]
+    budget = _budget(rows=budget_rows, heading_sides=_sides(**{"4": "Debit"}))
+    row = _by_label(R.rows(_payload(statement=stmt), budget=budget), "COST OF SALES")
+    assert row["budget"] == -250.0 and row["variance_to_budget"] == -50.0
+    assert row["favourability"] == "Unfavourable", "more cost than budgeted"
+    budget_rows = [F._row("4100", 350.0, adjustment_type="entity"), F._row("1110", -350.0, adjustment_type="entity")]
+    row = _by_label(R.rows(_payload(statement=stmt), budget=_budget(rows=budget_rows, heading_sides=_sides(**{"4": "Debit"}))),
+                    "COST OF SALES")
+    assert row["variance_to_budget"] == 50.0 and row["favourability"] == "Favourable"
+
+
+def test_a_zero_variance_on_a_declared_heading_is_on_budget():
+    rows = [F._row("4100", -241.43, adjustment_type="entity"), F._row("1110", 241.43, adjustment_type="entity")]
+    row = _by_label(R.rows(_payload(), budget=_budget(rows=rows, heading_sides=_sides(**{"4": "Credit"}))), "COST OF SALES")
+    assert row["variance_to_budget"] == 0.0 and row["favourability"] == R.ON_BUDGET == "On budget"
+
+
+def test_a_heading_with_no_declared_side_reads_n_a_whatever_the_variance():
+    """BUD-7-a: an undeclared normal balance is reported, never refused and
+    never given a direction; the live-shaped chart's heading 4 is blank."""
+    row = _by_label(R.rows(_payload(), budget=_budget()), "COST OF SALES")
+    assert row["variance_to_budget"] != 0 and row["favourability"] == R.FAVOURABILITY_NA == "n/a"
+    rows = [F._row("4100", -241.43, adjustment_type="entity"), F._row("1110", 241.43, adjustment_type="entity")]
+    row = _by_label(R.rows(_payload(), budget=_budget(rows=rows)), "COST OF SALES")
+    assert row["variance_to_budget"] == 0.0 and row["favourability"] == "n/a"
+
+
+def test_the_net_result_reads_more_profit_is_favourable():
+    data = R.rows(_payload(), budget=_budget())
+    net = _by_label(data, SM.NET_RESULT_LABEL)
+    assert net["variance_to_budget"] < 0 and net["favourability"] == "Unfavourable"
+    rows = [F._row("4100", -200.0, adjustment_type="entity"), F._row("1110", 200.0, adjustment_type="entity")]
+    assert _by_label(R.rows(_payload(), budget=_budget(rows=rows)), SM.NET_RESULT_LABEL)["favourability"] == "Favourable"
+    rows = [F._row("4100", -241.43, adjustment_type="entity"), F._row("1110", 241.43, adjustment_type="entity")]
+    assert _by_label(R.rows(_payload(), budget=_budget(rows=rows)), SM.NET_RESULT_LABEL)["favourability"] == "On budget"
+
+
+def test_balance_sheet_section_headers_and_budget_only_rows_carry_no_favourability():
+    data = R.rows(_payload(), budget=_budget(heading_sides=_sides(**{"4": "Credit"})))
+    for label in ("ASSETS", "LIABILITIES", "EQUITY", "of which current-year result",
+                  "of which currency translation (CTA)", "Unmatched residual", UNBALANCED_LABEL,
+                  "Profit and Loss", "Balance Sheet"):
+        assert _by_label(data, label)["favourability"] is None, label
+    assert all("favourability" in row for row in data), "the key is always present"
+
+
+def test_without_a_budget_or_with_a_non_ok_one_favourability_is_blank_and_unmentioned():
+    data = R.rows(_payload())
+    assert all(row["favourability"] is None for row in data)
+    assert "avourab" not in R.message(_payload())
+    budget = _budget(state="no_approved_budget", message="No approved budget for ZZ_GROUP FY2025.")
+    assert all(row["favourability"] is None for row in R.rows(_payload(), budget=budget))
+    assert "avourab" not in R.message(_payload(), budget=budget)
+
+
+def test_an_ok_budget_without_heading_sides_is_refused_naming_the_key():
+    budget = _budget()
+    del budget["meta"]["heading_sides"]
+    with pytest.raises(ValueError, match="heading_sides"):
+        R.rows(_payload(), budget=budget)
+
+
+def test_message_states_the_favourability_rule_for_an_ok_budget():
+    text = R.message(_payload(), budget=_budget())
+    assert "Favourability" in text
+    for phrase in ("normal balance", "n/a", "On budget", "net result", "more profit"):
+        assert phrase in text, phrase
+    assert "#" not in text
