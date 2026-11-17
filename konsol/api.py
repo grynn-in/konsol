@@ -243,6 +243,11 @@ _BUDGET_SCENARIO_COLUMN = {"variance_analysis": "budget_scenario_id"}
 #: the rounds to the budget (konsol#348 S6-Q1 b, review B1).
 _BUDGET_EXCLUDES_FORECAST = {"budget_input"}
 
+#: Datasets over the current-round views, which hold nothing for a forecast
+#: (scenario, year) with no submitted Current Forecast. A read names the
+#: declaration it lacks rather than read 0 (konsol#348 S6 review m2).
+_NEEDS_CURRENT_FORECAST = {"forecast_input", "latest_estimate"}
+
 
 def _get_fact_by_scenario(scenario):
     """Load Dataset doc by scenario_key. Returns dict or None."""
@@ -741,9 +746,11 @@ def _batch_query_clickhouse(requests_list):
         _active_budget_scenarios_by_year,
         choose_budget_scenario,
         named_budget_scenario_error,
+        _declared_forecasts_by_year,
         _forecast_scenario_ids,
         _scenario_ids,
         budget_scenarios_excluding_forecasts,
+        choose_declared_forecast,
         forecast_on_budget_read_error,
         scenario_id_error,
         scenario_in_clause,
@@ -771,6 +778,7 @@ def _batch_query_clickhouse(requests_list):
     facts = {}  # fact_key -> Dataset (or None), resolved once per call
     budgets_by_year = None  # looked up once per call, when first needed
     active_budgets = None  # likewise, for named budget scenarios
+    declared_by_year = None  # the Current Forecasts, likewise (S6 review m2)
 
     def resolve_fact(fact_key):
         if fact_key not in facts:
@@ -829,6 +837,19 @@ def _batch_query_clickhouse(requests_list):
                 if err:
                     errors[idx] = err
                     continue
+        fact = resolve_fact(fact_key)
+        if fact and fact.fact_name in _NEEDS_CURRENT_FORECAST and (
+                not scenario_id or _SAFE_SCENARIO_ID.match(scenario_id)):
+            # The declared current round, or a refusal that names the missing
+            # Current Forecast. (An unsafe id is refused by its format below.)
+            if declared_by_year is None:
+                declared_by_year = _declared_forecasts_by_year()
+            year = int(req["year"])
+            scenario_id, err = choose_declared_forecast(
+                scenario_id, declared_by_year.get(year, []), year)
+            if err:
+                errors[idx] = err
+                continue
         key = (
             fact_key,
             req["measure"],

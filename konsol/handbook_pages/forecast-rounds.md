@@ -24,6 +24,8 @@ The Consolidated Statement's budget columns show the group's approved budget, no
 
 A year with approved rounds and no Current Forecast reads nothing: never the sum of its rounds, and not the latest round either. The warehouse build warns, naming the scenario and the year. Declare a Current Forecast to show the year.
 
+In Excel, the `forecast` and `latest_estimate` reads refuse such a year and name the missing Current Forecast; they never show 0 for it. With no scenario named, they read the one forecast scenario declared for the year, and refuse when there are none or several. The `budget` read refuses a forecast scenario, because it would add the rounds together, and with no scenario named it reads every scenario except the forecasts.
+
 ## The latest estimate
 
 The **latest estimate** of a round is the year as that round sees it: the actuals for each period up to and including the as-of period, and the round's forecast after it, to the end of the horizon. It covers the entities the round forecasts. The forecast is the total of all its layers. Where an entity has no actuals for a period up to the as-of, the period is missing from the estimate (it is never filled with the forecast or with a zero) and the warehouse build warns, naming the entity and the period.

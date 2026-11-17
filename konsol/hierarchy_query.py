@@ -43,6 +43,9 @@ HIERARCHY_SCENARIO_CONFIG = {
         "measures": {"period_amount", "annual_amount"},
         "has_scenario_id": True,
         "has_layer": True,
+        # The view is empty for a (scenario, year) with no declaration: the
+        # read refuses it by name rather than read 0 (S6 review m2).
+        "needs_current_forecast": True,
     },
     "variance": {
         "table": "epm_gold.gold_variance_at_hierarchy_node",
@@ -360,6 +363,50 @@ def scenario_in_clause(ids, params, prefix):
     return f" AND scenario_id IN ({', '.join(holders)})"
 
 
+def _declared_forecasts_by_year():
+    """{fiscal_year: [scenario_id, ...]} of the submitted Current Forecasts,
+    one lookup however many years a call reads (konsol#348 S6-Q1 b)."""
+    import frappe
+
+    by_year = defaultdict(set)
+    for row in frappe.get_all(
+        "Current Forecast", filters={"docstatus": 1},
+        fields=["scenario_id", "fiscal_year"], limit_page_length=0,
+    ):
+        by_year[int(row["fiscal_year"])].add(row["scenario_id"])
+    return {year: sorted(ids) for year, ids in by_year.items()}
+
+
+def choose_declared_forecast(scenario_id, declared, fiscal_year):
+    """(scenario_id, None) a forecast read uses, or (None, why).
+
+    ``declared`` is the scenario_ids with a submitted Current Forecast for
+    ``fiscal_year``. The forecast reads go through the current-round views,
+    which hold nothing for an undeclared (scenario, year), so a read there
+    came back 0: a missing declaration looked like a zero forecast. A named
+    scenario must be declared; naming none, exactly one declared scenario is
+    the answer, none or several is refused by name (konsol#348 S6 review m2,
+    choose_budget_scenario's shape).
+    """
+    if scenario_id:
+        if scenario_id in declared:
+            return scenario_id, None
+        return None, (
+            f"Scenario '{scenario_id}' has no submitted Current Forecast for "
+            f"FY{fiscal_year}, so it has no current round to read. Submit a "
+            "Current Forecast naming the round.")
+    if len(declared) == 1:
+        return declared[0], None
+    if not declared:
+        return None, (
+            f"No submitted Current Forecast declares a round for FY{fiscal_year}, "
+            "so there is no forecast to read. Submit a Current Forecast for "
+            "the forecast scenario, or name scenario_id.")
+    return None, (
+        f"Several forecast scenarios have a submitted Current Forecast for "
+        f"FY{fiscal_year} ({', '.join(declared)}); name one with scenario_id.")
+
+
 def _active_budget_scenarios_by_year():
     """{fiscal_year: [scenario_id, ...]} of the active budget scenarios.
 
@@ -435,6 +482,7 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     keyed = []  # (group key, idx, req), grouped once actuals coverage is known
     budgets_by_year = None  # looked up once per call, when first needed
     active_budgets = None  # likewise, for named variance scenarios
+    declared_by_year = None  # the Current Forecasts, likewise (S6 review m2)
     known_cache = []  # every Scenario id, looked up once when first needed
 
     def known_scenarios():
@@ -500,6 +548,17 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
                 known=known_scenarios, label=f"Hierarchy scenario '{sc}'")
             if not err and cfg.get("excludes_forecast"):
                 err = forecast_on_budget_read_error(scenario_id, forecast_ids)
+            if err:
+                errors[idx] = err
+                continue
+        if cfg.get("needs_current_forecast") and (
+                not scenario_id or _SAFE_SCENARIO_ID.match(scenario_id)):
+            # (An unsafe id is refused by its format below.)
+            if declared_by_year is None:
+                declared_by_year = _declared_forecasts_by_year()
+            year = int(req["year"])
+            scenario_id, err = choose_declared_forecast(
+                scenario_id, declared_by_year.get(year, []), year)
             if err:
                 errors[idx] = err
                 continue
