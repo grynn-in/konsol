@@ -4,6 +4,20 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (17 Nov 2026, late): cost allocation phase 2a (Reciprocal) merged.** Issue #269; plan and progress are in `.claude/memory/active/tasks-cost-allocation-reciprocal.md`.
+
+**Merged** (konsol#541, dd8a18aa + konsolidat#363, 1e4d24a7)
+- **Reciprocal method** on the Rule Set and the Run. Departments that serve each other are solved exactly: a Gauss-Jordan solve over fractions, rounded to 12 places so each run still sums to zero. A closed loop with no exit to a final receiver is refused by name.
+- **hop_kind** (`own` | `pass`) on coefficients and allocation lines. A sender is relieved of its own cost once (`own`); cost passing through it is `pass`. With a declared allocation account, `pass` lines post to that account.
+- **Coefficient sync, per run after commit** (Deepak Pai, 17 Nov 2026, option B; the background resync job was rejected after it caused repeated snapshot bugs). Approve, cancel and delete each rewrite that run's warehouse rows and request the allocation build. A new read-only field, Coefficient Rows, stores each run's row count at approval.
+- **Hourly check** (`check_coefficients_staging`): SQL only, compares stored counts with the warehouse, re-reads before it repairs, rebuilds the whole table when more than 20 runs are out of step, and corrects wrong stored counts. One Error Log line lists what it repaired.
+- Handbook "Cost allocation" page: a reciprocal section with the IT and HR example.
+- Live test: every step passes (reciprocal amounts, declared-account balance, sync after approve/cancel/delete, failed-write recovery, the hourly repairs and the threshold rebuild). Fixture gate 34/34.
+
+**Open:** #534, #535, #536 (a governed build whose selection matches no model reports Completed).
+
+**Next:** phase 2 remainder on #269: fixed and derived driver sources, declared rates.
+
 **Update (17 Nov 2026, later): budget S5 (budget reports) merged.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s5.md`. The design picks are S5-Q1–Q7 on #348, all (a), taken under the standing rule.
 
 **Merged** (konsol#554, 992d31c2 + konsolidat#372, 2e3d48c0)
