@@ -2021,6 +2021,23 @@ def test_ok_budget_payload_is_the_statement_over_the_budget_rows_with_meta():
     assert ("fingerprint", CYCLE) in site.reads, "S5-Q2 a: the fingerprint is checked at the read"
 
 
+def test_ok_budget_meta_carries_the_heading_sides_from_the_chart():
+    """konsol#348 S6 KB2 (for S6-Q3 a, BUD-7-a): the budget payload's ``meta``
+    carries ``heading_sides``, {heading code: the chart's normal_balance} for
+    every heading in the budget statement, a blank side kept as '' (the
+    report reads it as "n/a", never guesses a direction). Nothing else in the
+    payload changes; a non-ok budget carries None."""
+    site = _budget_site()
+    site.accounts["4"]["normal_balance"] = "Credit"
+    result = _call_budget(site)
+    assert result["state"] == "ok", result["message"]
+    assert result["meta"]["heading_sides"] == {"1": "Debit", "2": "Credit", "3": "Credit", "4": "Credit"}
+    assert set(result["meta"]) == {"cycle", "layers", "rate_set", "scenario_id", "declaration", "heading_sides"}
+    # The live chart's P&L heading declares no side: kept blank, not defaulted.
+    assert _call_budget(_budget_site())["meta"]["heading_sides"]["4"] == ""
+    assert _call_budget(_Site())["meta"]["heading_sides"] is None
+
+
 def test_no_declaration_is_no_approved_budget_with_no_clickhouse_and_no_fingerprint_read():
     site = _Site()
     result = _call_budget(site)
