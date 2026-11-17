@@ -277,9 +277,12 @@ _ENTITY_SLOT_COLUMN = {"epm_gold.gold_forecast_accuracy_group": "consolidation_g
 
 #: Tables holding every budget scenario's rows and each forecast scenario's
 #: declared current round only (konsolidat S6 WC1). A read naming no
-#: scenario reads the budgets only, never a forecast added to them; a named
-#: forecast needs its Current Forecast for the year, or the cell would read 0
-#: (konsol#348 S6-Q7 a; #106 A: a forecast is read by naming it).
+#: scenario reads the one active budget scenario of the row's year, resolved
+#: as the variance read resolves it, and refuses none or several by name:
+#: never a forecast added to the budget, nor two budgets added together
+#: (konsol#561 review M1). A named forecast needs its Current Forecast for
+#: the year, or the cell would read 0 (konsol#348 S6-Q7 a; #106 A: a
+#: forecast is read by naming it).
 _FORECAST_BY_NAME_ONLY = {"epm_gold.gold_consolidated_budget_fact"}
 
 
@@ -873,12 +876,17 @@ def _batch_query_clickhouse(requests_list):
             # refusal that says why (konsol#214). Resolved per row, before
             # grouping: a group's key has no year, so it can hold several.
             fact = resolve_fact(fact_key)
-            if fact and _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+            by_name_only = bool(
+                fact and _read_table(fact, req["measure"]) in _FORECAST_BY_NAME_ONLY)
+            if fact and (_BUDGET_SCENARIO_COLUMN.get(fact.fact_name) or by_name_only):
                 if budgets_by_year is None:
                     budgets_by_year = _active_budget_scenarios_by_year()
                 year = int(req["year"])
                 scenario_id, err = choose_budget_scenario(
-                    budgets_by_year.get(year, []), fiscal_year=year)
+                    budgets_by_year.get(year, []), fiscal_year=year,
+                    none_reason=("so there is no budget to read. Name "
+                                 "scenario_id to read a forecast.")
+                    if by_name_only else None)
                 if err:
                     errors[idx] = err
                     continue
@@ -1048,10 +1056,10 @@ def _batch_query_clickhouse(requests_list):
             params["param_sid"] = scenario_id
             column = budget_column or "scenario_id"
             scenario_id_clause = f" AND {column} = {{sid:String}}"
-        elif table in _BUDGET_EXCLUDES_FORECAST or table in _FORECAST_BY_NAME_ONLY:
+        elif table in _BUDGET_EXCLUDES_FORECAST:
             # No scenario named: every non-forecast scenario, never a
-            # forecast's rounds (konsol#348 S6 review B1), nor a forecast's
-            # current round added to the budget (S6 KC1).
+            # forecast's rounds (konsol#348 S6 review B1). (The consolidated
+            # budget resolved its one budget scenario per row above.)
             ids, err = budget_scenarios_excluding_forecasts(
                 known_scenarios, forecast_ids)
             if err:

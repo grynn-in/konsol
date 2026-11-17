@@ -456,19 +456,21 @@ def _active_budget_scenarios_by_year():
     return {year: sorted(ids) for year, ids in by_year.items()}
 
 
-def choose_budget_scenario(active, fiscal_year):
+def choose_budget_scenario(active, fiscal_year, *, none_reason=None):
     """The budget scenario a variance read uses when none is named.
 
     ``active`` is the active budget scenarios already narrowed to
     ``fiscal_year``. Exactly one is the answer. None, or several, is an
-    error that says so, never a guess (konsol#214).
+    error that says so, never a guess (konsol#214). ``none_reason`` replaces
+    the "no variance to show" clause for a read that is not a variance (the
+    consolidated budget, konsol#561 review M1).
     """
     if len(active) == 1:
         return active[0], None
     if not active:
         return None, (
             f"No active budget scenario belongs to FY{fiscal_year}, "
-            "so there is no variance to show."
+            + (none_reason or "so there is no variance to show.")
         )
     return None, (
         f"Several active budget scenarios belong to FY{fiscal_year} "
