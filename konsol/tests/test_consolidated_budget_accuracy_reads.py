@@ -307,3 +307,32 @@ def test_accuracy_read_over_two_years_binds_each_years_round():
     (sql,) = queries
     rounds = re.search(r"AND \(fiscal_year, cycle\) IN \((.*?)\)(?: AND| GROUP|$)", sql).group(1)
     assert len(re.findall(r"\(\{\w+:Int32\}, \{\w+:String\}\)", rounds)) == 2, sql
+
+
+# ── forecast_accuracy_group: the entity argument is the consolidation group ──
+#
+# konsolidat's gold_forecast_accuracy_group (WC3) keeps one row per
+# consolidation group AND entity: an entity in two groups (a sub-group and its
+# parent, or two roots) has a row in each group's currency. Read by entity,
+# K.EPM added the two currencies together. The read binds the entity argument
+# to consolidation_group instead, as the consolidated and consolidated_budget
+# reads put the group in the entity slot: the group's accuracy in its own
+# currency, its entities summed.
+
+def test_group_accuracy_read_binds_the_consolidation_group():
+    result, queries, _ = flat([{"fact": "forecast_accuracy_group", "measure": "forecast_error",
+                                "scenario_id": "ZZ_FC"}])
+    assert not result.get("errors"), result
+    assert result["values"] == [3.0]
+    (sql,) = queries
+    assert sql.startswith("SELECT consolidation_group, fiscal_year, fiscal_period, main_account")
+    assert "WHERE (consolidation_group, fiscal_year, main_account) IN (" in sql
+    assert "data_area_id" not in sql
+
+
+def test_entity_accuracy_read_still_binds_the_entity():
+    _, queries, _ = flat([{"fact": "forecast_accuracy", "measure": "forecast_error",
+                           "scenario_id": "ZZ_FC"}])
+    (sql,) = queries
+    assert "WHERE (data_area_id, fiscal_year, main_account) IN (" in sql
+    assert "consolidation_group" not in sql
