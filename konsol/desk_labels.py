@@ -56,6 +56,8 @@ LABELS = {
     "Approved Budget": "Approved Budgets",
     # konsol#348 S6 KA1 (S6-Q1 b): the forecast scenario's declared current round per year
     "Current Forecast": "Current Forecasts",
+    # konsol#348 S6 KA9 (QB10 b, S6-Q9 a): is every period of a round's horizon approved?
+    "Forecast Horizon Coverage": "Forecast Horizon Coverage",
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
     "Budget Layer": "Budget Layers",
