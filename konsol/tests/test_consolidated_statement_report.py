@@ -106,7 +106,15 @@ _BUDGET_OK = {"state": "ok", "message": "Approved budget for ZZG FY2024: Budget 
               "meta": {"cycle": "B", "layers": ["base"], "rate_set": "RS", "scenario_id": "S", "declaration": "APB"}}
 
 
-def _execute_with(statement, entity_statement=None, budget=None):
+_ENTITY_BUDGET_OK = {
+    "state": "ok", "statement": {"x": 1},
+    "message": ("Approved budget for ZZG FY2024: Budget Cycle B. Entity budget for ZZA in EUR, the entity's "
+                "functional currency, from the Cycle's rows for the entity before translation."),
+    "meta": {"cycle": "B", "layers": ["base"], "rate_set": "RS", "scenario_id": "S", "declaration": "APB",
+             "heading_sides": {}, "group": "ZZG", "entity": "ZZA", "currency": "EUR"}}
+
+
+def _execute_with(statement, entity_statement=None, budget=None, entity_budget=None):
     """Exec the module's functions against stub frappe/statement_api
     (``statement(fy, fp, group)`` -> ``(payload, reads)``, as
     ``statement_api._statement``; ``budget(fy, fp, group)`` -> the budget
@@ -124,6 +132,12 @@ def _execute_with(statement, entity_statement=None, budget=None):
     def budget_payload(fy, fp, group):
         seen["budget_calls"].append((fy, fp, group))
         return (budget or (lambda *a: dict(_BUDGET_OK)))(fy, fp, group)
+
+    seen["entity_budget_calls"] = []
+
+    def entity_budget_payload(fy, fp, entity):
+        seen["entity_budget_calls"].append((fy, fp, entity))
+        return (entity_budget or (lambda *a: dict(_ENTITY_BUDGET_OK)))(fy, fp, entity)
 
     class Model:
         prior_with_rows = staticmethod(REAL_MODEL.prior_with_rows)
@@ -176,6 +190,7 @@ def _execute_with(statement, entity_statement=None, budget=None):
 
     api = types.SimpleNamespace(
         get_statement=get_statement, _statement=_statement, budget_payload=budget_payload,
+        entity_budget_payload=entity_budget_payload,
         get_entity_statement=lambda *a: _entity_statement(*a)[0], _entity_statement=_entity_statement)
     env = {"frappe": frappe, "statement_api": api, "statement_report_model": Model,
            "_group_code": lambda value: value or None}  # imported from statement_api (row 11b)
@@ -311,12 +326,76 @@ def test_a_non_ok_statement_reads_no_budget():
     assert seen["budget_calls"] == []
 
 
-def test_entity_basis_reads_no_budget():
-    """The entity budget is S6: the Entity basis asks for none, so the
-    legend carries no budget line."""
+def test_entity_basis_reads_the_entity_budget_and_hands_it_to_columns_rows_and_message():
+    """S6 KB9 (S6-Q6 a): the Entity basis reads the entity budget of its root
+    group's Approved Budget (statement_api.entity_budget_payload), once,
+    after the statement; never the group budget."""
     execute, seen = _execute_with(lambda *a: _ok(2024, []), lambda fy, fp, entity: _ok(int(fy), [_tb(int(fy), 12)]))
+    result = execute({"fiscal_year": "2024", "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"})
+    assert seen["budget_calls"] == []
+    assert seen["entity_budget_calls"] == [("2024", 12, "ZZA")]
+    assert seen["budget"] == _ENTITY_BUDGET_OK
+    assert seen["message_budget"] is seen["budget"] and seen["columns_budget"] is seen["budget"]
+    assert result == (["cols"], ["rows"], "msg")
+
+
+def _choose_group(*a):
+    return {"state": "choose_group", "statement": None,
+            "message": "ZZA is a member of 2 root consolidation groups (ZZG, ZZH), each with its own approved "
+                       "budget, and the Entity basis names none: no entity budget is shown.",
+            "meta": {"group": None, "entity": "ZZA", "currency": "EUR", "heading_sides": None}}
+
+
+def test_entity_basis_choose_group_renders_no_budget_column_and_its_sentence():
+    """BUD-4-2: a visible state, never a blank column. The report hands the
+    state to the model, whose columns() adds no budget column for it and
+    whose legend carries the sentence."""
+    execute, seen = _execute_with(lambda *a: _ok(2024, []), lambda fy, fp, entity: _ok(int(fy), [_tb(int(fy), 12)]),
+                                  entity_budget=_choose_group)
+    assert execute({"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"}) \
+        == (["cols"], ["rows"], "msg")
+    budget = seen["columns_budget"]
+    assert budget["state"] == "choose_group"
+    fields = [c["fieldname"] for c in REAL_MODEL.columns(2, budget=budget)]
+    assert "budget" not in fields and "favourability" not in fields
+    assert REAL_MODEL._budget_text(budget) == "Budget columns not shown: " + budget["message"]
+
+
+def test_a_refused_or_faulty_entity_budget_read_never_fails_the_report():
+    def refused(*a):
+        raise _ValidationError("ZZA is outside your entity scope.")
+
+    entity_ok = lambda fy, fp, entity: _ok(int(fy), [_tb(int(fy), 12)])  # noqa: E731
+    execute, seen = _execute_with(lambda *a: _ok(2024, []), entity_ok, entity_budget=refused)
+    assert execute({"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"}) \
+        == (["cols"], ["rows"], "msg")
+    assert seen["budget"] == {"state": "error", "message": "ZZA is outside your entity scope.",
+                              "statement": None, "meta": {}}
+    assert seen["error_logs"] == []
+
+    def faulty(*a):
+        raise KeyError("currency")
+
+    execute, seen = _execute_with(lambda *a: _ok(2024, []), entity_ok, entity_budget=faulty)
     execute({"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"})
-    assert seen["budget_calls"] == [] and seen["budget"] is None and seen["message_budget"] is None
+    assert seen["budget"]["state"] == "error" and "KeyError" in seen["budget"]["message"]
+    assert [e["title"] for e in seen["error_logs"]] == ["Consolidated Statement entity budget read"]
+
+
+def test_a_non_ok_entity_statement_reads_no_entity_budget():
+    def refused(fy, fp, entity):
+        payload, reads = _ok(int(fy), [])
+        payload.update(state="setup_gap", message="ZZA has no Functional Currency.", statement=None)
+        return payload, None
+
+    execute, seen = _execute_with(lambda *a: _ok(2024, []), refused)
+    try:
+        execute({"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"})
+    except Refused as e:
+        assert "Functional Currency" in str(e)
+    else:
+        raise AssertionError("a non-ok entity statement was not refused")
+    assert seen["entity_budget_calls"] == []
 
 
 
