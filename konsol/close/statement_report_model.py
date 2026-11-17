@@ -34,6 +34,23 @@ exactly what the Close app's Numbers screen shows.
   absent last year, a non-ok prior payload, a section header and a
   residual explanation row are blank, never 0. ``prior_year_change`` is
   this year's value on the same basis (YTD or ``current``) minus it.
+- Budget (konsol#348 S5 K6): ``budget`` is a third payload, the SAME
+  ``statement_model.statement`` over the approved budget's rows
+  (``gold_fully_consolidated_budget``: same chart, periods, minor unit and
+  display sign), plus ``meta`` (``cycle, layers, rate_set, scenario_id,
+  declaration``) and the approved-budget state and its sentence
+  (``approved_budget_model``). Merged per line like the prior year:
+  ``budget`` is the budget line's ``current``, ``variance_to_budget`` is this
+  period's ``current`` minus it, ``budget_ytd`` the budget line's ``ytd``
+  (P&L lines only). A Balance Sheet budget value is the year's budgeted
+  movements to date, not a balance (a budget has Regular-period rows only;
+  S5-Q4 a), and ``message`` says so. The budget's own "Unbalanced budget"
+  line (S5-Q3 a), which the actuals never carry, is laid out before the
+  residual with blank actuals. A line absent from the budget, a non-ok
+  budget (its sentence goes in the message), a section header and a
+  residual explanation row are blank, never 0. The columns are "before
+  eliminations": the consolidated budget has no intercompany eliminations
+  and no group-level adjustments yet.
 
 A non-ok payload raises ``ValueError`` with the payload's own message: the
 report refuses, it never shows an empty statement. An unknown line kind
@@ -60,12 +77,24 @@ def _load_period_name():
 period_name = _load_period_name()
 
 _AMOUNT_FIELDS = ("current", "comparison", "variance", "ytd")
+_BUDGET_FIELDS = ("budget", "variance_to_budget", "budget_ytd")
 _UNEXPLAINED_LABEL = "Unexplained"
+
+#: konsol#348 S5 K6 (declared sub-rule): the consolidated budget is before
+#: intercompany eliminations and without group-level adjustments. Said in
+#: the column label and the message, in words (no issue numbers in user text).
+BUDGET_COLUMN_LABEL = "Budget (before eliminations)"
+BUDGET_LIMITS = "before intercompany eliminations and without group-level adjustments"
+#: S5-Q4 (a): a budget has Regular-period rows only, so its cumulative
+#: Balance Sheet value is the year's budgeted movements, not a balance.
+BUDGET_BS_BASIS = "the balance sheet budget columns show the budgeted movements year to date, not balances"
 
 
 def columns(minor_unit=None):
     """The report columns: line, code, the Numbers screen's four amount
-    columns (``statement_export_model.COLUMNS``), and the currency.
+    columns (``statement_export_model.COLUMNS``), the three budget columns
+    (S5 K6; the export's own ``BUDGET_COLUMNS`` mirrors them, S5-Q6 a), the
+    prior-year pair and the currency.
 
     ``minor_unit`` is the statement's own (the reporting currency's ISO
     minor unit, konsol#354): the amount columns show that many places.
@@ -84,6 +113,9 @@ def columns(minor_unit=None):
         amount("comparison", "Comparison"),
         amount("variance", "Variance"),
         amount("ytd", "Year to date"),
+        amount("budget", BUDGET_COLUMN_LABEL),
+        amount("variance_to_budget", "Variance to budget"),
+        amount("budget_ytd", "Budget year to date"),
         amount("prior_year", "Prior year"),
         amount("prior_year_change", "Change vs prior year"),
         {"fieldname": "currency", "label": "Currency", "fieldtype": "Link",
@@ -134,6 +166,8 @@ def _row(label, currency, line=None, fields=_AMOUNT_FIELDS, code=None, indent=0,
         value = line.get(field) if (line is not None and field in fields) else None
         row[field] = _zero(value)
     row["prior_year"] = row["prior_year_change"] = None
+    for field in _BUDGET_FIELDS:
+        row[field] = None
     row["commentary"] = None
     row.update(flags)
     return row
@@ -217,10 +251,67 @@ def _with_prior(row, section, line, prior_values, minor_unit, include=None):
     return row
 
 
-def rows(payload, prior=None, drill_group=None):
+def _budget_items(budget):
+    """``{key: line or include}`` of an ok budget payload (the whole item,
+    since Budget takes ``current`` and Budget year to date takes ``ytd``);
+    ``None`` when there is no budget or it is not ok (the message says why)."""
+    if not budget or budget.get("state") != "ok" or not budget.get("statement"):
+        return None
+    items = {}
+    for section in budget["statement"]["sections"]:
+        for line in section["lines"]:
+            for key, item in _line_keys(section["section"], line):
+                items[key] = item
+    return items
+
+
+def _with_budget(row, section, line, budget_items, minor_unit, include=None, variance=True):
+    """``row`` with the budget's value for the same line (its ``current``:
+    on the Balance Sheet the budgeted movements year to date, S5-Q4 a), the
+    variance to budget (this period's ``current`` minus it, same display
+    sign, rounded once to ``minor_unit``) and the budget's year to date on a
+    P&L line. Absent from the budget: left blank, never 0. ``variance``
+    False leaves the variance blank (the residual: two near-zeros compared
+    would say nothing)."""
+    if budget_items is None:
+        return row
+    key, item = ((section, "include", line["heading"], include.get("kind")), include) \
+        if include is not None else next(_line_keys(section, line))
+    budget_item = budget_items.get(key)
+    if budget_item is None:
+        return row
+    budget_value = budget_item.get("current")
+    if budget_value is None:
+        return row
+    row["budget"] = _zero(budget_value)
+    this = item.get("current")
+    if variance and this is not None:
+        row["variance_to_budget"] = _zero(round(this - budget_value, minor_unit))
+    if "ytd" in budget_item and budget_item.get("ytd") is not None:
+        row["budget_ytd"] = _zero(budget_item["ytd"])
+    return row
+
+
+def _budget_only_unbalanced(section, lines, budget_items, currency):
+    """The budget's "Unbalanced budget (no balancing entry)" line (S5-Q3 a)
+    as a row with blank actuals, when the budget carries one and the
+    actuals of ``section`` do not (actuals never carry the plug): the
+    budget balance sheet is seen to foot. ``None`` otherwise."""
+    if budget_items is None:
+        return None
+    item = budget_items.get((section, "unbalanced"))
+    if item is None or any(line.get("kind") == "unbalanced" for line in lines):
+        return None
+    row = _row(item["label"], currency, None)
+    row["budget"] = _zero(item.get("current"))
+    return row
+
+
+def rows(payload, prior=None, drill_group=None, budget=None):
     """The report rows for ``payload``, with the prior year's payload
-    ``prior`` (or ``None``) on the prior-year columns and ``drill_group``
-    on the heading rows (see the module docstring)."""
+    ``prior`` (or ``None``) on the prior-year columns, the budget payload
+    ``budget`` (or ``None``) on the budget columns, and ``drill_group`` on
+    the heading rows (see the module docstring)."""
     _refuse_unless_ok(payload)
     for key in ("commentary", "can_comment"):
         if key not in payload:
@@ -230,6 +321,12 @@ def rows(payload, prior=None, drill_group=None):
     if minor_unit is None:
         raise ValueError("The statement payload has no minor_unit.")
     prior_values = _prior_values(prior)
+    budget_items = _budget_items(budget)
+
+    def merged(row, name, line, include=None, variance=True):
+        return _with_budget(_with_prior(row, name, line, prior_values, minor_unit, include=include),
+                            name, line, budget_items, minor_unit, include=include, variance=variance)
+
     out = []
     for section in payload["statement"]["sections"]:
         name = section["section"]
@@ -237,28 +334,33 @@ def rows(payload, prior=None, drill_group=None):
         for line in section["lines"]:
             kind = line.get("kind")
             if kind == "heading":
-                out.append(_with_commentary(_with_prior(
+                out.append(_with_commentary(merged(
                     _row(line.get("heading_name") or line["heading"], currency, line,
                          code=line["heading"]),
-                    name, line, prior_values, minor_unit), payload, line["heading"], drill_group))
+                    name, line), payload, line["heading"], drill_group))
                 for include in line.get("includes") or []:
-                    out.append(_with_prior(
+                    out.append(merged(
                         _row(include["label"], currency, include,
                              fields=("current", "comparison"), indent=1),
-                        name, line, prior_values, minor_unit, include=include))
-            elif kind in ("no_heading", "net_result"):
-                out.append(_with_prior(
+                        name, line, include=include))
+            elif kind in ("no_heading", "net_result", "unbalanced"):
+                # ``unbalanced``: the budget's plug line (S5-Q3 a), net-debit
+                # terms like the BS no_heading line; actuals never carry it.
+                out.append(merged(
                     _row(line["label"], currency, line, bold=int(kind == "net_result")),
-                    name, line, prior_values, minor_unit))
+                    name, line))
             elif kind == "not_in_chart":
                 codes = ", ".join(line.get("codes") or [])
                 label = f"{line['label']} ({codes})" if codes else line["label"]
-                out.append(_with_prior(_row(label, currency, line), name, line, prior_values, minor_unit))
+                out.append(merged(_row(label, currency, line), name, line))
             elif kind == "residual":
-                out.append(_with_prior(
+                budget_only = _budget_only_unbalanced(name, section["lines"], budget_items, currency)
+                if budget_only is not None:
+                    out.append(budget_only)
+                out.append(merged(
                     _row(line["label"], currency, line,
                          fields=("current", "comparison"), bold=1),
-                    name, line, prior_values, minor_unit))
+                    name, line, variance=False))
                 if line.get("current"):
                     for item in line.get("explained") or []:
                         out.append(_row(item["label"], currency, {"current": item["amount"]},
@@ -307,12 +409,27 @@ def _prior_year_text(period, prior):
     return "Prior year (%s) is blank: %s" % (name, reason)
 
 
-def message(payload, prior=None):
+def _budget_text(budget):
+    """The message's budget line (S5 K6): for an ok budget its own sentence
+    (approved_budget_model: the Cycle, layers, Rate Set, declaration and
+    approver) with the columns' limits and the Balance Sheet basis (S5-Q4
+    a); for any other state the state's sentence, so the blank columns are
+    explained; nothing when no budget was asked for (the Entity basis)."""
+    if budget is None:
+        return None
+    if _budget_items(budget) is not None:
+        own = (budget.get("message") or "").rstrip(".")
+        return "%s. The budget columns are %s; %s." % (own, BUDGET_LIMITS, BUDGET_BS_BASIS)
+    reason = budget.get("message") or "the budget is not available (state: %s)" % budget.get("state")
+    return "Budget columns are blank: %s" % reason
+
+
+def message(payload, prior=None, budget=None):
     """The report message: ``Numbers · FY2025 P07 · <group> · <currency>``,
     the legend, every note the Numbers screen shows (comparison note,
-    declared-accounts gap, entities not included), and the prior-year line
-    (``_prior_year_text``), each escaped, joined by ``<br>``: Desk renders
-    the report message as HTML."""
+    declared-accounts gap, entities not included), the prior-year line
+    (``_prior_year_text``) and the budget line (``_budget_text``), each
+    escaped, joined by ``<br>``: Desk renders the report message as HTML."""
     _refuse_unless_ok(payload)
     period = payload["period"]
     stmt = payload["statement"]
@@ -338,4 +455,5 @@ def message(payload, prior=None):
     if not_included:
         lines.append(not_included)
     lines.append(_prior_year_text(period, prior))
+    lines.append(_budget_text(budget))
     return "<br>".join(_html.escape(line) for line in lines if line)
