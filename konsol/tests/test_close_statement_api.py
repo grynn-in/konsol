@@ -297,6 +297,11 @@ class _Site:
         self.budget_layers = [{"layer_code": "board", "sort_order": 2},
                               {"layer_code": "base", "sort_order": 1}]
         self.fingerprints = {}
+        #: PR #554 review M2: an exception the fingerprint check raises (a fault
+        #: in the budget read), and the Error Log entries frappe.log_error wrote.
+        self.fingerprint_error = None
+        self.error_logs = []
+        self.cleared_messages = 0
         self.budget_tb_rows = []
         #: S5 K9: the budget drill's entity-grain rows (``amt`` alias) and the
         #: gold_consolidated_budget_tb rate rows.
@@ -382,6 +387,16 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
+
+    def log_error(title=None, message=None, **k):
+        site.error_logs.append({"title": title, "message": message})
+
+    def clear_last_message():
+        site.cleared_messages += 1
+
+    frappe.log_error = log_error
+    frappe.get_traceback = lambda *a, **k: "Traceback (stub)"
+    frappe.clear_last_message = clear_last_message
     site.response = {}
     frappe.response = site.response
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
@@ -480,6 +495,8 @@ def _budget_fingerprint(site):
 
     def check_input_fingerprint(cycle):
         site.reads.append(("fingerprint", cycle))
+        if site.fingerprint_error is not None:
+            raise site.fingerprint_error
         return dict(site.fingerprints[cycle])
 
     mod.check_input_fingerprint = check_input_fingerprint
@@ -2391,3 +2408,47 @@ def test_export_with_an_ok_budget_adds_the_three_columns_before_commentary():
     by_code = {r[1]: r for r in rows if r[1]}
     assert by_code["4"][9] == golden["commentary"]["4"]["text"]
     assert by_code["4"][6] == 1000.0, "COST OF SALES budget"
+
+
+def test_export_with_a_faulty_budget_read_keeps_the_actuals_file_and_logs_the_fault():
+    """PR #554 review M2: a fault anywhere in the budget read (here
+    check_input_fingerprint raising RuntimeError, before any ClickHouse read)
+    must not fail the actuals' file. The whole of _export_budget is guarded
+    as consolidated_statement._budget is: the budget is state "error", the
+    note says why, the event records budget null, and one Error Log carries
+    the traceback (a fault is a bug; the note alone needs a reader to report it)."""
+    site = _export_budget_site()
+    site.fingerprint_error = RuntimeError("fingerprint table is gone")
+    book = _export_book(site)
+    assert "filecontent" in site.response
+    assert book.sheetnames == ["Statement", "Drill", "Journals"]
+    assert _budget_event_detail(site) is None
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "Budget columns not shown: RuntimeError: fingerprint table is gone" in text, text
+    assert "Budget (before eliminations)" not in text
+    assert site.error_logs == [{"title": "Consolidated Statement export budget read", "message": "Traceback (stub)"}]
+    assert len(site.ch_calls) == 4, "the actuals' reads only"
+
+
+def test_export_with_a_refused_budget_line_keeps_the_actuals_file_without_a_log():
+    """PR #554 review M2: a frappe.throw inside the budget read (here
+    _budget_line's "no budget statement line") is a ValidationError: it
+    becomes state "error" with its own message, the queued message is
+    cleared so no dialog follows the download, and nothing is logged (a
+    refusal is the user's to read)."""
+    site = _export_budget_site()
+
+    def run(api):
+        api._budget_line = lambda *a, **k: api.frappe.throw("4 has no budget statement line (a bug).")
+        api.export_statement(2025, 7, None)
+
+    _invoke(site, run)
+    assert "filecontent" in site.response
+    import io
+    from openpyxl import load_workbook
+    book = load_workbook(io.BytesIO(site.response["filecontent"]))
+    assert book.sheetnames == ["Statement", "Drill", "Journals"]
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "Budget columns not shown: 4 has no budget statement line (a bug)." in text, text
+    assert _budget_event_detail(site) is None
+    assert site.error_logs == [] and site.cleared_messages == 1
