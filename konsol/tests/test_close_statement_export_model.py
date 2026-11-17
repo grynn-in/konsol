@@ -690,16 +690,33 @@ def test_an_ok_budget_note_names_the_cycle_the_limits_and_the_bs_basis():
     assert "no variance to budget on the balance sheet" in notes[0]
 
 
-def test_a_non_ok_budget_gives_blank_cells_and_its_sentence_as_the_note():
+def test_a_non_ok_budget_renders_the_actuals_layout_and_its_sentence_as_the_note():
+    """BUD-4-2 (Deepak Pai, 7 Nov 2026): a visible "no approved budget"
+    state, never a blank column (PR #554 review D1). A non-ok budget adds
+    the state's sentence as a note and nothing else: the sections keep the
+    actuals' columns, Commentary and By in the same cells as without a
+    budget, and no budget label appears anywhere."""
     budget = _budget(state="no_approved_budget", message="No approved budget for FY2025.")
     book = _budget_book(budget)
     rows = _rows(book["Statement"])
-    assert "Budget columns are blank: No approved budget for FY2025." in [r[0] for r in rows]
+    assert "Budget columns not shown: No approved budget for FY2025." in [r[0] for r in rows]
+    plain = _rows(_book()["Statement"])
+    for section in ("Profit and Loss", "Balance Sheet"):
+        assert _section_block(rows, section) == _section_block(plain, section), section
     pl = _section_block(rows, "Profit and Loss")
-    assert pl[0][6:9] == _BUDGET_LABELS
-    row = _row_starting(pl, "COST OF SALES", "4")
-    assert row[6] is None and row[7] is None and row[8] is None
+    assert pl[0][:8] == ["Line", "Code", "This period", "Comparison", "Variance", "Year to date",
+                         "Commentary", "By"]
+    assert _row_starting(pl, "COST OF SALES", "4")[6] == _payload()["commentary"]["4"]["text"]
+    assert not any(isinstance(c, str) and c in _BUDGET_LABELS for r in rows for c in r)
     assert book.sheetnames == ["Statement", "Drill", "Journals"]
+
+
+def test_an_ok_budget_adds_the_three_columns_and_shifts_commentary_three_cells_right():
+    """The other half of D1: the columns appear only when the state is ok."""
+    rows = _rows(_budget_book(_budget())["Statement"])
+    pl = _section_block(rows, "Profit and Loss")
+    assert pl[0][6:11] == _BUDGET_LABELS + ["Commentary", "By"]
+    assert _row_starting(pl, "COST OF SALES", "4")[9] == _payload()["commentary"]["4"]["text"]
 
 
 def test_a_budget_drill_sheet_exists_only_when_budget_drills_are_given():

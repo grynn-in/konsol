@@ -129,7 +129,8 @@ def _execute_with(statement, entity_statement=None, budget=None):
         prior_with_rows = staticmethod(REAL_MODEL.prior_with_rows)
 
         @staticmethod
-        def columns(minor_unit=None):
+        def columns(minor_unit=None, budget=None):
+            seen["columns_budget"] = budget
             return ["cols"]
 
         @staticmethod
@@ -238,13 +239,16 @@ def test_group_basis_reads_the_budget_for_the_statements_own_group_and_hands_it_
     result = execute({"fiscal_year": "2024", "fiscal_period": 12})
     assert seen["budget_calls"] == [("2024", 12, "ZZG")]
     assert seen["budget"] == _BUDGET_OK and seen["message_budget"] is seen["budget"]
+    # BUD-4-2 (PR #554 review D1): the columns depend on the budget's state,
+    # so the model's columns() takes the budget payload too.
+    assert seen["columns_budget"] is seen["budget"]
     assert result == (["cols"], ["rows"], "msg")
 
 
 def test_a_refused_budget_read_never_fails_the_report():
     """budget_payload throws (a refusal) or raises (a fault): the report
     renders the actuals, and the budget payload carries the reason for the
-    legend's "Budget columns are blank: ..." line."""
+    legend's "Budget columns not shown: ..." line."""
     def refused(fy, fp, group):
         raise _ValidationError("Not permitted to read Budget Cycle B.")
 

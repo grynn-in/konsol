@@ -1122,12 +1122,14 @@ def test_export_statement_sheet_matches_the_golden_payload():
             if line["kind"] == "heading":
                 assert by_code[line["heading"]][0] == line["heading_name"]
                 assert by_code[line["heading"]][2] == line["current"]
-    # S5 K12: the group export always carries the three budget columns (blank
-    # here: no declaration), so Commentary and By sit three columns further.
-    assert rows[8][6:9] == ["Budget (before eliminations)", "Variance to budget", "Budget year to date"]
-    assert by_code["4"][9] == golden["commentary"]["4"]["text"]
-    assert by_code["4"][10].startswith(golden["commentary"]["4"]["by"] + " · ")
-    assert by_code["4"][6] is None and by_code["4"][7] is None and by_code["4"][8] is None
+    # BUD-4-2 (PR #554 review D1): no declaration means no budget columns, so
+    # Commentary and By keep the golden positions; the state is the note.
+    assert rows[8][6:8] == ["Commentary", "By"]
+    assert by_code["4"][6] == golden["commentary"]["4"]["text"]
+    assert by_code["4"][7].startswith(golden["commentary"]["4"]["by"] + " · ")
+    assert not any(isinstance(c, str) and c.startswith("Budget (before") for r in rows for c in r)
+    assert any(isinstance(r[0], str) and r[0].startswith("Budget columns not shown: No approved budget for G1 FY2025")
+               for r in rows), [r[0] for r in rows[:8]]
 
 
 def test_export_drill_sheet_totals_equal_every_golden_heading():
@@ -2362,6 +2364,7 @@ def test_export_without_a_declaration_reads_four_times_and_records_budget_null()
     assert "Budget drill" not in book.sheetnames
     text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
     assert "No approved budget for G1 FY2025" in text, "the state's sentence is the note"
+    assert "Budget (before eliminations)" not in text, "BUD-4-2: a state, never a blank column (D1)"
 
 
 def test_export_with_a_budget_drill_fault_keeps_the_actuals_file_and_records_budget_null():
@@ -2371,5 +2374,20 @@ def test_export_with_a_budget_drill_fault_keeps_the_actuals_file_and_records_bud
     assert book.sheetnames == ["Statement", "Drill", "Journals"]
     assert _budget_event_detail(site) is None
     text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
-    assert "Budget columns are blank: ZZA 4100: no translation rate row" in text, "the note names the fault"
+    assert "Budget columns not shown: ZZA 4100: no translation rate row" in text, "the note names the fault"
+    assert "Budget (before eliminations)" not in text, "BUD-4-2: a state, never a blank column (D1)"
     assert "filecontent" in site.response
+
+
+def test_export_with_an_ok_budget_adds_the_three_columns_before_commentary():
+    """The other half of D1: with an ok budget the three columns follow the
+    actuals' and Commentary moves three cells right."""
+    golden = _golden()
+    book = _export_book(_export_budget_site())
+    rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
+    header = next(r for r in rows if r[0] == "Line")
+    assert header[6:11] == ["Budget (before eliminations)", "Variance to budget", "Budget year to date",
+                            "Commentary", "By"]
+    by_code = {r[1]: r for r in rows if r[1]}
+    assert by_code["4"][9] == golden["commentary"]["4"]["text"]
+    assert by_code["4"][6] == 1000.0, "COST OF SALES budget"

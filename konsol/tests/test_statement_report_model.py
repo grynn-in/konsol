@@ -554,11 +554,21 @@ def _budget(rows=None, state="ok", message=_BUDGET_OK_SENTENCE, **meta):
     return {"state": state, "message": message, "statement": stmt, "meta": {**_BUDGET_META, **meta}}
 
 
-def test_columns_add_the_budget_columns_after_ytd():
-    fieldnames = [c["fieldname"] for c in R.columns()]
+def test_columns_carry_the_budget_columns_only_for_an_ok_budget():
+    """BUD-4-2 (Deepak Pai, 7 Nov 2026): "Numbers shows a visible 'no approved
+    budget' state, never a blank column". The three budget columns follow
+    Year to date when, and only when, the budget payload is ok; without a
+    budget, or with a non-ok one, the report has no budget column at all and
+    the message carries the state (PR #554 review D1)."""
+    actuals = [c["fieldname"] for c in R.columns()]
+    assert "budget" not in actuals and "variance_to_budget" not in actuals and "budget_ytd" not in actuals
+    assert actuals[actuals.index("ytd") + 1] == "prior_year"
+    for state in ("no_approved_budget", "cycle_cancelled", "inputs_changed", "layer_missing", "error", "no_rows"):
+        assert [c["fieldname"] for c in R.columns(2, budget=_budget(state=state, message="x"))] == actuals, state
+    fieldnames = [c["fieldname"] for c in R.columns(budget=_budget())]
     assert fieldnames[fieldnames.index("ytd") + 1:fieldnames.index("prior_year")] == [
         "budget", "variance_to_budget", "budget_ytd"]
-    by_name = {c["fieldname"]: c for c in R.columns(minor_unit=2)}
+    by_name = {c["fieldname"]: c for c in R.columns(minor_unit=2, budget=_budget())}
     assert by_name["budget"]["label"] == "Budget (before eliminations)"
     assert by_name["variance_to_budget"]["label"] == "Variance to budget"
     assert by_name["budget_ytd"]["label"] == "Budget year to date"
@@ -716,14 +726,18 @@ def test_section_headers_and_residual_explanations_carry_no_budget():
     ("inputs_changed", "Approved Budget APB for ZZ_GROUP FY2025: the inputs of Budget Cycle B have changed."),
     ("layer_missing", "Approved Budget APB for ZZ_GROUP FY2025 reads layer gone, which is no Budget Layer."),
 ])
-def test_a_non_ok_budget_renders_blank_and_the_message_carries_its_sentence(state, sentence):
+def test_a_non_ok_budget_renders_no_budget_columns_and_the_message_carries_its_sentence(state, sentence):
+    """BUD-4-2: a visible state, never a blank column (PR #554 review D1)."""
     payload = _payload()
     budget = _budget(state=state, message=sentence)
     data = R.rows(payload, budget=budget)
     assert data == R.rows(payload)
     assert all(row["budget"] is None for row in data)
+    assert R.columns(2, budget=budget) == R.columns(2), "no budget column to leave blank"
     text = R.message(payload, budget=budget)
     assert sentence in text
+    assert "Budget columns not shown: " + sentence in text, text
+    assert "blank" not in text.lower(), "there is no blank column to explain"
 
 
 def test_a_non_ok_budget_with_no_sentence_still_names_its_state():
