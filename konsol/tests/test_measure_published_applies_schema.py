@@ -590,8 +590,9 @@ def test_a_non_admin_may_still_save_metadata_on_a_draft():
 # --- install, migrate and patches apply nothing (#351 review) --------------
 #
 # install_defaults (after_install, and install._seed_defaults in
-# after_migrate) inserts 15 Published Measures. With the hook live inside
-# them, each ran apply_and_rebuild: 15 applies, a full-refresh Build Approval
+# after_migrate) inserts 14 Published Measures (15 until konsol#348 S6 KB1
+# retired variance_favorable). With the hook live inside
+# them, each ran apply_and_rebuild: one apply per Measure, a full-refresh Build Approval
 # left on a brand-new site, and ~22 minutes against an unreachable ClickHouse.
 # The two Measure patches each ran one more. Under in_install, in_migrate and
 # in_patch the hook applies nothing; install and migrate regenerate the dbt

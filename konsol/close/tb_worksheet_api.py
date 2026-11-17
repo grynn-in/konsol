@@ -1,17 +1,39 @@
 """Consolidation worksheet endpoint (konsol#494 rows 6-7).
 
 ``get_worksheet(fiscal_year, fiscal_period, consolidation_group=None,
-entities=None)`` (GET) returns one root consolidation group's trial balance
+entities=None, dimension=None, basis=None)`` (GET) returns one root
+consolidation group's trial balance
 as a worksheet: one line per account, one column per shown entity (entity
 layer plus its CTA), Other entities, Outside your scope, Intercompany
 eliminations, one column per adjustment group, Rounding, Consolidated
 (``tb_worksheet_model.worksheet``). Amounts are net debit in the group's
 reporting currency; Balance Sheet cumulative, Profit and Loss year to date.
 
+``basis`` (konsol#348 S6 KB6; S6-Q5 a, taken under the standing rule) is
+``Actual`` (the default when blank, declared here and on the Desk filter) or
+``Budget``; anything else is refused by name before any read. ``Budget`` is
+the same worksheet over the approved budget: ``statement_api._approved_budget``
+decides for the (group, year) first, and a state other than ``ok``
+(``no_approved_budget``, ``cycle_cancelled``, ``inputs_changed``,
+``layer_missing``, approved_budget_model) is returned as the worksheet's
+state with its sentence and NO ClickHouse read (BUD-4-2: a visible state,
+never an empty worksheet). On ``ok`` the ONE read is ``_BUDGET_WORKSHEET_SQL``
+over ``gold_fully_consolidated_budget``, bound to the group, the
+declaration's ``scenario_id``, its ``cycle`` AND its layers (a filter that
+misses one sums a budget with a reforecast), laid out by the same
+``worksheet()``: the budget's balancing plug (``adjustment_type
+unbalanced``, the literal account ``UNBALANCED``) is its own column,
+"Unbalanced budget" (``tb_worksheet_model.LAYER_LABELS_EXTRA``). The payload
+carries ``basis`` and, on the Budget basis, ``budget`` = ``{cycle, layers,
+rate_set, scenario_id, declaration, message}`` (None on Actual) for the
+legend. The budget is before intercompany eliminations and without
+group-level adjustments (S5's declared limit); the Actual basis is unchanged.
+
 States, never a silent empty worksheet:
 
 - ``choose_group``: several root groups and none named, or none declared
   (``statement_api.choose_group``); no ClickHouse read;
+- the approved-budget states above (Budget basis only); no ClickHouse read;
 - ``no_chart``: nothing Published in Main Account; no ClickHouse read;
 - ``setup_gap``: the group's reporting currency has no ISO Currency minor
   unit (konsol#354; never a guessed 2); no ClickHouse read;
@@ -22,7 +44,7 @@ States, never a silent empty worksheet:
 - ``ok``: ``worksheet`` is the model's output with its tuple keys turned
   into string ids (``"entity:ZZA"``, ``"layer:topside"``,
   ``"bucket:other_entities"``, ``"rounding"``, ``"consolidated"``; line keys
-  ``"account:1110"``, ``"not_in_chart:9999"``, ``"cta_undeclared"``), so the
+  ``"account:1110"``, ``"not_in_chart:9999"``, ``"cta_undeclared"``, ``"unbalanced"``), so the
   payload is JSON-safe.
 
 ``dimension`` (optional ``dim_*`` column name) groups lines by that
@@ -47,7 +69,8 @@ import frappe
 from konsol import fiscal_calendar
 from konsol.close import ch_read, signoff_gate, statement_model, tb_worksheet_model
 from konsol.close.statement_api import (
-    _chart, _error_message, _find_period, _minor_unit, _period_key, choose_group, root_groups)
+    _approved_budget, _chart, _error_message, _find_period, _minor_unit, _period_key, _sql_array,
+    approved_budget_model, choose_group, root_groups)
 from konsol.entity_permissions import allowed_entity_codes
 from konsol.tb_dimension import declared_dimensions
 
@@ -62,10 +85,33 @@ _WORKSHEET_SQL = (
     "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
     "reporting_currency"
 )
+#: konsol#348 S6 KB6: the Budget basis's ONE read, ``_WORKSHEET_SQL``'s shape
+#: over ``gold_fully_consolidated_budget``, bound like ``statement_api.
+#: _BUDGET_TB_SQL`` to the declaration's scenario_id, cycle and layers
+#: (``layers`` is ``_sql_array``'s literal): the table holds every Cycle of
+#: every budget and forecast scenario. Same ``reporting_currency, sum(amount)``
+#: text, so ``_dimension_sql`` builds the dimension variant of either.
+_BUDGET_WORKSHEET_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "reporting_currency, sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_budget "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "reporting_currency"
+)
+
+#: The two bases and their tables (module constants, never request input).
+ACTUAL, BUDGET = "Actual", "Budget"
+BASES = (ACTUAL, BUDGET)
+_ACTUAL_TABLE = "gold_fully_consolidated_tb"
+_BUDGET_TABLE = "gold_fully_consolidated_budget"
 
 #: The dimension variant is built from the constant above, never typed twice:
 #: the checked column name (``dimension_column``) goes in once as
-#: ``<name> AS dimension_value`` and once in GROUP BY.
+#: ``<name> AS dimension_value`` and once in GROUP BY. The table name is the
+#: basis's (``_ACTUAL_TABLE`` or ``_BUDGET_TABLE``), substituted from these
+#: two constants only.
 _DIMENSION_COLUMNS_READ = (
     "SELECT name FROM system.columns "
     "WHERE database = 'epm_gold' AND table = 'gold_fully_consolidated_tb' "
@@ -77,8 +123,11 @@ _NO_CHART_MESSAGE = "Publish the group chart (Main Account) first."
 
 @frappe.whitelist(methods=["GET"])
 def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities=None,
-                  dimension=None):
+                  dimension=None, basis=None):
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    basis = basis or ACTUAL
+    if basis not in BASES:
+        frappe.throw(f"Basis {basis!r} is not one of {ACTUAL}, {BUDGET}.")
     key = _period_key(fiscal_year, fiscal_period)
     period_rows = fiscal_calendar.fiscal_period_rows()
     period_row = _find_period(key, period_rows)
@@ -114,6 +163,8 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
         "minor_unit": None,
         "entities": sorted(shown) if shown is not None else None,
         "dimension": dimension,
+        "basis": basis,
+        "budget": None,
         "state": state,
         "message": message,
         "gap": None,
@@ -121,6 +172,20 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
     }
     if state != "ok":
         return result
+
+    sql, params, table = _WORKSHEET_SQL, {"group": chosen, "fy": key[0]}, _ACTUAL_TABLE
+    if basis == BUDGET:
+        # S6 KB6: the declaration decides first; nothing is read until it is ok.
+        approved = _approved_budget(chosen, key[0])
+        result["budget"] = {"cycle": approved["cycle"], "layers": approved["layers"],
+                            "rate_set": approved["rate_set"], "scenario_id": approved["scenario_id"],
+                            "declaration": approved["declaration"], "message": approved["message"]}
+        if approved["state"] != approved_budget_model.OK:
+            result.update(state=approved["state"], message=approved["message"])
+            return result
+        sql, table = _BUDGET_WORKSHEET_SQL, _BUDGET_TABLE
+        params.update(scenario=approved["scenario_id"], cycle=approved["cycle"],
+                      layers=_sql_array(approved["layers"]))
 
     accounts = _chart()
     if not accounts:
@@ -140,9 +205,8 @@ def get_worksheet(fiscal_year, fiscal_period, consolidation_group=None, entities
     try:
         # The dimension check (one system.columns read) sits here, after
         # every no-read state; its failure is a state like the worksheet's.
-        dimension_sql = _dimension_sql(dimension) if dimension is not None else None
-        rows = [_row(r) for r in ch_read.rows(dimension_sql or _WORKSHEET_SQL,
-                                              {"group": chosen, "fy": key[0]})]
+        dimension_sql = _dimension_sql(dimension, sql, table) if dimension is not None else None
+        rows = [_row(r) for r in ch_read.rows(dimension_sql or sql, params)]
     except _DimensionRefused as e:
         frappe.throw(str(e))
     except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
@@ -173,19 +237,22 @@ class _DimensionRefused(Exception):
     """The dimension failed a check (legal, declared, built)."""
 
 
-def _dimension_sql(name):
-    """``_WORKSHEET_SQL`` grouped by the dimension column ``name``. The name
-    is interpolated only after ``dimension_column``'s three checks (legal,
-    declared Published and ticked, built); one ``system.columns`` read. A
+def _dimension_sql(name, sql, table):
+    """``sql`` (``_WORKSHEET_SQL`` or ``_BUDGET_WORKSHEET_SQL``) grouped by
+    the dimension column ``name``. The name is interpolated only after
+    ``dimension_column``'s three checks (legal, declared Published and ticked,
+    built in ``table``: the basis's table, so a dimension the budget does not
+    carry is refused by name); one ``system.columns`` read. A
     failed read propagates to the caller's read handler (``not_built`` /
     ``error``); a refusal raises ``_DimensionRefused``, which the caller
     turns into a ``frappe.throw`` before any worksheet read."""
-    present = [r["name"] for r in ch_read.rows(_DIMENSION_COLUMNS_READ)]
+    assert table in (_ACTUAL_TABLE, _BUDGET_TABLE), table
+    present = [r["name"] for r in ch_read.rows(_DIMENSION_COLUMNS_READ.replace(_ACTUAL_TABLE, table, 1))]
     try:
-        column = tb_worksheet_model.dimension_column(name, declared_dimensions(), present)
+        column = tb_worksheet_model.dimension_column(name, declared_dimensions(), present, table=table)
     except ValueError as e:
         raise _DimensionRefused(str(e)) from e
-    sql = _WORKSHEET_SQL.replace(
+    sql = sql.replace(
         "reporting_currency, sum(amount)", "reporting_currency, %s AS dimension_value, "
         "sum(amount)" % column, 1)
     return sql + ", " + column

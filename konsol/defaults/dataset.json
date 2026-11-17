@@ -146,9 +146,6 @@
    },
    {
     "measure": "variance_pct"
-   },
-   {
-    "measure": "variance_favorable"
    }
   ],
   "fact_dimensions": [],

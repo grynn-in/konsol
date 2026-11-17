@@ -273,6 +273,26 @@ def test_the_shipped_guide_has_the_budget_against_actuals_page():
     assert "cells are blank" not in text and "columns are blank" not in text
 
 
+def test_budget_vs_actual_page_covers_favourability_the_worksheet_and_the_entity_basis():
+    """konsol#348 S6 KB5: the favourability rule (S6-Q3 a, BUD-7-a), the
+    worksheet's Budget basis (S6-Q5 a) and the entity budget (S6-Q6 a), in
+    the words the reports use."""
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    text = pages["budget-vs-actual"]["markdown"]
+    for phrase in (
+        "## Favourability", "Favourable", "Unfavourable", "On budget", "n/a", "normal balance",
+        "Debit and Credit read the same way", "more profit",
+        "## The worksheet on the Budget basis", "Consolidation Worksheet", "Basis", "Unbalanced budget",
+        "## The entity basis", "functional currency", "top of the consolidation tree",
+        "no consolidation group",
+        "four budget columns",
+    ):
+        assert phrase in text, phrase
+    assert "three budget columns and the legend" not in text, "the export now has four"
+    # PR #558 review M1: one node per entity gives one root; no "several roots" state.
+    assert "several root consolidation groups" not in text
+
+
 def test_the_shipped_guide_has_the_forecast_rounds_page():
     """konsol#348 S6 KA10: the forecast rounds page, for everyone, in Concepts.
     It names a round and its as-of date, the Current Forecast declaration (one

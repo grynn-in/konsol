@@ -158,3 +158,103 @@ def test_report_json_and_js():
     js = open(os.path.join(DIR, "consolidation_worksheet.js")).read()
     assert "frappe.call" not in js and "MultiSelectList" in js
     assert "get_link_options" in js and "in_trial_balance" in js
+
+
+# --- Basis: Actual or Budget (konsol#348 S6 KB7; S6-Q5 a) ----------------------
+
+_BUDGET_SENTENCE = ("Approved budget for ZZG FY2025: Budget Cycle BCYC-ZZB-2025-abc12345, all layers "
+                    "(base), Rate Set ZZRS (Approved Budget APB-CG-ZZG--2025-0f0f0f0f, approved by "
+                    "lead@example.com on 2026-11-17).")
+_BUDGET_META = {"cycle": "BCYC-ZZB-2025-abc12345", "layers": ["base"], "rate_set": "ZZRS",
+                "scenario_id": "ZZB", "declaration": "APB-CG-ZZG--2025-0f0f0f0f",
+                "message": _BUDGET_SENTENCE}
+
+
+def _budget_payload():
+    """The Budget basis: FCB rows, the plug in its own ``unbalanced`` column."""
+    rows = [_row("entity", "ZZA", "4000", -100.0), _row("entity", "ZZB", "4000", -50.0),
+            _row("unbalanced", "ZZA", "UNBALANCED", 100.0),
+            _row("unbalanced", "ZZB", "UNBALANCED", 50.0)]
+    # The plug is never a chart account (PR #558 review m2): the chart is the
+    # actuals' own, and the model labels the plug's line itself.
+    ws = WM.to_ids(WM.worksheet(rows, ACCOUNTS, PERIODS, (2025, 3), {"cta_account": None},
+                                2, None, None))
+    return dict(_ok_payload(), worksheet=ws, basis="Budget", budget=dict(_BUDGET_META))
+
+
+def _kwargs(seen):
+    args, kwargs = seen["call"]
+    return kwargs
+
+
+def test_the_basis_defaults_to_actual_and_is_passed_by_name():
+    execute, seen = _execute_with(_ok_payload())
+    execute(dict(_FILTERS))
+    assert _kwargs(seen).get("basis") == "Actual"
+    execute, seen = _execute_with(_budget_payload())
+    execute(dict(_FILTERS, basis="Budget"))
+    assert _kwargs(seen).get("basis") == "Budget"
+
+
+def test_the_actual_message_is_unchanged_and_names_no_budget():
+    execute, _ = _execute_with(dict(_ok_payload(), basis="Actual", budget=None))
+    _, _, message = execute(dict(_FILTERS))
+    plain_execute, _ = _execute_with(_ok_payload())
+    assert message == plain_execute(dict(_FILTERS))[2]
+    assert "udget" not in message
+
+
+def test_an_ok_budget_shows_the_unbalanced_column_and_the_budget_sentence():
+    execute, _ = _execute_with(_budget_payload())
+    columns, data, message = execute(dict(_FILTERS, basis="Budget"))
+    labels = [c["label"] for c in columns]
+    assert any(label.startswith("Unbalanced budget") for label in labels), labels
+    [plug] = [row for row in data if row["account"] == "UNBALANCED"]
+    assert plug["name"] == WM.statement_model.UNBALANCED_LABEL, "never 'not in the published chart'"
+    assert "Basis: Budget" in message
+    assert "BCYC-ZZB-2025-abc12345" in message
+    assert LAYOUT.BUDGET_LIMITS in message
+    assert "budgeted movements" in message
+    assert data[-1]["account"] == "Total"
+
+
+@pytest.mark.parametrize("state", ["no_approved_budget", "cycle_cancelled", "inputs_changed",
+                                   "layer_missing"])
+def test_a_budget_state_is_the_legend_with_no_columns_never_an_empty_grid(state):
+    """BUD-4-2 (Deepak Pai, 7 Nov 2026): a visible state, never a blank column."""
+    payload = dict(_ok_payload(), state=state, message="No approved budget because " + state,
+                   worksheet=None, basis="Budget", budget=dict(_BUDGET_META, message="x"))
+    execute, _ = _execute_with(payload)
+    columns, data, message = execute(dict(_FILTERS, basis="Budget"))
+    assert columns == [] and data == []
+    assert "Basis: Budget" in message
+    assert "Budget worksheet not shown: No approved budget because " + state in message
+
+
+def test_a_non_budget_state_on_the_budget_basis_is_still_refused():
+    execute, _ = _execute_with({"state": "not_built", "message": "because not_built",
+                                "worksheet": None, "basis": "Budget", "budget": None})
+    with pytest.raises(Refused, match="because not_built"):
+        execute(dict(_FILTERS, basis="Budget"))
+
+
+def test_the_limits_text_is_the_statement_reports():
+    srm = _load("statement_report_model")
+    assert LAYOUT.BUDGET_LIMITS == srm.BUDGET_LIMITS
+
+
+def test_the_js_has_a_basis_select_actual_or_budget_defaulting_to_actual():
+    js = open(os.path.join(DIR, "consolidation_worksheet.js")).read()
+    block = js[js.index('fieldname: "basis"'):]
+    block = block[:block.index("}")]
+    assert 'fieldtype: "Select"' in block
+    assert 'options: "Actual\\nBudget"' in block
+    assert 'default: "Actual"' in block
+
+
+def test_the_budget_states_are_approved_budget_models_states_but_ok():
+    abm = _load("approved_budget_model")
+    tree = _tree()
+    assign = next(n for n in tree.body if isinstance(n, ast.Assign)
+                  and any(getattr(t, "id", None) == "BUDGET_STATES" for t in n.targets))
+    assert ast.literal_eval(assign.value) == tuple(s for s in abm.STATES if s != abm.OK)
