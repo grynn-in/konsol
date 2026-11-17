@@ -16,6 +16,5 @@
   {"doctype": "Measure", "name": "consolidated_amount", "measure_name": "consolidated_amount", "expression": "sum(consolidated_amount)", "label": "Consolidated Amount", "cube_type": "sum", "status": "Published"},
   {"doctype": "Measure", "name": "forecast_amount", "measure_name": "forecast_amount", "expression": "sum(forecast_amount)", "label": "Forecast Amount", "cube_type": "sum", "status": "Published"},
   {"doctype": "Measure", "name": "forecast_error", "measure_name": "forecast_error", "expression": "sum(forecast_error)", "label": "Forecast Error (Forecast - Actual)", "cube_type": "sum", "status": "Published"},
-  {"doctype": "Measure", "name": "forecast_abs_error", "measure_name": "forecast_abs_error", "expression": "sum(forecast_abs_error)", "label": "Forecast Error (Absolute)", "cube_type": "sum", "status": "Published"},
-  {"doctype": "Measure", "name": "forecast_error_pct", "measure_name": "forecast_error_pct", "expression": "avg(forecast_error_pct)", "label": "Forecast Error (%)", "cube_type": "avg", "status": "Published"}
+  {"doctype": "Measure", "name": "forecast_abs_error", "measure_name": "forecast_abs_error", "expression": "sum(forecast_abs_error)", "label": "Forecast Error (Absolute)", "cube_type": "sum", "status": "Published"}
 ]

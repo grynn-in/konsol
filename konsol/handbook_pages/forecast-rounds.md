@@ -73,8 +73,8 @@ The add-in reads a forecast by its scenario word (the sixth argument of `=K.EPM`
 |---|---|
 | `forecast` | The declared round's forecast, by entity. |
 | `latest_estimate` | The declared round's latest estimate: actuals to the as-of period, the forecast after it. |
-| `consolidated_budget` | The group's consolidated budget, translated and before eliminations. The entity argument is the consolidation group. Name a budget scenario in `scenarioId`, or a forecast scenario to read its declared round. With no scenario named, it reads the budget scenarios only, never a forecast. `layer` reads one layer. |
-| `forecast_accuracy` | The declared round's accuracy, in entity currency. The measure is `forecast_error` unless you name `forecast_abs_error`, `forecast_error_pct`, `forecast_amount` or `actual_amount`. |
+| `consolidated_budget` | The group's consolidated budget, translated and before eliminations. The entity argument is the consolidation group. Name a budget scenario in `scenarioId`, or a forecast scenario to read its declared round. With no scenario named, it reads the one budget scenario of the year, never a forecast, and refuses when there are none or several. `layer` reads one layer. |
+| `forecast_accuracy` | The declared round's accuracy, in entity currency. The measure is `forecast_error` unless you name `forecast_abs_error`, `forecast_amount` or `actual_amount`. |
 | `forecast_accuracy_group` | The declared round's accuracy for a consolidation group, in the group's currency, its entities added together. The entity argument is the consolidation group. |
 
 For example, `=K.EPM("G1",2026,3,"4000","","consolidated_budget",,"BUD26")` reads the consolidated budget of group G1 for scenario BUD26.
@@ -82,7 +82,8 @@ For example, `=K.EPM("G1",2026,3,"4000","","consolidated_budget",,"BUD26")` read
 - A forecast read of a year with no Current Forecast is refused, and the message names the missing declaration. With no scenario named, the `forecast`, `latest_estimate` and accuracy reads take the one forecast scenario declared for the year, and refuse when there are none or several.
 - The `budget` read refuses a forecast scenario, because it would add the rounds together. With no scenario named, it reads every scenario except the forecasts.
 - In Excel, the accuracy reads show the declared round only. The Forecast Accuracy report shows every round.
-- A budget, forecast or accuracy cell with no row in the warehouse reads 0. The error % in Excel averages the rows that have one, and reads 0 where every actual is 0: the report shows n/a there.
+- A budget, forecast or accuracy cell with no row in the warehouse reads 0.
+- There is no error % to read in Excel. Compute it in the sheet as `forecast_error / ABS(actual_amount)`, from two `=K.EPM` cells of the same range, and guard an actual of 0. The Forecast Accuracy report shows the error % per row, and n/a where the actual is 0.
 
 ## Cancelling a round
 

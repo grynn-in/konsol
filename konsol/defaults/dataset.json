@@ -248,9 +248,6 @@
    },
    {
     "measure": "forecast_abs_error"
-   },
-   {
-    "measure": "forecast_error_pct"
    }
   ],
   "fact_dimensions": [],
@@ -285,9 +282,6 @@
    },
    {
     "measure": "forecast_abs_error"
-   },
-   {
-    "measure": "forecast_error_pct"
    }
   ],
   "fact_dimensions": [],
