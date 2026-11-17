@@ -118,6 +118,7 @@ SIDEBARS = {
         ("Section", "Budget"),
         ("DocType", "Budget Cycle", "budget"),
         ("DocType", "Budget Annual Input", "budget"),
+        ("DocType", "Approved Budget"),   # konsol#348 S5 K13 (BUD-4-2)
         ("Section", "Forecast"),
         ("DocType", "Budget Cycle", "forecast"),
         ("DocType", "Budget Annual Input", "forecast"),
