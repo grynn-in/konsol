@@ -2170,9 +2170,10 @@ def test_budget_drill_rates_read_fx_method_from_the_budget_tb_not_the_chart():
     rates_sql = [sql for sql, _ in site.ch_calls if "gold_consolidated_budget_tb" in sql]
     assert len(rates_sql) == 1 and "fx_method" in rates_sql[0], rates_sql
     [row] = result["drill"]["rows"]
+    # with_rates orders by (fx_method, rate, rate_set): the blank method first.
     assert row["accounts"][0]["rates"] == [
-        {"fx_method": "historical", "rate": 1.10, "rate_set": "ZZRS"},
         {"fx_method": "", "rate": 1.12, "rate_set": "ZZRS"},
+        {"fx_method": "historical", "rate": 1.10, "rate_set": "ZZRS"},
     ]
     assert "average" not in json.dumps(result)
 

@@ -289,19 +289,21 @@ _BUDGET_UNBALANCED_SQL = (
 )
 #: S5-Q7 (a): the rate each budget account was translated at, per (entity,
 #: account, period) of the heading's leaves, from the translated budget
-#: (``gold_consolidated_budget_tb``; ``rate_set`` is carried on every row).
-#: The periods come back too, so Python keeps the statement window's rows
-#: (the current period for a P&L heading, every key up to it for a Balance
-#: Sheet one) without a second SQL shape. The table drops ``fx_method``
-#: (``select * except``); the warehouse took it from the chart's Translation
-#: Method, so ``_rate_rows_for`` attaches that same declared value.
+#: (``gold_consolidated_budget_tb``; ``fx_method`` and ``rate_set`` are
+#: carried on every row, S5 G1). The periods come back too, so Python keeps
+#: the statement window's rows (the current period for a P&L heading, every
+#: key up to it for a Balance Sheet one) without a second SQL shape. The
+#: method is the one the warehouse APPLIED at build time, never the chart's
+#: Translation Method of today: a chart changed since the build would
+#: misname the rate. A warehouse without the column fails this read by name
+#: (``state "error"``), so the konsolidat change ships with this one.
 _BUDGET_RATES_SQL = (
-    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, translation_rate, rate_set "
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, fx_method, translation_rate, rate_set "
     "FROM epm_gold.gold_consolidated_budget_tb "
     "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
     "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
     "AND main_account IN {accounts:Array(String)} "
-    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, translation_rate, rate_set"
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, fx_method, translation_rate, rate_set"
 )
 
 
@@ -1151,13 +1153,13 @@ def get_entity_drill(fiscal_year, fiscal_period, entity, heading):
     return result
 
 
-def _rate_rows_for(rows, keys, accounts_map):
+def _rate_rows_for(rows, keys):
     """``drill_model.with_rates``'s rate rows from ``_BUDGET_RATES_SQL``'s:
     the statement window's periods only (``keys``), ``translation_rate`` as
-    a float, and the chart's declared Translation Method as ``fx_method``
-    (the budget TB table does not carry it; blank stays blank, and the
-    Statement Drill report says "chart default" for it, never a derived
-    method)."""
+    a float, and ``fx_method`` as the warehouse carries it (S5 G1): the
+    method applied at build time. A blank method (an account the chart did
+    not declare at build time) stays blank, and the Statement Drill report
+    says "chart default" for it; nothing here fills it from today's chart."""
     out = []
     for row in rows:
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) not in keys:
@@ -1165,7 +1167,7 @@ def _rate_rows_for(rows, keys, accounts_map):
         rate = row.get("translation_rate")
         out.append({
             "data_area_id": row.get("data_area_id"), "main_account": row.get("main_account"),
-            "fx_method": (accounts_map.get(row.get("main_account")) or {}).get("fx_method") or "",
+            "fx_method": row.get("fx_method") or "",
             "translation_rate": None if rate is None else float(rate),
             "rate_set": row.get("rate_set"),
         })
@@ -1219,7 +1221,7 @@ def get_budget_drill(fiscal_year, fiscal_period, consolidation_group, heading):
 
     accounts = frappe.get_all(
         "Main Account", filters={"status": "Published"},
-        fields=ACCOUNT_FIELDS + ["fx_method"], limit_page_length=0,
+        fields=ACCOUNT_FIELDS, limit_page_length=0,
     )
     accounts_map = {a["name"]: a for a in accounts}
     unbalanced = heading == drill_model.UNBALANCED_HEADING
@@ -1264,7 +1266,7 @@ def get_budget_drill(fiscal_year, fiscal_period, consolidation_group, heading):
             drill_sql = _BUDGET_DRILL_SQL_WITH_CTA if heading == cta_heading else _BUDGET_DRILL_SQL
             binds["accounts"] = _sql_array(_leaf_codes(heading, accounts_map))
             drill_rows = [_drill_row(r) for r in ch_read.rows(drill_sql, binds)]
-            rate_rows = _rate_rows_for(ch_read.rows(_BUDGET_RATES_SQL, binds), keys, accounts_map)
+            rate_rows = _rate_rows_for(ch_read.rows(_BUDGET_RATES_SQL, binds), keys)
     except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
         result["state"] = "not_built" if ch_read.not_built(e) else "error"
         result["message"] = _error_message(e)
