@@ -283,12 +283,14 @@ def test_budget_vs_actual_page_covers_favourability_the_worksheet_and_the_entity
         "## Favourability", "Favourable", "Unfavourable", "On budget", "n/a", "normal balance",
         "Debit and Credit read the same way", "more profit",
         "## The worksheet on the Budget basis", "Consolidation Worksheet", "Basis", "Unbalanced budget",
-        "## The entity basis", "functional currency", "several root consolidation groups",
+        "## The entity basis", "functional currency", "top of the consolidation tree",
         "no consolidation group",
         "four budget columns",
     ):
         assert phrase in text, phrase
     assert "three budget columns and the legend" not in text, "the export now has four"
+    # PR #558 review M1: one node per entity gives one root; no "several roots" state.
+    assert "several root consolidation groups" not in text
 
 
 def test_the_shipped_guide_names_no_customer():

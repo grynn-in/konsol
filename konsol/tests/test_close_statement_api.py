@@ -2563,10 +2563,14 @@ def test_entity_export_with_a_faulty_entity_budget_keeps_the_file_and_logs_the_f
 # scenario_id, cycle and layers AND the entity. The translated table has the
 # budget's plug; the local rows do not, so the reader synthesises one
 # ``unbalanced`` row per period (−Σ local) and S5's Unbalanced line and
-# residual rule serve the entity basis unchanged. An entity in several root
-# groups is ``choose_group`` naming them (never a guess; the Entity basis has
-# no group filter, S6-Q6 b is the upgrade); in none, ``no_group``. Both decide
-# before any Approved Budget or ClickHouse read.
+# residual rule serve the entity basis unchanged. The root is the TOP of the
+# tree: the walk follows parent_consolidation_group from the entity's one node
+# (an entity sits in one node, Consolidation Group._validate_entity_in_one_node;
+# a leaf's consolidation_group is its PARENT's code, so it is never the root's
+# in a nested tree). An entity in no node is ``no_group``, decided before any
+# Approved Budget or ClickHouse read. No ``choose_group``: one node and one
+# parent per node give one root by construction, and an ownership link may
+# only name an owner under the same root (ownership_period.owner_refusal).
 
 def _entity_budget_site(groups=("G1",)):
     site = _budget_site()
@@ -2577,9 +2581,11 @@ def _entity_budget_site(groups=("G1",)):
     }
     site.groups = [{"name": "CG-G1-", "consolidation_group": "G1", "reporting_currency": "USD"},
                    {"name": "CG-G2-", "consolidation_group": "G2", "reporting_currency": "EUR"}]
-    # Member rows carry the root's code and the entity (konsol#495 row 11b).
+    # A member node directly under its root: its code is the parent's, its
+    # parent the root's node.
     site.groups += [{"name": f"CG-{g}-ZZA", "consolidation_group": g, "data_area_id": "ZZA",
-                     "reporting_currency": None} for g in groups]
+                     "parent_consolidation_group": f"CG-{g}-", "reporting_currency": None}
+                    for g in groups]
     site.entity_budget_rows = [
         _drill_tb_row("4100", -1000, "entity", "ZZA"),
         _drill_tb_row("1110", 300, "entity", "ZZA"),
@@ -2650,16 +2656,41 @@ def test_entity_budget_plug_is_one_row_per_period_and_zero_when_balanced():
     assert bs[-1]["kind"] == "residual" and bs[-1]["current"] == 0.0
 
 
-def test_entity_in_two_root_groups_is_choose_group_naming_them_with_no_reads():
+def test_entity_budget_reads_the_top_root_groups_budget_through_a_nested_tree():
+    """PR #558 review M1: GROUP_CORP > GROUP_EMEA > DEMF. DEMF's node carries
+    its PARENT's code (GROUP_EMEA), and an Approved Budget is declared on the
+    root GROUP_CORP only: the Entity basis for DEMF walks the parent links to
+    GROUP_CORP and reads its budget, never GROUP_EMEA's (none) or a guess."""
+    site = _entity_budget_site(groups=())
+    site.entities["DEMF"] = {"entity_name": "Zz Demf", "functional_currency": "JPY", "is_group": 0}
+    site.groups = [
+        {"name": "CG-GROUP_CORP-", "consolidation_group": "GROUP_CORP", "data_area_id": None,
+         "parent_consolidation_group": None, "reporting_currency": "USD"},
+        {"name": "CG-GROUP_EMEA-", "consolidation_group": "GROUP_EMEA", "data_area_id": None,
+         "parent_consolidation_group": "CG-GROUP_CORP-", "reporting_currency": "EUR"},
+        {"name": "CG-GROUP_EMEA-DEMF", "consolidation_group": "GROUP_EMEA", "data_area_id": "DEMF",
+         "parent_consolidation_group": "CG-GROUP_EMEA-", "reporting_currency": None},
+    ]
+    site.approved_budgets[0]["consolidation_group"] = "CG-GROUP_CORP-"
+    site.entity_budget_rows = [_drill_tb_row("4100", -1000, "entity", "DEMF"),
+                               _drill_tb_row("1110", 300, "entity", "DEMF")]
+    result = _call_entity_budget(site, entity="DEMF")
+    assert result["state"] == "ok", result["message"]
+    assert result["meta"]["group"] == "GROUP_CORP" and result["meta"]["declaration"] == DECLARATION
+    [(sql, params)] = _entity_budget_calls(site)
+    assert params["group"] == "GROUP_CORP" and params["entity"] == "DEMF"
+    assert _line(result, "Profit and Loss", "heading", "4")["current"] == 1000.0
+
+
+def test_an_entity_on_two_nodes_is_refused_naming_them():
+    """The controller refuses a second node for an entity
+    (_validate_entity_in_one_node); data written around it is refused here by
+    name, never resolved to one of the roots."""
     site = _entity_budget_site(groups=("G1", "G2"))
-    result = _call_entity_budget(site)
-    assert result["state"] == "choose_group"
-    assert "ZZA" in result["message"] and "G1" in result["message"] and "G2" in result["message"]
-    assert result["statement"] is None
-    assert result["meta"]["group"] is None and result["meta"]["cycle"] is None
-    assert result["meta"]["entity"] == "ZZA" and result["meta"]["currency"] == "JPY"
+    with pytest.raises(Exception) as info:
+        _call_entity_budget(site)
+    assert "CG-G1-ZZA" in str(info.value) and "CG-G2-ZZA" in str(info.value)
     assert site.ch_calls == []
-    assert not [r for r in site.reads if r == ("get_all", "Approved Budget") or r[0] == "fingerprint"]
 
 
 def test_entity_in_no_group_is_no_group_with_no_reads():
