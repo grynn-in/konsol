@@ -243,67 +243,9 @@ import types
 from datetime import datetime
 from decimal import Decimal
 from fractions import Fraction
-import threading
-import time
 
 RUN_PY = os.path.join(EPM_DOCTYPES, RUN, "cost_allocation_run.py")
 RUN_JS = os.path.join(EPM_DOCTYPES, RUN, "cost_allocation_run.js")
-
-
-class _FakeLock:
-    """redis-py Lock over a real threading.Lock: acquire() waits up to
-    blocking_timeout and returns False on timeout, as redis-py does."""
-
-    def __init__(self, world, name, timeout, blocking_timeout):
-        self.world, self.name = world, name
-        self.timeout, self.blocking_timeout = timeout, blocking_timeout
-        self.inner = world.locks.setdefault(name, threading.Lock())
-
-    def acquire(self):
-        self.world.lock_requests.append((self.name, self.timeout, self.blocking_timeout))
-        if self.world.lock_never_free:
-            return False
-        got = self.inner.acquire(timeout=self.blocking_timeout)
-        if got:
-            self.world.events.append("lock")
-        return got
-
-    def release(self):
-        self.world.events.append("unlock")
-        self.inner.release()
-
-
-class _FakeRedis:
-    """frappe.cache in v16: raw get/set (get returns bytes) and redis-py lock()."""
-
-    def __init__(self, world):
-        self.world = world
-
-    def get(self, key):
-        value = self.world.redis.get(key)
-        return None if value is None else str(value).encode()
-
-    def set(self, key, value, ex=None):
-        self.world.redis[key] = value
-
-    def lock(self, name, timeout=None, blocking_timeout=None):
-        return _FakeLock(self.world, name, timeout, blocking_timeout)
-
-
-class _FakeJob:
-    def __init__(self, status):
-        self.status = status
-
-    def get_status(self, refresh=True):
-        return self.status
-
-
-def _fake_background_jobs(world):
-    """frappe.utils.background_jobs.get_job over world.jobs (un-namespaced id ->
-    RQ status string); None when RQ has no such job (expired or never made)."""
-    bj = types.ModuleType("frappe.utils.background_jobs")
-    bj.get_job = lambda job_id: (_FakeJob(world.jobs[job_id]) if job_id in world.jobs else None)
-    return bj
 
 
 class _Refused(Exception):
@@ -579,6 +521,49 @@ class _Refusal(Exception):
     pass
 
 
+def _matches(row, filters):
+    """A get_all filter dict as the database applies it: equality, or ["in", [...]]."""
+    for key, want in (filters or {}).items():
+        if isinstance(want, (list, tuple)) and want and want[0] == "in":
+            if row.get(key) not in want[1]:
+                return False
+        elif row.get(key) != want:
+            return False
+    return True
+
+
+class _FakeClickHouse:
+    """clickhouse.execute over an in-memory coefficients table: records every
+    statement with its params, holds rows per run, and answers the counts."""
+
+    def __init__(self):
+        self.calls = []
+        self.rows = []            # dicts, as inserted
+        self.down = False
+        self.fail_on = None       # a statement prefix that raises
+
+    def held(self):
+        out = {}
+        for r in self.rows:
+            out[r["run"]] = out.get(r["run"], 0) + 1
+        return out
+
+    def execute(self, sql, params=None, timeout=None):
+        self.calls.append((sql, dict(params or {})))
+        head = sql.lstrip().split("\n", 1)[0].upper()
+        if self.down or (self.fail_on and head.startswith(self.fail_on)):
+            raise ConnectionError("clickhouse down")
+        if head.startswith("DELETE FROM"):
+            self.rows = [r for r in self.rows if r["run"] != params["param_run"]]
+        elif head.startswith("INSERT INTO"):
+            self.rows.extend(json.loads(line) for line in sql.split("\n")[1:] if line.strip())
+        elif head.startswith("SELECT RUN, COUNT()"):
+            return "\n".join(f"{r}\t{n}" for r, n in sorted(self.held().items()))
+        elif head.startswith("SELECT COUNT()"):
+            return str(len(self.rows))
+        return ""
+
+
 class _World:
     """In-memory site for the K8 hooks."""
 
@@ -601,16 +586,13 @@ class _World:
         self.syncs = []
         self.once = []
         self.enqueued = []
-        self.redis = {}
-        self.jobs = {}
-        self.locks = {}
-        self.lock_requests = []
-        self.lock_never_free = False
         self.events = []
         self.commit_callbacks = []
         self.logged = []
         self.sync_table_calls = []
         self.get_all_data = {}
+        self.ch = _FakeClickHouse()
+        self.stamps = []
 
 
 def _k8(world):
@@ -634,7 +616,8 @@ def _k8(world):
         if doctype == "Cost Allocation Rule Set Scenario":
             # as the database would: only the named rule set's scenario rows
             return list(world.rs_scenarios) if (filters or {}).get("parent") == "ZZ Rules" else []
-        return [_Row(r) for r in world.get_all_data.get(doctype, [])]
+        rows = [_Row(r) for r in world.get_all_data.get(doctype, []) if _matches(r, filters)]
+        return [r[pluck] for r in rows] if pluck else rows
 
     def sql(query, values=None, as_dict=False, **k):
         world.sql.append((query, values))
@@ -665,12 +648,10 @@ def _k8(world):
     fr.get_all = get_all
     def enqueue(*a, **k):
         world.enqueued.append((a, k))
-        world.jobs[k.get("job_id")] = "queued"     # RQ sets QUEUED at enqueue
 
     fr.enqueue = enqueue
     fr.local = types.SimpleNamespace(site="zz.local")
     fr.db.after_commit = types.SimpleNamespace(add=world.commit_callbacks.append)
-    fr.cache = _FakeRedis(world)
     fr.logger = lambda *a, **k: types.SimpleNamespace(
         info=lambda msg, *x, **y: world.events.append(("log", msg)),
         warning=lambda msg, *x, **y: world.events.append(("warning", msg)),
@@ -696,9 +677,17 @@ def _k8(world):
     module.period_status = ps
     ch = types.SimpleNamespace()
     ch.sync_doctype_after_commit = lambda *a, **k: world.syncs.append(a)
-    ch.after_commit_once = lambda key, fn: world.once.append((key, fn))
+    def after_commit_once(key, fn):
+        # as clickhouse.after_commit_once: one callback per key per transaction
+        if all(k != key for k, _fn in world.once):
+            world.once.append((key, fn))
+
+    ch.after_commit_once = after_commit_once
     ch.sync_table = lambda table, columns, rows, **k: world.sync_table_calls.append(
         (table, columns, rows, k)) or len(rows)
+    ch.execute = world.ch.execute
+    ch._stamp_watermark = lambda table, row_count, source_max_modified=None: world.stamps.append(
+        (table, row_count, source_max_modified))
     module.clickhouse = ch
     return module
 
@@ -830,23 +819,18 @@ def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
         w.syncs.clear()
         w.once.clear()
         w.enqueued.clear()
-        w.jobs.clear()                 # no resync job on the site before this hook
+        w.ch.calls.clear()
         getattr(_k8_run(m, docstatus=1), hook)()
         assert [(s[0], s[1]) for s in w.syncs] == [
             ("Cost Allocation Run", "epm_staging.cost_allocation_runs"),
             ("Cost Allocation Run Account", "epm_staging.cost_allocation_run_accounts"),
             ("Cost Allocation Run Weight", "epm_staging.cost_allocation_run_weights")], hook
-        assert w.once == [], hook      # RF4: the coefficients are a job, not an after-commit callback
-        assert w.sync_table_calls == [], hook
-        # RF7: nothing is enqueued inside the transaction; one after-commit
-        # callback decides, after the commit, whether to enqueue
-        assert w.enqueued == [], hook
-        assert len(w.commit_callbacks) == 1, hook
-        _with_rq(w, w.commit_callbacks.pop())
-        (args, kw), = w.enqueued
-        assert args == ("konsol.epm.doctype.cost_allocation_run.cost_allocation_run."
-                        "resync_coefficients_job",), hook
-        assert kw["run"] == "CAR-00001", hook
+        # RF10: the coefficients are one guarded after-commit callback per run
+        ((key, _fn),) = w.once
+        assert key == ("cost_allocation_coefficients", "CAR-00001"), hook
+        # nothing touches ClickHouse, the queue or the commit list in the hook
+        assert w.sync_table_calls == [] and w.ch.calls == [], hook
+        assert w.enqueued == [] and w.commit_callbacks == [], hook
 
 
 def test_lifecycle_no_sync_on_a_draft_save_or_validate():
@@ -930,10 +914,11 @@ def _expected_rows():
 def test_lifecycle_coefficient_resync_rebuilds_exact_rows_from_stored_driver_values():
     w = _World()
     w.get_all_data["Cost Allocation Run"] = [
-        {"name": "CAR-00001", "method": "Step-Down", "modified": datetime(2026, 11, 13, 9, 0, 0)}]
+        {"name": "CAR-00001", "method": "Step-Down", "docstatus": 1,
+         "modified": datetime(2026, 11, 13, 9, 0, 0)}]
     w.get_all_data["Cost Allocation Run Weight"] = _stored_weights()
     m = _k8(w)
-    written = m.CostAllocationRun._write_coefficients(force=True)
+    written = m.CostAllocationRun.resync_staging(force=True)
     (table, columns, rows, kw), = w.sync_table_calls
     assert table == "epm_staging.cost_allocation_coefficients"
     assert columns == ["run", "origin_member", "step", "sender_member", "receiver_member",
@@ -954,7 +939,7 @@ def test_lifecycle_coefficient_resync_rebuilds_exact_rows_from_stored_driver_val
 def test_lifecycle_coefficient_resync_with_no_submitted_runs_empties_the_table():
     w = _World()
     m = _k8(w)
-    m.CostAllocationRun._write_coefficients()
+    m.CostAllocationRun.resync_staging()
     (table, columns, rows, kw), = w.sync_table_calls
     assert rows == [] and kw["force"] is False
 
@@ -970,7 +955,7 @@ def test_lifecycle_coefficient_resync_reads_submitted_runs_only():
         return orig(doctype, filters=filters, **k)
 
     m.frappe.get_all = spy
-    m.CostAllocationRun._write_coefficients()
+    m.CostAllocationRun.resync_staging()
     assert ("Cost Allocation Run", {"docstatus": 1}) in seen
 
 
@@ -1357,10 +1342,11 @@ def test_rc4_coefficient_resync_for_reciprocal_carries_hop_kind_and_the_models_r
     from konsol import cost_allocation_model as model
     w = _World()
     w.get_all_data["Cost Allocation Run"] = [
-        {"name": "CAR-00001", "method": "Reciprocal", "modified": datetime(2026, 11, 13, 9, 0, 0)}]
+        {"name": "CAR-00001", "method": "Reciprocal", "docstatus": 1,
+         "modified": datetime(2026, 11, 13, 9, 0, 0)}]
     w.get_all_data["Cost Allocation Run Weight"] = _recip_stored()
     m = _k8(w)
-    m.CostAllocationRun._write_coefficients(force=True)
+    m.CostAllocationRun.resync_staging(force=True)
     (table, columns, rows, kw), = w.sync_table_calls
     assert columns == list(model.COEFFICIENT_COLUMNS) and "hop_kind" in columns
     steps = model.build_steps(
@@ -1397,58 +1383,7 @@ def test_rc4_submit_accepts_a_reciprocal_run_and_refuses_a_closed_loop():
     assert "IT" in msg and "HR" in msg and "final receiver" in msg
 
 
-# --- RF4: coefficients resync as a job; Compute reports an unsolvable loop ----------
-
-def _job_tasks_stub(calls):
-    tasks = types.ModuleType("konsol.tasks")
-    tasks.request_consolidation_build = lambda doctype, name, trigger_method: calls.append(
-        (doctype, name, trigger_method))
-    return tasks
-
-
-def test_rf4_job_resyncs_then_requests_the_allocation_build():
-    w = _World()
-    m = _k8(w)
-    order = []
-    m.CostAllocationRun._write_coefficients = classmethod(lambda cls, force=False: order.append("resync"))
-    tasks = _job_tasks_stub(order)
-    saved = sys.modules.get("konsol.tasks")
-    sys.modules["konsol.tasks"] = tasks
-    try:
-        m.resync_coefficients_job(run="CAR-00001")
-    finally:
-        if saved is None:
-            sys.modules.pop("konsol.tasks", None)
-        else:
-            sys.modules["konsol.tasks"] = saved
-    assert order == ["resync", ("Cost Allocation Run", "CAR-00001", "coefficients_resync")]
-
-
-def test_rf4_a_failing_job_raises_logs_and_requests_no_build():
-    w = _World()
-    m = _k8(w)
-    calls = []
-
-    def boom(cls, force=False):
-        raise RuntimeError("clickhouse down")
-
-    m.CostAllocationRun._write_coefficients = classmethod(boom)
-    saved = sys.modules.get("konsol.tasks")
-    sys.modules["konsol.tasks"] = _job_tasks_stub(calls)
-    try:
-        try:
-            m.resync_coefficients_job(run="CAR-00001")
-        except RuntimeError as exc:
-            assert "clickhouse down" in str(exc)
-        else:
-            raise AssertionError("the job swallowed the failure")
-    finally:
-        if saved is None:
-            sys.modules.pop("konsol.tasks", None)
-        else:
-            sys.modules["konsol.tasks"] = saved
-    assert calls == [] and len(w.logged) == 1
-
+# --- RF4: Compute reports an unsolvable loop; no doc-event build trigger -----------
 
 def test_rf4_the_run_trigger_is_not_a_doc_event_any_more():
     """The job requests the allocation build after the resync; a doc-event
@@ -1484,488 +1419,292 @@ def test_rf4_compute_refuses_a_reciprocal_loop_whose_exit_edges_have_zero_statis
     assert run.saved == 0
 
 
-# --- RF7: after-commit enqueue, one job at a time, fresh read --------------------
+# --- RF10: per-run coefficient writes after commit; synchronous reconcile ------
+# Deepak Pai, 17 Nov 2026 (konsol PR #541): option B. Rejected: A, keeping the
+# background resync job (its marker, lock, timeouts and re-enqueue loop).
 
-JOB = "konsol.epm.doctype.cost_allocation_run.cost_allocation_run.resync_coefficients_job"
-#: frappe.enqueue's own parameters (Frappe v16 background_jobs.enqueue), which
-#: can never reach the job as kwargs
-ENQUEUE_OWN = {"method", "queue", "timeout", "event", "is_async", "async", "job_name", "now",
-               "enqueue_after_commit", "on_success", "on_failure", "at_front", "job_id",
-               "deduplicate", "at_front_when_starved"}
-
-
-def _with_rq(w, fn):
-    saved = sys.modules.get("frappe.utils.background_jobs")
-    sys.modules["frappe.utils.background_jobs"] = _fake_background_jobs(w)
-    try:
-        return fn()
-    finally:
-        if saved is None:
-            sys.modules.pop("frappe.utils.background_jobs", None)
-        else:
-            sys.modules["frappe.utils.background_jobs"] = saved
+STAGING = "epm_staging.cost_allocation_coefficients"
+BUILD_JOB = "konsol.tasks.request_consolidation_build"
+MODIFIED = datetime(2026, 11, 13, 9, 0, 0)
 
 
-def _commit(w, m, name, hook="on_submit"):
-    """The hook runs, then the transaction commits and its callbacks fire."""
-    w.commit_callbacks.clear()
+def _site(w, runs):
+    """``runs``: {name: docstatus}, as committed. Every run stores the
+    3-sender step-down weights of _stored_weights()."""
+    w.get_all_data["Cost Allocation Run"] = [
+        {"name": n, "method": "Step-Down", "docstatus": d, "modified": MODIFIED}
+        for n, d in runs.items()]
+    w.get_all_data["Cost Allocation Run Weight"] = [
+        {**r, "parent": n} for n in runs for r in _stored_weights()]
+
+
+def _rows_for(name):
+    """The run's coefficient rows as the model builds them, JSON-shaped."""
+    return [{c: (str(v) if isinstance(v, Decimal) else v) for c, v in {**r, "run": name}.items()}
+            for r in _expected_rows()]
+
+
+def _commit(w, m, name, hook, committed):
+    """The hook runs inside the transaction. Then the commit lands the run's
+    new state (``committed``: a docstatus, or None for a delete) and the
+    after-commit callbacks fire, as Frappe's commit runs them."""
+    w.once.clear()
     getattr(_k8_run(m, name=name, docstatus=1), hook)()
-    for callback in list(w.commit_callbacks):
-        _with_rq(w, callback)
+    runs = [r for r in w.get_all_data.get("Cost Allocation Run", []) if r["name"] != name]
+    if committed is not None:
+        runs.append({"name": name, "method": "Step-Down", "docstatus": committed,
+                     "modified": MODIFIED})
+        if not any(r["parent"] == name for r in w.get_all_data.get("Cost Allocation Run Weight", [])):
+            w.get_all_data.setdefault("Cost Allocation Run Weight", []).extend(
+                {**r, "parent": name} for r in _stored_weights())
+    w.get_all_data["Cost Allocation Run"] = runs
+    for _key, fn in list(w.once):
+        fn()
 
 
-def test_rf7_no_job_on_the_site_enqueues_one_after_the_commit():
+def _statements(w):
+    return [sql.lstrip().split("\n", 1)[0].split(" ")[0].upper() for sql, _p in w.ch.calls]
+
+
+def _logged_text(w):
+    return " ".join(str(x) for a, k in w.logged for x in list(a) + list(k.values()))
+
+
+def test_rf10_submit_writes_exactly_that_runs_rows_delete_then_insert():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00002") + [{**_rows_for("CAR-00001")[0], "coefficient": "9"}]
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert _statements(w)[:2] == ["DELETE", "INSERT"]
+    (delete, params), (insert, _ip) = w.ch.calls[:2]
+    assert delete.startswith(f"DELETE FROM {STAGING} WHERE run = {{run:String}}")
+    assert params["param_run"] == "CAR-00001"
+    # the run name is a parameter, never formatted into the SQL
+    assert "CAR-00001" not in delete and "CAR-00001" not in insert.split("\n", 1)[0]
+    assert sorted(r["run"] for r in w.ch.rows if r["run"] == "CAR-00001") == \
+        ["CAR-00001"] * len(_expected_rows())
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00001"] == _rows_for("CAR-00001")
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00002"] == _rows_for("CAR-00002")
+
+
+def test_rf10_the_delete_is_synchronous():
     w = _World()
     m = _k8(w)
-    _commit(w, m, "CAR-00001")
+    _commit(w, m, "CAR-00001", "on_cancel", committed=2)
+    (delete, _p), = [c for c in w.ch.calls if c[0].startswith("DELETE")]
+    assert "lightweight_deletes_sync = 2" in delete
+
+
+def test_rf10_cancel_deletes_the_runs_rows_and_inserts_nothing():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00001") + _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "on_cancel", committed=2)
+    assert "INSERT" not in _statements(w)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00002"}
+    assert w.ch.calls[0][1]["param_run"] == "CAR-00001"
+
+
+def test_rf10_delete_deletes_the_runs_rows():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00001") + _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "after_delete", committed=None)
+    assert "INSERT" not in _statements(w)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00002"}
+
+
+def test_rf10_the_write_is_after_commit_once_per_transaction_and_reads_committed_state():
+    w = _World()
+    m = _k8(w)
+    reads = []
+    orig = m.frappe.get_all
+    m.frappe.get_all = lambda doctype, **k: reads.append(doctype) or orig(doctype, **k)
+    run = _k8_run(m, docstatus=1)
+    run.on_submit()
+    run.on_submit()
+    run.on_cancel()
+    # inside the transaction: nothing read, nothing written
+    assert reads == [] and w.ch.calls == []
+    assert [k for k, _fn in w.once] == [("cost_allocation_coefficients", "CAR-00001")]
+    # Frappe's commit: COMMIT, START TRANSACTION, then the callbacks, so the
+    # callback's first read opens a snapshot holding this commit
+    _site(w, {"CAR-00001": 1})
+    w.once[0][1]()
+    assert "Cost Allocation Run" in reads
+    assert "rollback" not in w.events
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00001"}
+
+
+def test_rf10_success_requests_the_build_naming_the_run_after_the_write():
+    w = _World()
+    m = _k8(w)
+    at_enqueue = []
+    m.frappe.enqueue = lambda *a, **k: (at_enqueue.append(_statements(w)), w.enqueued.append((a, k)))
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
     (args, kw), = w.enqueued
-    assert args == (JOB,) and kw["run"] == "CAR-00001" and kw["queue"] == "long"
+    assert args == (BUILD_JOB,)
+    assert kw["doctype"] == "Cost Allocation Run" and kw["name"] == "CAR-00001"
+    assert kw["trigger_method"] == "coefficients_sync"
+    # already after the commit: no enqueue_after_commit, and no dedupe that
+    # would drop a request behind a started job
+    assert "enqueue_after_commit" not in kw and "deduplicate" not in kw
+    assert at_enqueue[0][:2] == ["DELETE", "INSERT"]
 
 
-def test_rf7_a_queued_job_is_reused_because_it_has_not_read_yet():
-    w = _World()
-    m = _k8(w)
-    _commit(w, m, "CAR-00001")
-    _commit(w, m, "CAR-00002")             # job 1 still QUEUED: it reads after this commit
-    assert len(w.enqueued) == 1
-
-
-def test_rf7_rc8b_race_a_started_job_does_not_cover_a_later_commit():
-    """RC8b: run B committed ~0.86 s after its on_submit while job A ran, and
-    B was lost. A STARTED job may have read already, so B gets its own job."""
-    w = _World()
-    m = _k8(w)
-    _commit(w, m, "CAR-00009")
-    first = w.enqueued[0][1]["job_id"]
-    w.jobs[first] = "started"              # the worker picked job A up
-    _commit(w, m, "CAR-00011")             # B commits while A runs
-    assert len(w.enqueued) == 2
-    second = w.enqueued[1][1]["job_id"]
-    assert second != first                 # never the id of the STARTED job
-    assert w.enqueued[1][1]["run"] == "CAR-00011"
-
-
-def test_rf7_a_finished_failed_or_expired_job_does_not_cover_a_commit():
-    for status in ("finished", "failed", "stopped", "canceled", None):
+def test_rf10_cancel_and_delete_request_the_build_too():
+    for hook, committed in (("on_cancel", 2), ("after_delete", None)):
         w = _World()
         m = _k8(w)
-        _commit(w, m, "CAR-00001")
-        first = w.enqueued[0][1]["job_id"]
-        if status is None:
-            del w.jobs[first]              # RQ result TTL expired
-        else:
-            w.jobs[first] = status
-        _commit(w, m, "CAR-00002")
-        assert len(w.enqueued) == 2, status
+        _commit(w, m, "CAR-00001", hook, committed=committed)
+        (args, kw), = w.enqueued
+        assert args == (BUILD_JOB,) and kw["name"] == "CAR-00001", hook
 
 
-def test_rf7_cancel_and_delete_take_the_same_path():
-    for hook in ("on_cancel", "after_delete"):
+def test_rf10_stamps_the_watermark_with_the_tables_row_count():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert w.stamps == [(STAGING, 2 * len(_expected_rows()), "2026-11-13 09:00:00")]
+
+
+def test_rf10_a_failure_does_not_raise_logs_the_run_and_requests_no_build():
+    for fail_on in ("DELETE", "INSERT", None):
         w = _World()
         m = _k8(w)
-        _commit(w, m, "CAR-00003", hook=hook)
-        assert [kw["run"] for _a, kw in w.enqueued] == ["CAR-00003"], hook
+        w.ch.fail_on = fail_on
+        w.ch.down = fail_on is None
+        _commit(w, m, "CAR-00001", "on_submit", committed=1)   # raises nothing
+        assert w.enqueued == [], fail_on
+        assert w.stamps == [], fail_on
+        (a, k), = w.logged
+        assert k.get("defer_insert") is True, fail_on
+        assert "CAR-00001" in _logged_text(w), fail_on
+        assert any(e[0] == "error" and "CAR-00001" in e[1]
+                   for e in w.events if isinstance(e, tuple)), fail_on
 
 
-def test_rf7_enqueue_kwargs_avoid_enqueues_own_parameters_and_its_dedupe():
+def test_rf10_a_failed_build_request_does_not_raise_and_is_logged():
     w = _World()
     m = _k8(w)
-    _commit(w, m, "CAR-00001")
-    (_args, kw), = w.enqueued
-    job_kwargs = set(kw) - {"queue", "job_id", "timeout"}
-    assert job_kwargs == {"run"}
-    assert not job_kwargs & ENQUEUE_OWN
-    assert "deduplicate" not in kw and "enqueue_after_commit" not in kw
-    assert "run" in inspect.signature(m.resync_coefficients_job).parameters
+
+    def down(*a, **k):
+        raise ConnectionError("redis down")
+
+    m.frappe.enqueue = down
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00001"}
+    assert "CAR-00001" in _logged_text(w)
 
 
-def test_rf7_the_generation_counter_is_gone():
-    with open(RUN_PY) as f:
+def test_rf10_reconcile_rebuilds_synchronously_with_every_submitted_run():
+    w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00002": 1, "CAR-00003": 2})
+    m = _k8(w)
+    written = m.CostAllocationRun.resync_staging(force=True)
+    (table, columns, rows, kw), = w.sync_table_calls
+    # sync_table is the writer that stamps the reconcile run id on the watermark
+    assert table == STAGING and kw["force"] is True
+    assert written == len(rows) == 2 * len(_expected_rows())
+    assert {r[0] for r in rows} == {"CAR-00001", "CAR-00002"}
+    # synchronous: no job, no callback, no build request
+    assert w.enqueued == [] and w.commit_callbacks == [] and w.once == []
+
+
+def test_rf10_reconcile_stamps_the_reconcile_run_id():
+    """reconcile_all records resync_staging's row count, and its writer is
+    sync_table, which stamps _reconcile_run_id: no 'queued' result is left."""
+    with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
         src = f.read()
-    for gone in ("_bump_generation", "_generation", "MAX_RESYNC_PASSES", "deduplicate=True"):
-        assert gone not in src, gone
-
-
-def _job(w, m, run="CAR-00001", resync=None, calls=None):
-    calls = [] if calls is None else calls
-
-    def default(cls, force=False):
-        w.events.append(("resync", force))
-        return 7
-
-    m.CostAllocationRun._write_coefficients = classmethod(resync or default)
-    tasks = _job_tasks_stub(calls)
-    tasks.request_consolidation_build = lambda doctype, name, trigger_method: (
-        calls.append((doctype, name, trigger_method)),
-        w.events.append(("build", name)))
-    saved = sys.modules.get("konsol.tasks")
-    sys.modules["konsol.tasks"] = tasks
-    try:
-        m.resync_coefficients_job(run=run)
-    finally:
-        if saved is None:
-            sys.modules.pop("konsol.tasks", None)
-        else:
-            sys.modules["konsol.tasks"] = saved
-    return calls
-
-
-def test_rf7_job_locks_rolls_back_resyncs_forced_then_requests_the_build_for_the_run():
-    w = _World()
-    m = _k8(w)
-    calls = _job(w, m, run="CAR-00011")
-    steps = [e for e in w.events if not (isinstance(e, tuple) and e[0] == "log")]
-    assert steps == ["lock", "rollback", ("resync", True), "unlock", ("build", "CAR-00011")]
-    assert calls == [("Cost Allocation Run", "CAR-00011", "coefficients_resync")]
-    (name, timeout, wait), = w.lock_requests
-    assert name.endswith("zz.local") and timeout and wait
-
-
-def test_rf7_job_logs_one_line_with_run_rows_and_duration():
-    w = _World()
-    m = _k8(w)
-    _job(w, m, run="CAR-00011")
-    logs = [e[1] for e in w.events if isinstance(e, tuple) and e[0] == "log"]
-    assert len(logs) == 1
-    assert "CAR-00011" in logs[0] and "7 rows" in logs[0] and re.search(r"\d+\.\d+ ?s", logs[0])
-
-
-def test_rf7_a_clickhouse_failure_raises_logs_and_requests_no_build():
-    w = _World()
-    m = _k8(w)
-
-    def boom(cls, force=False):
-        assert force is True
-        raise RuntimeError("clickhouse down")
-
-    calls = []
-    try:
-        _job(w, m, resync=boom, calls=calls)
-    except RuntimeError as exc:
-        assert "clickhouse down" in str(exc)
-    else:
-        raise AssertionError("the job swallowed the failure")
-    assert calls == [] and len(w.logged) == 1
-    assert w.events[-1] == "unlock"        # the lock is released on failure
-
-
-def test_rf7_two_jobs_serialise_on_the_lock():
-    w = _World()
-    m = _k8(w)
-    release_a = threading.Event()
-    entered = []
-
-    def resync(cls, force=False):
-        me = threading.current_thread().name
-        entered.append(("in", me))
-        if me == "A":
-            release_a.wait(5)
-        entered.append(("out", me))
-        return 1
-
-    m.CostAllocationRun._write_coefficients = classmethod(resync)
-    saved = sys.modules.get("konsol.tasks")
-    sys.modules["konsol.tasks"] = _job_tasks_stub([])
-    try:
-        a = threading.Thread(target=m.resync_coefficients_job, kwargs={"run": "CAR-1"}, name="A",
-                             daemon=True)
-        b = threading.Thread(target=m.resync_coefficients_job, kwargs={"run": "CAR-2"}, name="B",
-                             daemon=True)
-        a.start()
-        deadline = time.monotonic() + 5
-        while ("in", "A") not in entered:
-            assert time.monotonic() < deadline, "job A never reached the resync"
-            time.sleep(0.005)
-        b.start()
-        time.sleep(0.1)
-        held = ("in", "B") not in entered   # B waits on the lock while A holds it
-        release_a.set()
-        a.join(5)
-        b.join(5)
-    finally:
-        if saved is None:
-            sys.modules.pop("konsol.tasks", None)
-        else:
-            sys.modules["konsol.tasks"] = saved
-    assert held
-    assert entered == [("in", "A"), ("out", "A"), ("in", "B"), ("out", "B")]
-
-
-def test_rf7_job_without_a_run_names_the_latest_submitted_or_cancelled_run():
-    w = _World()
-    m = _k8(w)
-    seen = {}
-
-    def get_all(doctype, filters=None, fields=None, pluck=None, order_by=None, **k):
-        seen.update(doctype=doctype, filters=filters, order_by=order_by, limit=k.get("limit"))
-        return ["CAR-00007"]
-
-    m.frappe.get_all = get_all
-    calls = _job(w, m, run=None)
-    assert calls == [("Cost Allocation Run", "CAR-00007", "coefficients_resync")]
-    assert seen["filters"] == {"docstatus": ["in", [1, 2]]}
-    assert seen["order_by"] == "modified desc" and seen["limit"] == 1
-
-
-# --- RF9: one locked writer, guarded callback, timeouts, hourly safety net ------
-
-def _stub_writer(w, m, rows=7):
-    def write(cls, force=False):
-        w.events.append(("resync", force))
-        return rows
-
-    m.CostAllocationRun._write_coefficients = classmethod(write)
-
-
-def _run_job(w, m, calls, **kwargs):
-    tasks = _job_tasks_stub(calls)
-    saved = sys.modules.get("konsol.tasks")
-    sys.modules["konsol.tasks"] = tasks
-    try:
-        return _with_rq(w, lambda: m.resync_coefficients_job(**kwargs))
-    finally:
-        if saved is None:
-            sys.modules.pop("konsol.tasks", None)
-        else:
-            sys.modules["konsol.tasks"] = saved
-
-
-def _log_lines(w):
-    return [e[1] for e in w.events if isinstance(e, tuple) and e[0] == "log"]
-
-
-def test_rf9_reconcile_entry_never_writes_and_enqueues_the_locked_job():
-    """R2: reconcile_all calls resync_staging inside after_migrate, whose
-    transaction still holds uncommitted work (roles, seeds, custom fields), so
-    it may neither roll back nor wait on the lock. It enqueues the job."""
-    w = _World()
-    m = _k8(w)
-    result = _with_rq(w, lambda: m.CostAllocationRun.resync_staging(force=True))
-    assert w.sync_table_calls == [] and "rollback" not in w.events
-    (args, kw), = w.enqueued
-    assert args == (JOB,) and kw["run"] is None and kw["request_build"] is False
-    assert result == "queued"
-    # reconcile's job does not stand in for a submit's: no marker, so a later
-    # commit enqueues its own job, which requests the build
-    assert w.redis == {}
-
-
-def test_rf9_reconcile_reuses_a_queued_job():
-    w = _World()
-    m = _k8(w)
-    _commit(w, m, "CAR-00001")
-    assert _with_rq(w, lambda: m.CostAllocationRun.resync_staging(force=True)) == "queued"
-    assert len(w.enqueued) == 1
-
-
-def test_rf9_reconcile_and_the_job_take_the_same_lock():
-    w = _World()
-    m = _k8(w)
-    _stub_writer(w, m)
-    _commit(w, m, "CAR-00001")
-    w.jobs[w.enqueued[0][1]["job_id"]] = "started"   # else reconcile reuses it
-    _with_rq(w, lambda: m.CostAllocationRun.resync_staging(force=True))
-    w.jobs.clear()
-    for _args, kw in list(w.enqueued):
-        job_kwargs = {k: v for k, v in kw.items() if k not in ("queue", "job_id", "timeout")}
-        _run_job(w, m, [], **job_kwargs)
-    names = {name for name, _t, _b in w.lock_requests}
-    assert len(w.lock_requests) == 2 and len(names) == 1
-    assert w.events.count(("resync", True)) == 2
-
-
-def test_rf9_reconcile_job_requests_no_build():
-    w = _World()
-    m = _k8(w)
-    _stub_writer(w, m)
-    calls = []
-    _run_job(w, m, calls, run=None, request_build=False)
-    assert calls == [] and ("resync", True) in w.events
-
-
-def test_rf9_the_writer_is_called_only_under_the_lock():
-    """No caller may write cost_allocation_coefficients without the lock:
-    sync_table is called by _write_coefficients alone, and _write_coefficients
-    by _locked_resync alone, after the lock and the rollback."""
+    loop = src.split("def _reconcile_tables():")[1].split("\ndef ")[0]
+    assert "cls.resync_staging(force=True)" in loop
+    assert "queue" not in loop.lower()
     with open(RUN_PY) as f:
         tree = ast.parse(f.read())
-    callers = {"sync_table": set(), "_write_coefficients": set()}
-
-    def walk(node, owner):
-        for child in ast.iter_child_nodes(node):
-            name = owner
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                name = child.name
-            if isinstance(child, ast.Call):
-                called = getattr(child.func, "attr", None) or getattr(child.func, "id", None)
-                if called in callers:
-                    callers[called].add(owner)
-            walk(child, name)
-
-    walk(tree, "<module>")
-    assert callers["sync_table"] == {"_write_coefficients"}, callers
-    assert callers["_write_coefficients"] == {"_locked_resync"}, callers
-    fn = next(n for n in ast.walk(tree)
-              if isinstance(n, ast.FunctionDef) and n.name == "_locked_resync")
-    src = ast.unparse(fn)
-    assert src.index(".acquire(") < src.index("rollback(") < src.index("_write_coefficients(")
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "CostAllocationRun")
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "resync_staging")
+    calls = {ast.unparse(c.func) for c in ast.walk(fn) if isinstance(c, ast.Call)}
+    assert "clickhouse.sync_table" in calls
+    assert not any("enqueue" in c for c in calls)
 
 
-def test_rf9_the_callback_with_redis_down_logs_and_does_not_raise():
-    for broken in ("enqueue", "cache"):
-        w = _World()
-        m = _k8(w)
+# the hourly safety net (F4, F5)
 
-        def down(*a, **k):
-            raise ConnectionError("redis down")
-
-        if broken == "enqueue":
-            m.frappe.enqueue = down
-        else:
-            m.frappe.cache = types.SimpleNamespace(get=down, set=down, lock=down)
-        assert _with_rq(w, lambda: m._queue_coefficient_resync("CAR-00042")) is None, broken
-        (args, kw), = w.logged
-        text = " ".join(str(x) for x in list(args) + list(kw.values()))
-        assert "CAR-00042" in text, broken
-        # after the commit an inserted Error Log would never be committed
-        assert kw.get("defer_insert") is True, broken
-        assert any(e[0] == "error" and "CAR-00042" in e[1]
-                   for e in w.events if isinstance(e, tuple)), broken
+def _staged(w, counts):
+    """Put ``counts`` ({run: rows}) in staging."""
+    w.ch.rows = [r for run, n in counts.items() for r in _rows_for(run)[:n]]
 
 
-def test_rf9_a_commit_survives_a_failing_callback():
+def test_rf10_safety_net_does_nothing_on_a_match():
     w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00002": 1, "CAR-00003": 2})
+    n = len(_expected_rows())
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
     m = _k8(w)
-    m.frappe.enqueue = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("redis down"))
-    _commit(w, m, "CAR-00001")              # raises nothing out of the commit
-    assert len(w.logged) == 1
+    m.check_coefficients_staging()
+    assert _statements(w) == ["SELECT"]
+    assert "GROUP BY run" in w.ch.calls[0][0]
+    assert w.enqueued == [] and w.logged == [] and w.stamps == [] and w.sync_table_calls == []
 
 
-def test_rf9_timeout_inequalities():
-    """R4: a waiter that waited its full RESYNC_WAIT_SECONDS still has
-    RESYNC_RUN_SECONDS to run before RQ kills it; the lock outlives any live
-    holder (RQ kills a job at RESYNC_JOB_TIMEOUT after it started, and a
-    job holds the lock only after it started). A waiter cannot also outwait a
-    dead holder's lock (that would need WAIT >= LOCK >= JOB >= WAIT + RUN), so
-    a waiter that times out re-enqueues instead: the chain of waiters always
-    outlasts the dead holder's lock."""
-    m = _k8(_World())
-    assert m.RESYNC_RUN_SECONDS > 0
-    assert m.RESYNC_JOB_TIMEOUT >= m.RESYNC_WAIT_SECONDS + m.RESYNC_RUN_SECONDS
-    assert m.RESYNC_LOCK_SECONDS >= m.RESYNC_JOB_TIMEOUT
-
-
-def test_rf9_the_enqueue_and_the_lock_use_the_declared_timeouts():
+def test_rf10_safety_net_repairs_a_missing_run_and_requests_its_build():
     w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00002": 1})
+    _staged(w, {"CAR-00001": len(_expected_rows())})
     m = _k8(w)
-    _stub_writer(w, m)
-    _commit(w, m, "CAR-00001")
-    (_args, kw), = w.enqueued
-    assert kw["timeout"] == m.RESYNC_JOB_TIMEOUT
-    _run_job(w, m, [], run="CAR-00001")
-    (_name, ttl, wait), = w.lock_requests
-    assert ttl == m.RESYNC_LOCK_SECONDS and wait == m.RESYNC_WAIT_SECONDS
-
-
-def test_rf9_a_lock_timeout_reenqueues_and_reads_nothing():
-    w = _World()
-    m = _k8(w)
-    _stub_writer(w, m)
-    _commit(w, m, "CAR-00005")
-    first = w.enqueued[0][1]["job_id"]
-    w.jobs[first] = "started"               # this job is the one now running
-    w.lock_never_free = True
-    calls = []
-    _run_job(w, m, calls, run="CAR-00005")  # does not raise
-    assert len(w.enqueued) == 2
-    second = w.enqueued[1][1]
-    assert second["job_id"] != first and second["run"] == "CAR-00005"
-    assert second.get("request_build", True) is True
-    assert w.redis[m._queued_marker_key()] == second["job_id"]
-    assert calls == [] and "rollback" not in w.events and ("resync", True) not in w.events
-    (args, kw), = w.logged
-    assert "CAR-00005" in " ".join(str(x) for x in list(args) + list(kw.values()))
-
-
-def test_rf9_a_job_without_any_run_requests_no_build_and_logs_one_line():
-    """R6: run=None (reconcile, by hand, or the safety net with only extra
-    rows) and no submitted or cancelled run: no build request."""
-    w = _World()
-    m = _k8(w)
-    _stub_writer(w, m, rows=0)
-    m.frappe.get_all = lambda *a, **k: []
-    calls = []
-    _run_job(w, m, calls, run=None)
-    assert calls == []
-    (line,) = _log_lines(w)
-    assert "no build" in line.lower()
-
-
-# the hourly safety net (R1b-d)
-
-def _staging(m, runs):
-    m.clickhouse.execute = lambda sql, *a, **k: "\n".join(runs)
-
-
-def _submitted(m, names):
-    def get_all(doctype, filters=None, pluck=None, **k):
-        assert doctype == "Cost Allocation Run" and filters == {"docstatus": 1}
-        return list(names)
-
-    m.frappe.get_all = get_all
-
-
-def test_rf9_safety_net_does_nothing_on_a_match():
-    w = _World()
-    m = _k8(w)
-    _submitted(m, ["CAR-00001", "CAR-00002"])
-    _staging(m, ["CAR-00002", "CAR-00001"])
-    _with_rq(w, m.check_coefficients_staging)
-    assert w.enqueued == [] and w.logged == [] and w.redis == {} and w.sync_table_calls == []
-
-
-def test_rf9_safety_net_enqueues_and_logs_a_missing_run():
-    w = _World()
-    m = _k8(w)
-    _submitted(m, ["CAR-00001", "CAR-00003", "CAR-00002"])
-    _staging(m, ["CAR-00001"])
-    _with_rq(w, m.check_coefficients_staging)
+    m.check_coefficients_staging()
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00002"] == _rows_for("CAR-00002")
     (args, kw), = w.enqueued
-    assert args == (JOB,) and kw["run"] == "CAR-00002" and kw.get("request_build", True)
-    (largs, lkw), = w.logged
-    text = " ".join(str(x) for x in list(largs) + list(lkw.values()))
-    assert "CAR-00002" in text and "CAR-00003" in text
-    assert "\n" not in lkw.get("message", text)
+    assert args == (BUILD_JOB,) and kw["name"] == "CAR-00002"
+    (a, k), = w.logged
+    assert "CAR-00002" in _logged_text(w) and "CAR-00001" not in _logged_text(w)
+    assert "\n" not in k.get("message", "")
 
 
-def test_rf9_safety_net_enqueues_for_an_extra_cancelled_run():
+def test_rf10_safety_net_deletes_an_extra_run_and_its_build_names_the_run():
     w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00004": 2})
+    n = len(_expected_rows())
+    _staged(w, {"CAR-00001": n, "CAR-00004": n})
     m = _k8(w)
-    _submitted(m, ["CAR-00001"])
-    _staging(m, ["CAR-00001", "CAR-00004"])
-    _with_rq(w, m.check_coefficients_staging)
+    m.check_coefficients_staging()
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00001"}
+    assert "INSERT" not in _statements(w)
     (args, kw), = w.enqueued
-    assert args == (JOB,) and kw["run"] is None
-    (largs, lkw), = w.logged
-    assert "CAR-00004" in " ".join(str(x) for x in list(largs) + list(lkw.values()))
+    assert args == (BUILD_JOB,) and kw["name"] == "CAR-00004"     # F4
+    assert "CAR-00004" in _logged_text(w)
 
 
-def test_rf9_safety_net_waits_for_a_resync_already_in_flight():
-    """A commit whose job is queued or running shows as a mismatch until the
-    job writes; that is not a loss. The next hour checks again."""
-    for status in ("queued", "started"):
-        w = _World()
-        m = _k8(w)
-        _commit(w, m, "CAR-00002")
-        w.jobs[w.enqueued[0][1]["job_id"]] = status
-        _submitted(m, ["CAR-00001", "CAR-00002"])
-        _staging(m, ["CAR-00001"])
-        _with_rq(w, m.check_coefficients_staging)
-        assert len(w.enqueued) == 1 and w.logged == [], status
+def test_rf10_safety_net_repairs_a_run_with_the_wrong_row_count():
+    w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00002": 1})
+    n = len(_expected_rows())
+    _staged(w, {"CAR-00001": n, "CAR-00002": n - 1})                # F5
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00002"] == _rows_for("CAR-00002")
+    (args, kw), = w.enqueued
+    assert kw["name"] == "CAR-00002"
+    assert len(w.logged) == 1 and "CAR-00002" in _logged_text(w)
 
 
-def test_rf9_safety_net_is_scheduled_hourly():
-    with open(os.path.join(os.path.dirname(RUN_PY), "..", "..", "..", "hooks.py")) as f:
+def test_rf10_safety_net_with_clickhouse_down_only_warns():
+    w = _World()
+    _site(w, {"CAR-00001": 1})
+    w.ch.down = True
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert w.logged == [] and w.enqueued == [] and w.stamps == []
+    assert any(e[0] == "warning" for e in w.events if isinstance(e, tuple))
+
+
+def test_rf10_safety_net_is_scheduled_hourly():
+    with open(os.path.join(APP_DIR, "hooks.py")) as f:
         tree = ast.parse(f.read())
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
@@ -1975,3 +1714,31 @@ def test_rf9_safety_net_is_scheduled_hourly():
                     ".check_coefficients_staging") in events.get("hourly", [])
             return
     raise AssertionError("scheduler_events not found")
+
+
+REMOVED = ("resync_coefficients_job", "_locked_resync", "_queue_coefficient_resync",
+           "_queued_marker_key", "_resync_lock_key", "_marker_status", "_job_status",
+           "_latest_run", "_write_coefficients", "_NO_LOCK", "RESYNC_JOB",
+           "RESYNC_WAIT_SECONDS", "RESYNC_RUN_SECONDS", "RESYNC_JOB_TIMEOUT",
+           "RESYNC_LOCK_SECONDS", "RESYNC_MARKER_SECONDS",
+           "cost_allocation_coefficients_queued", "cost_allocation_coefficients_resync")
+
+
+def test_rf10_the_job_marker_and_lock_are_gone_and_nothing_references_them():
+    m = _k8(_World())
+    for name in REMOVED:
+        assert not hasattr(m, name), name
+        assert not hasattr(m.CostAllocationRun, name), name
+    this = os.path.abspath(__file__)
+    found = []
+    for root, _dirs, files in os.walk(APP_DIR):
+        for f in files:
+            path = os.path.join(root, f)
+            if not f.endswith((".py", ".json", ".js", ".txt")) or os.path.abspath(path) == this:
+                continue
+            with open(path, encoding="utf-8", errors="ignore") as fh:
+                text = fh.read()
+            for name in REMOVED:
+                if re.search(rf"\b{re.escape(name)}\b", text):
+                    found.append((os.path.relpath(path, APP_DIR), name))
+    assert found == []
