@@ -307,6 +307,9 @@ class _Site:
         #: gold_consolidated_budget_tb rate rows.
         self.budget_drill_rows = []
         self.budget_rate_rows = []
+        #: S6 KB8: the entity budget's one read over gold_consolidated_budget_tb
+        #: (``amt`` alias over local_amount; the plug is synthesised in Python).
+        self.entity_budget_rows = []
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -416,8 +419,10 @@ def _ch_read(site):
             raise site.ch_error
         if "gold_consolidation_adjustments" in sql:
             return [dict(r) for r in site.journal_rows]
-        if "gold_consolidated_budget_tb" in sql:  # S5 K9: the budget drill's rates read
-            return [dict(r) for r in site.budget_rate_rows]
+        if "gold_consolidated_budget_tb" in sql:
+            if "local_amount" in sql:  # S6 KB8: the entity budget's one read
+                return [dict(r) for r in site.entity_budget_rows]
+            return [dict(r) for r in site.budget_rate_rows]  # S5 K9: the budget drill's rates read
         if "gold_fully_consolidated_budget" in sql:
             if "data_area_id" in sql:  # S5 K9: the budget drill's entity-grain read
                 return [dict(r) for r in site.budget_drill_rows]
@@ -2470,3 +2475,156 @@ def test_export_with_a_refused_budget_line_keeps_the_actuals_file_without_a_log(
     assert "Budget columns not shown: 4 has no budget statement line (a bug)." in text, text
     assert _budget_event_detail(site) is None
     assert site.error_logs == [] and site.cleared_messages == 1
+
+
+# --- the entity budget (konsol#348 S6 KB8; S6-Q6 a) -------------------------------
+#
+# ``entity_budget_payload(fy, fp, entity)`` (not whitelisted; the Desk report
+# calls it on the Entity basis, KB9) is the Approved Budget of the entity's ROOT
+# group, read at the entity's grain: gold_consolidated_budget_tb.local_amount
+# (the entity's own currency), bound to the group, the declaration's
+# scenario_id, cycle and layers AND the entity. The translated table has the
+# budget's plug; the local rows do not, so the reader synthesises one
+# ``unbalanced`` row per period (−Σ local) and S5's Unbalanced line and
+# residual rule serve the entity basis unchanged. An entity in several root
+# groups is ``choose_group`` naming them (never a guess; the Entity basis has
+# no group filter, S6-Q6 b is the upgrade); in none, ``no_group``. Both decide
+# before any Approved Budget or ClickHouse read.
+
+def _entity_budget_site(groups=("G1",)):
+    site = _budget_site()
+    site.minor_units = {"USD": 2, "JPY": 0}
+    site.entities = {
+        "ZZA": {"entity_name": "Zz Entity A", "functional_currency": "JPY", "is_group": 0},
+        "ZZG": {"entity_name": "Zz Group", "functional_currency": "JPY", "is_group": 1},
+    }
+    site.groups = [{"name": "CG-G1-", "consolidation_group": "G1", "reporting_currency": "USD"},
+                   {"name": "CG-G2-", "consolidation_group": "G2", "reporting_currency": "EUR"}]
+    # Member rows carry the root's code and the entity (konsol#495 row 11b).
+    site.groups += [{"name": f"CG-{g}-ZZA", "consolidation_group": g, "data_area_id": "ZZA",
+                     "reporting_currency": None} for g in groups]
+    site.entity_budget_rows = [
+        _drill_tb_row("4100", -1000, "entity", "ZZA"),
+        _drill_tb_row("1110", 300, "entity", "ZZA"),
+        _drill_tb_row("4100", -500, "entity", "ZZA", fp=6),
+        _drill_tb_row("1110", 500, "entity", "ZZA", fp=6),
+    ]
+    return site
+
+
+def _call_entity_budget(site, fy=2025, fp=7, entity="ZZA"):
+    result = _invoke(site, lambda api: api.entity_budget_payload(fy, fp, entity))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def _entity_budget_calls(site):
+    return [(sql, params) for sql, params in site.ch_calls if "gold_consolidated_budget_tb" in sql]
+
+
+def test_entity_budget_reads_the_local_budget_once_bound_to_group_scenario_cycle_layers_and_entity():
+    site = _entity_budget_site()
+    result = _call_entity_budget(site)
+    assert result["state"] == "ok", result["message"]
+    calls = _entity_budget_calls(site)
+    assert len(calls) == 1 and len(site.ch_calls) == 1, site.ch_calls
+    sql, params = calls[0]
+    assert "gold_consolidated_budget_tb" in sql and "sum(local_amount)" in sql
+    for bind in ("consolidation_group = {group:String}", "scenario_id = {scenario:String}",
+                 "cycle = {cycle:String}", "layer IN {layers:Array(String)}", "fiscal_year <= {fy:UInt32}",
+                 "data_area_id = {entity:String}"):
+        assert bind in sql, bind
+    assert params == {"group": "G1", "scenario": "ZZB", "cycle": CYCLE, "fy": 2025,
+                      "layers": "['base','board']", "entity": "ZZA"}
+    assert "dim_" not in sql
+    assert ("fingerprint", CYCLE) in site.reads
+
+
+def test_entity_budget_payload_is_the_statement_in_the_entitys_currency_with_a_synthesised_plug():
+    site = _entity_budget_site()
+    result = _call_entity_budget(site)
+    assert set(result) == {"state", "message", "statement", "meta"}
+    assert result["meta"] == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS",
+                              "scenario_id": "ZZB", "declaration": DECLARATION,
+                              "heading_sides": {"1": "Debit", "2": "Credit", "3": "Credit", "4": ""},
+                              "group": "G1", "entity": "ZZA", "currency": "JPY"}
+    stmt = result["statement"]
+    assert stmt["minor_unit"] == 0, "the entity's functional currency, never the group's"
+    pl = _line(result, "Profit and Loss", "heading", "4")
+    assert pl["current"] == 1000.0 and pl["ytd"] == 1500.0
+    assert _bs_line(result, "1")["current"] == 800.0
+    bs = result["statement"]["sections"][1]["lines"]
+    unbalanced = next(l for l in bs if l.get("kind") == "unbalanced")
+    assert unbalanced["current"] == -800.0, "one plug per period: -(−1000+300) at P7, -(−500+500)=0 at P6, cumulative"
+    assert bs[-1]["kind"] == "residual" and bs[-1]["current"] == 0.0
+    for word in (CYCLE, "ZZA", "JPY", DECLARATION):
+        assert word in result["message"], word
+
+
+def test_entity_budget_plug_is_one_row_per_period_and_zero_when_balanced():
+    site = _entity_budget_site()
+    site.entity_budget_rows = [_drill_tb_row("4100", -1000, "entity", "ZZA"),
+                               _drill_tb_row("1110", 1000, "entity", "ZZA")]
+    result = _call_entity_budget(site)
+    bs = result["statement"]["sections"][1]["lines"]
+    unbalanced = next(l for l in bs if l.get("kind") == "unbalanced")
+    assert unbalanced["current"] == 0.0 and bs[-1]["current"] == 0.0
+
+
+def test_entity_in_two_root_groups_is_choose_group_naming_them_with_no_reads():
+    site = _entity_budget_site(groups=("G1", "G2"))
+    result = _call_entity_budget(site)
+    assert result["state"] == "choose_group"
+    assert "ZZA" in result["message"] and "G1" in result["message"] and "G2" in result["message"]
+    assert result["statement"] is None
+    assert result["meta"]["group"] is None and result["meta"]["cycle"] is None
+    assert result["meta"]["entity"] == "ZZA" and result["meta"]["currency"] == "JPY"
+    assert site.ch_calls == []
+    assert not [r for r in site.reads if r == ("get_all", "Approved Budget") or r[0] == "fingerprint"]
+
+
+def test_entity_in_no_group_is_no_group_with_no_reads():
+    site = _entity_budget_site(groups=())
+    result = _call_entity_budget(site)
+    assert result["state"] == "no_group" and "ZZA" in result["message"]
+    assert "Consolidation Group" in result["message"]
+    assert site.ch_calls == [] and not [r for r in site.reads if r == ("get_all", "Approved Budget")]
+
+
+def test_entity_budget_without_a_declaration_for_its_group_is_no_approved_budget():
+    site = _entity_budget_site()
+    site.approved_budgets = []
+    result = _call_entity_budget(site)
+    assert result["state"] == "no_approved_budget" and "G1 FY2025" in result["message"]
+    assert result["meta"]["group"] == "G1" and site.ch_calls == []
+
+
+def test_entity_budget_no_rows_names_the_cycle_and_the_entity_never_zeros():
+    site = _entity_budget_site()
+    site.entity_budget_rows = []
+    result = _call_entity_budget(site)
+    assert result["state"] == "no_rows"
+    assert CYCLE in result["message"] and "ZZA" in result["message"] and "FY2025 P07" in result["message"]
+    assert result["statement"] is None
+
+
+def test_entity_budget_refuses_a_blank_unknown_group_or_out_of_scope_entity_before_any_read():
+    for entity in ("", "ZZ-NOPE", "ZZG"):
+        site = _entity_budget_site()
+        with pytest.raises(Exception):
+            _call_entity_budget(site, entity=entity)
+        assert site.ch_calls == [], entity
+    site = _entity_budget_site()
+    site.allowed = {"ZZB"}
+    with pytest.raises(Exception) as info:
+        _call_entity_budget(site)
+    assert "ZZA" in str(info.value) or "permitted" in str(info.value).lower()
+    assert site.ch_calls == [] and not [r for r in site.reads if r[0] == "fingerprint"]
+
+
+def test_entity_budget_with_an_undeclared_functional_currency_is_setup_gap():
+    site = _entity_budget_site()
+    site.entities["ZZA"]["functional_currency"] = "XXX"
+    result = _call_entity_budget(site)
+    assert result["state"] == "setup_gap" and "XXX" in result["message"]
+    assert site.ch_calls == []
