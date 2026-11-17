@@ -102,18 +102,28 @@ def _ok(fy, tb_rows):
     return payload, {"tb_rows": tb_rows}
 
 
-def _execute_with(statement, entity_statement=None):
+_BUDGET_OK = {"state": "ok", "message": "Approved budget for ZZG FY2024: Budget Cycle B.", "statement": {"x": 1},
+              "meta": {"cycle": "B", "layers": ["base"], "rate_set": "RS", "scenario_id": "S", "declaration": "APB"}}
+
+
+def _execute_with(statement, entity_statement=None, budget=None):
     """Exec the module's functions against stub frappe/statement_api
     (``statement(fy, fp, group)`` -> ``(payload, reads)``, as
-    ``statement_api._statement``) and a row model that records the prior
-    payload it was handed (``prior_with_rows`` is the real one)."""
+    ``statement_api._statement``; ``budget(fy, fp, group)`` -> the budget
+    payload, as ``statement_api.budget_payload``, S5 K7) and a row model that
+    records the prior and budget payloads it was handed (``prior_with_rows``
+    is the real one)."""
     tree = ast.parse(open(PATH).read())
     fns = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
-    seen = {"calls": []}
+    seen = {"calls": [], "budget_calls": []}
 
     def _statement(fy, fp, group):
         seen["calls"].append((fy, fp, group))
         return statement(fy, fp, group)
+
+    def budget_payload(fy, fp, group):
+        seen["budget_calls"].append((fy, fp, group))
+        return (budget or (lambda *a: dict(_BUDGET_OK)))(fy, fp, group)
 
     class Model:
         prior_with_rows = staticmethod(REAL_MODEL.prior_with_rows)
@@ -123,14 +133,18 @@ def _execute_with(statement, entity_statement=None):
             return ["cols"]
 
         @staticmethod
-        def rows(payload, prior=None, drill_group=None):
+        def rows(payload, prior=None, drill_group=None, budget=None):
+            if payload.get("state") != "ok":   # the real model refuses a non-ok payload
+                raise ValueError(payload.get("message"))
             seen["rows"] = prior
             seen["drill_group"] = drill_group
+            seen["budget"] = budget
             return ["rows"]
 
         @staticmethod
-        def message(payload, prior=None):
+        def message(payload, prior=None, budget=None):
             seen["message"] = prior
+            seen["message_budget"] = budget
             return "msg"
 
     def throw(msg, *a, **k):
@@ -154,7 +168,7 @@ def _execute_with(statement, entity_statement=None):
         return _statement(*a)[0]
 
     api = types.SimpleNamespace(
-        get_statement=get_statement, _statement=_statement,
+        get_statement=get_statement, _statement=_statement, budget_payload=budget_payload,
         get_entity_statement=lambda *a: _entity_statement(*a)[0], _entity_statement=_entity_statement)
     env = {"frappe": frappe, "statement_api": api, "statement_report_model": Model,
            "_group_code": lambda value: value or None}  # imported from statement_api (row 11b)
@@ -201,6 +215,72 @@ def test_execute_hands_the_chosen_group_filter_to_the_heading_drill_links():
     execute, seen = _execute_with(lambda fy, fp, group: _ok(int(fy), [_tb(int(fy), 12)]))
     execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "CG-ZZG-"})
     assert seen["drill_group"] == "CG-ZZG-"
+
+
+# --- Budget columns (konsol#348 S5 K7): the Group basis asks for the budget --
+
+def _ok_group(fy, tb_rows, group="ZZG"):
+    payload, reads = _ok(fy, tb_rows)
+    payload["consolidation_group"] = group
+    return payload, reads
+
+
+def test_group_basis_reads_the_budget_for_the_statements_own_group_and_hands_it_to_rows_and_message():
+    """The group may be blank in the filter (the only group): the budget is
+    read for the group the statement chose, once, after the statement."""
+    execute, seen = _execute_with(lambda fy, fp, group: _ok_group(int(fy), [_tb(int(fy), 12)]))
+    result = execute({"fiscal_year": "2024", "fiscal_period": 12})
+    assert seen["budget_calls"] == [("2024", 12, "ZZG")]
+    assert seen["budget"] == _BUDGET_OK and seen["message_budget"] is seen["budget"]
+    assert result == (["cols"], ["rows"], "msg")
+
+
+def test_a_refused_budget_read_never_fails_the_report():
+    """budget_payload throws (a refusal) or raises (a fault): the report
+    renders the actuals, and the budget payload carries the reason for the
+    legend's "Budget columns are blank: ..." line."""
+    def refused(fy, fp, group):
+        raise _ValidationError("Not permitted to read Budget Cycle B.")
+
+    execute, seen = _execute_with(lambda fy, fp, group: _ok_group(int(fy), [_tb(int(fy), 12)]), budget=refused)
+    assert execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "ZZG"}) \
+        == (["cols"], ["rows"], "msg")
+    assert seen["budget"]["state"] == "error" and seen["budget"]["statement"] is None
+    assert seen["budget"]["message"] == "Not permitted to read Budget Cycle B."
+    assert seen["budget"]["meta"] == {}
+
+    def faulty(fy, fp, group):
+        raise KeyError("input_fingerprint")
+
+    execute, seen = _execute_with(lambda fy, fp, group: _ok_group(int(fy), [_tb(int(fy), 12)]), budget=faulty)
+    execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "ZZG"})
+    assert seen["budget"]["state"] == "error"
+    assert "KeyError" in seen["budget"]["message"] and "input_fingerprint" in seen["budget"]["message"]
+
+
+def test_a_non_ok_statement_reads_no_budget():
+    def refused(fy, fp, group):
+        payload, reads = _ok_group(int(fy), [])
+        payload.update(state="choose_group", message="Choose a consolidation group.", statement=None,
+                       consolidation_group=None)
+        return payload, None
+
+    execute, seen = _execute_with(refused)
+    try:
+        execute({"fiscal_year": 2024, "fiscal_period": 12})
+    except Refused as e:
+        assert "Choose a consolidation group" in str(e)
+    else:
+        raise AssertionError("a non-ok statement was not refused")
+    assert seen["budget_calls"] == []
+
+
+def test_entity_basis_reads_no_budget():
+    """The entity budget is S6: the Entity basis asks for none, so the
+    legend carries no budget line."""
+    execute, seen = _execute_with(lambda *a: _ok(2024, []), lambda fy, fp, entity: _ok(int(fy), [_tb(int(fy), 12)]))
+    execute({"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"})
+    assert seen["budget_calls"] == [] and seen["budget"] is None and seen["message_budget"] is None
 
 
 
