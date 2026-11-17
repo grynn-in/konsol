@@ -43,9 +43,12 @@ def _real_group_code(frappe):
 
 
 def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, periods=None,
-            group_names=None, disabled=(), **kwargs):
+            group_names=None, disabled=(), budget_rows=None, budget_error=None, **kwargs):
     """``readable``: the reports whose Report.is_permitted() is True; the rest
-    are denied. ``doctype_ok``: frappe.has_permission(ref_doctype, "report")."""
+    are denied. ``doctype_ok``: frappe.has_permission(ref_doctype, "report").
+    ``ch_rows`` / ``ch_error`` serve the actuals' reads
+    (gold_fully_consolidated_tb); ``budget_rows`` / ``budget_error`` the
+    budget's (gold_fully_consolidated_budget, konsol#348 S5 K15)."""
     calls = {"sql": [], "params": [], "kwargs": [], "has_permission": [], "only_for": 0}
     frappe = types.ModuleType("frappe")
     frappe.whitelist = lambda **kw: (lambda fn: fn)
@@ -94,6 +97,10 @@ def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, peri
         calls["sql"].append(sql)
         calls["params"].append(params)
         calls["kwargs"].append({"settings": settings, "timeout": timeout})
+        if "gold_fully_consolidated_budget" in sql:
+            if budget_error is not None:
+                raise budget_error
+            return budget_rows or []
         if ch_error is not None:
             raise ch_error
         return ch_rows or []
@@ -126,7 +133,10 @@ def test_latest_with_data_from_one_warehouse_read():
     info, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}])
     assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 5}
     assert info["years"] == [2024, 2025]
-    assert len(calls["sql"]) == 2 and all("gold_fully_consolidated_tb" in q for q in calls["sql"])
+    # Two actuals reads (periods, years) and one budget years read (S5 K15).
+    assert len(calls["sql"]) == 3
+    assert [("gold_fully_consolidated_tb" in q, "gold_fully_consolidated_budget" in q) for q in calls["sql"]] \
+        == [(True, False), (True, False), (False, True)]
 
 
 def test_failed_read_falls_back_to_latest_regular_and_does_not_raise():
@@ -169,7 +179,7 @@ def test_permission_uses_the_report_right_on_the_reports_doctype():
 
 def test_the_warehouse_read_has_a_short_timeout():
     _, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}])
-    assert calls["kwargs"] == [{"settings": {"max_execution_time": 2}, "timeout": 3}] * 2
+    assert calls["kwargs"] == [{"settings": {"max_execution_time": 2}, "timeout": 3}] * 3
 
 
 def test_only_regular_periods_count_for_latest():
@@ -197,7 +207,7 @@ def test_a_group_filters_the_read_with_a_bound_parameter():
     _, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}],
                        consolidation_group="G1'; DROP")
     assert all("consolidation_group = {group:String}" in q for q in calls["sql"])
-    assert calls["params"] == [{"group": "G1'; DROP"}] * 2
+    assert calls["params"] == [{"group": "G1'; DROP"}] * 3
     assert not any("DROP" in q for q in calls["sql"])
 
 
@@ -220,13 +230,13 @@ def test_a_group_document_name_is_resolved_to_the_warehouse_code():
     # column holds the code.
     _, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}],
                        consolidation_group="CG-X-", group_names={"CG-X-": "X"})
-    assert calls["params"] == [{"group": "X"}] * 2
+    assert calls["params"] == [{"group": "X"}] * 3
 
 
 def test_a_bare_code_is_bound_unchanged():
     _, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}],
                        consolidation_group="X", group_names={"CG-X-": "X"})
-    assert calls["params"] == [{"group": "X"}] * 2
+    assert calls["params"] == [{"group": "X"}] * 3
 
 
 def test_group_code_is_imported_from_the_report_not_copied():
@@ -243,3 +253,51 @@ def test_a_disabled_report_does_not_grant_the_strips():
         _invoke(disabled=REPORTS)
     info, _ = _invoke(disabled=REPORTS[:2])  # the third still opens
     assert info["years"] == [2024, 2025]
+
+
+# --- a budget-only year is marked on the Year strip (konsol#348 S5 K15) -------------
+#
+# data_years is the UNION of the years with actuals (gold_fully_consolidated_tb)
+# and the years with an approved budget (gold_fully_consolidated_budget), for
+# the group, so a year budgeted before any actuals arrive is marked. ``latest``
+# (the period a first visit opens on) stays the actuals': the Consolidated
+# Statement refuses a period with no actuals rows, so opening on a budget-only
+# period would open on a refusal. One extra read, same timeout, same group
+# bind; a failed budget read leaves the actuals' years, and a failed actuals
+# read leaves the budget's.
+
+def _budget_year_rows(*years):
+    return [{"fiscal_year": y} for y in years]
+
+
+def test_a_budget_only_year_is_marked_on_the_year_strip():
+    info, calls = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}],
+                          budget_rows=_budget_year_rows(2026))
+    assert info["data_years"] == [2025, 2026]
+    assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 5}, "the actuals' latest"
+    budget_sql = [q for q in calls["sql"] if "gold_fully_consolidated_budget" in q]
+    assert len(budget_sql) == 1 and "SELECT DISTINCT fiscal_year FROM" in budget_sql[0]
+    assert "gold_fully_consolidated_tb" not in budget_sql[0]
+
+
+def test_a_failed_budget_read_still_returns_the_actuals_years():
+    info, _ = _invoke(ch_rows=[{"fiscal_year": 2025, "fiscal_period": 5}],
+                      budget_error=RuntimeError("Code: 60. UNKNOWN_TABLE"))
+    assert info["data_years"] == [2025]
+    assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 5}
+
+
+def test_a_failed_actuals_read_still_returns_the_budget_years():
+    info, _ = _invoke(ch_error=RuntimeError("UNKNOWN_TABLE"), budget_rows=_budget_year_rows(2026))
+    assert info["data_years"] == [2026]
+    assert info["latest"] == {"fiscal_year": 2025, "fiscal_period": 12}, "the fallback: latest declared Regular"
+
+
+def test_the_budget_years_read_is_bound_to_the_group_like_the_actuals():
+    _, calls = _invoke(ch_rows=[], budget_rows=_budget_year_rows(2026),
+                       consolidation_group="CG-X-", group_names={"CG-X-": "X"})
+    budget = [(q, p) for q, p in zip(calls["sql"], calls["params"]) if "gold_fully_consolidated_budget" in q]
+    assert len(budget) == 1
+    assert "consolidation_group = {group:String}" in budget[0][0] and budget[0][1] == {"group": "X"}
+    _, calls = _invoke(ch_rows=[], budget_rows=_budget_year_rows(2026))
+    assert all("{group:String}" not in q for q in calls["sql"])
