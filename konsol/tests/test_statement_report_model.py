@@ -742,3 +742,76 @@ def test_message_names_cycle_layers_rate_set_and_the_limits_for_an_ok_budget():
 
 def test_message_has_no_budget_line_without_a_budget():
     assert "udget" not in R.message(_payload())
+
+
+# --- budget-only lines the actuals lack (PR #554 review M1) -------------------
+#
+# A budget can carry a non-heading line the actuals do not: a P&L or BS "No
+# heading" line (a leaf with no parent heading), a "Not in the group chart"
+# line, or the plug. Each is laid out as its own row with blank actuals, where
+# the actuals' line would stand, so the Budget column foots on screen (the
+# P&L Net result equals its headings plus No heading). Only the plug was.
+
+def _budget_with_lines_the_actuals_lack():
+    """Budget rows: COST OF SALES -1,000; a P&L leaf 4900 with no heading
+    -50; a code 9999 outside the chart 120 on the Balance Sheet; cash 300;
+    the plug closes the entity's local imbalance (-(−1000 − 50 + 120 + 300)
+    = 630). The actuals (``_payload()``) carry neither extra line."""
+    accounts = F._s_accounts()
+    accounts["4900"] = {"account_name": "Other income", "parent_account": None, "is_group": False,
+                        "statement_section": SM.PL, "lft": 15}
+    rows = [F._row("4100", -1000.0, adjustment_type="entity"),
+            F._row("4900", -50.0, adjustment_type="entity"),
+            F._row("9999", 120.0, adjustment_type="entity"),
+            F._row("1110", 300.0, adjustment_type="entity"),
+            F._row("UNBALANCED", 630.0, adjustment_type="unbalanced")]
+    stmt = SM.statement(rows, accounts, F._S_CALENDAR, F._S_KEY, F._s_declared(), minor_unit=2)
+    return {"state": "ok", "message": _BUDGET_OK_SENTENCE, "statement": stmt, "meta": dict(_BUDGET_META)}
+
+
+def test_budget_only_no_heading_and_not_in_chart_lines_are_laid_out_and_the_net_result_foots():
+    payload, budget = _payload(), _budget_with_lines_the_actuals_lack()
+    without = [r["label"] for r in R.rows(payload)]
+    assert "No heading" not in without and not any(l.startswith("Not in the group chart") for l in without)
+    assert _line(budget, 0, {"kind": "no_heading"})["current"] == 50.0
+    assert _line(budget, 1, {"kind": "not_in_chart"})["current"] == 120.0
+
+    data = R.rows(payload, drill_group="CG-ZZG-", budget=budget)
+    labels = [r["label"] for r in data]
+    no_heading = _by_label(data, "No heading")
+    assert labels.index("COST OF SALES") < labels.index("No heading") < labels.index(SM.NET_RESULT_LABEL)
+    assert no_heading["current"] is None and no_heading["comparison"] is None and no_heading["ytd"] is None
+    assert no_heading["budget"] == 50.0 and no_heading["budget_ytd"] == 50.0
+    assert no_heading["variance_to_budget"] is None, "no actual to compare with"
+    net = _by_label(data, SM.NET_RESULT_LABEL)
+    assert net["budget"] == 1050.0 == _by_label(data, "COST OF SALES")["budget"] + no_heading["budget"]
+    assert net["budget_ytd"] == 1050.0
+
+    not_in_chart = _by_label(data, "Not in the group chart (9999)")
+    assert labels.index("EQUITY") < labels.index("Not in the group chart (9999)") \
+        < labels.index(UNBALANCED_LABEL) < labels.index("Unmatched residual")
+    assert not_in_chart["current"] is None and not_in_chart["comparison"] is None
+    assert not_in_chart["budget"] == 120.0 and not_in_chart["variance_to_budget"] is None
+    assert not_in_chart["budget_ytd"] is None
+    # Neither is a heading or the plug: no code, no drill, no commentary.
+    for row in (no_heading, not_in_chart):
+        assert row["code"] is None and not row.get("drill_budget") and row.get("drill_group") is None
+        assert row["commentary"] is None and row["prior_year"] is None
+    assert _by_label(data, UNBALANCED_LABEL)["budget"] == 630.0
+
+
+def test_a_budget_only_line_is_not_added_when_the_actuals_carry_it():
+    """Actuals with their own No heading / Not in the group chart lines take
+    the budget's values by kind, and no second row appears."""
+    accounts = F._s_accounts()
+    accounts["4900"] = {"account_name": "Other income", "parent_account": None, "is_group": False,
+                        "statement_section": SM.PL, "lft": 15}
+    rows = F._s_rows() + [F._row("4900", -10.0), F._row("9999", 5.0)]
+    stmt = SM.statement(rows, accounts, F._S_CALENDAR, F._S_KEY, F._s_declared(), minor_unit=2)
+    payload = _payload(statement=stmt)
+    data = R.rows(payload, budget=_budget_with_lines_the_actuals_lack())
+    no_heading = _by_label(data, "No heading")
+    assert no_heading["current"] == 10.0 and no_heading["budget"] == 50.0
+    assert no_heading["variance_to_budget"] == -40.0
+    not_in_chart = _by_label(data, "Not in the group chart (9999)")
+    assert not_in_chart["current"] == 5.0 and not_in_chart["budget"] == 120.0

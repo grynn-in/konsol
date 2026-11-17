@@ -723,3 +723,48 @@ def test_budget_drill_sheet_has_rate_and_rate_set_columns_per_entity_account():
     assert zzb[8] == "closing 1.1" and zzb[9] == "ZZRS"
     cta = next(r for r in rows if r[3] == "Currency translation (CTA)")
     assert cta[8] is None and cta[9] is None
+
+
+def _budget_with_lines_the_actuals_lack():
+    """PR #554 review M1 (test_statement_report_model's fixture): a P&L leaf
+    with no heading (-50) and a code outside the chart (120) that the golden
+    actuals do not carry; the plug closes the entity's local imbalance."""
+    accounts = _F._s_accounts()
+    accounts["4900"] = {"account_name": "Other income", "parent_account": None, "is_group": False,
+                        "statement_section": _SM.PL, "lft": 15}
+    rows = [_F._row("4100", -1000.0, adjustment_type="entity"),
+            _F._row("4900", -50.0, adjustment_type="entity"),
+            _F._row("9999", 120.0, adjustment_type="entity"),
+            _F._row("1110", 300.0, adjustment_type="entity"),
+            _F._row("UNBALANCED", 630.0, adjustment_type="unbalanced")]
+    stmt = _SM.statement(rows, accounts, _F._S_CALENDAR, _F._S_KEY, _F._s_declared(), minor_unit=2)
+    return {"state": "ok", "message": _BUDGET_SENTENCE, "statement": stmt,
+            "meta": _budget()["meta"]}
+
+
+def test_budget_only_no_heading_and_not_in_chart_lines_are_written_with_blank_actuals():
+    """PR #554 review M1: every non-heading budget line the actuals lack is
+    written where the actuals' line would stand, actuals blank, so the
+    Budget column foots on the sheet (Net result = headings + No heading)."""
+    rows = _rows(_budget_book(_budget_with_lines_the_actuals_lack())["Statement"])
+    pl = _section_block(rows, "Profit and Loss")
+    labels = [r[0] for r in pl]
+    assert labels.index("COST OF SALES") < labels.index("No heading") < labels.index("Net result")
+    row = _row_starting(pl, "No heading")
+    assert row[1] is None and row[2:6] == [None] * 4
+    assert row[6] == 50.0 and row[7] is None and row[8] == 50.0
+    net = _row_starting(pl, "Net result")
+    assert net[6] == 1050.0 == _row_starting(pl, "COST OF SALES", "4")[6] + row[6]
+    bs = _section_block(rows, "Balance Sheet")
+    labels = [r[0] for r in bs]
+    plug = "Unbalanced budget (no balancing entry)"
+    assert labels.index("EQUITY") < labels.index("Not in the group chart (9999)") < labels.index(plug) \
+        < labels.index("Unmatched residual")
+    row = _row_starting(bs, "Not in the group chart (9999)")
+    assert row[1] is None and row[2:5] == [None] * 3
+    assert row[5] == 120.0 and row[6] is None and row[7] is None
+    assert _row_starting(bs, plug)[5] == 630.0
+    # The golden actuals carry no such lines: without the budget, none is written.
+    plain = [r[0] for r in _rows(_book()["Statement"])]
+    assert "No heading" not in plain and not any(isinstance(v, str) and v.startswith("Not in the group chart")
+                                                 for v in plain)
