@@ -65,7 +65,10 @@ before a group or a chart exists.
 whitelisted; konsol#348 S5 K4) is the Consolidated Statement's third
 payload, the approved budget's statement for the Group basis:
 ``{state, message, statement, meta}`` with ``meta`` = ``{cycle, layers,
-rate_set, scenario_id, declaration}``. The state is
+rate_set, scenario_id, declaration, heading_sides}`` (``heading_sides``,
+S6 KB2: {heading code: the chart's normal_balance, '' when blank} for every
+heading in the budget statement, None unless ``ok``; the report's
+Favourability column reads it). The state is
 ``approved_budget_model.budget_state`` over the live Approved Budget of
 the (group, year), the Budget Cycle it names, the Cycle's input
 fingerprint recomputed at this read (S5-Q2 a) and the Budget Layers;
@@ -775,7 +778,8 @@ def _budget_statement(key, period_rows, declared, accounts_map, currency, group)
     Set, declaration, approver); on any other state, that state's sentence."""
     approved = _approved_budget(group, key[0])
     meta = {"cycle": approved["cycle"], "layers": approved["layers"], "rate_set": approved["rate_set"],
-            "scenario_id": approved["scenario_id"], "declaration": approved["declaration"]}
+            "scenario_id": approved["scenario_id"], "declaration": approved["declaration"],
+            "heading_sides": None}
     out = {"state": approved["state"], "message": approved["message"], "statement": None, "meta": meta}
     if approved["state"] != approved_budget_model.OK:
         return out
@@ -801,7 +805,21 @@ def _budget_statement(key, period_rows, declared, accounts_map, currency, group)
         out.update(state=built["state"], message=built["message"])
         return out
     out["statement"] = built["statement"]
+    meta["heading_sides"] = _heading_sides(built["statement"], accounts_map)
     return out
+
+
+def _heading_sides(statement, accounts_map):
+    """``{heading code: normal_balance}`` for every heading line of
+    ``statement``, from the chart (konsol#348 S6 KB2, for the Favourability
+    column, S6-Q3 a). A blank side is kept as ``''``: the report reads it as
+    "n/a" (BUD-7-a: an undeclared account is reported, never given a
+    direction), so nothing here guesses one."""
+    return {
+        line["heading"]: (accounts_map.get(line["heading"]) or {}).get("normal_balance") or ""
+        for section in statement["sections"]
+        for line in section["lines"] if line.get("kind") == "heading"
+    }
 
 
 def budget_payload(fiscal_year, fiscal_period, consolidation_group):

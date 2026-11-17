@@ -2002,7 +2002,8 @@ def test_ok_budget_payload_is_the_statement_over_the_budget_rows_with_meta():
     result = _call_budget(site)
     assert result["state"] == "ok"
     assert result["meta"] == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS",
-                              "scenario_id": "ZZB", "declaration": DECLARATION}
+                              "scenario_id": "ZZB", "declaration": DECLARATION,
+                              "heading_sides": {"1": "Debit", "2": "Credit", "3": "Credit", "4": ""}}
     assert set(result) == {"state", "message", "statement", "meta"}
     for word in (CYCLE, "base, board", "ZZRS", DECLARATION, LEAD, "2026-11-17"):
         assert word in result["message"], word
@@ -2045,7 +2046,7 @@ def test_no_declaration_is_no_approved_budget_with_no_clickhouse_and_no_fingerpr
     assert "No approved budget for G1 FY2025" in result["message"]
     assert result["statement"] is None
     assert result["meta"] == {"cycle": None, "layers": None, "rate_set": None, "scenario_id": None,
-                              "declaration": None}
+                              "declaration": None, "heading_sides": None}
     assert site.ch_calls == []
     assert not [r for r in site.reads if r[0] == "fingerprint"]
 
