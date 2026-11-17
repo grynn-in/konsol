@@ -32,6 +32,7 @@ RUN_FIELDS = [
     ("receiver_account_mode", "Select", 0, 1),
     ("allocation_account", "Link", 0, 1),
     ("amounts_after_approval", "Select", 0, 1),
+    ("coefficient_row_count", "Int", 0, 1),
     ("values_carried_forward", "Check", 0, 1),
     ("computed_at", "Datetime", 0, 1),
     ("computed_by", "Link", 0, 1),
@@ -128,10 +129,28 @@ def test_doctype_run_link_and_select_options():
     assert fields["accounts"]["options"] == "Cost Allocation Run Account"
     assert fields["status"]["options"] == "Draft\nPending Approval\nApproved\nCancelled"
     assert fields["status"]["default"] == "Draft"
-    assert fields["method"]["options"] == "Direct\nStep-Down"
+    assert fields["method"]["options"] == "Direct\nStep-Down\nReciprocal"
     assert fields["receiver_account_mode"]["options"] == (
         "Sender's Own Accounts\nDeclared Allocation Account")
     assert fields["amounts_after_approval"]["options"] == "Follow Latest Data\nFreeze at Approval"
+
+
+def test_run_select_options_equal_model_constants():
+    """The Run copies the rule set's method and receiver account mode, so its
+    options must be the model's constants. A narrower list refuses a valid
+    run on save (konsol#269 RF1: Reciprocal was refused)."""
+    from konsol import cost_allocation_model as model
+    fields = _by_name(RUN)
+    assert fields["method"]["options"].split("\n") == list(model.METHODS)
+    assert fields["receiver_account_mode"]["options"].split("\n") == list(model.ACCOUNT_MODES)
+
+
+def test_run_amounts_after_approval_options_equal_rule_set():
+    """No model constant exists for this choice, so the Run must offer exactly
+    the rule set's options: the copied value is refused on save otherwise."""
+    run_options = _by_name(RUN)["amounts_after_approval"]["options"]
+    rule_set_options = _by_name("cost_allocation_rule_set")["amounts_after_approval"]["options"]
+    assert run_options.split("\n") == rule_set_options.split("\n")
 
 
 def test_doctype_declared_account_is_shown_only_when_declared():
@@ -219,6 +238,7 @@ def test_doctype_is_installed_as_a_workflow():
 # --- K7: Compute Weights (stubbed frappe) -------------------------------------
 
 import importlib.util
+import inspect
 import sys
 import types
 from datetime import datetime
@@ -502,6 +522,49 @@ class _Refusal(Exception):
     pass
 
 
+def _matches(row, filters):
+    """A get_all filter dict as the database applies it: equality, or ["in", [...]]."""
+    for key, want in (filters or {}).items():
+        if isinstance(want, (list, tuple)) and want and want[0] == "in":
+            if row.get(key) not in want[1]:
+                return False
+        elif row.get(key) != want:
+            return False
+    return True
+
+
+class _FakeClickHouse:
+    """clickhouse.execute over an in-memory coefficients table: records every
+    statement with its params, holds rows per run, and answers the counts."""
+
+    def __init__(self):
+        self.calls = []
+        self.rows = []            # dicts, as inserted
+        self.down = False
+        self.fail_on = None       # a statement prefix that raises
+
+    def held(self):
+        out = {}
+        for r in self.rows:
+            out[r["run"]] = out.get(r["run"], 0) + 1
+        return out
+
+    def execute(self, sql, params=None, timeout=None):
+        self.calls.append((sql, dict(params or {})))
+        head = sql.lstrip().split("\n", 1)[0].upper()
+        if self.down or (self.fail_on and head.startswith(self.fail_on)):
+            raise ConnectionError("clickhouse down")
+        if head.startswith("DELETE FROM"):
+            self.rows = [r for r in self.rows if r["run"] != params["param_run"]]
+        elif head.startswith("INSERT INTO"):
+            self.rows.extend(json.loads(line) for line in sql.split("\n")[1:] if line.strip())
+        elif head.startswith("SELECT RUN, COUNT()"):
+            return "\n".join(f"{r}\t{n}" for r, n in sorted(self.held().items()))
+        elif head.startswith("SELECT COUNT()"):
+            return str(len(self.rows))
+        return ""
+
+
 class _World:
     """In-memory site for the K8 hooks."""
 
@@ -523,8 +586,16 @@ class _World:
         self.undeclared = set()
         self.syncs = []
         self.once = []
+        self.enqueued = []
+        self.events = []
+        self.commit_callbacks = []
+        self.logged = []
         self.sync_table_calls = []
         self.get_all_data = {}
+        self.ch = _FakeClickHouse()
+        self.stamps = []
+        self.set_values = []
+        self.commits = 0
 
 
 def _k8(world):
@@ -548,7 +619,8 @@ def _k8(world):
         if doctype == "Cost Allocation Rule Set Scenario":
             # as the database would: only the named rule set's scenario rows
             return list(world.rs_scenarios) if (filters or {}).get("parent") == "ZZ Rules" else []
-        return [_Row(r) for r in world.get_all_data.get(doctype, [])]
+        rows = [_Row(r) for r in world.get_all_data.get(doctype, []) if _matches(r, filters)]
+        return [r[pluck] for r in rows] if pluck else rows
 
     def sql(query, values=None, as_dict=False, **k):
         world.sql.append((query, values))
@@ -574,8 +646,31 @@ def _k8(world):
 
     fr.throw = throw
     fr.whitelist = lambda *a, **k: (lambda fn: fn)
-    fr.db = types.SimpleNamespace(get_value=get_value, sql=sql)
+    def set_value(doctype, name, field, value, update_modified=True):
+        world.set_values.append((doctype, name, field, value, update_modified))
+        for r in world.get_all_data.get(doctype, []):
+            if r["name"] == name:
+                r[field] = value
+
+    def commit():
+        world.commits += 1
+
+    fr.db = types.SimpleNamespace(get_value=get_value, sql=sql, set_value=set_value,
+                                  commit=commit,
+                                  rollback=lambda: world.events.append("rollback"))
     fr.get_all = get_all
+    def enqueue(*a, **k):
+        world.enqueued.append((a, k))
+
+    fr.enqueue = enqueue
+    fr.local = types.SimpleNamespace(site="zz.local")
+    fr.db.after_commit = types.SimpleNamespace(add=world.commit_callbacks.append)
+    fr.logger = lambda *a, **k: types.SimpleNamespace(
+        info=lambda msg, *x, **y: world.events.append(("log", msg)),
+        warning=lambda msg, *x, **y: world.events.append(("warning", msg)),
+        error=lambda msg, *x, **y: world.events.append(("error", msg)))
+    fr.log_error = lambda *a, **k: world.logged.append((a, k))
+    fr._dict = lambda **k: types.SimpleNamespace(**k)
     module.frappe = fr
 
     ps = types.SimpleNamespace()
@@ -595,9 +690,17 @@ def _k8(world):
     module.period_status = ps
     ch = types.SimpleNamespace()
     ch.sync_doctype_after_commit = lambda *a, **k: world.syncs.append(a)
-    ch.after_commit_once = lambda key, fn: world.once.append((key, fn))
+    def after_commit_once(key, fn):
+        # as clickhouse.after_commit_once: one callback per key per transaction
+        if all(k != key for k, _fn in world.once):
+            world.once.append((key, fn))
+
+    ch.after_commit_once = after_commit_once
     ch.sync_table = lambda table, columns, rows, **k: world.sync_table_calls.append(
         (table, columns, rows, k)) or len(rows)
+    ch.execute = world.ch.execute
+    ch._stamp_watermark = lambda table, row_count, source_max_modified=None: world.stamps.append(
+        (table, row_count, source_max_modified))
     module.clickhouse = ch
     return module
 
@@ -728,13 +831,20 @@ def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
     for hook in ("on_submit", "on_cancel", "after_delete"):
         w.syncs.clear()
         w.once.clear()
-        getattr(_k8_run(m, docstatus=1), hook)()
+        w.enqueued.clear()
+        w.ch.calls.clear()
+        # a submitted run cannot be deleted: after_delete sees a cancelled one
+        getattr(_k8_run(m, docstatus=2 if hook == "after_delete" else 1), hook)()
         assert [(s[0], s[1]) for s in w.syncs] == [
             ("Cost Allocation Run", "epm_staging.cost_allocation_runs"),
             ("Cost Allocation Run Account", "epm_staging.cost_allocation_run_accounts"),
             ("Cost Allocation Run Weight", "epm_staging.cost_allocation_run_weights")], hook
-        assert [k for k, _fn in w.once] == [("cost_allocation_run_coefficients",)], hook
-        assert w.sync_table_calls == [], hook
+        # RF10: the coefficients are one guarded after-commit callback per run
+        ((key, _fn),) = w.once
+        assert key == ("cost_allocation_coefficients", "CAR-00001"), hook
+        # nothing touches ClickHouse, the queue or the commit list in the hook
+        assert w.sync_table_calls == [] and w.ch.calls == [], hook
+        assert w.enqueued == [] and w.commit_callbacks == [], hook
 
 
 def test_lifecycle_no_sync_on_a_draft_save_or_validate():
@@ -818,24 +928,25 @@ def _expected_rows():
 def test_lifecycle_coefficient_resync_rebuilds_exact_rows_from_stored_driver_values():
     w = _World()
     w.get_all_data["Cost Allocation Run"] = [
-        {"name": "CAR-00001", "method": "Step-Down", "modified": datetime(2026, 11, 13, 9, 0, 0)}]
+        {"name": "CAR-00001", "method": "Step-Down", "docstatus": 1,
+         "modified": datetime(2026, 11, 13, 9, 0, 0)}]
     w.get_all_data["Cost Allocation Run Weight"] = _stored_weights()
     m = _k8(w)
     written = m.CostAllocationRun.resync_staging(force=True)
     (table, columns, rows, kw), = w.sync_table_calls
     assert table == "epm_staging.cost_allocation_coefficients"
     assert columns == ["run", "origin_member", "step", "sender_member", "receiver_member",
-                       "driver", "pool_coefficient", "coefficient"]
+                       "driver", "hop_kind", "pool_coefficient", "coefficient"]
     assert kw["force"] is True and written == len(rows)
     expected = [[r[c] for c in columns] for r in _expected_rows()]
     assert rows == expected
     by = {(r[1], r[2], r[4]): r for r in rows}
     # IT's pool reaches P1 directly (1/3) and through HR (1/6 * 1/4): exact
-    assert by[("IT", 2, "P1")][6] == Decimal("0.166666666667")
+    assert by[("IT", 2, "P1")][7] == Decimal("0.166666666667")
     # every hop's receivers sum exactly to the hop's pool coefficient
     hops = {}
     for r in rows:
-        hops.setdefault((r[1], r[2], r[3]), [r[6], Decimal(0)])[1] += r[7]
+        hops.setdefault((r[1], r[2], r[3]), [r[7], Decimal(0)])[1] += r[8]
     assert all(pool == total for pool, total in hops.values())
 
 
@@ -1147,7 +1258,7 @@ def test_kf1_compute_button_only_in_draft_status():
 
 _COMPUTED = ("computed_at", "computed_by", "computed_for_rule_set", "computed_for_scenario",
              "computed_for_fiscal_year", "computed_for_fiscal_period",
-             "rule_set_modified", "values_carried_forward")
+             "rule_set_modified", "values_carried_forward", "coefficient_row_count")
 
 
 def test_kf3_amended_insert_clears_the_computed_snapshot():
@@ -1155,7 +1266,7 @@ def test_kf3_amended_insert_clears_the_computed_snapshot():
     m = _k8(_World())
     run = _k8_run(m, amended_from="CAR-00001", accounts=[_Row(main_account="6000")],
                   computed_at=datetime(2026, 11, 12), computed_by="zz@example.com",
-                  values_carried_forward=1)
+                  values_carried_forward=1, coefficient_row_count=7)
     run.set = lambda field, rows: run.__dict__.__setitem__(field, list(rows))
     run.before_insert()
     assert run.weights == [] and run.accounts == []
@@ -1201,3 +1312,789 @@ def test_kf3_compute_without_a_workflow_checks_docstatus_only():
         pass
     else:
         raise AssertionError("expected a refusal")
+
+
+# --- RC4 (konsol#269 phase 2a): Reciprocal through Compute, submit and the sync ----
+
+def _recip_rule_set():
+    return _rule_set(
+        method="Reciprocal",
+        rules=[_Row(step=1, sender_member="IT", driver="Tickets"),
+               _Row(step=2, sender_member="HR", driver="Headcount")],
+        receivers=[_Row(step=1, receiver_member="HR"), _Row(step=1, receiver_member="Sales"),
+                   _Row(step=1, receiver_member="Ops"), _Row(step=2, receiver_member="IT"),
+                   _Row(step=2, receiver_member="Sales"), _Row(step=2, receiver_member="Ops")])
+
+
+def _recip_stats():
+    return [_stat("CAS-00001", 3, "HR", 5, "Tickets"), _stat("CAS-00001", 3, "Sales", 3, "Tickets"),
+            _stat("CAS-00001", 3, "Ops", 2, "Tickets"), _stat("CAS-00002", 3, "IT", 4, "Headcount"),
+            _stat("CAS-00002", 3, "Sales", 4, "Headcount"), _stat("CAS-00002", 3, "Ops", 2, "Headcount")]
+
+
+def _recip_stored():
+    rows = [(1, "IT", "HR", 5, "Tickets"), (1, "IT", "Sales", 3, "Tickets"), (1, "IT", "Ops", 2, "Tickets"),
+            (2, "HR", "IT", 4, "Headcount"), (2, "HR", "Sales", 4, "Headcount"),
+            (2, "HR", "Ops", 2, "Headcount")]
+    return [{"parent": "CAR-00001", "idx": i + 1, "step": s, "sender_member": snd,
+             "receiver_member": rcv, "driver": drv, "driver_value": v}
+            for i, (s, snd, rcv, v, drv) in enumerate(rows)]
+
+
+def test_rc4_compute_snapshots_reciprocal_and_the_weights_build_exact_rows():
+    from konsol import cost_allocation_model as model
+    m = _run_module(rule_set=_recip_rule_set(), stats=_recip_stats())
+    run = _Run()
+    m.compute_weights_on(run)
+    assert run.method == "Reciprocal" and run.saved == 1
+    stored = [{**w, "driver_value": w["driver_value"]} for w in run.weights]
+    rows = m._coefficient_rows("CAR-00001", "Reciprocal", stored)
+    assert rows and {r["hop_kind"] for r in rows} == {"own", "pass"}
+
+
+def test_rc4_coefficient_resync_for_reciprocal_carries_hop_kind_and_the_models_rows():
+    from konsol import cost_allocation_model as model
+    w = _World()
+    w.get_all_data["Cost Allocation Run"] = [
+        {"name": "CAR-00001", "method": "Reciprocal", "docstatus": 1,
+         "modified": datetime(2026, 11, 13, 9, 0, 0)}]
+    w.get_all_data["Cost Allocation Run Weight"] = _recip_stored()
+    m = _k8(w)
+    m.CostAllocationRun.resync_staging(force=True)
+    (table, columns, rows, kw), = w.sync_table_calls
+    assert columns == list(model.COEFFICIENT_COLUMNS) and "hop_kind" in columns
+    steps = model.build_steps(
+        [{"step": 1, "sender_member": "IT", "driver": "Tickets"},
+         {"step": 2, "sender_member": "HR", "driver": "Headcount"}],
+        [{"step": 1, "receiver_member": r} for r in ("HR", "Sales", "Ops")]
+        + [{"step": 2, "receiver_member": r} for r in ("IT", "Sales", "Ops")])
+    exact = {(1, "HR"): Fraction(5, 10), (1, "Sales"): Fraction(3, 10), (1, "Ops"): Fraction(2, 10),
+             (2, "IT"): Fraction(4, 10), (2, "Sales"): Fraction(4, 10), (2, "Ops"): Fraction(2, 10)}
+    expected = model.coefficient_rows("CAR-00001", steps, exact, "Reciprocal")
+    assert rows == [[r[c] for c in columns] for r in expected]
+    kinds = {r[columns.index("hop_kind")] for r in rows}
+    assert kinds == {"own", "pass"}
+
+
+def test_rc4_submit_accepts_a_reciprocal_run_and_refuses_a_closed_loop():
+    w = _World()
+    w.stat_rows = [{"statistic": r["statistic"], "docstatus": 1, "fiscal_period": 3,
+                    "member": r["member"], "value": r["value"]} for r in _recip_stats()]
+    stored = [_Row(step=x["step"], sender_member=x["sender_member"], receiver_member=x["receiver_member"],
+                   driver=x["driver"], statistic="CAS-00001" if x["step"] == 1 else "CAS-00002",
+                   value_period=3, driver_value=x["driver_value"]) for x in _recip_stored()]
+    _k8_run(_k8(w), method="Reciprocal", weights=stored).before_submit()
+    loop = [_Row(step=1, sender_member="IT", receiver_member="HR", driver="Tickets",
+                 statistic="CAS-00001", value_period=3, driver_value=5),
+            _Row(step=2, sender_member="HR", receiver_member="IT", driver="Headcount",
+                 statistic="CAS-00002", value_period=3, driver_value=4)]
+    w2 = _World()
+    w2.stat_rows = [{"statistic": "CAS-00001", "docstatus": 1, "fiscal_period": 3,
+                     "member": "HR", "value": 5},
+                    {"statistic": "CAS-00002", "docstatus": 1, "fiscal_period": 3,
+                     "member": "IT", "value": 4}]
+    msg = _refused(_k8_run(_k8(w2), method="Reciprocal", weights=loop).before_submit)
+    assert "IT" in msg and "HR" in msg and "final receiver" in msg
+
+
+# --- RF4: Compute reports an unsolvable loop; no doc-event build trigger -----------
+
+def test_rf4_the_run_trigger_is_not_a_doc_event_any_more():
+    """The job requests the allocation build after the resync; a doc-event
+    trigger would race it (the build could read stale coefficients)."""
+    with open(os.path.join(os.path.dirname(RUN_PY), "..", "..", "..", "hooks.py")) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "_dbt_trigger_doctypes" for t in node.targets):
+            names = [e.value for e in node.value.elts if isinstance(e, ast.Constant)]
+            assert "Cost Allocation Run" not in names
+            return
+    raise AssertionError("_dbt_trigger_doctypes not found")
+
+
+def test_rf4_compute_refuses_a_reciprocal_loop_whose_exit_edges_have_zero_statistics():
+    rs = _rule_set(
+        method="Reciprocal",
+        rules=[_Row(step=1, sender_member="IT", driver="ZZ Head"),
+               _Row(step=2, sender_member="HR", driver="ZZ Head")],
+        receivers=[_Row(step=1, receiver_member="HR"), _Row(step=1, receiver_member="P1"),
+                   _Row(step=2, receiver_member="IT"), _Row(step=2, receiver_member="P1")])
+    stats = [_stat("CAS-00001", 3, "HR", 10), _stat("CAS-00001", 3, "IT", 10),
+             _stat("CAS-00001", 3, "P1", 0)]
+    m = _run_module(rule_set=rs, stats=stats)
+    run = _Run()
+    try:
+        m.compute_weights_on(run)
+    except _Refused as exc:
+        assert str(exc)
+    else:
+        raise AssertionError("Compute accepted a loop whose cost can never leave")
+    assert run.saved == 0
+
+
+# --- RF10: per-run coefficient writes after commit; synchronous reconcile ------
+# Deepak Pai, 17 Nov 2026 (konsol PR #541): option B. Rejected: A, keeping the
+# background resync job (its marker, lock, timeouts and re-enqueue loop).
+
+STAGING = "epm_staging.cost_allocation_coefficients"
+BUILD_JOB = "konsol.tasks.request_consolidation_build"
+MODIFIED = datetime(2026, 11, 13, 9, 0, 0)
+
+
+def _site(w, runs):
+    """``runs``: {name: docstatus}, as committed. Every run stores the
+    3-sender step-down weights of _stored_weights()."""
+    w.get_all_data["Cost Allocation Run"] = [
+        {"name": n, "method": "Step-Down", "docstatus": d, "modified": MODIFIED}
+        for n, d in runs.items()]
+    w.get_all_data["Cost Allocation Run Weight"] = [
+        {**r, "parent": n} for n in runs for r in _stored_weights()]
+
+
+def _rows_for(name):
+    """The run's coefficient rows as the model builds them, JSON-shaped."""
+    return [{c: (str(v) if isinstance(v, Decimal) else v) for c, v in {**r, "run": name}.items()}
+            for r in _expected_rows()]
+
+
+def _commit(w, m, name, hook, committed, docstatus=None):
+    """The hook runs inside the transaction. Then the commit lands the run's
+    new state (``committed``: a docstatus, or None for a delete) and the
+    after-commit callbacks fire, as Frappe's commit runs them. ``docstatus``
+    is the hooked document's own; a deleted run defaults to cancelled (2),
+    since a submitted run cannot be deleted."""
+    w.once.clear()
+    if docstatus is None:
+        docstatus = 2 if hook == "after_delete" else 1
+    getattr(_k8_run(m, name=name, docstatus=docstatus), hook)()
+    runs = [r for r in w.get_all_data.get("Cost Allocation Run", []) if r["name"] != name]
+    if committed is not None:
+        runs.append({"name": name, "method": "Step-Down", "docstatus": committed,
+                     "modified": MODIFIED})
+        if not any(r["parent"] == name for r in w.get_all_data.get("Cost Allocation Run Weight", [])):
+            w.get_all_data.setdefault("Cost Allocation Run Weight", []).extend(
+                {**r, "parent": name} for r in _stored_weights())
+    w.get_all_data["Cost Allocation Run"] = runs
+    for _key, fn in list(w.once):
+        fn()
+
+
+def _statements(w):
+    return [sql.lstrip().split("\n", 1)[0].split(" ")[0].upper() for sql, _p in w.ch.calls]
+
+
+def _logged_text(w):
+    return " ".join(str(x) for a, k in w.logged for x in list(a) + list(k.values()))
+
+
+def test_rf10_submit_writes_exactly_that_runs_rows_delete_then_insert():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00002") + [{**_rows_for("CAR-00001")[0], "coefficient": "9"}]
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert _statements(w)[:2] == ["DELETE", "INSERT"]
+    (delete, params), (insert, _ip) = w.ch.calls[:2]
+    assert delete.startswith(f"DELETE FROM {STAGING} WHERE run = {{run:String}}")
+    assert params["param_run"] == "CAR-00001"
+    # the run name is a parameter, never formatted into the SQL
+    assert "CAR-00001" not in delete and "CAR-00001" not in insert.split("\n", 1)[0]
+    assert sorted(r["run"] for r in w.ch.rows if r["run"] == "CAR-00001") == \
+        ["CAR-00001"] * len(_expected_rows())
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00001"] == _rows_for("CAR-00001")
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00002"] == _rows_for("CAR-00002")
+
+
+def test_rf10_the_delete_is_synchronous():
+    w = _World()
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "on_cancel", committed=2)
+    (delete, _p), = [c for c in w.ch.calls if c[0].startswith("DELETE")]
+    assert "lightweight_deletes_sync = 2" in delete
+
+
+def test_rf10_cancel_deletes_the_runs_rows_and_inserts_nothing():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00001") + _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "on_cancel", committed=2)
+    assert "INSERT" not in _statements(w)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00002"}
+    assert w.ch.calls[0][1]["param_run"] == "CAR-00001"
+
+
+def test_rf10_delete_deletes_the_runs_rows():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00001") + _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "after_delete", committed=None)
+    assert "INSERT" not in _statements(w)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00002"}
+
+
+def test_rf10_the_write_is_after_commit_once_per_transaction_and_reads_committed_state():
+    w = _World()
+    m = _k8(w)
+    reads = []
+    orig = m.frappe.get_all
+    m.frappe.get_all = lambda doctype, **k: reads.append(doctype) or orig(doctype, **k)
+    run = _k8_run(m, docstatus=1)
+    run.on_submit()
+    run.on_submit()
+    run.on_cancel()
+    # inside the transaction: nothing read, nothing written
+    assert reads == [] and w.ch.calls == []
+    assert [k for k, _fn in w.once] == [("cost_allocation_coefficients", "CAR-00001")]
+    # Frappe's commit: COMMIT, START TRANSACTION, then the callbacks, so the
+    # callback's first read opens a snapshot holding this commit
+    _site(w, {"CAR-00001": 1})
+    w.once[0][1]()
+    assert "Cost Allocation Run" in reads
+    assert "rollback" not in w.events
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00001"}
+
+
+def test_rf10_success_requests_the_build_naming_the_run_after_the_write():
+    w = _World()
+    m = _k8(w)
+    at_enqueue = []
+    m.frappe.enqueue = lambda *a, **k: (at_enqueue.append(_statements(w)), w.enqueued.append((a, k)))
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    (args, kw), = w.enqueued
+    assert args == (BUILD_JOB,)
+    assert kw["doctype"] == "Cost Allocation Run" and kw["name"] == "CAR-00001"
+    assert kw["trigger_method"] == "coefficients_sync"
+    # already after the commit: no enqueue_after_commit, and no dedupe that
+    # would drop a request behind a started job
+    assert "enqueue_after_commit" not in kw and "deduplicate" not in kw
+    assert at_enqueue[0][:2] == ["DELETE", "INSERT"]
+
+
+def test_rf10_cancel_and_delete_request_the_build_too():
+    for hook, committed in (("on_cancel", 2), ("after_delete", None)):
+        w = _World()
+        m = _k8(w)
+        _commit(w, m, "CAR-00001", hook, committed=committed)
+        (args, kw), = w.enqueued
+        assert args == (BUILD_JOB,) and kw["name"] == "CAR-00001", hook
+
+
+def test_rf10_stamps_the_watermark_with_the_tables_row_count():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert w.stamps == [(STAGING, 2 * len(_expected_rows()), "2026-11-13 09:00:00")]
+
+
+def test_rf10_a_failure_does_not_raise_logs_the_run_and_requests_no_build():
+    for fail_on in ("DELETE", "INSERT", None):
+        w = _World()
+        m = _k8(w)
+        w.ch.fail_on = fail_on
+        w.ch.down = fail_on is None
+        _commit(w, m, "CAR-00001", "on_submit", committed=1)   # raises nothing
+        assert w.enqueued == [], fail_on
+        assert w.stamps == [], fail_on
+        (a, k), = w.logged
+        assert k.get("defer_insert") is True, fail_on
+        assert "CAR-00001" in _logged_text(w), fail_on
+        assert any(e[0] == "error" and "CAR-00001" in e[1]
+                   for e in w.events if isinstance(e, tuple)), fail_on
+
+
+def test_rf10_a_failed_build_request_does_not_raise_and_is_logged():
+    w = _World()
+    m = _k8(w)
+
+    def down(*a, **k):
+        raise ConnectionError("redis down")
+
+    m.frappe.enqueue = down
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00001"}
+    assert "CAR-00001" in _logged_text(w)
+
+
+def test_rf10_reconcile_rebuilds_synchronously_with_every_submitted_run():
+    w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00002": 1, "CAR-00003": 2})
+    m = _k8(w)
+    written = m.CostAllocationRun.resync_staging(force=True)
+    (table, columns, rows, kw), = w.sync_table_calls
+    # sync_table is the writer that stamps the reconcile run id on the watermark
+    assert table == STAGING and kw["force"] is True
+    assert written == len(rows) == 2 * len(_expected_rows())
+    assert {r[0] for r in rows} == {"CAR-00001", "CAR-00002"}
+    # synchronous: no job, no callback, no build request
+    assert w.enqueued == [] and w.commit_callbacks == [] and w.once == []
+
+
+def test_rf10_reconcile_stamps_the_reconcile_run_id():
+    """reconcile_all records resync_staging's row count, and its writer is
+    sync_table, which stamps _reconcile_run_id: no 'queued' result is left."""
+    with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
+        src = f.read()
+    loop = src.split("def _reconcile_tables():")[1].split("\ndef ")[0]
+    assert "cls.resync_staging(force=True)" in loop
+    assert "queue" not in loop.lower()
+    with open(RUN_PY) as f:
+        tree = ast.parse(f.read())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "CostAllocationRun")
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "resync_staging")
+    calls = {ast.unparse(c.func) for c in ast.walk(fn) if isinstance(c, ast.Call)}
+    assert "clickhouse.sync_table" in calls
+    assert not any("enqueue" in c for c in calls)
+
+
+# the hourly safety net (F4, F5)
+
+def _staged(w, counts):
+    """Put ``counts`` ({run: rows}) in staging."""
+    w.ch.rows = [r for run, n in counts.items() for r in _rows_for(run)[:n]]
+
+
+def test_rf10_safety_net_does_nothing_on_a_match():
+    w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00002": 1, "CAR-00003": 2})
+    n = len(_expected_rows())
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert _statements(w) == ["SELECT"]
+    assert "GROUP BY run" in w.ch.calls[0][0]
+    assert w.enqueued == [] and w.logged == [] and w.stamps == [] and w.sync_table_calls == []
+
+
+def test_rf10_safety_net_repairs_a_missing_run_and_requests_its_build():
+    w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00002": 1})
+    _staged(w, {"CAR-00001": len(_expected_rows())})
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00002"] == _rows_for("CAR-00002")
+    (args, kw), = w.enqueued
+    assert args == (BUILD_JOB,) and kw["name"] == "CAR-00002"
+    (a, k), = w.logged
+    assert "CAR-00002" in _logged_text(w) and "CAR-00001" not in _logged_text(w)
+    assert "\n" not in k.get("message", "")
+
+
+def test_rf10_safety_net_deletes_an_extra_run_and_its_build_names_the_run():
+    w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00004": 2})
+    n = len(_expected_rows())
+    _staged(w, {"CAR-00001": n, "CAR-00004": n})
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00001"}
+    assert "INSERT" not in _statements(w)
+    (args, kw), = w.enqueued
+    assert args == (BUILD_JOB,) and kw["name"] == "CAR-00004"     # F4
+    assert "CAR-00004" in _logged_text(w)
+
+
+def test_rf10_safety_net_repairs_a_run_with_the_wrong_row_count():
+    w = _World()
+    _site(w, {"CAR-00001": 1, "CAR-00002": 1})
+    n = len(_expected_rows())
+    _staged(w, {"CAR-00001": n, "CAR-00002": n - 1})                # F5
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00002"] == _rows_for("CAR-00002")
+    (args, kw), = w.enqueued
+    assert kw["name"] == "CAR-00002"
+    assert len(w.logged) == 1 and "CAR-00002" in _logged_text(w)
+
+
+def test_rf10_safety_net_with_clickhouse_down_only_warns():
+    w = _World()
+    _site(w, {"CAR-00001": 1})
+    w.ch.down = True
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert w.logged == [] and w.enqueued == [] and w.stamps == []
+    assert any(e[0] == "warning" for e in w.events if isinstance(e, tuple))
+
+
+def test_rf10_safety_net_is_scheduled_hourly():
+    with open(os.path.join(APP_DIR, "hooks.py")) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "scheduler_events" for t in node.targets):
+            events = ast.literal_eval(node.value)
+            assert ("konsol.epm.doctype.cost_allocation_run.cost_allocation_run"
+                    ".check_coefficients_staging") in events.get("hourly", [])
+            return
+    raise AssertionError("scheduler_events not found")
+
+
+REMOVED = ("resync_coefficients_job", "_locked_resync", "_queue_coefficient_resync",
+           "_queued_marker_key", "_resync_lock_key", "_marker_status", "_job_status",
+           "_latest_run", "_write_coefficients", "_NO_LOCK", "RESYNC_JOB",
+           "RESYNC_WAIT_SECONDS", "RESYNC_RUN_SECONDS", "RESYNC_JOB_TIMEOUT",
+           "RESYNC_LOCK_SECONDS", "RESYNC_MARKER_SECONDS",
+           "cost_allocation_coefficients_queued", "cost_allocation_coefficients_resync")
+
+
+def test_rf10_the_job_marker_and_lock_are_gone_and_nothing_references_them():
+    m = _k8(_World())
+    for name in REMOVED:
+        assert not hasattr(m, name), name
+        assert not hasattr(m.CostAllocationRun, name), name
+    this = os.path.abspath(__file__)
+    found = []
+    for root, _dirs, files in os.walk(APP_DIR):
+        for f in files:
+            path = os.path.join(root, f)
+            if not f.endswith((".py", ".json", ".js", ".txt")) or os.path.abspath(path) == this:
+                continue
+            with open(path, encoding="utf-8", errors="ignore") as fh:
+                text = fh.read()
+            for name in REMOVED:
+                if re.search(rf"\b{re.escape(name)}\b", text):
+                    found.append((os.path.relpath(path, APP_DIR), name))
+    assert found == []
+
+
+# --- RF11: the hourly check is SQL-only and re-checks before it repairs; a
+# successful write always requests its build (PR #541, RF10 re-review F1-F5).
+
+def _site_counted(w, runs, count=None):
+    """As _site, with each run's stored coefficient_row_count. ``runs``:
+    {name: docstatus}; ``count``: the stored count (default: the model's)."""
+    _site(w, runs)
+    n = len(_expected_rows()) if count is None else count
+    for r in w.get_all_data["Cost Allocation Run"]:
+        r["coefficient_row_count"] = n if r["docstatus"] == 1 else 0
+
+
+def _count_model_calls(m):
+    calls = []
+    orig = m._coefficient_rows
+
+    def spy(run_name, method, stored):
+        calls.append(run_name)
+        return orig(run_name, method, stored)
+
+    m._coefficient_rows = spy
+    return calls
+
+
+def test_rf11_doctype_coefficient_row_count_is_a_read_only_no_copy_computation_field():
+    doc = _doc(RUN)
+    fields = _by_name(RUN)
+    f = fields["coefficient_row_count"]
+    assert f["fieldtype"] == "Int" and f["label"] == "Coefficient Rows"
+    assert f.get("read_only") == 1 and f.get("no_copy") == 1
+    assert f["description"] == ("Set on approval: the number of coefficient rows this run "
+                                "writes to the warehouse.")
+    names = [x["fieldname"] for x in doc["fields"]]
+    at = names.index("coefficient_row_count")
+    assert names.index("computation_section") < at < names.index("computed_section")
+
+
+def test_rf11_before_submit_stores_the_coefficient_row_count():
+    w = _World()
+    m = _k8(w)
+    run = _k8_run(m)
+    run.before_submit()
+    built = m._coefficient_rows("CAR-00001", "Step-Down", m._rows(run.weights))
+    assert built and run.coefficient_row_count == len(built)
+
+
+def test_rf11_check_uses_the_stored_count_without_calling_the_model():
+    w = _World()
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1, "CAR-00003": 2})
+    n = len(_expected_rows())
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
+    m = _k8(w)
+    model_calls = _count_model_calls(m)
+    reads = []
+    orig = m.frappe.get_all
+    m.frappe.get_all = lambda doctype, **k: reads.append((doctype, k)) or orig(doctype, **k)
+    m.check_coefficients_staging()
+    assert model_calls == []
+    (doctype, k), = reads
+    assert doctype == "Cost Allocation Run" and k["filters"] == {"docstatus": 1}
+    assert "coefficient_row_count" in k["fields"]
+    assert _statements(w) == ["SELECT"]
+    assert w.logged == [] and w.enqueued == [] and "rollback" not in w.events
+
+
+def test_rf11_a_run_without_a_stored_count_falls_back_to_the_model():
+    for stored in (None, 0):
+        w = _World()
+        _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1})
+        w.get_all_data["Cost Allocation Run"][0]["coefficient_row_count"] = stored
+        n = len(_expected_rows())
+        _staged(w, {"CAR-00001": n, "CAR-00002": n})
+        m = _k8(w)
+        model_calls = _count_model_calls(m)
+        m.check_coefficients_staging()
+        assert model_calls == ["CAR-00001"], stored
+        assert _statements(w) == ["SELECT"], stored
+        assert w.logged == [] and w.enqueued == [], stored
+
+
+def test_rf11_a_model_rejected_run_is_logged_and_the_check_continues():
+    w = _World()
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1})
+    w.get_all_data["Cost Allocation Run"][0]["coefficient_row_count"] = None
+    _staged(w, {})
+    m = _k8(w)
+    orig = m._coefficient_rows
+
+    def rows(run_name, method, stored):
+        if run_name == "CAR-00001":
+            raise m.model.CostAllocationError("ZZ every driver value is zero")
+        return orig(run_name, method, stored)
+
+    m._coefficient_rows = rows
+    m.check_coefficients_staging()                       # raises nothing
+    # the other run was still repaired
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00002"}
+    (args, kw), = w.enqueued
+    assert kw["name"] == "CAR-00002"
+    (a, k), = w.logged
+    text = _logged_text(w)
+    assert "not repaired: CAR-00001: " in text and "ZZ every driver value is zero" in text
+
+
+def test_rf11_the_world_changes_mid_check_and_nothing_is_repaired_from_the_stale_read():
+    """The first read is a REPEATABLE READ snapshot. Between it and the repair,
+    CAR-00002 is approved (its callback writes its rows) and CAR-00003 is
+    cancelled (its callback deletes them). Neither may be touched; CAR-00004,
+    still missing after the re-check, is repaired."""
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 0, "CAR-00003": 1, "CAR-00004": 1})
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
+    m = _k8(w)
+
+    def rollback():
+        w.events.append("rollback")
+        for r in w.get_all_data["Cost Allocation Run"]:
+            if r["name"] == "CAR-00002":
+                r["docstatus"], r["coefficient_row_count"] = 1, n
+            if r["name"] == "CAR-00003":
+                r["docstatus"] = 2
+
+    m.frappe.db.rollback = rollback
+    before = [dict(r) for r in w.ch.rows if r["run"] in ("CAR-00002", "CAR-00003")]
+    m.check_coefficients_staging()
+    assert "rollback" in w.events
+    touched = [p.get("param_run") for sql, p in w.ch.calls if sql.startswith("DELETE")]
+    assert touched == ["CAR-00004"]
+    assert [r for r in w.ch.rows if r["run"] in ("CAR-00002", "CAR-00003")] == before
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00004"] == _rows_for("CAR-00004")
+    assert [kw["name"] for _a, kw in w.enqueued] == ["CAR-00004"]
+    text = _logged_text(w)
+    assert "CAR-00004" in text and "CAR-00002" not in text and "CAR-00003" not in text
+
+
+def test_rf11_above_the_threshold_the_table_is_rebuilt_once():
+    m0 = _k8(_World())
+    assert m0.COEFFICIENT_REBUILD_THRESHOLD == 20
+    w = _World()
+    _site_counted(w, {f"CAR-{i:05d}": 1 for i in range(1, 22)})        # 21 runs
+    _staged(w, {})
+    m = _k8(w)
+    m.check_coefficients_staging()
+    (table, _cols, rows, kw), = w.sync_table_calls
+    assert table == STAGING and kw["force"] is True
+    assert len({r[0] for r in rows}) == 21
+    assert "DELETE" not in _statements(w) and "INSERT" not in _statements(w)
+    assert len(w.logged) == 1 and len(w.enqueued) == 1
+    (args, _kw), = w.enqueued
+    assert args == (BUILD_JOB,)
+
+
+def test_rf11_at_the_threshold_runs_are_repaired_one_by_one():
+    w = _World()
+    _site_counted(w, {f"CAR-{i:05d}": 1 for i in range(1, 21)})        # 20 runs
+    _staged(w, {})
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert w.sync_table_calls == []
+    assert len(w.enqueued) == 20 and len(w.logged) == 1
+
+
+def test_rf11_a_failed_count_after_a_write_still_requests_the_build():
+    w = _World()
+    m = _k8(w)
+    w.ch.fail_on = "SELECT COUNT()"
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00001"}
+    (args, kw), = w.enqueued
+    assert args == (BUILD_JOB,) and kw["name"] == "CAR-00001"
+    assert w.stamps == []
+    assert any(e[0] == "warning" and "CAR-00001" in e[1]
+               for e in w.events if isinstance(e, tuple))
+
+
+def test_rf11_a_failed_watermark_stamp_after_a_write_still_requests_the_build():
+    w = _World()
+    m = _k8(w)
+
+    def stamp(*a, **k):
+        raise ConnectionError("clickhouse down")
+
+    m.clickhouse._stamp_watermark = stamp
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    (args, kw), = w.enqueued
+    assert kw["name"] == "CAR-00001"
+    assert any(e[0] == "warning" for e in w.events if isinstance(e, tuple))
+
+
+def test_rf11_a_failed_build_request_is_logged_with_the_call_to_run_by_hand():
+    w = _World()
+    m = _k8(w)
+
+    def down(*a, **k):
+        raise ConnectionError("redis down")
+
+    m.frappe.enqueue = down
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert ('konsol.tasks.request_consolidation_build("Cost Allocation Run", "CAR-00001", '
+            '"coefficients_sync")') in _logged_text(w)
+
+
+def test_rf11_deleting_a_draft_does_nothing():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "after_delete", committed=None, docstatus=0)
+    assert w.once == [] and w.syncs == []
+    assert w.ch.calls == [] and w.enqueued == []
+
+
+def test_rf11_deleting_a_cancelled_run_deletes_its_rows_and_requests_the_build():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00001") + _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "after_delete", committed=None, docstatus=2)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00002"}
+    assert [kw["name"] for _a, kw in w.enqueued] == ["CAR-00001"]
+
+
+def test_rf11_the_race_comment_states_the_doubling_and_the_dbt_guard():
+    with open(RUN_PY) as f:
+        src = f.read()
+    assert "last write wins" not in src
+    assert "assert_cost_allocation_coefficients_close" in src
+    assert "double" in src
+
+
+# --- RF12: stored counts self-correct; a failed rebuild falls back to per-run
+# repair; the F4 comment names the right writers (PR #541, RF11 re-review R1-R3).
+
+def _count_set(w, run, n):
+    return ("Cost Allocation Run", run, "coefficient_row_count", n, False)
+
+
+def test_rf12_a_stale_stored_count_is_repaired_once_then_corrected():
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1}, count=n + 3)     # stale
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert len(w.enqueued) == 2                                  # both repaired
+    assert w.set_values == [_count_set(w, "CAR-00001", n), _count_set(w, "CAR-00002", n)]
+    assert f"stored count {n + 3} -> {n}" in _logged_text(w)
+    calls, enq, logged = len(w.ch.calls), len(w.enqueued), len(w.logged)
+    m.check_coefficients_staging()                               # the second check does nothing
+    assert [sql.split()[0] for sql, _p in w.ch.calls[calls:]] == ["SELECT"]
+    assert len(w.enqueued) == enq and len(w.logged) == logged
+    assert len(w.set_values) == 2
+
+
+def test_rf12_a_legacy_run_with_a_stored_zero_gets_its_count_written_back():
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1})
+    w.get_all_data["Cost Allocation Run"][0]["coefficient_row_count"] = 0
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
+    m = _k8(w)
+    model_calls = _count_model_calls(m)
+    m.check_coefficients_staging()
+    assert model_calls == ["CAR-00001"]
+    assert w.set_values == [_count_set(w, "CAR-00001", n)]
+    assert w.enqueued == []                                      # nothing was repaired
+    m.check_coefficients_staging()                               # the model path ran once
+    assert model_calls == ["CAR-00001"] and len(w.set_values) == 1
+
+
+def test_rf13_a_legacy_count_is_stored_even_when_another_run_is_out_of_step():
+    """Tester CA-1 bug 1: a mismatch on another run discarded the first-read
+    correction of a matching legacy run, so its model path ran every hour."""
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1})
+    w.get_all_data["Cost Allocation Run"][0]["coefficient_row_count"] = 0   # legacy
+    _staged(w, {"CAR-00001": n, "CAR-00002": n - 2})                         # 2 out of step
+    m = _k8(w)
+    model_calls = _count_model_calls(m)
+    m.check_coefficients_staging()
+    assert _count_set(w, "CAR-00001", n) in w.set_values
+    calls = len(model_calls)
+    m.check_coefficients_staging()                               # the model path ran once
+    assert len(model_calls) == calls
+
+
+def test_rf12_after_a_rebuild_the_counts_are_backfilled_from_the_rows_written():
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {f"CAR-{i:05d}": 1 for i in range(1, 22)}, count=1)   # all stale
+    _staged(w, {})
+    m = _k8(w)
+    orig = m.clickhouse.sync_table
+
+    def writing(table, columns, rows, **k):
+        w.ch.rows = [dict(zip(columns, r)) for r in rows]
+        return orig(table, columns, rows, **k)
+
+    m.clickhouse.sync_table = writing
+    m.check_coefficients_staging()
+    assert len(w.sync_table_calls) == 1
+    assert sorted(w.set_values) == sorted(_count_set(w, f"CAR-{i:05d}", n) for i in range(1, 22))
+
+
+def test_rf12_a_failed_rebuild_repairs_run_by_run_and_logs_the_rejected_run():
+    w = _World()
+    _site_counted(w, {f"CAR-{i:05d}": 1 for i in range(1, 22)})        # 21 runs
+    _staged(w, {})
+    m = _k8(w)
+    orig = m._coefficient_rows
+
+    def rows(run_name, method, stored):
+        if run_name == "CAR-00007":
+            raise m.model.CostAllocationError("ZZ every driver value is zero")
+        return orig(run_name, method, stored)
+
+    m._coefficient_rows = rows
+    m.check_coefficients_staging()                               # raises nothing
+    assert w.sync_table_calls == []                              # the rebuild failed
+    assert {r["run"] for r in w.ch.rows} == {f"CAR-{i:05d}" for i in range(1, 22)} - {"CAR-00007"}
+    assert sorted(kw["name"] for _a, kw in w.enqueued) == sorted(
+        f"CAR-{i:05d}" for i in range(1, 22) if i != 7)
+    text = _logged_text(w)
+    assert "not repaired: CAR-00007: " in text and "ZZ every driver value is zero" in text
+    assert "rebuild failed" in text
+
+
+def test_rf12_the_race_comment_names_the_callback_and_the_hourly_repair():
+    with open(RUN_PY) as f:
+        src = f.read()
+    flat = " ".join(line.lstrip("# ") for line in src.splitlines())
+    assert "two writers that both read the run as submitted: the after-commit callback and the hourly repair" in flat
+    assert "db.commit" not in src
+    assert "(a submit's callback and a fast\n#   cancel's in another request, or a callback and the hourly repair)" not in src

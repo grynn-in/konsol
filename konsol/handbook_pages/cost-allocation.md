@@ -21,6 +21,7 @@ Everything lives in **Planning → Allocation**.
 
 - **Direct**: each sender gives its cost straight to the departments it serves. A sender may not receive, so service departments are never charged for each other.
 - **Step-Down**: use it when one service department also uses another's services (HR uses IT). Senders go in step order: put the department that serves the others first. A sender passes on its own cost plus whatever earlier steps gave it, and receives nothing after its own step.
+- **Reciprocal**: use it when service departments serve each other, for example IT supports HR and HR recruits for IT. Konsol solves the exchange exactly, with no iterations and no rounding plug. Step order does not matter. A department may not serve itself. A group of departments whose cost can never reach a department outside the group is refused, and the refusal names them.
 
 ## A worked example
 
@@ -67,6 +68,40 @@ The total is conserved to the cent. Allocation never creates or loses cost.
 
 - With **Declared Allocation Account** 6999: IT and HR are relieved on 6000, and Sales and Ops receive the cost on 6999.
 - With **Freeze at Approval**: if IT's cost later becomes 1,200, a Follow Latest Data run moves to Sales 975 and Ops 585. A frozen run stays at 875 and 525, and the drift warning names the run.
+
+## A reciprocal example
+
+Same entity. IT and HR serve each other, and both serve Sales and Ops. Rule set: Reciprocal. IT sends its cost by **IT Tickets**. HR sends its cost by **Headcount**.
+
+- IT: own cost 1,000, sent to HR 5, Sales 3, Ops 2 (50%, 30%, 20%).
+- HR: own cost 400, sent to IT 4, Sales 4, Ops 2 (40%, 40%, 20%).
+
+Each department's total is its own cost plus its share of the other's total. IT's total is 1,000 plus 40% of HR's total (450), so 1,450. HR's total is 400 plus 50% of IT's total (725), so 1,125.
+
+The six gross lines are:
+
+| from → to | amount | own | pass |
+|---|---|---|---|
+| IT → HR | 725 | 500 | 225 |
+| IT → Sales | 435 | 300 | 135 |
+| IT → Ops | 290 | 200 | 90 |
+| HR → IT | 450 | 160 | 290 |
+| HR → Sales | 450 | 160 | 290 |
+| HR → Ops | 225 | 80 | 145 |
+
+Each line is split into `own` (the sender's own cost) and `pass` (cost it received and passes on). The `own` column adds to 1,400, the cost the two departments started with. In **Declared Allocation Account** mode, only `own` cost is relieved on the pool account.
+
+The lines include IT and HR charging each other. Each service department still ends at zero, because what it receives it passes on.
+
+| department | before | after |
+|---|---|---|
+| IT | 1,000 | 0 |
+| HR | 400 | 0 |
+| Sales | 0 | 885 |
+| Ops | 0 | 515 |
+| Total | 1,400 | 1,400 |
+
+Sales receives 435 from IT and 450 from HR, so 885. Ops receives 290 from IT and 225 from HR, so 515.
 
 ## Approval and the period
 

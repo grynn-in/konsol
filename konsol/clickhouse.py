@@ -1048,8 +1048,8 @@ _REFERENCE_TABLE_DDL = {
     ),
     "epm_staging.cost_allocation_coefficients": (
         "(run String, origin_member String, step UInt16, sender_member String, "
-        "receiver_member String, driver String, pool_coefficient Decimal(38,12), "
-        "coefficient Decimal(38,12)) "
+        "receiver_member String, driver String, hop_kind String, "
+        "pool_coefficient Decimal(38,12), coefficient Decimal(38,12)) "
         "ENGINE = MergeTree ORDER BY (run, origin_member, step, receiver_member)"
     ),
     "epm_staging.cost_allocation_statistics": (
@@ -1247,6 +1247,8 @@ _POSITIONED_COLUMNS = {
         ("layer", "String", "main_account"),
         ("currency", "String", "layer"),
     ],
+    # konsol#269 RC3: the reciprocal method's own/pass hop, after driver (as in the CREATE)
+    "epm_staging.cost_allocation_coefficients": [("hop_kind", "String", "driver")],
 }
 
 
@@ -1670,6 +1672,8 @@ def _reconcile_tables():
             # resync_staging() for exactly this call. A doctype at 0 records
             # still syncs — TRUNCATE+INSERT of nothing empties the table,
             # which is the point.
+            # Cost Allocation Run's resync_staging rebuilds its coefficients
+            # here, synchronously, like the others (RF10).
             if getattr(cls, "resync_staging", None):
                 _record(synced, cls.CH_STAGING_TABLE, cls.resync_staging(force=True))
             elif getattr(cls, "CH_STAGING_TABLE", None) and getattr(cls, "CH_STAGING_FIELD_MAP", None):

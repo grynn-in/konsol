@@ -3,6 +3,8 @@
 validate builds the pure model's RuleSet from the document and lists every
 error in one refusal. The frappe reads are small helpers so tests can stub them.
 """
+from fractions import Fraction
+
 import frappe
 from frappe.model.document import Document
 
@@ -80,6 +82,23 @@ class CostAllocationRuleSet(Document):
         )
         try:
             model.assert_valid(rs)
+        except model.CostAllocationError as exc:
+            return exc.errors
+        if rs.method == model.RECIPROCAL:
+            return self._closed_loop_errors(rules, receivers)
+        return []
+
+    def _closed_loop_errors(self, rules, receivers):
+        """Refuse at save a Reciprocal loop whose cost can never leave. Whether
+        a receiver is reachable depends on weights only through "positive", so
+        equal weights decide it with no statistics: if even those cannot exit,
+        no statistic can. A loop that only zero statistics close is refused at
+        Compute (compute_weights_on builds the coefficient rows) and again at
+        submit."""
+        steps = model.build_steps(rules, receivers)
+        weights = {(st.step, r): Fraction(1, len(st.receivers)) for st in steps for r in st.receivers}
+        try:
+            model.reciprocal_coefficients(steps, weights)
         except model.CostAllocationError as exc:
             return exc.errors
         return []
