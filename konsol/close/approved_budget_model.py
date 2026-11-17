@@ -18,9 +18,11 @@ The five states, judged in this order, the first that holds wins:
    K16); this state is the backstop the reader shows anyway.
 3. ``inputs_changed``: the Cycle's input fingerprint, recomputed at this read
    (#348 S5-Q2 a), no longer matches the one stamped at Approve, or the
-   declaration's copy of it is not the Cycle's. The approved figures are not
-   the ones in the warehouse, so nothing is read (BUD-11-3: reported, and
-   the approver decides what follows).
+   declaration's copy of it is not the Cycle's, or the declaration carries no
+   copy at all (a submitted row with a blank ``input_fingerprint`` cannot be
+   checked, so it is never ok; PR #554 review m2). The approved figures are
+   not known to be the ones in the warehouse, so nothing is read (BUD-11-3:
+   reported, and the approver decides what follows).
 4. ``layer_missing``: the layer policy names no existing Budget Layer (One
    layer whose layer is gone; All layers on a site with none).
 5. ``ok``: ``layers`` holds the layer codes to read, in sort order.
@@ -43,8 +45,8 @@ ONE_LAYER = "One layer"
 
 #: One sentence per state. ``{group}`` is the group's code, ``{fiscal_year}``
 #: the year, ``{declaration}`` the Approved Budget's name, ``{cycle}`` the
-#: Budget Cycle's name; ``{cycle_why}``, ``{layers}``, ``{layer_why}`` and
-#: ``{approved}`` are built by ``budget_state``.
+#: Budget Cycle's name; ``{cycle_why}``, ``{inputs_why}``, ``{layers}``,
+#: ``{layer_why}`` and ``{approved}`` are built by ``budget_state``.
 SENTENCES = {
     OK: ("Approved budget for {group} FY{fiscal_year}: Budget Cycle {cycle}, {layers}, Rate Set {rate_set} "
          "(Approved Budget {declaration}{approved})."),
@@ -52,13 +54,18 @@ SENTENCES = {
                          "Budget Cycle and the layer policy) and submit it.{draft}"),
     CYCLE_CANCELLED: ("Approved Budget {declaration} for {group} FY{fiscal_year} names Budget Cycle {cycle}, "
                       "which {cycle_why}: cancel the declaration and amend it to name the approved Cycle."),
-    INPUTS_CHANGED: ("Approved Budget {declaration} for {group} FY{fiscal_year}: the inputs of Budget Cycle "
-                     "{cycle} have changed since it was approved, so the warehouse no longer holds the approved "
-                     "figures and none are shown. Review the Cycle; to approve the changed inputs, cancel and "
-                     "amend the Cycle and the declaration."),
+    INPUTS_CHANGED: "Approved Budget {declaration} for {group} FY{fiscal_year} {inputs_why}",
     LAYER_MISSING: ("Approved Budget {declaration} for {group} FY{fiscal_year} reads {layer_why}: define the "
                     "layer in Budget Layer, or amend the declaration."),
 }
+
+#: The two reasons for ``inputs_changed`` (``{inputs_why}``).
+_INPUTS_CHANGED_WHY = ("names Budget Cycle {cycle}, whose inputs have changed since it was approved, so the "
+                       "warehouse no longer holds the approved figures and none are shown. Review the Cycle; to "
+                       "approve the changed inputs, cancel and amend the Cycle and the declaration.")
+_NO_FINGERPRINT_WHY = ("carries no input fingerprint, so the figures it approved cannot be checked against "
+                       "Budget Cycle {cycle} and none are shown. Cancel the declaration and amend it, so that "
+                       "Approve stamps the Cycle's fingerprint.")
 
 
 def sentence(state, **context):
@@ -151,8 +158,14 @@ def budget_state(group, fiscal_year, declaration, cycle, fingerprint, layer_rows
                          "check runs at every read (#348 S5-Q2 a)")
     stamped = declaration.get("input_fingerprint")
     stored = fingerprint.get("stored")
-    if fingerprint.get("matches") is not True or (stamped and stored and stamped != stored):
-        return {"state": INPUTS_CHANGED, "message": sentence(INPUTS_CHANGED, **ctx), "layers": None}
+    if not stamped:
+        # PR #554 review m2: a submitted declaration with no copy of the
+        # Cycle's fingerprint cannot be checked, so it is never ok.
+        why = _NO_FINGERPRINT_WHY.format(**ctx)
+        return {"state": INPUTS_CHANGED, "message": sentence(INPUTS_CHANGED, inputs_why=why, **ctx), "layers": None}
+    if fingerprint.get("matches") is not True or (stored and stamped != stored):
+        why = _INPUTS_CHANGED_WHY.format(**ctx)
+        return {"state": INPUTS_CHANGED, "message": sentence(INPUTS_CHANGED, inputs_why=why, **ctx), "layers": None}
 
     layers = layers_for(declaration, layer_rows)
     if not layers:
