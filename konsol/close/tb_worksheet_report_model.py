@@ -24,7 +24,13 @@ number: every cell is the worksheet's own displayed value.
 - ``message(ws, payload)``: period, group, currency, sign, window, any
   column whose exact total is non-zero at the minor unit (Rounding never), and ``N entities outside your scope`` as a count.
   It is built from the worksheet's column labels only, so an out-of-scope
-  entity is never named.
+  entity is never named. On the Budget basis (konsol#348 S6 KB7; S6-Q5 a)
+  the header adds "Basis: Budget" and the message the approved budget's own
+  sentence, the declared limits (``BUDGET_LIMITS``, statement_report_model's
+  text) and the Balance Sheet basis (budgeted movements, not balances).
+- ``budget_state_message(payload)``: the legend of a Budget basis whose
+  approved budget is not ok: the header and "Budget worksheet not shown: "
+  with the state's sentence (BUD-4-2: a visible state, never an empty grid).
 
 Pure: no frappe, no konsol imports; ``period_name`` is a sibling loaded by path.
 """
@@ -45,6 +51,12 @@ def _load_sibling(name):
 
 
 period_name = _load_sibling("period_name").period_name
+#: The S5 limits of every budget column, the statement report's own text.
+BUDGET_LIMITS = _load_sibling("statement_report_model").BUDGET_LIMITS
+BUDGET = "Budget"
+_BUDGET_BS_BASIS = ("On the Budget basis, Balance Sheet accounts are the budgeted movements to the "
+                    "period end, not balances; the Unbalanced budget column is the budget's balancing "
+                    "plug per entity.")
 
 TOTAL_LABEL = "Total"
 _RESERVED = ("account", "name", "dimension", "currency")
@@ -155,17 +167,33 @@ def message(ws, payload):
     """The report message: period, group, currency, sign, window, non-zero
     totals and the outside-scope count, each escaped, joined by ``<br>``
     (Desk renders the message as HTML)."""
-    period = payload["period"]
-    header = " · ".join(
-        ["Consolidation worksheet", period_name(period["fiscal_year"], period["fiscal_period"])]
-        + [p for p in (payload.get("consolidation_group"), payload.get("reporting_currency"))
-           if p not in (None, "")])
     lines = [
-        header,
+        _header(payload),
         "Amounts are net debit: debit positive, credit negative.",
         "Balance Sheet accounts are cumulative to the period end; "
         "Profit and Loss accounts are year to date.",
         _nonzero_totals_text(ws),
         _outside_text(ws.get("outside_count")),
     ]
+    if payload.get("basis") == BUDGET:
+        own = ((payload.get("budget") or {}).get("message") or "").rstrip(".")
+        lines += ["%s. The budget is %s." % (own, BUDGET_LIMITS), _BUDGET_BS_BASIS]
     return "<br>".join(_html.escape(line) for line in lines if line)
+
+
+def _header(payload):
+    period = payload["period"]
+    basis = ["Basis: Budget"] if payload.get("basis") == BUDGET else []
+    return " · ".join(
+        ["Consolidation worksheet", period_name(period["fiscal_year"], period["fiscal_period"])]
+        + basis
+        + [p for p in (payload.get("consolidation_group"), payload.get("reporting_currency"))
+           if p not in (None, "")])
+
+
+def budget_state_message(payload):
+    """The legend of a Budget basis whose approved budget is not ok: the
+    header and the state's sentence, escaped (BUD-4-2)."""
+    reason = payload.get("message") or "the budget is not available (state: %s)" % payload.get("state")
+    return "<br>".join(_html.escape(line) for line in
+                       (_header(payload), "Budget worksheet not shown: %s" % reason))

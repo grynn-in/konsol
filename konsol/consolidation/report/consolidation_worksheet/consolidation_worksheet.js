@@ -4,7 +4,7 @@
 // report's execute; this script holds filters and formatting only.
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
 frappe.query_reports["Consolidation Worksheet"] = {
-	onload: (report) => konsol.period_reports.setup(report, { keys: ["fiscal_year", "fiscal_period", "consolidation_group", "entities", "dimension"] }),
+	onload: (report) => konsol.period_reports.setup(report, { keys: ["fiscal_year", "fiscal_period", "consolidation_group", "entities", "dimension", "basis"] }),
 	filters: [
 		{
 			fieldname: "fiscal_year",
@@ -49,6 +49,14 @@ frappe.query_reports["Consolidation Worksheet"] = {
 			get_query() {
 				return { filters: { status: "Published", in_trial_balance: 1 } };
 			},
+		},
+		{
+			fieldname: "basis",
+			label: __("Basis"),
+			fieldtype: "Select",
+			options: "Actual\nBudget",
+			default: "Actual",
+			description: __("Actual, or the approved budget for the group and year in the same layout."),
 		},
 	],
 

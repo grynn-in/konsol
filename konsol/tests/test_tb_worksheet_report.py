@@ -248,3 +248,11 @@ def test_the_js_has_a_basis_select_actual_or_budget_defaulting_to_actual():
     assert 'fieldtype: "Select"' in block
     assert 'options: "Actual\\nBudget"' in block
     assert 'default: "Actual"' in block
+
+
+def test_the_budget_states_are_approved_budget_models_states_but_ok():
+    abm = _load("approved_budget_model")
+    tree = _tree()
+    assign = next(n for n in tree.body if isinstance(n, ast.Assign)
+                  and any(getattr(t, "id", None) == "BUDGET_STATES" for t in n.targets))
+    assert ast.literal_eval(assign.value) == tuple(s for s in abm.STATES if s != abm.OK)
