@@ -239,6 +239,37 @@ def test_the_shipped_guide_loads_and_has_a_start_page_per_role():
     assert len({p["slug"] for p in pages}) == len(pages)
 
 
+def test_the_shipped_guide_has_the_budget_against_actuals_page():
+    """konsol#348 S5 K14: the Budget columns' page, for everyone, in Concepts.
+    It names what the columns are, that the budget is before eliminations,
+    the balance sheet basis, every blank-column state and what to do, the
+    drill and its rate, the export, the cancel rule, and (one line) that an
+    entity leaving mid-plan is shown as the warehouse holds it today. No
+    issue numbers in user text (konsol#371-7)."""
+    import re
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    page = pages.get("budget-vs-actual")
+    assert page is not None, sorted(pages)
+    assert page["audience"] == "Everyone" and page["section"] == "Concepts"
+    text = page["markdown"]
+    for phrase in (
+        "Budget (before eliminations)", "Variance to budget", "Budget year to date",
+        "Approved Budget", "Budget Cycle", "Rate Set",
+        "before intercompany eliminations and without group-level adjustments",
+        "budgeted movements", "no variance to budget on the balance sheet",
+        "Unbalanced budget (no balancing entry)",
+        "No approved budget", "cancelled", "inputs", "layer", "Build the budget",
+        "Statement Drill", "translation", "Budget Entr",
+        "Export to Excel", "Budget drill",
+        "Cancel the Approved Budget first",
+    ):
+        assert phrase in text, phrase
+    exit_line = [ln for ln in text.splitlines() if "leaves the group" in ln or "exits" in ln.lower()]
+    assert exit_line and "today" in exit_line[-1].lower(), exit_line
+    assert not re.search(r"#\d+", text), "no issue numbers in user text"
+    assert "blank" in text and " 0 " not in text.replace("P0", ""), "blank, never a zero, for a missing budget"
+
+
 def test_the_shipped_guide_names_no_customer():
     """Generic examples only (E1, ZZ01, "Group"): the repo is public."""
     text = " ".join(_read(os.path.join(PAGES, f)) for f in os.listdir(PAGES)).lower()
