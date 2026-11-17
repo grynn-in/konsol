@@ -39,10 +39,10 @@ period's ``current`` minus it on a Profit and Loss line only (S5 F1: on the
 Balance Sheet a budgeted movement set against an actual balance is not a
 variance, so the cell is blank); Budget year to date is the budget's ``ytd``
 (Profit and Loss only). A cell is blank, never 0, where the budget is
-absent; where an ok budget lacks a heading or the net result, it is budgeted
-at 0 (Deepak Pai, 17 Nov 2026, konsol#348 comment 6956694095: unbudgeted is
-budget zero), and any other line it lacks is blank; the residual takes no
-variance. A
+absent or lacks the line. An unbudgeted heading is budgeted at 0 (Deepak
+Pai, 17 Nov 2026, konsol#348 comment 6956694095: unbudgeted is budget zero)
+because statement_model.statement emits every chart heading, at 0 when no
+row sits under it, and the net result; the residual takes no variance. A
 non-heading budget line the actuals lack (a section's "No heading", "Not in
 the group chart", or the budget's own "Unbalanced budget (no balancing
 entry)" plug) is written where the actuals' line would stand (before the P&L
@@ -357,8 +357,9 @@ def _budget_cells(section, line, budget_items, minor_unit, include=None, varianc
                   heading_sides=None):
     """``[budget, variance to budget, favourability, budget year to date]``
     for a line (or an include of it), blank (``None``, never 0) where the
-    budget is absent, not ok or lacks a line other than a heading or the net
-    result, which are budgeted at 0 (statement_report_model._with_budget). The variance is Profit and Loss
+    budget is absent, not ok or lacks the line. An unbudgeted heading is in
+    an ok budget at 0 (statement_model emits every chart heading; 17 Nov 2026
+    rule), so it needs no case here. The variance is Profit and Loss
     only (S5 F1) and rounded once to the minor unit; ``variance`` False (the
     residual) leaves it blank. Favourability (S6 KB4) is text on a P&L
     heading (from ``heading_sides``) and the net result only."""
@@ -369,13 +370,7 @@ def _budget_cells(section, line, budget_items, minor_unit, include=None, varianc
         if include is not None else next(_line_keys(section, line))
     budget_item = budget_items.get(key)
     if budget_item is None or budget_item.get("current") is None:
-        # Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348
-        # comment 6956694095; statement_report_model._with_budget): a heading
-        # or the net result the ok budget lacks is budgeted at 0 (P&L: Budget
-        # YTD 0 too); includes and other lines stay blank.
-        if include is not None or line.get("kind") not in ("heading", "net_result"):
-            return blank
-        budget_item = {"current": 0.0, "ytd": 0.0} if section == PL else {"current": 0.0}
+        return blank
     budget_value = budget_item["current"]
     this = item.get("current")
     cells = [_amount(budget_value, "budget"), None, None, None]
