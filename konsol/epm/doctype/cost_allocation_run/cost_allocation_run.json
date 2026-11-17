@@ -154,6 +154,14 @@
    "description": "Snapshot of the rule set's choice. Follow Latest Data uses the current trial balance and budget; Freeze at Approval keeps the amounts as they stood at approval."
   },
   {
+   "fieldname": "coefficient_row_count",
+   "fieldtype": "Int",
+   "label": "Coefficient Rows",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Set on approval: the number of coefficient rows this run writes to the warehouse."
+  },
+  {
    "fieldname": "computed_section",
    "fieldtype": "Section Break",
    "label": "Computed"
