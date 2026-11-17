@@ -4,7 +4,7 @@ audience: Everyone
 section: Concepts
 order: 170
 ---
-The Consolidated Statement shows three budget columns beside the actuals: **Budget (before eliminations)**, **Variance to budget** and **Budget year to date**. They read the group's approved budget for the fiscal year of the period you open. Where there is no approved budget to show, the columns are not shown at all and the legend under the statement says why: a visible state, never a blank column.
+The Consolidated Statement shows four budget columns beside the actuals: **Budget (before eliminations)**, **Variance to budget**, **Favourability** and **Budget year to date**. They read the group's approved budget for the fiscal year of the period you open. Where there is no approved budget to show, the columns are not shown at all and the legend under the statement says why: a visible state, never a blank column.
 
 ## What "approved" means
 
@@ -16,6 +16,7 @@ The statement reads that declaration's Cycle and layers only. Two Cycles are nev
 
 - **Budget (before eliminations)**: the Cycle's rows for the period, translated at the Cycle's Rate Set and consolidated by ownership, in the group's reporting currency, with the signs of the actuals (income positive, costs in brackets).
 - **Variance to budget**: this period's actual minus the budget, on profit and loss lines only.
+- **Favourability**: a word, not a number, on profit and loss headings and the net result (see below).
 - **Budget year to date**: the budget from the start of the fiscal year to the period.
 
 The budget is **before intercompany eliminations and without group-level adjustments**: no elimination, deal journal, top-side or equity-method entry reaches it. The legend repeats this.
@@ -25,6 +26,23 @@ The budget is **before intercompany eliminations and without group-level adjustm
 A budget has period movements only, so the balance sheet budget column shows the **budgeted movements year to date**, not balances. There is **no variance to budget on the balance sheet**: a movement against a balance is not a variance.
 
 A Cycle whose entries do not balance within an entity and period carries a balancing plug. The plug shows as its own balance sheet line, **Unbalanced budget (no balancing entry)**, and counts in the residual, so the budget balance sheet adds up and the plug is visible.
+
+## Favourability
+
+The Favourability column reads the variance to budget of a profit and loss heading:
+
+| The column says | When |
+|---|---|
+| Favourable | The variance to budget is above zero. |
+| Unfavourable | The variance to budget is below zero. |
+| On budget | The variance to budget is exactly zero. |
+| n/a | The heading's main account declares no normal balance. |
+
+The rule depends on the heading's **normal balance** (Debit or Credit, on the Main Account). Debit and Credit read the same way: the statement shows income and costs both income-positive, so a cost above budget is already a negative variance, and income above budget a positive one. A heading whose main account leaves the normal balance blank reads **n/a**: the statement does not guess a direction for it. Set the normal balance on the Main Account to give it one.
+
+The net result is Favourable when there is more profit than budgeted. Balance sheet lines have no favourability, as they have no variance to budget. A heading that has actuals but no line in the approved budget shows blank budget cells, so it has no favourability either.
+
+The legend under the statement states the rule, and the Excel export carries the same column.
 
 ## When the columns are not shown
 
@@ -42,7 +60,26 @@ Click the Budget cell of a heading to open **Statement Drill** on the Budget bas
 
 ## Export to Excel
 
-**Export to Excel** adds the three budget columns and the legend line to the Statement sheet, and a **Budget drill** sheet with every heading's budget drill and its rates. The download is recorded as a close event that names the Cycle, layers and Rate Set.
+**Export to Excel** adds the four budget columns and the legend line to the Statement sheet, and a **Budget drill** sheet with every heading's budget drill and its rates. The download is recorded as a close event that names the Cycle, layers and Rate Set.
+
+## The worksheet on the Budget basis
+
+The **Consolidation Worksheet** has a **Basis** filter: **Actual** (the default) or **Budget**. On Budget it lays out the approved budget of the group and year in the same columns as the actuals: one column per entity, its translation difference, then Consolidated. The budget's balancing plug is its own column, **Unbalanced budget**. Balance sheet accounts show the budgeted movements to the period end, not balances. The legend names the approved budget and repeats that it is before intercompany eliminations and without group-level adjustments.
+
+Where there is no approved budget to show, the worksheet shows no columns, and the legend says why, in the same words as the statement.
+
+## The entity basis
+
+On the Consolidated Statement's **Entity** basis, the budget columns show that entity's own budget: the entity's rows of the Budget Cycle named by its root group's Approved Budget, in the entity's **functional currency**, before translation and before eliminations. A Cycle whose entries do not balance for the entity shows the plug as the **Unbalanced budget** line, as on the group statement, so the balance sheet still adds up.
+
+The Entity basis has no group filter, so the root group decides which approved budget applies:
+
+| The legend says | What to do |
+|---|---|
+| The entity is a member of several root consolidation groups | No entity budget is shown, because each group has its own approved budget. Open the Group basis for the group whose budget you want. |
+| The entity is a member of no consolidation group | Add it to a root Consolidation Group, and declare that group's Approved Budget. |
+
+Any other reason (no approved budget, a cancelled Cycle, changed inputs) reads as on the group statement.
 
 ## Cancelling a Cycle
 
