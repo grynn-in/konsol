@@ -2,15 +2,22 @@
 fiscal years and the latest period with data (``period_strip_model.strip_info``)
 so the Desk Year and Period strips can mark years and open on a period.
 
-Three short warehouse reads, each on its own: the actuals' periods and years
-(``gold_fully_consolidated_tb``) and the approved budget's years
-(``gold_fully_consolidated_budget``, konsol#348 S5 K15), so a year budgeted
+Two short warehouse reads, each on its own: the actuals' periods and years
+(``gold_fully_consolidated_tb``). A read that fails (warehouse not built, any
+error) contributes nothing: with no actuals the latest is None and the model
+falls back to the latest declared Regular period. Never raises for a
+warehouse failure.
+
+The budget years (konsol#348 S5 K15; PR #554 review m7b) are the fiscal years
+of the SUBMITTED Approved Budgets (docstatus 1), read from MariaDB: for the
+root Consolidation Group document(s) of the given group's code when one is
+given, else every group's. The warehouse's budget table holds every approved
+Cycle's rows whatever any declaration says, so it is not read for this: the
+mark says "an approved budget is declared for this year", so a year budgeted
 before any actuals arrive is marked on the Year strip. ``data_years`` is the
 union; ``latest`` (the period a first visit opens on) is the actuals' only,
 because the Consolidated Statement refuses a period with no actuals rows. A
-read that fails (warehouse not built, any error) contributes nothing: with
-no actuals the latest is None and the model falls back to the latest
-declared Regular period. Never raises for a warehouse failure.
+MariaDB failure is a site fault and is not swallowed.
 """
 import frappe
 
@@ -26,12 +33,6 @@ _PERIODS_SQL = (
 )
 _YEARS_SQL = (
     "SELECT DISTINCT fiscal_year FROM epm_gold.gold_fully_consolidated_tb "
-    "{where}ORDER BY fiscal_year"
-)
-#: S5 K15: the years with an approved budget in the warehouse (every approved
-#: Cycle's rows, whatever the declaration: the mark says "budget data exists").
-_BUDGET_YEARS_SQL = (
-    "SELECT DISTINCT fiscal_year FROM epm_gold.gold_fully_consolidated_budget "
     "{where}ORDER BY fiscal_year"
 )
 _GROUP_WHERE = "WHERE consolidation_group = {group:String} "
@@ -55,6 +56,26 @@ def _may_open_a_period_report():
     return False
 
 
+def _approved_budget_years(group):
+    """The fiscal years with a SUBMITTED Approved Budget (module docstring):
+    ``group`` is the warehouse code (``_group_code``), or None for every
+    group. An Approved Budget links the root Consolidation Group document,
+    not the code, so the code's root row(s) are resolved first (the
+    statement_api._approved_budget pattern); a code with no root row has no
+    declarations. Sorted, distinct."""
+    filters = {"docstatus": 1}
+    if group:
+        names = [row["name"] for row in frappe.get_all(
+            "Consolidation Group",
+            filters={"consolidation_group": group, "data_area_id": ["is", "not set"]},
+            fields=["name"], limit_page_length=0)]
+        if not names:
+            return []
+        filters["consolidation_group"] = ["in", names]
+    rows = frappe.get_all("Approved Budget", filters=filters, fields=["fiscal_year"], limit_page_length=0)
+    return sorted({int(row["fiscal_year"]) for row in rows})
+
+
 @frappe.whitelist(methods=["GET"])
 def period_strip_info(consolidation_group=None):
     if not _may_open_a_period_report():
@@ -75,5 +96,5 @@ def period_strip_info(consolidation_group=None):
 
     with_data = read(_PERIODS_SQL, lambda r: (int(r["fiscal_year"]), int(r["fiscal_period"])))
     data_years = read(_YEARS_SQL, lambda r: int(r["fiscal_year"])) or []
-    budget_years = read(_BUDGET_YEARS_SQL, lambda r: int(r["fiscal_year"])) or []
+    budget_years = _approved_budget_years(group)
     return period_strip_model.strip_info(period_rows, with_data, sorted(set(data_years) | set(budget_years)))

@@ -96,7 +96,8 @@ def _invoke(ch_rows=None, ch_error=None, readable=REPORTS, doctype_ok=True, peri
         elif doctype == "Approved Budget":
             rows = list(approved_budgets or [])
             if "docstatus" in filters:
-                rows = [r for r in rows if r["docstatus"] == filters.pop("docstatus")]
+                docstatus = filters.pop("docstatus")
+                rows = [r for r in rows if r["docstatus"] == docstatus]
             if "consolidation_group" in filters:
                 op, names = filters.pop("consolidation_group")
                 assert op == "in", op
