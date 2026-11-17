@@ -4,6 +4,57 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (17 Nov 2026, later): budget S5 (budget reports) merged.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s5.md`. The design picks are S5-Q1–Q7 on #348, all (a), taken under the standing rule.
+
+**Merged** (konsol#554, 992d31c2 + konsolidat#372, 2e3d48c0)
+- **Approved Budget** (new submittable doctype): it names one approved budget-type Cycle and its layers per group and fiscal year.
+  - Submit is the approval and stamps Approved By and Approved On. Only one declaration is live per group and year.
+  - It copies the Cycle's input fingerprint at submit.
+  - A Budget Cycle cannot be cancelled while a submitted declaration names it (a locking read).
+- **Consolidated Statement**, group basis: Budget (before eliminations), Variance to budget and Budget year to date.
+  - The columns appear only while the budget state is ok. Otherwise the legend and the export note give the state, never a blank column (BUD-4-2). The states are: no approved budget, Cycle cancelled, inputs changed since approval, layer missing.
+  - On the balance sheet the budget shows YTD movements (S5-Q4 a), so there is no variance there.
+  - The budget's UNBALANCED plug is its own line. Budget-only lines are shown.
+  - Every budget read binds group, scenario, Cycle and layer.
+- **Statement Drill** has a Budget basis showing the declared method, rate and Rate Set per entity. **xlsx** has the budget columns and a "Budget drill" sheet; the Close Event records the Cycle.
+- The Year strip marks years that have a submitted Approved Budget. New Handbook page: "Budget against actuals".
+- `pytest.ini` at the repo root stops `konsol/.pytest_cache` from appearing and breaking the dimension scan.
+- Live test: every step passes. The actuals export is identical with no declaration, and the budget cells match the warehouse by hand.
+
+**Open:**
+- #555 (cosmetic).
+- #552 (undecided).
+- An Entity Accountant needs EPM User to open any statement drill (unchanged from main).
+
+**Next:** S6. It covers:
+- the forecast latest-estimate read, which removes the interim one-approved-round rule;
+- forecast accuracy;
+- favourability (BUD-7-a);
+- worksheet budget columns.
+
+**Update (17 Nov 2026): budget S4 (consolidated budget) merged.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s4.md`.
+
+**Merged**
+- **S4a** (konsolidat#365, 6afeea92 + konsol#546, 5a8b9edd): Rate Sets (S4-Q1 c).
+  - Each Budget Cycle names the Rate Set it translates at; one set is the actuals set.
+  - The CTB core is a shared macro, `macros/consolidation_core.sql`. The actuals CTB is unchanged by A/B.
+- **S4b** (konsolidat#368, 705f718 + konsol#550, 4bee1d1): three new gold models in the `scenarios` domain.
+  - `gold_budget_entity_ownership`: ownership on the budget's own period spine.
+  - `gold_consolidated_budget_tb`: the translated and consolidated budget, per scenario, Cycle and layer, at each Cycle's Rate Set.
+  - `gold_fully_consolidated_budget`: adds the CTA, UNBALANCED and NCI attribution layers.
+  - A budget key with no usable rate in its set stops that build by name (`budget_rate_guard`).
+  - The budget is before eliminations (#427); deal journals and topside are absent (#425).
+  - Live: CTB and FCTB are identical by multiset diff, and every budget fixture passes.
+- **konsolidat#369**: on a warehouse where every table is empty, ClickHouse 24.8 sets no `max_threads` cap, and stacked window steps multiplied threads (CANNOT_SCHEDULE_TASK on CI).
+  - Fix: the core anchors its plan on `system.one`; the budget's partner is `materialize('')`.
+  - Pinned by `tests/test_consolidation_core_thread_cap.py`. It was bisected on CI's throwaway ClickHouse.
+
+**Open:**
+- #552 (undecided): a budget's treatment of an entity that exits the group mid-plan.
+- #547, #549, #551.
+
+**Next:** S5, the budget reports (budget columns, drill, xlsx, a "no approved budget" state). The S5 notes are in the S4 task file.
+
 **Update (15 Nov 2026): #189 PR3 and budget S3 merged; #525 fixed.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s3.md`. This round was built on Fable at Deepak Pai's request.
 
 **Merged**

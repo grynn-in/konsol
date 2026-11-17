@@ -44,6 +44,10 @@ def _execute_with(drill_payload, submissions=()):
         seen["get_entity_drill"] = (fy, fp, entity, heading)
         return drill_payload
 
+    def get_budget_drill(fy, fp, group, heading):
+        seen["get_budget_drill"] = (fy, fp, group, heading)
+        return drill_payload
+
     def get_value(doctype, name, field=None, *a, **k):
         seen.setdefault("get_value", []).append((doctype, name, field))
         return "JPY" if doctype == "Entity" else "USD"
@@ -54,7 +58,8 @@ def _execute_with(drill_payload, submissions=()):
 
     class Model:
         @staticmethod
-        def columns(minor_unit=None):
+        def columns(minor_unit=None, basis=None):
+            seen["columns"] = (minor_unit, basis)
             return ["cols"]
 
         @staticmethod
@@ -77,7 +82,7 @@ def _execute_with(drill_payload, submissions=()):
         db=types.SimpleNamespace(get_value=get_value),
         get_all=get_all)
     env = {"frappe": frappe, "statement_api": types.SimpleNamespace(
-               get_drill=get_drill, get_entity_drill=get_entity_drill),
+               get_drill=get_drill, get_entity_drill=get_entity_drill, get_budget_drill=get_budget_drill),
            "statement_drill_report_model": Model,
            "_group_code": lambda value: {"CG-ZZG-": "ZZG"}.get(value, value)}
     exec(compile(ast.Module(body=fns, type_ignores=[]), PATH, "exec"), env)
@@ -151,6 +156,51 @@ def test_entity_basis_without_an_entity_is_refused_and_needs_no_group():
         execute(filters)
 
 
+_BUDGET_FILTERS = {"fiscal_year": 2024, "fiscal_period": 12, "basis": "Budget",
+                   "consolidation_group": "CG-ZZG-", "heading": "1"}
+_BUDGET_OK = {"state": "ok", "message": None, "basis": "Budget",
+              "period": {"fiscal_year": 2024, "fiscal_period": 12},
+              "drill": {"minor_unit": 2, "rows": [
+                  {"layer": "entity", "entity": "ZZA", "accounts": [],
+                   "rates": [{"fx_method": "closing", "rate": 1.1, "rate_set": "ZZRS"}],
+                   "source": {"kind": "cycle", "cycle": "BC-1", "entity": "ZZA"}},
+              ]}}
+
+
+def test_budget_basis_drills_the_approved_budget_for_the_group_code():
+    """S5 K10b: basis Budget routes to get_budget_drill with the group's
+    code and the heading (UNBALANCED included), in the group's reporting
+    currency; the columns are laid out for the Budget basis; no trial
+    balance is read (the sources are Budget Cycles)."""
+    execute, seen = _execute_with(_BUDGET_OK)
+    assert execute(dict(_BUDGET_FILTERS)) == (["cols"], ["rows"], "msg")
+    assert seen["get_budget_drill"] == (2024, 12, "ZZG", "1")
+    assert "get_drill" not in seen and "get_entity_drill" not in seen
+    assert seen["rows"][1] == "USD"
+    assert seen["columns"] == (2, "Budget")
+    assert "get_all" not in seen
+    execute, seen = _execute_with(_BUDGET_OK)
+    execute(dict(_BUDGET_FILTERS, heading="UNBALANCED"))
+    assert seen["get_budget_drill"] == (2024, 12, "ZZG", "UNBALANCED")
+
+
+def test_budget_basis_needs_a_group_not_an_entity():
+    execute, _ = _execute_with(_BUDGET_OK)
+    filters = dict(_BUDGET_FILTERS)
+    del filters["consolidation_group"]
+    with pytest.raises(Refused, match="consolidation group"):
+        execute(filters)
+
+
+def test_group_and_entity_bases_lay_out_their_own_columns():
+    execute, seen = _execute_with(_OK)
+    execute(dict(_FILTERS))
+    assert seen["columns"][1] != "Budget"
+    execute, seen = _execute_with(_OK)
+    execute(dict(_ENTITY_FILTERS))
+    assert seen["columns"][1] != "Budget"
+
+
 def test_group_basis_still_needs_a_group():
     execute, _ = _execute_with(_OK)
     filters = dict(_FILTERS)
@@ -168,7 +218,7 @@ def _filter(fieldname):
 
 def test_js_basis_and_entity_filters():
     basis = _filter("basis")
-    assert "Group\\nEntity" in basis and 'default: "Group"' in basis
+    assert "Group\\nEntity\\nBudget" in basis and 'default: "Group"' in basis
     entity = _filter("entity")
     assert 'options: "Entity"' in entity
     assert 'depends_on: \'eval:doc.basis=="Entity"\'' in entity
@@ -221,3 +271,29 @@ def test_js_switching_basis_back_to_group_swaps_them_back():
     got = _basis_change("Entity", "Group")
     assert got["after"]["consolidation_group"] and not got["after"]["entity"]
     assert got["calls"][-1] == "refresh", got["calls"]
+
+
+def test_js_budget_basis_requires_the_group_like_the_group_basis():
+    """S5 K10b: opened from a Budget cell (?basis=Budget) or switched to."""
+    got = _loaded("Budget")
+    assert got["after"]["consolidation_group"] and not got["after"]["entity"]
+    assert "refresh" not in got["calls"]
+    got = _basis_change("Entity", "Budget")
+    assert got["after"]["consolidation_group"] and not got["after"]["entity"]
+    assert got["calls"][-1] == "refresh", got["calls"]
+
+
+def test_js_heading_filter_accepts_the_unbalanced_literal():
+    """The plug's drill is heading "UNBALANCED", the warehouse's literal
+    main_account, not a Main Account: a Link filter would clear it on
+    validation, so the heading filter skips client-side link validation
+    (the server refuses an unknown heading by name anyway)."""
+    heading = _filter("heading")
+    assert "ignore_link_validation: 1" in heading
+    from konsol.tests.test_desk_report_js_calls import run_route
+    route = {"fiscal_year": 2024, "fiscal_period": 12, "basis": "Budget",
+             "consolidation_group": "CG-ZZ", "heading": "UNBALANCED"}
+    got = run_route("statement_drill/statement_drill.js", "Statement Drill", route)
+    assert got["error"] is None, got
+    assert got["values"]["heading"] == "UNBALANCED" and got["values"]["basis"] == "Budget"
+    assert got["runs"] == [{"ran": got["values"]}], got

@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\": \"h0\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Planning cycles</b></span>\", \"col\": 12}}, {\"id\": \"s0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Budget Cycles\", \"col\": 4}}, {\"id\": \"s1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Forecast Cycles\", \"col\": 4}}, {\"id\": \"s2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Scenarios\", \"col\": 4}}]",
+ "content": "[{\"id\": \"h0\", \"type\": \"header\", \"data\": {\"text\": \"<span class=\\\"h4\\\"><b>Planning cycles</b></span>\", \"col\": 12}}, {\"id\": \"s0\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Budget Cycles\", \"col\": 4}}, {\"id\": \"s1\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Forecast Cycles\", \"col\": 4}}, {\"id\": \"s3\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Approved Budgets\", \"col\": 4}}, {\"id\": \"s2\", \"type\": \"shortcut\", \"data\": {\"shortcut_name\": \"Scenarios\", \"col\": 4}}]",
  "creation": "2026-11-08 02:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -12,7 +12,7 @@
  "is_hidden": 0,
  "label": "Planning",
  "links": [],
- "modified": "2026-11-14 12:00:00.000000",
+ "modified": "2026-11-17 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "EPM",
  "name": "Planning",
@@ -42,6 +42,13 @@
    "type": "DocType",
    "format": "{} open",
    "stats_filter": "[[\"Budget Cycle\", \"scenario_type\", \"=\", \"forecast\"], [\"Budget Cycle\", \"docstatus\", \"=\", 0]]"
+  },
+  {
+   "color": "Green",
+   "doc_view": "List",
+   "label": "Approved Budgets",
+   "link_to": "Approved Budget",
+   "type": "DocType"
   },
   {
    "color": "Grey",

@@ -66,6 +66,16 @@
    "in_list_view": 1
   },
   {
+   "fieldname": "rate_set",
+   "fieldtype": "Link",
+   "label": "Rate Set",
+   "options": "Rate Set",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The set this tranche's rate belongs to (konsol#348). The set flagged Is Actuals is the one the actuals translation reads; a budget or forecast names its own set on its Budget Cycle. Part of the key: the same tranche may carry one rate per set. Never assumed."
+  },
+  {
    "fieldname": "historical_rate",
    "fieldtype": "Float",
    "label": "Rate (1 From = rate To)",
@@ -123,5 +133,5 @@
    "email": 1
   }
  ],
- "modified": "2026-11-07 20:00:00.000000"
+ "modified": "2026-11-15 12:00:00.000000"
 }

@@ -346,3 +346,157 @@ def drill(rows, journals, accounts, heading, keys, declared, allowed, statement_
         "dimensions_note": DIMENSIONS_NOTE,
         "minor_unit": minor_unit,
     }
+
+
+# -- the budget drill (konsol#348 S5 K8) --------------------------------------
+#
+# gold_fully_consolidated_budget rows have the FCTB shape plus the budget's
+# balancing plug: one row per (entity, period) with main_account
+# 'UNBALANCED' and adjustment_type 'unbalanced' (S5-Q3 a). A heading drill
+# over them is ``drill`` as it stands: the plug's code is under no heading,
+# so it is skipped (the leaf check above), and the heading still matches its
+# line. ``_LAYER_LABELS`` must never gain an ``unbalanced`` entry: it would
+# put the plug under headings and break their totals (the test pins it). The
+# "Unbalanced budget (no balancing entry)" line has its own drill below.
+
+#: The plug's literal ``main_account`` (konsolidat gold_fully_consolidated_budget.sql).
+UNBALANCED_HEADING = "UNBALANCED"
+
+
+def unbalanced_drill(rows, keys, allowed, minor_unit, cycle=None, statement_line=None):
+    """The budget's "Unbalanced budget (no balancing entry)" line, one row
+    per entity (konsol#348 S5 K8; S5-Q3 a).
+
+    ``rows`` are the budget's entity-grain rows (``drill``'s shape); only
+    those with ``adjustment_type == "unbalanced"`` and a key in ``keys``
+    (the BS cumulative window) count. ``allowed`` is the caller's entity
+    scope (``None`` = every entity visible): entities outside it are one
+    aggregate row, never named (W4-E9). Amounts stay in net-debit terms,
+    the line's own (statement_model: ``sign 1``). ``cycle`` is the Budget
+    Cycle the rows come from, named in each row's ``source``. When
+    ``statement_line`` (the statement's ``unbalanced`` line) is given, the
+    total must equal its ``current`` exactly, or this raises ``ValueError``
+    (a bug, never a silent difference). Same return shape as ``drill``,
+    with ``heading`` the literal ``UNBALANCED``.
+    """
+    minor_unit = statement_model.places(minor_unit)
+    keys = set(keys)
+    if not keys:
+        raise ValueError(f"{UNBALANCED_HEADING}: no keys given to drill into")
+    cur_key = max(keys)
+
+    buckets = {}
+    for row in rows:
+        if row.get("adjustment_type") != statement_model.UNBALANCED:
+            continue
+        key = (row["fiscal_year"], row["fiscal_period"])
+        if key not in keys:
+            continue
+        if row.get("null_rows"):
+            raise ValueError(
+                f"{UNBALANCED_HEADING} {row['fiscal_year']}/{row['fiscal_period']}: "
+                "has null rows, amount cannot be read as 0")
+        if row["amount"] is None:
+            raise ValueError(
+                f"{UNBALANCED_HEADING} {row['fiscal_year']}/{row['fiscal_period']}: "
+                "amount is None, cannot be read as 0")
+        entity = row.get("data_area_id")
+        buckets[entity] = buckets.get(entity, Decimal("0")) + _dec(row["amount"])
+
+    out_rows = []
+    allowed_entities = None if allowed is None else set(allowed)
+    outside_count = 0
+    outside_amount = Decimal("0")
+    for entity in sorted(buckets):
+        if allowed_entities is not None and entity not in allowed_entities:
+            outside_count += 1
+            outside_amount += buckets[entity]
+            continue
+        out_rows.append({
+            "layer": "entity", "label": None, "entity": entity,
+            "amount": _round(buckets[entity], minor_unit),
+            "accounts": [],
+            "source": {"kind": "cycle", "cycle": cycle, "entity": entity},
+        })
+    if outside_count:
+        out_rows.append({
+            "layer": "entity", "label": "%d entities outside your scope" % outside_count,
+            "entity": None, "amount": _round(outside_amount, minor_unit),
+            "accounts": [], "source": None,
+        })
+
+    # Rounded once from the raw buckets, as ``drill`` does; a per-row
+    # rounding drift is shown, never hidden.
+    true_total = _round(sum(buckets.values(), Decimal("0")), minor_unit)
+    displayed_total = _round(sum((_dec(row["amount"]) for row in out_rows), Decimal("0")), minor_unit)
+    if displayed_total != true_total:
+        out_rows.append({
+            "layer": "rounding", "label": "Rounding", "entity": None,
+            "amount": _round(_dec(true_total) - _dec(displayed_total), minor_unit),
+            "accounts": [], "source": None,
+        })
+
+    if statement_line is not None:
+        expected = _round(_dec(statement_line["current"]), minor_unit)
+        if true_total != expected:
+            raise ValueError(
+                f"{UNBALANCED_HEADING}: drill total {true_total} does not match the statement "
+                f"line's current {expected} (a bug, never shown as a silent difference)")
+
+    return {
+        "heading": UNBALANCED_HEADING,
+        "heading_name": statement_model.UNBALANCED_LABEL,
+        "section": statement_model.BS,
+        "rows": out_rows,
+        "total": true_total,
+        "dimensions_note": DIMENSIONS_NOTE,
+        "minor_unit": minor_unit,
+    }
+
+
+def _rate_key(rate):
+    return (rate["fx_method"] or "", str(rate["rate"]), rate["rate_set"] or "")
+
+
+def with_rates(drill, rate_rows, cycle):
+    """``drill`` with the rate each budget account was translated at
+    (konsol#348 S5 K8; S5-Q7 a: per entity row, the distinct (fx_method,
+    translation_rate) pairs of its accounts, plus the Rate Set).
+
+    ``rate_rows`` are ``gold_consolidated_budget_tb`` rows for the window:
+    ``{"data_area_id", "main_account", "fx_method", "translation_rate",
+    "rate_set"}``, one per (entity, account, period). Every account of an
+    entity row gets ``rates``: its distinct ``{"fx_method", "rate",
+    "rate_set"}`` in that order (a BS window spans periods, so an account
+    may carry several); the entity row gets the union, and its ``source``
+    becomes ``{"kind": "cycle", "cycle", "entity"}``: the budget's rows
+    come from the Cycle, not a trial balance. An entity account with no rate
+    row raises ``ValueError`` naming the entity and account: the rate is
+    never shown blank. Rows of other layers (CTA, NCI) and the outside-scope
+    aggregate carry no rates and are left alone. Amounts do not change.
+    Mutates and returns ``drill``.
+    """
+    by_key = {}
+    for row in rate_rows:
+        rate = {"fx_method": row.get("fx_method"), "rate": row.get("translation_rate"),
+                "rate_set": row.get("rate_set")}
+        slot = by_key.setdefault((row.get("data_area_id"), row.get("main_account")), {})
+        slot[_rate_key(rate)] = rate
+
+    for row in drill["rows"]:
+        if row.get("layer") != "entity" or row.get("entity") is None:
+            continue
+        entity = row["entity"]
+        union = {}
+        for account in row.get("accounts") or []:
+            code = account["main_account"]
+            found = by_key.get((entity, code))
+            if not found:
+                raise ValueError(
+                    f"{entity} {code}: no translation rate row in gold_consolidated_budget_tb for the "
+                    "window; the budget drill never shows a blank rate")
+            account["rates"] = [found[k] for k in sorted(found)]
+            union.update(found)
+        row["rates"] = [union[k] for k in sorted(union)]
+        row["source"] = {"kind": "cycle", "cycle": cycle, "entity": entity}
+    return drill

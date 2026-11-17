@@ -2243,7 +2243,7 @@ FISCAL_PERIODS_DEDUP_SQL = (
 
 @frappe.whitelist()
 def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, fiscal_year=None,
-             fiscal_period=None, limit=500):
+             fiscal_period=None, limit=500, rate_set=None):
     """Read-only: the group's governed exchange rates, the ones translation uses.
 
     One source of truth (decided 13 Sep 2026): the approved Group Exchange
@@ -2257,6 +2257,8 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
       fiscal_year / fiscal_period  one year, one period
       as_of                        periods starting on/before this date (YYYY-MM-DD)
       limit                        row cap (1..5000, default 500)
+      rate_set                     one Rate Set by name; omitted, the set flagged Is
+                                   Actuals (konsol#348; refused by name while none is)
 
     Filter values are bound as ClickHouse HTTP query parameters: ``{name:Type}``
     in the SQL and ``param_<name>`` on the wire (#175: a bare name is read as a
@@ -2266,9 +2268,10 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
     import json
 
     from konsol.clickhouse import execute
+    from konsol.group_rates import actuals_rate_set
 
-    conds = []
-    params = {}
+    conds = ["rate_set = {rs:String}"]
+    params = {"rs": str(rate_set) if rate_set else actuals_rate_set()}
     if from_currency:
         params["fc"] = str(from_currency).upper()
         conds.append("from_currency = {fc:String}")
@@ -2297,7 +2300,7 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
     where = (" WHERE " + " AND ".join(conds)) if conds else ""
     sql = (
         "SELECT from_currency, to_currency, rate_type, fiscal_year, fiscal_period, "
-        "toString(fp.start_date) AS period_start, rate, document "
+        "toString(fp.start_date) AS period_start, rate, document, rate_set "
         f"FROM {GOVERNED_FX_TABLE} "
         f"INNER JOIN {FISCAL_PERIODS_DEDUP_SQL} AS fp USING (fiscal_year, fiscal_period)"
         f"{where} "

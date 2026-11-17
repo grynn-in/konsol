@@ -291,3 +291,160 @@ def test_group_message_header_is_unchanged_and_has_no_basis():
     first = D.message(_payload(F._heading1_rows(), "1")).split("<br>")[0]
     assert first.startswith("Statement drill · FY2025 P07 · ZZ_GROUP · 1 ")
     assert "Basis" not in first
+
+
+# --- the Budget basis (#348 S5 K10a) --------------------------------------
+
+_BUDGET_META = {"cycle": F.CYCLE, "layers": ["Original", "Revision 1"], "rate_set": "ZZRS",
+                "scenario_id": "ZZSC", "declaration": "ZZDECL"}
+
+
+def _budget_payload(heading="1", scoped=None):
+    rows = F._budget_rows()
+    line = F._statement_line(rows, heading)
+    drill = DM.with_rates(
+        DM.drill(rows, [], F._accounts(), heading, _keys(heading), F._declared(), scoped, line,
+                 minor_unit=2),
+        F._RATES, F.CYCLE)
+    return {"period": dict(_PERIOD), "consolidation_group": "ZZ_GROUP", "heading": heading,
+            "basis": "Budget", "meta": dict(_BUDGET_META), "state": "ok", "message": None,
+            "drill": drill}
+
+
+def _unbalanced_payload(scoped=None):
+    rows = F._budget_rows()
+    line = F._unbalanced_line(rows)
+    drill = DM.unbalanced_drill(rows, F._KEYS, scoped, 2, cycle=F.CYCLE, statement_line=line)
+    return {"period": dict(_PERIOD), "consolidation_group": "ZZ_GROUP", "heading": "UNBALANCED",
+            "basis": "Budget", "meta": dict(_BUDGET_META), "state": "ok", "message": None,
+            "drill": drill}
+
+
+def test_budget_columns_gain_rate_and_rate_set_after_amount():
+    cols = D.columns(2, "Budget")
+    names = [c["fieldname"] for c in cols]
+    assert names == ["label", "entity", "main_account", "amount", "rate", "rate_set",
+                     "source_doctype", "source", "currency"]
+    by_name = {c["fieldname"]: c for c in cols}
+    # PR #554 review m6: the method is the chart's DECLARED Translation Method
+    # as recorded at build time, not the one the core applied (closing can be
+    # applied before a historical account's first tranche), so the column says so.
+    assert (by_name["rate"]["label"], by_name["rate"]["fieldtype"], by_name["rate"]["width"]) == (
+        "Declared method and rate", "Data", 200)
+    assert (by_name["rate_set"]["label"], by_name["rate_set"]["fieldtype"],
+            by_name["rate_set"]["options"], by_name["rate_set"]["width"]) == (
+        "Rate Set", "Link", "Rate Set", 110)
+    assert by_name["source"]["fieldtype"] == "Dynamic Link"
+    assert by_name["amount"]["precision"] == 2
+
+
+@pytest.mark.parametrize("basis", [None, "Group", "Entity"])
+def test_other_bases_keep_their_columns(basis):
+    assert D.columns(2, basis) == D.columns(2)
+    assert [c["fieldname"] for c in D.columns(2, basis)] == [
+        "label", "entity", "main_account", "amount", "source_doctype", "source", "currency"]
+
+
+def test_budget_rows_show_rates_on_account_and_entity_rows():
+    data = D.rows(_budget_payload(), "USD")
+    zza = next(r for r in data if r["entity"] == "ZZA" and r["indent"] == 0)
+    assert zza["rate"] == "closing 1.1; closing 1.12"
+    assert zza["rate_set"] == "ZZRS"
+    account = data[data.index(zza) + 1]
+    assert account["indent"] == 1 and account["main_account"] == "1110"
+    assert account["rate"] == "closing 1.1; closing 1.12" and account["rate_set"] == "ZZRS"
+    zzb = next(r for r in data if r["entity"] == "ZZB" and r["indent"] == 0)
+    assert zzb["rate"] == "closing 1.1"
+
+
+def test_budget_total_and_rows_without_rates_show_none():
+    data = D.rows(_budget_payload("3"), "USD")
+    for row in data:
+        assert row["rate"] is None and row["rate_set"] is None
+    assert _total(data)["amount"] == 1005.0
+
+
+def test_budget_outside_scope_aggregate_has_no_rate():
+    data = D.rows(_budget_payload(scoped={"ZZA"}), "USD")
+    outside = next(r for r in data if r["label"] == "1 entities outside your scope")
+    assert outside["rate"] is None and outside["rate_set"] is None
+    assert outside["budget_entries_filters"] is None
+
+
+def test_a_blank_fx_method_reads_closing_undeclared():
+    """PR #554 review m6: an account whose Translation Method the chart left
+    blank is translated at closing by the consolidation core, so a blank
+    ``fx_method`` reads "closing (undeclared)", never "chart default"."""
+    payload = _budget_payload()
+    zzb = next(r for r in payload["drill"]["rows"] if r["entity"] == "ZZB")
+    zzb["rates"] = [{"fx_method": None, "rate": 1.25, "rate_set": "ZZRS"},
+                    {"fx_method": "", "rate": 1.3, "rate_set": "ZZRS2"}]
+    data = D.rows(payload, "USD")
+    row = next(r for r in data if r["entity"] == "ZZB" and r["indent"] == 0)
+    assert row["rate"] == "closing (undeclared) 1.25; closing (undeclared) 1.3"
+    assert row["rate_set"] == "ZZRS; ZZRS2"
+    assert "chart default" not in open(os.path.join(APP_DIR, "close", "statement_drill_report_model.py")).read()
+
+
+def test_budget_entity_row_links_its_cycle_and_the_budget_entry_list():
+    data = D.rows(_budget_payload(), "USD")
+    zza = next(r for r in data if r["entity"] == "ZZA" and r["indent"] == 0)
+    assert (zza["source_doctype"], zza["source"]) == ("Budget Cycle", F.CYCLE)
+    assert zza["budget_entries_filters"] == {"cycle": F.CYCLE, "data_area_id": "ZZA"}
+    for row in data:
+        if row is not zza and row["entity"] != "ZZB":
+            assert row["budget_entries_filters"] is None
+        assert "budget_entries_filters" in row
+
+
+def test_a_budget_entity_with_accounts_but_no_rates_raises_naming_it():
+    rows = F._budget_rows()
+    line = F._statement_line(rows, "1")
+    drill = DM.drill(rows, [], F._accounts(), "1", F._KEYS, F._declared(), None, line, minor_unit=2)
+    for item in drill["rows"]:
+        item["source"] = {"kind": "cycle", "cycle": F.CYCLE, "entity": item["entity"]}
+    payload = _budget_payload()
+    payload["drill"] = drill
+    with pytest.raises(ValueError, match="ZZA"):
+        D.rows(payload, "USD")
+
+
+def test_unbalanced_drill_lays_out_one_row_per_entity_then_total():
+    data = D.rows(_unbalanced_payload(), "USD")
+    assert [(r["label"], r["indent"], r["amount"]) for r in data] == [
+        ("ZZA", 0, 705.0), ("ZZB", 0, -200.0), ("Total", 0, 505.0)]
+    assert _total(data)["amount"] == F._unbalanced_line(F._budget_rows())["current"] == 505.0
+    for row in data[:2]:
+        assert (row["source_doctype"], row["source"]) == ("Budget Cycle", F.CYCLE)
+        assert row["rate"] is None and row["rate_set"] is None
+    assert data[0]["budget_entries_filters"] == {"cycle": F.CYCLE, "data_area_id": "ZZA"}
+    assert data[2]["budget_entries_filters"] is None
+
+
+def test_unbalanced_drill_outside_scope_row():
+    data = D.rows(_unbalanced_payload({"ZZA"}), "USD")
+    assert [r["label"] for r in data] == ["ZZA", "1 entities outside your scope", "Total"]
+    assert data[1]["budget_entries_filters"] is None and data[1]["source"] is None
+
+
+def test_budget_message_header_and_budget_line():
+    lines = D.message(_budget_payload()).split("<br>")
+    assert lines[0] == ("Statement drill · FY2025 P07 · Budget · ZZ_GROUP · "
+                        "1 " + _budget_payload()["drill"]["heading_name"]
+                        + " (" + _budget_payload()["drill"]["section"] + ")")
+    assert lines[1] == (f"Budget Cycle {F.CYCLE}, Original, Revision 1, Rate Set ZZRS; "
+                        "before intercompany eliminations and without group-level adjustments")
+    assert lines[2] == _budget_payload()["drill"]["dimensions_note"]
+    assert "#" not in "".join(lines)
+
+
+def test_unbalanced_message_header():
+    header = D.message(_unbalanced_payload()).split("<br>")[0]
+    assert header == ("Statement drill · FY2025 P07 · Budget · ZZ_GROUP · "
+                      "UNBALANCED Unbalanced budget (no balancing entry) (Balance Sheet)")
+
+
+def test_other_bases_gain_no_budget_keys():
+    for row in D.rows(_payload(F._heading1_rows(), "1", F._TOPSIDE_JOURNALS), "USD"):
+        assert not {"rate", "rate_set", "budget_entries_filters"} & set(row)
+    assert "Budget" not in D.message(_payload(F._heading1_rows(), "1"))

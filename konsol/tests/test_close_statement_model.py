@@ -8,6 +8,7 @@ WITHDRAWN).
 Loaded by path; the module imports nothing from frappe or konsol.
 """
 import ast
+from decimal import Decimal
 import importlib.util
 import os
 
@@ -659,3 +660,138 @@ def test_module_imports_no_frappe():
             assert not any(a.name.split(".")[0] in ("frappe", "konsol") for a in node.names)
         if isinstance(node, ast.ImportFrom):
             assert (node.module or "").split(".")[0] not in ("frappe", "konsol")
+
+
+# --- the budget's UNBALANCED plug (konsol#348 S5 K5, S5-Q3 a) -----------------
+#
+# gold_fully_consolidated_budget writes one row per (entity, period) with
+# ``main_account 'UNBALANCED'`` and ``adjustment_type 'unbalanced'``: the
+# amount that makes a budget with no balancing entry foot. Fed to
+# heading_amounts as it stood, that row landed in "Not in the group chart
+# (UNBALANCED)". Decided (#348 S5-Q3 a): its own bucket by adjustment_type,
+# its own Balance Sheet line "Unbalanced budget (no balancing entry)" in
+# net-debit terms (sign 1), counted in the residual so the budget balance
+# sheet foots. Actuals rows carry no such adjustment_type and are unchanged:
+# the balanced fixture's whole payload is pinned below.
+
+UNBALANCED_LABEL = "Unbalanced budget (no balancing entry)"
+
+
+def _budget_rows():
+    """FCB shape (konsolidat gold_fully_consolidated_budget.sql): a revenue
+    budget of 1,000 with no balancing entry, so the plug is +1,000 net debit
+    for the same (entity, period)."""
+    return [
+        _row("4100", -1000.0, adjustment_type="entity"),
+        _row("UNBALANCED", 1000.0, adjustment_type="unbalanced"),
+    ]
+
+
+def test_unbalanced_rows_are_their_own_bucket_never_not_in_chart():
+    out = M.heading_amounts(_budget_rows(), _s_accounts(), {_KEY}, minor_unit=2)
+    assert out["unbalanced"] == 1000.0
+    assert out["exact"]["unbalanced"] == Decimal("1000.0")
+    assert out["not_in_chart"] == {}
+    assert out["headings"] == {"4": -1000.0}
+    assert "unbalanced" not in out["headings"] and "UNBALANCED" not in out["headings"]
+
+
+def test_budget_rows_show_the_unbalanced_line_and_the_residual_foots():
+    result = M.statement(_budget_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
+    lines = result["sections"][1]["lines"]
+    kinds = [line["kind"] for line in lines]
+    assert "not_in_chart" not in kinds, "the plug is not an unmapped code"
+    unbalanced = next(line for line in lines if line["kind"] == "unbalanced")
+    assert unbalanced["label"] == UNBALANCED_LABEL
+    assert unbalanced["current"] == 1000.0           # net-debit terms, unflipped
+    assert unbalanced["sign"] == 1
+    assert unbalanced["comparison"] is None and unbalanced["variance"] is None
+    # Before the residual, after the headings (and "Not in the group chart").
+    assert kinds.index("unbalanced") == len(kinds) - 2 and kinds[-1] == "residual"
+    # Equity carries the budgeted result; the plug carries the other side;
+    # the residual foots to 0 with nothing to explain.
+    equity = _bs_line(result, "3")
+    assert equity["current"] == 1000.0
+    residual = _residual_line(result)
+    assert residual["current"] == 0.0
+    assert "explained" not in residual
+
+
+def test_unbalanced_line_carries_its_comparison_when_that_period_is_loaded():
+    rows = _budget_rows() + [
+        {**_row("4100", -400.0, adjustment_type="entity"), "fiscal_period": 6},
+        {**_row("UNBALANCED", 400.0, adjustment_type="unbalanced"), "fiscal_period": 6},
+    ]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
+    unbalanced = next(line for line in result["sections"][1]["lines"] if line["kind"] == "unbalanced")
+    assert unbalanced["current"] == 1400.0          # cumulative, like every BS line
+    assert unbalanced["comparison"] == 400.0
+    assert unbalanced["variance"] == 1000.0
+    assert _residual_line(result)["comparison"] == 0.0
+
+
+def test_no_unbalanced_line_when_the_plug_is_zero_in_both_periods():
+    rows = _s_rows() + [_row("UNBALANCED", 0.0, adjustment_type="unbalanced")]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
+    assert "unbalanced" not in [line["kind"] for line in result["sections"][1]["lines"]]
+
+
+def test_an_unbalanced_plug_that_does_not_foot_leaves_the_residual_visible():
+    """The plug is counted in the residual, never used to force it to 0: a
+    plug that is wrong by 1.00 shows as a residual of 1.00."""
+    rows = [_row("4100", -1000.0, adjustment_type="entity"), _row("UNBALANCED", 1001.0, adjustment_type="unbalanced")]
+    result = M.statement(rows, _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
+    assert _residual_line(result)["current"] == 1.0
+
+
+def test_unbalanced_line_declares_sign_1_like_the_bs_no_heading_line():
+    """Extends test_sign_key_present_only_on_heading_lines_pl_and_bs: the
+    unbalanced line is in net-debit terms and says so."""
+    result = M.statement(_budget_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
+    for line in result["sections"][1]["lines"]:
+        if line["kind"] in ("no_heading", "unbalanced"):
+            assert line["sign"] == 1, line
+        elif line["kind"] != "heading":
+            assert "sign" not in line, line
+
+
+#: The balanced actuals fixture's whole payload, as statement() returned it
+#: before S5 K5 (generated 17 Nov 2026 from _s_rows / _s_accounts /
+#: _s_declared, minor_unit 2). Actuals rows have no ``unbalanced``
+#: adjustment_type, so K5 must leave this byte-identical.
+_ACTUALS_PAYLOAD_BEFORE_K5 = {
+    'gap': None,
+    'legend': 'Profit and loss: income positive, costs in brackets. Balance sheet: assets, '
+              'liabilities and equity positive.',
+    'minor_unit': 2,
+    'periods': {'comparison': (2025, 6),
+                'comparison_note': 'No rows in the warehouse for FY2025 P06',
+                'current': (2025, 7)},
+    'sections': [{'lines': [{'comparison': None, 'current': 241.43, 'heading': '4',
+                             'heading_name': 'COST OF SALES', 'kind': 'heading', 'sign': -1,
+                             'variance': None, 'ytd': 241.43},
+                            {'comparison': None, 'current': 241.43, 'kind': 'net_result',
+                             'label': 'Net result', 'sign': -1, 'variance': None, 'ytd': 241.43}],
+                  'section': 'Profit and Loss'},
+                 {'lines': [{'comparison': None, 'current': 1735.1, 'heading': '1',
+                             'heading_name': 'ASSETS', 'kind': 'heading', 'sign': 1, 'variance': None},
+                            {'comparison': None, 'current': 803.7, 'heading': '2',
+                             'heading_name': 'LIABILITIES', 'kind': 'heading', 'sign': -1,
+                             'variance': None},
+                            {'comparison': None, 'current': 931.4, 'heading': '3',
+                             'heading_name': 'EQUITY',
+                             'includes': [{'comparison': None, 'current': 5.07, 'kind': 'cta',
+                                           'label': 'of which currency translation (CTA)'},
+                                          {'comparison': None, 'current': 241.43,
+                                           'kind': 'current_year_result',
+                                           'label': 'of which current-year result'}],
+                             'kind': 'heading', 'sign': -1, 'variance': None},
+                            {'comparison': None, 'current': 0.0, 'kind': 'residual',
+                             'label': 'Unmatched residual'}],
+                  'section': 'Balance Sheet'}],
+}
+
+
+def test_actuals_payload_is_byte_identical_to_before_k5():
+    result = M.statement(_s_rows(), _s_accounts(), _S_CALENDAR, _S_KEY, _s_declared(), minor_unit=2)
+    assert result == _ACTUALS_PAYLOAD_BEFORE_K5

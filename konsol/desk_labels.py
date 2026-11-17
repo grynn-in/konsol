@@ -27,6 +27,7 @@ LABELS = {
     # --- Close: rates ----------------------------------------------------
     "Group Exchange Rate": "Group Exchange Rates",
     "Historical Equity Rate": "Historical Equity Rates",
+    "Rate Set": "Rate Sets",
     # --- Close: intercompany ---------------------------------------------
     "IC Balance": "IC Balances",
     # --- Close: adjustments ----------------------------------------------
@@ -51,6 +52,8 @@ LABELS = {
     "Budget Cycle": "All Cycles",
     "Budget Entry": "All Entries",
     "Budget Annual Input": "All Annual Inputs",
+    # konsol#348 S5 K13: the group's declared budget per year (BUD-4-2)
+    "Approved Budget": "Approved Budgets",
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
     "Budget Layer": "Budget Layers",

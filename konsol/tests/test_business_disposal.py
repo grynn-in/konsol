@@ -363,6 +363,7 @@ def _load():
     ps.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
     gr = types.ModuleType("konsol.group_rates")
     gr.true_rate = lambda quote, per: float(Decimal(str(quote or 0)) / int(per or 1))
+    gr.actuals_rate_set = lambda: "ACTUAL"
     # konsol#529: before_cancel sets the workflow's docstatus-2 state through
     # this helper; it has its own tests (test_cancelled_workflow_state.py).
     wfs = types.ModuleType("konsol.workflows")
@@ -515,6 +516,7 @@ class _Site:
     def _get_all(self, doctype, filters=None, fields=None, order_by=None, limit_page_length=None, **k):
         if doctype == "Group Exchange Rate":
             assert filters.get("docstatus") == 1 and filters.get("rate_type") == "Closing", filters
+            assert filters.get("rate_set") == "ACTUAL", "konsol#348: a deal translates at the actuals rate"
             key = (filters["from_currency"], filters["to_currency"], filters["fiscal_year"], filters["fiscal_period"])
             if key not in self.rates:
                 return []
