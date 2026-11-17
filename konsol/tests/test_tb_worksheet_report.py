@@ -175,9 +175,9 @@ def _budget_payload():
     rows = [_row("entity", "ZZA", "4000", -100.0), _row("entity", "ZZB", "4000", -50.0),
             _row("unbalanced", "ZZA", "UNBALANCED", 100.0),
             _row("unbalanced", "ZZB", "UNBALANCED", 50.0)]
-    accounts = dict(ACCOUNTS, UNBALANCED={"account_name": "Unbalanced budget",
-                                          "statement_section": "Balance Sheet", "is_group": 0, "lft": 3})
-    ws = WM.to_ids(WM.worksheet(rows, accounts, PERIODS, (2025, 3), {"cta_account": None},
+    # The plug is never a chart account (PR #558 review m2): the chart is the
+    # actuals' own, and the model labels the plug's line itself.
+    ws = WM.to_ids(WM.worksheet(rows, ACCOUNTS, PERIODS, (2025, 3), {"cta_account": None},
                                 2, None, None))
     return dict(_ok_payload(), worksheet=ws, basis="Budget", budget=dict(_BUDGET_META))
 
@@ -209,6 +209,8 @@ def test_an_ok_budget_shows_the_unbalanced_column_and_the_budget_sentence():
     columns, data, message = execute(dict(_FILTERS, basis="Budget"))
     labels = [c["label"] for c in columns]
     assert any(label.startswith("Unbalanced budget") for label in labels), labels
+    [plug] = [row for row in data if row["account"] == "UNBALANCED"]
+    assert plug["name"] == WM.statement_model.UNBALANCED_LABEL, "never 'not in the published chart'"
     assert "Basis: Budget" in message
     assert "BCYC-ZZB-2025-abc12345" in message
     assert LAYOUT.BUDGET_LIMITS in message

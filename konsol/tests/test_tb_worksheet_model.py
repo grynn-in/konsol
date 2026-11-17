@@ -558,6 +558,9 @@ def test_a_budget_worksheet_lays_out_the_plug_as_a_labelled_column_and_foots():
     columns = {c["key"]: c["label"] for c in result["columns"]}
     assert columns[("layer", "unbalanced")] == "Unbalanced budget"
     plug = next(line for line in result["lines"] if line["account"] == "UNBALANCED")
-    assert plug["name"] == M.NOT_IN_CHART_LABEL
+    # PR #558 review m2: the plug is its own line, labelled as the statement
+    # labels it, never "not in the published chart".
+    assert plug["key"] == M.UNBALANCED and plug["name"] == SM.UNBALANCED_LABEL
+    assert [line["key"] for line in M.to_ids(result)["lines"]][-1] == "unbalanced"
     assert plug["cells"][("layer", "unbalanced")] == 700.0 and plug["consolidated"] == 700.0
     assert result["total"]["consolidated"] == 0.0
