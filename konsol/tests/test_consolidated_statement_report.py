@@ -439,7 +439,10 @@ def test_js_drill_url_uses_the_entity_when_the_row_carries_one():
 
 def test_js_heading_link_shows_for_an_entity_row_too():
     source = _js()
-    assert "data.code && (data.drill_group || data.drill_entity)" in source
+    # The one condition for the actuals' drill link (review m3: never the plug's row).
+    assert 'data.code && data.code !== UNBALANCED_CODE && (data.drill_group || data.drill_entity)' in source
+    assert 'const UNBALANCED_CODE = "UNBALANCED"' in source
+    assert 'column.fieldname === "label" && has_actuals_drill(data)' in source
 
 
 def test_js_budget_cell_opens_the_budget_drill_when_the_row_is_marked():

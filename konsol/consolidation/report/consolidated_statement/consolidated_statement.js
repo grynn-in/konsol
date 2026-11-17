@@ -7,15 +7,23 @@
 // The Budget cell of a heading row, and of the "Unbalanced budget" row, opens
 // Statement Drill on the Budget basis (konsol#348 S5 K10b) when the report
 // marked the row (drill_budget: the budget is ok); a blank budget cell is no link.
+// The "Unbalanced budget" row's label is NO link (PR #554 review m3): its code
+// is the plug's literal, not a chart heading, so the actuals' drill would
+// refuse it; only its Budget cell links.
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
 const ADD_COMMENTARY = __("Add commentary");
 const EXPORT_TO_EXCEL = __("Export to Excel");
+// statement_report_model.UNBALANCED_CODE: the plug row's code.
+const UNBALANCED_CODE = "UNBALANCED";
 
 function drill_url(data) {
 	// The heading row carries the group the statement was built for
 	// (statement_report_model: drill_group), so a blank group filter (the
 	// only group) still opens the right drill. On the entity basis the row
-	// carries drill_entity instead: open the entity drill.
+	// carries drill_entity instead: open the entity drill. The basis is
+	// always named (PR #554 review m4): Statement Drill remembers its filters
+	// per user (#514), so a link without one would open on whatever Basis
+	// the user last used there.
 	const params = new URLSearchParams({
 		fiscal_year: frappe.query_report.get_filter_value("fiscal_year"),
 		fiscal_period: frappe.query_report.get_filter_value("fiscal_period"),
@@ -25,9 +33,16 @@ function drill_url(data) {
 		params.set("basis", "Entity");
 		params.set("entity", data.drill_entity);
 	} else {
+		params.set("basis", "Group");
 		params.set("consolidation_group", data.drill_group || "");
 	}
 	return `${frappe.router.make_url(["query-report", "Statement Drill"])}?${params}`;
+}
+
+function has_actuals_drill(data) {
+	// A heading row (a chart code with the group or entity it was built for);
+	// never the plug's row, whose only drill is the budget's (review m3).
+	return data.code && data.code !== UNBALANCED_CODE && (data.drill_group || data.drill_entity);
 }
 
 function budget_drill_url(data) {
@@ -220,7 +235,7 @@ frappe.query_reports["Consolidated Statement"] = {
 		if (!data) {
 			return value;
 		}
-		if (column.fieldname === "label" && data.code && (data.drill_group || data.drill_entity)) {
+		if (column.fieldname === "label" && has_actuals_drill(data)) {
 			value = `<a href="${drill_url(data)}" title="${__("Open the drill for this heading")}">${value}</a>`;
 		}
 		if (column.fieldname === "budget" && data.drill_budget && data.code) {
