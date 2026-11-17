@@ -32,6 +32,7 @@ RUN_FIELDS = [
     ("receiver_account_mode", "Select", 0, 1),
     ("allocation_account", "Link", 0, 1),
     ("amounts_after_approval", "Select", 0, 1),
+    ("coefficient_row_count", "Int", 0, 1),
     ("values_carried_forward", "Check", 0, 1),
     ("computed_at", "Datetime", 0, 1),
     ("computed_by", "Link", 0, 1),
@@ -1244,7 +1245,7 @@ def test_kf1_compute_button_only_in_draft_status():
 
 _COMPUTED = ("computed_at", "computed_by", "computed_for_rule_set", "computed_for_scenario",
              "computed_for_fiscal_year", "computed_for_fiscal_period",
-             "rule_set_modified", "values_carried_forward")
+             "rule_set_modified", "values_carried_forward", "coefficient_row_count")
 
 
 def test_kf3_amended_insert_clears_the_computed_snapshot():
@@ -1252,7 +1253,7 @@ def test_kf3_amended_insert_clears_the_computed_snapshot():
     m = _k8(_World())
     run = _k8_run(m, amended_from="CAR-00001", accounts=[_Row(main_account="6000")],
                   computed_at=datetime(2026, 11, 12), computed_by="zz@example.com",
-                  values_carried_forward=1)
+                  values_carried_forward=1, coefficient_row_count=7)
     run.set = lambda field, rows: run.__dict__.__setitem__(field, list(rows))
     run.before_insert()
     assert run.weights == [] and run.accounts == []
@@ -1444,12 +1445,16 @@ def _rows_for(name):
             for r in _expected_rows()]
 
 
-def _commit(w, m, name, hook, committed):
+def _commit(w, m, name, hook, committed, docstatus=None):
     """The hook runs inside the transaction. Then the commit lands the run's
     new state (``committed``: a docstatus, or None for a delete) and the
-    after-commit callbacks fire, as Frappe's commit runs them."""
+    after-commit callbacks fire, as Frappe's commit runs them. ``docstatus``
+    is the hooked document's own; a deleted run defaults to cancelled (2),
+    since a submitted run cannot be deleted."""
     w.once.clear()
-    getattr(_k8_run(m, name=name, docstatus=1), hook)()
+    if docstatus is None:
+        docstatus = 2 if hook == "after_delete" else 1
+    getattr(_k8_run(m, name=name, docstatus=docstatus), hook)()
     runs = [r for r in w.get_all_data.get("Cost Allocation Run", []) if r["name"] != name]
     if committed is not None:
         runs.append({"name": name, "method": "Step-Down", "docstatus": committed,
@@ -1742,3 +1747,234 @@ def test_rf10_the_job_marker_and_lock_are_gone_and_nothing_references_them():
                 if re.search(rf"\b{re.escape(name)}\b", text):
                     found.append((os.path.relpath(path, APP_DIR), name))
     assert found == []
+
+
+# --- RF11: the hourly check is SQL-only and re-checks before it repairs; a
+# successful write always requests its build (PR #541, RF10 re-review F1-F5).
+
+def _site_counted(w, runs, count=None):
+    """As _site, with each run's stored coefficient_row_count. ``runs``:
+    {name: docstatus}; ``count``: the stored count (default: the model's)."""
+    _site(w, runs)
+    n = len(_expected_rows()) if count is None else count
+    for r in w.get_all_data["Cost Allocation Run"]:
+        r["coefficient_row_count"] = n if r["docstatus"] == 1 else 0
+
+
+def _count_model_calls(m):
+    calls = []
+    orig = m._coefficient_rows
+
+    def spy(run_name, method, stored):
+        calls.append(run_name)
+        return orig(run_name, method, stored)
+
+    m._coefficient_rows = spy
+    return calls
+
+
+def test_rf11_doctype_coefficient_row_count_is_a_read_only_no_copy_computation_field():
+    doc = _doc(RUN)
+    fields = _by_name(RUN)
+    f = fields["coefficient_row_count"]
+    assert f["fieldtype"] == "Int" and f["label"] == "Coefficient Rows"
+    assert f.get("read_only") == 1 and f.get("no_copy") == 1
+    assert f["description"] == ("Set on approval: the number of coefficient rows this run "
+                                "writes to the warehouse.")
+    names = [x["fieldname"] for x in doc["fields"]]
+    at = names.index("coefficient_row_count")
+    assert names.index("computation_section") < at < names.index("computed_section")
+
+
+def test_rf11_before_submit_stores_the_coefficient_row_count():
+    w = _World()
+    m = _k8(w)
+    run = _k8_run(m)
+    run.before_submit()
+    built = m._coefficient_rows("CAR-00001", "Step-Down", m._rows(run.weights))
+    assert built and run.coefficient_row_count == len(built)
+
+
+def test_rf11_check_uses_the_stored_count_without_calling_the_model():
+    w = _World()
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1, "CAR-00003": 2})
+    n = len(_expected_rows())
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
+    m = _k8(w)
+    model_calls = _count_model_calls(m)
+    reads = []
+    orig = m.frappe.get_all
+    m.frappe.get_all = lambda doctype, **k: reads.append((doctype, k)) or orig(doctype, **k)
+    m.check_coefficients_staging()
+    assert model_calls == []
+    (doctype, k), = reads
+    assert doctype == "Cost Allocation Run" and k["filters"] == {"docstatus": 1}
+    assert "coefficient_row_count" in k["fields"]
+    assert _statements(w) == ["SELECT"]
+    assert w.logged == [] and w.enqueued == [] and "rollback" not in w.events
+
+
+def test_rf11_a_run_without_a_stored_count_falls_back_to_the_model():
+    for stored in (None, 0):
+        w = _World()
+        _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1})
+        w.get_all_data["Cost Allocation Run"][0]["coefficient_row_count"] = stored
+        n = len(_expected_rows())
+        _staged(w, {"CAR-00001": n, "CAR-00002": n})
+        m = _k8(w)
+        model_calls = _count_model_calls(m)
+        m.check_coefficients_staging()
+        assert model_calls == ["CAR-00001"], stored
+        assert _statements(w) == ["SELECT"], stored
+        assert w.logged == [] and w.enqueued == [], stored
+
+
+def test_rf11_a_model_rejected_run_is_logged_and_the_check_continues():
+    w = _World()
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1})
+    w.get_all_data["Cost Allocation Run"][0]["coefficient_row_count"] = None
+    _staged(w, {})
+    m = _k8(w)
+    orig = m._coefficient_rows
+
+    def rows(run_name, method, stored):
+        if run_name == "CAR-00001":
+            raise m.model.CostAllocationError("ZZ every driver value is zero")
+        return orig(run_name, method, stored)
+
+    m._coefficient_rows = rows
+    m.check_coefficients_staging()                       # raises nothing
+    # the other run was still repaired
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00002"}
+    (args, kw), = w.enqueued
+    assert kw["name"] == "CAR-00002"
+    (a, k), = w.logged
+    text = _logged_text(w)
+    assert "not repaired: CAR-00001: " in text and "ZZ every driver value is zero" in text
+
+
+def test_rf11_the_world_changes_mid_check_and_nothing_is_repaired_from_the_stale_read():
+    """The first read is a REPEATABLE READ snapshot. Between it and the repair,
+    CAR-00002 is approved (its callback writes its rows) and CAR-00003 is
+    cancelled (its callback deletes them). Neither may be touched; CAR-00004,
+    still missing after the re-check, is repaired."""
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 0, "CAR-00003": 1, "CAR-00004": 1})
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
+    m = _k8(w)
+
+    def rollback():
+        w.events.append("rollback")
+        for r in w.get_all_data["Cost Allocation Run"]:
+            if r["name"] == "CAR-00002":
+                r["docstatus"], r["coefficient_row_count"] = 1, n
+            if r["name"] == "CAR-00003":
+                r["docstatus"] = 2
+
+    m.frappe.db.rollback = rollback
+    before = [dict(r) for r in w.ch.rows if r["run"] in ("CAR-00002", "CAR-00003")]
+    m.check_coefficients_staging()
+    assert "rollback" in w.events
+    touched = [p.get("param_run") for sql, p in w.ch.calls if sql.startswith("DELETE")]
+    assert touched == ["CAR-00004"]
+    assert [r for r in w.ch.rows if r["run"] in ("CAR-00002", "CAR-00003")] == before
+    assert [r for r in w.ch.rows if r["run"] == "CAR-00004"] == _rows_for("CAR-00004")
+    assert [kw["name"] for _a, kw in w.enqueued] == ["CAR-00004"]
+    text = _logged_text(w)
+    assert "CAR-00004" in text and "CAR-00002" not in text and "CAR-00003" not in text
+
+
+def test_rf11_above_the_threshold_the_table_is_rebuilt_once():
+    m0 = _k8(_World())
+    assert m0.COEFFICIENT_REBUILD_THRESHOLD == 20
+    w = _World()
+    _site_counted(w, {f"CAR-{i:05d}": 1 for i in range(1, 22)})        # 21 runs
+    _staged(w, {})
+    m = _k8(w)
+    m.check_coefficients_staging()
+    (table, _cols, rows, kw), = w.sync_table_calls
+    assert table == STAGING and kw["force"] is True
+    assert len({r[0] for r in rows}) == 21
+    assert "DELETE" not in _statements(w) and "INSERT" not in _statements(w)
+    assert len(w.logged) == 1 and len(w.enqueued) == 1
+    (args, _kw), = w.enqueued
+    assert args == (BUILD_JOB,)
+
+
+def test_rf11_at_the_threshold_runs_are_repaired_one_by_one():
+    w = _World()
+    _site_counted(w, {f"CAR-{i:05d}": 1 for i in range(1, 21)})        # 20 runs
+    _staged(w, {})
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert w.sync_table_calls == []
+    assert len(w.enqueued) == 20 and len(w.logged) == 1
+
+
+def test_rf11_a_failed_count_after_a_write_still_requests_the_build():
+    w = _World()
+    m = _k8(w)
+    w.ch.fail_on = "SELECT COUNT()"
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00001"}
+    (args, kw), = w.enqueued
+    assert args == (BUILD_JOB,) and kw["name"] == "CAR-00001"
+    assert w.stamps == []
+    assert any(e[0] == "warning" and "CAR-00001" in e[1]
+               for e in w.events if isinstance(e, tuple))
+
+
+def test_rf11_a_failed_watermark_stamp_after_a_write_still_requests_the_build():
+    w = _World()
+    m = _k8(w)
+
+    def stamp(*a, **k):
+        raise ConnectionError("clickhouse down")
+
+    m.clickhouse._stamp_watermark = stamp
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    (args, kw), = w.enqueued
+    assert kw["name"] == "CAR-00001"
+    assert any(e[0] == "warning" for e in w.events if isinstance(e, tuple))
+
+
+def test_rf11_a_failed_build_request_is_logged_with_the_call_to_run_by_hand():
+    w = _World()
+    m = _k8(w)
+
+    def down(*a, **k):
+        raise ConnectionError("redis down")
+
+    m.frappe.enqueue = down
+    _commit(w, m, "CAR-00001", "on_submit", committed=1)
+    assert ('konsol.tasks.request_consolidation_build("Cost Allocation Run", "CAR-00001", '
+            '"coefficients_sync")') in _logged_text(w)
+
+
+def test_rf11_deleting_a_draft_does_nothing():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "after_delete", committed=None, docstatus=0)
+    assert w.once == [] and w.syncs == []
+    assert w.ch.calls == [] and w.enqueued == []
+
+
+def test_rf11_deleting_a_cancelled_run_deletes_its_rows_and_requests_the_build():
+    w = _World()
+    _site(w, {"CAR-00002": 1})
+    w.ch.rows = _rows_for("CAR-00001") + _rows_for("CAR-00002")
+    m = _k8(w)
+    _commit(w, m, "CAR-00001", "after_delete", committed=None, docstatus=2)
+    assert {r["run"] for r in w.ch.rows} == {"CAR-00002"}
+    assert [kw["name"] for _a, kw in w.enqueued] == ["CAR-00001"]
+
+
+def test_rf11_the_race_comment_states_the_doubling_and_the_dbt_guard():
+    with open(RUN_PY) as f:
+        src = f.read()
+    assert "last write wins" not in src
+    assert "assert_cost_allocation_coefficients_close" in src
+    assert "double" in src
