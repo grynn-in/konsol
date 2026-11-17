@@ -2045,18 +2045,36 @@ def test_ok_budget_meta_carries_the_heading_sides_from_the_chart():
     assert _call_budget(_Site())["meta"]["heading_sides"] is None
 
 
-def test_heading_sides_cover_a_chart_heading_the_budget_lacks():
+def test_an_unbudgeted_pl_heading_from_the_s5_path_is_budget_zero_and_its_drill_opens_empty():
     """Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
-    6956694095): the report reads an unbudgeted P&L heading's favourability
-    by its normal balance, so the side map covers every heading of the
-    chart, not only those the budget statement carries."""
+    6956694095) holds through the S5 path itself (PR #558 review m1):
+    statement_model.statement emits every chart heading, at 0 when no row
+    sits under it, so a budget with no row under P&L heading 4 still carries
+    heading 4. The report then shows Budget 0.00 and Budget YTD 0.00, the
+    actual as the variance, the favourability by the heading's normal balance
+    (and the side map covers it), and a Budget cell that opens the drill; the
+    drill is ok and shows no rows."""
     site = _budget_site()
     site.accounts["4"]["normal_balance"] = "Credit"
     site.budget_tb_rows = [_tb_row("1110", 300.0, adjustment_type="entity"),
                            _tb_row("UNBALANCED", -300.0, adjustment_type="unbalanced")]
-    result = _call_budget(site)
-    assert result["state"] == "ok", result["message"]
-    assert result["meta"]["heading_sides"]["4"] == "Credit"
+    budget = _call_budget(site)
+    assert budget["state"] == "ok", budget["message"]
+    assert _line(budget, "Profit and Loss", "heading", "4")["current"] == 0.0, "emitted at 0"
+    assert budget["meta"]["heading_sides"]["4"] == "Credit"
+
+    actual = _call(site, group="G1")
+    R = _load_path("statement_report_model_for_unbudgeted_test",
+                   os.path.join(CLOSE_DIR, "statement_report_model.py"))
+    [row] = [r for r in R.rows(actual, drill_group="CG-G1-", budget=budget) if r["code"] == "4"]
+    assert row["budget"] == 0.0 and row["budget_ytd"] == 0.0
+    assert row["variance_to_budget"] == row["current"] == 241.43
+    assert row["favourability"] == "Favourable", "unbudgeted revenue"
+    assert row["drill_budget"] == 1, "the Budget cell opens the drill"
+
+    drill = _call_budget_drill(site, heading="4")
+    assert drill["state"] == "ok", drill["message"]
+    assert drill["drill"]["rows"] == [] and drill["drill"]["total"] == 0.0
 
 
 def test_no_declaration_is_no_approved_budget_with_no_clickhouse_and_no_fingerprint_read():

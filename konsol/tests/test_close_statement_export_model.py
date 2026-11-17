@@ -674,35 +674,17 @@ def test_the_budgets_unbalanced_line_precedes_the_residual_with_blank_actuals():
     assert row[5] == 700.0 and row[6] is None and row[7] is None
 
 
-def test_an_unbudgeted_pl_heading_is_budget_zero_with_the_actual_as_variance():
-    """Deepak Pai, 17 Nov 2026 (konsol#348 comment 6956694095; the 22 Sep
-    2026 rule): an unbudgeted P&L heading is budget zero, as on the Desk
-    report (statement_report_model._with_budget)."""
+def test_a_line_absent_from_the_budget_payload_is_blank_never_zero():
+    """statement_model.statement emits every chart heading (at 0 when
+    unbudgeted) and the net result, so an ok budget never lacks one; a
+    payload that does is blank like any other absent line (PR #558 review
+    m1; test_close_statement_api pins the S5 path end to end)."""
     budget = _budget()
     lines = budget["statement"]["sections"][0]["lines"]
     lines[:] = [ln for ln in lines if ln.get("heading") != "4"]
     pl = _section_block(_rows(_budget_book(budget)["Statement"]), "Profit and Loss")
     row = _row_starting(pl, "COST OF SALES", "4")
-    assert row[6] == 0 and row[9] == 0
-    assert row[7] == row[2] == 241.43
-    assert row[8] == "Favourable"
-
-
-def test_an_unbudgeted_net_result_is_budget_zero():
-    budget = _budget()
-    lines = budget["statement"]["sections"][0]["lines"]
-    lines[:] = [ln for ln in lines if ln.get("kind") != "net_result"]
-    row = _row_starting(_pl(budget), "Net result")
-    assert row[6] == 0 and row[9] == 0 and row[7] == row[2] and row[8] == "Favourable"
-
-
-def test_an_unbudgeted_bs_heading_is_budget_zero_with_a_blank_variance():
-    budget = _budget()
-    lines = budget["statement"]["sections"][1]["lines"]
-    lines[:] = [ln for ln in lines if ln.get("heading") != "2"]
-    bs = _section_block(_rows(_budget_book(budget)["Statement"]), "Balance Sheet")
-    row = _row_starting(bs, "LIABILITIES", "2")
-    assert row[5] == 0 and row[6] is None and row[7] is None and row[8] is None
+    assert row[6] is None and row[7] is None and row[8] is None and row[9] is None
 
 
 def test_the_unbudgeted_rule_equals_the_report_models_and_is_in_the_note():
@@ -898,19 +880,6 @@ def test_favourability_is_text_and_blank_on_balance_sheet_and_budget_only_rows()
     bs = _section_block(rows, "Balance Sheet")
     assert bs[0][7] == "Favourability"
     assert all(r[7] is None for r in bs[1:])
-
-
-def test_a_heading_absent_from_the_budget_reads_by_its_normal_balance():
-    """Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026): the variance is
-    the actual, read by the heading's side: with no side it reads n/a; given
-    one, it reads."""
-    budget = _budget()
-    lines = budget["statement"]["sections"][0]["lines"]
-    lines[:] = [ln for ln in lines if ln.get("heading") != "4"]
-    del budget["meta"]["heading_sides"]["4"]
-    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "n/a"
-    budget["meta"]["heading_sides"]["4"] = "Credit"
-    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "Favourable"
 
 
 def test_the_ok_budget_note_carries_the_favourability_rule():
