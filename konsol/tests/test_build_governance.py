@@ -805,9 +805,10 @@ def test_the_allocation_selector_is_its_own_domain_tag():
     assert selector["allocation"] == "tag:domain:allocation"
 
 
-def test_cost_allocation_run_requests_its_build_from_the_coefficients_job_not_a_doc_event():
-    """RF4: the build reads the coefficients in staging, so the resync job
-    requests it once they are in. A doc_events trigger would race the job.
+def test_cost_allocation_run_requests_its_build_from_the_coefficients_write_not_a_doc_event():
+    """RF4, RF10: the build reads the coefficients in staging, so the run's
+    after-commit coefficient write requests it once they are in. A doc_events
+    trigger would race the write.
     Business Combination stays a doc_events trigger."""
     with open(HOOKS_PY) as f:
         tree = ast.parse(f.read())
