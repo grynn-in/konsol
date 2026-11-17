@@ -11,7 +11,8 @@ konsol#230, so a site keeps what it was given until a patch says otherwise):
 
 1. the ``variance_analysis`` Dataset's child row naming the Measure goes;
 2. where no other Dataset names the Measure, it is unpublished and deleted;
-   where one does (a site-made Dataset), the Measure stays and the patch
+   where one does (a site-made Dataset's row, or any Dataset's
+   ``default_measure``, PR #558 review m3), the Measure stays and the patch
    logs the Datasets by name: a site's own semantic model is never edited
    silently (konsol#230);
 3. every step is logged by name; a rerun, or a site that never seeded the
@@ -97,7 +98,7 @@ class _Doc:
 
 
 class _Site:
-    def __init__(self, measure=True, dataset_row=True, other_datasets=()):
+    def __init__(self, measure=True, dataset_row=True, other_datasets=(), default_of=()):
         self.calls = []
         self.tables = {"Measure", "Dataset", "Dataset Measure"}
         self.measures = {MEASURE: {"name": MEASURE, "status": "Published", "cube_type": "sum"}} if measure else {}
@@ -109,6 +110,9 @@ class _Site:
         for parent in other_datasets:
             self.dataset_measures.append({"name": "dm-" + parent, "parent": parent, "parenttype": "Dataset",
                                           "measure": MEASURE})
+        # Dataset rows: name and default_measure (a Link to Measure).
+        self.datasets = [{"name": DATASET, "default_measure": "variance_abs"}]
+        self.datasets += [{"name": name, "default_measure": MEASURE} for name in default_of]
         self.logs = []
 
     def module(self):
@@ -126,8 +130,8 @@ class _Site:
 
         def get_all(doctype, filters=None, fields=None, **k):
             site.calls.append(("get_all", doctype, dict(filters or {})))
-            assert doctype == "Dataset Measure", doctype
-            rows = [r for r in site.dataset_measures
+            assert doctype in ("Dataset Measure", "Dataset"), doctype
+            rows = [r for r in (site.dataset_measures if doctype == "Dataset Measure" else site.datasets)
                     if all(r.get(key) == value for key, value in (filters or {}).items())]
             return [types.SimpleNamespace(**{f: r.get(f) for f in fields}) for r in rows]
 
@@ -207,6 +211,20 @@ def test_a_site_dataset_that_names_the_measure_keeps_it_and_is_named():
     assert not [c for c in site.calls if c[0] in ("delete_doc", "save")]
     warnings = [m for level, m in site.logs if level == "warning"]
     assert warnings and "zz_site_dataset" in warnings[0] and MEASURE in warnings[0]
+
+
+def test_a_dataset_whose_default_measure_is_the_measure_keeps_it_and_is_named():
+    """PR #558 review m3: ``Dataset.default_measure`` is a Link to the
+    Measure, so a Dataset defaulting to it is another use, as a row is: the
+    Measure stays (deleting it would leave that Dataset's default pointing
+    at nothing) and the log names the Dataset."""
+    site = _Site(default_of=("zz_default_dataset",))
+    _run(site)
+    assert _measures_of(site, DATASET) == ["variance_abs"], "the shipped Dataset's row still goes"
+    assert MEASURE in site.measures and site.measures[MEASURE]["status"] == "Published"
+    assert not [c for c in site.calls if c[0] in ("delete_doc", "save")]
+    warnings = [m for level, m in site.logs if level == "warning"]
+    assert warnings and "zz_default_dataset" in warnings[0] and MEASURE in warnings[0]
 
 
 def test_a_second_run_and_a_site_without_the_measure_are_no_ops():
