@@ -22,9 +22,9 @@ Budget Cycle rule); a cancelled declaration stays as the audit trail and may
 be amended.
 
 Write-through (S6 KA2): a submitted declaration is one row of
-``epm_staging.current_forecasts`` (scenario_id, fiscal_year, cycle,
-as_of_date), entering on submit and leaving on cancel, after the commit, once
-per transaction (clickhouse.sync_doctype_after_commit); submitted rows only,
+``epm_staging.current_forecasts`` (scenario_id, fiscal_year, cycle; the
+warehouse reads the round's as-of from budget_cycles), entering on submit and
+leaving on cancel, after the commit, once per transaction (clickhouse.sync_doctype_after_commit); submitted rows only,
 by the doctype's own is_submittable (resolve_sync_filters). The DDL is
 clickhouse._REFERENCE_TABLE_DDL, identical to konsolidat's init-db.sql.
 
@@ -67,15 +67,15 @@ class CurrentForecast(Document):
     #: so gold_forecast_current_round picks the round every forecast reader
     #: joins. Keys are ClickHouse columns in the DDL's order
     #: (clickhouse._REFERENCE_TABLE_DDL, identical to konsolidat's
-    #: init-db.sql); values are this doctype's fields. horizon_periods and
-    #: rate_set are not here: the warehouse reads them from budget_cycles by
-    #: `cycle`, and a copy would be a second source of truth.
+    #: init-db.sql); values are this doctype's fields. as_of_date,
+    #: horizon_periods and rate_set are not here: the warehouse reads them
+    #: from budget_cycles by `cycle`, and a copy would be a second source of
+    #: truth (S6 pair A review m4). The form keeps them, read-only.
     CH_TABLE = "epm_staging.current_forecasts"
     CH_FIELD_MAP = {
         "scenario_id": "scenario_id",
         "fiscal_year": "fiscal_year",
         "cycle": "budget_cycle",
-        "as_of_date": "as_of_date",
     }
 
     def validate(self):
