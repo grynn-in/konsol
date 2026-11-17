@@ -114,6 +114,21 @@ def test_a_declaration_stamped_from_another_fingerprint_is_inputs_changed():
     assert out["state"] == M.INPUTS_CHANGED
 
 
+@pytest.mark.parametrize("blank", [None, ""])
+def test_a_submitted_declaration_with_no_fingerprint_is_inputs_changed_never_ok(blank):
+    """PR #554 review m2: a docstatus-1 declaration whose ``input_fingerprint``
+    is blank cannot be checked against the Cycle (before_submit refuses the
+    case, but a row written another way must not pass as ok). It is
+    INPUTS_CHANGED, the sentence says it carries no fingerprint, and nothing
+    is read."""
+    out = _state(declaration=_declaration(input_fingerprint=blank))
+    assert out["state"] == M.INPUTS_CHANGED
+    assert out["layers"] is None
+    assert "no input fingerprint" in out["message"], out["message"]
+    for word in (APB, GROUP, "FY2027", CYCLE):
+        assert word in out["message"], (word, out["message"])
+
+
 def test_one_layer_that_no_longer_exists_is_layer_missing():
     out = _state(declaration=_declaration(layer_policy=M.ONE_LAYER, layer="gone"))
     assert out["state"] == M.LAYER_MISSING
