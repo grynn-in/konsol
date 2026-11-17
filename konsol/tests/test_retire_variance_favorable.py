@@ -65,7 +65,7 @@ def test_nothing_in_the_app_names_the_flag_outside_tests_and_patches():
             dirs[:] = []
             continue
         for name in files:
-            if not name.endswith((".py", ".js", ".json", ".md", ".html", ".txt")):
+            if not name.endswith((".py", ".js", ".json", ".md", ".html", ".txt")) or name == "patches.txt":
                 continue
             path = os.path.join(root, name)
             try:
@@ -140,7 +140,7 @@ class _Site:
         def get_doc(doctype, name, *a, **k):
             site.calls.append(("get_doc", doctype, name))
             assert doctype == "Measure" and name in site.measures, (doctype, name)
-            return _Doc(site, doctype, name, **site.measures[name])
+            return _Doc(site, doctype, name, **{k: v for k, v in site.measures[name].items() if k != "name"})
 
         def delete_doc(doctype, name, *a, **k):
             site.calls.append(("delete_doc", doctype, name, k))

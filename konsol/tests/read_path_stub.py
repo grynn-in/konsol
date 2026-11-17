@@ -30,7 +30,6 @@ DEFAULT_MEASURES = {
     "variance_abs": "sum",
     "variance_amount": "sum",
     "variance_pct": "avg",
-    "variance_favorable": "sum",
     "actual_amount": "sum",
     "budget_amount": "sum",
     "consolidated_amount": "sum",
