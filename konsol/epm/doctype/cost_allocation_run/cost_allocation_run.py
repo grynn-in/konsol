@@ -499,16 +499,17 @@ class CostAllocationRun(Document):
 #
 # Residual windows. There is no lock: each is repaired by the hourly
 # check_coefficients_staging, and none publishes wrong numbers.
-# - Two writers for the same run interleave (a submit's callback and a fast
-#   cancel's in another request, or a callback and the hourly repair). Each
-#   runs DELETE then INSERT from its own committed read. If both DELETEs land
-#   before either INSERT, and both read the run as submitted, both INSERTs
-#   land and the run's rows are doubled. The allocation build then fails
+# - Two writers for the same run interleave. Each runs DELETE then INSERT
+#   from its own committed read. Doubling needs two writers that both read
+#   the run as submitted: the after-commit callback and the hourly repair. If
+#   both DELETEs land before either INSERT, both INSERTs land and the run's
+#   rows are doubled. The allocation build then fails
 #   assert_cost_allocation_coefficients_close (a sender's coefficients no
 #   longer sum to its pool), so nothing is published, and the next hourly
-#   check sees the wrong count and repairs the run. If instead the submit's
-#   INSERT lands after the cancel's DELETE, the cancelled run's rows stay
-#   until the next hourly check.
+#   check sees the wrong count and repairs the run. A submit's callback and a
+#   fast cancel's cannot double the rows (the cancel reads the run as
+#   cancelled): if the submit's INSERT lands after the cancel's DELETE, the
+#   cancelled run's rows stay until the next hourly check removes them.
 # - A reconcile rebuild races a per-run write: the rebuild swaps in the
 #   snapshot it read, which can drop a per-run write made after that read (or
 #   keep rows the per-run write deleted). The hourly check repairs the run.
@@ -580,7 +581,7 @@ def _replace_run_rows(run_name, rows):
         clickhouse.execute(f"INSERT INTO {table} ({', '.join(columns)}) FORMAT JSONEachRow\n{body}")
 
 
-def _sync_run_coefficients(run_name):
+def _sync_run_coefficients(run_name, errors=None):
     """After-commit callback of CostAllocationRun._sync, and the hourly
     check's repair. Reads the run's committed state: submitted, it replaces
     the run's coefficient rows; cancelled, deleted or missing, it deletes
@@ -593,12 +594,15 @@ def _sync_run_coefficients(run_name):
     requested; the hourly check repairs the run. The table count and the
     watermark stamp after the write are best-effort: a failure there is a
     file-log warning and the build is still requested. Returns the run's rows
-    written, or None when the write failed."""
+    written, or None when the write failed; then ``errors`` (a dict, if
+    given) gets the reason under the run's name."""
     try:
         found = _submitted_coefficients([run_name])
         run, rows = found[0] if found else (None, [])
         _replace_run_rows(run_name, rows)
-    except Exception:  # noqa: BLE001 — never raise out of a commit
+    except Exception as exc:  # noqa: BLE001 — never raise out of a commit
+        if errors is not None:
+            errors[run_name] = str(exc).replace(f"{_PREFIX}{run_name}: ", "", 1)
         _log_failure(run_name, "Cost Allocation coefficients not written",
                      f"Run {run_name}: its coefficient rows could not be written to staging; "
                      "no build requested. The hourly check repairs it.")
@@ -660,11 +664,13 @@ def _held_counts():
     return held
 
 
-def _expected_counts(runs, failed):
+def _expected_counts(runs, failed, corrections=None):
     """{run: expected rows} for submitted ``runs`` (name, coefficient_row_count).
     The stored count is used as is. A run submitted before the field existed
     (0 or NULL) is counted through the model, one run at a time: a run the
-    model refuses goes into ``failed`` with its reason, and the rest go on."""
+    model refuses goes into ``failed`` with its reason, and the rest go on.
+    The model's count for such a run goes into ``corrections`` {run: count},
+    to be stored once, so the model path runs once per legacy run (RF12 R1)."""
     expected = {}
     for r in runs:
         name, count = r["name"], r.get("coefficient_row_count")
@@ -672,6 +678,8 @@ def _expected_counts(runs, failed):
             try:
                 found = _submitted_coefficients([name])
                 count = len(found[0][1]) if found else 0
+                if corrections is not None and count:
+                    corrections[name] = count
             except Exception as exc:  # noqa: BLE001 — one run must not stop the check
                 failed[name] = str(exc).replace(f"{_PREFIX}{name}: ", "", 1)
                 continue
@@ -679,14 +687,16 @@ def _expected_counts(runs, failed):
     return expected
 
 
-def _submitted_counts(failed, names=None):
+def _submitted_counts(failed, names=None, corrections=None, current=None):
     filters = {"docstatus": 1}
     if names is not None:
         filters["name"] = ["in", list(names)]
     runs = frappe.get_all("Cost Allocation Run", filters=filters,
                           fields=["name", "coefficient_row_count"], order_by="name",
                           limit_page_length=0)
-    return _expected_counts(runs, failed)
+    if current is not None:
+        current.update({r["name"]: int(r.get("coefficient_row_count") or 0) for r in runs})
+    return _expected_counts(runs, failed, corrections)
 
 
 def _out_of_step(runs, expected, held, failed):
@@ -694,10 +704,11 @@ def _out_of_step(runs, expected, held, failed):
 
 
 def check_coefficients_staging():
-    """Hourly safety net (RF9-RF11). SQL only: compares each submitted run's
-    stored coefficient_row_count with ``SELECT run, count() ... GROUP BY run``
-    in staging. The model runs only for a run submitted before that field
-    existed.
+    """Hourly safety net (RF9-RF12), run by the scheduler only. SQL only:
+    compares each submitted run's stored coefficient_row_count with
+    ``SELECT run, count() ... GROUP BY run`` in staging. The model runs only
+    for a run submitted before that field existed, and then once: its count
+    is stored.
 
     A mismatch is never repaired from the first read: under REPEATABLE READ
     it is a snapshot, and a run approved or cancelled since has had its rows
@@ -705,12 +716,21 @@ def check_coefficients_staging():
     re-reads each mismatched run's docstatus and stored count and its
     ClickHouse count, and repairs only the runs still out of step (F1). More
     than COEFFICIENT_REBUILD_THRESHOLD of those: one full rebuild
-    (resync_staging) and one build request instead. Each repair requests its
-    own run's build. One Error Log line lists what was repaired and what was
+    (resync_staging) and one build request instead; if the rebuild fails,
+    the runs are repaired one by one (R2). Each repair requests its own
+    run's build, and a stored count that differs from the rows written is
+    corrected (R1). One Error Log line lists what was repaired and what was
     not. On a match it does nothing. An unreachable ClickHouse is a file-log
-    warning only: the next hour checks again."""
+    warning only: the next hour checks again.
+
+    Commit: the corrected counts are written with set_value and are not
+    committed here. The scheduler runs this as a background job, and
+    frappe's execute_job commits when the job returns (utils/background_jobs.py),
+    as konsol's other scheduled jobs rely on. This file takes no commit call
+    at all (test_lifecycle_no_commit_and_no_save_in_the_hooks)."""
     failed = {}
-    expected = _submitted_counts(failed)
+    corrections, stored = {}, {}
+    expected = _submitted_counts(failed, corrections=corrections, current=stored)
     try:
         held = _held_counts()
     except Exception:  # noqa: BLE001 — unreachable ClickHouse: check again next hour
@@ -720,7 +740,8 @@ def check_coefficients_staging():
     if mismatched:
         # End the snapshot: the re-reads below see every commit made since.
         frappe.db.rollback()
-        expected = _submitted_counts(failed, mismatched)
+        corrections, stored = {}, {}
+        expected = _submitted_counts(failed, mismatched, corrections, stored)
         try:
             held = _held_counts()
         except Exception:  # noqa: BLE001
@@ -728,35 +749,71 @@ def check_coefficients_staging():
             return
         mismatched = _out_of_step(mismatched, expected, held, failed)
     not_repaired = [f"{run}: {reason}" for run, reason in sorted(failed.items())]
+    rebuild_failed = None
     if len(mismatched) > COEFFICIENT_REBUILD_THRESHOLD:
-        _rebuild_all(mismatched, not_repaired)
-        return
+        rebuild_failed = _rebuild_all(mismatched, not_repaired)
+        if rebuild_failed is None:
+            return
     repaired = []
     for run in mismatched:
-        counts = f"(expected {expected.get(run, 0)}, held {held.get(run, 0)})"
-        if _sync_run_coefficients(run) is not None:
-            repaired.append(f"{run} {counts}")
-        else:
-            not_repaired.append(f"{run}: write failed {counts}")
-    if repaired or not_repaired:
+        counts = f"(expected {expected.get(run, 0)}, held {held.get(run, 0)}"
+        errors = {}
+        try:
+            written = _sync_run_coefficients(run, errors)
+        except Exception as exc:  # noqa: BLE001 — one run must not stop the others
+            written, errors[run] = None, str(exc)
+        if written is None:
+            not_repaired.append(f"{run}: {errors.get(run, 'write failed')} {counts})")
+            continue
+        note = ""
+        if run in stored and stored[run] != written:
+            corrections[run] = written
+            note = f"; stored count {stored[run]} -> {written}"
+        repaired.append(f"{run} {counts}{note})")
+    _store_counts(corrections, stored)
+    if repaired or not_repaired or rebuild_failed:
+        lead = f"The full rebuild failed ({rebuild_failed}); repaired run by run. " if rebuild_failed else ""
         frappe.log_error(
             title="Cost Allocation coefficients out of step with submitted runs",
-            message=(f"Repaired: {', '.join(repaired) or 'none'}; "
+            message=(f"{lead}Repaired: {', '.join(repaired) or 'none'}; "
                      f"not repaired: {'; '.join(not_repaired) or 'none'}."))
+
+
+def _store_counts(corrections, stored):
+    """Write each corrected coefficient_row_count (no modified bump: the
+    watermark follows ``modified``). The caller's job commits."""
+    for run, n in sorted(corrections.items()):
+        if stored.get(run) != n:
+            frappe.db.set_value("Cost Allocation Run", run, "coefficient_row_count", n,
+                                update_modified=False)
+
+
+def _backfill_counts():
+    """After a full rebuild: set each submitted run's stored count to the rows
+    the rebuild wrote for it (ClickHouse GROUP BY run). Best-effort."""
+    try:
+        held = _held_counts()
+        runs = frappe.get_all("Cost Allocation Run", filters={"docstatus": 1},
+                              fields=["name", "coefficient_row_count"], order_by="name",
+                              limit_page_length=0)
+        stored = {r["name"]: int(r.get("coefficient_row_count") or 0) for r in runs}
+        _store_counts({run: held.get(run, 0) for run in stored}, stored)
+    except Exception:  # noqa: BLE001 — counts self-correct on a later check
+        frappe.logger().warning("Cost Allocation coefficient counts not back-filled",
+                                exc_info=True)
 
 
 def _rebuild_all(mismatched, not_repaired):
     """Too many runs out of step to repair one by one: rebuild the table from
-    every submitted run once, log one line, and request one build."""
+    every submitted run once, log one line, request one build and back-fill
+    the stored counts. Returns None when done. When the rebuild fails it
+    returns the reason, and the caller repairs run by run."""
     try:
         written = CostAllocationRun.resync_staging(force=True)
-    except Exception as exc:  # noqa: BLE001 — log it; the next hour tries again
+    except Exception as exc:  # noqa: BLE001 — fall back to per-run repair
         frappe.logger().error("Cost Allocation coefficients rebuild failed", exc_info=True)
-        frappe.log_error(
-            title="Cost Allocation coefficients out of step with submitted runs",
-            message=(f"{len(mismatched)} runs out of step; the full rebuild failed: {exc}; "
-                     f"not repaired: {'; '.join(not_repaired) or 'none'}."))
-        return
+        return str(exc) or type(exc).__name__
+    _backfill_counts()
     frappe.log_error(
         title="Cost Allocation coefficients out of step with submitted runs",
         message=(f"{len(mismatched)} runs out of step (more than "
@@ -764,6 +821,7 @@ def _rebuild_all(mismatched, not_repaired):
                  f"({', '.join(mismatched)}); not repaired: "
                  f"{'; '.join(not_repaired) or 'none'}."))
     _request_build(mismatched[0])
+    return None
 
 
 def _nine(value):

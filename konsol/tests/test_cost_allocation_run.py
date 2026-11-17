@@ -2010,7 +2010,6 @@ def test_rf12_a_stale_stored_count_is_repaired_once_then_corrected():
     assert len(w.enqueued) == 2                                  # both repaired
     assert w.set_values == [_count_set(w, "CAR-00001", n), _count_set(w, "CAR-00002", n)]
     assert f"stored count {n + 3} -> {n}" in _logged_text(w)
-    assert w.commits == 1
     calls, enq, logged = len(w.ch.calls), len(w.enqueued), len(w.logged)
     m.check_coefficients_staging()                               # the second check does nothing
     assert [sql.split()[0] for sql, _p in w.ch.calls[calls:]] == ["SELECT"]
@@ -2029,7 +2028,7 @@ def test_rf12_a_legacy_run_with_a_stored_zero_gets_its_count_written_back():
     m.check_coefficients_staging()
     assert model_calls == ["CAR-00001"]
     assert w.set_values == [_count_set(w, "CAR-00001", n)]
-    assert w.enqueued == [] and w.commits == 1                   # nothing was repaired
+    assert w.enqueued == []                                      # nothing was repaired
     m.check_coefficients_staging()                               # the model path ran once
     assert model_calls == ["CAR-00001"] and len(w.set_values) == 1
 
@@ -2050,7 +2049,6 @@ def test_rf12_after_a_rebuild_the_counts_are_backfilled_from_the_rows_written():
     m.check_coefficients_staging()
     assert len(w.sync_table_calls) == 1
     assert sorted(w.set_values) == sorted(_count_set(w, f"CAR-{i:05d}", n) for i in range(1, 22))
-    assert w.commits == 1
 
 
 def test_rf12_a_failed_rebuild_repairs_run_by_run_and_logs_the_rejected_run():
@@ -2079,6 +2077,7 @@ def test_rf12_a_failed_rebuild_repairs_run_by_run_and_logs_the_rejected_run():
 def test_rf12_the_race_comment_names_the_callback_and_the_hourly_repair():
     with open(RUN_PY) as f:
         src = f.read()
-    assert "two writers that both read the run as submitted" in src
-    assert "the after-commit callback and the hourly repair" in src
+    flat = " ".join(line.lstrip("# ") for line in src.splitlines())
+    assert "two writers that both read the run as submitted: the after-commit callback and the hourly repair" in flat
+    assert "db.commit" not in src
     assert "(a submit's callback and a fast\n#   cancel's in another request, or a callback and the hourly repair)" not in src
