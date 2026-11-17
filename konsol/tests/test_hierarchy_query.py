@@ -861,3 +861,29 @@ def test_the_measure_tooltip_points_at_the_dataset():
     (epm,) = [f for f in _addin_functions() if f["id"] == "EPM"]
     (measure,) = [p for p in epm["parameters"] if p["name"] == "measure"]
     assert "dataset" in measure["description"].lower(), measure["description"]
+
+
+# ── konsol#348 S6 KA6 (S6-Q1 b): a forecast hierarchy read sums one round ────
+
+def test_forecast_reads_the_declared_current_round_view():
+    """gold_budget_at_hierarchy_node keeps every approved forecast round by
+    `cycle`, and a hierarchy read binds scenario_id and layer but never cycle,
+    so over that table it added the rounds. The forecast config reads the
+    view narrowed to the declared current round (konsolidat S6 WA6); budget
+    keeps the rollup (one Cycle per year by rule)."""
+    C = _load_hq().HIERARCHY_SCENARIO_CONFIG
+    assert C["forecast"]["table"] == "epm_gold.gold_forecast_current_at_hierarchy_node"
+    assert C["budget"]["table"] == "epm_gold.gold_budget_at_hierarchy_node"
+    sqls = {}
+    for sc in ("budget", "forecast"):
+        result, queries, _ = _run_hierarchy(
+            [{"scenario": sc, "scenario_id": "ZZ_PLAN", "measure": "period_amount"}],
+            scenarios=[("ZZ_PLAN", "budget", 1)])
+        assert not result.get("errors")
+        (sql, _params), = queries
+        sqls[sc] = sql
+    assert "gold_forecast_current_at_hierarchy_node" in sqls["forecast"]
+    assert "gold_budget_at_hierarchy_node" not in sqls["forecast"]
+    assert "gold_budget_at_hierarchy_node" in sqls["budget"]
+    assert sqls["forecast"].replace("gold_forecast_current_at_hierarchy_node", "gold_budget_at_hierarchy_node") \
+        == sqls["budget"]
