@@ -2110,11 +2110,12 @@ def test_the_actuals_statement_reads_no_budget():
 # entity-grain rows come from gold_fully_consolidated_budget bound to the same
 # scenario_id, cycle and layers; ``drill_model.drill`` checks the total against
 # the budget statement's line; ``with_rates`` attaches each account's
-# translation rate, Translation Method and Rate Set as the warehouse applied
-# them (gold_consolidated_budget_tb carries fx_method and rate_set on every
-# row; S5 G1), the window's rows only. The chart's Translation Method of
-# today is never attached: a chart changed since the build would misname the
-# rate. ``heading == "UNBALANCED"`` is the plug's own drill by entity.
+# translation rate, declared Translation Method and Rate Set as the warehouse
+# recorded them at build time (gold_consolidated_budget_tb carries fx_method
+# and rate_set on every row; S5 G1), the window's rows only. The chart's
+# Translation Method of today is never attached: a chart changed since the
+# build would misname the rate. ``heading == "UNBALANCED"`` is the plug's own
+# drill by entity.
 
 def _rate_row(entity, account, rate, rate_set="ZZRS", fy=2025, fp=7, fx_method="closing"):
     return {"fiscal_year": fy, "fiscal_period": fp, "data_area_id": entity, "main_account": account,
@@ -2167,9 +2168,10 @@ def test_budget_drill_of_a_heading_has_rates_per_account_and_matches_the_budget_
 
 def test_budget_drill_rates_read_fx_method_from_the_budget_tb_not_the_chart():
     """S5 G1: the rates read names fx_method from gold_consolidated_budget_tb,
-    and the method shown is the row's own. A blank method on the row stays
-    blank (the report reads it "chart default"); it is never filled from the
-    chart."""
+    and the method shown is the row's own (the chart's declared method as
+    recorded at build time, review m6). A blank method on the row stays
+    blank (the report reads it "closing (undeclared)"); it is never filled
+    from the chart."""
     site = _budget_drill_site()
     site.budget_rate_rows = [
         _rate_row("ZZA", "1110", 1.10, fx_method="historical"),

@@ -11,7 +11,8 @@ Consolidated Statement report with the same filters.
 
 Basis Budget (konsol#348 S5 K10b): ``statement_api.get_budget_drill`` for
 the group and heading (``UNBALANCED`` for the plug's row), laid out with the
-Rate and Rate Set columns; the entity rows' sources are Budget Cycles, so no
+"Declared method and rate" and Rate Set columns (the chart's declared method
+at build time, review m6); the entity rows' sources are Budget Cycles, so no
 trial balance is read. Opened from the statement's Budget cell.
 """
 import frappe

@@ -292,11 +292,15 @@ _BUDGET_UNBALANCED_SQL = (
 #: (``gold_consolidated_budget_tb``; ``fx_method`` and ``rate_set`` are
 #: carried on every row, S5 G1). The periods come back too, so Python keeps
 #: the statement window's rows (the current period for a P&L heading, every
-#: key up to it for a Balance Sheet one) without a second SQL shape. The
-#: method is the one the warehouse APPLIED at build time, never the chart's
-#: Translation Method of today: a chart changed since the build would
-#: misname the rate. A warehouse without the column fails this read by name
-#: (``state "error"``), so the konsolidat change ships with this one.
+#: key up to it for a Balance Sheet one) without a second SQL shape.
+#: ``fx_method`` is the chart's DECLARED Translation Method as the warehouse
+#: recorded it at build time (PR #554 review m6), never the chart of today
+#: (a chart changed since the build would misname the rate) and not the
+#: method the core applied: the core translates an undeclared account ('')
+#: at closing, and applies closing before a historical account's first
+#: tranche. The drill labels it "Declared method". A warehouse without the
+#: column fails this read by name (``state "error"``), so the konsolidat
+#: change ships with this one.
 _BUDGET_RATES_SQL = (
     "SELECT fiscal_year, fiscal_period, data_area_id, main_account, fx_method, translation_rate, rate_set "
     "FROM epm_gold.gold_consolidated_budget_tb "
@@ -1159,9 +1163,10 @@ def _rate_rows_for(rows, keys):
     """``drill_model.with_rates``'s rate rows from ``_BUDGET_RATES_SQL``'s:
     the statement window's periods only (``keys``), ``translation_rate`` as
     a float, and ``fx_method`` as the warehouse carries it (S5 G1): the
-    method applied at build time. A blank method (an account the chart did
-    not declare at build time) stays blank, and the Statement Drill report
-    says "chart default" for it; nothing here fills it from today's chart."""
+    chart's declared method as recorded at build time. A blank method (an
+    account the chart did not declare at build time) stays blank, and the
+    Statement Drill report reads it "closing (undeclared)" (review m6: the
+    core translates it at closing); nothing here fills it from today's chart."""
     out = []
     for row in rows:
         if (int(row["fiscal_year"]), int(row["fiscal_period"])) not in keys:

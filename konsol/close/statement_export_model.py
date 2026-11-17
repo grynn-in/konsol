@@ -38,8 +38,11 @@ budget's own "Unbalanced budget (no balancing entry)" line is written before
 the residual, its actuals blank, when the actuals carry no such line. One
 note line follows the other notes: for an ok budget its own sentence plus the
 limits and the Balance Sheet basis; otherwise "Budget columns are blank: ...".
-The "Budget drill" sheet is the Drill sheet's layout plus "Rate" and "Rate
-Set" columns, from ``drill_model.with_rates``. With ``budget=None`` nothing
+The "Budget drill" sheet is the Drill sheet's layout plus "Declared method
+and rate" and "Rate Set" columns, from ``drill_model.with_rates``: the
+method is the chart's declared Translation Method as recorded at build time,
+not the one the core applied (PR #554 review m6; the core can apply closing
+before a historical account's first tranche). With ``budget=None`` nothing
 changes: no columns, no note, no sheet.
 
 Amounts are written as numbers with a bracket format, the payload's own
@@ -133,11 +136,14 @@ _TITLE = Font(bold=True, size=14)
 
 DRILL_HEADER = ["Section", "Heading", "Heading name", "Layer", "Entity",
                 "Account", "Account name", "Amount"]
-BUDGET_DRILL_HEADER = DRILL_HEADER + ["Rate", "Rate Set"]
+#: The same label as statement_drill_report_model.RATE_LABEL (review m6).
+BUDGET_DRILL_HEADER = DRILL_HEADER + ["Declared method and rate", "Rate Set"]
 JOURNAL_HEADER = ["Heading", "Heading name", "Journal", "Description", "Amount",
                   "Posted by", "Approved by", "Basis"]
 _BUDGET_DRILL_NOTE = ("Budget " + BUDGET_LIMITS + ". Each heading's amount is its budget column "
-                      "figure; Rate is the translation rate of the entity's accounts.")
+                      "figure. Declared method and rate: the chart's Translation Method declared for the "
+                      "account when the budget was built (closing where undeclared), and the translation "
+                      "rate of the entity's accounts.")
 _BASIS_NOTE = ("Each heading's amount is its This period figure: cumulative "
                "for the Balance Sheet, the period alone for Profit and Loss.")
 

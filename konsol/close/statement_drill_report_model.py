@@ -38,9 +38,13 @@ accepted: an entity row links its Budget Cycle, and carries
 list the Desk JS opens); every other row carries ``None``. Every row gains
 ``rate`` and ``rate_set`` text: each ``{fx_method, rate}`` of the row's
 ``rates`` as ``"<fx_method> <rate>"`` joined by "; ", the rate as the payload
-gives it, never rounded. A blank ``fx_method`` reads ``"chart default
-<rate>"``: the Main Account left the Translation Method blank, so the
-warehouse applied the chart's default (which one is not derived here).
+gives it, never rounded. ``fx_method`` is the chart's DECLARED Translation
+Method as recorded when the budget was built (PR #554 review m6), not the
+method the core applied: the core can apply closing before a historical
+account's first tranche, so the column is labelled "Declared method and
+rate". A blank ``fx_method`` reads ``"closing (undeclared) <rate>"``: the
+Main Account left the Translation Method blank, and the consolidation core
+translates an undeclared account at the closing rate.
 ``rate_set`` is the distinct Rate Sets in order. Rows without ``rates``
 (CTA, NCI, outside-scope aggregate, Total, the unbalanced entity rows) show
 both as None; an entity row with accounts but no ``rates`` raises
@@ -75,13 +79,20 @@ JOURNAL_DOCTYPE = "Consolidation Journal"
 CYCLE_DOCTYPE = "Budget Cycle"
 BUDGET = "Budget"
 _SOURCE_KINDS = ("tb", "journals", "cycle")
+#: PR #554 review m6: the chart's declared method, not the applied one
+#: (statement_export_model.BUDGET_DRILL_HEADER carries the same label).
+RATE_LABEL = "Declared method and rate"
+#: What a blank declared method reads as: the core translates an undeclared
+#: account at the closing rate (consolidation_core: join_use_nulls=0 gives '').
+UNDECLARED_METHOD = "closing (undeclared)"
 
 
 def columns(minor_unit=None, basis=None):
     """``minor_unit`` is the drill's own (the reporting currency's ISO minor
     unit, konsol#354): the Amount column shows that many places. ``None``
     (no drill) sets no precision, never a guessed 2. ``basis`` ``Budget``
-    adds the Rate and Rate Set columns after Amount."""
+    adds the "Declared method and rate" and Rate Set columns after Amount
+    (module docstring: declared, not applied)."""
     amount = {"fieldname": "amount", "label": "Amount", "fieldtype": "Currency",
               "options": "currency", "width": 170}
     if minor_unit is not None:
@@ -89,7 +100,7 @@ def columns(minor_unit=None, basis=None):
     budget = []
     if basis == BUDGET:
         budget = [
-            {"fieldname": "rate", "label": "Rate", "fieldtype": "Data", "width": 160},
+            {"fieldname": "rate", "label": RATE_LABEL, "fieldtype": "Data", "width": 200},
             {"fieldname": "rate_set", "label": "Rate Set", "fieldtype": "Link",
              "options": "Rate Set", "width": 110},
         ]
@@ -173,7 +184,7 @@ def _rate_texts(item):
     if not rates:
         return None, None
     rate = "; ".join(
-        f"{r.get('fx_method') or 'chart default'} {r.get('rate')}" for r in rates)
+        f"{r.get('fx_method') or UNDECLARED_METHOD} {r.get('rate')}" for r in rates)
     sets = []
     for r in rates:
         if r.get("rate_set") and r["rate_set"] not in sets:

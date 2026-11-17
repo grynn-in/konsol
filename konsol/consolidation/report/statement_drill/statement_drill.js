@@ -2,8 +2,8 @@
 // eliminations, CTA, top-side journals, deal rows), its accounts and its
 // source documents. Opened from a Consolidated Statement heading.
 // Basis Budget (konsol#348 S5 K10b): the approved budget's drill for the
-// heading (or UNBALANCED, the plug's row), each entity row with its rate,
-// Rate Set and Budget Cycle; opened from the statement's Budget cell. It
+// heading (or UNBALANCED, the plug's row), each entity row with its declared
+// method and rate, Rate Set and Budget Cycle; opened from the statement's Budget cell. It
 // needs the group, as the Group basis does.
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
 // The Frappe query report checks only `reqd` before a run (conditional-mandatory
@@ -54,7 +54,7 @@ frappe.query_reports["Statement Drill"] = {
 			fieldtype: "Select",
 			options: "Group\nEntity\nBudget",
 			default: "Group",
-			description: __("Entity: one entity's own trial balance in its functional currency. Budget: the approved budget, before eliminations, with the rate each account was translated at."),
+			description: __("Entity: one entity's own trial balance in its functional currency. Budget: the approved budget, before eliminations, with each account's declared translation method and the rate it was translated at."),
 			on_change: on_basis_change,
 		},
 		{

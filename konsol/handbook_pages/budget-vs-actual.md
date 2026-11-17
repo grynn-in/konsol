@@ -38,7 +38,7 @@ A Cycle whose entries do not balance within an entity and period carries a balan
 
 ## The drill and the rate
 
-Click the Budget cell of a heading to open **Statement Drill** on the Budget basis: one row per entity in your scope, with its accounts. Each account shows the translation method and rate the warehouse used for it, and the Rate Set, as they were when the budget was built. The Source column opens the Budget Cycle, and the entity's **Budget Entries** are one click away. The Unbalanced line has its own drill, by entity.
+Click the Budget cell of a heading to open **Statement Drill** on the Budget basis: one row per entity in your scope, with its accounts. Each account shows its **declared method and rate**: the translation method the chart declared for the account when the budget was built, and the rate it was translated at, with the Rate Set. An account with no declared method reads "closing (undeclared)": it is translated at the closing rate. The Source column opens the Budget Cycle, and the entity's **Budget Entries** are one click away. The Unbalanced line has its own drill, by entity.
 
 ## Export to Excel
 
