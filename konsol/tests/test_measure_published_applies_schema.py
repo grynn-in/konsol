@@ -590,8 +590,9 @@ def test_a_non_admin_may_still_save_metadata_on_a_draft():
 # --- install, migrate and patches apply nothing (#351 review) --------------
 #
 # install_defaults (after_install, and install._seed_defaults in
-# after_migrate) inserts 15 Published Measures. With the hook live inside
-# them, each ran apply_and_rebuild: 15 applies, a full-refresh Build Approval
+# after_migrate) inserts 14 Published Measures (15 until konsol#348 S6 KB1
+# retired variance_favorable). With the hook live inside
+# them, each ran apply_and_rebuild: one apply per Measure, a full-refresh Build Approval
 # left on a brand-new site, and ~22 minutes against an unreachable ClickHouse.
 # The two Measure patches each ran one more. Under in_install, in_migrate and
 # in_patch the hook applies nothing; install and migrate regenerate the dbt
@@ -683,10 +684,10 @@ def test_migrate_seeds_the_defaults_with_no_apply_and_regenerates_vars_once():
     mod = _install_module(events)
     _FRAPPE_FLAGS.in_migrate = True
     _with_dbt_config(probe, mod.after_migrate)
-    assert len(_STORE) == 15, sorted(_STORE)
+    assert len(_STORE) == 14, sorted(_STORE)
     assert _REBUILDS == [], _REBUILDS
     regenerated = [e for e in events if e[0] == "regenerate_vars"]
-    assert regenerated == [("regenerate_vars", 15)], events
+    assert regenerated == [("regenerate_vars", 14)], events
     assert events[-1][0] == "regenerate_vars", "regenerate after every other migrate step"
 
 
@@ -711,9 +712,9 @@ def test_install_seeds_the_defaults_with_no_apply_and_regenerates_vars_once():
             events.append((hook, None))
             continue
         _with_dbt_config(probe, fn)
-    assert len(_STORE) == 15, sorted(_STORE)
+    assert len(_STORE) == 14, sorted(_STORE)
     assert _REBUILDS == [], _REBUILDS
-    assert [e for e in events if e[0] == "regenerate_vars"] == [("regenerate_vars", 15)], events
+    assert [e for e in events if e[0] == "regenerate_vars"] == [("regenerate_vars", 14)], events
 
 
 def test_a_failed_regenerate_does_not_fail_the_migrate_and_says_so():
