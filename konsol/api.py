@@ -269,6 +269,12 @@ _PER_ROUND = {
     "epm_gold.gold_forecast_accuracy_group",
 }
 
+#: Tables whose rows are keyed by consolidation group AND entity, read with
+#: the group in the entity slot (as the consolidated reads are): an entity in
+#: two groups has a row in each group's currency, and read by entity the
+#: currencies added up (konsol#348 S6 KC1, gold_forecast_accuracy_group).
+_ENTITY_SLOT_COLUMN = {"epm_gold.gold_forecast_accuracy_group": "consolidation_group"}
+
 #: Tables holding every budget scenario's rows and each forecast scenario's
 #: declared current round only (konsolidat S6 WC1). A read naming no
 #: scenario reads the budgets only, never a forecast added to them; a named
@@ -994,9 +1000,10 @@ def _batch_query_clickhouse(requests_list):
         # per-cell key (entity, year, account, dims) and carries no period,
         # while SELECT/GROUP BY adds `fiscal_period` so a row can be
         # attributed to the cell that asked for it (konsol#231).
-        in_col_names = ["data_area_id", "fiscal_year", "main_account"]
+        entity_col = _ENTITY_SLOT_COLUMN.get(table, "data_area_id")
+        in_col_names = [entity_col, "fiscal_year", "main_account"]
         in_col_names.extend(dim_names_sorted)
-        select_cols = ["data_area_id", "fiscal_year", "fiscal_period", "main_account"]
+        select_cols = [entity_col, "fiscal_year", "fiscal_period", "main_account"]
         select_cols.extend(dim_names_sorted)
 
         # Build IN tuples and params (without fiscal_period)

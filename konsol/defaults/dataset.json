@@ -271,7 +271,7 @@
   "has_layer": 0,
   "status": "Published",
   "generates_source": 0,
-  "grain": "One row per approved forecast round x closed period x entity x main_account x dimensions, in the consolidation group's currency at the round's rates, layers summed; a read takes the declared current round (konsol#348 FC-4-2)",
+  "grain": "One row per approved forecast round x closed period x consolidation group x entity x main_account x dimensions, in the group's currency, layers summed; K.EPM's entity argument is the consolidation group (its entities summed) and a read takes the declared current round (konsol#348 FC-4-2)",
   "default_measure": "forecast_error",
   "fact_measures": [
    {

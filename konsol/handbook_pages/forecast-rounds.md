@@ -75,7 +75,7 @@ The add-in reads a forecast by its scenario word (the sixth argument of `=K.EPM`
 | `latest_estimate` | The declared round's latest estimate: actuals to the as-of period, the forecast after it. |
 | `consolidated_budget` | The group's consolidated budget, translated and before eliminations. The entity argument is the consolidation group. Name a budget scenario in `scenarioId`, or a forecast scenario to read its declared round. With no scenario named, it reads the budget scenarios only, never a forecast. `layer` reads one layer. |
 | `forecast_accuracy` | The declared round's accuracy, in entity currency. The measure is `forecast_error` unless you name `forecast_abs_error`, `forecast_error_pct`, `forecast_amount` or `actual_amount`. |
-| `forecast_accuracy_group` | The same, in the group's currency. |
+| `forecast_accuracy_group` | The declared round's accuracy for a consolidation group, in the group's currency, its entities added together. The entity argument is the consolidation group. |
 
 For example, `=K.EPM("G1",2026,3,"4000","","consolidated_budget",,"BUD26")` reads the consolidated budget of group G1 for scenario BUD26.
 
