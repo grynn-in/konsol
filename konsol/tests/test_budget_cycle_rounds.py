@@ -247,3 +247,32 @@ def test_the_suffix_scheme_still_applies_within_a_round(env):
     doc = env.cycle(scenario_type="forecast", as_of_date="2027-03-31", horizon_periods=12)
     doc.autoname()
     assert doc.name == "BCYC-ZZFC-2027-2027-03-31-2"
+
+
+# ---- S6 KA3: approved rounds sit side by side; the interim one-approved-round rule is gone --------
+#
+# konsol#348 S6-Q1 (b), Deepak Pai, 17 Nov 2026: the warehouse picks a forecast pair's round from the
+# Current Forecast declaration (gold_forecast_current_round), so the readers never sum rounds and a
+# second Approve no longer doubles anything. The interim refusal (_refuse_second_approved_forecast_round,
+# test_budget_cycle_one_approved_round.py) and konsolidat's assert_forecast_one_approved_round_until_s6
+# go together; the konsol and konsolidat halves of pair A merge together.
+
+def test_a_second_approved_round_of_one_forecast_pair_is_accepted(env):
+    """Red before KA3: refused by name ("Until the latest-estimate read is built (S6)...")."""
+    env.pair[:] = [_row("FC-Q1", 1, datetime.date(2027, 3, 31)), _row("FC-Q2", 0, "2027-06-30")]
+    doc = env.cycle("FC-Q2", scenario_type="forecast", as_of_date="2027-06-30", horizon_periods=12, docstatus=1)
+    doc.before_submit()
+    assert doc.input_fingerprint == "v1:stub", "Approve still stamps the fingerprint (S4 K8)"
+
+
+def test_the_interim_one_approved_round_rule_is_gone():
+    import ast
+
+    with open(CYCLE_PY) as f:
+        src = f.read()
+    tree = ast.parse(src)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "BudgetCycle")
+    methods = {n.name for n in cls.body if isinstance(n, ast.FunctionDef)}
+    assert "_refuse_second_approved_forecast_round" not in methods
+    assert "Interim rule" not in src and "until_s6" not in src, "the interim text is gone with the rule"
+    assert not os.path.exists(os.path.join(APP_DIR, "tests", "test_budget_cycle_one_approved_round.py"))
