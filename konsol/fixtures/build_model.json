@@ -175,6 +175,12 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_ownership_exits",
+  "model_name": "gold_ownership_exits",
+  "build_domain": "actuals"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_period_hierarchy",
   "model_name": "gold_period_hierarchy",
   "build_domain": "staging"
