@@ -5,7 +5,8 @@ drill rows; rejected: an Excel add-in function).
 
 ``workbook(payload, drills)`` turns ``statement_api.get_statement``'s ``ok``
 payload and one ``drill_model.drill`` result per statement heading into the
-bytes of an .xlsx with three sheets:
+bytes of an .xlsx with three sheets (a fourth, "Budget drill", when a budget
+drill is given):
 
 - **Statement**: the header, the sign-off label, the legend and the notes
   (declared-accounts gap, comparison note, entities not included), then
@@ -19,6 +20,27 @@ bytes of an .xlsx with three sheets:
   total. The column foots to each heading's total.
 - **Journals**: the top-side journals behind each heading's "Top-side
   journals" drill row, with their basis (posted in this period).
+
+**Budget (konsol#348 S5 K11).** ``workbook(payload, drills, budget=None,
+budget_drills=None)``. With a budget payload, the three ``BUDGET_COLUMNS``
+("Budget (before eliminations)", "Variance to budget", "Budget year to date")
+follow the actuals columns in each section's header. S5-Q6 a: they are a
+SEPARATE constant, so ``COLUMNS`` and its numbers.js pin do not change. Lines
+are matched to the budget exactly as ``statement_report_model`` matches them
+(a heading by its code, an include by its heading and kind, any other line by
+kind). Budget is the budget line's ``current``; Variance to budget is this
+period's ``current`` minus it on a Profit and Loss line only (S5 F1: on the
+Balance Sheet a budgeted movement set against an actual balance is not a
+variance, so the cell is blank); Budget year to date is the budget's ``ytd``
+(Profit and Loss only). A cell is blank, never 0, where the budget is
+absent, not ok, or lacks the line; the residual takes no variance. The
+budget's own "Unbalanced budget (no balancing entry)" line is written before
+the residual, its actuals blank, when the actuals carry no such line. One
+note line follows the other notes: for an ok budget its own sentence plus the
+limits and the Balance Sheet basis; otherwise "Budget columns are blank: ...".
+The "Budget drill" sheet is the Drill sheet's layout plus "Rate" and "Rate
+Set" columns, from ``drill_model.with_rates``. With ``budget=None`` nothing
+changes: no columns, no note, no sheet.
 
 Amounts are written as numbers with a bracket format, the payload's own
 sign — never re-derived. A missing amount raises (never written as 0); a
@@ -69,6 +91,20 @@ _FIELD = {"This period": "current", "Comparison": "comparison",
           "Variance": "variance", "Year to date": "ytd"}
 _COMPARISON_FIELDS = ("comparison", "variance")
 
+#: The budget columns (konsol#348 S5 K11; S5-Q6 a: a separate constant, never
+#: part of ``COLUMNS``, which numbers.js pins). Same three on each section;
+#: statement_report_model.columns() carries the same labels.
+BUDGET_COLUMNS = {
+    PL: ["Budget (before eliminations)", "Variance to budget", "Budget year to date"],
+    BS: ["Budget (before eliminations)", "Variance to budget", "Budget year to date"],
+}
+#: The note's texts: the same words as statement_report_model.BUDGET_LIMITS and
+#: BUDGET_BS_BASIS (a test pins the equality; this module imports no konsol code).
+BUDGET_LIMITS = "before intercompany eliminations and without group-level adjustments"
+BUDGET_BS_BASIS = ("the balance sheet budget column shows the budgeted movements year to date, not balances, "
+                   "so there is no variance to budget on the balance sheet")
+UNBALANCED = "unbalanced"
+
 #: numbers.js ``SIGNOFF_LABEL`` texts.
 SIGNOFF_LABEL = {
     "signed": "Signed",
@@ -97,8 +133,11 @@ _TITLE = Font(bold=True, size=14)
 
 DRILL_HEADER = ["Section", "Heading", "Heading name", "Layer", "Entity",
                 "Account", "Account name", "Amount"]
+BUDGET_DRILL_HEADER = DRILL_HEADER + ["Rate", "Rate Set"]
 JOURNAL_HEADER = ["Heading", "Heading name", "Journal", "Description", "Amount",
                   "Posted by", "Approved by", "Basis"]
+_BUDGET_DRILL_NOTE = ("Budget " + BUDGET_LIMITS + ". Each heading's amount is its budget column "
+                      "figure; Rate is the translation rate of the entity's accounts.")
 _BASIS_NOTE = ("Each heading's amount is its This period figure: cumulative "
                "for the Balance Sheet, the period alone for Profit and Loss.")
 
@@ -215,14 +254,87 @@ def _amount_cols(start, count):
     return set(range(start, start + count))
 
 
-def _section_rows(section, commentary, comparison_note):
+def _line_keys(section, line):
+    """``(key, item)`` for a line and each of its includes, as
+    statement_report_model._line_keys: a heading by its code, an include by
+    its heading and kind, any other line by kind."""
+    kind = line.get("kind")
+    if kind == "heading":
+        yield (section, kind, line.get("heading")), line
+        for include in line.get("includes") or []:
+            yield (section, "include", line.get("heading"), include.get("kind")), include
+    else:
+        yield (section, kind), line
+
+
+def _budget_items(budget):
+    """``{key: line or include}`` of an ok budget payload; ``None`` when
+    there is no budget or it is not ok (statement_report_model._budget_items)."""
+    if not budget or budget.get("state") != "ok" or not budget.get("statement"):
+        return None
+    items = {}
+    for section in budget["statement"]["sections"]:
+        for line in section["lines"]:
+            for key, item in _line_keys(section["section"], line):
+                items[key] = item
+    return items
+
+
+def _budget_cells(section, line, budget_items, minor_unit, include=None, variance=True):
+    """``[budget, variance to budget, budget year to date]`` for a line (or
+    an include of it), blank (``None``, never 0) where the budget is absent,
+    not ok or lacks the line (statement_report_model._with_budget). The
+    variance is Profit and Loss only (S5 F1) and rounded once to the minor
+    unit; ``variance`` False (the residual) leaves it blank."""
+    blank = [None, None, None]
+    if budget_items is None:
+        return blank
+    key, item = ((section, "include", line["heading"], include.get("kind")), include) \
+        if include is not None else next(_line_keys(section, line))
+    budget_item = budget_items.get(key)
+    if budget_item is None or budget_item.get("current") is None:
+        return blank
+    budget_value = budget_item["current"]
+    this = item.get("current")
+    cells = [_amount(budget_value, "budget"), None, None]
+    if variance and section == PL and this is not None:
+        cells[1] = _amount(round(this - budget_value, minor_unit), "variance to budget")
+    if budget_item.get("ytd") is not None:
+        cells[2] = _amount(budget_item["ytd"], "budget year to date")
+    return cells
+
+
+def _budget_note(budget):
+    """The Statement sheet's budget line: for an ok budget its own sentence
+    with the columns' limits and the Balance Sheet basis; otherwise why the
+    columns are blank; ``None`` when no budget was asked for."""
+    if budget is None:
+        return None
+    if _budget_items(budget) is not None:
+        own = (budget.get("message") or "").rstrip(".")
+        return "%s. The budget columns are %s; %s." % (own, BUDGET_LIMITS, BUDGET_BS_BASIS)
+    reason = budget.get("message") or "the budget is not available (state: %s)" % budget.get("state")
+    return "Budget columns are blank: %s" % reason
+
+
+def _section_rows(section, commentary, comparison_note, budget=None, minor_unit=None):
     """``[(values, font)]`` for one section's table: header row, then each
-    line (and a heading's "of which" rows, and a residual's explanation)."""
+    line (and a heading's "of which" rows, and a residual's explanation).
+    With a ``budget`` payload each row carries the three budget cells after
+    the actuals."""
     name = section["section"]
     if name not in COLUMNS:
         raise ValueError(f"unknown statement section: {name}")
     columns = COLUMNS[name]
-    out = [(["Line", "Code"] + columns + ["Commentary", "By"], _BOLD)]
+    with_budget = budget is not None
+    budget_items = _budget_items(budget)
+    out = [(["Line", "Code"] + columns + (BUDGET_COLUMNS[name] if with_budget else [])
+            + ["Commentary", "By"], _BOLD)]
+
+    def budgeted(line, include=None, variance=True):
+        if not with_budget:
+            return []
+        return _budget_cells(name, line, budget_items, minor_unit, include, variance)
 
     def amounts(line, what, fields=None):
         return [
@@ -237,18 +349,27 @@ def _section_rows(section, commentary, comparison_note):
             code = line["heading"]
             entry = commentary.get(code)
             note = [entry["text"], _byline(entry)] if entry and entry.get("text") else [None, None]
-            out.append(([line.get("heading_name"), code] + amounts(line, code) + note, None))
+            out.append(([line.get("heading_name"), code] + amounts(line, code)
+                         + budgeted(line) + note, None))
             for include in line.get("includes") or []:
                 out.append(([_INDENT + include["label"], None]
-                            + amounts(include, include["label"], ("current", "comparison")), None))
-        elif kind in ("no_heading", "net_result"):
+                            + amounts(include, include["label"], ("current", "comparison"))
+                            + budgeted(line, include), None))
+        elif kind in ("no_heading", "net_result", UNBALANCED):
             font = _BOLD if kind == "net_result" else None
-            out.append(([line["label"], None] + amounts(line, line["label"]), font))
+            out.append(([line["label"], None] + amounts(line, line["label"]) + budgeted(line), font))
         elif kind == "not_in_chart":
             label = "%s (%s)" % (line["label"], ", ".join(line.get("codes") or []))
-            out.append(([label, None] + amounts(line, line["label"]), None))
+            out.append(([label, None] + amounts(line, line["label"]) + budgeted(line), None))
         elif kind == "residual":
-            out.append(([line["label"], None] + amounts(line, line["label"], ("current",)), _BOLD))
+            item = (budget_items or {}).get((name, UNBALANCED))
+            if item is not None and not any(ln.get("kind") == UNBALANCED for ln in section["lines"]):
+                # The budget's plug, actuals blank (statement_report_model.
+                # _budget_only_unbalanced): the budget balance sheet foots.
+                out.append(([item["label"], None] + [None] * len(columns)
+                            + [_amount(item.get("current"), item["label"]), None, None], None))
+            out.append(([line["label"], None] + amounts(line, line["label"], ("current",))
+                        + budgeted(line, variance=False), _BOLD))
             if line.get("current"):
                 for item in line.get("explained") or []:
                     out.append(([_INDENT + item["label"], None,
@@ -260,7 +381,7 @@ def _section_rows(section, commentary, comparison_note):
     return out
 
 
-def _statement_sheet(ws, payload):
+def _statement_sheet(ws, payload, budget=None):
     statement = payload["statement"]
     sheet = _Sheet(ws, _minor_unit(statement))
     sheet.write([_header_text(payload)], _TITLE)
@@ -269,7 +390,7 @@ def _statement_sheet(ws, payload):
     gap = payload.get("gap")
     comparison_note = statement["periods"].get("comparison_note")
     for note in ((gap or {}).get("message"), comparison_note,
-                 _not_included_text(payload.get("not_included"))):
+                 _not_included_text(payload.get("not_included")), _budget_note(budget)):
         if note:
             sheet.write([note])
     sheet.blank()
@@ -277,16 +398,19 @@ def _statement_sheet(ws, payload):
     commentary = payload.get("commentary") or {}
     for section in statement["sections"]:
         sheet.write([section["section"]], _BOLD)
-        cols = _amount_cols(3, len(COLUMNS.get(section["section"], ())))
-        for values, font in _section_rows(section, commentary, comparison_note):
+        cols = _amount_cols(3, len(COLUMNS.get(section["section"], ()))
+                            + (len(BUDGET_COLUMNS.get(section["section"], ())) if budget is not None else 0))
+        for values, font in _section_rows(section, commentary, comparison_note, budget,
+                                          _minor_unit(statement)):
             sheet.write(values, font, cols)
         sheet.blank()
 
     ws.column_dimensions["A"].width = 44
-    for letter in "CDEF":
-        ws.column_dimensions[letter].width = 16
-    ws.column_dimensions["G"].width = 48
-    ws.column_dimensions["H"].width = 36
+    amount_columns = 4 + (3 if budget is not None else 0)
+    for col in range(3, 3 + amount_columns):
+        ws.column_dimensions[chr(ord("A") + col - 1)].width = 16
+    ws.column_dimensions[chr(ord("A") + 2 + amount_columns)].width = 48
+    ws.column_dimensions[chr(ord("A") + 3 + amount_columns)].width = 36
 
 
 def _headings_in_order(statement):
@@ -294,17 +418,61 @@ def _headings_in_order(statement):
             for line in section["lines"] if line.get("kind") == "heading"]
 
 
+def _rate_cells(rates):
+    """``[Rate, Rate Set]`` text for the Budget drill: "<fx_method> <rate>"
+    per distinct rate and the distinct Rate Sets, each joined with "; ";
+    blank (``None``) when the row carries no rates."""
+    if not rates:
+        return [None, None]
+    texts, sets = [], []
+    for rate in rates:
+        text = "%s %s" % (rate.get("fx_method"), rate.get("rate"))
+        if text not in texts:
+            texts.append(text)
+        if rate.get("rate_set") not in (None, "") and rate["rate_set"] not in sets:
+            sets.append(rate["rate_set"])
+    return ["; ".join(texts), "; ".join(sets) or None]
+
+
 def _drill_sheets(drill_ws, journal_ws, statement, drills):
     minor_unit = _minor_unit(statement)
     drill_sheet, journal_sheet = _Sheet(drill_ws, minor_unit), _Sheet(journal_ws, minor_unit)
-    headings = _headings_in_order(statement)
     notes = {d.get("dimensions_note") for d in drills.values() if d.get("dimensions_note")}
     drill_sheet.write([" ".join(sorted(notes) + [_BASIS_NOTE])])
     drill_sheet.write(DRILL_HEADER, _BOLD)
     journal_sheet.write(["Top-side journals posted in this period, by heading."])
     journal_sheet.write(JOURNAL_HEADER, _BOLD)
+    _write_drills(drill_sheet, journal_sheet, _headings_in_order(statement), drills, minor_unit)
+    for ws, widths in ((drill_ws, (16, 10, 28, 30, 12, 12, 30, 16)),
+                       (journal_ws, (10, 28, 16, 40, 16, 28, 28, 40))):
+        for i, width in enumerate(widths):
+            ws.column_dimensions[chr(ord("A") + i)].width = width
+
+
+def _budget_drill_sheet(ws, budget, budget_drills):
+    """The "Budget drill" sheet: the Drill sheet's layout plus Rate and Rate
+    Set (``drill_model.with_rates``). Headings in the budget statement's
+    order, then any other drill (the UNBALANCED line) by name."""
+    minor_unit = _minor_unit(budget["statement"])
+    sheet = _Sheet(ws, minor_unit)
+    notes = {d.get("dimensions_note") for d in budget_drills.values() if d.get("dimensions_note")}
+    sheet.write([" ".join(sorted(notes) + [_BUDGET_DRILL_NOTE])])
+    sheet.write(BUDGET_DRILL_HEADER, _BOLD)
+    ordered = [h for h in _headings_in_order(budget["statement"]) if h in budget_drills]
+    ordered += sorted(h for h in budget_drills if h not in ordered)
+    _write_drills(sheet, None, ordered, budget_drills, minor_unit, rates=True)
+    for i, width in enumerate((16, 10, 28, 30, 12, 12, 30, 16, 28, 20)):
+        ws.column_dimensions[chr(ord("A") + i)].width = width
+
+
+def _write_drills(drill_sheet, journal_sheet, headings, drills, minor_unit, rates=False):
+    """The drill rows of each heading (and its journals, when a journal sheet
+    is given); ``rates`` adds the Rate and Rate Set cells."""
     amount_col = {DRILL_HEADER.index("Amount") + 1}
     journal_amount_col = {JOURNAL_HEADER.index("Amount") + 1}
+
+    def tail(cells=None):
+        return (cells or [None, None]) if rates else []
 
     for code in headings:
         drill = drills.get(code)
@@ -319,7 +487,8 @@ def _drill_sheets(drill_ws, journal_ws, statement, drills):
                 for account in row["accounts"]:
                     drill_sheet.write(
                         [section, code, name, layer, entity, account["main_account"],
-                         account.get("account_name"), _amount(account["amount"], what)],
+                         account.get("account_name"), _amount(account["amount"], what)]
+                        + tail(_rate_cells(account.get("rates"))),
                         amount_cols=amount_col)
                 # Each account is rounded to the minor unit on its own, so
                 # the lines can drift from their row (measured live 6 Oct:
@@ -330,31 +499,30 @@ def _drill_sheets(drill_ws, journal_ws, statement, drills):
                 if drift:
                     drill_sheet.write(
                         [section, code, name, layer, entity, None, ACCOUNT_ROUNDING,
-                         float(drift)], amount_cols=amount_col)
+                         float(drift)] + tail(), amount_cols=amount_col)
             else:
                 drill_sheet.write(
                     [section, code, name, layer, entity, None, None,
-                     _amount(row["amount"], what)], amount_cols=amount_col)
-            for journal in row.get("journals") or []:
+                     _amount(row["amount"], what)] + tail(_rate_cells(row.get("rates"))),
+                    amount_cols=amount_col)
+            for journal in (row.get("journals") or []) if journal_sheet is not None else []:
                 journal_sheet.write(
                     [code, name, journal["journal_id"], journal.get("description"),
                      _amount(journal["amount"], f"{code} {journal['journal_id']}"),
                      journal.get("posted_by"), journal.get("approved_by"),
                      row.get("journals_basis")], amount_cols=journal_amount_col)
         drill_sheet.write([section, code, name, "Total", None, None, None,
-                           _amount(drill["total"], f"{code} total")],
+                           _amount(drill["total"], f"{code} total")] + tail(),
                           _BOLD, amount_col)
 
-    for ws, widths in ((drill_ws, (16, 10, 28, 30, 12, 12, 30, 16)),
-                       (journal_ws, (10, 28, 16, 40, 16, 28, 28, 40))):
-        for i, width in enumerate(widths):
-            ws.column_dimensions[chr(ord("A") + i)].width = width
 
-
-def workbook(payload, drills):
+def workbook(payload, drills, budget=None, budget_drills=None):
     """The .xlsx bytes for an ``ok`` statement payload and its drills
     (``{heading: drill_model.drill(...)}``, one per statement heading).
-    Raises ``ValueError`` on a non-ok payload (its own message), a missing
+    ``budget`` (the budget payload: ``state``, ``message``, ``statement``,
+    ``meta``) adds the budget columns and note; ``budget_drills`` (headings
+    and "UNBALANCED", through ``drill_model.with_rates``) adds the "Budget
+    drill" sheet. Raises ``ValueError`` on a non-ok payload (its own message), a missing
     drill, a missing amount, or a kind/state this module does not know."""
     if payload.get("state") != "ok" or not payload.get("statement"):
         raise ValueError(payload.get("message") or "The statement is not ready to export.")
@@ -362,9 +530,13 @@ def workbook(payload, drills):
     book = Workbook()
     statement_ws = book.active
     statement_ws.title = "Statement"
-    _statement_sheet(statement_ws, payload)
+    _statement_sheet(statement_ws, payload, budget)
     _drill_sheets(book.create_sheet("Drill"), book.create_sheet("Journals"),
                   payload["statement"], drills)
+    if budget_drills is not None:
+        if _budget_items(budget) is None:
+            raise ValueError("A budget drill needs an ok budget payload.")
+        _budget_drill_sheet(book.create_sheet("Budget drill"), budget, budget_drills)
     out = io.BytesIO()
     book.save(out)
     return out.getvalue()

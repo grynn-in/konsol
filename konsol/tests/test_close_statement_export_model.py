@@ -664,7 +664,9 @@ def test_the_budgets_unbalanced_line_precedes_the_residual_with_blank_actuals():
 
 
 def test_a_line_absent_from_the_budget_is_blank_never_zero():
-    budget = _budget(rows=[_F._row("1110", 300.0, adjustment_type="entity")])
+    budget = _budget()
+    lines = budget["statement"]["sections"][0]["lines"]
+    lines[:] = [ln for ln in lines if ln.get("heading") != "4"]
     pl = _section_block(_rows(_budget_book(budget)["Statement"]), "Profit and Loss")
     row = _row_starting(pl, "COST OF SALES", "4")
     assert row[6] is None and row[7] is None and row[8] is None
@@ -713,7 +715,7 @@ def test_budget_drill_sheet_has_rate_and_rate_set_columns_per_entity_account():
     header = next(r for r in rows if r[0] == "Section")
     assert header[:8] == M.DRILL_HEADER and header[8:10] == ["Rate", "Rate Set"]
     zza = next(r for r in rows if r[4] == "ZZA" and r[5] == "1110")
-    assert zza[8] == "average 1.05; closing 1.1" and zza[9] == "ZZRS; ZZRS2"
+    assert zza[8] == "average 1.05; closing 1.1" and zza[9] == "ZZRS2; ZZRS"  # in the order of the rates
     zzb = next(r for r in rows if r[4] == "ZZB" and r[5] == "1110")
     assert zzb[8] == "closing 1.1" and zzb[9] == "ZZRS"
     cta = next(r for r in rows if r[3] == "Currency translation (CTA)")
