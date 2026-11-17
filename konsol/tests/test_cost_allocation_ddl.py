@@ -37,8 +37,8 @@ BODIES = {
     ),
     "epm_staging.cost_allocation_coefficients": (
         "(run String, origin_member String, step UInt16, sender_member String, "
-        "receiver_member String, driver String, pool_coefficient Decimal(38,12), "
-        "coefficient Decimal(38,12)) "
+        "receiver_member String, driver String, hop_kind String, "
+        "pool_coefficient Decimal(38,12), coefficient Decimal(38,12)) "
         "ENGINE = MergeTree ORDER BY (run, origin_member, step, receiver_member)"
     ),
     "epm_staging.cost_allocation_statistics": (
@@ -73,6 +73,14 @@ def test_reference_ddl_carries_the_six_w1_bodies():
     for table, body in BODIES.items():
         assert table in ddl, table
         assert _normalise(ddl[table]) == _normalise(body), (table, ddl[table])
+
+
+def test_an_existing_coefficients_table_gains_hop_kind_after_driver():
+    """An existing stack gets hop_kind by ALTER ... AFTER driver, the same place
+    the CREATE puts it (_POSITIONED_COLUMNS, asked from system.columns first)."""
+    positioned = _literal("_POSITIONED_COLUMNS")
+    assert positioned["epm_staging.cost_allocation_coefficients"] == [
+        ("hop_kind", "String", "driver")]
 
 
 def test_the_six_names_are_not_retired():

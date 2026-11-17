@@ -8,9 +8,10 @@ draft, and reach the warehouse while it is approved (docstatus 1): the
 submit and the cancel queue their syncs, after the commit.
 
 The deadline is a target date; nothing locks at it. A cancel is refused once
-every period of the year is closed (period_status.assert_year_not_closed), and
+every period of the year is closed (period_status.assert_year_not_closed),
 while a submitted Approved Budget names the Cycle (konsol#348 S5 K16, S5-Q5 a:
-cancel the declaration first); a cancelled Cycle leaves the warehouse and
+cancel the declaration first), and while a submitted Current Forecast names
+it (S6 KA3, S6-Q1 b: the same); a cancelled Cycle leaves the warehouse and
 stays as the audit trail, and its amendment carries the pair on.
 
 A Cycle of a forecast scenario is one ROUND, keyed by (scenario, fiscal year,
@@ -39,10 +40,13 @@ the inputs approved (konsol.epm.budget_fingerprint), read-only and frozen by
 the submit. ``check_input_fingerprint`` recomputes it on request and reports a
 mismatch; it decides nothing.
 
-Interim rule until S6 (posted on #348, 15 Nov 2026): a forecast pair holds at
-most ONE approved round, because the readers still sum rounds across the
-cycle. before_submit refuses the second Approve by name
-(_refuse_second_approved_forecast_round); S6 removes it.
+A forecast pair holds its approved rounds side by side (S6, FC-4), and no
+reader sums them: the round a (scenario, year) reports is DECLARED in a
+Current Forecast (S6-Q1 b, Deepak Pai, 17 Nov 2026), and the warehouse's
+gold_forecast_current_round joins that declaration into every forecast
+reader. The one-approved-round refusal that held the readers safe between
+S3 and S6 (15 Nov 2026) is gone with konsolidat's backstop test; the two
+halves of S6 pair A merged together so no gap summed two rounds.
 """
 import frappe
 from frappe import _
@@ -210,47 +214,16 @@ class BudgetCycle(Document):
 
     def before_submit(self):
         """Approve is the submit (the workflow's Approve calls doc.submit(),
-        frappe/model/workflow.py), so the interim rule runs here, after
-        validate and before anything is written; then the input fingerprint
-        is stamped (S4 K8, S4-Q5 a): the hash of the inputs being approved,
-        set here so it lands with the approval and nothing saves in on_submit.
-        Imported here: the controller is loaded under test without it."""
-        self._refuse_second_approved_forecast_round()
+        frappe/model/workflow.py): the input fingerprint is stamped here
+        (S4 K8, S4-Q5 a), the hash of the inputs being approved, set after
+        validate and before anything is written so it lands with the approval
+        and nothing saves in on_submit. A forecast pair's second approved
+        round is accepted (S6 KA3): the readers take the declared current
+        round (Current Forecast) and never sum rounds. Imported here: the
+        controller is loaded under test without it."""
         from konsol.epm.budget_fingerprint import compute
 
         self.input_fingerprint = compute(self)
-
-    def _refuse_second_approved_forecast_round(self):
-        """INTERIM RULE, REMOVED IN S6 (konsol#348, review of #540 /
-        konsolidat#362, 15 Nov 2026): a forecast (scenario, year) holds at most
-        ONE approved round. Four readers sum a forecast's rounds across
-        ``cycle``: gold_scenario_trial_balance, the cost-allocation pool
-        (cost_allocation_run.py), the ``forecast_input`` Dataset
-        (defaults/dataset.json) and ``hierarchy_query``. Until the
-        latest-estimate read picks the round (S6, FC-2-1), approving a second
-        round would add two forecasts together silently, so the second Approve
-        is refused by name: cancel the approved round first. Draft rounds are
-        not limited, and a cancelled round does not count. A budget pair is not
-        read here: one live Cycle per pair already holds it.
-
-        Read under the pair lock budget_intake.lock_cycles takes (a locking
-        read: under REPEATABLE READ a plain read would miss a round approved
-        while this one waited), so two Approves of one pair serialise and the
-        second sees the first. The warehouse backstop is konsolidat's
-        assert_forecast_one_approved_round_until_s6; both go in S6, with
-        test_budget_cycle_one_approved_round.py."""
-        if self.scenario_type != M.FORECAST:
-            return
-        from konsol import budget_intake
-
-        for c in budget_intake.lock_cycles(self.scenario_id, self.fiscal_year):
-            if c["name"] == self.name or c["docstatus"] != 1:
-                continue
-            frappe.throw(
-                _("Budget Cycle {0} (as of {1}) is already the approved round of {2} {3}. Until the "
-                  "latest-estimate read is built (S6), cancel it before approving another round.").format(
-                    c["name"], c["as_of_date"], self.scenario_id, self.fiscal_year),
-                frappe.ValidationError)
 
     def on_submit(self):
         """Approved: the Cycle and its rows enter the warehouse, after the commit."""
@@ -259,13 +232,15 @@ class BudgetCycle(Document):
         self._resync_entries()
 
     def before_cancel(self):
-        """BUD-9-3: cancel only while the year has an open period, and (S5
-        K16, S5-Q5 a) never while a submitted Approved Budget names this
-        Cycle. Nothing changes before the gates."""
+        """BUD-9-3: cancel only while the year has an open period, and never
+        while a submitted Approved Budget (S5 K16, S5-Q5 a) or a submitted
+        Current Forecast (S6 KA3, S6-Q1 b) names this Cycle. Nothing changes
+        before the gates."""
         from konsol.period_status import assert_year_not_closed
 
         assert_year_not_closed(self.fiscal_year, _("cancel Budget Cycle {0}").format(self.name))
         self._refuse_cancel_under_an_approved_budget()
+        self._refuse_cancel_under_a_current_forecast()
         # After the gates: the installed workflow's docstatus-2 state (#529).
         set_cancelled_state(self)
 
@@ -297,6 +272,38 @@ class BudgetCycle(Document):
         frappe.throw(
             _("Cannot cancel Budget Cycle {0}: {1} names it as the group's approved budget, and the "
               "Consolidated Statement's Budget columns read it. Cancel that Approved Budget first "
+              "(a period of its year must be open), then the Cycle.").format(self.name, named),
+            frappe.ValidationError)
+
+    def _refuse_cancel_under_a_current_forecast(self):
+        """konsol#348 S6 KA3 (S6-Q1 b, Deepak Pai, 17 Nov 2026): a submitted
+        Current Forecast names this Cycle as the round its (scenario, year)
+        reports; every forecast reader joins that declaration. Cancelling the
+        Cycle under it would leave the declaration naming a cancelled round:
+        gold_forecast_current_round drops the pair and the year reads empty
+        with only a WARN to say why. So the cancel is refused here, naming
+        the declaration to cancel first. A draft declaration declares nothing
+        yet and a cancelled one is history: neither counts. Submitted rows
+        only (docstatus 1), in name order.
+
+        A LOCKING read, as the Approved Budget gate above: the declaration's
+        submit locks this Cycle's row (CurrentForecast._cycle_row
+        for_update), so a cancel that waited on that lock reads here after
+        the submit committed; a plain read would use this request's
+        REPEATABLE READ snapshot and miss it. frappe.get_all takes no
+        for_update on v16, hence db.get_values."""
+        live = frappe.db.get_values(
+            "Current Forecast", {"budget_cycle": self.name, "docstatus": 1},
+            ["name", "scenario_id", "fiscal_year"], as_dict=True,
+            order_by="name asc", for_update=True)
+        if not live:
+            return
+        named = ", ".join(
+            _("Current Forecast {0} ({1} FY{2})").format(r.name, r.scenario_id, r.fiscal_year)
+            for r in live)
+        frappe.throw(
+            _("Cannot cancel Budget Cycle {0}: {1} names it as the current forecast round, and every "
+              "forecast read of that scenario and year takes it. Cancel that Current Forecast first "
               "(a period of its year must be open), then the Cycle.").format(self.name, named),
             frappe.ValidationError)
 

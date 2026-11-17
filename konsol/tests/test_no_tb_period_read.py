@@ -322,6 +322,10 @@ def _run_hierarchy(rows, loaded, allowed=None, reply=""):
         return None, None
 
     fake_frappe = types.ModuleType("frappe")
+    # One budget Scenario and no forecast: a budget read that names no
+    # scenario reads the non-forecast ones (konsol#348 S6 review B1).
+    fake_frappe.get_all = lambda doctype, filters=None, **kw: (
+        [] if (filters or {}).get("scenario_type") == "forecast" else ["ZZ_BUD"])
     read_path_stub.install(fake_frappe)
     fake_frappe.log_error = lambda *a, **k: None
     fake_frappe.get_traceback = lambda: ""

@@ -67,3 +67,4 @@ konsol.patches.clear_stale_default_workspace
 konsol.patches.set_cancelled_workflow_state
 konsol.patches.stamp_rate_set_actual
 konsol.patches.retire_variance_favorable_measure
+konsol.patches.repoint_forecast_dataset

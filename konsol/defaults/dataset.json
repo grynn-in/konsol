@@ -71,14 +71,14 @@
   "fact_name": "forecast_input",
   "label": "Forecast",
   "source_type": "Budget",
-  "clickhouse_table": "epm_gold.gold_spread_budget",
-  "dbt_model": "gold_spread_budget",
+  "clickhouse_table": "epm_gold.gold_forecast_current",
+  "dbt_model": "gold_forecast_current",
   "scenario_key": "forecast",
   "has_scenario_id": 1,
   "has_layer": 1,
   "status": "Published",
   "generates_source": 0,
-  "grain": "One row per main_account x fiscal_period x entity x scenario cell x layer (forecast Scenario ids; konsol#106)",
+  "grain": "One row per main_account x fiscal_period x entity x scenario cell x layer, the declared current round only (forecast Scenario ids; konsol#106, konsol#348 S6-Q1 b)",
   "default_measure": "period_amount",
   "fact_measures": [
    {
@@ -87,6 +87,32 @@
    },
    {
     "measure": "annual_amount"
+   }
+  ],
+  "fact_dimensions": [],
+  "reroute_measure": "",
+  "reroute_table": "",
+  "reroute_column": ""
+ },
+ {
+  "doctype": "Dataset",
+  "name": "latest_estimate",
+  "fact_name": "latest_estimate",
+  "label": "Latest Estimate",
+  "source_type": "Budget",
+  "clickhouse_table": "epm_gold.gold_latest_estimate_current",
+  "dbt_model": "gold_latest_estimate_current",
+  "scenario_key": "latest_estimate",
+  "has_scenario_id": 1,
+  "has_layer": 0,
+  "status": "Published",
+  "generates_source": 0,
+  "grain": "One row per main_account x fiscal_period x entity x forecast scenario: actuals to the declared current round's as-of period, its forecast after it (layers summed; konsol#348 S6-Q2 a)",
+  "default_measure": "period_amount",
+  "fact_measures": [
+   {
+    "measure": "period_amount",
+    "required": 1
    }
   ],
   "fact_dimensions": [],

@@ -91,12 +91,14 @@ class _Thrown(Exception):
 
 
 @contextlib.contextmanager
-def _cycle_env(approved_budgets, closed_years=()):
+def _cycle_env(approved_budgets, closed_years=(), current_forecasts=()):
     """The Budget Cycle controller against a stub frappe, installed for the
     whole block (before_cancel imports konsol.period_status at call time).
-    Yields ``(doc, seen)``: ``seen`` records the Approved Budget reads, the period
-    gate calls and set_cancelled_state calls."""
+    Yields ``(doc, seen)``: ``seen`` records the declaration reads (Approved
+    Budget, then Current Forecast; S6 KA3), the period gate calls and
+    set_cancelled_state calls."""
     seen = {"read": [], "gate": [], "cancelled": []}
+    declarations = {"Approved Budget": list(approved_budgets), "Current Forecast": list(current_forecasts)}
 
     class Document:
         def __init__(self, **kw):
@@ -110,8 +112,8 @@ def _cycle_env(approved_budgets, closed_years=()):
 
     def get_values(doctype, filters=None, fieldname=None, as_dict=False, order_by=None, for_update=False, **k):
         seen["read"].append((doctype, dict(filters or {}), list(fieldname or []), order_by, for_update))
-        assert doctype == "Approved Budget" and as_dict
-        rows = [r for r in approved_budgets
+        assert doctype in declarations and as_dict, doctype
+        rows = [r for r in declarations[doctype]
                 if r["budget_cycle"] == filters["budget_cycle"] and r["docstatus"] == filters["docstatus"]]
         return [types.SimpleNamespace(**{f: r.get(f) for f in fieldname}) for r in rows]
 
@@ -170,7 +172,8 @@ def test_cancel_is_refused_by_name_while_a_submitted_approved_budget_names_the_c
     assert CYCLE_NAME in message and "APB-CG-ZZGRP--2027-0f0f0f0f" in message, message
     assert "Approved Budget" in message and "cancel" in message.lower()
     assert seen["cancelled"] == [], "nothing changes before the gate"
-    (doctype, filters, fields, order_by, for_update), = seen["read"]
+    (doctype, filters, fields, order_by, for_update), = seen["read"]   # refused before the S6 read
+    assert doctype == "Approved Budget"
     assert filters == {"budget_cycle": CYCLE_NAME, "docstatus": 1}, "submitted declarations only"
     assert order_by, "a deterministic order (v16 sorts by creation otherwise)"
 
@@ -184,8 +187,9 @@ def test_the_approved_budget_read_is_a_locking_read():
     frappe.get_all takes no for_update, so the read is frappe.db.get_values."""
     with _cycle_env([]) as (doc, seen):
         doc.before_cancel()
-    (_doctype, _filters, _fields, _order_by, for_update), = seen["read"]
-    assert for_update is True, "the cancel gate must read the declarations FOR UPDATE"
+    assert [r[0] for r in seen["read"]] == ["Approved Budget", "Current Forecast"]
+    for _doctype, _filters, _fields, _order_by, for_update in seen["read"]:
+        assert for_update is True, "the cancel gate must read the declarations FOR UPDATE"
 
 
 def test_cancel_is_allowed_once_the_declaration_is_cancelled_or_was_never_submitted():
@@ -203,3 +207,47 @@ def test_the_period_gate_still_runs_first():
             doc.before_cancel()
     assert seen["read"] == [], "the closed year refuses before the Approved Budget read"
     assert seen["cancelled"] == []
+
+
+# --- cancel while a Current Forecast names the Cycle (konsol#348 S6 KA3; S6-Q1 b) ---
+#
+# Deepak Pai, 17 Nov 2026: a submitted Current Forecast names the round every
+# forecast reader takes for its (scenario, year). Cancelling that Cycle under
+# the declaration would leave the declaration pointing at a cancelled round
+# (the warehouse drops the row and WARNs), so the cancel is refused by name:
+# cancel the declaration first. The S5 K16 pattern, both sides locking: the
+# declaration's submit reads the Cycle FOR UPDATE (CurrentForecast._cycle_row),
+# this gate reads the declarations FOR UPDATE.
+
+def _current_forecast(name="CFC-ZZFC-2027-0f0f0f0f", docstatus=1, cycle=CYCLE_NAME):
+    return {"name": name, "docstatus": docstatus, "budget_cycle": cycle, "scenario_id": "ZZFC", "fiscal_year": 2027}
+
+
+def test_cancel_is_refused_by_name_while_a_submitted_current_forecast_names_the_cycle():
+    with _cycle_env([], current_forecasts=[_current_forecast()]) as (doc, seen):
+        with pytest.raises(_Thrown) as info:
+            doc.before_cancel()
+    message = str(info.value)
+    assert CYCLE_NAME in message and "CFC-ZZFC-2027-0f0f0f0f" in message, message
+    assert "Current Forecast" in message and "cancel" in message.lower()
+    assert "ZZFC FY2027" in message, "the sentence names the pair the declaration covers"
+    assert seen["cancelled"] == [], "nothing changes before the gate"
+    doctype, filters, fields, order_by, for_update = seen["read"][1]
+    assert doctype == "Current Forecast"
+    assert filters == {"budget_cycle": CYCLE_NAME, "docstatus": 1}, "submitted declarations only"
+    assert order_by and for_update is True
+
+
+def test_cancel_is_allowed_once_the_current_forecast_is_cancelled_or_was_never_submitted():
+    for declarations in ([], [_current_forecast(docstatus=2)], [_current_forecast(docstatus=0)],
+                         [_current_forecast(cycle="BCYC-ZZFC-2027-other")]):
+        with _cycle_env([], current_forecasts=declarations) as (doc, seen):
+            doc.before_cancel()
+        assert seen["cancelled"] == [doc], declarations
+
+
+def test_the_approved_budget_gate_runs_before_the_current_forecast_read():
+    with _cycle_env([_declaration()], current_forecasts=[_current_forecast()]) as (doc, seen):
+        with pytest.raises(_Thrown, match="Approved Budget"):
+            doc.before_cancel()
+    assert [r[0] for r in seen["read"]] == ["Approved Budget"], "refused before the Current Forecast read"

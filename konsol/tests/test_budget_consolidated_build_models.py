@@ -18,7 +18,10 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD_MODEL_FIXTURE = os.path.join(APP_DIR, "fixtures", "build_model.json")
 DBT_CONFIG_PATH = os.path.join(APP_DIR, "dbt_config.py")
 
-BUDGET_MODELS = ("gold_budget_entity_ownership", "gold_consolidated_budget_tb", "gold_fully_consolidated_budget")
+BUDGET_MODELS = ("gold_budget_entity_ownership", "gold_consolidated_budget_tb", "gold_fully_consolidated_budget",
+                 # konsol#348 S6 KA7 (pair A): the forecast rounds' relations
+                 "gold_forecast_current_round", "gold_forecast_current", "gold_forecast_current_at_hierarchy_node",
+                 "gold_latest_estimate", "gold_latest_estimate_current")
 
 # What konsol writes between the managed markers for the scenarios group once
 # both rows exist: alphabetical within the domain, 6-space indent, one tags line.
@@ -28,7 +31,18 @@ EXPECTED_SCENARIOS_LINES = [
     "        +tags: ['gold', 'domain:scenarios']",
     "      gold_consolidated_budget_tb:",
     "        +tags: ['gold', 'domain:scenarios']",
+    # konsol#348 S6 KA7: the declared current round and its readers
+    "      gold_forecast_current:",
+    "        +tags: ['gold', 'domain:scenarios']",
+    "      gold_forecast_current_at_hierarchy_node:",
+    "        +tags: ['gold', 'domain:scenarios']",
+    "      gold_forecast_current_round:",
+    "        +tags: ['gold', 'domain:scenarios']",
     "      gold_fully_consolidated_budget:",
+    "        +tags: ['gold', 'domain:scenarios']",
+    "      gold_latest_estimate:",
+    "        +tags: ['gold', 'domain:scenarios']",
+    "      gold_latest_estimate_current:",
     "        +tags: ['gold', 'domain:scenarios']",
     "      gold_scenario_trial_balance:",
     "        +tags: ['gold', 'domain:scenarios']",

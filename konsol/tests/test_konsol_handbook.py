@@ -293,6 +293,29 @@ def test_budget_vs_actual_page_covers_favourability_the_worksheet_and_the_entity
     assert "several root consolidation groups" not in text
 
 
+def test_the_shipped_guide_has_the_forecast_rounds_page():
+    """konsol#348 S6 KA10: the forecast rounds page, for everyone, in Concepts.
+    It names a round and its as-of date, the Current Forecast declaration (one
+    per scenario and year; no declaration reads nothing, never the sum or the
+    latest), where the current round is read, the latest estimate, the horizon
+    coverage report, and the cancel order. No issue numbers in user text."""
+    import re
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    page = pages.get("forecast-rounds")
+    assert page is not None, sorted(pages)
+    assert page["audience"] == "Everyone" and page["section"] == "Concepts"
+    text = page["markdown"]
+    for phrase in (
+        "Budget Cycle", "as-of date", "Horizon", "Current Forecast", "one per scenario and fiscal year",
+        "never added together", "reads nothing", "not the latest round",
+        "Consolidated Statement", "cost allocation", "Excel",
+        "latest estimate", "actuals", "Forecast Horizon Coverage", "draft",
+        "Cancel the Current Forecast first",
+    ):
+        assert phrase in text, phrase
+    assert not re.search(r"#\d+", text), "no issue numbers in user text"
+
+
 def test_the_shipped_guide_names_no_customer():
     """Generic examples only (E1, ZZ01, "Group"): the repo is public."""
     text = " ".join(_read(os.path.join(PAGES, f)) for f in os.listdir(PAGES)).lower()
