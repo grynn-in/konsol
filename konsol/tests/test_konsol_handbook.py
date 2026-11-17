@@ -268,7 +268,9 @@ def test_the_shipped_guide_has_the_budget_against_actuals_page():
                  and ("leaves the group" in ln or "exit" in ln.lower())]
     assert exit_line and "today" in exit_line[-1].lower(), exit_line
     assert not re.search(r"#\d+", text), "no issue numbers in user text"
-    assert "blank" in text and " 0 " not in text.replace("P0", ""), "blank, never a zero, for a missing budget"
+    # BUD-4-2 (review D1): a missing budget shows a state, never a blank column or a zero.
+    assert "never a blank column" in text and " 0 " not in text.replace("P0", "")
+    assert "cells are blank" not in text and "columns are blank" not in text
 
 
 def test_the_shipped_guide_names_no_customer():
