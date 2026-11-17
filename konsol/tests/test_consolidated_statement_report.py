@@ -337,6 +337,13 @@ def test_entity_basis_reads_the_entity_budget_and_hands_it_to_columns_rows_and_m
     assert seen["budget"] == _ENTITY_BUDGET_OK
     assert seen["message_budget"] is seen["budget"] and seen["columns_budget"] is seen["budget"]
     assert result == (["cols"], ["rows"], "msg")
+    # The real model shows the budget columns for an ok entity budget, and its
+    # legend names the entity's currency and the before-eliminations limit.
+    ok = dict(_ENTITY_BUDGET_OK, statement={"sections": []})
+    fields = [c["fieldname"] for c in REAL_MODEL.columns(2, budget=ok)]
+    assert {"budget", "variance_to_budget", "favourability", "budget_ytd"} <= set(fields)
+    text = REAL_MODEL._budget_text(ok)
+    assert "Entity budget for ZZA in EUR" in text and "before intercompany eliminations" in text
 
 
 def _choose_group(*a):

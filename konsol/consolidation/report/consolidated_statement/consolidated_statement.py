@@ -12,8 +12,12 @@ prior year that is not available leaves the column blank and the report
 message says why — it never fails the report.
 
 The Budget columns (konsol#348 S5 K7) read the approved budget of the
-statement's own group and year (``statement_api.budget_payload``), on the
-Group basis only (the entity budget is S6). A budget that is not ok (no
+statement's own group and year (``statement_api.budget_payload``). On the
+Entity basis (S6 KB9; S6-Q6 a) they read the entity budget
+(``statement_api.entity_budget_payload``): the entity's rows of its root
+group's Approved Budget, in the entity's functional currency, before
+eliminations, with the plug synthesised; an entity in several root groups
+is the ``choose_group`` state, in none ``no_group``. A budget that is not ok (no
 approved budget, a cancelled Cycle, changed inputs, a missing layer, no
 rows, a refused or faulty read) renders no budget column at all and the
 message says why (BUD-4-2, Deepak Pai, 7 Nov 2026: a visible state, never a
@@ -43,7 +47,7 @@ def execute(filters=None):
         payload = statement_api.get_entity_statement(filters.fiscal_year, filters.fiscal_period, entity)
         prior = _prior_year(filters.fiscal_year, filters.fiscal_period, None, entity=entity)
         drill_group = None
-        budget = None
+        budget = _entity_budget(filters.fiscal_year, filters.fiscal_period, payload, entity)
     else:
         group = _group_code(filters.get("consolidation_group"))
         payload = statement_api.get_statement(filters.fiscal_year, filters.fiscal_period, group)
@@ -108,11 +112,30 @@ def _budget(fiscal_year, fiscal_period, payload):
     Nothing commits here; the request does."""
     if payload.get("state") != "ok" or not payload.get("consolidation_group"):
         return None
+    return _guarded_budget(statement_api.budget_payload, (fiscal_year, fiscal_period, payload["consolidation_group"]),
+                           "Consolidated Statement budget read")
+
+
+def _entity_budget(fiscal_year, fiscal_period, payload, entity):
+    """The entity budget's payload for the Entity basis (konsol#348 S6 KB9;
+    S6-Q6 a), ``_budget``'s pattern: ``None`` when the entity statement is
+    not ok; a refusal or a fault becomes a non-ok budget naming it, a fault
+    also an Error Log; never a failed statement. Its states (``no_group``,
+    ``choose_group``, the approved-budget states) render no budget column."""
+    if payload.get("state") != "ok":
+        return None
+    return _guarded_budget(statement_api.entity_budget_payload, (fiscal_year, fiscal_period, entity),
+                           "Consolidated Statement entity budget read")
+
+
+def _guarded_budget(read, args, title):
+    """``read(*args)``, a refusal or fault turned into a non-ok budget
+    payload (``_budget``'s docstring)."""
     try:
-        return statement_api.budget_payload(fiscal_year, fiscal_period, payload["consolidation_group"])
+        return read(*args)
     except frappe.ValidationError as e:
         frappe.clear_last_message()
         return {"state": "error", "message": str(e), "statement": None, "meta": {}}
     except Exception as e:  # noqa: BLE001 — visible in the legend, never a failed statement
-        frappe.log_error(title="Consolidated Statement budget read", message=frappe.get_traceback())
+        frappe.log_error(title=title, message=frappe.get_traceback())
         return {"state": "error", "message": f"{type(e).__name__}: {e}", "statement": None, "meta": {}}
