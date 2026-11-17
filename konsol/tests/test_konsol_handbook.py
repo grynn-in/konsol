@@ -264,7 +264,8 @@ def test_the_shipped_guide_has_the_budget_against_actuals_page():
         "Cancel the Approved Budget first",
     ):
         assert phrase in text, phrase
-    exit_line = [ln for ln in text.splitlines() if "leaves the group" in ln or "exits" in ln.lower()]
+    exit_line = [ln for ln in text.splitlines() if not ln.startswith("#")
+                 and ("leaves the group" in ln or "exit" in ln.lower())]
     assert exit_line and "today" in exit_line[-1].lower(), exit_line
     assert not re.search(r"#\d+", text), "no issue numbers in user text"
     assert "blank" in text and " 0 " not in text.replace("P0", ""), "blank, never a zero, for a missing budget"
