@@ -237,16 +237,31 @@ _FACT_FIELDS = [
 #: scenarios (konsol#214).
 _BUDGET_SCENARIO_COLUMN = {"variance_analysis": "budget_scenario_id"}
 
-#: Datasets over the budget fact, which also holds every approved round of a
-#: forecast year side by side. A read refuses a forecast scenario id and,
-#: naming none, reads the non-forecast scenarios only: unfiltered, it added
-#: the rounds to the budget (konsol#348 S6-Q1 b, review B1).
-_BUDGET_EXCLUDES_FORECAST = {"budget_input"}
+#: Warehouse tables, keyed by the table a read resolves to, never the
+#: Dataset name: Datasets belong to the site (konsol#230), so a site Dataset
+#: under any name reads these tables too.
+#:
+#: The budget fact also holds every approved round of a forecast year side
+#: by side. A read refuses a forecast scenario id and, naming none, reads the
+#: non-forecast scenarios only: unfiltered, it added the rounds to the budget
+#: (konsol#348 S6-Q1 b, review B1).
+_BUDGET_EXCLUDES_FORECAST = {"epm_gold.gold_spread_budget"}
 
-#: Datasets over the current-round views, which hold nothing for a forecast
-#: (scenario, year) with no submitted Current Forecast. A read names the
-#: declaration it lacks rather than read 0 (konsol#348 S6 review m2).
-_NEEDS_CURRENT_FORECAST = {"forecast_input", "latest_estimate"}
+#: The current-round views hold nothing for a forecast (scenario, year) with
+#: no submitted Current Forecast. A read names the declaration it lacks
+#: rather than read 0 (konsol#348 S6 review m2).
+_NEEDS_CURRENT_FORECAST = {
+    "epm_gold.gold_forecast_current",
+    "epm_gold.gold_latest_estimate_current",
+}
+
+
+def _read_table(fact, measure):
+    """The warehouse table a read of ``measure`` from ``fact`` resolves to:
+    the reroute table when the measure is rerouted, else the fact's own."""
+    if fact.reroute_measure and measure == fact.reroute_measure and fact.reroute_table:
+        return fact.reroute_table
+    return fact.clickhouse_table
 
 
 def _get_fact_by_scenario(scenario):
@@ -805,7 +820,7 @@ def _batch_query_clickhouse(requests_list):
                 err = scenario_id_error(
                     scenario_id, has_column=fact.has_scenario_id,
                     known=known_scenarios, label=f"Dataset '{fact.fact_name}'")
-                if not err and fact.fact_name in _BUDGET_EXCLUDES_FORECAST:
+                if not err and _read_table(fact, req["measure"]) in _BUDGET_EXCLUDES_FORECAST:
                     err = forecast_on_budget_read_error(scenario_id, forecast_ids)
                 if err:
                     errors[idx] = err
@@ -838,7 +853,7 @@ def _batch_query_clickhouse(requests_list):
                     errors[idx] = err
                     continue
         fact = resolve_fact(fact_key)
-        if fact and fact.fact_name in _NEEDS_CURRENT_FORECAST and (
+        if fact and _read_table(fact, req["measure"]) in _NEEDS_CURRENT_FORECAST and (
                 not scenario_id or _SAFE_SCENARIO_ID.match(scenario_id)):
             # The declared current round, or a refusal that names the missing
             # Current Forecast. (An unsafe id is refused by its format below.)
@@ -895,15 +910,11 @@ def _batch_query_clickhouse(requests_list):
                 errors[idx] = f"No Dataset for '{fact_key}'"
             continue
 
-        table = fact.clickhouse_table
-        query_measure = measure
-
         # Reroute measures that live in a different table/column
-        if fact.reroute_measure and measure == fact.reroute_measure:
-            if fact.reroute_table:
-                table = fact.reroute_table
-            if fact.reroute_column:
-                query_measure = fact.reroute_column
+        table = _read_table(fact, measure)
+        query_measure = measure
+        if fact.reroute_measure and measure == fact.reroute_measure and fact.reroute_column:
+            query_measure = fact.reroute_column
 
         # How this measure combines across periods, as it declares it. A
         # rerouted cumulative measure is the case that forced this: summing
@@ -993,7 +1004,7 @@ def _batch_query_clickhouse(requests_list):
             params["param_sid"] = scenario_id
             column = budget_column or "scenario_id"
             scenario_id_clause = f" AND {column} = {{sid:String}}"
-        elif fact.fact_name in _BUDGET_EXCLUDES_FORECAST:
+        elif table in _BUDGET_EXCLUDES_FORECAST:
             # No scenario named: every non-forecast scenario, never a
             # forecast's rounds (konsol#348 S6 review B1).
             ids, err = budget_scenarios_excluding_forecasts(
