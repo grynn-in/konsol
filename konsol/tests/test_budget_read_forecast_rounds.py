@@ -74,6 +74,11 @@ FACTS = [
     _fact("forecast_input", "forecast", "epm_gold.gold_forecast_current"),
     _fact("latest_estimate", "latest_estimate",
           "epm_gold.gold_latest_estimate_current", has_layer=0),
+    # Site Datasets under other names over the same tables (konsol#230): the
+    # guards follow the table a read resolves to, not the Dataset name.
+    _fact("zz_budget", "zz_budget", "epm_gold.gold_spread_budget"),
+    _fact("zz_forecast", "zz_forecast", "epm_gold.gold_forecast_current"),
+    _fact("zz_le", "zz_le", "epm_gold.gold_latest_estimate_current", has_layer=0),
 ]
 
 
@@ -362,3 +367,41 @@ def test_forecast_read_without_scenario_and_two_declarations_is_refused():
         assert result["errors"] == [
             "Several forecast scenarios have a submitted Current Forecast for "
             "FY2026 (ZZ_FC, ZZ_FC2); name one with scenario_id."], base
+
+
+# ── The guards follow the warehouse table, not the Dataset name ────────────
+#
+# Datasets belong to the site (konsol#230). A site Dataset named otherwise
+# over gold_spread_budget summed forecast rounds, and one over the
+# current-round views read 0 for a year with no Current Forecast.
+
+def test_renamed_budget_dataset_refuses_a_forecast_scenario_id():
+    result, queries, _ = flat([{"fact": "zz_budget", "scenario_id": "ZZ_FC"}])
+    assert queries == []
+    assert result["errors"] == [FORECAST_ON_BUDGET]
+    assert result["values"] == [None]
+
+
+def test_renamed_budget_dataset_without_scenario_excludes_forecasts():
+    result, queries, _ = flat([{"fact": "zz_budget"}])
+    assert not result.get("errors")
+    assert result["values"] == [-50.0]
+    (sql,) = queries
+    assert "AND scenario_id IN (" in sql
+
+
+def test_renamed_forecast_dataset_with_no_declaration_is_refused():
+    for fact in ("zz_forecast", "zz_le"):
+        result, queries, _ = flat([{"fact": fact, "scenario_id": "ZZ_FC", "year": 2027}])
+        assert queries == [], fact
+        assert result["errors"] == [_no_declaration("ZZ_FC", 2027)], fact
+        result, queries, _ = flat([{"fact": fact, "year": 2027}])
+        assert queries == [], fact
+        assert result["errors"] == [_NONE_DECLARED], fact
+
+
+def test_renamed_forecast_dataset_reads_the_declared_round():
+    for fact in ("zz_forecast", "zz_le"):
+        result, queries, _ = flat([{"fact": fact}])
+        assert not result.get("errors"), (fact, result)
+        assert result["values"] == [-110.0], fact
