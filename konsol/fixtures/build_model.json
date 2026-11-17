@@ -133,6 +133,24 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_forecast_current",
+  "model_name": "gold_forecast_current",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_forecast_current_at_hierarchy_node",
+  "model_name": "gold_forecast_current_at_hierarchy_node",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_forecast_current_round",
+  "model_name": "gold_forecast_current_round",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_fully_consolidated_budget",
   "model_name": "gold_fully_consolidated_budget",
   "build_domain": "scenarios"
@@ -172,6 +190,18 @@
   "name": "gold_ic_unmatched",
   "model_name": "gold_ic_unmatched",
   "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_latest_estimate",
+  "model_name": "gold_latest_estimate",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_latest_estimate_current",
+  "model_name": "gold_latest_estimate_current",
+  "build_domain": "scenarios"
  },
  {
   "doctype": "Build Model",
