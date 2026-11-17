@@ -12,8 +12,9 @@ Datasets and Measures are site-owned and seeded create-if-missing
 patch removes the ``forecast_error_pct`` row from the two shipped accuracy
 Datasets, except where the site made it the Dataset's default measure (the
 read would then fail): that Dataset is left alone and named in the migrate
-log. It then deletes the Measure only if no Dataset names it any more and it
-still holds the shipped expression; a site's own use of the name is kept.
+log. It then deletes the Measure only if no Dataset names it any more. A site
+that redefined the Measure (its expression is not the shipped one) is left
+alone entirely: the Datasets keep the row and the Measure stays.
 
 Idempotent: once removed, there is nothing left to remove.
 """
@@ -27,6 +28,13 @@ DATASETS = ("forecast_accuracy", "forecast_accuracy_group")
 
 
 def execute():
+    expression = frappe.db.get_value("Measure", MEASURE, "expression")
+    if expression is not None and expression != SHIPPED_EXPRESSION:
+        # The site redefined the Measure: its reads through the Datasets are
+        # its own, so neither the Datasets nor the Measure are touched.
+        print(f"konsol#561: Measure {MEASURE} is the site's own ({expression}); left as the "
+              "site set it, on every Dataset that names it.")
+        return
     for name in DATASETS:
         _retire_from_dataset(name)
     _retire_measure()
