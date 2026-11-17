@@ -1,0 +1,192 @@
+{
+ "name": "Approved Budget",
+ "doctype": "DocType",
+ "module": "EPM",
+ "issingle": 0,
+ "istable": 0,
+ "is_submittable": 1,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "",
+ "title_field": "title",
+ "search_fields": "consolidation_group,fiscal_year,budget_cycle",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "modified": "2026-11-17 12:00:00.000000",
+ "fields": [
+  {
+   "fieldname": "approved_budget_tab",
+   "fieldtype": "Tab Break",
+   "label": "Approved Budget"
+  },
+  {
+   "fieldname": "scope_section",
+   "fieldtype": "Section Break",
+   "label": "Scope"
+  },
+  {
+   "fieldname": "consolidation_group",
+   "fieldtype": "Link",
+   "label": "Consolidation Group",
+   "options": "Consolidation Group",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The root consolidation group whose budget this declares. A member row of a group is refused: the Consolidated Statement reads the root group's consolidated budget."
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Int",
+   "label": "Fiscal Year",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The fiscal year this declaration covers. It must be the Budget Cycle's year; one live declaration (draft or approved) per group and year."
+  },
+  {
+   "fieldname": "scope_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Set on save: the group's code and the year."
+  },
+  {
+   "fieldname": "budget_section",
+   "fieldtype": "Section Break",
+   "label": "Budget"
+  },
+  {
+   "fieldname": "budget_cycle",
+   "fieldtype": "Link",
+   "label": "Budget Cycle",
+   "options": "Budget Cycle",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The approved Budget Cycle whose figures are the group's budget for the year. It must be approved (not a draft, not cancelled), of a budget scenario (a forecast Cycle is refused: the latest-estimate read is a later step) and of this fiscal year."
+  },
+  {
+   "fieldname": "scenario_id",
+   "fieldtype": "Data",
+   "label": "Scenario",
+   "fetch_from": "budget_cycle.scenario_id",
+   "read_only": 1,
+   "description": "Copied from the Budget Cycle."
+  },
+  {
+   "fieldname": "rate_set",
+   "fieldtype": "Data",
+   "label": "Rate Set",
+   "fetch_from": "budget_cycle.rate_set",
+   "read_only": 1,
+   "description": "Copied from the Budget Cycle: the Rate Set its budget is translated at."
+  },
+  {
+   "fieldname": "budget_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "layer_policy",
+   "fieldtype": "Select",
+   "label": "Layer Policy",
+   "options": "All layers\nOne layer",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Which Budget Layers the approved budget is the sum of: every layer of the Cycle, or one named layer (for example a board layer). Declared here; nothing defaults it."
+  },
+  {
+   "fieldname": "layer",
+   "fieldtype": "Link",
+   "label": "Layer",
+   "options": "Budget Layer",
+   "depends_on": "eval:doc.layer_policy=='One layer'",
+   "mandatory_depends_on": "eval:doc.layer_policy=='One layer'",
+   "description": "The one Budget Layer the approved budget reads, when the policy is One layer. Left blank, and refused if set, with All layers."
+  },
+  {
+   "fieldname": "approval_section",
+   "fieldtype": "Section Break",
+   "label": "Approval"
+  },
+  {
+   "fieldname": "input_fingerprint",
+   "fieldtype": "Data",
+   "label": "Input Fingerprint",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Copied from the Budget Cycle at submit: the hash of the inputs the Cycle approved. The Consolidated Statement recomputes it when it reads the budget and reports a change since this approval; it decides nothing (BUD-11-3)."
+  },
+  {
+   "fieldname": "approval_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes",
+   "description": "Why this Cycle and layer policy are the approved budget. Optional; the approver and date are the document's own."
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "options": "Approved Budget",
+   "read_only": 1,
+   "no_copy": 1,
+   "print_hide": 1,
+   "search_index": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1
+  }
+ ]
+}
