@@ -138,3 +138,74 @@ def test_patch_is_registered():
     with open(PATCHES_TXT, encoding="utf-8") as fh:
         lines = [l.strip() for l in fh]
     assert "konsol.patches.repoint_forecast_dataset" in lines
+
+
+# --- pair C (KC1): consolidated budget and forecast accuracy ---------------
+#
+# konsol#348 S6-Q7 (a), taken under the standing rule: a `consolidated_budget`
+# Dataset over konsolidat's `gold_consolidated_budget_fact` (WC1: the fully
+# consolidated budget rolled to the group slot, the current round only for a
+# forecast scenario), with scenario_id and layer arguments. FC-4-2 (13 Nov
+# 2026): the accuracy model in entity currency (WC2) and in group currency
+# (WC3), each a Dataset with the error measures. All seeded create-if-missing
+# (konsol#230): `install_defaults` runs on every migrate and inserts a row a
+# site lacks, so existing sites receive them with no patch.
+
+MEASURES = os.path.join(APP_DIR, "defaults", "measure.json")
+ACCURACY_MEASURES = ["forecast_amount", "actual_amount", "forecast_error",
+                     "forecast_abs_error", "forecast_error_pct"]
+
+
+def _measures():
+    with open(MEASURES, encoding="utf-8") as fh:
+        return {r["name"]: r for r in json.load(fh)}
+
+
+def test_consolidated_budget_dataset_is_seeded():
+    cb = _dataset("consolidated_budget")
+    assert cb["doctype"] == "Dataset"
+    assert cb["name"] == cb["fact_name"] == "consolidated_budget"
+    assert cb["clickhouse_table"] == "epm_gold.gold_consolidated_budget_fact"
+    assert cb["dbt_model"] == "gold_consolidated_budget_fact"
+    assert cb["has_scenario_id"] == 1
+    assert cb["has_layer"] == 1
+    assert cb["default_measure"] == "consolidated_amount"
+    assert cb["status"] == "Published"
+    assert not cb.get("generates_source")
+    assert [m["measure"] for m in cb["fact_measures"]] == ["consolidated_amount"]
+
+
+def test_forecast_accuracy_datasets_are_seeded():
+    for key, table in (("forecast_accuracy", "gold_forecast_accuracy"),
+                       ("forecast_accuracy_group", "gold_forecast_accuracy_group")):
+        ds = _dataset(key)
+        assert ds["name"] == ds["fact_name"] == key
+        assert ds["clickhouse_table"] == f"epm_gold.{table}", key
+        assert ds["dbt_model"] == table, key
+        assert ds["has_scenario_id"] == 1, key
+        assert ds["has_layer"] == 0, key  # layers summed in the model
+        assert ds["default_measure"] == "forecast_error", key
+        assert ds["status"] == "Published", key
+        assert not ds.get("generates_source"), key
+        assert [m["measure"] for m in ds["fact_measures"]] == ACCURACY_MEASURES, key
+
+
+def test_accuracy_measures_are_seeded_with_their_aggregation():
+    measures = _measures()
+    for name in ("forecast_amount", "forecast_error", "forecast_abs_error"):
+        m = measures[name]
+        assert m["doctype"] == "Measure" and m["measure_name"] == name
+        assert m["expression"] == f"sum({name})" and m["cube_type"] == "sum", m
+        assert m["status"] == "Published"
+    pct = measures["forecast_error_pct"]
+    assert pct["expression"] == "avg(forecast_error_pct)" and pct["cube_type"] == "avg", pct
+
+
+def test_every_seeded_dataset_measure_is_a_seeded_measure():
+    """A Dataset row naming a Measure the seed lacks inserts a link to nothing
+    on a fresh site (defaults.ORDER seeds Measures first for this reason)."""
+    measures = _measures()
+    with open(DATASETS, encoding="utf-8") as fh:
+        for row in json.load(fh):
+            for m in row.get("fact_measures", []):
+                assert m["measure"] in measures, (row["name"], m["measure"])
