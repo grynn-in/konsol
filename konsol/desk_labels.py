@@ -54,6 +54,8 @@ LABELS = {
     "Budget Annual Input": "All Annual Inputs",
     # konsol#348 S5 K13: the group's declared budget per year (BUD-4-2)
     "Approved Budget": "Approved Budgets",
+    # konsol#348 S6 KA1 (S6-Q1 b): the forecast scenario's declared current round per year
+    "Current Forecast": "Current Forecasts",
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
     "Budget Layer": "Budget Layers",
