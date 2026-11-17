@@ -384,11 +384,11 @@ _D = datetime.date
 
 
 def _row(name, effective, end=None, docstatus=1, group="ZZG", entity="ZZ01",
-         owner="CG-ZZG-", owner_label="ZZG", pct=80.0, supersedes=None):
+         owner="CG-ZZG-", owner_label="ZZG", pct=80.0, supersedes=None, method="full"):
     return types.SimpleNamespace(name=name, consolidation_group=group, data_area_id=entity,
                                  owner_node=owner, owner_label=owner_label, ownership_pct=pct,
                                  effective_date=effective, end_date=end, docstatus=docstatus,
-                                 supersedes=supersedes)
+                                 supersedes=supersedes, consolidation_method=method)
 
 
 class _Stored:
@@ -426,6 +426,9 @@ def _site(rows, nodes=None):
             assert nodes is not None, "a tree is needed to read the nodes"
             assert not filters, filters
             return [types.SimpleNamespace(**vars(n)) for n in nodes.values()]
+        if doctype == "Business Disposal":
+            # the exit rule's read (konsolidat#335 F6): these sites record no sale
+            return []
         out = []
         for r in rows:
             ok = True
@@ -773,7 +776,7 @@ def _declared(**over):
 
 def _cg(name, group, entity, parent):
     return types.SimpleNamespace(name=name, consolidation_group=group, data_area_id=entity,
-                                 parent_consolidation_group=parent)
+                                 parent_consolidation_group=parent, exit_gain_loss_account="7900")
 
 
 #: Two hierarchies: ZZG (root group node; entity nodes ZZ01, ZZ02; sub-group
@@ -1508,3 +1511,179 @@ def test_resync_closure_calls_the_groups_resync_staging():
             else:
                 sys.modules[n] = old
     assert ran == ["resync"]
+
+
+# --- an exit needs a declared account (konsolidat#335, K2) -------------------
+
+def _exit_doc(account, held=(), sales=(), calls=None, **changes):
+    """A period validated against a root whose exit account is ``account``.
+    ``held`` is what the read of the other submitted periods of the node
+    answers, ``sales`` the read of the submitted Business Disposals; each
+    ``get_all`` call is appended to ``calls`` as (doctype, filters)."""
+    module = _load(_no_flags())
+    module.frappe.db.get_value = lambda *a, **k: types.SimpleNamespace(consolidation_group="ZZROOT", exit_gain_loss_account=account)
+    module.frappe.db.exists = lambda *a, **k: pytest.fail("the exit rule reads dates, not supersedes")
+
+    def get_all(doctype, filters=None, fields=None, **k):
+        if calls is not None:
+            calls.append((doctype, filters))
+        rows = {"Ownership Period": held, "Business Disposal": sales}[doctype]
+        return [types.SimpleNamespace(**r) for r in rows]
+
+    module.frappe.get_all = get_all
+    module.node_root = lambda node: "ZZROOT"
+    doc = _doc(module, **{"end_date": "2025-06-30", **changes})
+    doc._node = lambda: types.SimpleNamespace(name="CG-ZZG-ZZ01")
+    return doc
+
+
+def _held(start, end=None, method="full"):
+    return dict(effective_date=start, end_date=end, consolidation_method=method)
+
+
+def test_an_end_nothing_follows_without_a_declared_exit_account_is_refused_by_the_sentence():
+    with pytest.raises(_Refused) as e:
+        _exit_doc("")._validate_exit_account()
+    msg = str(e.value)
+    assert "Exit Gain/Loss Account" in msg and "ZZROOT" in msg
+    assert "leaves the group on 2025-06-30 without a Business Disposal" in msg, msg
+    with pytest.raises(_Refused):
+        _exit_doc(None, consolidation_method="equity")._validate_exit_account()
+    with pytest.raises(_Refused):
+        _exit_doc(None, consolidation_method="proportional")._validate_exit_account()
+
+
+def test_a_declared_exit_account_or_an_open_ended_period_passes():
+    _exit_doc("7900")._validate_exit_account()
+    _exit_doc("", end_date=None)._validate_exit_account()
+
+
+def test_the_node_held_the_day_after_by_any_submitted_period_passes():
+    """(a) an owner transfer, (b) a contiguous period without supersedes,
+    (c) another owner's link running on, (f) a successor whatever its name:
+    the read is the node's other submitted periods, never ``supersedes``."""
+    calls = []
+    _exit_doc("", held=[_held("2025-07-01")], calls=calls)._validate_exit_account()
+    _exit_doc("", held=[_held("2023-01-01", method="equity")])._validate_exit_account()
+    doctype, filters = calls[0]
+    assert doctype == "Ownership Period"
+    assert filters["consolidation_group"] == "ZZG" and filters["data_area_id"] == "ZZ01"
+    assert filters["docstatus"] == 1 and filters["name"] == ["!=", "OP-ZZG-ZZ01-2024-01-01"]
+    assert "supersedes" not in filters
+
+
+def test_a_link_with_method_none_ending_passes():
+    """(d) nothing was consolidated through it, so nothing is derecognised."""
+    _exit_doc("", consolidation_method="none")._validate_exit_account()
+
+
+def test_a_successor_with_method_none_or_after_a_gap_is_refused():
+    """(e) deemed loss of control is an exit in the warehouse; so is a gap."""
+    with pytest.raises(_Refused):
+        _exit_doc("", held=[_held("2025-07-01", method="none")])._validate_exit_account()
+    with pytest.raises(_Refused):
+        _exit_doc("", held=[_held("2025-07-02")])._validate_exit_account()
+
+
+def test_is_disposal_exempts_only_with_a_full_business_disposal_on_the_end():
+    """(g) the warehouse needs is_disposal AND a submitted full Business
+    Disposal of the entity dated on the end."""
+    with pytest.raises(_Refused):
+        _exit_doc("", is_disposal=1)._validate_exit_account()
+    with pytest.raises(_Refused):
+        _exit_doc("", is_disposal=1,
+                  sales=[dict(disposal_date="2025-06-30", retained_interest_pct=25.0)])._validate_exit_account()
+    calls = []
+    _exit_doc("", is_disposal=1, calls=calls,
+              sales=[dict(disposal_date="2025-06-30", retained_interest_pct=0.0)])._validate_exit_account()
+    doctype, filters = calls[1]
+    assert doctype == "Business Disposal"
+    assert filters["consolidation_group"] == "ZZG" and filters["disposed_entity"] == "ZZ01"
+    assert filters["docstatus"] == 1
+
+
+def test_validate_calls_the_exit_account_rule():
+    assert "_validate_exit_account()" in _method_body(_src(), "validate")
+
+
+# --- a re-entry is an acquisition (konsolidat#335 review F4, X14) ------------
+
+def _reentry_doc(held=(), deals=(), sales=(), calls=None, **changes):
+    """A period starting 2026-01-01 validated against the node's other
+    submitted periods (``held``), its submitted Business Combinations
+    (``deals``: acquisition dates) and Business Disposals (``sales``)."""
+    module = _load(_no_flags())
+
+    def get_all(doctype, filters=None, fields=None, **k):
+        if calls is not None:
+            calls.append((doctype, filters))
+        rows = {"Ownership Period": held, "Business Disposal": sales,
+                "Business Combination": [dict(acquisition_date=d) for d in deals]}[doctype]
+        return [types.SimpleNamespace(**r) for r in rows]
+
+    module.frappe.get_all = get_all
+    # the declared Regular period of a date: here one per calendar month
+    module._regular_period_of = lambda d: None if d is None else f"FY{d.year} P{d.month}"
+    return _doc(module, **{"effective_date": "2026-01-01", "end_date": None, **changes})
+
+
+def _gone(end="2025-06-30"):
+    return dict(effective_date="2023-01-01", end_date=end, consolidation_method="full")
+
+
+def test_a_re_entry_after_an_exit_without_a_combination_is_refused_by_the_sentence():
+    with pytest.raises(_Refused) as e:
+        _reentry_doc(held=[_gone()])._validate_reentry()
+    msg = str(e.value)
+    assert "left the group on 2025-06-30 without a Business Disposal" in msg
+    assert "Business Combination dated 2026-01-01" in msg
+
+
+def test_a_re_entry_with_a_combination_on_its_start_passes():
+    calls = []
+    _reentry_doc(held=[_gone()], deals=["2026-01-01"], calls=calls)._validate_reentry()
+    assert [c for c in calls if c[0] == "Business Combination"], calls
+
+
+def test_a_contiguous_successor_or_a_first_entry_needs_no_combination():
+    _reentry_doc(held=[_gone()], effective_date="2025-07-01")._validate_reentry()
+    _reentry_doc()._validate_reentry()
+
+
+def test_a_re_entry_after_a_full_disposal_is_refused_too():
+    held = [dict(_gone(), is_disposal=1)]
+    sales = [dict(disposal_date="2025-06-30", retained_interest_pct=0.0)]
+    with pytest.raises(_Refused) as e:
+        _reentry_doc(held=held, sales=sales)._validate_reentry()
+    assert "Business Disposal" in str(e.value) and "Business Combination dated 2026-01-01" in str(e.value)
+
+
+def test_a_group_node_and_a_non_live_period_are_not_checked():
+    _reentry_doc(held=[_gone()], data_area_id=None)._validate_reentry()
+    _reentry_doc(held=[_gone()], consolidation_method="none")._validate_reentry()
+
+
+# --- a gap inside one declared period (konsolidat#335 F1, X18) ---------------
+
+def test_x18_a_gap_inside_one_period_is_refused_even_with_a_combination():
+    held = [dict(_gone(end="2026-03-10"))]
+    for deals in ([], ["2026-03-20"]):
+        with pytest.raises(_Refused) as e:
+            _reentry_doc(held=held, deals=deals, effective_date="2026-03-20")._validate_reentry()
+        msg = str(e.value)
+        assert "ends on 2026-03-10 and starts again on 2026-03-20 inside the same period FY2026 P3" in msg
+        assert "the warehouse consolidates by period" in msg
+        assert "start 2026-03-11" in msg
+
+
+def test_x18_a_start_in_a_later_period_still_needs_the_combination_not_this_rule():
+    held = [dict(_gone(end="2026-03-10"))]
+    with pytest.raises(_Refused) as e:
+        _reentry_doc(held=held, effective_date="2026-04-02")._validate_reentry()
+    assert "needs a Business Combination" in str(e.value)
+    _reentry_doc(held=held, deals=["2026-04-02"], effective_date="2026-04-02")._validate_reentry()
+
+
+def test_x18_the_controller_documents_why_it_asks_for_the_exit_account_always():
+    doc = _method_body(_src(), "_validate_exit_account")
+    assert "cannot see carried balances" in doc and "#358" in doc

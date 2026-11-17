@@ -33,8 +33,9 @@ from frappe.model.document import Document
 from frappe.utils import getdate
 
 from konsol.clickhouse import after_commit_once, sync_doctype_after_commit
+from konsol.consolidation_policy_model import LABELS, required_accounts
 from konsol.fiscal_structure_model import MAX_DATE, MIN_DATE
-from konsol.ownership_graph_model import ownership_edges, path_between
+from konsol.ownership_graph_model import end_is_exit, exit_and_return_in_one_period, ownership_edges, path_between, reentry_after_exit
 from konsol.period_status import assert_open_between, first_period_affected
 
 # ClickHouse's Date type holds 1970-01-01 .. 2149-06-06 and CLAMPS anything
@@ -79,6 +80,20 @@ def _deal_value(field, value):
 def _pct(value):
     """A percentage as typed: 80 for 80.0, 10.5 for 10.5."""
     return f"{float(value or 0):g}"
+
+
+def _regular_period_of(date):
+    """The code ("FY2026 P3") of the declared Regular period holding
+    ``date``, or None: the periods the warehouse judges ownership by."""
+    if date is None:
+        return None
+    rows = frappe.db.sql(
+        "SELECT y.fiscal_year, p.fiscal_period FROM `tabEPM Fiscal Year Period` p "
+        "JOIN `tabEPM Fiscal Year` y ON y.name = p.parent "
+        "WHERE p.parentfield = 'periods' AND p.period_type = 'Regular' "
+        "AND p.start_date <= %s AND p.end_date >= %s ORDER BY p.start_date LIMIT 1",
+        (date, date))
+    return f"FY{rows[0][0]} P{rows[0][1]}" if rows else None
 
 
 def _date_or_none(value):
@@ -261,6 +276,111 @@ class OwnershipPeriod(Document):
         self._validate_dates_representable()
         self._check_no_gaps_or_overlaps()
         self._check_total_issued()
+        self._validate_exit_account()
+
+    def before_submit(self):
+        self._validate_reentry()
+
+    def _validate_reentry(self):
+        """konsolidat#335 F4: a live period that starts after the entity left
+        the group (an exit, or a full disposal) is an acquisition (IFRS 3);
+        nothing else brings its balances back. Refuse it unless a submitted
+        Business Combination of the entity is dated on its start. A group
+        node holds no entity and is not checked. The rule is
+        ``ownership_graph_model.reentry_after_exit``."""
+        start = _date_or_none(self.get("effective_date"))
+        entity = self.get("data_area_id") or None
+        if start is None or not entity:
+            return
+        others = frappe.get_all(
+            "Ownership Period",
+            filters={"consolidation_group": self.consolidation_group, "data_area_id": entity,
+                     "docstatus": 1, "name": ["!=", self.get("name") or ""]},
+            fields=["effective_date", "end_date", "consolidation_method", "is_disposal"])
+        disposals = frappe.get_all(
+            "Business Disposal",
+            filters={"consolidation_group": self.consolidation_group, "disposed_entity": entity, "docstatus": 1},
+            fields=["disposal_date", "retained_interest_pct"])
+        deals = frappe.get_all(
+            "Business Combination",
+            filters={"consolidation_group": self.consolidation_group, "acquired_entity": entity, "docstatus": 1},
+            fields=["acquisition_date"])
+        new = {"effective_date": start, "consolidation_method": self.get("consolidation_method")}
+        rows = [{"effective_date": _date_or_none(r.effective_date), "end_date": _date_or_none(r.end_date),
+                 "consolidation_method": r.consolidation_method, "is_disposal": getattr(r, "is_disposal", 0)}
+                for r in others]
+        sales = [{"disposal_date": _date_or_none(r.disposal_date), "retained_interest_pct": r.retained_interest_pct}
+                 for r in disposals]
+        same = exit_and_return_in_one_period(new, rows, sales, _regular_period_of)
+        if same is not None:
+            end, code = same
+            frappe.throw(
+                f"Ownership of `{self._owned_label()}` ends on {end.isoformat()} and starts again on "
+                f"{start.isoformat()} inside the same period {code}; the warehouse consolidates by period, "
+                f"so it sees no exit. Either make the new period continuous (start "
+                f"{(end + datetime.timedelta(days=1)).isoformat()}, a successor) or start it in a later "
+                f"period with a Business Combination.")
+        found = reentry_after_exit(new, rows, sales, [_date_or_none(r.acquisition_date) for r in deals])
+        if found is None:
+            return
+        left, is_exit = found
+        how = "without a Business Disposal" if is_exit else "through a Business Disposal"
+        frappe.throw(
+            f"`{self._owned_label()}` left the group on {left.isoformat()} {how}; "
+            f"re-entering it on {start.isoformat()} is an acquisition and needs a Business Combination "
+            f"dated {start.isoformat()}. Record the Business Combination (it creates this period), "
+            f"then submit.")
+
+    def _validate_exit_account(self):
+        """konsolidat#335: a link whose end takes its node out of the group
+        derecognises what it carried, and the balance lands on the root's
+        exit account. Refuse the end until the root declares it. Whether the
+        end is an exit is ``ownership_graph_model.end_is_exit``, the rule the
+        warehouse posts the exit journal on (review F6): read from the node's
+        other submitted periods and the entity's submitted Business
+        Disposals, never from ``supersedes``. The successor path end-dates
+        its predecessor with db_set and never reaches validate.
+
+        konsol asks for the exit account on EVERY exit because it
+        cannot see carried balances (they live in the warehouse); the
+        warehouse requires the account only when balances are carried
+        (konsolidat#358, X12). An exit refused here may post nothing there."""
+        end = _date_or_none(self.get("end_date"))
+        if end is None:
+            return
+        entity = self.get("data_area_id") or None
+        others = frappe.get_all(
+            "Ownership Period",
+            filters={"consolidation_group": self.consolidation_group, "data_area_id": entity or _BLANK,
+                     "docstatus": 1, "name": ["!=", self.get("name") or ""]},
+            fields=["effective_date", "end_date", "consolidation_method"])
+        # a sub-group's sale is no sale of the entities under it (the
+        # warehouse matches the disposed entity), so a group node has none
+        disposals = frappe.get_all(
+            "Business Disposal",
+            filters={"consolidation_group": self.consolidation_group, "disposed_entity": entity,
+                     "docstatus": 1},
+            fields=["disposal_date", "retained_interest_pct"]) if entity else []
+        link = {"end_date": end, "consolidation_method": self.get("consolidation_method"),
+                "is_disposal": self.get("is_disposal")}
+        others = [{"effective_date": _date_or_none(r.effective_date), "end_date": _date_or_none(r.end_date),
+                   "consolidation_method": r.consolidation_method} for r in others]
+        disposals = [{"disposal_date": _date_or_none(r.disposal_date),
+                      "retained_interest_pct": r.retained_interest_pct} for r in disposals]
+        if not end_is_exit(link, others, disposals):
+            return
+        node = self._node()
+        root = node_root(node) if node else self.consolidation_group
+        fields = required_accounts(None, {"kind": "exit"})
+        declared = frappe.db.get_value("Consolidation Group", root, ["consolidation_group", *fields], as_dict=True)
+        for field in fields:
+            if not getattr(declared, field, None):
+                frappe.throw(
+                    f"{LABELS[field]} is not declared on the group root '{getattr(declared, "consolidation_group", None) or root}'. "
+                    f"`{self._owned_label()}` leaves the group on {end.isoformat()} without a Business Disposal: "
+                    f"no other submitted period holds it the next day, and the derecognised balance needs "
+                    f"that account. Declare it on the Consolidation Group root, then save again."
+                )
 
     def before_cancel(self):
         """Cancel only while every period this ownership covers is open (#136):

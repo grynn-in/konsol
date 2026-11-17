@@ -145,3 +145,183 @@ def test_path_between_tolerates_a_start_outside_the_adjacency():
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+# --- when a link's end is an exit (konsolidat#335 option A, review F6) -------
+#
+# The warehouse (konsolidat macros/ownership_exits.sql) posts an exit when the
+# entity is no longer held, through a live method, the day after the end, and
+# no full Business Disposal ended the link. konsol refuses the end on the same
+# rule, not on whether some successor names this period in ``supersedes``.
+
+import datetime as _dt
+
+_END = _dt.date(2025, 6, 30)
+
+
+def _ending(method="full", is_disposal=0, end=_END):
+    return _Row(end_date=end, consolidation_method=method, is_disposal=is_disposal)
+
+
+def _held(start, end=None, method="full"):
+    return _Row(effective_date=start, end_date=end, consolidation_method=method)
+
+
+def _sale(date=_END, retained=0.0):
+    return _Row(disposal_date=date, retained_interest_pct=retained)
+
+
+def test_an_end_nothing_follows_is_an_exit():
+    assert _model().end_is_exit(_ending(), [], []) is True
+
+
+def test_an_open_ended_link_is_not_an_exit():
+    assert _model().end_is_exit(_ending(end=None), [], []) is False
+
+
+def test_a_an_owner_transfer_is_not_an_exit():
+    """(a) A's link ends, B's starts the next day: the entity stays held."""
+    assert _model().end_is_exit(_ending(), [_held(_dt.date(2025, 7, 1))], []) is False
+
+
+def test_b_a_contiguous_period_without_supersedes_is_not_an_exit():
+    """(b) the rule reads dates, never ``supersedes``: an open-ended or a
+    later-ending period effective the day after keeps the entity."""
+    m = _model()
+    assert m.end_is_exit(_ending(), [_held(_dt.date(2025, 7, 1), _dt.date(2026, 6, 30))], []) is False
+    # a period that started earlier and runs on past the end holds it too
+    assert m.end_is_exit(_ending(), [_held(_dt.date(2024, 1, 1))], []) is False
+
+
+def test_c_another_path_keeping_the_entity_is_not_an_exit():
+    """(c) one owner's link ends while another owner's equity link runs on."""
+    assert _model().end_is_exit(_ending(), [_held(_dt.date(2023, 1, 1), method="equity")], []) is False
+
+
+def test_d_a_link_with_method_none_ending_is_not_an_exit():
+    """(d) the entity was not live through it, so nothing is derecognised."""
+    assert _model().end_is_exit(_ending(method="none"), [], []) is False
+
+
+def test_e_a_successor_with_method_none_is_an_exit():
+    """(e) deemed loss of control: held, but no longer live."""
+    assert _model().end_is_exit(_ending(), [_held(_dt.date(2025, 7, 1), method="none")], []) is True
+
+
+def test_f_a_gap_or_an_earlier_end_is_an_exit():
+    """(f) whatever a successor is named (an amendment renames it), only its
+    dates count: one starting two days later, or ending on the same day, does
+    not hold the entity the day after."""
+    m = _model()
+    assert m.end_is_exit(_ending(), [_held(_dt.date(2025, 7, 2))], []) is True
+    assert m.end_is_exit(_ending(), [_held(_dt.date(2024, 1, 1), _END)], []) is True
+
+
+def test_g_is_disposal_without_a_full_business_disposal_is_an_exit():
+    """(g) the warehouse treats a link as ended by a sale only when it is
+    flagged is_disposal AND a full Business Disposal (retained 0) of the
+    entity is dated on its end."""
+    m = _model()
+    assert m.end_is_exit(_ending(is_disposal=1), [], []) is True
+    assert m.end_is_exit(_ending(is_disposal=1), [], [_sale(retained=20.0)]) is True
+    assert m.end_is_exit(_ending(is_disposal=1), [], [_sale(date=_dt.date(2025, 6, 29))]) is True
+    assert m.end_is_exit(_ending(is_disposal=0), [], [_sale()]) is True
+    assert m.end_is_exit(_ending(is_disposal=1), [], [_sale()]) is False
+    assert m.end_is_exit(_ending(is_disposal=1), [], [_sale(retained=None)]) is False
+
+
+# --- a re-entry is an acquisition (konsolidat#335 review F4, X14) ------------
+#
+# After the entity left the group (an exit journal, or a full Business
+# Disposal) nothing brings its balances back, so a live period that starts
+# after a gap is an acquisition (IFRS 3) and needs a submitted Business
+# Combination dated on its start.
+
+def _new(start=_dt.date(2026, 1, 1), method="full"):
+    return _Row(effective_date=start, consolidation_method=method)
+
+
+def _gone(end=_END, is_disposal=0, method="full"):
+    return _Row(effective_date=_dt.date(2023, 1, 1), end_date=end,
+                consolidation_method=method, is_disposal=is_disposal)
+
+
+def test_x14_a_re_entry_after_an_exit_without_a_combination_is_refused():
+    assert _model().reentry_after_exit(_new(), [_gone()], [], []) == (_END, True)
+
+
+def test_x14_a_combination_dated_on_the_start_allows_it():
+    assert _model().reentry_after_exit(_new(), [_gone()], [], [_dt.date(2026, 1, 1)]) is None
+    # one dated on another day does not
+    assert _model().reentry_after_exit(_new(), [_gone()], [], [_dt.date(2025, 12, 31)]) == (_END, True)
+
+
+def test_x14_a_contiguous_successor_is_no_re_entry():
+    m = _model()
+    assert m.reentry_after_exit(_new(_dt.date(2025, 7, 1)), [_gone()], [], []) is None
+    # another path still holds the entity the day before
+    held = _Row(effective_date=_dt.date(2023, 1, 1), end_date=None, consolidation_method="equity", is_disposal=0)
+    assert m.reentry_after_exit(_new(), [_gone(), held], [], []) is None
+
+
+def test_x14_a_first_entry_or_a_non_live_period_is_no_re_entry():
+    m = _model()
+    assert m.reentry_after_exit(_new(), [], [], []) is None
+    assert m.reentry_after_exit(_new(), [_gone(method="none")], [], []) is None
+    assert m.reentry_after_exit(_new(method="none"), [_gone()], [], []) is None
+
+
+def test_x14_a_re_entry_after_a_full_disposal_is_also_an_acquisition():
+    """Decided consistently: the entity was sold, buying it again is an
+    acquisition. The answer says it was a disposal, not an exit."""
+    assert _model().reentry_after_exit(
+        _new(), [_gone(is_disposal=1)], [_sale()], []) == (_END, False)
+
+
+# --- a gap inside one declared period is no exit (konsolidat#335 F1, X18) ----
+#
+# konsol's rules are by day; the warehouse judges ownership at each declared
+# period's end. A link ending 10 Mar and a live link starting 20 Mar (one
+# March) leaves the node held at March's end: no exit journal. Asking for an
+# exit account and then a Business Combination would post a second
+# acquisition on undisposed balances, so it is refused.
+
+def _month(d):
+    return None if d is None else (d.year, d.month)
+
+
+def _mar(day):
+    return _dt.date(2026, 3, day)
+
+
+def test_x18_a_gap_inside_one_period_is_refused():
+    m = _model()
+    found = m.exit_and_return_in_one_period(_new(_mar(20)), [_gone(end=_mar(10))], [], _month)
+    assert found == (_mar(10), (2026, 3))
+
+
+def test_x18_a_business_combination_does_not_excuse_it():
+    # the combination list is not even an argument: the warehouse would post
+    # an acquisition on balances that were never derecognised
+    import inspect
+    assert "acquisitions" not in inspect.signature(_model().exit_and_return_in_one_period).parameters
+
+
+def test_x18_a_later_period_a_successor_or_a_disposal_is_not_this_rule():
+    m = _model()
+    # start in a later period: the re-entry rule (Business Combination) owns it
+    assert m.exit_and_return_in_one_period(_new(_dt.date(2026, 4, 2)), [_gone(end=_mar(10))], [], _month) is None
+    # contiguous successor
+    assert m.exit_and_return_in_one_period(_new(_mar(11)), [_gone(end=_mar(10))], [], _month) is None
+    # a full disposal ended it: the warehouse posts the disposal journal
+    sale = _Row(disposal_date=_mar(10), retained_interest_pct=0)
+    assert m.exit_and_return_in_one_period(
+        _new(_mar(20)), [_gone(end=_mar(10), is_disposal=1)], [sale], _month) is None
+    # not live, or no earlier link
+    assert m.exit_and_return_in_one_period(_new(_mar(20), "none"), [_gone(end=_mar(10))], [], _month) is None
+    assert m.exit_and_return_in_one_period(_new(_mar(20)), [], [], _month) is None
+
+
+def test_x18_an_undeclared_or_non_regular_date_is_not_judged():
+    m = _model()
+    assert m.exit_and_return_in_one_period(_new(_mar(20)), [_gone(end=_mar(10))], [], lambda d: None) is None

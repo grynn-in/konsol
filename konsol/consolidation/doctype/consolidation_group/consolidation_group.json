@@ -260,6 +260,14 @@
    "description": "Dr a Business Combination's cost lines when Acquisition Costs Treatment is Expense."
   },
   {
+   "fieldname": "exit_gain_loss_account",
+   "fieldtype": "Link",
+   "options": "Main Account",
+   "label": "Exit Gain/Loss Account",
+   "depends_on": "eval:doc.is_group",
+   "description": "Posts the gain or loss when an Ownership Period ends without a Business Disposal (konsolidat#335). May be the same account as the disposal gain/loss account."
+  },
+  {
    "fieldname": "method_declarations_section",
    "fieldtype": "Section Break",
    "label": "Method Declarations",
