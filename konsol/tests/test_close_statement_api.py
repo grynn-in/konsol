@@ -2420,18 +2420,23 @@ def test_export_with_a_budget_drill_fault_keeps_the_actuals_file_and_records_bud
     assert "filecontent" in site.response
 
 
-def test_export_with_an_ok_budget_adds_the_three_columns_before_commentary():
-    """The other half of D1: with an ok budget the three columns follow the
-    actuals' and Commentary moves three cells right."""
+def test_export_with_an_ok_budget_adds_the_four_columns_before_commentary():
+    """The other half of D1: with an ok budget the four columns follow the
+    actuals' and Commentary moves four cells right. Favourability (S6 KB4)
+    reaches the file from the API's own meta.heading_sides (KB2)."""
     golden = _golden()
     book = _export_book(_export_budget_site())
     rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
     header = next(r for r in rows if r[0] == "Line")
-    assert header[6:11] == ["Budget (before eliminations)", "Variance to budget", "Budget year to date",
-                            "Commentary", "By"]
+    assert header[6:12] == ["Budget (before eliminations)", "Variance to budget", "Favourability",
+                            "Budget year to date", "Commentary", "By"]
     by_code = {r[1]: r for r in rows if r[1]}
-    assert by_code["4"][9] == golden["commentary"]["4"]["text"]
+    assert by_code["4"][10] == golden["commentary"]["4"]["text"]
     assert by_code["4"][6] == 1000.0, "COST OF SALES budget"
+    # The chart here leaves heading 4's normal balance blank: reported as n/a (BUD-7-a).
+    assert by_code["4"][8] == "n/a", by_code["4"]
+    net = next(r for r in rows if r[0] == "Net result")
+    assert net[7] < 0 and net[8] == "Unfavourable", net
 
 
 def test_export_with_a_faulty_budget_read_keeps_the_actuals_file_and_logs_the_fault():
