@@ -2,9 +2,15 @@
 fiscal years and the latest period with data (``period_strip_model.strip_info``)
 so the Desk Year and Period strips can mark years and open on a period.
 
-One warehouse read; if it fails (warehouse not built, any error) the latest
-with data is None and the model falls back to the latest declared Regular
-period. Never raises for a warehouse failure.
+Three short warehouse reads, each on its own: the actuals' periods and years
+(``gold_fully_consolidated_tb``) and the approved budget's years
+(``gold_fully_consolidated_budget``, konsol#348 S5 K15), so a year budgeted
+before any actuals arrive is marked on the Year strip. ``data_years`` is the
+union; ``latest`` (the period a first visit opens on) is the actuals' only,
+because the Consolidated Statement refuses a period with no actuals rows. A
+read that fails (warehouse not built, any error) contributes nothing: with
+no actuals the latest is None and the model falls back to the latest
+declared Regular period. Never raises for a warehouse failure.
 """
 import frappe
 
@@ -20,6 +26,12 @@ _PERIODS_SQL = (
 )
 _YEARS_SQL = (
     "SELECT DISTINCT fiscal_year FROM epm_gold.gold_fully_consolidated_tb "
+    "{where}ORDER BY fiscal_year"
+)
+#: S5 K15: the years with an approved budget in the warehouse (every approved
+#: Cycle's rows, whatever the declaration: the mark says "budget data exists").
+_BUDGET_YEARS_SQL = (
+    "SELECT DISTINCT fiscal_year FROM epm_gold.gold_fully_consolidated_budget "
     "{where}ORDER BY fiscal_year"
 )
 _GROUP_WHERE = "WHERE consolidation_group = {group:String} "
@@ -63,4 +75,5 @@ def period_strip_info(consolidation_group=None):
 
     with_data = read(_PERIODS_SQL, lambda r: (int(r["fiscal_year"]), int(r["fiscal_period"])))
     data_years = read(_YEARS_SQL, lambda r: int(r["fiscal_year"])) or []
-    return period_strip_model.strip_info(period_rows, with_data, data_years)
+    budget_years = read(_BUDGET_YEARS_SQL, lambda r: int(r["fiscal_year"])) or []
+    return period_strip_model.strip_info(period_rows, with_data, sorted(set(data_years) | set(budget_years)))
