@@ -4,7 +4,7 @@ audience: Everyone
 section: Concepts
 order: 170
 ---
-The Consolidated Statement shows three budget columns beside the actuals: **Budget (before eliminations)**, **Variance to budget** and **Budget year to date**. They read the group's approved budget for the fiscal year of the period you open. Where there is no approved budget, the cells are blank, never zero, and the legend under the statement says why.
+The Consolidated Statement shows three budget columns beside the actuals: **Budget (before eliminations)**, **Variance to budget** and **Budget year to date**. They read the group's approved budget for the fiscal year of the period you open. Where there is no approved budget to show, the columns are not shown at all and the legend under the statement says why: a visible state, never a blank column.
 
 ## What "approved" means
 
@@ -26,7 +26,7 @@ A budget has period movements only, so the balance sheet budget column shows the
 
 A Cycle whose entries do not balance within an entity and period carries a balancing plug. The plug shows as its own balance sheet line, **Unbalanced budget (no balancing entry)**, and counts in the residual, so the budget balance sheet adds up and the plug is visible.
 
-## When the columns are blank
+## When the columns are not shown
 
 | The legend says | What to do |
 |---|---|
