@@ -249,7 +249,7 @@ class _Site:
         self.roles = {"EPM Analyst"}
         self.periods = [dict(r) for r in _CALENDAR]
         self._open(2025, 7)
-        self.groups = [{"consolidation_group": "G1", "reporting_currency": "USD"}]
+        self.groups = [{"name": "CG-G1-", "consolidation_group": "G1", "reporting_currency": "USD"}]
         self.accounts = _accounts()
         self.cta_account, self.result_account = "3300", "3100"
         self.declared_rows = dict(_DECLARED_ROWS)
@@ -288,6 +288,16 @@ class _Site:
         #: konsol#495 row 11b: Consolidation Group document rows by name (the
         #: Desk Link value ``CG-<code>-``): {"consolidation_group", "data_area_id"}.
         self.group_docs = {}
+        #: konsol#348 S5 K4: the approved-budget read. Approved Budget rows
+        #: (live: docstatus 0/1), Budget Cycle rows by name, Budget Layer rows,
+        #: ``check_input_fingerprint`` results by Cycle name, and the ONE
+        #: ClickHouse read over gold_fully_consolidated_budget.
+        self.approved_budgets = []
+        self.budget_cycles = {}
+        self.budget_layers = [{"layer_code": "board", "sort_order": 2},
+                              {"layer_code": "base", "sort_order": 1}]
+        self.fingerprints = {}
+        self.budget_tb_rows = []
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -337,6 +347,12 @@ def _frappe(site):
             rows = [r for r in site.commentary_rows if _match(r, filters)]
         elif doctype == "User":
             rows = [r for r in site.users if _match(r, filters)]
+        elif doctype == "Approved Budget":
+            rows = [r for r in site.approved_budgets if _match(r, filters)]
+        elif doctype == "Budget Cycle":
+            rows = [r for r in site.budget_cycles.values() if _match(r, filters)]
+        elif doctype == "Budget Layer":
+            rows = [r for r in site.budget_layers if _match(r, filters)]
         else:
             raise AssertionError("unexpected get_all on %s" % doctype)
         return [{f: r.get(f) for f in fields} for r in rows]
@@ -381,6 +397,8 @@ def _ch_read(site):
             raise site.ch_error
         if "gold_consolidation_adjustments" in sql:
             return [dict(r) for r in site.journal_rows]
+        if "gold_fully_consolidated_budget" in sql:  # S5 K4: the budget's one read
+            return [dict(r) for r in site.budget_tb_rows]
         if "DISTINCT data_area_id" in sql:
             return [dict(r) for r in site.entity_rows]
         if "gold_trial_balance" in sql:  # konsol#495: the entity basis's one read
@@ -446,6 +464,20 @@ def _close_event(site):
     return ce
 
 
+def _budget_fingerprint(site):
+    """Stub of ``konsol.epm.budget_fingerprint.check_input_fingerprint``
+    (S5-Q2 a: recomputed at every read). Records the call; answers from
+    ``site.fingerprints[cycle]``; an unknown Cycle is a test fault."""
+    mod = types.ModuleType("konsol.epm.budget_fingerprint")
+
+    def check_input_fingerprint(cycle):
+        site.reads.append(("fingerprint", cycle))
+        return dict(site.fingerprints[cycle])
+
+    mod.check_input_fingerprint = check_input_fingerprint
+    return mod
+
+
 def _assertion_run(site):
     mod = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     mod.SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
@@ -475,6 +507,9 @@ def _invoke(site, run):
             raise frappe.PermissionError("Not permitted to access entity '%s'" % code)
 
     entity_permissions.assert_entity_access = assert_entity_access
+    epm = types.ModuleType("konsol.epm")
+    epm.__path__ = []
+    epm.budget_fingerprint = _budget_fingerprint(site)
     consolidation = types.ModuleType("konsol.consolidation")
     doctype_pkg = types.ModuleType("konsol.consolidation.doctype")
     assertion_run_pkg = types.ModuleType("konsol.consolidation.doctype.assertion_run")
@@ -491,8 +526,9 @@ def _invoke(site, run):
     names = ["frappe", "konsol", "konsol.close", "konsol.fiscal_calendar",
              "konsol.entity_permissions", "konsol.close.ch_read", "konsol.close.signoff_gate",
              "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
-             "konsol.close.statement_export_model",
+             "konsol.close.statement_export_model", "konsol.close.approved_budget_model",
              "konsol.close.commentary_model", "konsol.close.close_event",
+             "konsol.epm", "konsol.epm.budget_fingerprint",
              "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run",
              "konsol.consolidation.doctype.assertion_run.assertion_run",
@@ -504,6 +540,7 @@ def _invoke(site, run):
         "konsol.entity_permissions": entity_permissions,
         "konsol.close.ch_read": close.ch_read, "konsol.close.signoff_gate": close.signoff_gate,
         "konsol.close.close_event": close.close_event,
+        "konsol.epm": epm, "konsol.epm.budget_fingerprint": epm.budget_fingerprint,
         "konsol.consolidation": consolidation, "konsol.consolidation.doctype": doctype_pkg,
         "konsol.consolidation.doctype.assertion_run": assertion_run_pkg,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run_mod,
@@ -520,6 +557,8 @@ def _invoke(site, run):
             os.path.join(CLOSE_DIR, "statement_export_model.py"))
         close.commentary_model = _load_path(
             "konsol.close.commentary_model", os.path.join(CLOSE_DIR, "commentary_model.py"))
+        close.approved_budget_model = _load_path(
+            "konsol.close.approved_budget_model", os.path.join(CLOSE_DIR, "approved_budget_model.py"))
         api = _load_path("close_statement_api_under_test", API_PY)
         return run(api)
     finally:
@@ -615,7 +654,7 @@ def test_no_sql_constant_has_an_alias_column_collision():
     constants = _sql_constants()
     assert set(constants) == {
         "_TB_SQL", "_ENTITY_SQL", "_DRILL_SQL", "_DRILL_SQL_WITH_CTA",
-        "_DRILL_JOURNALS_SQL", "_ENTITY_TB_SQL",
+        "_DRILL_JOURNALS_SQL", "_ENTITY_TB_SQL", "_BUDGET_TB_SQL",
     }, "a *_SQL constant was added or removed: update this test's expected set"
     for name, sql in constants.items():
         collision = _alias_collision(sql)
@@ -1859,3 +1898,188 @@ def test_entity_with_a_tb_only_in_an_earlier_year_is_no_rows_not_a_zero_statemen
     result = _call_entity(site)
     assert result["state"] == "no_rows", result["state"]
     assert result["statement"] is None
+
+
+# --- the approved budget read (konsol#348 S5 K4; S5-Q2 a) --------------------
+#
+# ``budget_payload(fy, fp, group)`` is ``statement_report_model.rows(budget=)``'s
+# third payload: ``{state, message, statement, meta}``. The state is
+# ``approved_budget_model.budget_state`` over the live Approved Budget of the
+# (group, year), the Cycle it names, the Cycle's input fingerprint recomputed
+# at this read (S5-Q2 a) and the Budget Layers; only an ``ok`` state reads
+# ClickHouse, and that ONE read binds scenario_id, cycle AND layer (a reader
+# that misses one sums a budget with a reforecast). The statement is the same
+# ``statement_model.statement`` over the budget rows. Nothing here raises into
+# the actuals statement: every failure is a state with its sentence.
+
+CYCLE = "BCYC-ZZB-2025-abc12345"
+DECLARATION = "APB-CG-G1--2025-0f0f0f0f"
+FINGERPRINT = "0f0f0f0f0f0f0f0f"
+
+
+def _budget_site(**declaration):
+    site = _Site()
+    site.approved_budgets = [{
+        "name": DECLARATION, "docstatus": 1, "consolidation_group": "CG-G1-", "fiscal_year": 2025,
+        "budget_cycle": CYCLE, "scenario_id": "ZZB", "rate_set": "ZZRS", "layer_policy": "All layers",
+        "layer": None, "input_fingerprint": FINGERPRINT, "owner": LEAD,
+        "modified": datetime(2026, 11, 17, 9, 0, 0), **declaration}]
+    site.budget_cycles = {CYCLE: {"name": CYCLE, "docstatus": 1, "input_fingerprint": FINGERPRINT,
+                                  "scenario_id": "ZZB", "rate_set": "ZZRS", "fiscal_year": 2025}}
+    site.fingerprints = {CYCLE: {"cycle": CYCLE, "docstatus": 1, "stored": FINGERPRINT,
+                                 "current": FINGERPRINT, "matches": True, "message": "as approved"}}
+    site.budget_tb_rows = [
+        _tb_row("4100", -1000.0, adjustment_type="entity"),
+        _tb_row("1110", 300.0, adjustment_type="entity"),
+        _tb_row("UNBALANCED", 700.0, adjustment_type="unbalanced"),
+    ]
+    return site
+
+
+def _call_budget(site, fy=2025, fp=7, group="G1"):
+    result = _invoke(site, lambda api: api.budget_payload(fy, fp, group))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def _budget_calls(site):
+    return [(sql, params) for sql, params in site.ch_calls if "gold_fully_consolidated_budget" in sql]
+
+
+def test_budget_sql_binds_group_scenario_cycle_layers_and_year():
+    """The one budget read binds all of scenario_id, cycle and layer."""
+    site = _budget_site()
+    result = _call_budget(site)
+    assert result["state"] == "ok", result["message"]
+    calls = _budget_calls(site)
+    assert len(calls) == 1 and len(site.ch_calls) == 1, site.ch_calls
+    sql, params = calls[0]
+    for bind in ("consolidation_group = {group:String}", "scenario_id = {scenario:String}",
+                 "cycle = {cycle:String}", "layer IN {layers:Array(String)}", "fiscal_year <= {fy:UInt32}"):
+        assert bind in sql, bind
+    assert params == {"group": "G1", "scenario": "ZZB", "cycle": CYCLE, "fy": 2025,
+                      "layers": "['base','board']"}
+    assert "dim_" not in sql
+    assert "GROUP BY fiscal_year, fiscal_period, main_account, adjustment_type" in sql
+
+
+def test_ok_budget_payload_is_the_statement_over_the_budget_rows_with_meta():
+    site = _budget_site()
+    result = _call_budget(site)
+    assert result["state"] == "ok"
+    assert result["meta"] == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS",
+                              "scenario_id": "ZZB", "declaration": DECLARATION}
+    assert set(result) == {"state", "message", "statement", "meta"}
+    for word in (CYCLE, "base, board", "ZZRS", DECLARATION, LEAD, "2026-11-17"):
+        assert word in result["message"], word
+    stmt = result["statement"]
+    assert stmt["minor_unit"] == 2
+    pl = stmt["sections"][0]["lines"]
+    assert next(l for l in pl if l.get("heading") == "4")["current"] == 1000.0
+    bs = stmt["sections"][1]["lines"]
+    assert _bs_line(result, "1")["current"] == 300.0
+    unbalanced = next(l for l in bs if l.get("kind") == "unbalanced")
+    assert unbalanced["current"] == 700.0
+    assert bs[-1]["kind"] == "residual" and bs[-1]["current"] == 0.0
+    assert ("fingerprint", CYCLE) in site.reads, "S5-Q2 a: the fingerprint is checked at the read"
+
+
+def test_no_declaration_is_no_approved_budget_with_no_clickhouse_and_no_fingerprint_read():
+    site = _Site()
+    result = _call_budget(site)
+    assert result["state"] == "no_approved_budget"
+    assert "No approved budget for G1 FY2025" in result["message"]
+    assert result["statement"] is None
+    assert result["meta"] == {"cycle": None, "layers": None, "rate_set": None, "scenario_id": None,
+                              "declaration": None}
+    assert site.ch_calls == []
+    assert not [r for r in site.reads if r[0] == "fingerprint"]
+
+
+def test_a_draft_declaration_is_named_but_declares_nothing():
+    site = _budget_site(docstatus=0)
+    result = _call_budget(site)
+    assert result["state"] == "no_approved_budget"
+    assert DECLARATION in result["message"] and "draft" in result["message"]
+    assert site.ch_calls == []
+
+
+def test_a_declaration_of_another_group_or_year_does_not_count():
+    site = _budget_site(consolidation_group="CG-G2-")
+    assert _call_budget(site)["state"] == "no_approved_budget"
+    site = _budget_site(fiscal_year=2024)
+    assert _call_budget(site)["state"] == "no_approved_budget"
+    assert site.ch_calls == []
+
+
+def test_a_cancelled_or_missing_cycle_is_cycle_cancelled_with_no_fingerprint_read():
+    site = _budget_site()
+    site.budget_cycles[CYCLE]["docstatus"] = 2
+    result = _call_budget(site)
+    assert result["state"] == "cycle_cancelled" and "is cancelled" in result["message"]
+    assert result["meta"]["cycle"] == CYCLE and result["meta"]["declaration"] == DECLARATION
+    assert site.ch_calls == [] and not [r for r in site.reads if r[0] == "fingerprint"]
+    site = _budget_site()
+    site.budget_cycles = {}
+    result = _call_budget(site)
+    assert result["state"] == "cycle_cancelled" and "no longer exists" in result["message"]
+
+
+def test_a_changed_fingerprint_is_inputs_changed_with_no_clickhouse_read():
+    site = _budget_site()
+    site.fingerprints[CYCLE].update(matches=False, current="deadbeefdeadbeef")
+    result = _call_budget(site)
+    assert result["state"] == "inputs_changed"
+    assert CYCLE in result["message"] and "changed since it was approved" in result["message"]
+    assert result["statement"] is None and site.ch_calls == []
+    # The declaration's copy of the fingerprint is not the Cycle's: the same state.
+    site = _budget_site(input_fingerprint="1111111111111111")
+    assert _call_budget(site)["state"] == "inputs_changed"
+
+
+def test_one_layer_policy_reads_that_layer_only_and_a_gone_layer_is_layer_missing():
+    site = _budget_site(layer_policy="One layer", layer="board")
+    result = _call_budget(site)
+    assert result["state"] == "ok" and result["meta"]["layers"] == ["board"]
+    assert _budget_calls(site)[0][1]["layers"] == "['board']"
+    site = _budget_site(layer_policy="One layer", layer="gone")
+    result = _call_budget(site)
+    assert result["state"] == "layer_missing" and "gone" in result["message"]
+    assert site.ch_calls == []
+
+
+def test_no_budget_rows_for_the_year_is_no_rows_naming_the_cycle_never_zeros():
+    site = _budget_site()
+    site.budget_tb_rows = [_tb_row("4100", -1000.0, adjustment_type="entity", fy=2024, fp=12)]
+    result = _call_budget(site)
+    assert result["state"] == "no_rows"
+    assert CYCLE in result["message"] and "FY2025 P07" in result["message"]
+    assert result["statement"] is None
+    assert result["meta"]["cycle"] == CYCLE
+
+
+def test_a_warehouse_failure_is_a_state_with_the_meta_kept_never_a_raise():
+    site = _budget_site()
+    site.ch_error = RuntimeError("Code: 60. DB::Exception: Table epm_gold.gold_fully_consolidated_budget "
+                                 "does not exist. (UNKNOWN_TABLE)")
+    result = _call_budget(site)
+    assert result["state"] == "not_built" and "UNKNOWN_TABLE" in result["message"]
+    assert result["statement"] is None and result["meta"]["cycle"] == CYCLE
+
+
+def test_budget_payload_refuses_an_unknown_group_and_an_undeclared_period():
+    site = _budget_site()
+    with pytest.raises(Exception):
+        _call_budget(site, group="ZZ-NOPE")
+    with pytest.raises(Exception):
+        _call_budget(site, fy=2031)
+
+
+def test_the_actuals_statement_reads_no_budget():
+    """``get_statement`` is unchanged by S5: the report asks for the budget
+    separately (K7), so a budget fault can never fail the actuals."""
+    site = _budget_site()
+    _call(site)
+    assert _budget_calls(site) == []
+    assert not [r for r in site.reads if r[0] == "fingerprint"]
+    assert not [r for r in site.reads if r == ("get_all", "Approved Budget")]
