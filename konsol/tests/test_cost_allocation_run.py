@@ -821,7 +821,8 @@ def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
         w.once.clear()
         w.enqueued.clear()
         w.ch.calls.clear()
-        getattr(_k8_run(m, docstatus=1), hook)()
+        # a submitted run cannot be deleted: after_delete sees a cancelled one
+        getattr(_k8_run(m, docstatus=2 if hook == "after_delete" else 1), hook)()
         assert [(s[0], s[1]) for s in w.syncs] == [
             ("Cost Allocation Run", "epm_staging.cost_allocation_runs"),
             ("Cost Allocation Run Account", "epm_staging.cost_allocation_run_accounts"),
