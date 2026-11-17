@@ -1808,6 +1808,7 @@ def test_entity_export_records_one_statement_exported_event_scoped_to_the_entity
         "detail": {
             "basis": "Entity", "consolidation_group": None, "entity": "ZZA",
             "filename": "numbers-FY2025P07-entity-ZZA.xlsx", "label": "Provisional",
+            "budget": None,   # S5 K12: the entity budget is S6
         },
     }]
     assert response["filename"] == "numbers-FY2025P07-entity-ZZA.xlsx"
@@ -2272,3 +2273,91 @@ def test_budget_drill_warehouse_failure_is_a_state():
     site.ch_error = RuntimeError("Code: 60. DB::Exception: Table does not exist. (UNKNOWN_TABLE)")
     result = _call_budget_drill(site)
     assert result["state"] == "not_built" and result["drill"] is None
+
+
+# --- the export with the approved budget (konsol#348 S5 K12) ------------------
+#
+# export_statement on the Group basis reads the approved budget (K4) and every
+# heading's budget drill in ONE entity-grain read (the heading leaves plus the
+# UNBALANCED literal, so the plug's drill needs no read of its own) and ONE
+# rates read, the _drill_reads pattern; the workbook gets both (K11), and the
+# statement_exported event's detail carries budget {cycle, layers, rate_set},
+# or null when there is no ok budget. ClickHouse: 4 reads without a budget,
+# 7 with one (the actuals' 4, the budget statement's 1, the two drill reads).
+# A budget fault (a warehouse failure on its reads, a drill mismatch, a
+# missing rate) never fails the actuals' file: the note says why and the
+# event records budget null.
+
+def _export_budget_site():
+    site = _budget_site()
+    actuals = _export_site()
+    site.drill_tb_rows, site.journal_rows = actuals.drill_tb_rows, actuals.journal_rows
+    site.budget_drill_rows = [
+        _drill_tb_row("1110", 300.0, "entity", "ZZA"),
+        _drill_tb_row("4100", -1000.0, "entity", "ZZA"),
+        _drill_tb_row("UNBALANCED", 700.0, "unbalanced", "ZZA"),
+    ]
+    site.budget_rate_rows = [_rate_row("ZZA", "1110", 1.10), _rate_row("ZZA", "4100", 1.08)]
+    return site
+
+
+def _budget_event_detail(site):
+    assert len(site.events) == 1, site.events
+    return site.events[0]["detail"]["budget"]
+
+
+def test_export_with_an_approved_budget_writes_the_budget_sheet_and_records_the_budget():
+    site = _export_budget_site()
+    book = _export_book(site)
+    assert book.sheetnames == ["Statement", "Drill", "Journals", "Budget drill"]
+    header = [c.value for c in book["Statement"][2]] + [c.value for c in book["Statement"][1]]
+    text = " ".join(str(v) for v in header if v)
+    assert "Budget" in text, text
+    assert _budget_event_detail(site) == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS"}
+    budget_sheet = book["Budget drill"]
+    labels = [row[0] for row in budget_sheet.iter_rows(values_only=True)]
+    assert any(v == "UNBALANCED" or (isinstance(v, str) and "Unbalanced" in v) for v in labels), labels
+
+
+def test_export_with_a_budget_reads_clickhouse_seven_times_each_budget_read_bound():
+    site = _export_budget_site()
+    _call_export(site)
+    assert len(site.ch_calls) == 7, [sql[:70] for sql, _ in site.ch_calls]
+    budget_calls = [(sql, p) for sql, p in site.ch_calls
+                    if "gold_fully_consolidated_budget" in sql or "gold_consolidated_budget_tb" in sql]
+    assert len(budget_calls) == 3
+    for sql, params in budget_calls:
+        for bind in ("scenario_id = {scenario:String}", "cycle = {cycle:String}",
+                     "layer IN {layers:Array(String)}", "consolidation_group = {group:String}"):
+            assert bind in sql, (bind, sql)
+        assert params["scenario"] == "ZZB" and params["cycle"] == CYCLE
+        assert params["layers"] == "['base','board']"
+        assert "dim_" not in sql
+    grain = [(sql, p) for sql, p in budget_calls if "gold_fully_consolidated_budget" in sql and "data_area_id" in sql]
+    assert len(grain) == 1, "ONE entity-grain budget read, whatever the heading count"
+    assert "'UNBALANCED'" in grain[0][1]["accounts"], "the plug's rows come with the heading leaves"
+    assert "'1110'" in grain[0][1]["accounts"] and "'4100'" in grain[0][1]["accounts"]
+    assert "adjustment_type = 'unbalanced'" not in grain[0][0]
+    rates = [(sql, p) for sql, p in budget_calls if "gold_consolidated_budget_tb" in sql]
+    assert len(rates) == 1 and "fx_method" in rates[0][0]
+
+
+def test_export_without_a_declaration_reads_four_times_and_records_budget_null():
+    site = _export_site()
+    book = _export_book(site)
+    assert len(site.ch_calls) == 4
+    assert _budget_event_detail(site) is None
+    assert "Budget drill" not in book.sheetnames
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "No approved budget for G1 FY2025" in text, "the state's sentence is the note"
+
+
+def test_export_with_a_budget_drill_fault_keeps_the_actuals_file_and_records_budget_null():
+    site = _export_budget_site()
+    site.budget_rate_rows = []     # with_rates: no rate row for ZZA 1110, never a blank rate
+    book = _export_book(site)
+    assert book.sheetnames == ["Statement", "Drill", "Journals"]
+    assert _budget_event_detail(site) is None
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "ZZA" in text and "1110" in text, "the note names the fault"
+    assert "filecontent" in site.response
