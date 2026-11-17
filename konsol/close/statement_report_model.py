@@ -44,7 +44,8 @@ exactly what the Close app's Numbers screen shows.
   period's ``current`` minus it, ``budget_ytd`` the budget line's ``ytd``
   (P&L lines only). A Balance Sheet budget value is the year's budgeted
   movements to date, not a balance (a budget has Regular-period rows only;
-  S5-Q4 a), and ``message`` says so. The budget's own "Unbalanced budget"
+  S5-Q4 a), so a Balance Sheet line has no variance to budget (S5 F1), and
+  ``message`` says both. The budget's own "Unbalanced budget"
   line (S5-Q3 a), which the actuals never carry, is laid out before the
   residual with blank actuals. A line absent from the budget, a non-ok
   budget (its sentence goes in the message), a section header and a
@@ -86,8 +87,13 @@ _UNEXPLAINED_LABEL = "Unexplained"
 BUDGET_COLUMN_LABEL = "Budget (before eliminations)"
 BUDGET_LIMITS = "before intercompany eliminations and without group-level adjustments"
 #: S5-Q4 (a): a budget has Regular-period rows only, so its cumulative
-#: Balance Sheet value is the year's budgeted movements, not a balance.
-BUDGET_BS_BASIS = "the balance sheet budget columns show the budgeted movements year to date, not balances"
+#: Balance Sheet value is the year's budgeted movements, not a balance. S5 F1
+#: (17 Nov 2026): a movement and a balance differ by no variance, so the
+#: Balance Sheet has none; the legend says so.
+BUDGET_BS_BASIS = ("the balance sheet budget column shows the budgeted movements year to date, not balances, "
+                   "so there is no variance to budget on the balance sheet")
+#: The one section whose lines carry a variance to budget (statement_model.PL).
+_BUDGET_VARIANCE_SECTION = "Profit and Loss"
 
 
 def columns(minor_unit=None):
@@ -268,11 +274,13 @@ def _budget_items(budget):
 def _with_budget(row, section, line, budget_items, minor_unit, include=None, variance=True):
     """``row`` with the budget's value for the same line (its ``current``:
     on the Balance Sheet the budgeted movements year to date, S5-Q4 a), the
-    variance to budget (this period's ``current`` minus it, same display
-    sign, rounded once to ``minor_unit``) and the budget's year to date on a
-    P&L line. Absent from the budget: left blank, never 0. ``variance``
-    False leaves the variance blank (the residual: two near-zeros compared
-    would say nothing)."""
+    variance to budget on a Profit and Loss line only (this period's
+    ``current`` minus it, same display sign, rounded once to ``minor_unit``)
+    and the budget's year to date on a P&L line. Absent from the budget:
+    left blank, never 0. A Balance Sheet line has no variance (S5 F1: a
+    budgeted movement against an actual balance is not a variance; the
+    message says so). ``variance`` False leaves the variance blank (the
+    residual: two near-zeros compared would say nothing)."""
     if budget_items is None:
         return row
     key, item = ((section, "include", line["heading"], include.get("kind")), include) \
@@ -285,7 +293,7 @@ def _with_budget(row, section, line, budget_items, minor_unit, include=None, var
         return row
     row["budget"] = _zero(budget_value)
     this = item.get("current")
-    if variance and this is not None:
+    if variance and section == _BUDGET_VARIANCE_SECTION and this is not None:
         row["variance_to_budget"] = _zero(round(this - budget_value, minor_unit))
     if "ytd" in budget_item and budget_item.get("ytd") is not None:
         row["budget_ytd"] = _zero(budget_item["ytd"])
