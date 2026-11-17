@@ -1935,8 +1935,10 @@ def _budget_site(**declaration):
     site.approved_budgets = [{
         "name": DECLARATION, "docstatus": 1, "consolidation_group": "CG-G1-", "fiscal_year": 2025,
         "budget_cycle": CYCLE, "scenario_id": "ZZB", "rate_set": "ZZRS", "layer_policy": "All layers",
-        "layer": None, "input_fingerprint": FINGERPRINT, "owner": LEAD,
-        "modified": datetime(2026, 11, 17, 9, 0, 0), **declaration}]
+        "layer": None, "input_fingerprint": FINGERPRINT, "owner": "drafter@example.com",
+        "modified": datetime(2026, 11, 20, 9, 0, 0),
+        # PR #554 review m1: the approver is the submitter, stamped at submit.
+        "approved_by": LEAD, "approved_on": datetime(2026, 11, 17, 9, 0, 0), **declaration}]
     site.budget_cycles = {CYCLE: {"name": CYCLE, "docstatus": 1, "input_fingerprint": FINGERPRINT,
                                   "scenario_id": "ZZB", "rate_set": "ZZRS", "fiscal_year": 2025}}
     site.fingerprints = {CYCLE: {"cycle": CYCLE, "docstatus": 1, "stored": FINGERPRINT,
@@ -1985,6 +1987,9 @@ def test_ok_budget_payload_is_the_statement_over_the_budget_rows_with_meta():
     assert set(result) == {"state", "message", "statement", "meta"}
     for word in (CYCLE, "base, board", "ZZRS", DECLARATION, LEAD, "2026-11-17"):
         assert word in result["message"], word
+    # PR #554 review m1: the submitter and the submit time, never the drafter
+    # (owner) or the last save (modified).
+    assert "drafter@example.com" not in result["message"] and "2026-11-20" not in result["message"]
     stmt = result["statement"]
     assert stmt["minor_unit"] == 2
     pl = stmt["sections"][0]["lines"]

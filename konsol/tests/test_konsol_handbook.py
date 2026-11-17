@@ -254,7 +254,7 @@ def test_the_shipped_guide_has_the_budget_against_actuals_page():
     text = page["markdown"]
     for phrase in (
         "Budget (before eliminations)", "Variance to budget", "Budget year to date",
-        "Approved Budget", "Budget Cycle", "Rate Set",
+        "Approved Budget", "Budget Cycle", "Rate Set", "Approved By", "Approved On",
         "before intercompany eliminations and without group-level adjustments",
         "budgeted movements", "no variance to budget on the balance sheet",
         "Unbalanced budget (no balancing entry)",

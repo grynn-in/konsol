@@ -32,7 +32,8 @@ def _declaration(**over):
     d = {"name": APB, "docstatus": 1, "consolidation_group": "CG-ZZGRP-", "fiscal_year": FY,
          "budget_cycle": CYCLE, "scenario_id": "ZZB", "rate_set": "ZZRS", "layer_policy": M.ALL_LAYERS,
          "layer": None, "input_fingerprint": "v1:aaaa", "owner": "lead@example.com",
-         "modified": datetime(2026, 11, 17, 9, 30)}
+         "modified": datetime(2026, 11, 17, 9, 30), "approved_by": "lead@example.com",
+         "approved_on": datetime(2026, 11, 17, 9, 30)}
     d.update(over)
     return d
 
@@ -69,6 +70,17 @@ def test_ok_names_the_cycle_layers_rate_set_and_approver():
     msg = out["message"]
     for word in (GROUP, "FY2027", CYCLE, "ZZRS", "base, board", APB, "lead@example.com", "2026-11-17"):
         assert word in msg, (word, msg)
+
+
+def test_the_approver_is_the_submitter_not_the_owner():
+    """PR #554 review m1: the declaration's ``approved_by`` / ``approved_on``
+    (stamped in before_submit) name the approval; the owner drafted it and
+    ``modified`` moves with every save."""
+    out = _state(declaration=_declaration(owner="drafter@example.com", modified=datetime(2026, 11, 20, 8, 0),
+                                          approved_by="lead@example.com", approved_on=datetime(2026, 11, 17, 9, 30)))
+    assert out["state"] == M.OK
+    assert "approved by lead@example.com on 2026-11-17" in out["message"], out["message"]
+    assert "drafter@example.com" not in out["message"] and "2026-11-20" not in out["message"]
 
 
 def test_no_declaration_is_no_approved_budget_and_says_what_to_do():

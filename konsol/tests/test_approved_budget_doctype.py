@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import types
+from datetime import datetime
 
 import pytest
 
@@ -97,6 +98,14 @@ def test_approval_fields_per_the_field_table():
     assert fp["fieldtype"] == "Data" and fp["read_only"] == 1 and fp["no_copy"] == 1
     assert not fp.get("allow_on_submit"), "copied in before_submit, frozen by the submit"
     assert "Cycle" in fp["description"], fp["description"]
+    # PR #554 review m1: the approver is the submitter, stamped at submit.
+    by = fields["approved_by"]
+    assert (by["fieldtype"], by["options"], by["read_only"], by["no_copy"]) == ("Link", "User", 1, 1)
+    assert not by.get("allow_on_submit") and not by.get("reqd")
+    on = fields["approved_on"]
+    assert (on["fieldtype"], on["read_only"], on["no_copy"]) == ("Datetime", 1, 1)
+    assert not on.get("allow_on_submit") and not on.get("reqd")
+    assert "submit" in by["description"].lower() and "submit" in on["description"].lower()
     notes = fields["notes"]
     assert notes["fieldtype"] == "Small Text" and not notes.get("reqd")
     af = fields["amended_from"]
@@ -117,7 +126,7 @@ def test_tabs_and_sections_per_the_field_table():
         assert scope < order.index(name) < budget, name
     for name in ("budget_cycle", "scenario_id", "rate_set", "layer_policy", "layer"):
         assert budget < order.index(name) < approval, name
-    for name in ("input_fingerprint", "notes", "amended_from"):
+    for name in ("input_fingerprint", "approved_by", "approved_on", "notes", "amended_from"):
         assert order.index(name) > approval, name
     assert [n for n in order if kinds[n] == "Column Break"], "two columns (ERPNext form standard)"
 
@@ -208,7 +217,7 @@ def env(monkeypatch):
             pass
 
     def get_value(doctype, name, fieldname=None, as_dict=False, **k):
-        asked.append(("get_value", doctype, name))
+        asked.append(("get_value", doctype, name, {"for_update": k.get("for_update", False)}))
         row = tables[doctype].get(name) if isinstance(tables[doctype], dict) else None
         if row is None:
             return None
@@ -232,6 +241,12 @@ def env(monkeypatch):
     frappe.throw = throw
     frappe.ValidationError = _Thrown
     frappe.flags = types.SimpleNamespace(in_install=False, in_import=False, in_migrate=False, in_patch=False)
+    # PR #554 review m1: the submitter and the submit time, as before_submit reads them.
+    frappe.session = types.SimpleNamespace(user="lead@example.com")
+    now = datetime(2026, 11, 17, 9, 30, 0)
+    utils = types.ModuleType("frappe.utils")
+    utils.now_datetime = lambda: now
+    frappe.utils = utils
     frappe.db = types.SimpleNamespace(
         get_value=get_value, get_values=get_values,
         exists=lambda dt, name: any(r["name"] == name for r in tables["Approved Budget"]),
@@ -257,7 +272,8 @@ def env(monkeypatch):
     workflows.set_cancelled_state = lambda doc: cancelled.append(doc) or None
     added_indexes = []
     frappe.db.add_index = lambda dt, fields, index_name=None: added_indexes.append((dt, list(fields), index_name))
-    for name, mod in {"frappe": frappe, "frappe.model": model, "frappe.model.document": docmod,
+    for name, mod in {"frappe": frappe, "frappe.utils": utils, "frappe.model": model,
+                      "frappe.model.document": docmod,
                       "konsol.epm.budget_grain": grain, "konsol.period_status": period_status,
                       "konsol.workflows": workflows}.items():
         monkeypatch.setitem(sys.modules, name, mod)
@@ -276,7 +292,7 @@ def env(monkeypatch):
 
     return types.SimpleNamespace(doc=doc, tables=tables, asked=asked, mod=mod, frappe=frappe,
                                  closed_years=closed_years, gate_calls=gate_calls, cancelled=cancelled,
-                                 added_indexes=added_indexes)
+                                 added_indexes=added_indexes, now=now)
 
 
 def test_a_valid_declaration_copies_the_cycles_scenario_and_rate_set_and_titles_itself(env):
@@ -395,6 +411,34 @@ def test_submit_copies_the_cycles_input_fingerprint_without_a_save(env):
     assert not d.get("input_fingerprint")
     d.before_submit()
     assert d.input_fingerprint == "v1:deadbeef"
+
+
+def test_submit_stamps_the_submitter_as_approver_and_the_submit_time(env):
+    """PR #554 review m1: the legend's "approved by" is the submitter, not the
+    document's owner (who may have drafted it). before_submit stamps
+    ``approved_by`` (frappe.session.user) and ``approved_on``
+    (now_datetime), read-only fields the statement reads."""
+    d = env.doc(owner="drafter@example.com")
+    d.validate()
+    assert not d.get("approved_by") and not d.get("approved_on")
+    d.before_submit()
+    assert d.approved_by == "lead@example.com"
+    assert d.approved_on == env.now
+
+
+def test_submit_reads_the_cycle_for_update(env):
+    """PR #554 review m7a: before_submit's Cycle read locks the row, so a
+    concurrent Budget Cycle cancel (whose gate reads submitted declarations,
+    K16) and this submit serialise instead of both passing (write skew under
+    REPEATABLE READ). validate's read stays plain."""
+    d = env.doc()
+    d.validate()
+    plain = [a for a in env.asked if a[:2] == ("get_value", "Budget Cycle")]
+    assert plain and all(a[3]["for_update"] is False for a in plain)
+    env.asked.clear()
+    d.before_submit()
+    locked = [a for a in env.asked if a[:2] == ("get_value", "Budget Cycle")]
+    assert locked and all(a[3]["for_update"] is True for a in locked), env.asked
 
 
 def test_submit_refuses_a_cycle_with_no_fingerprint_stamped(env):
