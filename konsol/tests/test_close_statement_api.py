@@ -2099,19 +2099,21 @@ def test_the_actuals_statement_reads_no_budget():
 # entity-grain rows come from gold_fully_consolidated_budget bound to the same
 # scenario_id, cycle and layers; ``drill_model.drill`` checks the total against
 # the budget statement's line; ``with_rates`` attaches each account's
-# translation rate (gold_consolidated_budget_tb, the window's rows) and Rate
-# Set, with the Translation Method the chart declares for the account (the
-# budget TB table does not carry fx_method; the warehouse took it from the same
-# chart). ``heading == "UNBALANCED"`` is the plug's own drill by entity.
+# translation rate, Translation Method and Rate Set as the warehouse applied
+# them (gold_consolidated_budget_tb carries fx_method and rate_set on every
+# row; S5 G1), the window's rows only. The chart's Translation Method of
+# today is never attached: a chart changed since the build would misname the
+# rate. ``heading == "UNBALANCED"`` is the plug's own drill by entity.
 
-def _rate_row(entity, account, rate, rate_set="ZZRS", fy=2025, fp=7):
+def _rate_row(entity, account, rate, rate_set="ZZRS", fy=2025, fp=7, fx_method="closing"):
     return {"fiscal_year": fy, "fiscal_period": fp, "data_area_id": entity, "main_account": account,
-            "translation_rate": rate, "rate_set": rate_set}
+            "fx_method": fx_method, "translation_rate": rate, "rate_set": rate_set}
 
 
 def _budget_drill_site():
     site = _budget_site()
-    site.accounts["1110"]["fx_method"] = "closing"
+    # Today's chart says average; the warehouse translated at closing (S5 G1).
+    site.accounts["1110"]["fx_method"] = "average"
     site.budget_drill_rows = [
         _drill_tb_row("1110", 300.0, "entity", "ZZA"),
         _drill_tb_row("4100", -1000.0, "entity", "ZZA"),
@@ -2148,8 +2150,31 @@ def test_budget_drill_of_a_heading_has_rates_per_account_and_matches_the_budget_
     assert row["accounts"][0]["rates"] == [
         {"fx_method": "closing", "rate": 1.10, "rate_set": "ZZRS"},
         {"fx_method": "closing", "rate": 1.12, "rate_set": "ZZRS"},
-    ], "the window's distinct rates, with the chart's Translation Method; P08 is outside"
+    ], "the window's distinct rates, with the warehouse's fx_method, never today's chart; P08 is outside"
     assert row["rates"] == row["accounts"][0]["rates"]
+
+
+def test_budget_drill_rates_read_fx_method_from_the_budget_tb_not_the_chart():
+    """S5 G1: the rates read names fx_method from gold_consolidated_budget_tb,
+    and the method shown is the row's own. A blank method on the row stays
+    blank (the report reads it "chart default"); it is never filled from the
+    chart."""
+    site = _budget_drill_site()
+    site.budget_rate_rows = [
+        _rate_row("ZZA", "1110", 1.10, fx_method="historical"),
+        _rate_row("ZZA", "1110", 1.12, fx_method="", fp=6),
+        _rate_row("ZZA", "4100", 1.08),
+    ]
+    result = _call_budget_drill(site)
+    assert result["state"] == "ok", result["message"]
+    rates_sql = [sql for sql, _ in site.ch_calls if "gold_consolidated_budget_tb" in sql]
+    assert len(rates_sql) == 1 and "fx_method" in rates_sql[0], rates_sql
+    [row] = result["drill"]["rows"]
+    assert row["accounts"][0]["rates"] == [
+        {"fx_method": "historical", "rate": 1.10, "rate_set": "ZZRS"},
+        {"fx_method": "", "rate": 1.12, "rate_set": "ZZRS"},
+    ]
+    assert "average" not in json.dumps(result)
 
 
 def test_budget_drill_reads_clickhouse_three_times_each_bound_to_scenario_cycle_and_layers():
