@@ -21,12 +21,13 @@ Site-free: the JSON is read as a file; the controller runs against a stub
 frappe whose db serves in-memory rows and records what it was asked.
 """
 import ast
+import functools
 import importlib.util
 import json
 import os
 import sys
 import types
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -34,6 +35,20 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCTYPE_DIR = os.path.join(APP_DIR, "epm", "doctype", "current_forecast")
 PATH = os.path.join(DOCTYPE_DIR, "current_forecast.json")
 CONTROLLER = os.path.join(DOCTYPE_DIR, "current_forecast.py")
+CLICKHOUSE = os.path.join(APP_DIR, "clickhouse.py")
+
+#: S6 KA2: the write-through table. Identical to konsolidat's clickhouse/init-db.sql
+#: (its tests/test_current_forecasts_ddl.py pins the same body); keep them identical.
+TABLE = "epm_staging.current_forecasts"
+DDL = (
+    "(scenario_id String, fiscal_year UInt16, cycle String, "
+    "as_of_date Date32 DEFAULT '1900-01-01') "
+    "ENGINE = MergeTree ORDER BY (scenario_id, fiscal_year)"
+)
+#: ClickHouse column -> Frappe field, in the DDL's column order.
+FIELD_MAP = {"scenario_id": "scenario_id", "fiscal_year": "fiscal_year", "cycle": "budget_cycle",
+             "as_of_date": "as_of_date"}
+SYNC_KEY = ("sync_doctype", "Current Forecast", TABLE)
 FLAGS = {"r": "read", "w": "write", "c": "create", "d": "delete", "s": "submit", "x": "cancel", "a": "amend"}
 
 FORECAST = "ZZFC"
@@ -238,12 +253,31 @@ def env(monkeypatch):
     frappe.ValidationError = _Thrown
     frappe.flags = types.SimpleNamespace(in_install=False, in_import=False, in_migrate=False, in_patch=False)
     frappe.session = types.SimpleNamespace(user="lead@example.com")
+    now = datetime(2026, 11, 17, 9, 30, 0)
     utils = types.ModuleType("frappe.utils")
+    utils.now_datetime = lambda: now
     frappe.utils = utils
+    queue = []   # frappe.db.after_commit, as the real after_commit_once fills it
     frappe.db = types.SimpleNamespace(
         get_value=get_value, get_values=get_values,
         exists=lambda dt, name: any(r["name"] == name for r in tables["Current Forecast"]),
+        after_commit=types.SimpleNamespace(_functions=queue, add=queue.append),
     )
+    ch = _clickhouse_stub(frappe)
+    # S6 KA2: the year gate and the workflow helper, recorded.
+    closed_years = set()
+    gate_calls = []
+
+    def assert_year_not_closed(fiscal_year, action="run"):
+        gate_calls.append((fiscal_year, action))
+        if fiscal_year in closed_years:
+            raise _Thrown(f"Cannot {action}: every period of FY{fiscal_year} is closed.")
+
+    period_status = types.ModuleType("konsol.period_status")
+    period_status.assert_year_not_closed = assert_year_not_closed
+    cancelled = []
+    workflows = types.ModuleType("konsol.workflows")
+    workflows.set_cancelled_state = lambda doc: cancelled.append(doc) or None
     model = types.ModuleType("frappe.model")
     docmod = types.ModuleType("frappe.model.document")
     docmod.Document = Document
@@ -261,8 +295,9 @@ def env(monkeypatch):
     added_indexes = []
     frappe.db.add_index = lambda dt, fields, index_name=None: added_indexes.append((dt, list(fields), index_name))
     for name, mod in {"frappe": frappe, "frappe.utils": utils, "frappe.model": model,
-                      "frappe.model.document": docmod,
-                      "konsol.epm.budget_grain": grain,
+                      "frappe.model.document": docmod, "konsol.clickhouse": ch,
+                      "konsol.epm.budget_grain": grain, "konsol.period_status": period_status,
+                      "konsol.workflows": workflows,
                       "konsol.epm.doctype.scenario.scenario": scenario}.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
@@ -279,7 +314,37 @@ def env(monkeypatch):
         return d
 
     return types.SimpleNamespace(doc=doc, tables=tables, asked=asked, mod=mod, frappe=frappe,
-                                 type_reads=type_reads, added_indexes=added_indexes)
+                                 type_reads=type_reads, added_indexes=added_indexes, now=now,
+                                 queue=queue, closed_years=closed_years, gate_calls=gate_calls,
+                                 cancelled=cancelled)
+
+
+def _literal(name):
+    with open(CLICKHOUSE) as f:
+        tree = ast.parse(f.read())
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", None) == name)
+
+
+def _clickhouse_stub(frappe):
+    """konsol.clickhouse with the REAL after_commit_once and
+    sync_doctype_after_commit (lifted by AST, as test_budget_cycle_write_through
+    does), so the once-per-transaction key is the production one."""
+    with open(CLICKHOUSE) as f:
+        tree = ast.parse(f.read())
+    wanted = {"after_commit_once", "sync_doctype_after_commit"}
+    fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    assert {n.name for n in fns} == wanted
+    ch = types.ModuleType("konsol.clickhouse")
+    ch.frappe = frappe
+    ch.functools = functools
+    ch.sync_doctype = lambda *a, **k: None
+    exec(compile(ast.Module(body=fns, type_ignores=[]), CLICKHOUSE, "exec"), ch.__dict__)
+    return ch
+
+
+def _keys(queue):
+    return [getattr(f, "_konsol_key", None) for f in queue]
 
 
 def test_a_valid_declaration_copies_the_round_and_titles_itself(env):
@@ -416,3 +481,148 @@ def test_on_doctype_update_adds_the_live_declaration_index(env):
     env.mod.on_doctype_update()
     assert env.added_indexes == [("Current Forecast", ["scenario_id", "fiscal_year", "docstatus"],
                                   "current_forecast_live")]
+
+
+# ---- S6 KA2: submit stamps; cancel is gated on the year; the write-through -------------------
+
+def test_submit_copies_the_cycles_input_fingerprint_without_a_save(env):
+    """BUD-11-3: the declaration carries the hash of the round it declared,
+    frozen by the submit, so a reader can report a change since."""
+    d = env.doc()
+    d.validate()
+    assert not d.get("input_fingerprint")
+    d.before_submit()
+    assert d.input_fingerprint == "v1:r2"
+
+
+def test_submit_stamps_the_submitter_as_approver_and_the_submit_time(env):
+    d = env.doc(owner="drafter@example.com")
+    d.validate()
+    assert not d.get("approved_by") and not d.get("approved_on")
+    d.before_submit()
+    assert d.approved_by == "lead@example.com"
+    assert d.approved_on == env.now
+
+
+def test_submit_reads_the_cycle_for_update_and_validate_does_not(env):
+    """Budget Cycle's cancel gate (S6 KA3) reads the submitted declarations
+    FOR UPDATE; this submit locks the Cycle row, so the two serialise instead
+    of both passing (write skew under REPEATABLE READ; Approved Budget m7a)."""
+    d = env.doc()
+    d.validate()
+    plain = [a for a in env.asked if a[:2] == ("get_value", "Budget Cycle")]
+    assert plain and all(a[3]["for_update"] is False for a in plain)
+    env.asked.clear()
+    d.before_submit()
+    locked = [a for a in env.asked if a[:2] == ("get_value", "Budget Cycle")]
+    assert locked and all(a[3]["for_update"] is True for a in locked), env.asked
+
+
+def test_submit_re_refuses_a_cycle_cancelled_since_the_draft_was_saved(env):
+    """The locking read sees the latest committed row: a Cycle cancelled after
+    validate passed is refused at submit, never declared."""
+    d = env.doc()
+    d.validate()
+    env.tables["Budget Cycle"][R2]["docstatus"] = 2
+    with pytest.raises(_Thrown, match=rf"{R2}.*cancelled"):
+        d.before_submit()
+
+
+def test_submit_refuses_a_cycle_with_no_fingerprint_stamped(env):
+    env.tables["Budget Cycle"][R2]["input_fingerprint"] = None
+    with pytest.raises(_Thrown, match=rf"{R2}.*fingerprint"):
+        env.doc().before_submit()
+
+
+def test_cancel_is_refused_when_every_period_of_the_year_is_closed(env):
+    env.closed_years.add(2027)
+    d = env.doc(name="CFC-ZZFC-2027", docstatus=1)
+    with pytest.raises(_Thrown, match=r"FY2027.*closed"):
+        d.before_cancel()
+    assert env.gate_calls == [(2027, "cancel Current Forecast CFC-ZZFC-2027")]
+    assert env.cancelled == [], "nothing changes before the gate"
+    assert SYNC_KEY not in _keys(env.queue), "a refused cancel queues no sync"
+
+
+def test_cancel_is_allowed_with_one_open_period_and_sets_the_cancelled_state(env):
+    d = env.doc(name="CFC-ZZFC-2027", docstatus=1)
+    d.before_cancel()
+    assert env.gate_calls == [(2027, "cancel Current Forecast CFC-ZZFC-2027")]
+    # A site may install a workflow of its own (none ships): the shared helper
+    # sets its docstatus-2 state when there is one.
+    assert env.cancelled == [d]
+
+
+def test_nothing_is_assigned_before_the_cancel_gate():
+    """test_cancel_period_gate's rule, pinned here too for the one doctype."""
+    with open(CONTROLLER) as f:
+        tree = ast.parse(f.read())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "CurrentForecast")
+    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "before_cancel")
+    calls = [c for c in ast.walk(fn) if isinstance(c, ast.Call)]
+    gate = next(c.lineno for c in calls if getattr(c.func, "id", getattr(c.func, "attr", None)) == "assert_year_not_closed")
+    early = [n for n in ast.walk(fn) if isinstance(n, ast.Assign) and n.lineno < gate]
+    assert not early
+
+
+# ---- the write-through table -------------------------------------------------------------
+
+def test_the_ddl_is_pinned_and_the_table_ships_whole():
+    assert _literal("_REFERENCE_TABLE_DDL")[TABLE] == DDL
+    assert TABLE not in _literal("_ADDED_COLUMNS")
+    assert TABLE not in _literal("_RETIRED_TABLES")
+
+
+def test_an_unset_as_of_date_is_a_declared_sentinel_never_1970():
+    """Read from clickhouse.py, the way the pin is: asserting on this file's
+    own DDL literal could not fail when the source changed (review of #546)."""
+    shipped = _literal("_REFERENCE_TABLE_DDL")[TABLE]
+    assert "as_of_date Date32 DEFAULT '1900-01-01'" in shipped
+    assert "1970" not in shipped
+    assert shipped.endswith("ORDER BY (scenario_id, fiscal_year)"), "the key the readers join on"
+
+
+def test_the_controller_names_the_table_and_its_columns_in_ddl_order(env):
+    cls = env.mod.CurrentForecast
+    assert cls.CH_TABLE == TABLE
+    assert list(cls.CH_FIELD_MAP) == list(FIELD_MAP)
+    assert cls.CH_FIELD_MAP == FIELD_MAP
+    # Submitted only, by the doctype's own is_submittable (resolve_sync_filters);
+    # a declared filter here would be a second rule.
+    assert not hasattr(cls, "CH_SYNC_FILTERS")
+    assert _doctype()["is_submittable"] == 1
+
+
+def test_submit_queues_the_sync_once_after_the_commit(env):
+    env.doc(name="CFC-ZZFC-2027").on_submit()
+    assert _keys(env.queue).count(SYNC_KEY) == 1
+
+
+def test_cancel_queues_the_sync_once_after_the_commit(env):
+    env.doc(name="CFC-ZZFC-2027", docstatus=1).on_cancel()
+    assert _keys(env.queue).count(SYNC_KEY) == 1
+
+
+def test_a_draft_save_queues_no_sync(env):
+    d = env.doc()
+    for hook in ("validate", "before_save", "on_update"):
+        if hasattr(d, hook):
+            getattr(d, hook)()
+    assert SYNC_KEY not in _keys(env.queue)
+
+
+def test_two_declarations_in_one_transaction_queue_one_sync(env):
+    env.doc(name="CFC-ZZFC-2027").on_submit()
+    env.doc(name="CFC-ZZFC-2028", fiscal_year=2028, budget_cycle=R_2028).on_submit()
+    assert _keys(env.queue).count(SYNC_KEY) == 1
+
+
+def test_the_sync_runs_sync_doctype_with_the_tables_field_map(env):
+    """The queued job is sync_doctype(doctype, table, field_map), the one
+    mechanism every write-through uses (CLAUDE.md)."""
+    env.doc(name="CFC-ZZFC-2027").on_submit()
+    job = next(f for f in env.queue if getattr(f, "_konsol_key", None) == SYNC_KEY)
+    seen = []
+    sys.modules["konsol.clickhouse"].sync_doctype = lambda *a, **k: seen.append(a)
+    job()
+    assert seen == [("Current Forecast", TABLE, FIELD_MAP)]

@@ -26,6 +26,8 @@ GATED = {
     "BudgetCycle": "assert_year_not_closed",
     # konsol#348 S5 K2: the declaration cancels while its year has an open period
     "ApprovedBudget": "assert_year_not_closed",
+    # konsol#348 S6 KA2 (S6-Q1 b): the current-round declaration, the same gate
+    "CurrentForecast": "assert_year_not_closed",
 }
 
 

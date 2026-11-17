@@ -223,6 +223,9 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         # konsol#348 S4-Q2 (a): the approved Budget Cycles, one row each, so
         # the warehouse reads a Cycle's Rate Set (test_budget_cycle_write_through.py)
         "epm_staging.budget_cycles",
+        # konsol#348 S6-Q1 (b): a forecast scenario's declared current round per
+        # year, so the warehouse picks one round (test_current_forecast_doctype.py)
+        "epm_staging.current_forecasts",
         # konsol#110: the entity registry, so a connector-less entity has a
         # currency the consolidation can join on
         "epm_staging.entities",
