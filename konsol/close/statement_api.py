@@ -65,7 +65,10 @@ before a group or a chart exists.
 whitelisted; konsol#348 S5 K4) is the Consolidated Statement's third
 payload, the approved budget's statement for the Group basis:
 ``{state, message, statement, meta}`` with ``meta`` = ``{cycle, layers,
-rate_set, scenario_id, declaration}``. The state is
+rate_set, scenario_id, declaration, heading_sides}`` (``heading_sides``,
+S6 KB2: {heading code: the chart's normal_balance, '' when blank} for every
+heading in the budget statement, None unless ``ok``; the report's
+Favourability column reads it). The state is
 ``approved_budget_model.budget_state`` over the live Approved Budget of
 the (group, year), the Budget Cycle it names, the Cycle's input
 fingerprint recomputed at this read (S5-Q2 a) and the Budget Layers;
@@ -78,6 +81,17 @@ so one sign rule serves both; no rows for the year is ``no_rows``. Every
 failure is a state with its sentence, never a raise into the actuals:
 ``get_statement`` itself reads no budget (the Desk report asks for it
 separately, K7).
+
+``entity_budget_payload(fiscal_year, fiscal_period, entity)`` (not
+whitelisted; konsol#348 S6 KB8, S6-Q6 a) is the same payload on the Entity
+basis: the Approved Budget of the entity's TOP root group, found by walking
+the parent links from the entity's node (none is ``no_group``, before any
+read; an entity on two nodes is refused by name), read
+at the entity's grain from ``gold_consolidated_budget_tb.local_amount`` in
+the entity's functional currency (``_ENTITY_BUDGET_TB_SQL``, bound to the
+group, scenario_id, cycle, layers and the entity), with the budget's plug
+synthesised per period so the residual is 0. ``meta`` adds ``group``,
+``entity`` and ``currency``.
 
 Query count is constant in the number of headings and entities: MariaDB
 reads are periods 1, groups 1, declared-accounts (Close Settings 2 +
@@ -204,6 +218,23 @@ _BUDGET_TB_SQL = (
     "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
     "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
     "GROUP BY fiscal_year, fiscal_period, main_account, adjustment_type"
+)
+#: konsol#348 S6 KB8 (S6-Q6 a): the entity budget's ONE read, ``_ENTITY_TB_SQL``'s
+#: shape over ``gold_consolidated_budget_tb.local_amount`` (the budget at the
+#: entity's grain in the entity's own currency, before translation), bound
+#: like ``_BUDGET_TB_SQL`` to the group, the declaration's scenario_id, cycle
+#: and layers, AND to the entity. ``adjustment_type`` is the literal
+#: ``'entity'``; the translated table's ``unbalanced`` plug has no local
+#: counterpart, so ``_entity_budget_statement`` synthesises one row per
+#: period from these rows. Aliased ``amt`` (N53).
+_ENTITY_BUDGET_TB_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, 'entity' AS adjustment_type, "
+    "sum(local_amount) AS amt, countIf(local_amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_consolidated_budget_tb "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "AND data_area_id = {entity:String} "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account"
 )
 _ENTITY_SQL = (
     "SELECT DISTINCT data_area_id FROM epm_gold.gold_fully_consolidated_tb "
@@ -775,7 +806,8 @@ def _budget_statement(key, period_rows, declared, accounts_map, currency, group)
     Set, declaration, approver); on any other state, that state's sentence."""
     approved = _approved_budget(group, key[0])
     meta = {"cycle": approved["cycle"], "layers": approved["layers"], "rate_set": approved["rate_set"],
-            "scenario_id": approved["scenario_id"], "declaration": approved["declaration"]}
+            "scenario_id": approved["scenario_id"], "declaration": approved["declaration"],
+            "heading_sides": None}
     out = {"state": approved["state"], "message": approved["message"], "statement": None, "meta": meta}
     if approved["state"] != approved_budget_model.OK:
         return out
@@ -801,7 +833,21 @@ def _budget_statement(key, period_rows, declared, accounts_map, currency, group)
         out.update(state=built["state"], message=built["message"])
         return out
     out["statement"] = built["statement"]
+    meta["heading_sides"] = _heading_sides(built["statement"], accounts_map)
     return out
+
+
+def _heading_sides(statement, accounts_map):
+    """``{heading code: normal_balance}`` for every heading line of
+    ``statement``, from the chart (konsol#348 S6 KB2, for the Favourability
+    column, S6-Q3 a). A blank side is kept as ``''``: the report reads it as
+    "n/a" (BUD-7-a: an undeclared account is reported, never given a
+    direction), so nothing here guesses one."""
+    return {
+        line["heading"]: (accounts_map.get(line["heading"]) or {}).get("normal_balance") or ""
+        for section in statement["sections"]
+        for line in section["lines"] if line.get("kind") == "heading"
+    }
 
 
 def budget_payload(fiscal_year, fiscal_period, consolidation_group):
@@ -819,6 +865,149 @@ def budget_payload(fiscal_year, fiscal_period, consolidation_group):
     declared = signoff_gate.statement_accounts()
     return _budget_statement(key, period_rows, declared, _chart(),
                              groups[consolidation_group].get("reporting_currency"), consolidation_group)
+
+
+#: S6 KB8: the entity budget's own state, before any Approved Budget read
+#: (the five approved_budget_model states follow).
+ENTITY_NO_GROUP = "no_group"
+UNBALANCED_CODE = "UNBALANCED"
+
+
+def _entity_root_group(entity):
+    """The code of the TOP root Consolidation Group of ``entity``'s node, or
+    None when no node carries the entity (S6-Q6 a; PR #558 review M1).
+
+    A leaf's ``consolidation_group`` is its PARENT node's code
+    (ConsolidationGroup._label), so the walk follows
+    ``parent_consolidation_group`` from the entity's node to the node with
+    none, as ownership_period.node_root does; an Approved Budget declares
+    only a root. One node per entity (_validate_entity_in_one_node) and one
+    parent per node give one root; an ownership link names an owner under
+    the same root (ownership_period.owner_refusal), so the ownership graph
+    adds none. Data written around the one-node rule is refused by name."""
+    nodes = frappe.get_all(
+        "Consolidation Group",
+        fields=["name", "consolidation_group", "data_area_id", "parent_consolidation_group"],
+        limit_page_length=0, order_by="name asc")
+    by_name = {n["name"]: n for n in nodes}
+    own = sorted(n["name"] for n in nodes if n.get("data_area_id") == entity)
+    if not own:
+        return None
+    if len(own) > 1:
+        frappe.throw(f"{entity} is on {len(own)} Consolidation Group nodes ({', '.join(own)}); an entity "
+                     "belongs to one node. Remove the extra node before its budget can be shown.")
+    node, seen = by_name[own[0]], set()
+    while node.get("parent_consolidation_group") in by_name and node["name"] not in seen:
+        seen.add(node["name"])
+        node = by_name[node["parent_consolidation_group"]]
+    return node["consolidation_group"]
+
+
+def _with_entity_plug(tb_rows, entity):
+    """``tb_rows`` plus one synthesised ``unbalanced`` row per (fiscal_year,
+    fiscal_period) present, ``-sum(amount)`` of that period's rows under the
+    literal ``main_account 'UNBALANCED'`` (the translated table's own plug
+    code, S4-Q8 b), so the entity budget's residual is 0 and S5's Unbalanced
+    line shows the entity's local imbalance. A balanced period gets a 0
+    row: the line is present either way, as in the translated budget. A
+    NULL amount is left to statement_model to refuse (never summed as 0)."""
+    sums = {}
+    for row in tb_rows:
+        period = (row["fiscal_year"], row["fiscal_period"])
+        amount = row.get("amount")
+        if amount is None or row.get("null_rows"):
+            continue
+        sums[period] = sums.get(period, 0.0) + amount
+    plugs = [
+        {"fiscal_year": fy, "fiscal_period": fp, "data_area_id": entity, "main_account": UNBALANCED_CODE,
+         "adjustment_type": "unbalanced", "amount": -total, "null_rows": 0}
+        for (fy, fp), total in sorted(sums.items())
+    ]
+    return list(tb_rows) + plugs
+
+
+def _entity_budget_statement(key, period_rows, declared, accounts_map, currency, entity):
+    """The entity budget's payload (konsol#348 S6 KB8; S6-Q6 a):
+    ``{"state", "message", "statement", "meta"}`` with ``meta`` =
+    ``_budget_statement``'s plus ``group``, ``entity`` and ``currency`` (the
+    entity's functional currency, which the statement is rounded to).
+
+    The entity's top root group decides first (``_entity_root_group``):
+    none is ``no_group``, with its sentence and no further read. Otherwise
+    ``_approved_budget`` for it, and
+    only ``ok`` reads ClickHouse, ONCE (``_ENTITY_BUDGET_TB_SQL``) with the
+    plug synthesised (``_with_entity_plug``), through ``_build_statement`` in
+    the entity's currency. The ok message is the group's approved-budget
+    sentence plus the entity and its currency."""
+    meta = {"cycle": None, "layers": None, "rate_set": None, "scenario_id": None, "declaration": None,
+            "heading_sides": None, "group": None, "entity": entity, "currency": currency}
+    out = {"state": "ok", "message": None, "statement": None, "meta": meta}
+    group = _entity_root_group(entity)
+    if group is None:
+        out.update(state=ENTITY_NO_GROUP, message=(
+            f"{entity} is a member of no consolidation group, so it has no approved budget to show: add it "
+            "to a root Consolidation Group, and declare that group's Approved Budget."))
+        return out
+    meta["group"] = group
+
+    approved = _approved_budget(group, key[0])
+    meta.update(cycle=approved["cycle"], layers=approved["layers"], rate_set=approved["rate_set"],
+                scenario_id=approved["scenario_id"], declaration=approved["declaration"])
+    out.update(state=approved["state"], message=approved["message"])
+    if approved["state"] != approved_budget_model.OK:
+        return out
+
+    def currency_gap(currency):
+        if not currency:
+            return (f"{entity} has no Functional Currency: set it on the Entity before "
+                    "its budget can be shown.")
+        return (
+            f"{statement_model.STATEMENT_CURRENCY_PRECISION_UNDECLARED}: the functional currency "
+            f"{currency} of {entity} has no ISO Currency, so its minor unit is undeclared. "
+            "Add it to ISO Currency, or set the entity's Functional Currency.")
+
+    def read():
+        rows = [_drill_row(r) for r in ch_read.rows(_ENTITY_BUDGET_TB_SQL, {
+            "group": group, "scenario": approved["scenario_id"], "cycle": approved["cycle"],
+            "layers": _sql_array(approved["layers"]), "fy": key[0], "entity": entity})]
+        return {"tb_rows": _with_entity_plug(rows, entity)}
+
+    built = _build_statement(
+        key, period_rows, declared, accounts_map, currency, currency_gap, read,
+        no_rows_message=(f"No budget rows in the warehouse for Budget Cycle {approved['cycle']} and {entity} "
+                         f"up to {period_name(*key)}: build the budget."))
+    if built["state"] != "ok":
+        out.update(state=built["state"], message=built["message"])
+        return out
+    out["statement"] = built["statement"]
+    meta["heading_sides"] = _heading_sides(built["statement"], accounts_map)
+    out["message"] = (f"{approved['message'].rstrip('.')}. Entity budget for {entity} in {currency}, the "
+                      "entity's functional currency, from the Cycle's rows for the entity before translation.")
+    return out
+
+
+def entity_budget_payload(fiscal_year, fiscal_period, entity):
+    """``_entity_budget_statement`` from the request's own values, resolved
+    as ``_entity_statement`` resolves them (konsol#348 S6 KB8): the entity
+    (scope first, then unknown or a group entity refused by name), the
+    period (refused when undeclared), the declared accounts and the chart.
+    Not whitelisted: the Desk report calls it on the Entity basis (KB9)
+    after its own ``get_entity_statement``."""
+    key = _period_key(fiscal_year, fiscal_period)
+    if not entity:
+        frappe.throw("Choose an entity.")
+    assert_entity_access(entity)
+    row = frappe.db.get_value(
+        "Entity", entity, ["entity_name", "functional_currency", "is_group"], as_dict=True)
+    if not row:
+        frappe.throw(f"{entity} is not an entity.")
+    if row.get("is_group"):
+        frappe.throw(f"{entity} is a group entity: choose a legal entity, or use the Group basis.")
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    _find_period(key, period_rows)
+    declared = signoff_gate.statement_accounts()
+    return _entity_budget_statement(key, period_rows, declared, _chart(), row.get("functional_currency"),
+                                    entity)
 
 
 @frappe.whitelist(methods=["GET"])
@@ -1317,7 +1506,7 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
 
     ``basis="Entity"`` (konsol#495) exports one entity's own statement
     (``_entity_statement``, ``entity`` required): the drills come from the
-    statement's own trial-balance rows, so ClickHouse is read ONCE in total.
+    statement's own trial-balance rows, so ClickHouse is read ONCE for the actuals.
     A blank basis or ``"Group"`` is the group export above, unchanged; any
     other basis is refused.
 
@@ -1326,7 +1515,9 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
     workbook is built, in the request's own transaction (no commit here; a
     GET would roll it back, hence POST). A refusal records nothing. The
     detail's ``budget`` is ``{cycle, layers, rate_set}`` for the ok budget
-    the file carries, else ``None`` (the entity export always)."""
+    the file carries, else ``None``. The Entity export carries the entity
+    budget (``entity_budget_payload``, S6 KB8: one more ClickHouse read when
+    it is ok) with its columns and note, and no "Budget drill" sheet."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     if basis not in (None, "", "Group", "Entity"):
         frappe.throw(f"Basis {basis} is not one of Group, Entity.")
@@ -1338,8 +1529,12 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
             drills = _entity_drills(payload, reads)
         except ValueError as e:
             frappe.throw(str(e))
+        # The entity budget (konsol#348 S6 KB8) goes to the workbook as on the
+        # Desk report (KB9); the Entity basis has no budget drill sheet.
+        budget = _export_entity_budget(fiscal_year, fiscal_period, payload["entity"])
         _send_workbook(payload, drills, _filename(payload["period"], None, entity=entity),
-                       basis="Entity", consolidation_group=None, entity=payload["entity"])
+                       basis="Entity", consolidation_group=None, entity=payload["entity"],
+                       budget=budget)
         return
     payload, reads = _statement(fiscal_year, fiscal_period, group_code(consolidation_group))
     if payload["state"] != "ok":
@@ -1362,6 +1557,23 @@ def export_statement(fiscal_year, fiscal_period, consolidation_group=None, basis
 def _budget_unavailable(message):
     """A non-ok budget payload naming why (``_export_budget``'s guard)."""
     return {"state": "error", "message": message, "statement": None, "meta": {}}
+
+
+def _export_entity_budget(fiscal_year, fiscal_period, entity):
+    """The entity budget payload for the Entity export (``entity_budget_payload``,
+    konsol#348 S6 KB8), guarded as ``_export_budget`` is: a refusal becomes
+    state "error" with its own message (no log, the queued message cleared),
+    any other fault state "error" naming it plus one Error Log. Either way
+    the workbook writes no budget column and the note says why; the
+    actuals' file is produced."""
+    try:
+        return entity_budget_payload(fiscal_year, fiscal_period, entity)
+    except frappe.ValidationError as e:
+        frappe.clear_last_message()
+        return _budget_unavailable(str(e))
+    except Exception as e:  # noqa: BLE001 — a budget fault never fails the actuals' file
+        frappe.log_error(title="Consolidated Statement export entity budget read", message=frappe.get_traceback())
+        return _budget_unavailable(f"{type(e).__name__}: {e}")
 
 
 def _export_budget(payload, reads):

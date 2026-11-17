@@ -12,7 +12,7 @@ REPORT_DIR = os.path.join(APP_DIR, "consolidation", "report")
 #: Report script -> the filters it remembers, in order.
 KEYS = {
     "consolidation_worksheet": ["fiscal_year", "fiscal_period", "consolidation_group",
-                                "entities", "dimension"],
+                                "entities", "dimension", "basis"],
     "consolidated_statement": ["fiscal_year", "fiscal_period", "consolidation_group",
                                "basis", "entity"],
     "statement_drill": ["fiscal_year", "fiscal_period", "consolidation_group", "heading",

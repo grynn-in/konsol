@@ -22,8 +22,10 @@ drill is given):
   journals" drill row, with their basis (posted in this period).
 
 **Budget (konsol#348 S5 K11).** ``workbook(payload, drills, budget=None,
-budget_drills=None)``. With an OK budget payload, the three ``BUDGET_COLUMNS``
-("Budget (before eliminations)", "Variance to budget", "Budget year to date")
+budget_drills=None)``. With an OK budget payload, the four ``BUDGET_COLUMNS``
+("Budget (before eliminations)", "Variance to budget", "Favourability" (S6
+KB4: a text on P&L headings and the net result, the report model's rule),
+"Budget year to date")
 follow the actuals columns in each section's header. BUD-4-2 (Deepak Pai,
 7 Nov 2026: "a visible 'no approved budget' state, never a blank column";
 PR #554 review D1): a budget that is not ok adds NO column, so the sheet keeps
@@ -37,7 +39,10 @@ period's ``current`` minus it on a Profit and Loss line only (S5 F1: on the
 Balance Sheet a budgeted movement set against an actual balance is not a
 variance, so the cell is blank); Budget year to date is the budget's ``ytd``
 (Profit and Loss only). A cell is blank, never 0, where the budget is
-absent or lacks the line; the residual takes no variance. A
+absent or lacks the line. An unbudgeted heading is budgeted at 0 (Deepak
+Pai, 17 Nov 2026, konsol#348 comment 6956694095: unbudgeted is budget zero)
+because statement_model.statement emits every chart heading, at 0 when no
+row sits under it, and the net result; the residual takes no variance. A
 non-heading budget line the actuals lack (a section's "No heading", "Not in
 the group chart", or the budget's own "Unbalanced budget (no balancing
 entry)" plug) is written where the actuals' line would stand (before the P&L
@@ -102,11 +107,12 @@ _FIELD = {"This period": "current", "Comparison": "comparison",
 _COMPARISON_FIELDS = ("comparison", "variance")
 
 #: The budget columns (konsol#348 S5 K11; S5-Q6 a: a separate constant, never
-#: part of ``COLUMNS``, which numbers.js pins). Same three on each section;
-#: statement_report_model.columns() carries the same labels.
+#: part of ``COLUMNS``, which numbers.js pins). Same four on each section, so
+#: Commentary and By stand in the same cells; statement_report_model.columns()
+#: carries the same labels. "Favourability" (S6 KB4, S6-Q3 a) is a text cell.
 BUDGET_COLUMNS = {
-    PL: ["Budget (before eliminations)", "Variance to budget", "Budget year to date"],
-    BS: ["Budget (before eliminations)", "Variance to budget", "Budget year to date"],
+    PL: ["Budget (before eliminations)", "Variance to budget", "Favourability", "Budget year to date"],
+    BS: ["Budget (before eliminations)", "Variance to budget", "Favourability", "Budget year to date"],
 }
 #: The note's texts: the same words as statement_report_model.BUDGET_LIMITS and
 #: BUDGET_BS_BASIS (a test pins the equality; this module imports no konsol code).
@@ -114,6 +120,41 @@ BUDGET_LIMITS = "before intercompany eliminations and without group-level adjust
 BUDGET_BS_BASIS = ("the balance sheet budget column shows the budgeted movements year to date, not balances, "
                    "so there is no variance to budget on the balance sheet")
 UNBALANCED = "unbalanced"
+
+#: Favourability (konsol#348 S6 KB4; S6-Q3 a, BUD-7-a, Deepak Pai, 7 Nov
+#: 2026): the same texts, rule and function as statement_report_model (a test
+#: pins the equality; this module imports no konsol code).
+FAVOURABLE = "Favourable"
+UNFAVOURABLE = "Unfavourable"
+ON_BUDGET = "On budget"
+FAVOURABILITY_NA = "n/a"
+_DECLARED_SIDES = ("Debit", "Credit")
+FAVOURABILITY_RULE = (
+    "Favourability: on a profit and loss heading whose main account declares a normal balance, a variance "
+    "to budget above zero is Favourable and below zero Unfavourable (income and costs are both shown "
+    "income-positive, so Debit and Credit read the same way), zero is On budget; a heading with no "
+    "declared normal balance reads n/a. The net result is favourable when there is more profit than budgeted")
+#: Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
+#: 6956694095; the 22 Sep 2026 rule): statement_report_model.UNBUDGETED_RULE's
+#: words (a test pins the equality).
+UNBUDGETED_RULE = ("A heading or net result with no budget line is budgeted at zero, so on the profit and loss "
+                   "its variance to budget is the actual: unbudgeted spend is Unfavourable and unbudgeted "
+                   "revenue Favourable")
+#: The Entity basis's budget (S6 KB8) has no budget drill, so its export has
+#: no "Budget drill" sheet; the note says so.
+ENTITY_NO_BUDGET_DRILL = ("The entity budget has no budget drill, so this file has no Budget drill sheet: "
+                          "open the Group basis export for one")
+
+
+def favourability(variance_to_budget, side):
+    """statement_report_model.favourability: ``n/a`` unless ``side`` is Debit
+    or Credit (or ``"net_result"``), else On budget at zero, Favourable
+    above, Unfavourable below (display sign, income positive)."""
+    if side != "net_result" and side not in _DECLARED_SIDES:
+        return FAVOURABILITY_NA
+    if variance_to_budget == 0:
+        return ON_BUDGET
+    return FAVOURABLE if variance_to_budget > 0 else UNFAVOURABLE
 #: statement_report_model._BUDGET_ONLY_KINDS (PR #554 review M1): the
 #: non-heading budget lines written with blank actuals when the actuals lack
 #: them, in statement_model's order.
@@ -300,13 +341,29 @@ def _budget_items(budget):
     return items
 
 
-def _budget_cells(section, line, budget_items, minor_unit, include=None, variance=True):
-    """``[budget, variance to budget, budget year to date]`` for a line (or
-    an include of it), blank (``None``, never 0) where the budget is absent,
-    not ok or lacks the line (statement_report_model._with_budget). The
-    variance is Profit and Loss only (S5 F1) and rounded once to the minor
-    unit; ``variance`` False (the residual) leaves it blank."""
-    blank = [None, None, None]
+def _heading_sides(budget):
+    """``meta.heading_sides`` of an ok budget (S6 KB2), or None when the
+    budget is not ok; an ok budget without it is refused naming the key, as
+    statement_report_model._heading_sides (every heading would read n/a)."""
+    if _budget_items(budget) is None:
+        return None
+    sides = (budget.get("meta") or {}).get("heading_sides")
+    if sides is None:
+        raise ValueError("The budget payload has no meta.heading_sides.")
+    return sides
+
+
+def _budget_cells(section, line, budget_items, minor_unit, include=None, variance=True,
+                  heading_sides=None):
+    """``[budget, variance to budget, favourability, budget year to date]``
+    for a line (or an include of it), blank (``None``, never 0) where the
+    budget is absent, not ok or lacks the line. An unbudgeted heading is in
+    an ok budget at 0 (statement_model emits every chart heading; 17 Nov 2026
+    rule), so it needs no case here. The variance is Profit and Loss
+    only (S5 F1) and rounded once to the minor unit; ``variance`` False (the
+    residual) leaves it blank. Favourability (S6 KB4) is text on a P&L
+    heading (from ``heading_sides``) and the net result only."""
+    blank = [None, None, None, None]
     if budget_items is None:
         return blank
     key, item = ((section, "include", line["heading"], include.get("kind")), include) \
@@ -316,17 +373,24 @@ def _budget_cells(section, line, budget_items, minor_unit, include=None, varianc
         return blank
     budget_value = budget_item["current"]
     this = item.get("current")
-    cells = [_amount(budget_value, "budget"), None, None]
+    cells = [_amount(budget_value, "budget"), None, None, None]
     if variance and section == PL and this is not None:
         cells[1] = _amount(round(this - budget_value, minor_unit), "variance to budget")
+        kind = line.get("kind")
+        if include is None and kind == "heading":
+            cells[2] = favourability(cells[1], (heading_sides or {}).get(line["heading"]) or "")
+        elif include is None and kind == "net_result":
+            cells[2] = favourability(cells[1], "net_result")
     if budget_item.get("ytd") is not None:
-        cells[2] = _amount(budget_item["ytd"], "budget year to date")
+        cells[3] = _amount(budget_item["ytd"], "budget year to date")
     return cells
 
 
-def _budget_note(budget):
+def _budget_note(budget, entity_basis=False):
     """The Statement sheet's budget line: for an ok budget its own sentence
-    with the columns' limits and the Balance Sheet basis; otherwise the
+    with the columns' limits, the Balance Sheet basis, the favourability and
+    unbudgeted rules and, on the Entity basis, that there is no budget drill
+    sheet (``ENTITY_NO_BUDGET_DRILL``); otherwise the
     state's sentence, prefixed "Budget columns not shown:", which is the
     visible state BUD-4-2 asks for (no budget column is written then);
     ``None`` when no budget was asked for."""
@@ -334,7 +398,9 @@ def _budget_note(budget):
         return None
     if _budget_items(budget) is not None:
         own = (budget.get("message") or "").rstrip(".")
-        return "%s. The budget columns are %s; %s." % (own, BUDGET_LIMITS, BUDGET_BS_BASIS)
+        note = "%s. The budget columns are %s; %s. %s. %s." % (own, BUDGET_LIMITS, BUDGET_BS_BASIS,
+                                                              FAVOURABILITY_RULE, UNBUDGETED_RULE)
+        return "%s %s." % (note, ENTITY_NO_BUDGET_DRILL) if entity_basis else note
     reason = budget.get("message") or "the budget is not available (state: %s)" % budget.get("state")
     return "Budget columns not shown: %s" % reason
 
@@ -350,6 +416,7 @@ def _section_rows(section, commentary, comparison_note, budget=None, minor_unit=
         raise ValueError(f"unknown statement section: {name}")
     columns = COLUMNS[name]
     budget_items = _budget_items(budget)
+    heading_sides = _heading_sides(budget)
     with_budget = budget_items is not None
     out = [(["Line", "Code"] + columns + (BUDGET_COLUMNS[name] if with_budget else [])
             + ["Commentary", "By"], _BOLD)]
@@ -357,7 +424,7 @@ def _section_rows(section, commentary, comparison_note, budget=None, minor_unit=
     def budgeted(line, include=None, variance=True):
         if not with_budget:
             return []
-        return _budget_cells(name, line, budget_items, minor_unit, include, variance)
+        return _budget_cells(name, line, budget_items, minor_unit, include, variance, heading_sides)
 
     def budget_only(section):
         """The budget's non-heading lines the actuals lack, actuals blank
@@ -375,7 +442,7 @@ def _section_rows(section, commentary, comparison_note, budget=None, minor_unit=
                 label = "%s (%s)" % (label, ", ".join(item["codes"]))
             ytd = _amount(item["ytd"], label + " ytd") if item.get("ytd") is not None else None
             rows.append(([label, None] + [None] * len(columns)
-                         + [_amount(item.get("current"), label), None, ytd], None))
+                         + [_amount(item.get("current"), label), None, None, ytd], None))
         return rows
 
     def amounts(line, what, fields=None):
@@ -429,7 +496,8 @@ def _statement_sheet(ws, payload, budget=None):
     gap = payload.get("gap")
     comparison_note = statement["periods"].get("comparison_note")
     for note in ((gap or {}).get("message"), comparison_note,
-                 _not_included_text(payload.get("not_included")), _budget_note(budget)):
+                 _not_included_text(payload.get("not_included")),
+                 _budget_note(budget, entity_basis=payload.get("basis") == "Entity")):
         if note:
             sheet.write([note])
     sheet.blank()
@@ -447,7 +515,7 @@ def _statement_sheet(ws, payload, budget=None):
         sheet.blank()
 
     ws.column_dimensions["A"].width = 44
-    amount_columns = 4 + (3 if with_budget else 0)
+    amount_columns = 4 + (len(BUDGET_COLUMNS[PL]) if with_budget else 0)
     for col in range(3, 3 + amount_columns):
         ws.column_dimensions[chr(ord("A") + col - 1)].width = 16
     ws.column_dimensions[chr(ord("A") + 2 + amount_columns)].width = 48
