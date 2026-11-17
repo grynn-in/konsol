@@ -594,6 +594,8 @@ class _World:
         self.get_all_data = {}
         self.ch = _FakeClickHouse()
         self.stamps = []
+        self.set_values = []
+        self.commits = 0
 
 
 def _k8(world):
@@ -644,7 +646,17 @@ def _k8(world):
 
     fr.throw = throw
     fr.whitelist = lambda *a, **k: (lambda fn: fn)
-    fr.db = types.SimpleNamespace(get_value=get_value, sql=sql,
+    def set_value(doctype, name, field, value, update_modified=True):
+        world.set_values.append((doctype, name, field, value, update_modified))
+        for r in world.get_all_data.get(doctype, []):
+            if r["name"] == name:
+                r[field] = value
+
+    def commit():
+        world.commits += 1
+
+    fr.db = types.SimpleNamespace(get_value=get_value, sql=sql, set_value=set_value,
+                                  commit=commit,
                                   rollback=lambda: world.events.append("rollback"))
     fr.get_all = get_all
     def enqueue(*a, **k):
@@ -1979,3 +1991,93 @@ def test_rf11_the_race_comment_states_the_doubling_and_the_dbt_guard():
     assert "last write wins" not in src
     assert "assert_cost_allocation_coefficients_close" in src
     assert "double" in src
+
+
+# --- RF12: stored counts self-correct; a failed rebuild falls back to per-run
+# repair; the F4 comment names the right writers (PR #541, RF11 re-review R1-R3).
+
+def _count_set(w, run, n):
+    return ("Cost Allocation Run", run, "coefficient_row_count", n, False)
+
+
+def test_rf12_a_stale_stored_count_is_repaired_once_then_corrected():
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1}, count=n + 3)     # stale
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
+    m = _k8(w)
+    m.check_coefficients_staging()
+    assert len(w.enqueued) == 2                                  # both repaired
+    assert w.set_values == [_count_set(w, "CAR-00001", n), _count_set(w, "CAR-00002", n)]
+    assert f"stored count {n + 3} -> {n}" in _logged_text(w)
+    calls, enq, logged = len(w.ch.calls), len(w.enqueued), len(w.logged)
+    m.check_coefficients_staging()                               # the second check does nothing
+    assert [sql.split()[0] for sql, _p in w.ch.calls[calls:]] == ["SELECT"]
+    assert len(w.enqueued) == enq and len(w.logged) == logged
+    assert len(w.set_values) == 2
+
+
+def test_rf12_a_legacy_run_with_a_stored_zero_gets_its_count_written_back():
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {"CAR-00001": 1, "CAR-00002": 1})
+    w.get_all_data["Cost Allocation Run"][0]["coefficient_row_count"] = 0
+    _staged(w, {"CAR-00001": n, "CAR-00002": n})
+    m = _k8(w)
+    model_calls = _count_model_calls(m)
+    m.check_coefficients_staging()
+    assert model_calls == ["CAR-00001"]
+    assert w.set_values == [_count_set(w, "CAR-00001", n)]
+    assert w.enqueued == []                                      # nothing was repaired
+    m.check_coefficients_staging()                               # the model path ran once
+    assert model_calls == ["CAR-00001"] and len(w.set_values) == 1
+
+
+def test_rf12_after_a_rebuild_the_counts_are_backfilled_from_the_rows_written():
+    w = _World()
+    n = len(_expected_rows())
+    _site_counted(w, {f"CAR-{i:05d}": 1 for i in range(1, 22)}, count=1)   # all stale
+    _staged(w, {})
+    m = _k8(w)
+    orig = m.clickhouse.sync_table
+
+    def writing(table, columns, rows, **k):
+        w.ch.rows = [dict(zip(columns, r)) for r in rows]
+        return orig(table, columns, rows, **k)
+
+    m.clickhouse.sync_table = writing
+    m.check_coefficients_staging()
+    assert len(w.sync_table_calls) == 1
+    assert sorted(w.set_values) == sorted(_count_set(w, f"CAR-{i:05d}", n) for i in range(1, 22))
+
+
+def test_rf12_a_failed_rebuild_repairs_run_by_run_and_logs_the_rejected_run():
+    w = _World()
+    _site_counted(w, {f"CAR-{i:05d}": 1 for i in range(1, 22)})        # 21 runs
+    _staged(w, {})
+    m = _k8(w)
+    orig = m._coefficient_rows
+
+    def rows(run_name, method, stored):
+        if run_name == "CAR-00007":
+            raise m.model.CostAllocationError("ZZ every driver value is zero")
+        return orig(run_name, method, stored)
+
+    m._coefficient_rows = rows
+    m.check_coefficients_staging()                               # raises nothing
+    assert w.sync_table_calls == []                              # the rebuild failed
+    assert {r["run"] for r in w.ch.rows} == {f"CAR-{i:05d}" for i in range(1, 22)} - {"CAR-00007"}
+    assert sorted(kw["name"] for _a, kw in w.enqueued) == sorted(
+        f"CAR-{i:05d}" for i in range(1, 22) if i != 7)
+    text = _logged_text(w)
+    assert "not repaired: CAR-00007: " in text and "ZZ every driver value is zero" in text
+    assert "rebuild failed" in text
+
+
+def test_rf12_the_race_comment_names_the_callback_and_the_hourly_repair():
+    with open(RUN_PY) as f:
+        src = f.read()
+    flat = " ".join(line.lstrip("# ") for line in src.splitlines())
+    assert "two writers that both read the run as submitted: the after-commit callback and the hourly repair" in flat
+    assert "db.commit" not in src
+    assert "(a submit's callback and a fast\n#   cancel's in another request, or a callback and the hourly repair)" not in src
