@@ -98,7 +98,10 @@ def _budget(fiscal_year, fiscal_period, payload):
     actuals' own message). A refused read (``frappe.throw``) or any fault
     in the read becomes a non-ok budget payload naming it, so the columns
     are blank with the reason in the legend and the actuals still render:
-    a budget fault never fails the statement."""
+    a budget fault never fails the statement. A fault (anything but a
+    refusal) is a bug, so it is also written to the Error Log with its
+    traceback (S5 G2): the legend alone depends on a user reporting it.
+    Nothing commits here; the request does."""
     if payload.get("state") != "ok" or not payload.get("consolidation_group"):
         return None
     try:
@@ -107,4 +110,5 @@ def _budget(fiscal_year, fiscal_period, payload):
         frappe.clear_last_message()
         return {"state": "error", "message": str(e), "statement": None, "meta": {}}
     except Exception as e:  # noqa: BLE001 — visible in the legend, never a failed statement
+        frappe.log_error(title="Consolidated Statement budget read", message=frappe.get_traceback())
         return {"state": "error", "message": f"{type(e).__name__}: {e}", "statement": None, "meta": {}}
