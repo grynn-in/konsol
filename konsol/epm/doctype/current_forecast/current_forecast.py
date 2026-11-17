@@ -16,9 +16,17 @@ nothing is guessed. The declaration adds no figures.
 Submittable, and submit is the approval (the Approved Budget precedent, #348
 S5-Q1 a): review happens on the draft, EPM Admin submits, there is no
 installed workflow and no state field. The approver and the time are stamped
-at submit (``approved_by``, ``approved_on``). Cancel is gated on the year
-(S6 KA2); a cancelled declaration stays as the audit trail and may be
-amended.
+at submit (``approved_by``, ``approved_on``), with a copy of the round's
+``input_fingerprint`` (BUD-11-3). Cancel is gated on the year (BUD-9-3, the
+Budget Cycle rule); a cancelled declaration stays as the audit trail and may
+be amended.
+
+Write-through (S6 KA2): a submitted declaration is one row of
+``epm_staging.current_forecasts`` (scenario_id, fiscal_year, cycle,
+as_of_date), entering on submit and leaving on cancel, after the commit, once
+per transaction (clickhouse.sync_doctype_after_commit); submitted rows only,
+by the doctype's own is_submittable (resolve_sync_filters). The DDL is
+clickhouse._REFERENCE_TABLE_DDL, identical to konsolidat's init-db.sql.
 
 validate refuses, by name, what the readers could not read correctly:
 - a scenario that is not of type ``forecast`` (read under the Scenario share
@@ -36,8 +44,10 @@ validate refuses, by name, what the readers could not read correctly:
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils import now_datetime
 
 from konsol.epm.budget_grain import digest_name
+from konsol.workflows import set_cancelled_state
 
 FORECAST = "forecast"
 
@@ -53,6 +63,21 @@ _CYCLE_FIELDS = ["docstatus", "scenario_id", "scenario_type", "fiscal_year", "as
 
 
 class CurrentForecast(Document):
+    #: S6 KA2: the declared current round, one row per submitted declaration,
+    #: so gold_forecast_current_round picks the round every forecast reader
+    #: joins. Keys are ClickHouse columns in the DDL's order
+    #: (clickhouse._REFERENCE_TABLE_DDL, identical to konsolidat's
+    #: init-db.sql); values are this doctype's fields. horizon_periods and
+    #: rate_set are not here: the warehouse reads them from budget_cycles by
+    #: `cycle`, and a copy would be a second source of truth.
+    CH_TABLE = "epm_staging.current_forecasts"
+    CH_FIELD_MAP = {
+        "scenario_id": "scenario_id",
+        "fiscal_year": "fiscal_year",
+        "cycle": "budget_cycle",
+        "as_of_date": "as_of_date",
+    }
+
     def validate(self):
         self._refuse_non_forecast_scenario()
         cycle = self._cycle_row()
@@ -143,6 +168,61 @@ class CurrentForecast(Document):
                   "one live declaration: work in it, or cancel it and amend it.").format(
                     row.name, states[int(row.docstatus)], self.scenario_id, self.fiscal_year),
                 frappe.ValidationError)
+
+    def before_submit(self):
+        """Submit is the approval. The declaration takes a copy of the round's
+        ``input_fingerprint`` (BUD-11-3): the hash of the inputs approved in
+        the round declared HERE, frozen by the submit, so a reader can
+        recompute the Cycle's and report a change since the declaration. Set
+        in before_submit so it lands with the approval and nothing saves in
+        on_submit. A Cycle with no stamp (approved before S4 K8) is refused by
+        name: a blank copy would never match anything. The Cycle row is read
+        FOR UPDATE (``_cycle_row``) and judged again: a Cycle cancelled since
+        the draft was saved is refused here, never declared. The approver
+        and the time are stamped too: the submitter approves, whoever
+        drafted the document."""
+        cycle = self._cycle_row(for_update=True)
+        self._refuse_bad_cycle(cycle)
+        if not cycle.input_fingerprint:
+            frappe.throw(
+                _("Budget Cycle {0} has no input fingerprint stamped (it was approved before fingerprints "
+                  "were). Cancel and amend the Cycle so Approve stamps one, then declare it.").format(
+                    self.budget_cycle),
+                frappe.ValidationError)
+        self.input_fingerprint = cycle.input_fingerprint
+        self.approved_by = frappe.session.user
+        self.approved_on = now_datetime()
+
+    def on_submit(self):
+        """Declared: the row enters the warehouse, after the commit."""
+        self._resync()
+
+    def before_cancel(self):
+        """Cancel only while the year has an open period (the Budget Cycle
+        rule, BUD-9-3): a fully closed year's forecast is history. Nothing
+        changes before the gate. No workflow ships for this doctype; the
+        shared helper sets a docstatus-2 state only when a site has installed
+        one of its own. A cancelled declaration leaves the year with no
+        current round (the warehouse WARNs, the readers read nothing) and
+        stays as the audit trail; a correction is an amendment."""
+        from konsol.period_status import assert_year_not_closed
+
+        assert_year_not_closed(self.fiscal_year, _("cancel Current Forecast {0}").format(self.name))
+        set_cancelled_state(self)
+
+    def on_cancel(self):
+        """Undeclared again: the row leaves the warehouse, after the commit."""
+        self._resync()
+
+    def _resync(self):
+        """Queue the sync once per transaction, after the commit (konsol#124).
+        The sync replaces the whole table with the submitted declarations, so
+        one covers every declaration in the transaction; a draft save queues
+        nothing, because a draft is not in the table either way. Imported
+        here: the controller is loaded under test without clickhouse.py."""
+        from konsol.clickhouse import sync_doctype_after_commit
+
+        sync_doctype_after_commit(self.doctype, self.CH_TABLE, self.CH_FIELD_MAP)
 
     def autoname(self):
         """``CFC-<scenario>-<year>-<sha8>`` (budget_grain.digest_name:

@@ -620,9 +620,11 @@ def test_two_declarations_in_one_transaction_queue_one_sync(env):
 def test_the_sync_runs_sync_doctype_with_the_tables_field_map(env):
     """The queued job is sync_doctype(doctype, table, field_map), the one
     mechanism every write-through uses (CLAUDE.md)."""
+    seen = []
+    # Installed before the hook: sync_doctype_after_commit binds the function at
+    # queue time (functools.partial), as production does.
+    sys.modules["konsol.clickhouse"].sync_doctype = lambda *a, **k: seen.append(a)
     env.doc(name="CFC-ZZFC-2027").on_submit()
     job = next(f for f in env.queue if getattr(f, "_konsol_key", None) == SYNC_KEY)
-    seen = []
-    sys.modules["konsol.clickhouse"].sync_doctype = lambda *a, **k: seen.append(a)
     job()
     assert seen == [("Current Forecast", TABLE, FIELD_MAP)]

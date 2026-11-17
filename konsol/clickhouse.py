@@ -806,6 +806,23 @@ _REFERENCE_TABLE_DDL = {
         "rate_set String, as_of_date Date32 DEFAULT '1900-01-01', horizon_periods UInt16) "
         "ENGINE = MergeTree ORDER BY name"
     ),
+    # konsol#348 S6-Q1 (b), decided by Deepak Pai, 17 Nov 2026 (#348 comment
+    # 6953756459): a forecast scenario's DECLARED current round per fiscal
+    # year, one row per submitted Current Forecast. A forecast (scenario,
+    # year) holds several approved rounds side by side and they never sum;
+    # the warehouse's gold_forecast_current_round joins this to budget_cycles
+    # on `cycle`, and every forecast reader takes that round alone. A year
+    # with approved rounds and no row here has no forecast rows anywhere, and
+    # the warehouse WARNs naming it. as_of_date is the round's, a Date32 with
+    # a declared 1900-01-01 default (a Date clamps to a silent 1970-01-01).
+    # Identical to konsolidat's clickhouse/init-db.sql; keep them identical
+    # (test_current_forecast_doctype.py pins it here, konsolidat's
+    # tests/test_current_forecasts_ddl.py there).
+    "epm_staging.current_forecasts": (
+        "(scenario_id String, fiscal_year UInt16, cycle String, "
+        "as_of_date Date32 DEFAULT '1900-01-01') "
+        "ENGINE = MergeTree ORDER BY (scenario_id, fiscal_year)"
+    ),
     # Budget S2 (I3): the raw budget landing table, one row per Budget Entry
     # Line (konsol#348, D0 Q1-b2), written through while its Budget Cycle is
     # approved. Debit and credit (Q3-a); amount_basis required, never
