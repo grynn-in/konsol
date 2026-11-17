@@ -237,6 +237,12 @@ _FACT_FIELDS = [
 #: scenarios (konsol#214).
 _BUDGET_SCENARIO_COLUMN = {"variance_analysis": "budget_scenario_id"}
 
+#: Datasets over the budget fact, which also holds every approved round of a
+#: forecast year side by side. A read refuses a forecast scenario id and,
+#: naming none, reads the non-forecast scenarios only: unfiltered, it added
+#: the rounds to the budget (konsol#348 S6-Q1 b, review B1).
+_BUDGET_EXCLUDES_FORECAST = {"budget_input"}
+
 
 def _get_fact_by_scenario(scenario):
     """Load Dataset doc by scenario_key. Returns dict or None."""
@@ -735,8 +741,12 @@ def _batch_query_clickhouse(requests_list):
         _active_budget_scenarios_by_year,
         choose_budget_scenario,
         named_budget_scenario_error,
+        _forecast_scenario_ids,
         _scenario_ids,
+        budget_scenarios_excluding_forecasts,
+        forecast_on_budget_read_error,
         scenario_id_error,
+        scenario_in_clause,
     )
 
     known_cache = []  # every Scenario id, looked up once when first needed
@@ -745,6 +755,13 @@ def _batch_query_clickhouse(requests_list):
         if not known_cache:
             known_cache.append(_scenario_ids())
         return known_cache[0]
+
+    forecast_cache = []  # the forecast Scenario ids, likewise
+
+    def forecast_ids():
+        if not forecast_cache:
+            forecast_cache.append(_forecast_scenario_ids())
+        return forecast_cache[0]
 
     ch_settings = _get_ch_connection()
     n = len(requests_list)
@@ -780,6 +797,8 @@ def _batch_query_clickhouse(requests_list):
                 err = scenario_id_error(
                     scenario_id, has_column=fact.has_scenario_id,
                     known=known_scenarios, label=f"Dataset '{fact.fact_name}'")
+                if not err and fact.fact_name in _BUDGET_EXCLUDES_FORECAST:
+                    err = forecast_on_budget_read_error(scenario_id, forecast_ids)
                 if err:
                     errors[idx] = err
                     continue
@@ -953,6 +972,16 @@ def _batch_query_clickhouse(requests_list):
             params["param_sid"] = scenario_id
             column = budget_column or "scenario_id"
             scenario_id_clause = f" AND {column} = {{sid:String}}"
+        elif fact.fact_name in _BUDGET_EXCLUDES_FORECAST:
+            # No scenario named: every non-forecast scenario, never a
+            # forecast's rounds (konsol#348 S6 review B1).
+            ids, err = budget_scenarios_excluding_forecasts(
+                known_scenarios, forecast_ids)
+            if err:
+                for idx, _ in group_items:
+                    errors[idx] = err
+                continue
+            scenario_id_clause = scenario_in_clause(ids, params, "bsid")
 
         # Optional layer filter (budget facts). Omitted → sum across all layers
         # (the final budget); supplied → restrict to one layer. Mirrors the
