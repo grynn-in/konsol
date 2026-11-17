@@ -213,6 +213,12 @@ def build_sender_pool_query(dimension, declared, scenario, entity, fiscal_year,
                             fiscal_period, accounts, senders):
     """(sql, params) for the pool of each sender member (pure).
 
+    The pool reads gold_scenario_trial_balance by scenario_id. For a forecast
+    scenario that table holds the DECLARED current round's rows only (konsol#348
+    S6-Q1 b: the Current Forecast of the scenario and year), so a forecast pool
+    is the current round's, never the sum of the year's approved rounds; a year
+    with no declaration has no rows and its pool is empty.
+
     Every value travels as a ClickHouse query parameter. The one identifier, the
     dimension column, is refused unless it is a declared dimension name and a
     plain identifier, then backtick-quoted."""
