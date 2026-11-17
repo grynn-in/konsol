@@ -342,9 +342,15 @@ def test_retire_pct_patch_keeps_a_measure_another_dataset_names():
 
 
 def test_retire_pct_patch_keeps_a_measure_the_site_redefined():
+    """Re-review minor 3: a site that redefined the Measure (here as a weighted
+    ratio) keeps it AND keeps it on both Datasets, so its K.EPM reads still work;
+    the patch does not edit a site's own semantic model."""
     site = _PctSite(_seeded(), {PCT: "sum(forecast_error) / sum(abs(actual_amount))"}).run()
     assert PCT in site.measures
-    assert site.datasets["forecast_accuracy"]["rows"] == _KEPT
+    for name in ("forecast_accuracy", "forecast_accuracy_group"):
+        assert site.datasets[name]["rows"] == _KEPT + [PCT], name
+        assert json.loads(site.datasets[name]["measures"]) == sorted(_KEPT + [PCT]), name
+    assert site.writes == []
 
 
 def test_retire_pct_patch_does_nothing_on_a_site_without_them():
