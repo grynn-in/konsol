@@ -570,7 +570,7 @@ def test_columns_carry_the_budget_columns_only_for_an_ok_budget():
         assert [c["fieldname"] for c in R.columns(2, budget=_budget(state=state, message="x"))] == actuals, state
     fieldnames = [c["fieldname"] for c in R.columns(budget=_budget())]
     assert fieldnames[fieldnames.index("ytd") + 1:fieldnames.index("prior_year")] == [
-        "budget", "variance_to_budget", "budget_ytd"]
+        "budget", "variance_to_budget", "favourability", "budget_ytd"]
     by_name = {c["fieldname"]: c for c in R.columns(minor_unit=2, budget=_budget())}
     assert by_name["budget"]["label"] == "Budget (before eliminations)"
     assert by_name["variance_to_budget"]["label"] == "Variance to budget"
