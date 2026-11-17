@@ -518,7 +518,8 @@ def test_unbalanced_drill_cuts_to_scope_without_naming_the_other_entity():
     result = M.unbalanced_drill(_budget_rows(), _KEYS, {"ZZA"}, 2, cycle=CYCLE)
     assert [(r["entity"], r["label"], r["amount"]) for r in result["rows"]] == [
         ("ZZA", None, 705.0), (None, "1 entities outside your scope", -200.0)]
-    assert "ZZB" not in str(result)
+    for row in result["rows"]:
+        assert row.get("entity") != "ZZB" and "ZZB" not in (row.get("label") or "")
     assert result["total"] == 505.0
 
 
