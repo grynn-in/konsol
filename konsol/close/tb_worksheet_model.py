@@ -79,17 +79,25 @@ CTA_UNDECLARED = ("cta_undeclared",)
 CTA_UNDECLARED_LABEL = "CTA (no CTA account declared)"
 NOT_IN_CHART_LABEL = "not in the published chart"
 _CTA_CODE = "CTA"
+#: The Budget basis's plug (konsol#348 S6 KB6; PR #558 review m2): an
+#: ``unbalanced`` row is its own line, labelled as the statement labels it,
+#: never a chart account and never "not in the published chart".
+UNBALANCED = ("unbalanced",)
+_UNBALANCED_CODE = "UNBALANCED"
 
 
 def row_key(row, accounts, declared):
-    """Line key for one row: ``("account", code)``, ``CTA_UNDECLARED`` or
-    ``("not_in_chart", code)``.
+    """Line key for one row: ``("account", code)``, ``CTA_UNDECLARED``,
+    ``UNBALANCED`` or ``("not_in_chart", code)``.
 
     A cta-layer row (``main_account`` is the literal ``CTA``) is placed under
     ``declared["cta_account"]``; undeclared, it keeps a visible row of its own.
+    An ``unbalanced`` row (the budget's plug) is the ``UNBALANCED`` line.
     A code missing from the Published chart is never dropped.
     """
     code = row["main_account"]
+    if row.get("adjustment_type") == "unbalanced":
+        return UNBALANCED
     if row.get("adjustment_type") == "cta" or code == _CTA_CODE:
         cta_account = (declared or {}).get("cta_account")
         return ("account", cta_account) if cta_account else CTA_UNDECLARED
@@ -189,12 +197,16 @@ def _line_order(key, accounts):
         return (0, (accounts.get(key[1]) or {}).get("lft") or 0, key[1])
     if key[0] == "not_in_chart":
         return (1, 0, key[1])
+    if key == UNBALANCED:
+        return (3, 0, "")
     return (2, 0, "")
 
 
 def _line_head(key, accounts):
     if key == CTA_UNDECLARED:
         return _CTA_CODE, CTA_UNDECLARED_LABEL
+    if key == UNBALANCED:
+        return _UNBALANCED_CODE, statement_model.UNBALANCED_LABEL
     if key[0] == "not_in_chart":
         return key[1], NOT_IN_CHART_LABEL
     return key[1], (accounts.get(key[1]) or {}).get("account_name")
@@ -383,7 +395,7 @@ def to_ids(ws):
     """``worksheet``'s result with every key a string id: ``entity:ZZA``,
     ``layer:topside``, ``bucket:other_entities``, ``rounding``,
     ``consolidated``; line keys ``account:1110``, ``not_in_chart:9999``,
-    ``cta_undeclared`` (``<account id>|<value>`` when dimensioned). Same shape
+    ``cta_undeclared``, ``unbalanced`` (``<account id>|<value>`` when dimensioned). Same shape
     otherwise, JSON-safe; the API payload and the Desk layout both use it."""
     def cells(values):
         return {_id(k): v for k, v in values.items()}

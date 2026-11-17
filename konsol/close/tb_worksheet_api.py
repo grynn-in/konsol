@@ -44,7 +44,7 @@ States, never a silent empty worksheet:
 - ``ok``: ``worksheet`` is the model's output with its tuple keys turned
   into string ids (``"entity:ZZA"``, ``"layer:topside"``,
   ``"bucket:other_entities"``, ``"rounding"``, ``"consolidated"``; line keys
-  ``"account:1110"``, ``"not_in_chart:9999"``, ``"cta_undeclared"``), so the
+  ``"account:1110"``, ``"not_in_chart:9999"``, ``"cta_undeclared"``, ``"unbalanced"``), so the
   payload is JSON-safe.
 
 ``dimension`` (optional ``dim_*`` column name) groups lines by that
