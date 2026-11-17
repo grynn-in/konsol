@@ -597,19 +597,34 @@ def test_a_bs_heading_takes_the_budgeted_movement_year_to_date_with_no_budget_yt
     data = R.rows(_payload(), budget=_budget())
     assets = _by_label(data, "ASSETS")
     assert assets["budget"] == 300.0
-    assert assets["variance_to_budget"] == round(1735.10 - 300.0, 2)
     assert assets["budget_ytd"] is None
     # A budget line present with nothing budgeted is 0.00, not blank.
     liabilities = _by_label(data, "LIABILITIES")
     assert liabilities["budget"] == 0.0 and str(liabilities["budget"]) == "0.0"
-    assert liabilities["variance_to_budget"] == 803.70
+
+
+def test_a_bs_line_has_no_variance_to_budget():
+    """S5 F1 (coordinator, 17 Nov 2026): under S5-Q4 (a) the BS budget is a
+    movement year to date and the actual is a balance; their difference is
+    not a variance, so the cell is blank on every Balance Sheet line (a
+    heading, an include, the plug) while the Budget value stays. The P&L
+    keeps its variance, and the legend says why the BS has none."""
+    data = R.rows(_payload(), budget=_budget())
+    for label in ("ASSETS", "LIABILITIES", "EQUITY", "of which current-year result",
+                  "of which currency translation (CTA)"):
+        row = _by_label(data, label)
+        assert row["budget"] is not None, label
+        assert row["variance_to_budget"] is None, label
+    assert _by_label(data, "COST OF SALES")["variance_to_budget"] == round(241.43 - 1000.0, 2)
+    text = R.message(_payload(), budget=_budget())
+    assert "no variance to budget on the balance sheet" in text.lower()
 
 
 def test_equity_includes_take_the_budgets_include_of_the_same_kind():
     data = R.rows(_payload(), budget=_budget())
     result = _by_label(data, "of which current-year result")
     assert result["budget"] == 1000.0
-    assert result["variance_to_budget"] == round(241.43 - 1000.0, 2)
+    assert result["variance_to_budget"] is None   # a BS line (S5 F1)
     cta = _by_label(data, "of which currency translation (CTA)")
     assert cta["budget"] == 0.0   # the budget has a CTA bucket of 0: present, zero
 
@@ -633,7 +648,8 @@ def test_a_budget_only_unbalanced_line_is_laid_out_before_the_residual():
 def test_an_actuals_unbalanced_line_is_laid_out_and_takes_the_budgets_by_kind():
     data = R.rows(_payload(rows=_budget_rows()), budget=_budget())
     row = _by_label(data, UNBALANCED_LABEL)
-    assert row["current"] == 700.0 and row["budget"] == 700.0 and row["variance_to_budget"] == 0.0
+    assert row["current"] == 700.0 and row["budget"] == 700.0
+    assert row["variance_to_budget"] is None   # a BS line (S5 F1)
     # Without a budget the line still lays out (no unknown-kind refusal).
     assert _by_label(R.rows(_payload(rows=_budget_rows())), UNBALANCED_LABEL)["current"] == 700.0
 
