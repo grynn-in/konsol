@@ -684,6 +684,7 @@ def test_no_sql_constant_has_an_alias_column_collision():
         "_TB_SQL", "_ENTITY_SQL", "_DRILL_SQL", "_DRILL_SQL_WITH_CTA",
         "_DRILL_JOURNALS_SQL", "_ENTITY_TB_SQL", "_BUDGET_TB_SQL",
         "_BUDGET_DRILL_SQL", "_BUDGET_DRILL_SQL_WITH_CTA", "_BUDGET_UNBALANCED_SQL", "_BUDGET_RATES_SQL",
+        "_ENTITY_BUDGET_TB_SQL",
     }, "a *_SQL constant was added or removed: update this test's expected set"
     for name, sql in constants.items():
         collision = _alias_collision(sql)
@@ -2555,7 +2556,7 @@ def test_entity_budget_payload_is_the_statement_in_the_entitys_currency_with_a_s
     assert _bs_line(result, "1")["current"] == 800.0
     bs = result["statement"]["sections"][1]["lines"]
     unbalanced = next(l for l in bs if l.get("kind") == "unbalanced")
-    assert unbalanced["current"] == -800.0, "one plug per period: -(−1000+300) at P7, -(−500+500)=0 at P6, cumulative"
+    assert unbalanced["current"] == 700.0, "one plug per period: -(-1000+300)=700 at P7, -(-500+500)=0 at P6"
     assert bs[-1]["kind"] == "residual" and bs[-1]["current"] == 0.0
     for word in (CYCLE, "ZZA", "JPY", DECLARATION):
         assert word in result["message"], word
@@ -2566,9 +2567,11 @@ def test_entity_budget_plug_is_one_row_per_period_and_zero_when_balanced():
     site.entity_budget_rows = [_drill_tb_row("4100", -1000, "entity", "ZZA"),
                                _drill_tb_row("1110", 1000, "entity", "ZZA")]
     result = _call_entity_budget(site)
+    assert result["state"] == "ok", result["message"]
     bs = result["statement"]["sections"][1]["lines"]
-    unbalanced = next(l for l in bs if l.get("kind") == "unbalanced")
-    assert unbalanced["current"] == 0.0 and bs[-1]["current"] == 0.0
+    # statement_model shows the plug line only when it is non-zero (S5-Q3 a).
+    assert "unbalanced" not in [l.get("kind") for l in bs]
+    assert bs[-1]["kind"] == "residual" and bs[-1]["current"] == 0.0
 
 
 def test_entity_in_two_root_groups_is_choose_group_naming_them_with_no_reads():
