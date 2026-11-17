@@ -25,6 +25,12 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_budget_entity_ownership",
+  "model_name": "gold_budget_entity_ownership",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_business_combination_journal",
   "model_name": "gold_business_combination_journal",
   "build_domain": "consolidation"
@@ -46,6 +52,12 @@
   "name": "gold_cashflow_fact",
   "model_name": "gold_cashflow_fact",
   "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_consolidated_budget_tb",
+  "model_name": "gold_consolidated_budget_tb",
+  "build_domain": "scenarios"
  },
  {
   "doctype": "Build Model",
@@ -118,6 +130,12 @@
   "name": "gold_equity_method_associates",
   "model_name": "gold_equity_method_associates",
   "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_fully_consolidated_budget",
+  "model_name": "gold_fully_consolidated_budget",
+  "build_domain": "scenarios"
  },
  {
   "doctype": "Build Model",
