@@ -22,6 +22,8 @@ Open the add-in's pane (the **Konsolidat** button on the Home ribbon) and sign i
 
 For example, `=K.EPM("E1",2026,3,"4000","","","region=EU")`.
 
+`scenario` is a word that picks what to read: `actuals` (the default), `budget`, `forecast`, `latest_estimate`, `variance`, `consolidated`, `consolidated_budget`, `forecast_accuracy`, `forecast_accuracy_group` or `cashflow`. The planning words, and which forecast round they read, are explained on the Forecast rounds page.
+
 An actuals read of a period with no trial balance shows `#N/A` with the message "No trial balance for …". A loaded period where the account has no balance shows 0. A range such as Q1 reads if at least one of its periods is loaded. A malformed argument shows `#VALUE!` with the reason.
 
 The other functions have their own argument order. `dimensions` is the fifth argument in the first four:
