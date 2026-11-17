@@ -600,6 +600,11 @@ def test_a_non_admin_may_still_save_metadata_on_a_draft():
 
 _INSTALL = os.path.join(_APP, "install.py")
 _HOOKS = os.path.join(_APP, "hooks.py")
+
+#: The Measures konsol/defaults ships (15 until konsol#348 S6 KC1 added the
+#: four forecast accuracy measures): counted from the file, not restated.
+with open(os.path.join(_APP, "defaults", "measure.json")) as _f:
+    _SHIPPED_MEASURES = len(json.load(_f))
 _PATCHES = os.path.join(_APP, "patches")
 
 
@@ -683,10 +688,10 @@ def test_migrate_seeds_the_defaults_with_no_apply_and_regenerates_vars_once():
     mod = _install_module(events)
     _FRAPPE_FLAGS.in_migrate = True
     _with_dbt_config(probe, mod.after_migrate)
-    assert len(_STORE) == 15, sorted(_STORE)
+    assert len(_STORE) == _SHIPPED_MEASURES, sorted(_STORE)
     assert _REBUILDS == [], _REBUILDS
     regenerated = [e for e in events if e[0] == "regenerate_vars"]
-    assert regenerated == [("regenerate_vars", 15)], events
+    assert regenerated == [("regenerate_vars", _SHIPPED_MEASURES)], events
     assert events[-1][0] == "regenerate_vars", "regenerate after every other migrate step"
 
 
@@ -711,9 +716,9 @@ def test_install_seeds_the_defaults_with_no_apply_and_regenerates_vars_once():
             events.append((hook, None))
             continue
         _with_dbt_config(probe, fn)
-    assert len(_STORE) == 15, sorted(_STORE)
+    assert len(_STORE) == _SHIPPED_MEASURES, sorted(_STORE)
     assert _REBUILDS == [], _REBUILDS
-    assert [e for e in events if e[0] == "regenerate_vars"] == [("regenerate_vars", 15)], events
+    assert [e for e in events if e[0] == "regenerate_vars"] == [("regenerate_vars", _SHIPPED_MEASURES)], events
 
 
 def test_a_failed_regenerate_does_not_fail_the_migrate_and_says_so():

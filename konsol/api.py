@@ -253,7 +253,28 @@ _BUDGET_EXCLUDES_FORECAST = {"epm_gold.gold_spread_budget"}
 _NEEDS_CURRENT_FORECAST = {
     "epm_gold.gold_forecast_current",
     "epm_gold.gold_latest_estimate_current",
+    # konsol#348 S6 KC1: the accuracy models resolve their scenario the same
+    # way, then read the declared round's rows (_PER_ROUND below).
+    "epm_gold.gold_forecast_accuracy",
+    "epm_gold.gold_forecast_accuracy_group",
 }
+
+#: Tables that keep every approved round side by side, keyed by ``cycle``
+#: (FC-4-2, the accuracy models). ``K.EPM`` binds scenario_id, never a
+#: cycle, so a read narrows ``(fiscal_year, cycle)`` to the declared Cycle of
+#: each year it reads: rounds never sum (konsol#348 S6-Q1 b, S6 KC1). Every
+#: round's accuracy is the Forecast Accuracy report's.
+_PER_ROUND = {
+    "epm_gold.gold_forecast_accuracy",
+    "epm_gold.gold_forecast_accuracy_group",
+}
+
+#: Tables holding every budget scenario's rows and each forecast scenario's
+#: declared current round only (konsolidat S6 WC1). A read naming no
+#: scenario reads the budgets only, never a forecast added to them; a named
+#: forecast needs its Current Forecast for the year, or the cell would read 0
+#: (konsol#348 S6-Q7 a; #106 A: a forecast is read by naming it).
+_FORECAST_BY_NAME_ONLY = {"epm_gold.gold_consolidated_budget_fact"}
 
 
 def _read_table(fact, measure):
@@ -761,8 +782,10 @@ def _batch_query_clickhouse(requests_list):
         _active_budget_scenarios_by_year,
         choose_budget_scenario,
         named_budget_scenario_error,
+        _declared_cycles,
         _declared_forecasts_by_year,
         _forecast_scenario_ids,
+        round_in_clause,
         _scenario_ids,
         budget_scenarios_excluding_forecasts,
         choose_declared_forecast,
@@ -794,6 +817,7 @@ def _batch_query_clickhouse(requests_list):
     budgets_by_year = None  # looked up once per call, when first needed
     active_budgets = None  # likewise, for named budget scenarios
     declared_by_year = None  # the Current Forecasts, likewise (S6 review m2)
+    declared_cycles = None  # their Cycles, for the per-round tables (S6 KC1)
 
     def resolve_fact(fact_key):
         if fact_key not in facts:
@@ -861,6 +885,19 @@ def _batch_query_clickhouse(requests_list):
                 declared_by_year = _declared_forecasts_by_year()
             year = int(req["year"])
             scenario_id, err = choose_declared_forecast(
+                scenario_id, declared_by_year.get(year, []), year)
+            if err:
+                errors[idx] = err
+                continue
+        if (fact and _read_table(fact, req["measure"]) in _FORECAST_BY_NAME_ONLY
+                and scenario_id and _SAFE_SCENARIO_ID.match(scenario_id)
+                and scenario_id in forecast_ids()):
+            # A named forecast reads its declared current round, or is
+            # refused naming the missing Current Forecast (S6 KC1).
+            if declared_by_year is None:
+                declared_by_year = _declared_forecasts_by_year()
+            year = int(req["year"])
+            _, err = choose_declared_forecast(
                 scenario_id, declared_by_year.get(year, []), year)
             if err:
                 errors[idx] = err
@@ -1004,9 +1041,10 @@ def _batch_query_clickhouse(requests_list):
             params["param_sid"] = scenario_id
             column = budget_column or "scenario_id"
             scenario_id_clause = f" AND {column} = {{sid:String}}"
-        elif table in _BUDGET_EXCLUDES_FORECAST:
+        elif table in _BUDGET_EXCLUDES_FORECAST or table in _FORECAST_BY_NAME_ONLY:
             # No scenario named: every non-forecast scenario, never a
-            # forecast's rounds (konsol#348 S6 review B1).
+            # forecast's rounds (konsol#348 S6 review B1), nor a forecast's
+            # current round added to the budget (S6 KC1).
             ids, err = budget_scenarios_excluding_forecasts(
                 known_scenarios, forecast_ids)
             if err:
@@ -1014,6 +1052,21 @@ def _batch_query_clickhouse(requests_list):
                     errors[idx] = err
                 continue
             scenario_id_clause = scenario_in_clause(ids, params, "bsid")
+        if table in _PER_ROUND:
+            # The declared round of each year read (S6 KC1). scenario_id was
+            # resolved per row above, and every row's year has a declaration.
+            if declared_cycles is None:
+                declared_cycles = _declared_cycles()
+            try:
+                scenario_id_clause += round_in_clause(
+                    scenario_id, {req["year"] for _, req in group_items},
+                    declared_cycles, params, "rnd")
+            except KeyError as exc:
+                # A declaration cancelled between the two lookups.
+                sid, year = exc.args[0]
+                for idx, _ in group_items:
+                    errors[idx] = choose_declared_forecast(sid, [], year)[1]
+                continue
 
         # Optional layer filter (budget facts). Omitted → sum across all layers
         # (the final budget); supplied → restrict to one layer. Mirrors the

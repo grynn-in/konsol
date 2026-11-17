@@ -305,4 +305,5 @@ def test_accuracy_read_over_two_years_binds_each_years_round():
          "year": 2027}], declared=declared)
     assert not result.get("errors"), result
     (sql,) = queries
-    assert sql.count(":Int32}, {") == 2, sql
+    rounds = re.search(r"AND \(fiscal_year, cycle\) IN \((.*?)\)(?: AND| GROUP|$)", sql).group(1)
+    assert len(re.findall(r"\(\{\w+:Int32\}, \{\w+:String\}\)", rounds)) == 2, sql
