@@ -1,6 +1,6 @@
 """Budget S4b K9 (konsol#348): the consolidated budget models are governed.
 
-konsolidat's `gold_consolidated_budget_tb` and `gold_fully_consolidated_budget`
+konsolidat's `gold_budget_entity_ownership`, `gold_consolidated_budget_tb` and `gold_fully_consolidated_budget`
 sit beside `gold_scenario_trial_balance` and the `gold_variance_*` models in
 the `scenarios` Build Governance domain. A gold model with no Build Model row
 gets no `domain:` tag, is selected by no scoped build and goes stale; CI's
@@ -18,12 +18,14 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD_MODEL_FIXTURE = os.path.join(APP_DIR, "fixtures", "build_model.json")
 DBT_CONFIG_PATH = os.path.join(APP_DIR, "dbt_config.py")
 
-BUDGET_MODELS = ("gold_consolidated_budget_tb", "gold_fully_consolidated_budget")
+BUDGET_MODELS = ("gold_budget_entity_ownership", "gold_consolidated_budget_tb", "gold_fully_consolidated_budget")
 
 # What konsol writes between the managed markers for the scenarios group once
 # both rows exist: alphabetical within the domain, 6-space indent, one tags line.
 EXPECTED_SCENARIOS_LINES = [
     "      # --- Domain: scenarios ---",
+    "      gold_budget_entity_ownership:",
+    "        +tags: ['gold', 'domain:scenarios']",
     "      gold_consolidated_budget_tb:",
     "        +tags: ['gold', 'domain:scenarios']",
     "      gold_fully_consolidated_budget:",
