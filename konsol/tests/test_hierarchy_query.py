@@ -193,7 +193,8 @@ _mrs_spec.loader.exec_module(read_path_stub)
 _NO_BUDGET = "No active budget scenario belongs to FY2026, so there is no variance to show."
 
 
-def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None, api=None):
+def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None, api=None,
+                   declared=()):
     """batch_query_hierarchy over ``rows`` (dicts overriding a default request).
 
     ``active_budgets`` is what the Scenario doctype holds as active budget
@@ -206,6 +207,8 @@ def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None, api=Non
     ``api``, when given, is an api module (see ``_failing_api``) served as
     konsol.api, and ClickHouse is queried through it instead of the fake;
     hierarchy_query's own log_error calls then go to ``api._zz_logged`` too.
+    ``declared`` is the submitted Current Forecasts as (scenario_id,
+    fiscal_year), which a forecast read needs (konsol#348 S6 review m2).
     """
     queries, lookups = [], []
     if scenarios is not None:
@@ -220,6 +223,9 @@ def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None, api=Non
             wanted = set(filters["scenario_id"][1])
             return [{"scenario_id": s, "fiscal_year": y}
                     for s, y in cycles if s in wanted]
+        if doctype == "Current Forecast":
+            lookups.append({"Current Forecast": filters})
+            return [{"scenario_id": s, "fiscal_year": y} for s, y in declared]
         assert doctype == "Scenario", doctype
         lookups.append(filters)
         if scenarios is None:
@@ -458,27 +464,20 @@ def test_budget_and_forecast_still_filter_scenario_id():
     # a forecast, which a budget read refuses (konsol#348 S6 review B1)
     assert lookups == [{}, {"scenario_type": "forecast"}]
     # A budget read with no scenario named no longer reads all of the table:
-    # it excludes the forecasts (konsol#348 S6 review B1;
-    # test_budget_read_forecast_rounds.py).
-    for sc in ("forecast",):
-        result, queries, lookups = _run_hierarchy(
-            [{"scenario": sc, "scenario_id": "ZZ_PLAN", "measure": "period_amount"}],
-            scenarios=[("ZZ_PLAN", "budget", 1)])
-        assert not result.get("errors")
-        (sql, params), = queries
-        assert "AND scenario_id = {sid:String}" in sql
-        assert "budget_scenario_id" not in sql
-        assert params["param_sid"] == "ZZ_PLAN"
-        # asked only whether the named id exists (konsol#287 review)
-        assert lookups == [{}]
-        # no scenario named: all of the table, as before
-        result, queries, lookups = _run_hierarchy(
-            [{"scenario": sc, "measure": "period_amount"}], active_budgets=[])
-        assert not result.get("errors")
-        (sql, params), = queries
-        assert "scenario_id" not in sql
-        assert "param_sid" not in params
-        assert lookups == []
+    # it excludes the forecasts (konsol#348 S6 review B1). A forecast read
+    # takes the declared scenario of the year (review m2). Both are in
+    # test_budget_read_forecast_rounds.py.
+    result, queries, lookups = _run_hierarchy(
+        [{"scenario": "forecast", "scenario_id": "ZZ_FC", "measure": "period_amount"}],
+        scenarios=[("ZZ_FC", "forecast", 1)], declared=[("ZZ_FC", 2026)])
+    assert not result.get("errors")
+    (sql, params), = queries
+    assert "AND scenario_id = {sid:String}" in sql
+    assert "budget_scenario_id" not in sql
+    assert params["param_sid"] == "ZZ_FC"
+    # asked whether the named id exists (konsol#287 review) and whether its
+    # year has a submitted Current Forecast (konsol#348 S6 review m2)
+    assert lookups == [{}, {"Current Forecast": {"docstatus": 1}}]
 
 
 # ── a scenario_id that cannot filter the hierarchy table is refused
@@ -889,10 +888,13 @@ def test_forecast_reads_the_declared_current_round_view():
     assert C["forecast"]["table"] == "epm_gold.gold_forecast_current_at_hierarchy_node"
     assert C["budget"]["table"] == "epm_gold.gold_budget_at_hierarchy_node"
     sqls = {}
-    for sc in ("budget", "forecast"):
+    # each scenario word reads a scenario of its own type; a forecast read
+    # needs its year's Current Forecast (konsol#348 S6 review m2)
+    for sc, sid in (("budget", "ZZ_PLAN"), ("forecast", "ZZ_FC")):
         result, queries, _ = _run_hierarchy(
-            [{"scenario": sc, "scenario_id": "ZZ_PLAN", "measure": "period_amount"}],
-            scenarios=[("ZZ_PLAN", "budget", 1)])
+            [{"scenario": sc, "scenario_id": sid, "measure": "period_amount"}],
+            scenarios=[("ZZ_PLAN", "budget", 1), ("ZZ_FC", "forecast", 1)],
+            declared=[("ZZ_FC", 2026)])
         assert not result.get("errors")
         (sql, _params), = queries
         sqls[sc] = sql

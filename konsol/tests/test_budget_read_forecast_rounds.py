@@ -283,3 +283,82 @@ def test_budget_read_without_scenario_and_only_forecasts_is_refused():
         result, queries, _ = run([{}], scenarios=only)
         assert queries == [], run
         assert result["errors"] == [message], run
+
+
+# ── m2: a forecast read needs a submitted Current Forecast ─────────────────
+#
+# The forecast and latest_estimate reads go through the current-round views,
+# which hold nothing for a (scenario, year) with no declaration. Read there,
+# the cell came back 0 (api.py's coalesce): a missing declaration looked like
+# a zero forecast. The read is refused and names what is missing, the way a
+# variance read with no budget scenario is (choose_budget_scenario).
+
+def _no_declaration(sid, year):
+    return (f"Scenario '{sid}' has no submitted Current Forecast for FY{year}, "
+            "so it has no current round to read. Submit a Current Forecast "
+            "naming the round.")
+
+
+_NONE_DECLARED = ("No submitted Current Forecast declares a round for FY2027, "
+                  "so there is no forecast to read. Submit a Current Forecast "
+                  "for the forecast scenario, or name scenario_id.")
+
+#: The forecast reads: (runner, request overrides).
+_FORECAST_READS = [
+    (flat, {"fact": "forecast_input"}),
+    (flat, {"fact": "latest_estimate"}),
+    (hierarchy, {"scenario": "forecast"}),
+]
+
+
+def test_forecast_reads_the_declared_round():
+    for run, base in _FORECAST_READS:
+        result, queries, _ = run([dict(base, scenario_id="ZZ_FC")])
+        assert not result.get("errors"), (base, result)
+        assert result["values"] == [-110.0], base
+        assert len(queries) == 1
+
+
+def test_forecast_read_with_no_declaration_for_the_year_is_refused():
+    for run, base in _FORECAST_READS:
+        result, queries, _ = run([dict(base, scenario_id="ZZ_FC", year=2027)])
+        assert queries == [], base
+        assert result["errors"] == [_no_declaration("ZZ_FC", 2027)], base
+        assert result["values"] == [None], base
+
+
+def test_forecast_read_of_a_budget_scenario_is_refused():
+    for run, base in _FORECAST_READS:
+        result, queries, _ = run([dict(base, scenario_id="ZZ_BUD")])
+        assert queries == [], base
+        assert result["errors"] == [_no_declaration("ZZ_BUD", 2026)], base
+
+
+def test_forecast_read_without_scenario_takes_the_one_declared_scenario():
+    for run, base in _FORECAST_READS:
+        result, queries, lookups = run([dict(base)])
+        assert not result.get("errors"), (base, result)
+        assert result["values"] == [-110.0], base
+        (sql,) = queries
+        assert "AND scenario_id = {sid:String}" in sql, base
+        # one Current Forecast lookup, however many rows
+        result, _, lookups = run([dict(base), dict(base, account="ZZ4001")])
+        assert [d for d, _ in lookups].count("Current Forecast") == 1, base
+
+
+def test_forecast_read_without_scenario_and_no_declaration_is_refused():
+    for run, base in _FORECAST_READS:
+        result, queries, _ = run([dict(base, year=2027)])
+        assert queries == [], base
+        assert result["errors"] == [_NONE_DECLARED], base
+
+
+def test_forecast_read_without_scenario_and_two_declarations_is_refused():
+    two = [("ZZ_FC", 2026), ("ZZ_FC2", 2026)]
+    scenarios = SCENARIOS + [("ZZ_FC2", "forecast")]
+    for run, base in _FORECAST_READS:
+        result, queries, _ = run([dict(base)], scenarios=scenarios, declared=two)
+        assert queries == [], base
+        assert result["errors"] == [
+            "Several forecast scenarios have a submitted Current Forecast for "
+            "FY2026 (ZZ_FC, ZZ_FC2); name one with scenario_id."], base
