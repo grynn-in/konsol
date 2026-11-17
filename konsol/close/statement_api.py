@@ -239,6 +239,56 @@ _DRILL_JOURNALS_SQL = (
     "GROUP BY journal_id, adjustment_type, data_area_id, main_account"
 )
 
+#: konsol#348 S5 K9: the budget drill's reads, ``_DRILL_SQL``'s shape over
+#: ``gold_fully_consolidated_budget``, each bound to the declaration's
+#: scenario_id, cycle and layers like ``_BUDGET_TB_SQL`` (never one without
+#: the three). The CTA branch as for the actuals; ``_BUDGET_UNBALANCED_SQL``
+#: is the plug's own drill (S5-Q3 a): the rows carrying the literal
+#: ``main_account 'UNBALANCED'``, which no heading's leaves ever name.
+_BUDGET_DRILL_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_budget "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "AND (main_account IN {accounts:Array(String)}) "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type"
+)
+_BUDGET_DRILL_SQL_WITH_CTA = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_budget "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "AND (main_account IN {accounts:Array(String)} OR adjustment_type = 'cta') "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type"
+)
+_BUDGET_UNBALANCED_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type, "
+    "sum(amount) AS amt, countIf(amount IS NULL) AS null_rows "
+    "FROM epm_gold.gold_fully_consolidated_budget "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "AND adjustment_type = 'unbalanced' "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, adjustment_type"
+)
+#: S5-Q7 (a): the rate each budget account was translated at, per (entity,
+#: account, period) of the heading's leaves, from the translated budget
+#: (``gold_consolidated_budget_tb``; ``rate_set`` is carried on every row).
+#: The periods come back too, so Python keeps the statement window's rows
+#: (the current period for a P&L heading, every key up to it for a Balance
+#: Sheet one) without a second SQL shape. The table drops ``fx_method``
+#: (``select * except``); the warehouse took it from the chart's Translation
+#: Method, so ``_rate_rows_for`` attaches that same declared value.
+_BUDGET_RATES_SQL = (
+    "SELECT fiscal_year, fiscal_period, data_area_id, main_account, translation_rate, rate_set "
+    "FROM epm_gold.gold_consolidated_budget_tb "
+    "WHERE consolidation_group = {group:String} AND scenario_id = {scenario:String} "
+    "AND cycle = {cycle:String} AND layer IN {layers:Array(String)} AND fiscal_year <= {fy:UInt32} "
+    "AND main_account IN {accounts:Array(String)} "
+    "GROUP BY fiscal_year, fiscal_period, data_area_id, main_account, translation_rate, rate_set"
+)
+
 
 def _period_key(fiscal_year, fiscal_period):
     try:
@@ -1083,6 +1133,144 @@ def get_entity_drill(fiscal_year, fiscal_period, entity, heading):
     if heading not in drills:
         frappe.throw(f"{heading} is not a heading on this statement.")
     result["drill"] = drills[heading]
+    return result
+
+
+def _rate_rows_for(rows, keys, accounts_map):
+    """``drill_model.with_rates``'s rate rows from ``_BUDGET_RATES_SQL``'s:
+    the statement window's periods only (``keys``), ``translation_rate`` as
+    a float, and the chart's declared Translation Method as ``fx_method``
+    (the budget TB table does not carry it; blank stays blank, and the
+    Statement Drill report says "chart default" for it, never a derived
+    method)."""
+    out = []
+    for row in rows:
+        if (int(row["fiscal_year"]), int(row["fiscal_period"])) not in keys:
+            continue
+        rate = row.get("translation_rate")
+        out.append({
+            "data_area_id": row.get("data_area_id"), "main_account": row.get("main_account"),
+            "fx_method": (accounts_map.get(row.get("main_account")) or {}).get("fx_method") or "",
+            "translation_rate": None if rate is None else float(rate),
+            "rate_set": row.get("rate_set"),
+        })
+    return out
+
+
+def _budget_line(stmt, kind=None, heading=None):
+    """The budget statement's line of ``kind`` (the ``unbalanced`` plug,
+    shown only when non-zero: None when absent) or of ``heading``."""
+    for section in stmt["sections"]:
+        for line in section["lines"]:
+            if heading is not None and line.get("heading") == heading:
+                return line
+            if kind is not None and line.get("kind") == kind:
+                return line
+    if heading is not None:
+        frappe.throw(f"{heading} has no budget statement line (a bug).")
+    return None
+
+
+@frappe.whitelist(methods=["GET"])
+def get_budget_drill(fiscal_year, fiscal_period, consolidation_group, heading):
+    """One statement heading's drill on the approved budget (konsol#348 S5
+    K9; S5-Q7 a): ``get_drill``'s payload shape with ``basis "Budget"`` and
+    the budget's ``meta`` (``cycle, layers, rate_set, scenario_id,
+    declaration``).
+
+    The budget statement (``_budget_statement``, K4) decides the state: a
+    non-ok budget comes back as its own state and sentence with ``drill``
+    None, and reads nothing more (no declaration reads nothing at all). On
+    ok, a heading's entity-grain rows (``_BUDGET_DRILL_SQL``, the CTA branch
+    for the CTA heading) go through ``drill_model.drill`` against the budget
+    statement's own line, and ``with_rates`` attaches each account's
+    distinct translation rates and Rate Set over the window
+    (``_BUDGET_RATES_SQL``, ``_rate_rows_for``), the source becoming the
+    Budget Cycle. ``heading == "UNBALANCED"`` is the plug's own drill by
+    entity (``drill_model.unbalanced_drill``, no rates: the plug has no
+    account). Every read binds scenario_id, cycle and layers. ClickHouse is
+    read three times for a heading, twice for UNBALANCED, 0 when the budget
+    is not ok. Same roles and entity scope as ``get_drill``; a drill/line
+    mismatch, a NULL amount or a missing rate row is ``state "error"``
+    naming it, never a silent breakdown."""
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    key = _period_key(fiscal_year, fiscal_period)
+    period_rows = fiscal_calendar.fiscal_period_rows()
+    period_row = _find_period(key, period_rows)
+
+    groups = {g["consolidation_group"]: g for g in root_groups()}
+    if not consolidation_group or consolidation_group not in groups:
+        frappe.throw(f"{consolidation_group} is not a consolidation group.")
+
+    accounts = frappe.get_all(
+        "Main Account", filters={"status": "Published"},
+        fields=ACCOUNT_FIELDS + ["fx_method"], limit_page_length=0,
+    )
+    accounts_map = {a["name"]: a for a in accounts}
+    unbalanced = heading == drill_model.UNBALANCED_HEADING
+    entry = accounts_map.get(heading)
+    if not unbalanced and (entry is None or not entry.get("is_group")):
+        frappe.throw(f"{heading} is not a statement heading of the group chart.")
+
+    declared = signoff_gate.statement_accounts()
+    currency = groups[consolidation_group].get("reporting_currency")
+    budget = _budget_statement(key, period_rows, declared, accounts_map, currency, consolidation_group)
+
+    result = {
+        "period": {
+            "fiscal_year": key[0], "fiscal_period": key[1],
+            "code": period_row.get("period_code"), "status": period_row.get("status"),
+            "period_type": period_row.get("period_type"),
+        },
+        "consolidation_group": consolidation_group,
+        "heading": heading,
+        "basis": "Budget",
+        "meta": budget["meta"],
+        "state": budget["state"],
+        "message": budget["message"],
+        "drill": None,
+    }
+    if budget["state"] != "ok":
+        return result
+
+    stmt = budget["statement"]
+    meta = budget["meta"]
+    binds = {"group": consolidation_group, "scenario": meta["scenario_id"], "cycle": meta["cycle"],
+             "layers": _sql_array(meta["layers"]), "fy": key[0]}
+    section = statement_model.BS if unbalanced else entry.get("statement_section")
+    keys = _drill_keys(period_rows, key, section)
+    allowed = allowed_entity_codes()
+    try:
+        if unbalanced:
+            drill_rows = [_drill_row(r) for r in ch_read.rows(_BUDGET_UNBALANCED_SQL, binds)]
+            rate_rows = None
+        else:
+            cta_heading = _heading_of(declared.get("cta_account"), accounts_map)
+            drill_sql = _BUDGET_DRILL_SQL_WITH_CTA if heading == cta_heading else _BUDGET_DRILL_SQL
+            binds["accounts"] = _sql_array(_leaf_codes(heading, accounts_map))
+            drill_rows = [_drill_row(r) for r in ch_read.rows(drill_sql, binds)]
+            rate_rows = _rate_rows_for(ch_read.rows(_BUDGET_RATES_SQL, binds), keys, accounts_map)
+    except Exception as e:  # noqa: BLE001 — any failure means "can't say", never 0 rows
+        result["state"] = "not_built" if ch_read.not_built(e) else "error"
+        result["message"] = _error_message(e)
+        return result
+
+    try:
+        if unbalanced:
+            drill = drill_model.unbalanced_drill(
+                drill_rows, keys, allowed, stmt["minor_unit"], cycle=meta["cycle"],
+                statement_line=_budget_line(stmt, kind=statement_model.UNBALANCED))
+        else:
+            drill = drill_model.drill(
+                drill_rows, [], accounts_map, heading, keys, declared, allowed,
+                _budget_line(stmt, heading=heading), stmt["minor_unit"])
+            drill = drill_model.with_rates(drill, rate_rows, meta["cycle"])
+    except ValueError as e:
+        result["state"] = "error"
+        result["message"] = str(e)
+        return result
+
+    result["drill"] = drill
     return result
 
 

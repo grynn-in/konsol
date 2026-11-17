@@ -2231,7 +2231,8 @@ def test_budget_drill_with_a_missing_rate_row_is_an_error_naming_entity_and_acco
 
 def test_budget_drill_cuts_to_the_callers_scope():
     site = _budget_drill_site()
-    site.budget_drill_rows.append(_drill_tb_row("1110", 50.0, "entity", "ZZB"))
+    # ZZC, not ZZB: the scenario is ZZB, and the check below is on the whole payload.
+    site.budget_drill_rows.append(_drill_tb_row("1110", 50.0, "entity", "ZZC"))
     site.budget_tb_rows = [r if r["main_account"] != "1110" else dict(r, amount=350.0) for r in site.budget_tb_rows]
     site.allowed = ["ZZA"]
     result = _call_budget_drill(site)
@@ -2239,7 +2240,7 @@ def test_budget_drill_cuts_to_the_callers_scope():
     rows = result["drill"]["rows"]
     assert [r.get("entity") for r in rows] == ["ZZA", None]
     assert rows[1]["label"] == "1 entities outside your scope" and rows[1]["amount"] == 50.0
-    assert "ZZB" not in json.dumps(result)
+    assert "ZZC" not in json.dumps(result)
 
 
 def test_budget_drill_warehouse_failure_is_a_state():
