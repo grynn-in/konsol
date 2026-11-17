@@ -8,6 +8,11 @@ own (``get_drill``: same roles, same reads, same signs, its total already
 checked against the statement line); this report only lays it out
 (``statement_drill_report_model``). Opened from a heading of the
 Consolidated Statement report with the same filters.
+
+Basis Budget (konsol#348 S5 K10b): ``statement_api.get_budget_drill`` for
+the group and heading (``UNBALANCED`` for the plug's row), laid out with the
+Rate and Rate Set columns; the entity rows' sources are Budget Cycles, so no
+trial balance is read. Opened from the statement's Budget cell.
 """
 import frappe
 
@@ -34,8 +39,9 @@ def execute(filters=None):
         currency = frappe.db.get_value("Entity", filters.entity, "functional_currency")
     else:
         group = _group_code(filters.consolidation_group)
-        payload = statement_api.get_drill(filters.fiscal_year, filters.fiscal_period, group,
-                                          filters.heading)
+        read = (statement_api.get_budget_drill if filters.get("basis") == "Budget"
+                else statement_api.get_drill)
+        payload = read(filters.fiscal_year, filters.fiscal_period, group, filters.heading)
         currency = frappe.db.get_value(
             "Consolidation Group", {"consolidation_group": group, "data_area_id": ["is", "not set"]},
             "reporting_currency")
@@ -45,7 +51,9 @@ def execute(filters=None):
         message = statement_drill_report_model.message(payload, submissions)
     except ValueError as e:
         frappe.throw(str(e))
-    return statement_drill_report_model.columns((payload.get("drill") or {}).get("minor_unit")), data, message
+    columns = statement_drill_report_model.columns((payload.get("drill") or {}).get("minor_unit"),
+                                                   basis=payload.get("basis"))
+    return columns, data, message
 
 
 def _submissions(payload):

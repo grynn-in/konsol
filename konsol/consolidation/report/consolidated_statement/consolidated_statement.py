@@ -16,7 +16,9 @@ statement's own group and year (``statement_api.budget_payload``), on the
 Group basis only (the entity budget is S6). A budget that is not ok (no
 approved budget, a cancelled Cycle, changed inputs, a missing layer, no
 rows, a refused or faulty read) leaves the columns blank and the message
-says why — it never fails the report either.
+says why — it never fails the report either. When it is ok, the model
+marks the heading rows and the plug's row with ``drill_budget`` (S5 K10b):
+their Budget cell opens Statement Drill on the Budget basis.
 """
 import frappe
 

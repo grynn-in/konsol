@@ -106,7 +106,7 @@ _BUDGET_OK = {"state": "ok", "message": "Approved budget for ZZG FY2024: Budget 
               "meta": {"cycle": "B", "layers": ["base"], "rate_set": "RS", "scenario_id": "S", "declaration": "APB"}}
 
 
-def _execute_with(statement, entity_statement=None, budget=None, model_rows=None):
+def _execute_with(statement, entity_statement=None, budget=None):
     """Exec the module's functions against stub frappe/statement_api
     (``statement(fy, fp, group)`` -> ``(payload, reads)``, as
     ``statement_api._statement``; ``budget(fy, fp, group)`` -> the budget
@@ -139,8 +139,6 @@ def _execute_with(statement, entity_statement=None, budget=None, model_rows=None
             seen["rows"] = prior
             seen["drill_group"] = drill_group
             seen["budget"] = budget
-            if model_rows is not None:
-                return [dict(r) for r in model_rows]
             return ["rows"]
 
         @staticmethod
@@ -290,45 +288,6 @@ def test_a_faulty_budget_read_is_logged_as_well_as_shown():
 
     source = open(PATH).read()
     assert "frappe.db.commit" not in source, "never commit inside a request's report"
-
-
-_MODEL_ROWS = [
-    {"label": "Profit and Loss", "code": None, "is_section": 1, "budget": None},
-    {"label": "REVENUE", "code": "4", "drill_group": "CG-ZZG-", "budget": -1000.0},
-    {"label": "of which CTA", "code": None, "indent": 1, "budget": 0.0},
-    {"label": "Net result", "code": None, "budget": -300.0},
-    {"label": "Unbalanced budget (no balancing entry)", "code": "UNBALANCED", "drill_group": "CG-ZZG-",
-     "budget": 700.0},
-    {"label": "Unmatched residual", "code": None, "budget": 0.0},
-]
-
-
-def test_an_ok_budget_marks_the_heading_and_unbalanced_rows_for_the_budget_drill():
-    """S5 K10b: ``drill_budget`` on the rows whose Budget cell opens the
-    budget drill (Statement Drill, basis Budget): heading rows (a code and
-    the drill group) and the plug's row (code UNBALANCED). Includes, net
-    result, section headers and the residual carry none."""
-    execute, seen = _execute_with(lambda fy, fp, group: _ok_group(int(fy), [_tb(int(fy), 12)]),
-                                  model_rows=_MODEL_ROWS)
-    _, data, _ = execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "CG-ZZG-"})
-    flagged = [row["label"] for row in data if row.get("drill_budget")]
-    assert flagged == ["REVENUE", "Unbalanced budget (no balancing entry)"]
-    assert all(row["drill_budget"] == 1 for row in data if row.get("drill_budget"))
-
-
-def test_a_non_ok_budget_marks_no_row_for_the_budget_drill():
-    def no_budget(fy, fp, group):
-        return {"state": "no_approved_budget", "message": "No approved budget for ZZG FY2024.",
-                "statement": None, "meta": {}}
-
-    execute, seen = _execute_with(lambda fy, fp, group: _ok_group(int(fy), [_tb(int(fy), 12)]),
-                                  budget=no_budget, model_rows=_MODEL_ROWS)
-    _, data, _ = execute({"fiscal_year": 2024, "fiscal_period": 12, "consolidation_group": "CG-ZZG-"})
-    assert not any(row.get("drill_budget") for row in data)
-    execute, seen = _execute_with(lambda *a: _ok(2024, []), lambda fy, fp, entity: _ok(int(fy), [_tb(int(fy), 12)]),
-                                  model_rows=_MODEL_ROWS)
-    _, data, _ = execute({"fiscal_year": 2024, "fiscal_period": 12, "basis": "Entity", "entity": "ZZA"})
-    assert not any(row.get("drill_budget") for row in data), "the entity basis has no budget"
 
 
 def test_a_non_ok_statement_reads_no_budget():

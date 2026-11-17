@@ -4,6 +4,9 @@
 // statement_api.export_statement (a form POST in a new tab: open_url_post);
 // "Add commentary" saves a heading's commentary through
 // commentary_api.save_commentary (the Close app's own call).
+// The Budget cell of a heading row, and of the "Unbalanced budget" row, opens
+// Statement Drill on the Budget basis (konsol#348 S5 K10b) when the report
+// marked the row (drill_budget: the budget is ok); a blank budget cell is no link.
 // Frappe v16 runs report JS as an IIFE: assign the report explicitly.
 const ADD_COMMENTARY = __("Add commentary");
 const EXPORT_TO_EXCEL = __("Export to Excel");
@@ -24,6 +27,20 @@ function drill_url(data) {
 	} else {
 		params.set("consolidation_group", data.drill_group || "");
 	}
+	return `${frappe.router.make_url(["query-report", "Statement Drill"])}?${params}`;
+}
+
+function budget_drill_url(data) {
+	// The approved budget's drill for the row's code: a chart heading, or
+	// UNBALANCED for the plug's row (statement_report_model.UNBALANCED_CODE).
+	// Group basis only: the entity budget is S6, so no entity key here.
+	const params = new URLSearchParams({
+		fiscal_year: frappe.query_report.get_filter_value("fiscal_year"),
+		fiscal_period: frappe.query_report.get_filter_value("fiscal_period"),
+		basis: "Budget",
+		consolidation_group: data.drill_group || "",
+		heading: data.code,
+	});
 	return `${frappe.router.make_url(["query-report", "Statement Drill"])}?${params}`;
 }
 
@@ -205,6 +222,9 @@ frappe.query_reports["Consolidated Statement"] = {
 		}
 		if (column.fieldname === "label" && data.code && (data.drill_group || data.drill_entity)) {
 			value = `<a href="${drill_url(data)}" title="${__("Open the drill for this heading")}">${value}</a>`;
+		}
+		if (column.fieldname === "budget" && data.drill_budget && data.code) {
+			value = `<a href="${budget_drill_url(data)}" title="${__("Open the budget drill for this line")}">${value}</a>`;
 		}
 		if (column.fieldname === "label" && data.indent) {
 			value = `<span style="padding-left: ${data.indent * 2}em">${value}</span>`;

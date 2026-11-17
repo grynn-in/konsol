@@ -26,6 +26,11 @@ exactly what the Close app's Numbers screen shows.
 - Drill: a heading row carries ``drill_group`` (the Consolidation Group
   document name the Statement Drill filter takes) and
   ``consolidation_group`` (the group code commentary is keyed on).
+  ``drill_budget`` (S5 K10b) is 1 on a heading row, and on the budget-only
+  Unbalanced row (code ``UNBALANCED``), when the budget is ok and has the
+  line and a group is known: its Budget cell opens Statement Drill on the
+  Budget basis. Includes, net result, section headers and the residual
+  never carry it.
 - ``prior_year``: the prior year's value for the SAME line, from a second
   payload (``get_statement(fiscal_year - 1, fiscal_period, group)``): a
   P&L line takes the prior year's year to date, a Balance Sheet line the
@@ -155,6 +160,10 @@ def _with_commentary(row, payload, heading, drill_group):
     row["consolidation_group"] = payload.get("consolidation_group")
     # Entity basis (konsol#495): the entity the Statement Drill opens for.
     row["drill_entity"] = payload.get("entity") if payload.get("basis") == "Entity" else None
+    # S5 K10b: the Budget cell opens the budget drill when the budget is ok
+    # and has this line (a value; a non-ok budget leaves it None) and a
+    # group is known to drill on.
+    row["drill_budget"] = 1 if row.get("budget") is not None and drill_group else 0
     return row
 
 
@@ -300,18 +309,30 @@ def _with_budget(row, section, line, budget_items, minor_unit, include=None, var
     return row
 
 
-def _budget_only_unbalanced(section, lines, budget_items, currency):
+#: The plug row's code (S5 K10b): the warehouse's literal main_account of the
+#: budget's balancing plug, and the heading ``get_budget_drill`` takes for its
+#: drill by entity. Never a chart code (statement_model.heading_amounts).
+UNBALANCED_CODE = "UNBALANCED"
+
+
+def _budget_only_unbalanced(section, lines, budget_items, currency, drill_group=None):
     """The budget's "Unbalanced budget (no balancing entry)" line (S5-Q3 a)
     as a row with blank actuals, when the budget carries one and the
     actuals of ``section`` do not (actuals never carry the plug): the
-    budget balance sheet is seen to foot. ``None`` otherwise."""
+    budget balance sheet is seen to foot. ``None`` otherwise. The row's
+    ``code`` is ``UNBALANCED_CODE`` and it carries ``drill_group``, so its
+    Budget cell can open the plug's own drill (S5 K10b); it has no
+    ``consolidation_group`` or commentary keys, so its label is no heading
+    link."""
     if budget_items is None:
         return None
     item = budget_items.get((section, "unbalanced"))
     if item is None or any(line.get("kind") == "unbalanced" for line in lines):
         return None
-    row = _row(item["label"], currency, None)
+    row = _row(item["label"], currency, None, code=UNBALANCED_CODE)
     row["budget"] = _zero(item.get("current"))
+    row["drill_group"] = drill_group
+    row["drill_budget"] = 1 if row["budget"] is not None and drill_group else 0
     return row
 
 
@@ -362,7 +383,8 @@ def rows(payload, prior=None, drill_group=None, budget=None):
                 label = f"{line['label']} ({codes})" if codes else line["label"]
                 out.append(merged(_row(label, currency, line), name, line))
             elif kind == "residual":
-                budget_only = _budget_only_unbalanced(name, section["lines"], budget_items, currency)
+                budget_only = _budget_only_unbalanced(name, section["lines"], budget_items, currency,
+                                                      drill_group)
                 if budget_only is not None:
                     out.append(budget_only)
                 out.append(merged(

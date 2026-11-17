@@ -659,6 +659,30 @@ def test_the_budget_only_unbalanced_row_carries_the_plugs_code_and_the_drill_gro
     assert _by_label(data, "LIABILITIES")["code"] == "2"
 
 
+def test_an_ok_budget_marks_the_heading_and_unbalanced_rows_for_the_budget_drill():
+    """S5 K10b: ``drill_budget`` on the rows whose Budget cell opens the
+    budget drill (Statement Drill, basis Budget): heading rows with a budget
+    value and the plug's row. Includes, net result, section headers and the
+    residual carry 0. Without a group to drill on, nothing is marked."""
+    data = R.rows(_payload(), drill_group="CG-ZZG-", budget=_budget())
+    flagged = [row["label"] for row in data if row.get("drill_budget")]
+    assert UNBALANCED_LABEL in flagged
+    assert all(row["code"] for row in data if row.get("drill_budget"))
+    headings = [row["label"] for row in data if row.get("code") and row["code"] != "UNBALANCED"]
+    assert [h for h in headings if h in flagged] == headings, "every heading with a budget value"
+    for label in ("Profit and Loss", "Net result", "Unmatched residual"):
+        assert not _by_label(data, label).get("drill_budget")
+    assert not any(row.get("drill_budget") for row in R.rows(_payload(), drill_group=None, budget=_budget()))
+
+
+def test_a_non_ok_or_absent_budget_marks_no_row_for_the_budget_drill():
+    for budget in (None, {"state": "no_approved_budget", "message": "No approved budget.",
+                          "statement": None, "meta": {}}):
+        data = R.rows(_payload(), drill_group="CG-ZZG-", budget=budget)
+        assert not any(row.get("drill_budget") for row in data)
+        assert all("drill_budget" in row for row in data if row.get("code")), "the key is always present"
+
+
 def test_an_actuals_unbalanced_line_is_laid_out_and_takes_the_budgets_by_kind():
     data = R.rows(_payload(rows=_budget_rows()), budget=_budget())
     row = _by_label(data, UNBALANCED_LABEL)
