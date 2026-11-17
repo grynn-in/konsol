@@ -713,7 +713,10 @@ def test_budget_drill_sheet_has_rate_and_rate_set_columns_per_entity_account():
     budget = _budget()
     rows = _rows(_budget_book(budget, _budget_drills(budget))["Budget drill"])
     header = next(r for r in rows if r[0] == "Section")
-    assert header[:8] == M.DRILL_HEADER and header[8:10] == ["Rate", "Rate Set"]
+    # PR #554 review m6: the DECLARED method (the chart's, at build time), not the applied one.
+    assert header[:8] == M.DRILL_HEADER and header[8:10] == ["Declared method and rate", "Rate Set"]
+    note = rows[0][0]
+    assert "declared" in note.lower() and "applied" not in note.lower(), note
     zza = next(r for r in rows if r[4] == "ZZA" and r[5] == "1110")
     assert zza[8] == "average 1.05; closing 1.1" and zza[9] == "ZZRS2; ZZRS"  # in the order of the rates
     zzb = next(r for r in rows if r[4] == "ZZB" and r[5] == "1110")

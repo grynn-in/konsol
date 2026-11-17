@@ -326,8 +326,11 @@ def test_budget_columns_gain_rate_and_rate_set_after_amount():
     assert names == ["label", "entity", "main_account", "amount", "rate", "rate_set",
                      "source_doctype", "source", "currency"]
     by_name = {c["fieldname"]: c for c in cols}
+    # PR #554 review m6: the method is the chart's DECLARED Translation Method
+    # as recorded at build time, not the one the core applied (closing can be
+    # applied before a historical account's first tranche), so the column says so.
     assert (by_name["rate"]["label"], by_name["rate"]["fieldtype"], by_name["rate"]["width"]) == (
-        "Rate", "Data", 160)
+        "Declared method and rate", "Data", 200)
     assert (by_name["rate_set"]["label"], by_name["rate_set"]["fieldtype"],
             by_name["rate_set"]["options"], by_name["rate_set"]["width"]) == (
         "Rate Set", "Link", "Rate Set", 110)
@@ -368,15 +371,19 @@ def test_budget_outside_scope_aggregate_has_no_rate():
     assert outside["budget_entries_filters"] is None
 
 
-def test_a_blank_fx_method_reads_chart_default():
+def test_a_blank_fx_method_reads_closing_undeclared():
+    """PR #554 review m6: an account whose Translation Method the chart left
+    blank is translated at closing by the consolidation core, so a blank
+    ``fx_method`` reads "closing (undeclared)", never "chart default"."""
     payload = _budget_payload()
     zzb = next(r for r in payload["drill"]["rows"] if r["entity"] == "ZZB")
     zzb["rates"] = [{"fx_method": None, "rate": 1.25, "rate_set": "ZZRS"},
                     {"fx_method": "", "rate": 1.3, "rate_set": "ZZRS2"}]
     data = D.rows(payload, "USD")
     row = next(r for r in data if r["entity"] == "ZZB" and r["indent"] == 0)
-    assert row["rate"] == "chart default 1.25; chart default 1.3"
+    assert row["rate"] == "closing (undeclared) 1.25; closing (undeclared) 1.3"
     assert row["rate_set"] == "ZZRS; ZZRS2"
+    assert "chart default" not in open(os.path.join(APP_DIR, "close", "statement_drill_report_model.py")).read()
 
 
 def test_budget_entity_row_links_its_cycle_and_the_budget_entry_list():
