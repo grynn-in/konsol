@@ -72,11 +72,10 @@ Where there is no approved budget to show, the worksheet shows no columns, and t
 
 On the Consolidated Statement's **Entity** basis, the budget columns show that entity's own budget: the entity's rows of the Budget Cycle named by its root group's Approved Budget, in the entity's **functional currency**, before translation and before eliminations. A Cycle whose entries do not balance for the entity shows the plug as the **Unbalanced budget** line, as on the group statement, so the balance sheet still adds up.
 
-The Entity basis has no group filter, so the root group decides which approved budget applies:
+The Entity basis has no group filter. The approved budget is the one declared on the group at the top of the consolidation tree the entity sits in, even when the entity sits under a sub-group: an Approved Budget is declared only on a root group.
 
 | The legend says | What to do |
 |---|---|
-| The entity is a member of several root consolidation groups | No entity budget is shown, because each group has its own approved budget. Open the Group basis for the group whose budget you want. |
 | The entity is a member of no consolidation group | Add it to a root Consolidation Group, and declare that group's Approved Budget. |
 
 Any other reason (no approved budget, a cancelled Cycle, changed inputs) reads as on the group statement.

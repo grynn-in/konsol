@@ -14,10 +14,10 @@ message says why — it never fails the report.
 The Budget columns (konsol#348 S5 K7) read the approved budget of the
 statement's own group and year (``statement_api.budget_payload``). On the
 Entity basis (S6 KB9; S6-Q6 a) they read the entity budget
-(``statement_api.entity_budget_payload``): the entity's rows of its root
-group's Approved Budget, in the entity's functional currency, before
-eliminations, with the plug synthesised; an entity in several root groups
-is the ``choose_group`` state, in none ``no_group``. A budget that is not ok (no
+(``statement_api.entity_budget_payload``): the entity's rows of the
+Approved Budget of the top root group of its tree, in the entity's
+functional currency, before eliminations, with the plug synthesised; an
+entity in no group is the ``no_group`` state. A budget that is not ok (no
 approved budget, a cancelled Cycle, changed inputs, a missing layer, no
 rows, a refused or faulty read) renders no budget column at all and the
 message says why (BUD-4-2, Deepak Pai, 7 Nov 2026: a visible state, never a

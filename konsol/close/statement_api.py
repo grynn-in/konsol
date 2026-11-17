@@ -84,8 +84,9 @@ separately, K7).
 
 ``entity_budget_payload(fiscal_year, fiscal_period, entity)`` (not
 whitelisted; konsol#348 S6 KB8, S6-Q6 a) is the same payload on the Entity
-basis: the Approved Budget of the entity's ROOT group (several roots is
-``choose_group`` naming them, none ``no_group``; both before any read), read
+basis: the Approved Budget of the entity's TOP root group, found by walking
+the parent links from the entity's node (none is ``no_group``, before any
+read; an entity on two nodes is refused by name), read
 at the entity's grain from ``gold_consolidated_budget_tb.local_amount`` in
 the entity's functional currency (``_ENTITY_BUDGET_TB_SQL``, bound to the
 group, scenario_id, cycle, layers and the entity), with the budget's plug
@@ -866,22 +867,40 @@ def budget_payload(fiscal_year, fiscal_period, consolidation_group):
                              groups[consolidation_group].get("reporting_currency"), consolidation_group)
 
 
-#: S6 KB8: the entity budget's two states of its own, before any Approved
-#: Budget read (the five approved_budget_model states follow).
+#: S6 KB8: the entity budget's own state, before any Approved Budget read
+#: (the five approved_budget_model states follow).
 ENTITY_NO_GROUP = "no_group"
-ENTITY_CHOOSE_GROUP = "choose_group"
 UNBALANCED_CODE = "UNBALANCED"
 
 
-def _entity_root_groups(entity):
-    """The root Consolidation Group codes whose member rows carry
-    ``entity`` (every member row carries its root's code, konsol#495 row
-    11b), sorted. The entity budget reads the Approved Budget of that root
-    (S6-Q6 a); several roots is ``choose_group``, none ``no_group``."""
-    rows = frappe.get_all(
-        "Consolidation Group", filters={"data_area_id": entity},
-        fields=["consolidation_group"], limit_page_length=0)
-    return sorted({r["consolidation_group"] for r in rows if r.get("consolidation_group")})
+def _entity_root_group(entity):
+    """The code of the TOP root Consolidation Group of ``entity``'s node, or
+    None when no node carries the entity (S6-Q6 a; PR #558 review M1).
+
+    A leaf's ``consolidation_group`` is its PARENT node's code
+    (ConsolidationGroup._label), so the walk follows
+    ``parent_consolidation_group`` from the entity's node to the node with
+    none, as ownership_period.node_root does; an Approved Budget declares
+    only a root. One node per entity (_validate_entity_in_one_node) and one
+    parent per node give one root; an ownership link names an owner under
+    the same root (ownership_period.owner_refusal), so the ownership graph
+    adds none. Data written around the one-node rule is refused by name."""
+    nodes = frappe.get_all(
+        "Consolidation Group",
+        fields=["name", "consolidation_group", "data_area_id", "parent_consolidation_group"],
+        limit_page_length=0, order_by="name asc")
+    by_name = {n["name"]: n for n in nodes}
+    own = sorted(n["name"] for n in nodes if n.get("data_area_id") == entity)
+    if not own:
+        return None
+    if len(own) > 1:
+        frappe.throw(f"{entity} is on {len(own)} Consolidation Group nodes ({', '.join(own)}); an entity "
+                     "belongs to one node. Remove the extra node before its budget can be shown.")
+    node, seen = by_name[own[0]], set()
+    while node.get("parent_consolidation_group") in by_name and node["name"] not in seen:
+        seen.add(node["name"])
+        node = by_name[node["parent_consolidation_group"]]
+    return node["consolidation_group"]
 
 
 def _with_entity_plug(tb_rows, entity):
@@ -913,9 +932,9 @@ def _entity_budget_statement(key, period_rows, declared, accounts_map, currency,
     ``_budget_statement``'s plus ``group``, ``entity`` and ``currency`` (the
     entity's functional currency, which the statement is rounded to).
 
-    The entity's root group decides first (``_entity_root_groups``): none is
-    ``no_group``, several ``choose_group`` naming them, each with its
-    sentence and no further read. One root: ``_approved_budget`` for it, and
+    The entity's top root group decides first (``_entity_root_group``):
+    none is ``no_group``, with its sentence and no further read. Otherwise
+    ``_approved_budget`` for it, and
     only ``ok`` reads ClickHouse, ONCE (``_ENTITY_BUDGET_TB_SQL``) with the
     plug synthesised (``_with_entity_plug``), through ``_build_statement`` in
     the entity's currency. The ok message is the group's approved-budget
@@ -923,19 +942,12 @@ def _entity_budget_statement(key, period_rows, declared, accounts_map, currency,
     meta = {"cycle": None, "layers": None, "rate_set": None, "scenario_id": None, "declaration": None,
             "heading_sides": None, "group": None, "entity": entity, "currency": currency}
     out = {"state": "ok", "message": None, "statement": None, "meta": meta}
-    groups = _entity_root_groups(entity)
-    if not groups:
+    group = _entity_root_group(entity)
+    if group is None:
         out.update(state=ENTITY_NO_GROUP, message=(
             f"{entity} is a member of no consolidation group, so it has no approved budget to show: add it "
             "to a root Consolidation Group, and declare that group's Approved Budget."))
         return out
-    if len(groups) > 1:
-        out.update(state=ENTITY_CHOOSE_GROUP, message=(
-            f"{entity} is a member of {len(groups)} root consolidation groups ({', '.join(groups)}), each "
-            "with its own approved budget, and the Entity basis names none: no entity budget is shown. "
-            "Open the Group basis for the group whose budget you want."))
-        return out
-    group = groups[0]
     meta["group"] = group
 
     approved = _approved_budget(group, key[0])
