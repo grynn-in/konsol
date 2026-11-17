@@ -556,7 +556,8 @@ _DM = _load_by_path("drill_model_k11", "close", "drill_model.py")
 _BUDGET_SENTENCE = ("Approved budget for ZZ_GROUP FY2025: Budget Cycle BCYC-ZZB-2025-abc12345, all "
                     "layers (base, board), Rate Set ZZRS (Approved Budget APB-CG-ZZ_GROUP--2025-0f0f0f0f, "
                     "approved by lead@example.com on 2026-11-17).")
-_BUDGET_LABELS = ["Budget (before eliminations)", "Variance to budget", "Budget year to date"]
+_BUDGET_LABELS = ["Budget (before eliminations)", "Variance to budget", "Favourability",
+                  "Budget year to date"]
 
 
 def _budget(state="ok", message=_BUDGET_SENTENCE, rows=None):
@@ -571,7 +572,16 @@ def _budget(state="ok", message=_BUDGET_SENTENCE, rows=None):
     return {"state": state, "message": message, "statement": stmt,
             "meta": {"cycle": "BCYC-ZZB-2025-abc12345", "layers": ["base", "board"],
                      "rate_set": "ZZRS", "scenario_id": "ZZB",
-                     "declaration": "APB-CG-ZZ_GROUP--2025-0f0f0f0f"}}
+                     "declaration": "APB-CG-ZZ_GROUP--2025-0f0f0f0f",
+                     "heading_sides": _sides(stmt)}}
+
+
+def _sides(stmt, side="Debit"):
+    """statement_api._heading_sides' shape (S6 KB2): every heading of the
+    budget statement with a declared side; None unless ok."""
+    if stmt is None:
+        return None
+    return {ln["heading"]: side for s in stmt["sections"] for ln in s["lines"] if ln.get("kind") == "heading"}
 
 
 def _bline(budget, section, **match):
@@ -615,9 +625,9 @@ def test_header_carries_the_three_budget_columns_after_the_actuals_columns():
     rows = _rows(_budget_book(_budget())["Statement"])
     pl = _section_block(rows, "Profit and Loss")
     bs = _section_block(rows, "Balance Sheet")
-    assert pl[0][:11] == ["Line", "Code", "This period", "Comparison", "Variance", "Year to date",
+    assert pl[0][:12] == ["Line", "Code", "This period", "Comparison", "Variance", "Year to date",
                           *_BUDGET_LABELS, "Commentary", "By"]
-    assert bs[0][:10] == ["Line", "Code", "This period", "Comparison", "Variance",
+    assert bs[0][:11] == ["Line", "Code", "This period", "Comparison", "Variance",
                           *_BUDGET_LABELS, "Commentary", "By"]
 
 
@@ -629,7 +639,8 @@ def test_a_pl_line_has_budget_variance_to_budget_and_budget_ytd():
     bline = _bline(budget, 0, heading="4")
     assert row[6] == bline["current"] == 1000.0
     assert row[7] == round(actual["current"] - bline["current"], 2)
-    assert row[8] == bline["ytd"]
+    assert row[8] == "Unfavourable"  # 241.43 actual against 1,000 budget
+    assert row[9] == bline["ytd"]
     net = _row_starting(pl, "Net result")
     assert net[6] == _bline(budget, 0, kind="net_result")["current"]
     assert net[7] == round(241.43 - net[6], 2)
@@ -641,7 +652,7 @@ def test_a_bs_line_has_the_budget_and_no_variance_and_no_budget_ytd():
     bs = _section_block(_rows(_budget_book(budget)["Statement"]), "Balance Sheet")
     row = _row_starting(bs, "ASSETS", "1")
     assert row[5] == _bline(budget, 1, heading="1")["current"] == 300.0
-    assert row[6] is None and row[7] is None
+    assert row[6] is None and row[7] is None and row[8] is None
 
 
 def test_the_residual_takes_the_budget_but_no_variance():
@@ -669,7 +680,7 @@ def test_a_line_absent_from_the_budget_is_blank_never_zero():
     lines[:] = [ln for ln in lines if ln.get("heading") != "4"]
     pl = _section_block(_rows(_budget_book(budget)["Statement"]), "Profit and Loss")
     row = _row_starting(pl, "COST OF SALES", "4")
-    assert row[6] is None and row[7] is None and row[8] is None
+    assert row[6] is None and row[7] is None and row[8] is None and row[9] is None
 
 
 def test_without_a_budget_there_are_no_budget_columns_and_no_note():
@@ -711,12 +722,12 @@ def test_a_non_ok_budget_renders_the_actuals_layout_and_its_sentence_as_the_note
     assert book.sheetnames == ["Statement", "Drill", "Journals"]
 
 
-def test_an_ok_budget_adds_the_three_columns_and_shifts_commentary_three_cells_right():
+def test_an_ok_budget_adds_the_four_columns_and_shifts_commentary_four_cells_right():
     """The other half of D1: the columns appear only when the state is ok."""
     rows = _rows(_budget_book(_budget())["Statement"])
     pl = _section_block(rows, "Profit and Loss")
-    assert pl[0][6:11] == _BUDGET_LABELS + ["Commentary", "By"]
-    assert _row_starting(pl, "COST OF SALES", "4")[9] == _payload()["commentary"]["4"]["text"]
+    assert pl[0][6:12] == _BUDGET_LABELS + ["Commentary", "By"]
+    assert _row_starting(pl, "COST OF SALES", "4")[10] == _payload()["commentary"]["4"]["text"]
 
 
 def test_a_budget_drill_sheet_exists_only_when_budget_drills_are_given():
@@ -769,7 +780,7 @@ def test_budget_only_no_heading_and_not_in_chart_lines_are_written_with_blank_ac
     assert labels.index("COST OF SALES") < labels.index("No heading") < labels.index("Net result")
     row = _row_starting(pl, "No heading")
     assert row[1] is None and row[2:6] == [None] * 4
-    assert row[6] == 50.0 and row[7] is None and row[8] == 50.0
+    assert row[6] == 50.0 and row[7] is None and row[8] is None and row[9] == 50.0
     net = _row_starting(pl, "Net result")
     assert net[6] == 1050.0 == _row_starting(pl, "COST OF SALES", "4")[6] + row[6]
     bs = _section_block(rows, "Balance Sheet")
@@ -785,3 +796,89 @@ def test_budget_only_no_heading_and_not_in_chart_lines_are_written_with_blank_ac
     plain = [r[0] for r in _rows(_book()["Statement"])]
     assert "No heading" not in plain and not any(isinstance(v, str) and v.startswith("Not in the group chart")
                                                  for v in plain)
+
+
+# --- Favourability (konsol#348 S6 KB4; S6-Q3 a, BUD-7-a) ----------------------
+# The xlsx carries the same text column as the Desk report
+# (statement_report_model.favourability): P&L headings and the net result
+# only, from meta.heading_sides; the rule is in the budget note.
+
+_FAV = 8  # P&L: Line, Code, 4 actuals, Budget, Variance to budget, Favourability
+
+
+def _pl(budget):
+    return _section_block(_rows(_budget_book(budget)["Statement"]), "Profit and Loss")
+
+
+def test_the_favourability_texts_and_rule_equal_the_report_models():
+    assert (M.FAVOURABLE, M.UNFAVOURABLE, M.ON_BUDGET, M.FAVOURABILITY_NA) == \
+        (_REPORT.FAVOURABLE, _REPORT.UNFAVOURABLE, _REPORT.ON_BUDGET, _REPORT.FAVOURABILITY_NA)
+    assert M.FAVOURABILITY_RULE == _REPORT.FAVOURABILITY_RULE
+    for side in ("Debit", "Credit", "", None, "net_result"):
+        for variance in (-1.5, 0.0, 0, 2.25):
+            assert M.favourability(variance, side) == _REPORT.favourability(variance, side), (variance, side)
+
+
+def test_a_heading_below_budget_is_unfavourable_and_the_net_result_by_sign():
+    pl = _pl(_budget())
+    assert _row_starting(pl, "COST OF SALES", "4")[_FAV] == "Unfavourable"
+    assert _row_starting(pl, "Net result")[_FAV] == "Unfavourable"
+
+
+def test_a_heading_above_budget_is_favourable_whatever_its_declared_side():
+    for side in ("Debit", "Credit"):
+        budget = _budget()
+        _bline(budget, 0, heading="4")["current"] = 100.0
+        budget["meta"]["heading_sides"] = _sides(budget["statement"], side)
+        assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "Favourable", side
+
+
+def test_a_heading_at_budget_reads_on_budget():
+    budget = _budget()
+    _bline(budget, 0, heading="4")["current"] = 241.43
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "On budget"
+
+
+def test_a_heading_with_no_declared_side_reads_n_a():
+    """BUD-7-a: an undeclared normal balance is reported, never given a direction."""
+    budget = _budget()
+    budget["meta"]["heading_sides"]["4"] = ""
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "n/a"
+    del budget["meta"]["heading_sides"]["4"]
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "n/a"
+
+
+def test_favourability_is_text_and_blank_on_balance_sheet_and_budget_only_rows():
+    rows = _rows(_budget_book(_budget_with_lines_the_actuals_lack())["Statement"])
+    pl = _section_block(rows, "Profit and Loss")
+    assert isinstance(_row_starting(pl, "COST OF SALES", "4")[_FAV], str)
+    assert _row_starting(pl, "No heading")[_FAV] is None
+    bs = _section_block(rows, "Balance Sheet")
+    assert bs[0][7] == "Favourability"
+    assert all(r[7] is None for r in bs[1:])
+
+
+def test_a_heading_absent_from_the_budget_has_no_favourability():
+    budget = _budget()
+    lines = budget["statement"]["sections"][0]["lines"]
+    lines[:] = [ln for ln in lines if ln.get("heading") != "4"]
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] is None
+
+
+def test_the_ok_budget_note_carries_the_favourability_rule():
+    rows = _rows(_budget_book(_budget())["Statement"])
+    note = next(r[0] for r in rows if r[0] and r[0].startswith("Approved budget"))
+    assert M.FAVOURABILITY_RULE in note
+
+
+def test_an_ok_budget_without_heading_sides_is_refused_naming_the_key():
+    budget = _budget()
+    del budget["meta"]["heading_sides"]
+    with pytest.raises(ValueError, match="heading_sides"):
+        _budget_book(budget)
+
+
+def test_a_non_ok_budget_writes_no_favourability_column():
+    budget = _budget(state="no_approved_budget", message="No approved budget for FY2025.")
+    rows = _rows(_budget_book(budget)["Statement"])
+    assert not any(c == "Favourability" for r in rows for c in r)
