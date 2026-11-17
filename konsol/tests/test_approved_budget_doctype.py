@@ -485,3 +485,56 @@ def test_nothing_is_assigned_before_the_cancel_gate():
     gate = next(c.lineno for c in calls if getattr(c.func, "id", getattr(c.func, "attr", None)) == "assert_year_not_closed")
     early = [n for n in ast.walk(fn) if isinstance(n, ast.Assign) and n.lineno < gate]
     assert not early
+
+
+# ---- the form script (PR #554 review m5) -----------------------------------------------------
+
+JS_PATH = os.path.join(DOCTYPE_DIR, "approved_budget.js")
+
+_FORM_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+const [, , script, policy, layer] = process.argv;
+const handlers = {};
+global.frappe = { ui: { form: { on: (doctype, h) => { handlers[doctype] = h; } } } };
+vm.runInThisContext(fs.readFileSync(script, "utf8"));
+const h = handlers["Approved Budget"];
+const set = [];
+const frm = { doc: { layer_policy: policy, layer: layer || null },
+              set_value: (field, value) => { set.push([field, value]); frm.doc[field] = value; } };
+h.layer_policy(frm);
+console.log(JSON.stringify({ set, layer: frm.doc.layer }));
+"""
+
+
+def _run_layer_policy(policy, layer):
+    import shutil
+    import subprocess
+
+    assert shutil.which("node"), "node is needed to run the form script"
+    out = subprocess.run(["node", "-", JS_PATH, policy, layer], input=_FORM_HARNESS,
+                         capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+def test_form_script_clears_the_layer_when_the_policy_becomes_all_layers():
+    """PR #554 review m5: on the form the user has just chosen All layers, so
+    the layer that choice hides is cleared; validate keeps refusing a layer
+    named under All layers (an API insert), never clearing it there."""
+    got = _run_layer_policy("All layers", "board")
+    assert got["set"] == [["layer", None]] and got["layer"] is None
+
+
+def test_form_script_leaves_the_layer_alone_under_one_layer_and_when_already_blank():
+    assert _run_layer_policy("One layer", "board") == {"set": [], "layer": "board"}
+    assert _run_layer_policy("All layers", "") == {"set": [], "layer": None}
+
+
+def test_form_script_is_the_doctypes_own(env):
+    assert os.path.exists(JS_PATH)
+    with open(JS_PATH) as f:
+        src = f.read()
+    assert 'frappe.ui.form.on("Approved Budget"' in src
+    # The server rule is untouched: a layer under All layers is still refused.
+    with pytest.raises(_Thrown, match="All layers"):
+        env.doc(layer_policy="All layers", layer="board").validate()
