@@ -4,6 +4,34 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (17 Nov 2026, later): budget S5 (budget reports) merged.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s5.md`. The design picks are S5-Q1–Q7 on #348, all (a), taken under the standing rule.
+
+**Merged** (konsol#554, 992d31c2 + konsolidat#372, 2e3d48c0)
+- **Approved Budget** (new submittable doctype): it names one approved budget-type Cycle and its layers per group and fiscal year.
+  - Submit is the approval and stamps Approved By and Approved On. Only one declaration is live per group and year.
+  - It copies the Cycle's input fingerprint at submit.
+  - A Budget Cycle cannot be cancelled while a submitted declaration names it (a locking read).
+- **Consolidated Statement**, group basis: Budget (before eliminations), Variance to budget and Budget year to date.
+  - The columns appear only while the budget state is ok. Otherwise the legend and the export note give the state, never a blank column (BUD-4-2). The states are: no approved budget, Cycle cancelled, inputs changed since approval, layer missing.
+  - On the balance sheet the budget shows YTD movements (S5-Q4 a), so there is no variance there.
+  - The budget's UNBALANCED plug is its own line. Budget-only lines are shown.
+  - Every budget read binds group, scenario, Cycle and layer.
+- **Statement Drill** has a Budget basis showing the declared method, rate and Rate Set per entity. **xlsx** has the budget columns and a "Budget drill" sheet; the Close Event records the Cycle.
+- The Year strip marks years that have a submitted Approved Budget. New Handbook page: "Budget against actuals".
+- `pytest.ini` at the repo root stops `konsol/.pytest_cache` from appearing and breaking the dimension scan.
+- Live test: every step passes. The actuals export is identical with no declaration, and the budget cells match the warehouse by hand.
+
+**Open:**
+- #555 (cosmetic).
+- #552 (undecided).
+- An Entity Accountant needs EPM User to open any statement drill (unchanged from main).
+
+**Next:** S6. It covers:
+- the forecast latest-estimate read, which removes the interim one-approved-round rule;
+- forecast accuracy;
+- favourability (BUD-7-a);
+- worksheet budget columns.
+
 **Update (17 Nov 2026): budget S4 (consolidated budget) merged.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s4.md`.
 
 **Merged**
