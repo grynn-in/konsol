@@ -70,6 +70,7 @@ def test_module_imports_nothing_from_frappe_or_konsol():
 def test_columns_are_label_code_four_amounts_and_currency():
     fieldnames = [c["fieldname"] for c in R.columns()]
     assert fieldnames == ["label", "code", "current", "comparison", "variance", "ytd",
+                          "budget", "variance_to_budget", "budget_ytd",
                           "prior_year", "prior_year_change", "currency", "commentary"]
     for column in R.columns():
         if column["fieldname"] in ("current", "comparison", "variance", "ytd"):
@@ -256,7 +257,7 @@ def _line(payload, section, match):
 
 def test_columns_add_prior_year_and_change_after_ytd():
     fieldnames = [c["fieldname"] for c in R.columns()]
-    assert fieldnames[fieldnames.index("ytd") + 1:] == [
+    assert fieldnames[fieldnames.index("budget_ytd") + 1:] == [
         "prior_year", "prior_year_change", "currency", "commentary"]
     by_name = {c["fieldname"]: c for c in R.columns()}
     assert by_name["prior_year"]["label"] == "Prior year"
@@ -515,3 +516,175 @@ def test_has_rows_through_is_one_year_and_up_to_the_period():
     assert R.has_rows_through([_tb(2024, 8)], 2024, 7) is False
     assert R.has_rows_through([], 2024, 7) is False
     assert R.has_rows_through(None, 2024, 7) is False
+
+
+# --- Budget columns (konsol#348 S5 K6; S5-Q4 a, S5-Q6 a) --------------------
+#
+# ``rows(payload, prior, drill_group, budget)`` merges a budget payload per
+# line, the Prior year pattern: the budget statement is statement_model's own
+# statement over gold_fully_consolidated_budget rows (same chart, periods,
+# minor unit and display sign), so Budget is the budget line's ``current``,
+# Variance to budget is ``current - budget``, Budget year to date the budget
+# line's ``ytd`` (P&L lines only). A Balance Sheet budget value is the
+# budgeted movement year to date (a budget has Regular-period rows only), and
+# the message says so (S5-Q4 a). Blank, never 0, where the budget is absent or
+# not ok; the message carries the state's sentence then.
+
+UNBALANCED_LABEL = "Unbalanced budget (no balancing entry)"
+_BUDGET_META = {"cycle": "BCYC-ZZB-2025-abc12345", "layers": ["base", "board"], "rate_set": "ZZRS",
+                "scenario_id": "ZZB", "declaration": "APB-CG-ZZ_GROUP--2025-0f0f0f0f"}
+_BUDGET_OK_SENTENCE = ("Approved budget for ZZ_GROUP FY2025: Budget Cycle BCYC-ZZB-2025-abc12345, all layers "
+                       "(base, board), Rate Set ZZRS (Approved Budget APB-CG-ZZ_GROUP--2025-0f0f0f0f, approved by "
+                       "lead@example.com on 2026-11-17).")
+
+
+def _budget_rows():
+    """FCB shape: a revenue budget of 1,000 and a cash budget of 300 with no
+    balancing entry, so the plug is +700 for the (entity, period)."""
+    return [
+        F._row("4100", -1000.0, adjustment_type="entity"),
+        F._row("1110", 300.0, adjustment_type="entity"),
+        F._row("UNBALANCED", 700.0, adjustment_type="unbalanced"),
+    ]
+
+
+def _budget(rows=None, state="ok", message=_BUDGET_OK_SENTENCE, **meta):
+    stmt = SM.statement(rows if rows is not None else _budget_rows(), F._s_accounts(), F._S_CALENDAR,
+                        F._S_KEY, F._s_declared(), minor_unit=2) if state == "ok" else None
+    return {"state": state, "message": message, "statement": stmt, "meta": {**_BUDGET_META, **meta}}
+
+
+def test_columns_add_the_budget_columns_after_ytd():
+    fieldnames = [c["fieldname"] for c in R.columns()]
+    assert fieldnames[fieldnames.index("ytd") + 1:fieldnames.index("prior_year")] == [
+        "budget", "variance_to_budget", "budget_ytd"]
+    by_name = {c["fieldname"]: c for c in R.columns(minor_unit=2)}
+    assert by_name["budget"]["label"] == "Budget (before eliminations)"
+    assert by_name["variance_to_budget"]["label"] == "Variance to budget"
+    assert by_name["budget_ytd"]["label"] == "Budget year to date"
+    for name in ("budget", "variance_to_budget", "budget_ytd"):
+        assert by_name[name]["fieldtype"] == "Currency" and by_name[name]["options"] == "currency"
+        assert by_name[name]["precision"] == 2
+
+
+def test_without_a_budget_the_budget_columns_are_blank():
+    data = R.rows(_payload())
+    assert data and all(row["budget"] is None and row["variance_to_budget"] is None
+                        and row["budget_ytd"] is None for row in data)
+
+
+def test_a_pl_heading_takes_the_budgets_current_variance_and_ytd_matched_by_code():
+    payload, budget = _payload(), _budget()
+    row = _by_label(R.rows(payload, budget=budget), "COST OF SALES")
+    this_line = _line(payload, 0, {"heading": "4"})
+    budget_line = _line(budget, 0, {"heading": "4"})
+    assert budget_line["current"] == 1000.0 and this_line["current"] == 241.43
+    assert row["budget"] == 1000.0
+    assert row["variance_to_budget"] == round(241.43 - 1000.0, 2)
+    assert row["budget_ytd"] == budget_line["ytd"] == 1000.0
+
+
+def test_net_result_takes_the_budgets_net_result():
+    row = _by_label(R.rows(_payload(), budget=_budget()), SM.NET_RESULT_LABEL)
+    assert row["budget"] == 1000.0 and row["budget_ytd"] == 1000.0
+    assert row["variance_to_budget"] == round(241.43 - 1000.0, 2)
+
+
+def test_a_bs_heading_takes_the_budgeted_movement_year_to_date_with_no_budget_ytd():
+    """S5-Q4 (a): the budget's cumulative BS value IS the year's budgeted
+    movements (Regular-period rows only); the Budget year to date column
+    stays P&L-only, as on the actuals."""
+    data = R.rows(_payload(), budget=_budget())
+    assets = _by_label(data, "ASSETS")
+    assert assets["budget"] == 300.0
+    assert assets["variance_to_budget"] == round(1735.10 - 300.0, 2)
+    assert assets["budget_ytd"] is None
+    # A budget line present with nothing budgeted is 0.00, not blank.
+    liabilities = _by_label(data, "LIABILITIES")
+    assert liabilities["budget"] == 0.0 and str(liabilities["budget"]) == "0.0"
+    assert liabilities["variance_to_budget"] == 803.70
+
+
+def test_equity_includes_take_the_budgets_include_of_the_same_kind():
+    data = R.rows(_payload(), budget=_budget())
+    result = _by_label(data, "of which current-year result")
+    assert result["budget"] == 1000.0
+    assert result["variance_to_budget"] == round(241.43 - 1000.0, 2)
+    cta = _by_label(data, "of which currency translation (CTA)")
+    assert cta["budget"] == 0.0   # the budget has a CTA bucket of 0: present, zero
+
+
+def test_a_budget_only_unbalanced_line_is_laid_out_before_the_residual():
+    """Actuals never carry the plug; the budget's shows as its own row with
+    blank actuals columns, so the budget balance sheet is seen to foot."""
+    data = R.rows(_payload(), budget=_budget())
+    labels = [row["label"] for row in data]
+    at = labels.index(UNBALANCED_LABEL)
+    assert labels[at + 1] == "Unmatched residual"
+    row = data[at]
+    assert row["current"] is None and row["comparison"] is None and row["variance"] is None
+    assert row["budget"] == 700.0
+    assert row["variance_to_budget"] is None, "no actual to compare with"
+    assert row["budget_ytd"] is None and row["prior_year"] is None
+    residual = _by_label(data, "Unmatched residual")
+    assert residual["budget"] == 0.0
+
+
+def test_an_actuals_unbalanced_line_is_laid_out_and_takes_the_budgets_by_kind():
+    data = R.rows(_payload(rows=_budget_rows()), budget=_budget())
+    row = _by_label(data, UNBALANCED_LABEL)
+    assert row["current"] == 700.0 and row["budget"] == 700.0 and row["variance_to_budget"] == 0.0
+    # Without a budget the line still lays out (no unknown-kind refusal).
+    assert _by_label(R.rows(_payload(rows=_budget_rows())), UNBALANCED_LABEL)["current"] == 700.0
+
+
+def test_a_heading_absent_from_the_budget_has_a_blank_budget_not_zero():
+    budget = _budget()
+    bs_lines = budget["statement"]["sections"][1]["lines"]
+    bs_lines[:] = [line for line in bs_lines if line.get("heading") != "2"]
+    row = _by_label(R.rows(_payload(), budget=budget), "LIABILITIES")
+    assert row["budget"] is None and row["variance_to_budget"] is None
+
+
+def test_section_headers_and_residual_explanations_carry_no_budget():
+    declared = F._s_declared(cta_account=None)
+    data = R.rows(_payload(declared=declared), budget=_budget())
+    for row in data:
+        if row.get("is_section"):
+            assert row["budget"] is None and row["variance_to_budget"] is None
+    at = [r["label"] for r in data].index("Unmatched residual")
+    assert all(r["budget"] is None for r in data[at + 1:])
+
+
+@pytest.mark.parametrize("state, sentence", [
+    ("no_approved_budget", "No approved budget for ZZ_GROUP FY2025: declare one in Approved Budget."),
+    ("cycle_cancelled", "Approved Budget APB for ZZ_GROUP FY2025 names Budget Cycle B, which is cancelled."),
+    ("inputs_changed", "Approved Budget APB for ZZ_GROUP FY2025: the inputs of Budget Cycle B have changed."),
+    ("layer_missing", "Approved Budget APB for ZZ_GROUP FY2025 reads layer gone, which is no Budget Layer."),
+])
+def test_a_non_ok_budget_renders_blank_and_the_message_carries_its_sentence(state, sentence):
+    payload = _payload()
+    budget = _budget(state=state, message=sentence)
+    data = R.rows(payload, budget=budget)
+    assert data == R.rows(payload)
+    assert all(row["budget"] is None for row in data)
+    text = R.message(payload, budget=budget)
+    assert sentence in text
+
+
+def test_a_non_ok_budget_with_no_sentence_still_names_its_state():
+    text = R.message(_payload(), budget={"state": "error", "message": None, "statement": None, "meta": {}})
+    assert "Budget" in text and "error" in text
+
+
+def test_message_names_cycle_layers_rate_set_and_the_limits_for_an_ok_budget():
+    text = R.message(_payload(), budget=_budget())
+    for word in ("BCYC-ZZB-2025-abc12345", "base, board", "ZZRS", "APB-CG-ZZ_GROUP--2025-0f0f0f0f"):
+        assert word in text, word
+    assert "before intercompany eliminations and without group-level adjustments" in text
+    assert "budgeted movements year to date" in text   # S5-Q4 (a)
+    assert "#" not in text, "no issue numbers in user text"
+
+
+def test_message_has_no_budget_line_without_a_budget():
+    assert "udget" not in R.message(_payload())
