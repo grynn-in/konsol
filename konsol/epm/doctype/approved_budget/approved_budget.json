@@ -13,7 +13,7 @@
  "search_fields": "consolidation_group,fiscal_year,budget_cycle",
  "sort_field": "modified",
  "sort_order": "DESC",
- "modified": "2026-11-17 12:00:00.000000",
+ "modified": "2026-11-17 18:00:00.000000",
  "fields": [
   {
    "fieldname": "approved_budget_tab",
@@ -124,6 +124,23 @@
    "description": "Copied from the Budget Cycle at submit: the hash of the inputs the Cycle approved. The Consolidated Statement recomputes it when it reads the budget and reports a change since this approval; it decides nothing (BUD-11-3)."
   },
   {
+   "fieldname": "approved_by",
+   "fieldtype": "Link",
+   "label": "Approved By",
+   "options": "User",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Set at submit: the user who submitted the declaration (submit is the approval). The Consolidated Statement's legend names them."
+  },
+  {
+   "fieldname": "approved_on",
+   "fieldtype": "Datetime",
+   "label": "Approved On",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Set at submit: when the declaration was submitted, in the site's time zone."
+  },
+  {
    "fieldname": "approval_col_break",
    "fieldtype": "Column Break"
   },
@@ -131,7 +148,7 @@
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes",
-   "description": "Why this Cycle and layer policy are the approved budget. Optional; the approver and date are the document's own."
+   "description": "Why this Cycle and layer policy are the approved budget. Optional; Approved By and Approved On record the approval itself."
   },
   {
    "fieldname": "amended_from",

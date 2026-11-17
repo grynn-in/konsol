@@ -8,7 +8,7 @@ The Consolidated Statement shows three budget columns beside the actuals: **Budg
 
 ## What "approved" means
 
-An **Approved Budget** is a declaration per root consolidation group and fiscal year. It names one approved **Budget Cycle** of a budget scenario, and the layers that count: all layers, or one layer. Submit is the approval; the submitted document carries its owner and date. A group and year have one live declaration at a time.
+An **Approved Budget** is a declaration per root consolidation group and fiscal year. It names one approved **Budget Cycle** of a budget scenario, and the layers that count: all layers, or one layer. Submit is the approval: the document records who submitted it and when (**Approved By**, **Approved On**), and the statement's legend names them. A group and year have one live declaration at a time.
 
 The statement reads that declaration's Cycle and layers only. Two Cycles are never added together, and a forecast is not shown here.
 

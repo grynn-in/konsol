@@ -11,9 +11,10 @@ against.
 
 Submittable, and submit is the approval (#348 S5-Q1 a, taken under the
 standing rule): review happens on the draft, EPM Admin submits, and there is
-no installed workflow and no state field. The owner and date of the approval
-are the submitted document's own (``owner``, ``modified``, its Version
-rows). Cancel is gated on the year (S5 K2); a cancelled declaration stays as
+no installed workflow and no state field. The approver and the time of the
+approval are stamped at submit (``approved_by``, ``approved_on``; PR #554
+review m1: the owner may have drafted it, and ``modified`` moves with every
+save). Cancel is gated on the year (S5 K2); a cancelled declaration stays as
 the audit trail and may be amended.
 
 validate refuses, by name, what the statement could not read correctly:
@@ -33,6 +34,7 @@ validate refuses, by name, what the statement could not read correctly:
 import frappe
 from frappe import _
 from frappe.model.document import Document
+from frappe.utils import now_datetime
 
 from konsol.epm.budget_grain import digest_name
 from konsol.workflows import set_cancelled_state
@@ -76,11 +78,18 @@ class ApprovedBudget(Document):
                 frappe.ValidationError)
         return row
 
-    def _cycle_row(self):
+    def _cycle_row(self, for_update=False):
+        """The named Cycle's row. ``for_update`` (before_submit, PR #554 review
+        m7a) locks it: Budget Cycle's cancel gate (K16) reads the submitted
+        declarations that name the Cycle, and this submit reads the Cycle's
+        docstatus; without a lock the two could each read before the other
+        wrote (write skew under REPEATABLE READ) and leave a submitted
+        declaration naming a cancelled Cycle. The lock makes the second wait
+        for the first's commit, so it sees the row."""
         row = frappe.db.get_value(
             "Budget Cycle", self.budget_cycle,
             ["docstatus", "scenario_id", "scenario_type", "fiscal_year", "rate_set", "input_fingerprint"],
-            as_dict=True)
+            as_dict=True, for_update=for_update)
         if row is None:
             frappe.throw(_("Budget Cycle {0} does not exist.").format(self.budget_cycle), frappe.ValidationError)
         return row
@@ -158,8 +167,11 @@ class ApprovedBudget(Document):
         compares with the Cycle's recomputed hash at every read (S5-Q2 a).
         Set in before_submit so it lands with the approval and nothing saves
         in on_submit. A Cycle with no stamp (approved before S4 K8) is refused
-        by name: a blank copy would never match anything."""
-        cycle = self._cycle_row()
+        by name: a blank copy would never match anything. The Cycle row is
+        read FOR UPDATE (``_cycle_row``, review m7a). The approver and the
+        time are stamped here too (``approved_by``, ``approved_on``; review
+        m1): the submitter approves, whoever drafted the document."""
+        cycle = self._cycle_row(for_update=True)
         self._refuse_bad_cycle(cycle)
         if not cycle.input_fingerprint:
             frappe.throw(
@@ -168,6 +180,8 @@ class ApprovedBudget(Document):
                     self.budget_cycle),
                 frappe.ValidationError)
         self.input_fingerprint = cycle.input_fingerprint
+        self.approved_by = frappe.session.user
+        self.approved_on = now_datetime()
 
     def before_cancel(self):
         """Cancel only while the year has an open period (the Budget Cycle

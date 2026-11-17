@@ -698,7 +698,9 @@ def _group_statement(key, period_rows, group, declared, accounts_map, reporting_
 #: budget_state's ``declaration``).
 _APPROVED_BUDGET_FIELDS = ["name", "docstatus", "consolidation_group", "fiscal_year", "budget_cycle",
                            "scenario_id", "rate_set", "layer_policy", "layer", "input_fingerprint",
-                           "owner", "modified"]
+                           # PR #554 review m1: the submitter and the submit time, stamped in
+                           # before_submit; never owner/modified (the drafter, the last save).
+                           "approved_by", "approved_on"]
 
 
 def _approved_budget(group, fiscal_year):

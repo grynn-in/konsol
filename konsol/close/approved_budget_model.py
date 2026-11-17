@@ -117,8 +117,10 @@ def budget_state(group, fiscal_year, declaration, cycle, fingerprint, layer_rows
     - ``group``: the root group's code, ``fiscal_year`` its year (for the
       sentence; the reader resolved them).
     - ``declaration``: the live Approved Budget row (``name, docstatus,
-      budget_cycle, rate_set, layer_policy, layer, input_fingerprint, owner,
-      modified``), or None.
+      budget_cycle, rate_set, layer_policy, layer, input_fingerprint,
+      approved_by, approved_on``), or None. ``approved_by`` / ``approved_on``
+      are stamped at submit (PR #554 review m1): the submitter approves; the
+      owner may only have drafted it, and ``modified`` moves with every save.
     - ``cycle``: the named Budget Cycle's row (``name, docstatus,
       input_fingerprint``), or None when it is gone.
     - ``fingerprint``: ``budget_fingerprint.check_input_fingerprint``'s
@@ -176,9 +178,9 @@ def budget_state(group, fiscal_year, declaration, cycle, fingerprint, layer_rows
         return {"state": LAYER_MISSING, "message": sentence(LAYER_MISSING, layer_why=why, **ctx), "layers": None}
 
     approved = ""
-    owner, when = declaration.get("owner"), _date_text(declaration.get("modified"))
-    if owner or when:
-        approved = ", approved" + (f" by {owner}" if owner else "") + (f" on {when}" if when else "")
+    by, when = declaration.get("approved_by"), _date_text(declaration.get("approved_on"))
+    if by or when:
+        approved = ", approved" + (f" by {by}" if by else "") + (f" on {when}" if when else "")
     return {
         "state": OK,
         "message": sentence(OK, layers=_layers_text(declaration, layers), rate_set=declaration.get("rate_set"),
