@@ -4,6 +4,44 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (18 Nov 2026): budget S6 (forecast rounds, favourability, accuracy) merged; epic #348's planned stages are complete.** Plan and progress are in `.claude/memory/active/tasks-budget-s6.md`. S6-Q1 (b), a declared Current Forecast, is Deepak Pai's decision (#348 c6953756459), and so is "unbudgeted headings are budget zero" on the statement (c6956694095). S6-Q2 to S6-Q10 were taken under the standing rule. The round was built on Opus, after Fable hit its spend limit.
+
+**Merged**
+- **Pair A, forecast rounds** (konsol#557, 86a41dc9 + konsolidat#373, 4d912e85):
+  - **Current Forecast** (new submittable doctype): one per scenario and year. It names the current round, is written through to `epm_staging.current_forecasts`, and `gold_forecast_current_round` reads it.
+  - Every reader takes the declared round only: the scenario TB, K.EPM flat and hierarchy reads, and cost allocation. Rounds are never summed. A year with no declaration reads nothing, and a WARN names the year.
+  - The interim one-approved-round rule is removed from both repos.
+  - New: `gold_latest_estimate` (actuals to the as-of date, forecast after), the `latest_estimate` Dataset, and the Forecast Horizon Coverage report.
+  - Budget reads refuse forecast ids.
+  - CI fix on an all-empty warehouse: `cross join system.one` in the consolidation core stops the thread explosion (konsolidat#369).
+- **Pair B, favourability, worksheet and entity budget** (konsol#558, 9a1cc0c7 + konsolidat#374, e737756a):
+  - `variance_favourability` has three states (favourable / unfavourable / not_applicable), replacing the summable Bool. The `variance_favorable` Measure is retired by a patch, and Excel reading it now errors by name.
+  - Consolidated Statement: a Favourability column, with a legend that gives the rule. An unbudgeted P&L heading is budget zero.
+  - Worksheet: a Budget basis, with an Unbalanced budget column.
+  - Entity basis: Budget columns in the entity's functional currency, read from the entity's top root group.
+- **Pair C, Excel consolidated budget and forecast accuracy** (konsol#561, 368bafa0 + konsolidat#375, 5d9da46d):
+  - `gold_consolidated_budget_fact` and the `consolidated_budget` Dataset. With no scenario named, the read takes the year's single budget scenario and refuses when there are several.
+  - `gold_forecast_accuracy` (entity currency) and `gold_forecast_accuracy_group` (group currency, so FX movement is in the error). Every approved round is measured against closed periods, up to the round's longest horizon.
+  - The Desk Forecast Accuracy report, scoped by entity. In Excel, the accuracy read takes only the declared round.
+  - The error % is not an Excel measure. A patch retires `forecast_error_pct`; compute it in the sheet as `forecast_error / ABS(actual_amount)`.
+  - A period Close, Lock or Reopen now requests a `scenarios` build. That build is high-risk, so an EPM Admin approves it.
+- **Live tests**, through konsolidat-tester, on every pair: every step passes, and the actuals tables are identical before and after.
+
+**Open**
+- **Decisions for Deepak:** #562 (the statement reads n/a where a P&L heading has no normal balance, while the warehouse decides by the leaf) and #552 (an entity exiting mid-plan).
+- **Bugs and gaps:**
+  - #563: the `budget` Excel read sums budget scenarios.
+  - #564: upper-case Budget Layer codes.
+  - #565: an entity code in a group-keyed slot reads 0.
+  - konsolidat#376: the latest estimate uses per-Cycle horizons.
+  - #559: latest estimate gaps.
+  - #555: cosmetic.
+- **Follow-ups:**
+  - #566: Forecast columns on the statement (S6-Q10 b).
+  - #567: a consolidated hierarchy-node read.
+  - #568: budget Datasets read 0 for no row.
+  - #569: accuracy as at close.
+
 **Update (17 Nov 2026, late): cost allocation phase 2a (Reciprocal) merged.** Issue #269; plan and progress are in `.claude/memory/active/tasks-cost-allocation-reciprocal.md`.
 
 **Merged** (konsol#541, dd8a18aa + konsolidat#363, 1e4d24a7)
