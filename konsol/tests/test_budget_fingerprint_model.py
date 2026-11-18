@@ -209,9 +209,9 @@ def test_a_null_amount_raises_naming_the_row():
 
 
 def test_no_inputs_is_still_a_fingerprint_of_the_set():
-    empty = M.input_fingerprint("BUDGET_2027", [], [], [], [], [])
+    empty = M.input_fingerprint("BUDGET_2027", [], [], [], [], [], [])
     assert empty.startswith(M.VERSION + ":")
-    assert empty != M.input_fingerprint("ACTUAL", [], [], [], [], [])
+    assert empty != M.input_fingerprint("ACTUAL", [], [], [], [], [], [])
     assert empty != _fp()
 
 

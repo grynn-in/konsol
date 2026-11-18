@@ -17,7 +17,18 @@ every month as the actual rates arrive):
 - the Spread Profile weights the annual rows name (an unused profile is not
   an input);
 - the approved Group Exchange Rates (quote and unit, as entered) and
-  Historical Equity Rates of that set.
+  Historical Equity Rates of that set;
+- the approved Ownership Period links of the entities the Cycle names
+  (konsol#552, Deepak Pai, 18 Nov 2026): an ownership exit recorded after
+  Approve must read as a changed input, not silently change the consolidated
+  budget. A link counts when its child entity or its owner entity is one of
+  the Cycle's entities (the ``data_area_id`` of its annual or line rows). Its
+  percentage (2 places), method, effective and end dates, acquisition and
+  disposal markers and supersession are hashed. The fiscal year is NOT used
+  to select links: every link of those entities, of any date, is read, which
+  is conservative (an added or changed link always reads as a change, like
+  the historical tranches) and needs no year-date resolution. Acquisition
+  and disposal prices are not hashed: a budget does not consume them.
 
 Each row's text is hashed with its kind, and the hashes are summed mod
 2**256 (never XORed: two equal hashes would cancel), so the result is
@@ -35,7 +46,7 @@ from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 
 #: Stored as "<VERSION>:<64 hex>", so a later change of recipe reads as a
 #: different fingerprint, never as a match.
-VERSION = "v1"
+VERSION = "v2"  # v2: ownership links (konsol#552); every v1 stamp now reads as stale
 _MOD = 2 ** 256
 _SEP = "\x1f"
 
@@ -52,6 +63,11 @@ RATE_GRAIN = ("from_currency", "to_currency", "fiscal_year", "fiscal_period", "r
 RATE_VALUES = (("quote", 9), ("quoted_per", 0))
 HISTORICAL_GRAIN = ("consolidation_group", "data_area_id", "main_account", "rate_date", "to_currency")
 HISTORICAL_VALUES = (("historical_rate", 6),)
+OWNERSHIP_GRAIN = ("consolidation_group", "data_area_id", "owner_group", "owner_data_area_id",
+                   "consolidation_method", "effective_date", "end_date", "acquisition_date",
+                   "is_first_acquisition", "is_disposal", "disposal_date", "supersedes",
+                   "superseded_end_date")
+OWNERSHIP_VALUES = (("ownership_pct", 2),)
 
 
 def _number(value, places, kind, row, field):
@@ -96,12 +112,14 @@ def _each(kind, rows, grain, values):
 
 
 def input_fingerprint(rate_set, annual_inputs, entry_lines, weights, exchange_rates, historical_rates,
-                      dimensions=()):
+                      ownership_links, dimensions=()):
     """The fingerprint of a Cycle's approved inputs: "v1:<64 hex>".
 
     ``dimensions`` are the site's declared budget dimension fields (dim_*),
     part of both budget grains; a dim_* key on a row that is not declared is
-    not read. ``weights`` may hold every profile: only the profiles the
+    not read. ``ownership_links`` may hold every link: only those whose
+    child or owner entity is named by an annual or line row are hashed.
+    ``weights`` may hold every profile: only the profiles the
     annual rows name are hashed.
     """
     dims = tuple(dimensions or ())
@@ -117,5 +135,11 @@ def input_fingerprint(rate_set, annual_inputs, entry_lines, weights, exchange_ra
     for h in _each("rate", exchange_rates, RATE_GRAIN, RATE_VALUES):
         total += h
     for h in _each("historical", historical_rates, HISTORICAL_GRAIN, HISTORICAL_VALUES):
+        total += h
+    entities = {str(r.get("data_area_id")) for r in list(annual_inputs) + list(entry_lines)
+                if r.get("data_area_id")}
+    mine = [r for r in ownership_links
+            if str(r.get("data_area_id")) in entities or str(r.get("owner_data_area_id")) in entities]
+    for h in _each("ownership", mine, OWNERSHIP_GRAIN, OWNERSHIP_VALUES):
         total += h
     return "%s:%064x" % (VERSION, total % _MOD)
