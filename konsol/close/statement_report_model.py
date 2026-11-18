@@ -60,21 +60,16 @@ exactly what the Close app's Numbers screen shows.
   2026 rule) with no case here: statement_model.statement emits every chart
   heading, at 0 when no row sits under it, and the net result. On the P&L
   that is Budget and Budget year to date 0.00, the actual as the variance
-  and favourability by its normal balance; on the BS Budget 0.00 and no
+  and favourability by its sign; on the BS Budget 0.00 and no
   variance; its budget drill opens and shows no rows. A line absent from
   the budget, a section header and a residual explanation row are blank,
   never 0.
-  ``favourability`` (konsol#348 S6 KB3; S6-Q3 a, BUD-7-a) is a TEXT on a
-  Profit and Loss heading row and the net result, never a number: the
-  budget payload's ``meta.heading_sides`` (KB2) carries the chart's normal
-  balance per heading; for a declared side (Debit or Credit alike, since
-  the amounts are display-signed, income positive) a variance to budget
-  above zero is "Favourable", below zero "Unfavourable", zero "On budget";
-  a heading with no declared side reads "n/a" (reported, never refused,
-  never given a direction). The net result is favourable when profit is
-  higher (a declared sub-rule; the legend says so). Balance Sheet lines,
-  includes, budget-only rows and section headers carry none. An ok budget
-  without ``heading_sides`` is refused naming the key.
+  ``favourability`` (konsol#348 S6 KB3; konsol#562 option E, Deepak Pai, 18
+  Nov 2026) is a TEXT on a Profit and Loss heading row and the net result,
+  never a number: from the display-signed variance to budget alone (income
+  positive), above zero "Favourable", below zero "Unfavourable", zero "On
+  budget". The Main Account's normal balance does not gate it. Balance Sheet
+  lines, includes, budget-only rows and section headers carry none.
   A budget that is not ok
   renders NO budget column (``columns(minor_unit, budget)``), and
   ``message`` carries its state's sentence: BUD-4-2 (Deepak Pai, 7 Nov
@@ -111,21 +106,17 @@ _AMOUNT_FIELDS = ("current", "comparison", "variance", "ytd")
 _BUDGET_FIELDS = ("budget", "variance_to_budget", "favourability", "budget_ytd")
 _UNEXPLAINED_LABEL = "Unexplained"
 
-#: Favourability texts (konsol#348 S6 KB3; S6-Q3 a). Three states from the
-#: heading's declared normal balance (BUD-7-a: Deepak Pai, 7 Nov 2026) plus
-#: "On budget" for a zero variance with a budget present (a declared
-#: sub-rule). ``n/a`` is the reported state of an undeclared side.
+#: Favourability texts (konsol#348 S6 KB3). Three states from the sign of the
+#: display-signed variance (konsol#562 option E, Deepak Pai, 18 Nov 2026;
+#: amends the gate half of BUD-7-a), plus "On budget" for a zero variance.
 FAVOURABLE = "Favourable"
 UNFAVOURABLE = "Unfavourable"
 ON_BUDGET = "On budget"
-FAVOURABILITY_NA = "n/a"
-_DECLARED_SIDES = ("Debit", "Credit")
 #: The legend's rule, in words (no issue numbers in user text).
 FAVOURABILITY_RULE = (
-    "Favourability: on a profit and loss heading whose main account declares a normal balance, a variance "
-    "to budget above zero is Favourable and below zero Unfavourable (income and costs are both shown "
-    "income-positive, so Debit and Credit read the same way), zero is On budget; a heading with no "
-    "declared normal balance reads n/a. The net result is favourable when there is more profit than budgeted")
+    "Favourability: on the profit and loss, a variance to budget above zero is Favourable, below zero "
+    "Unfavourable and zero On budget; income and costs are both shown income-positive, so they read the "
+    "same way. The net result reads the same way: more profit than budgeted is Favourable")
 
 #: Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
 #: 6956694095; the 22 Sep 2026 rule). Said in the legend, in words.
@@ -337,33 +328,17 @@ def _budget_items(budget):
     return items
 
 
-def favourability(variance_to_budget, side):
-    """The favourability text for a display-signed variance and the heading's
-    declared side (konsol#348 S6 KB3): ``n/a`` unless ``side`` is Debit or
-    Credit (BUD-7-a), else On budget at zero, Favourable above, Unfavourable
-    below. ``side`` is the chart's normal balance, or the literal
-    ``"net_result"`` for the net result (more profit is favourable)."""
-    if side != "net_result" and side not in _DECLARED_SIDES:
-        return FAVOURABILITY_NA
+def favourability(variance_to_budget):
+    """The favourability text for a display-signed variance (income positive;
+    konsol#562, Deepak Pai, 18 Nov 2026): On budget at zero, Favourable
+    above, Unfavourable below. The sign alone decides; no account declaration
+    gates it."""
     if variance_to_budget == 0:
         return ON_BUDGET
     return FAVOURABLE if variance_to_budget > 0 else UNFAVOURABLE
 
 
-def _heading_sides(budget):
-    """``meta.heading_sides`` of an ok budget payload (KB2), or None when
-    there is no ok budget. An ok budget without it is refused naming the
-    key: a missing side map would read every heading as n/a."""
-    if _budget_items(budget) is None:
-        return None
-    sides = (budget.get("meta") or {}).get("heading_sides")
-    if sides is None:
-        raise ValueError("The budget payload has no meta.heading_sides.")
-    return sides
-
-
-def _with_budget(row, section, line, budget_items, minor_unit, include=None, variance=True,
-                 heading_sides=None):
+def _with_budget(row, section, line, budget_items, minor_unit, include=None, variance=True):
     """``row`` with the budget's value for the same line (its ``current``:
     on the Balance Sheet the budgeted movements year to date, S5-Q4 a), the
     variance to budget on a Profit and Loss line only (this period's
@@ -391,10 +366,9 @@ def _with_budget(row, section, line, budget_items, minor_unit, include=None, var
         row["variance_to_budget"] = _zero(round(this - budget_value, minor_unit))
         kind = line.get("kind")
         if include is None and kind == "heading":
-            row["favourability"] = favourability(row["variance_to_budget"],
-                                                 (heading_sides or {}).get(line["heading"]) or "")
+            row["favourability"] = favourability(row["variance_to_budget"])
         elif include is None and kind == "net_result":
-            row["favourability"] = favourability(row["variance_to_budget"], "net_result")
+            row["favourability"] = favourability(row["variance_to_budget"])
     if "ytd" in budget_item and budget_item.get("ytd") is not None:
         row["budget_ytd"] = _zero(budget_item["ytd"])
     return row
@@ -467,12 +441,10 @@ def rows(payload, prior=None, drill_group=None, budget=None):
         raise ValueError("The statement payload has no minor_unit.")
     prior_values = _prior_values(prior)
     budget_items = _budget_items(budget)
-    heading_sides = _heading_sides(budget)
 
     def merged(row, name, line, include=None, variance=True):
         return _with_budget(_with_prior(row, name, line, prior_values, minor_unit, include=include),
-                            name, line, budget_items, minor_unit, include=include, variance=variance,
-                            heading_sides=heading_sides)
+                            name, line, budget_items, minor_unit, include=include, variance=variance)
 
     out = []
     for section in payload["statement"]["sections"]:

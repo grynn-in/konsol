@@ -36,11 +36,10 @@ The Favourability column reads the variance to budget of a profit and loss headi
 | Favourable | The variance to budget is above zero. |
 | Unfavourable | The variance to budget is below zero. |
 | On budget | The variance to budget is exactly zero. |
-| n/a | The heading's main account declares no normal balance. |
 
-The rule depends on the heading's **normal balance** (Debit or Credit, on the Main Account). Debit and Credit read the same way: the statement shows income and costs both income-positive, so a cost above budget is already a negative variance, and income above budget a positive one. A heading whose main account leaves the normal balance blank reads **n/a**: the statement does not guess a direction for it. Set the normal balance on the Main Account to give it one.
+The sign of the variance alone decides it. The statement shows income and costs both income-positive, so a cost above budget is already a negative variance and income above budget a positive one. The Main Account's normal balance plays no part.
 
-The net result is Favourable when there is more profit than budgeted. Balance sheet lines have no favourability, as they have no variance to budget. A heading that has actuals but no line in the approved budget is budgeted at zero: on the profit and loss its Budget and Budget year to date are 0.00 and its variance is the actual, so unbudgeted spend is Unfavourable and unbudgeted revenue Favourable. On the balance sheet it shows Budget 0.00 and no variance.
+The net result reads the same way: Favourable when there is more profit than budgeted. Balance sheet lines have no favourability, as they have no variance to budget. A heading that has actuals but no line in the approved budget is budgeted at zero: on the profit and loss its Budget and Budget year to date are 0.00 and its variance is the actual, so unbudgeted spend is Unfavourable and unbudgeted revenue Favourable. On the balance sheet it shows Budget 0.00 and no variance.
 
 The legend under the statement states the rule, and the Excel export carries the same column.
 

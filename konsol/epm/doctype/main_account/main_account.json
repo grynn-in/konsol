@@ -139,7 +139,7 @@
    "fieldtype": "Select",
    "label": "Normal Balance",
    "options": "\nDebit\nCredit",
-   "description": "Left blank, it follows the account type."
+   "description": "Used to sign balance sheet headings on the statement. It does not affect the Favourability column."
   },
   {
    "fieldname": "time_balance",

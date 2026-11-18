@@ -2008,8 +2008,7 @@ def test_ok_budget_payload_is_the_statement_over_the_budget_rows_with_meta():
     result = _call_budget(site)
     assert result["state"] == "ok"
     assert result["meta"] == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS",
-                              "scenario_id": "ZZB", "declaration": DECLARATION,
-                              "heading_sides": {"1": "Debit", "2": "Credit", "3": "Credit", "4": ""}}
+                              "scenario_id": "ZZB", "declaration": DECLARATION}
     assert set(result) == {"state", "message", "statement", "meta"}
     for word in (CYCLE, "base, board", "ZZRS", DECLARATION, LEAD, "2026-11-17"):
         assert word in result["message"], word
@@ -2028,31 +2027,13 @@ def test_ok_budget_payload_is_the_statement_over_the_budget_rows_with_meta():
     assert ("fingerprint", CYCLE) in site.reads, "S5-Q2 a: the fingerprint is checked at the read"
 
 
-def test_ok_budget_meta_carries_the_heading_sides_from_the_chart():
-    """konsol#348 S6 KB2 (for S6-Q3 a, BUD-7-a): the budget payload's ``meta``
-    carries ``heading_sides``, {heading code: the chart's normal_balance} for
-    every heading in the budget statement, a blank side kept as '' (the
-    report reads it as "n/a", never guesses a direction). Nothing else in the
-    payload changes; a non-ok budget carries None."""
-    site = _budget_site()
-    site.accounts["4"]["normal_balance"] = "Credit"
-    result = _call_budget(site)
-    assert result["state"] == "ok", result["message"]
-    assert result["meta"]["heading_sides"] == {"1": "Debit", "2": "Credit", "3": "Credit", "4": "Credit"}
-    assert set(result["meta"]) == {"cycle", "layers", "rate_set", "scenario_id", "declaration", "heading_sides"}
-    # The live chart's P&L heading declares no side: kept blank, not defaulted.
-    assert _call_budget(_budget_site())["meta"]["heading_sides"]["4"] == ""
-    assert _call_budget(_Site())["meta"]["heading_sides"] is None
-
-
 def test_an_unbudgeted_pl_heading_from_the_s5_path_is_budget_zero_and_its_drill_opens_empty():
     """Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
     6956694095) holds through the S5 path itself (PR #558 review m1):
     statement_model.statement emits every chart heading, at 0 when no row
     sits under it, so a budget with no row under P&L heading 4 still carries
     heading 4. The report then shows Budget 0.00 and Budget YTD 0.00, the
-    actual as the variance, the favourability by the heading's normal balance
-    (and the side map covers it), and a Budget cell that opens the drill; the
+    actual as the variance, the favourability by the sign of the variance, and a Budget cell that opens the drill; the
     drill is ok and shows no rows."""
     site = _budget_site()
     site.accounts["4"]["normal_balance"] = "Credit"
@@ -2061,7 +2042,6 @@ def test_an_unbudgeted_pl_heading_from_the_s5_path_is_budget_zero_and_its_drill_
     budget = _call_budget(site)
     assert budget["state"] == "ok", budget["message"]
     assert _line(budget, "Profit and Loss", "heading", "4")["current"] == 0.0, "emitted at 0"
-    assert budget["meta"]["heading_sides"]["4"] == "Credit"
 
     actual = _call(site, group="G1")
     R = _load_path("statement_report_model_for_unbudgeted_test",
@@ -2110,16 +2090,16 @@ def _export_row(book, code):
     ("4", "Credit", -241.43, 0.0, 241.43, "Favourable"),
     # Debit (cost) heading, a cost of 241.43 against budget 0: Unfavourable.
     ("4", "Debit", 241.43, 0.0, -241.43, "Unfavourable"),
-    # No declared normal balance: reported "n/a", never given a direction.
-    ("4", "", -241.43, 0.0, 241.43, "n/a"),
+    # No declared normal balance: the sign alone decides (konsol#562).
+    ("4", "", -241.43, 0.0, 241.43, "Favourable"),
     # Balance Sheet heading 1: Budget 0.0, no variance, no favourability.
     ("1", "Debit", -241.43, 0.0, None, None),
 ])
-def test_unbudgeted_heading_is_budget_zero_with_favourability_by_normal_balance(
+def test_unbudgeted_heading_is_budget_zero_with_favourability_by_sign(
         code, side, actual, budget_value, variance, favourability):
     """Unbudgeted is budget zero (Deepak Pai, 22 Sep and 17 Nov 2026, konsol#348):
     while the budget is ok a heading with no budget rows shows Budget 0.00 and
-    Variance = actual, and Favourability follows the heading's normal balance,
+    Variance = actual, and Favourability follows the sign of the variance,
     so unbudgeted cost is Unfavourable. Restores the hand-payload cases that
     the PR #558 fix range deleted (review m1), through the real
     _budget_statement path, then the report model rows and the .xlsx cells."""
@@ -2149,7 +2129,7 @@ def test_no_declaration_is_no_approved_budget_with_no_clickhouse_and_no_fingerpr
     assert "No approved budget for G1 FY2025" in result["message"]
     assert result["statement"] is None
     assert result["meta"] == {"cycle": None, "layers": None, "rate_set": None, "scenario_id": None,
-                              "declaration": None, "heading_sides": None}
+                              "declaration": None}
     assert site.ch_calls == []
     assert not [r for r in site.reads if r[0] == "fingerprint"]
 
@@ -2520,7 +2500,7 @@ def test_export_with_a_budget_drill_fault_keeps_the_actuals_file_and_records_bud
 def test_export_with_an_ok_budget_adds_the_four_columns_before_commentary():
     """The other half of D1: with an ok budget the four columns follow the
     actuals' and Commentary moves four cells right. Favourability (S6 KB4)
-    reaches the file from the API's own meta.heading_sides (KB2)."""
+    reaches the file."""
     golden = _golden()
     book = _export_book(_export_budget_site())
     rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
@@ -2530,8 +2510,8 @@ def test_export_with_an_ok_budget_adds_the_four_columns_before_commentary():
     by_code = {r[1]: r for r in rows if r[1]}
     assert by_code["4"][10] == golden["commentary"]["4"]["text"]
     assert by_code["4"][6] == 1000.0, "COST OF SALES budget"
-    # The chart here leaves heading 4's normal balance blank: reported as n/a (BUD-7-a).
-    assert by_code["4"][8] == "n/a", by_code["4"]
+    # The chart here leaves heading 4's normal balance blank; the sign alone decides (konsol#562).
+    assert by_code["4"][8] == "Unfavourable", by_code["4"]
     net = next(r for r in rows if r[0] == "Net result")
     assert net[7] < 0 and net[8] == "Unfavourable", net
 
@@ -2712,7 +2692,6 @@ def test_entity_budget_payload_is_the_statement_in_the_entitys_currency_with_a_s
     assert set(result) == {"state", "message", "statement", "meta"}
     assert result["meta"] == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS",
                               "scenario_id": "ZZB", "declaration": DECLARATION,
-                              "heading_sides": {"1": "Debit", "2": "Credit", "3": "Credit", "4": ""},
                               "group": "G1", "entity": "ZZA", "currency": "JPY"}
     stmt = result["statement"]
     assert stmt["minor_unit"] == 0, "the entity's functional currency, never the group's"
