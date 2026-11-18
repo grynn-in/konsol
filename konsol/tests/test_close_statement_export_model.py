@@ -899,3 +899,13 @@ def test_a_non_ok_budget_writes_no_favourability_column():
     budget = _budget(state="no_approved_budget", message="No approved budget for FY2025.")
     rows = _rows(_budget_book(budget)["Statement"])
     assert not any(c == "Favourability" for r in rows for c in r)
+
+
+# --- konsol#562 option E: the sign alone decides (Deepak Pai, 18 Nov 2026) ----
+
+def test_562_a_heading_with_no_side_reads_by_sign_and_no_heading_sides_is_fine():
+    budget = _budget()
+    budget["meta"]["heading_sides"]["4"] = ""
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "Unfavourable"
+    del budget["meta"]["heading_sides"]
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "Unfavourable"

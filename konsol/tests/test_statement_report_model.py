@@ -980,3 +980,21 @@ def test_message_states_the_favourability_rule_for_an_ok_budget():
     for phrase in ("normal balance", "n/a", "On budget", "net result", "more profit"):
         assert phrase in text, phrase
     assert "#" not in text
+
+
+# --- konsol#562 option E: the sign alone decides (Deepak Pai, 18 Nov 2026) ----
+
+def test_562_a_heading_with_no_side_reads_by_the_sign_of_the_variance():
+    """Heading 4 has side '' in _BUDGET_META: it reads by sign, not n/a."""
+    row = _by_label(R.rows(_payload(), budget=_budget()), "COST OF SALES")
+    assert row["variance_to_budget"] < 0 and row["favourability"] == "Unfavourable"
+    small = [F._row("4100", -200.0, adjustment_type="entity"), F._row("1110", 200.0, adjustment_type="entity")]
+    row = _by_label(R.rows(_payload(), budget=_budget(rows=small)), "COST OF SALES")
+    assert row["variance_to_budget"] > 0 and row["favourability"] == "Favourable"
+
+
+def test_562_a_budget_payload_without_heading_sides_works():
+    budget = _budget()
+    del budget["meta"]["heading_sides"]
+    row = _by_label(R.rows(_payload(), budget=budget), "COST OF SALES")
+    assert row["favourability"] == "Unfavourable"
