@@ -22,6 +22,8 @@ Open the add-in's pane (the **Konsolidat** button on the Home ribbon) and sign i
 
 For example, `=K.EPM("E1",2026,3,"4000","","","region=EU")`.
 
+`scenario` is a word that picks what to read: `actuals` (the default), `budget`, `forecast`, `latest_estimate`, `variance`, `consolidated`, `consolidated_budget`, `forecast_accuracy`, `forecast_accuracy_group` or `cashflow`. The planning words, and which forecast round they read, are explained on the Forecast rounds page. The accuracy words have no error % measure: compute it in the sheet as `forecast_error / ABS(actual_amount)`. The Forecast Accuracy report shows it per row.
+
 An actuals read of a period with no trial balance shows `#N/A` with the message "No trial balance for …". A loaded period where the account has no balance shows 0. A range such as Q1 reads if at least one of its periods is loaded. A malformed argument shows `#VALUE!` with the reason.
 
 The other functions have their own argument order. `dimensions` is the fifth argument in the first four:
@@ -67,4 +69,4 @@ If you are not signed in, nothing is refreshed and the pane opens and says why.
 
 ## When the add-in changes
 
-Excel keeps the add-in's manifest, which lists its buttons and functions. When a konsol release raises the manifest version (the ribbon buttons came with 2.0.2.0, `K.EPMSAVE`'s currency and amountBasis arguments with 2.0.3.0, and its asOfDate argument with 2.0.4.0), your Microsoft 365 administrator uploads the manifest again in the Microsoft 365 admin center, from `/assets/konsol/excel-addin/manifest.xml` on your konsol site. Until then Excel keeps the old buttons and functions. A workbook on an old add-in sends requests the server refuses; reload the add-in.
+Excel keeps the add-in's manifest, which lists its buttons and functions. When a konsol release raises the manifest version (the ribbon buttons came with 2.0.2.0, `K.EPMSAVE`'s currency and amountBasis arguments with 2.0.3.0, its asOfDate argument with 2.0.4.0, and the scenario words in `K.EPM`'s tooltip with 2.0.5.0), your Microsoft 365 administrator uploads the manifest again in the Microsoft 365 admin center, from `/assets/konsol/excel-addin/manifest.xml` on your konsol site. Until then Excel keeps the old buttons and functions. A workbook on an old add-in sends requests the server refuses; reload the add-in.

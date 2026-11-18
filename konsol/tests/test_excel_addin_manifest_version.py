@@ -15,8 +15,9 @@ ADDIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: 2.0.2.0 (ribbon Refresh buttons, 7 Nov 2026) left functions.json unchanged;
 #: the pair moves because the test pins the Version too. 2.0.3.0 (konsol#348
 #: S2-X3): K.EPMSAVE takes currency and amountBasis. 2.0.4.0 (konsol#348 S3
-#: K5): K.EPMSAVE takes asOfDate, the forecast round.
-SHIPPED = ("2f7de2461c4ba47c", "2.0.4.0")
+#: K5): K.EPMSAVE takes asOfDate, the forecast round. 2.0.5.0 (konsol#348 S6
+#: KC1): K.EPM's scenario tooltip lists the Dataset words, the S6 ones included.
+SHIPPED = ("988c0179f42299f5", "2.0.5.0")
 
 
 def _version(name):

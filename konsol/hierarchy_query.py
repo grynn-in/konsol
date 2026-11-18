@@ -377,6 +377,33 @@ def _declared_forecasts_by_year():
     return {year: sorted(ids) for year, ids in by_year.items()}
 
 
+def _declared_cycles():
+    """{(scenario_id, fiscal_year): budget_cycle} of the submitted Current
+    Forecasts: the round a read of a table kept per round takes (konsol#348
+    S6 KC1). One per pair (the doctype refuses a second live one)."""
+    import frappe
+
+    return {
+        (row["scenario_id"], int(row["fiscal_year"])): row["budget_cycle"]
+        for row in frappe.get_all(
+            "Current Forecast", filters={"docstatus": 1},
+            fields=["scenario_id", "fiscal_year", "budget_cycle"], limit_page_length=0)
+    }
+
+
+def round_in_clause(scenario_id, years, cycles, params, prefix):
+    """`` AND (fiscal_year, cycle) IN (({<prefix>y0:Int32}, {<prefix>c0:String}), ...)``:
+    the declared Cycle of ``scenario_id`` for each of ``years``, bound into
+    ``params``. ``cycles`` is ``_declared_cycles()``'s map; every year must
+    have one (the read was refused before this otherwise)."""
+    holders = []
+    for i, year in enumerate(sorted({int(y) for y in years})):
+        holders.append(f"({{{prefix}y{i}:Int32}}, {{{prefix}c{i}:String}})")
+        params[f"param_{prefix}y{i}"] = str(year)
+        params[f"param_{prefix}c{i}"] = cycles[(scenario_id, year)]
+    return f" AND (fiscal_year, cycle) IN ({', '.join(holders)})"
+
+
 def choose_declared_forecast(scenario_id, declared, fiscal_year):
     """(scenario_id, None) a forecast read uses, or (None, why).
 
@@ -429,19 +456,21 @@ def _active_budget_scenarios_by_year():
     return {year: sorted(ids) for year, ids in by_year.items()}
 
 
-def choose_budget_scenario(active, fiscal_year):
+def choose_budget_scenario(active, fiscal_year, *, none_reason=None):
     """The budget scenario a variance read uses when none is named.
 
     ``active`` is the active budget scenarios already narrowed to
     ``fiscal_year``. Exactly one is the answer. None, or several, is an
-    error that says so, never a guess (konsol#214).
+    error that says so, never a guess (konsol#214). ``none_reason`` replaces
+    the "no variance to show" clause for a read that is not a variance (the
+    consolidated budget, konsol#561 review M1).
     """
     if len(active) == 1:
         return active[0], None
     if not active:
         return None, (
             f"No active budget scenario belongs to FY{fiscal_year}, "
-            "so there is no variance to show."
+            + (none_reason or "so there is no variance to show.")
         )
     return None, (
         f"Several active budget scenarios belong to FY{fiscal_year} "

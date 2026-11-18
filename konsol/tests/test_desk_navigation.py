@@ -124,6 +124,7 @@ SIDEBARS = {
         ("DocType", "Budget Annual Input", "forecast"),
         ("DocType", "Current Forecast"),   # konsol#348 S6 KA4 (S6-Q1 b)
         ("Report", "Forecast Horizon Coverage"),   # konsol#348 S6 KA9 (QB10 b, S6-Q9 a)
+        ("Report", "Forecast Accuracy"),   # konsol#348 S6 KC3 (FC-4-2)
         ("Section", "Shared"),
         ("DocType", "Scenario"),
         ("DocType", "Spread Profile"),

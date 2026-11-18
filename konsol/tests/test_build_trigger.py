@@ -29,7 +29,7 @@ def _fn(name):
     return next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
 
 
-def _run(method="on_submit", submittable=True, flags=(), raises=False):
+def _run(method="on_submit", submittable=True, flags=(), raises=False, scope=None):
     calls, logs = [], []
 
     # Frappe v15's real signature, so a job kwarg that reuses one of enqueue's
@@ -48,7 +48,10 @@ def _run(method="on_submit", submittable=True, flags=(), raises=False):
     exec(compile(ast.Module(body=[_fn("queue_consolidation_build")], type_ignores=[]), TASKS, "exec"), ns)
     doc = types.SimpleNamespace(doctype="Ownership Period", name="OP-1",
                                 meta=types.SimpleNamespace(is_submittable=submittable))
-    ns["queue_consolidation_build"](doc, method)
+    if scope is None:
+        ns["queue_consolidation_build"](doc, method)
+    else:
+        ns["queue_consolidation_build"](doc, method, scope=scope)
     return calls, logs
 
 
@@ -102,6 +105,55 @@ def test_job_kwargs_do_not_collide_with_enqueue_and_match_the_job():
     job_args = set(kw) - {"enqueue_after_commit", "job_id", "deduplicate"}
     target = _fn("request_consolidation_build")
     assert {a.arg for a in target.args.args} == job_args
+
+
+def test_a_named_scope_reaches_the_job_under_its_own_job_id():
+    """konsol#561 review M3: EPM Fiscal Year asks for the scenarios domain on a
+    status move, beside DOCTYPE_BUILD_MAP's "full" for a calendar change. The
+    scope rides to the job, and the job_id carries it, so deduplication never
+    folds a scoped request into the document's full one."""
+    plain, _ = _run("on_update", submittable=False)
+    scoped, logs = _run("on_update", submittable=False, scope="scenarios")
+    assert len(scoped) == 1 and not logs
+    assert plain[0][1]["build_scope"] is None
+    assert scoped[0][1]["build_scope"] == "scenarios"
+    assert scoped[0][1]["job_id"] != plain[0][1]["job_id"]
+    assert "scenarios" in scoped[0][1]["job_id"]
+
+
+def test_the_trigger_builds_the_named_scope_else_the_mapped_one():
+    import sys
+    requested = []
+    policy = types.ModuleType("konsol.close.close_policy_model")
+    policy.approval_build_reason = lambda *a: None
+    stubs = {"konsol": types.ModuleType("konsol"), "konsol.close": types.ModuleType("konsol.close"),
+             "konsol.close.close_policy_model": policy}
+    stubs["konsol"].__path__ = []
+    stubs["konsol.close"].__path__ = []
+    saved = {k: sys.modules.get(k) for k in stubs}
+    sys.modules.update(stubs)
+    try:
+        state = types.SimpleNamespace(**{f: False for f in FLAGS})
+        ns = {
+            "frappe": types.SimpleNamespace(
+                flags=state, session=types.SimpleNamespace(user="zz@example.com"),
+                get_roles=lambda user: [], logger=lambda: None),
+            "DOCTYPE_BUILD_MAP": {"EPM Fiscal Year": {"scope": "full", "risk": "high"}},
+            "request_build_for_scope": lambda scope, dt, dn, **kw: requested.append((scope, dt, dn)),
+        }
+        exec(compile(ast.Module(body=[_fn("on_consolidation_doc_update")], type_ignores=[]),
+                     TASKS, "exec"), ns)
+        doc = types.SimpleNamespace(doctype="EPM Fiscal Year", name="2025")
+        ns["on_consolidation_doc_update"](doc, "on_update")
+        ns["on_consolidation_doc_update"](doc, "on_update", scope="scenarios")
+    finally:
+        for k, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = mod
+    assert requested == [("full", "EPM Fiscal Year", "2025"),
+                         ("scenarios", "EPM Fiscal Year", "2025")], requested
 
 
 def test_only_the_job_calls_the_committing_trigger():
