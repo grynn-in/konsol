@@ -18,16 +18,15 @@ every month as the actual rates arrive):
   an input);
 - the approved Group Exchange Rates (quote and unit, as entered) and
   Historical Equity Rates of that set;
-- the approved Ownership Period links of the entities the Cycle names
-  (konsol#552, Deepak Pai, 18 Nov 2026): an ownership exit recorded after
-  Approve must read as a changed input, not silently change the consolidated
-  budget. A link counts when its child entity or its owner entity is one of
-  the Cycle's entities (the ``data_area_id`` of its annual or line rows). Its
-  percentage (2 places), method, effective and end dates, acquisition and
-  disposal markers and supersession are hashed. The fiscal year is NOT used
-  to select links: every link of those entities, of any date, is read, which
-  is conservative (an added or changed link always reads as a change, like
-  the historical tranches) and needs no year-date resolution. Acquisition
+- every approved Ownership Period link on the site (konsol#552, Deepak Pai,
+  18 Nov 2026). An ownership exit recorded after Approve must read as a
+  changed input; it must not silently change the consolidated budget. Every
+  link is read, whatever its entity or date. A holding that has no budget rows
+  but owns a Cycle entity changes only its own link when it exits, so a
+  narrower rule would miss it. The rule is conservative: any ownership change
+  marks every approved Cycle stale. Each link's percentage (2 places),
+  method, effective and end dates, acquisition and disposal markers, and
+  supersession are hashed. Acquisition
   and disposal prices are not hashed: a budget does not consume them.
 
 Each row's text is hashed with its kind, and the hashes are summed mod
@@ -117,8 +116,8 @@ def input_fingerprint(rate_set, annual_inputs, entry_lines, weights, exchange_ra
 
     ``dimensions`` are the site's declared budget dimension fields (dim_*),
     part of both budget grains; a dim_* key on a row that is not declared is
-    not read. ``ownership_links`` may hold every link: only those whose
-    child or owner entity is named by an annual or line row are hashed.
+    not read. ``ownership_links`` are the site's approved links, every one
+    hashed (konsol#552: a holding without budget rows can exit too).
     ``weights`` may hold every profile: only the profiles the
     annual rows name are hashed.
     """
@@ -136,10 +135,6 @@ def input_fingerprint(rate_set, annual_inputs, entry_lines, weights, exchange_ra
         total += h
     for h in _each("historical", historical_rates, HISTORICAL_GRAIN, HISTORICAL_VALUES):
         total += h
-    entities = {str(r.get("data_area_id")) for r in list(annual_inputs) + list(entry_lines)
-                if r.get("data_area_id")}
-    mine = [r for r in ownership_links
-            if str(r.get("data_area_id")) in entities or str(r.get("owner_data_area_id")) in entities]
-    for h in _each("ownership", mine, OWNERSHIP_GRAIN, OWNERSHIP_VALUES):
+    for h in _each("ownership", ownership_links, OWNERSHIP_GRAIN, OWNERSHIP_VALUES):
         total += h
     return "%s:%064x" % (VERSION, total % _MOD)

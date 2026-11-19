@@ -15,12 +15,10 @@ rejected as a model nothing calls).
   of the set is read, dated before or after the year alike: a tranche's
   effect runs from its date onward, and reading all of them is conservative
   (a new tranche reads as a change, never a changed one as a match);
-- the submitted Ownership Period links (the rows the warehouse syncs:
-  docstatus 1) whose child or owner entity is an entity of the Cycle's
-  annual or line rows (konsol#552, Deepak Pai, 18 Nov 2026). An ownership
-  exit recorded after Approve then reads as a changed input. Every such
-  link is read, of any date: the fiscal year does not select (conservative,
-  as for the tranches). Recipe v2: a Cycle approved before it holds a v1
+- every submitted Ownership Period link (the rows the warehouse syncs:
+  docstatus 1) on the site, whatever its entity or date (konsol#552, Deepak
+  Pai, 18 Nov 2026). An ownership exit recorded after Approve then reads as a
+  changed input, including the exit of a holding that has no budget rows. Recipe v2: a Cycle approved before it holds a v1
   stamp and reads as stale until re-approved; there is no re-stamp.
 
 Budget Cycle.before_submit stamps ``input_fingerprint`` with it; the Approve
@@ -66,16 +64,9 @@ OWNERSHIP_FIELDS = ("name", "consolidation_group", "data_area_id", "owner_group"
                     "supersedes", "superseded_end_date")
 
 
-def _ownership_links(entities):
-    """Submitted links whose child or owner entity is in ``entities``. Two
-    asks, merged by name: the filters have no OR, and never ``["in", []]``."""
-    if not entities:
-        return []
-    found = {}
-    for field in ("data_area_id", "owner_data_area_id"):
-        for r in _rows("Ownership Period", {"docstatus": 1, field: ["in", entities]}, OWNERSHIP_FIELDS):
-            found[r["name"]] = r
-    return [found[k] for k in sorted(found)]
+def _ownership_links():
+    """Every submitted link, by name (v16 sorts by creation otherwise)."""
+    return sorted(_rows("Ownership Period", {"docstatus": 1}, OWNERSHIP_FIELDS), key=lambda r: r["name"])
 
 
 def read_inputs(cycle):
@@ -90,7 +81,6 @@ def read_inputs(cycle):
                   {"docstatus": 1, "rate_set": cycle.rate_set, "fiscal_year": int(cycle.fiscal_year)},
                   RATE_FIELDS)
     historical = _rows("Historical Equity Rate", {"docstatus": 1, "rate_set": cycle.rate_set}, HISTORICAL_FIELDS)
-    entities = sorted({r["data_area_id"] for r in annual + lines if r.get("data_area_id")})
     return {
         "rate_set": cycle.rate_set,
         "annual_inputs": annual,
@@ -98,7 +88,7 @@ def read_inputs(cycle):
         "weights": weights,
         "exchange_rates": rates,
         "historical_rates": historical,
-        "ownership_links": _ownership_links(entities),
+        "ownership_links": _ownership_links(),
         "dimensions": dims,
     }
 
@@ -129,7 +119,7 @@ def check_input_fingerprint(cycle):
     else:
         matches = False
         message = _("Budget Cycle {0}: an input has changed since Approve (an annual figure, an entry line, "
-                    "a spread weight, a rate of Rate Set {1}, or an ownership link of an entity of the Cycle). Stamped {2}, now {3}.").format(
+                    "a spread weight, a rate of Rate Set {1}, or an ownership link). Stamped {2}, now {3}.").format(
             cycle, doc.rate_set, stored, current)
     return {"cycle": cycle, "docstatus": int(doc.docstatus or 0), "stored": stored, "current": current,
             "matches": matches, "message": message}
