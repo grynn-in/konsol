@@ -4,6 +4,23 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (19 Nov 2026): three HMD decisions, two built; one waits on #358.** All three decisions are by Deepak Pai, 18 Nov 2026, and recorded on their issues.
+- **konsol#562, decision E, plus an `on_budget` state** (konsolidat#377, dae26e03 + konsol#571, 8f40d17e):
+  - On the profit and loss, favourability comes from the sign of the variance alone: above zero Favourable, below Unfavourable, zero On budget. This holds on the statement (headings and net result) and in `gold_variance_analysis` (every P&L account).
+  - Main Account `normal_balance` no longer gates favourability. This amends the gate half of BUD-7-a.
+  - `variance_favourability` now has four states. `not_applicable` means only a balance-sheet account or an account not in the chart. This supersedes the "three states" line in the S6 entry below.
+  - The test was renamed `assert_variance_favourability_follows_sign`. The `heading_sides` payload was removed.
+  - A P&L heading with no actual and no budget reads On budget, because budget zero meets actual zero.
+  - Rejected: D (a mandatory side on every heading).
+- **konsol#552, decision C** (`budget_exit_treatment` on the group root, no default; Follow ownership first, As approved + scope line refused until built):
+  - Step 1 waits on konsolidat#358 and konsol#532, the ownership exit journal from another session.
+  - Prerequisite built (konsol#572, 54192d9c): the Budget Cycle fingerprint hashes every submitted Ownership Period link. An exit recorded after Approve now reads as stale.
+  - The recipe is v2, so Cycles approved before it read as stale until re-approved.
+- **konsolidat#370, decision B** (3a553e2a):
+  - The fixture gate runs as matrix shards (`fixture_gate.py --shard K/N`; N is the matrix length). A final job, `test fixtures, every shard ran every fixture`, fails unless the shards together ran every fixture exactly once. About 22 min instead of about 46.
+  - The workflow already had its path filter.
+- **Live tests** through konsolidat-tester: every step passed. On #562 the before/after diff changed exactly the 2 intended rows, and on #572 the main-versus-branch A/B was confirmed.
+
 **Update (18 Nov 2026): budget S6 (forecast rounds, favourability, accuracy) merged; epic #348's planned stages are complete.** Plan and progress are in `.claude/memory/active/tasks-budget-s6.md`. S6-Q1 (b), a declared Current Forecast, is Deepak Pai's decision (#348 c6953756459), and so is "unbudgeted headings are budget zero" on the statement (c6956694095). S6-Q2 to S6-Q10 were taken under the standing rule. The round was built on Opus, after Fable hit its spend limit.
 
 **Merged**
