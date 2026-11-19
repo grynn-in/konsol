@@ -112,7 +112,7 @@ def _each(kind, rows, grain, values):
 
 def input_fingerprint(rate_set, annual_inputs, entry_lines, weights, exchange_rates, historical_rates,
                       ownership_links, dimensions=()):
-    """The fingerprint of a Cycle's approved inputs: "v1:<64 hex>".
+    """The fingerprint of a Cycle's approved inputs: "v2:<64 hex>" (VERSION).
 
     ``dimensions`` are the site's declared budget dimension fields (dim_*),
     part of both budget grains; a dim_* key on a row that is not declared is
