@@ -139,7 +139,7 @@
    "fieldtype": "Select",
    "label": "Normal Balance",
    "options": "\nDebit\nCredit",
-   "description": "Debit or Credit. Left blank on an account, publishing the chart fills it from the account type; a heading is never filled. A balance sheet heading needs it to show on the statement. It does not affect favourability."
+   "description": "Debit or Credit. Left blank on an account, saving fills it from the account type; a heading is never filled. A balance sheet heading needs it to show on the statement. It does not affect favourability."
   },
   {
    "fieldname": "time_balance",
