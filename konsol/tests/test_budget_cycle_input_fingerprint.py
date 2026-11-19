@@ -105,6 +105,20 @@ def _tables():
             rate(2026, 12, "Closing", "1.07"),                      # another year
             rate(2027, 2, "Average", "1.09", docstatus=0),          # a draft
         ],
+        "Ownership Period": [
+            {"name": "OP-1", "consolidation_group": "ZZGRP", "data_area_id": "ZZNL", "owner_group": "ZZGRP",
+             "owner_data_area_id": "", "ownership_pct": 80, "consolidation_method": "full",
+             "effective_date": date(2024, 1, 1), "end_date": date(9999, 12, 31),
+             "acquisition_date": date(2024, 1, 1), "is_first_acquisition": 1, "is_disposal": 0,
+             "disposal_date": date(9999, 12, 31), "supersedes": None, "superseded_end_date": None,
+             "docstatus": 1},
+            {"name": "OP-2", "consolidation_group": "ZZGRP", "data_area_id": "ZZXX", "owner_group": "ZZGRP",
+             "owner_data_area_id": "", "ownership_pct": 50, "consolidation_method": "full",
+             "effective_date": date(2024, 1, 1), "end_date": date(9999, 12, 31), "docstatus": 1},
+            {"name": "OP-3", "consolidation_group": "ZZGRP", "data_area_id": "ZZNL", "owner_group": "ZZGRP",
+             "owner_data_area_id": "", "ownership_pct": 10, "consolidation_method": "full",
+             "effective_date": date(2026, 1, 1), "end_date": date(9999, 12, 31), "docstatus": 0},
+        ],
         "Historical Equity Rate": [
             {"consolidation_group": "ZZGRP", "data_area_id": "ZZNL", "main_account": "3000",
              "rate_date": date(2024, 1, 1), "to_currency": "USD", "historical_rate": "1.05",
@@ -312,3 +326,23 @@ def test_the_check_is_a_get_that_writes_nothing():
     assert decorators == ['frappe.whitelist(methods=["GET"])'], decorators
     for forbidden in ("set_value", ".save(", ".submit(", "db.sql(", "db.commit", "insert("):
         assert forbidden not in src, forbidden
+
+
+# ---- ownership (konsol#552, Deepak Pai, 18 Nov 2026) ----------------------------------
+
+def test_the_reader_takes_the_approved_links_of_the_cycles_entities(env):
+    inputs = env.reader.read_inputs(env.cycle())
+    assert [r["name"] for r in inputs["ownership_links"]] == ["OP-1", "OP-2"], "every submitted link"
+    asked = [f for dt, f in env.asked if dt == "Ownership Period"]
+    assert asked and all(f["docstatus"] == 1 for f in asked)
+
+
+def test_an_ownership_exit_recorded_after_approve_is_a_mismatch(env):
+    doc = env.cycle()
+    doc.before_submit()
+    assert env.reader.check_input_fingerprint(CYCLE)["matches"] is True
+    env.tables["Ownership Period"][1]["end_date"] = date(2027, 3, 31)   # ZZXX (a holding, say) exits
+    assert env.reader.check_input_fingerprint(CYCLE)["matches"] is False
+    doc.before_submit()
+    env.tables["Ownership Period"][0]["end_date"] = date(2027, 3, 31)   # ZZNL exits
+    assert env.reader.check_input_fingerprint(CYCLE)["matches"] is False

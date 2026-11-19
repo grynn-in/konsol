@@ -57,6 +57,15 @@ def _her(rate="1.05", date="2024-01-01", account="3000", entity="ZZNL", group="Z
             "rate_date": date, "to_currency": to, "historical_rate": rate}
 
 
+def _link(entity="ZZNL", owner_entity="", owner_group="ZZGRP", group="ZZGRP", pct=80, method="full",
+          start="2024-01-01", end="9999-12-31", disposal=0, disposal_date="9999-12-31", **over):
+    return {"consolidation_group": group, "data_area_id": entity, "owner_group": owner_group,
+            "owner_data_area_id": owner_entity, "ownership_pct": pct, "consolidation_method": method,
+            "effective_date": start, "end_date": end, "acquisition_date": "2024-01-01",
+            "is_first_acquisition": 1, "is_disposal": disposal, "disposal_date": disposal_date,
+            "supersedes": "", "superseded_end_date": None, **over}
+
+
 def _inputs(**over):
     base = dict(
         rate_set="BUDGET_2027",
@@ -66,6 +75,7 @@ def _inputs(**over):
         + [_weight(1, 1.0, "UNUSED")],
         exchange_rates=[_rate(), _rate(kind="Closing", quote="1.10"), _rate(fp=2, quote="1.09")],
         historical_rates=[_her(), _her(date="2025-06-30", rate="1.07")],
+        ownership_links=[_link(), _link(entity="ZZUS", pct=100)],
         dimensions=(),
     )
     base.update(over)
@@ -199,9 +209,9 @@ def test_a_null_amount_raises_naming_the_row():
 
 
 def test_no_inputs_is_still_a_fingerprint_of_the_set():
-    empty = M.input_fingerprint("BUDGET_2027", [], [], [], [], [])
+    empty = M.input_fingerprint("BUDGET_2027", [], [], [], [], [], [])
     assert empty.startswith(M.VERSION + ":")
-    assert empty != M.input_fingerprint("ACTUAL", [], [], [], [], [])
+    assert empty != M.input_fingerprint("ACTUAL", [], [], [], [], [], [])
     assert empty != _fp()
 
 
@@ -210,3 +220,46 @@ def test_the_model_is_pure_and_sums_not_xors():
         source = f.read()
     assert "import frappe" not in source and "clickhouse" not in source.lower()
     assert " ^ " not in source and "^=" not in source, "sum the per-row hashes, never XOR them"
+
+
+# ---- ownership (konsol#552, Deepak Pai, 18 Nov 2026) ---------------------------------
+
+def test_an_added_ownership_link_of_a_cycle_entity_changes_it():
+    links = _inputs()["ownership_links"] + [_link(entity="ZZNL", pct=10, start="2026-01-01")]
+    assert _fp(ownership_links=links) != _fp()
+    assert _fp(ownership_links=[]) != _fp()
+
+
+def test_a_changed_end_date_changes_it():
+    links = _inputs()["ownership_links"]
+    links[0] = dict(links[0], end_date="2027-06-30")
+    assert _fp(ownership_links=links) != _fp()
+
+
+def test_a_disposal_percentage_or_method_change_changes_it():
+    for change in ({"is_disposal": 1, "disposal_date": "2027-03-31"}, {"ownership_pct": 79.99},
+                   {"consolidation_method": "equity"}):
+        links = _inputs()["ownership_links"]
+        links[0] = dict(links[0], **change)
+        assert _fp(ownership_links=links) != _fp(), change
+
+
+def test_link_order_does_not_change_it_and_pct_scale_is_normalised():
+    links = _inputs()["ownership_links"]
+    assert _fp(ownership_links=list(reversed(links))) == _fp()
+    links[0] = dict(links[0], ownership_pct="80.00")
+    assert _fp(ownership_links=links) == _fp()
+
+
+def test_a_link_of_an_entity_outside_the_cycle_changes_it_too():
+    """Every approved link counts. If ZZHOLD owns a Cycle entity but has no budget
+    rows itself, ZZHOLD's exit changes only ZZHOLD's link. That exit must still
+    make the stamp stale (#552 review). The rule is conservative: any ownership
+    change marks every approved Cycle stale."""
+    links = _inputs()["ownership_links"] + [_link(entity="ZZXX", pct=5)]
+    assert _fp(ownership_links=links) != _fp()
+
+
+def test_a_link_whose_owner_is_a_cycle_entity_counts():
+    links = _inputs()["ownership_links"] + [_link(entity="ZZXX", owner_entity="ZZNL", owner_group="")]
+    assert _fp(ownership_links=links) != _fp()

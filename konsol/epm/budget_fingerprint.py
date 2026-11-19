@@ -14,7 +14,12 @@ rejected as a model nothing calls).
   and the approved Historical Equity Rate tranches of its set. Every tranche
   of the set is read, dated before or after the year alike: a tranche's
   effect runs from its date onward, and reading all of them is conservative
-  (a new tranche reads as a change, never a changed one as a match).
+  (a new tranche reads as a change, never a changed one as a match);
+- every submitted Ownership Period link (the rows the warehouse syncs:
+  docstatus 1) on the site, whatever its entity or date (konsol#552, Deepak
+  Pai, 18 Nov 2026). An ownership exit recorded after Approve then reads as a
+  changed input, including the exit of a holding that has no budget rows. Recipe v2: a Cycle approved before it holds a v1
+  stamp and reads as stale until re-approved; there is no re-stamp.
 
 Budget Cycle.before_submit stamps ``input_fingerprint`` with it; the Approve
 is the submit, so the value lands with the approval and nothing saves in
@@ -53,6 +58,17 @@ def _dimensions():
     return tuple(sorted(set(annual_dimensions()) | set(line_dimensions())))
 
 
+OWNERSHIP_FIELDS = ("name", "consolidation_group", "data_area_id", "owner_group", "owner_data_area_id",
+                    "ownership_pct", "consolidation_method", "effective_date", "end_date",
+                    "acquisition_date", "is_first_acquisition", "is_disposal", "disposal_date",
+                    "supersedes", "superseded_end_date")
+
+
+def _ownership_links():
+    """Every submitted link, by name (v16 sorts by creation otherwise)."""
+    return sorted(_rows("Ownership Period", {"docstatus": 1}, OWNERSHIP_FIELDS), key=lambda r: r["name"])
+
+
 def read_inputs(cycle):
     """The model's arguments for ``cycle`` (a Budget Cycle document)."""
     dims = _dimensions()
@@ -72,6 +88,7 @@ def read_inputs(cycle):
         "weights": weights,
         "exchange_rates": rates,
         "historical_rates": historical,
+        "ownership_links": _ownership_links(),
         "dimensions": dims,
     }
 
@@ -102,7 +119,7 @@ def check_input_fingerprint(cycle):
     else:
         matches = False
         message = _("Budget Cycle {0}: an input has changed since Approve (an annual figure, an entry line, "
-                    "a spread weight, or a rate of Rate Set {1}). Stamped {2}, now {3}.").format(
+                    "a spread weight, a rate of Rate Set {1}, or an ownership link). Stamped {2}, now {3}.").format(
             cycle, doc.rate_set, stored, current)
     return {"cycle": cycle, "docstatus": int(doc.docstatus or 0), "stored": stored, "current": current,
             "matches": matches, "message": message}
