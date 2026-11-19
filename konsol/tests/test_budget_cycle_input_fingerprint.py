@@ -332,7 +332,7 @@ def test_the_check_is_a_get_that_writes_nothing():
 
 def test_the_reader_takes_the_approved_links_of_the_cycles_entities(env):
     inputs = env.reader.read_inputs(env.cycle())
-    assert [r["name"] for r in inputs["ownership_links"]] == ["OP-1"], "submitted links of ZZNL only"
+    assert [r["name"] for r in inputs["ownership_links"]] == ["OP-1", "OP-2"], "every submitted link"
     asked = [f for dt, f in env.asked if dt == "Ownership Period"]
     assert asked and all(f["docstatus"] == 1 for f in asked)
 
@@ -341,7 +341,8 @@ def test_an_ownership_exit_recorded_after_approve_is_a_mismatch(env):
     doc = env.cycle()
     doc.before_submit()
     assert env.reader.check_input_fingerprint(CYCLE)["matches"] is True
-    env.tables["Ownership Period"][1]["end_date"] = date(2027, 3, 31)   # ZZXX: not the Cycle's
-    assert env.reader.check_input_fingerprint(CYCLE)["matches"] is True
+    env.tables["Ownership Period"][1]["end_date"] = date(2027, 3, 31)   # ZZXX (a holding, say) exits
+    assert env.reader.check_input_fingerprint(CYCLE)["matches"] is False
+    doc.before_submit()
     env.tables["Ownership Period"][0]["end_date"] = date(2027, 3, 31)   # ZZNL exits
     assert env.reader.check_input_fingerprint(CYCLE)["matches"] is False

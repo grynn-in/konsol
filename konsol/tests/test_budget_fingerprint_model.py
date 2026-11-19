@@ -251,9 +251,13 @@ def test_link_order_does_not_change_it_and_pct_scale_is_normalised():
     assert _fp(ownership_links=links) == _fp()
 
 
-def test_a_link_of_an_entity_outside_the_cycle_does_not_change_it():
+def test_a_link_of_an_entity_outside_the_cycle_changes_it_too():
+    """Every approved link counts. If ZZHOLD owns a Cycle entity but has no budget
+    rows itself, ZZHOLD's exit changes only ZZHOLD's link. That exit must still
+    make the stamp stale (#552 review). The rule is conservative: any ownership
+    change marks every approved Cycle stale."""
     links = _inputs()["ownership_links"] + [_link(entity="ZZXX", pct=5)]
-    assert _fp(ownership_links=links) == _fp()
+    assert _fp(ownership_links=links) != _fp()
 
 
 def test_a_link_whose_owner_is_a_cycle_entity_counts():
