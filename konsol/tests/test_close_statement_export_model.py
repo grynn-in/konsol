@@ -572,16 +572,7 @@ def _budget(state="ok", message=_BUDGET_SENTENCE, rows=None):
     return {"state": state, "message": message, "statement": stmt,
             "meta": {"cycle": "BCYC-ZZB-2025-abc12345", "layers": ["base", "board"],
                      "rate_set": "ZZRS", "scenario_id": "ZZB",
-                     "declaration": "APB-CG-ZZ_GROUP--2025-0f0f0f0f",
-                     "heading_sides": _sides(stmt)}}
-
-
-def _sides(stmt, side="Debit"):
-    """statement_api._heading_sides' shape (S6 KB2): every heading of the
-    budget statement with a declared side; None unless ok."""
-    if stmt is None:
-        return None
-    return {ln["heading"]: side for s in stmt["sections"] for ln in s["lines"] if ln.get("kind") == "heading"}
+                     "declaration": "APB-CG-ZZ_GROUP--2025-0f0f0f0f"}}
 
 
 def _bline(budget, section, **match):
@@ -825,7 +816,7 @@ def test_budget_only_no_heading_and_not_in_chart_lines_are_written_with_blank_ac
 # --- Favourability (konsol#348 S6 KB4; S6-Q3 a, BUD-7-a) ----------------------
 # The xlsx carries the same text column as the Desk report
 # (statement_report_model.favourability): P&L headings and the net result
-# only, from meta.heading_sides; the rule is in the budget note.
+# only, by the sign of the variance; the rule is in the budget note.
 
 _FAV = 8  # P&L: Line, Code, 4 actuals, Budget, Variance to budget, Favourability
 
@@ -835,12 +826,11 @@ def _pl(budget):
 
 
 def test_the_favourability_texts_and_rule_equal_the_report_models():
-    assert (M.FAVOURABLE, M.UNFAVOURABLE, M.ON_BUDGET, M.FAVOURABILITY_NA) == \
-        (_REPORT.FAVOURABLE, _REPORT.UNFAVOURABLE, _REPORT.ON_BUDGET, _REPORT.FAVOURABILITY_NA)
+    assert (M.FAVOURABLE, M.UNFAVOURABLE, M.ON_BUDGET) == \
+        (_REPORT.FAVOURABLE, _REPORT.UNFAVOURABLE, _REPORT.ON_BUDGET)
     assert M.FAVOURABILITY_RULE == _REPORT.FAVOURABILITY_RULE
-    for side in ("Debit", "Credit", "", None, "net_result"):
-        for variance in (-1.5, 0.0, 0, 2.25):
-            assert M.favourability(variance, side) == _REPORT.favourability(variance, side), (variance, side)
+    for variance in (-1.5, 0.0, 0, 2.25):
+        assert M.favourability(variance) == _REPORT.favourability(variance), variance
 
 
 def test_a_heading_below_budget_is_unfavourable_and_the_net_result_by_sign():
@@ -849,27 +839,16 @@ def test_a_heading_below_budget_is_unfavourable_and_the_net_result_by_sign():
     assert _row_starting(pl, "Net result")[_FAV] == "Unfavourable"
 
 
-def test_a_heading_above_budget_is_favourable_whatever_its_declared_side():
-    for side in ("Debit", "Credit"):
-        budget = _budget()
-        _bline(budget, 0, heading="4")["current"] = 100.0
-        budget["meta"]["heading_sides"] = _sides(budget["statement"], side)
-        assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "Favourable", side
+def test_a_heading_above_budget_is_favourable():
+    budget = _budget()
+    _bline(budget, 0, heading="4")["current"] = 100.0
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "Favourable"
 
 
 def test_a_heading_at_budget_reads_on_budget():
     budget = _budget()
     _bline(budget, 0, heading="4")["current"] = 241.43
     assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "On budget"
-
-
-def test_a_heading_with_no_declared_side_reads_n_a():
-    """BUD-7-a: an undeclared normal balance is reported, never given a direction."""
-    budget = _budget()
-    budget["meta"]["heading_sides"]["4"] = ""
-    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "n/a"
-    del budget["meta"]["heading_sides"]["4"]
-    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "n/a"
 
 
 def test_favourability_is_text_and_blank_on_balance_sheet_and_budget_only_rows():
@@ -888,14 +867,15 @@ def test_the_ok_budget_note_carries_the_favourability_rule():
     assert M.FAVOURABILITY_RULE in note
 
 
-def test_an_ok_budget_without_heading_sides_is_refused_naming_the_key():
-    budget = _budget()
-    del budget["meta"]["heading_sides"]
-    with pytest.raises(ValueError, match="heading_sides"):
-        _budget_book(budget)
-
-
 def test_a_non_ok_budget_writes_no_favourability_column():
     budget = _budget(state="no_approved_budget", message="No approved budget for FY2025.")
     rows = _rows(_budget_book(budget)["Statement"])
     assert not any(c == "Favourability" for r in rows for c in r)
+
+
+# --- konsol#562 option E: the sign alone decides (Deepak Pai, 18 Nov 2026) ----
+
+def test_562_a_heading_with_no_side_reads_by_sign_and_no_heading_sides_is_fine():
+    budget = _budget()
+    assert "heading_sides" not in budget["meta"]
+    assert _row_starting(_pl(budget), "COST OF SALES", "4")[_FAV] == "Unfavourable"

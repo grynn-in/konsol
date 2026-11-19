@@ -111,7 +111,7 @@ _ENTITY_BUDGET_OK = {
     "message": ("Approved budget for ZZG FY2024: Budget Cycle B. Entity budget for ZZA in EUR, the entity's "
                 "functional currency, from the Cycle's rows for the entity before translation."),
     "meta": {"cycle": "B", "layers": ["base"], "rate_set": "RS", "scenario_id": "S", "declaration": "APB",
-             "heading_sides": {}, "group": "ZZG", "entity": "ZZA", "currency": "EUR"}}
+             "group": "ZZG", "entity": "ZZA", "currency": "EUR"}}
 
 
 def _execute_with(statement, entity_statement=None, budget=None, entity_budget=None):
@@ -350,7 +350,7 @@ def _choose_group(*a):
     return {"state": "choose_group", "statement": None,
             "message": "ZZA is a member of 2 root consolidation groups (ZZG, ZZH), each with its own approved "
                        "budget, and the Entity basis names none: no entity budget is shown.",
-            "meta": {"group": None, "entity": "ZZA", "currency": "EUR", "heading_sides": None}}
+            "meta": {"group": None, "entity": "ZZA", "currency": "EUR"}}
 
 
 def test_entity_basis_choose_group_renders_no_budget_column_and_its_sentence():

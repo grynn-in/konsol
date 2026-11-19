@@ -280,8 +280,8 @@ def test_budget_vs_actual_page_covers_favourability_the_worksheet_and_the_entity
     pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
     text = pages["budget-vs-actual"]["markdown"]
     for phrase in (
-        "## Favourability", "Favourable", "Unfavourable", "On budget", "n/a", "normal balance",
-        "Debit and Credit read the same way", "more profit",
+        "## Favourability", "Favourable", "Unfavourable", "On budget", "normal balance",
+        "sign of the variance", "more profit",
         "## The worksheet on the Budget basis", "Consolidation Worksheet", "Basis", "Unbalanced budget",
         "## The entity basis", "functional currency", "top of the consolidation tree",
         "no consolidation group",

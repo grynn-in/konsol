@@ -121,19 +121,16 @@ BUDGET_BS_BASIS = ("the balance sheet budget column shows the budgeted movements
                    "so there is no variance to budget on the balance sheet")
 UNBALANCED = "unbalanced"
 
-#: Favourability (konsol#348 S6 KB4; S6-Q3 a, BUD-7-a, Deepak Pai, 7 Nov
+#: Favourability (konsol#348 S6 KB4; konsol#562 option E, Deepak Pai, 18 Nov
 #: 2026): the same texts, rule and function as statement_report_model (a test
 #: pins the equality; this module imports no konsol code).
 FAVOURABLE = "Favourable"
 UNFAVOURABLE = "Unfavourable"
 ON_BUDGET = "On budget"
-FAVOURABILITY_NA = "n/a"
-_DECLARED_SIDES = ("Debit", "Credit")
 FAVOURABILITY_RULE = (
-    "Favourability: on a profit and loss heading whose main account declares a normal balance, a variance "
-    "to budget above zero is Favourable and below zero Unfavourable (income and costs are both shown "
-    "income-positive, so Debit and Credit read the same way), zero is On budget; a heading with no "
-    "declared normal balance reads n/a. The net result is favourable when there is more profit than budgeted")
+    "Favourability: on the profit and loss, a variance to budget above zero is Favourable, below zero "
+    "Unfavourable and zero On budget; income and costs are both shown income-positive, so they read the "
+    "same way. The net result reads the same way: more profit than budgeted is Favourable")
 #: Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
 #: 6956694095; the 22 Sep 2026 rule): statement_report_model.UNBUDGETED_RULE's
 #: words (a test pins the equality).
@@ -146,15 +143,15 @@ ENTITY_NO_BUDGET_DRILL = ("The entity budget has no budget drill, so this file h
                           "open the Group basis export for one")
 
 
-def favourability(variance_to_budget, side):
-    """statement_report_model.favourability: ``n/a`` unless ``side`` is Debit
-    or Credit (or ``"net_result"``), else On budget at zero, Favourable
-    above, Unfavourable below (display sign, income positive)."""
-    if side != "net_result" and side not in _DECLARED_SIDES:
-        return FAVOURABILITY_NA
+def favourability(variance_to_budget):
+    """The favourability text for a display-signed variance (income positive;
+    konsol#562, Deepak Pai, 18 Nov 2026): On budget at zero, Favourable
+    above, Unfavourable below. The sign alone decides; no account declaration
+    gates it."""
     if variance_to_budget == 0:
         return ON_BUDGET
     return FAVOURABLE if variance_to_budget > 0 else UNFAVOURABLE
+
 #: statement_report_model._BUDGET_ONLY_KINDS (PR #554 review M1): the
 #: non-heading budget lines written with blank actuals when the actuals lack
 #: them, in statement_model's order.
@@ -341,20 +338,7 @@ def _budget_items(budget):
     return items
 
 
-def _heading_sides(budget):
-    """``meta.heading_sides`` of an ok budget (S6 KB2), or None when the
-    budget is not ok; an ok budget without it is refused naming the key, as
-    statement_report_model._heading_sides (every heading would read n/a)."""
-    if _budget_items(budget) is None:
-        return None
-    sides = (budget.get("meta") or {}).get("heading_sides")
-    if sides is None:
-        raise ValueError("The budget payload has no meta.heading_sides.")
-    return sides
-
-
-def _budget_cells(section, line, budget_items, minor_unit, include=None, variance=True,
-                  heading_sides=None):
+def _budget_cells(section, line, budget_items, minor_unit, include=None, variance=True):
     """``[budget, variance to budget, favourability, budget year to date]``
     for a line (or an include of it), blank (``None``, never 0) where the
     budget is absent, not ok or lacks the line. An unbudgeted heading is in
@@ -362,7 +346,7 @@ def _budget_cells(section, line, budget_items, minor_unit, include=None, varianc
     rule), so it needs no case here. The variance is Profit and Loss
     only (S5 F1) and rounded once to the minor unit; ``variance`` False (the
     residual) leaves it blank. Favourability (S6 KB4) is text on a P&L
-    heading (from ``heading_sides``) and the net result only."""
+    heading and the net result only."""
     blank = [None, None, None, None]
     if budget_items is None:
         return blank
@@ -378,9 +362,9 @@ def _budget_cells(section, line, budget_items, minor_unit, include=None, varianc
         cells[1] = _amount(round(this - budget_value, minor_unit), "variance to budget")
         kind = line.get("kind")
         if include is None and kind == "heading":
-            cells[2] = favourability(cells[1], (heading_sides or {}).get(line["heading"]) or "")
+            cells[2] = favourability(cells[1])
         elif include is None and kind == "net_result":
-            cells[2] = favourability(cells[1], "net_result")
+            cells[2] = favourability(cells[1])
     if budget_item.get("ytd") is not None:
         cells[3] = _amount(budget_item["ytd"], "budget year to date")
     return cells
@@ -416,7 +400,6 @@ def _section_rows(section, commentary, comparison_note, budget=None, minor_unit=
         raise ValueError(f"unknown statement section: {name}")
     columns = COLUMNS[name]
     budget_items = _budget_items(budget)
-    heading_sides = _heading_sides(budget)
     with_budget = budget_items is not None
     out = [(["Line", "Code"] + columns + (BUDGET_COLUMNS[name] if with_budget else [])
             + ["Commentary", "By"], _BOLD)]
@@ -424,7 +407,7 @@ def _section_rows(section, commentary, comparison_note, budget=None, minor_unit=
     def budgeted(line, include=None, variance=True):
         if not with_budget:
             return []
-        return _budget_cells(name, line, budget_items, minor_unit, include, variance, heading_sides)
+        return _budget_cells(name, line, budget_items, minor_unit, include, variance)
 
     def budget_only(section):
         """The budget's non-heading lines the actuals lack, actuals blank
