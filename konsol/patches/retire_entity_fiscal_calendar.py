@@ -11,7 +11,9 @@ The doctype code left the app with this patch. Frappe's migrate leaves the
 table, the Custom Fields and any Property Setter of a doctype that leaves the
 app, so this patch removes them:
 
-1. The Custom Fields and Property Setters on the doctype are deleted.
+1. The Custom Fields and Property Setters on the doctype are deleted, and so
+   are site rows elsewhere that name it: Link Custom Fields, Client Scripts,
+   Custom DocPerms, User Permissions and Reports.
 2. The DocType record is deleted.
 3. ``tabEntity Fiscal Calendar`` is dropped. Its rows are not kept: nothing
    read them (zero customers on 21 Nov 2026).
@@ -34,6 +36,13 @@ CH_TABLE = "epm_gold.entity_fiscal_calendars"
 def execute():
     frappe.db.delete("Custom Field", {"dt": DOCTYPE})
     frappe.db.delete("Property Setter", {"doc_type": DOCTYPE})
+    # Site rows on other doctypes that point at it; delete_doc removes only
+    # Table-type Custom Fields and global search (review of #578).
+    frappe.db.delete("Custom Field", {"options": DOCTYPE})
+    frappe.db.delete("Client Script", {"dt": DOCTYPE})
+    frappe.db.delete("Custom DocPerm", {"parent": DOCTYPE})
+    frappe.db.delete("User Permission", {"allow": DOCTYPE})
+    frappe.db.delete("Report", {"ref_doctype": DOCTYPE})
     frappe.delete_doc("DocType", DOCTYPE, ignore_missing=True, force=True)
     # delete_doc leaves the table of a standard DocType; drop it explicitly.
     frappe.db.sql_ddl(f"DROP TABLE IF EXISTS `tab{DOCTYPE}`")
