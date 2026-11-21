@@ -756,3 +756,66 @@ def test_unpublish_dimension_reports_the_build_approval():
     _stored("Published")
     result = config_service.unpublish_dimension(NAME)
     assert result.get("build_approval") == "ZZ-BAPR-1", result
+
+
+# --- Frappe Data Import: one schema apply per import (option a) -----------
+#
+# Frappe's importer saves each row under frappe.flags.in_import and commits it.
+# Applied per row, a ten-dimension import ran apply_schema_for_publish ten times
+# (each regenerates the dbt vars and walks the ClickHouse DDL for EVERY
+# Dimension) and queued ten Custom Field syncs. Under in_import the save defers
+# instead: konsol.data_import_sync runs apply_and_rebuild once when the import
+# finishes. The admin check stays on the row, so a non-admin's Published row is
+# refused there, by row, in the import log.
+
+
+def _deferred():
+    return set(_FRAPPE_FLAGS.get("konsol_import_rebuild") or ())
+
+
+def test_an_imported_published_dimension_defers_the_schema_apply():
+    _reset()
+    _FRAPPE_FLAGS.in_import = True
+    doc = _m.Dimension()
+    for k, v in _spec_for("Published").items():
+        setattr(doc, k, v)
+    doc.insert()
+    assert _STORE[NAME]["status"] == "Published"
+    assert _REBUILDS == [], "applied per row during an import"
+    assert _deferred() == {"Dimension"}
+    assert doc.flags.build_approval is None
+
+
+def test_an_imported_unpublish_defers_too():
+    _reset()
+    doc = _stored("Published")
+    _FRAPPE_FLAGS.in_import = True
+    doc.status = "Inactive"
+    doc.save()
+    assert _REBUILDS == []
+    assert _deferred() == {"Dimension"}
+
+
+def test_an_imported_draft_defers_nothing():
+    _reset()
+    _FRAPPE_FLAGS.in_import = True
+    doc = _m.Dimension()
+    for k, v in _spec_for("Draft").items():
+        setattr(doc, k, v)
+    doc.insert()
+    assert _REBUILDS == [] and _deferred() == set()
+
+
+def test_a_non_admin_cannot_import_a_published_dimension():
+    _reset(admin=False)
+    _FRAPPE_FLAGS.in_import = True
+    doc = _m.Dimension()
+    for k, v in _spec_for("Published").items():
+        setattr(doc, k, v)
+    try:
+        doc.insert()
+    except _PermissionError:
+        pass
+    else:
+        raise AssertionError("a non-admin imported a Published dimension")
+    assert _deferred() == set()
