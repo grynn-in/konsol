@@ -44,8 +44,8 @@ class _Doc(dict):
         pass
 
 
-def _job(approved_runs):
-    ev = {"argv": [], "counts": [], "emitted": []}
+def _job(approved_runs, extra_lines=()):
+    ev = {"argv": [], "counts": [], "emitted": [], "checkpoints": []}
     doc = _Doc(name="ZZ-AR-1", status="Queued", started_at=None)
     frappe = types.SimpleNamespace()
 
@@ -53,16 +53,29 @@ def _job(approved_runs):
         ev["counts"].append((doctype, filters))
         return approved_runs
 
+    def set_value(doctype, name, field, value, **k):
+        if field == "log":
+            ev["checkpoints"].append(value)
+
     frappe.db = types.SimpleNamespace(get_value=lambda *a, **k: "Queued", commit=lambda: None,
-                                      set_value=lambda *a, **k: None, count=count)
+                                      set_value=set_value, count=count)
     frappe.get_doc = lambda doctype, name: doc
     frappe.get_single = lambda doctype: types.SimpleNamespace(dbt_project_path="/zz")
     frappe.utils = types.SimpleNamespace(now_datetime=lambda: None)
     frappe.logger = lambda *a, **k: types.SimpleNamespace(info=lambda *a: None,
                                                           warning=lambda *a: None)
 
+    class _Proc:
+        def __init__(self):
+            self.stdout = iter(line + "\n" for line in extra_lines)
+
+        def wait(self, timeout=None):
+            raise RuntimeError("zz: no dbt here")
+
     def popen(argv, **k):
         ev["argv"] = list(argv)
+        if extra_lines:
+            return _Proc()
         raise RuntimeError("zz: no dbt here")
 
     ns = {
@@ -111,3 +124,14 @@ def test_the_field_is_a_read_only_result_field():
               ("RESULT_FIELDS", "NEW_RUN_BLANK_FIELDS")}
     assert "not_applicable" in consts["RESULT_FIELDS"]
     assert "not_applicable" in consts["NEW_RUN_BLANK_FIELDS"]
+
+
+def test_the_note_survives_a_log_longer_than_the_cap():
+    """Tester CA-579: the log keeps its last 20000 characters, so on a real
+    suite the note at the top was cut on every run."""
+    doc, ev = _job(0, extra_lines=["x" * 99] * 400)        # ~40000 characters of dbt output
+    assert doc.log.splitlines()[0] == NOTE
+    assert len(doc.log) <= 20000
+    assert doc.log.endswith("x" * 99 + "\nERROR: zz: no dbt here")
+    assert ev["checkpoints"] and all(c.splitlines()[0] == NOTE and len(c) <= 20000
+                                     for c in ev["checkpoints"])
