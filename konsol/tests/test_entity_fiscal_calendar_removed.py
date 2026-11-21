@@ -153,6 +153,17 @@ def test_the_patch_deletes_the_doctype_and_drops_both_tables():
     assert [c[1] for c in calls if c[0] == "ch"] == [f"DROP TABLE IF EXISTS {CH_TABLE}"]
     assert ("db.delete", "Custom Field", {"dt": DOCTYPE}) in calls
     assert ("db.delete", "Property Setter", {"doc_type": DOCTYPE}) in calls
+
+
+def test_the_patch_removes_site_rows_that_name_the_doctype():
+    """Rows on OTHER doctypes that point at it would dangle (review of #578)."""
+    calls = _run()
+    for row in (("db.delete", "Custom Field", {"options": DOCTYPE}),
+                ("db.delete", "Client Script", {"dt": DOCTYPE}),
+                ("db.delete", "Custom DocPerm", {"parent": DOCTYPE}),
+                ("db.delete", "User Permission", {"allow": DOCTYPE}),
+                ("db.delete", "Report", {"ref_doctype": DOCTYPE})):
+        assert row in calls, row
     # the record goes before its table
     assert calls.index(next(c for c in calls if c[0] == "delete_doc")) < calls.index(
         next(c for c in calls if c[0] == "sql_ddl"))
