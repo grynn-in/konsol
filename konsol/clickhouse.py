@@ -837,13 +837,6 @@ _REFERENCE_TABLE_DDL = {
         "ENGINE = MergeTree "
         "ORDER BY (scenario_id, data_area_id, fiscal_year, fiscal_period, layer, main_account)"
     ),
-    # konsolidat#146: which fiscal calendar each ERP legal entity posts against.
-    # It was seeds/entity_fiscal_calendars.csv, and it decides which calendar
-    # every GL line is dated into.
-    "epm_gold.entity_fiscal_calendars": (
-        "(data_area_id String, fiscal_calendar_id String) "
-        "ENGINE = MergeTree ORDER BY data_area_id"
-    ),
     # konsolidat#146: the ISO 4217 reference list. It was seeds/currencies.csv —
     # the one seed with no second writer, but still a table the warehouse
     # validates against living in the dbt repo rather than the app.
@@ -1107,6 +1100,13 @@ _RETIRED_TABLES = (
     "epm_staging.allocation_drivers",
     "epm_staging.allocation_tiers",
     "epm_staging.allocation_runs",
+    # konsol#577 (Deepak Pai, 21 Nov 2026): the Entity Fiscal Calendar doctype
+    # is removed. Nothing read this table since konsolidat#221 removed the ERP
+    # calendar branch; the site's one declared calendar (EPM Fiscal Year,
+    # epm_staging.fiscal_periods) dates every submission. Listed here so its
+    # watermark row goes with it (_retired_watermark_cleanup), or
+    # assert_staging_not_stale would report it LAGGING.
+    "epm_gold.entity_fiscal_calendars",
 )
 
 # Whole databases a previous release created and this one abandoned. Separate

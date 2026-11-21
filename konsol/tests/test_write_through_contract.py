@@ -215,7 +215,6 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_gold.spread_profiles",
         "epm_gold.scenario_definitions",
         "epm_gold.currencies",
-        "epm_gold.entity_fiscal_calendars",
         "epm_gold.budget_annual_input",
         # Budget S2 (I3): the raw budget landing table, one row per Budget
         # Entry Line (test_budget_raw_ddl.py)
@@ -848,6 +847,8 @@ def test_abandoned_relations_are_dropped_not_left_looking_live():
         "epm_staging.allocation_drivers",
         "epm_staging.allocation_tiers",
         "epm_staging.allocation_runs",
+        # konsol#577: Entity Fiscal Calendar is removed; nothing read the table
+        "epm_gold.entity_fiscal_calendars",
     }
     # nothing may be both dropped and created
     assert not set(m._RETIRED_TABLES) & set(m._REFERENCE_TABLE_DDL)

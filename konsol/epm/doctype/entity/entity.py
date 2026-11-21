@@ -43,8 +43,7 @@ class Entity(NestedSet):
     #
     # The warehouse column is accounting_currency because that is the name the
     # consolidation joins on; the field is functional_currency because that is
-    # what an accountant calls it. Same split as Entity Fiscal Calendar's
-    # erp_data_area -> data_area_id.
+    # what an accountant calls it.
     CH_TABLE = "epm_staging.entities"
     CH_FIELD_MAP = {
         "data_area_id": "name",
