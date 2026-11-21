@@ -234,6 +234,12 @@ doc_events["*"] = {
     "on_cancel": ["konsol.close.cancel_event.record", "konsol.close.data_change_hook.on_cancel"],
 }
 
+# Frappe Data Import of Entity and Dimension: one warehouse sync and one
+# build request per import, at its end (konsol.data_import_sync). on_change,
+# not on_update: the importer sets the final status with db_set, which runs
+# on_change only.
+doc_events["Data Import"] = {"on_change": "konsol.data_import_sync.on_change"}
+
 # ---------------------------------------------------------------------------
 # Entity-scoped access (#91)
 # ---------------------------------------------------------------------------

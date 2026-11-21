@@ -23,6 +23,7 @@ patch) still apply nothing; run Apply Schema after one.
 import frappe
 from frappe.model.document import Document
 
+from konsol.data_import_sync import defer_rebuild
 from konsol.schema_lifecycle import apply_and_rebuild, check_epm_admin
 from konsol.tb_dimension_model import FLAG, _is_on, is_legal_dimension_name
 
@@ -293,6 +294,14 @@ class Dimension(Document):
         if not action:
             return
         check_epm_admin()
+        if frappe.flags.in_import:
+            # Frappe Data Import: one apply for the whole import, not one per
+            # row. apply_schema_for_publish reads every Dimension, so the
+            # single apply that konsol.data_import_sync runs at the end covers
+            # all the imported rows. The admin check above stays per row, so a
+            # non-admin's Published row is refused in the import log.
+            defer_rebuild("Dimension")
+            return
         self.flags.build_approval = apply_and_rebuild(self, action)
 
     def on_trash(self):

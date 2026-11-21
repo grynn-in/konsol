@@ -133,7 +133,16 @@ class Entity(NestedSet):
         install / migrate / patch / import, best-effort if the queue is down
         (konsol.tasks.queue_consolidation_build, konsol#126). Entity only
         decides WHEN: a watched field changed, a delete of an entity that had
-        a currency, a rename."""
+        a currency, a rename.
+
+        Under Frappe Data Import (``frappe.flags.in_import``) the queue would
+        drop the request, so the row defers it instead and
+        ``konsol.data_import_sync`` requests one build when the import ends."""
+        if frappe.flags.in_import:
+            from konsol.data_import_sync import defer_rebuild
+
+            defer_rebuild("Entity")
+            return
         from konsol.tasks import queue_consolidation_build
 
         queue_consolidation_build(self, method)

@@ -7,6 +7,8 @@
   "editable_grid": 0,
   "engine": "InnoDB",
   "track_changes": 1,
+  "allow_import": 1,
+  "description": "The dimensions the warehouse carries. Frappe Data Import works for Dimension (Insert or Update); a Published row needs the EPM Admin role. When the import finishes, konsol applies the schema once for every row and requests one full-refresh build, not one per row.",
   "autoname": "field:dimension_name",
   "fields": [
     {
@@ -104,6 +106,7 @@
   "permissions": [
     {
       "role": "System Manager",
+      "import": 1,
       "read": 1,
       "write": 1,
       "create": 1,
@@ -111,6 +114,7 @@
     },
     {
       "export": 1,
+      "import": 1,
       "role": "EPM Admin",
       "read": 1,
       "write": 1,
