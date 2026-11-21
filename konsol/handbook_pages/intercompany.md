@@ -18,8 +18,9 @@ With no Published Intercompany Account, intercompany shows "not configured" and 
 
 A pair is the two sides (E1 with partner E2 on one account, and E2 with partner E1 on the counterpart). They are compared at 100% in the reporting currency. A balance-sheet pair compares the balance to date; a profit-and-loss pair compares the period's movement.
 
-- **Matched**: the smaller side. It is eliminated from both sides at the share the group holds of both.
-- **NCI**: when the group holds more of one side than the other (100% against 80%, say), the extra is eliminated against the **Non-controlling Interest Account** declared on the group's root (a placeholder account until one is declared).
+- **Matched**: the smaller side. It is eliminated from both sides in full, at 100%, whatever share the group holds (IFRS 10.B86). A subsidiary is consolidated line by line at 100%, so its intercompany balances leave at 100%.
+- **NCI**: the minority's share of a subsidiary is not part of the elimination. A separate NCI attribution journal posts it as one line on the **Non-controlling Interest Account** declared on the group's root (a placeholder account until one is declared).
+- **Joint operations**: an entity consolidated at the operator's share (IFRS 11) is the exception. A pair with it is eliminated to the extent of that share.
 - **Difference**: what is left of each side. It goes to the group's **Intercompany Difference Account**, labelled with its cause (booking or fx). With no difference account, only the matched amount is eliminated and the difference stays on the intercompany accounts.
 
 ## Tolerance
