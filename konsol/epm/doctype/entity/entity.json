@@ -51,7 +51,7 @@
    "label": "Parent Entity",
    "options": "Entity",
    "ignore_user_permissions": 1,
-   "description": "Management hierarchy only. Legal ownership is a DAG and lives in Entity Ownership."
+   "description": "Where this entity sits in the entity tree. A user given access to a group entity sees every entity under it. This does not affect ownership or any consolidated number: record who owns this entity, and what share, in an Ownership Period."
   },
   {
    "fieldname": "is_group",

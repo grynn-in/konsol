@@ -14,7 +14,9 @@ is what lets the two sides join without a mapping table.
 
 This is the *management* hierarchy — a strict tree of divisions and regions.
 Legal ownership is a DAG (an entity can have several parents through split
-holdings or a JV) and does not belong here; that is Entity Ownership's job.
+holdings or a JV) and does not belong here; that is Ownership Period's job.
+The tree drives Entity access (``entity_permissions.subtree_codes``) and Desk
+navigation only; no consolidation model reads ``parent_entity``.
 
 konsol#110: Entity writes through to ``epm_staging.entities``, the governed
 entity registry. The warehouse used to learn which entities exist, and what
@@ -171,14 +173,14 @@ class Entity(NestedSet):
     def _guard_leaf_parenting(self):
         """Only roll-up nodes may have children. A legal entity holding another
         entity is an ownership relationship, not a management one, and belongs
-        in Entity Ownership."""
+        in an Ownership Period."""
         if self.is_group or not self.parent_entity:
             return
         parent_is_group = frappe.db.get_value("Entity", self.parent_entity, "is_group")
         if not parent_is_group:
             frappe.throw(
                 _("{0} is a legal entity, so it cannot be a parent. "
-                  "Mark it as a group, or record the relationship as ownership instead.")
+                  "Mark it as a group, or record the relationship in an Ownership Period instead.")
                 .format(self.parent_entity)
             )
 
