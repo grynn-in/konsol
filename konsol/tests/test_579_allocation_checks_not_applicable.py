@@ -88,7 +88,7 @@ def _job(approved_runs, extra_lines=()):
         "_dbt_bin": lambda: "dbt",
         "_parse_results": lambda doc, path: None,
     }
-    fns = _functions("run_close_assertions", "_not_applicable_checks")
+    fns = _functions("run_close_assertions", "_not_applicable_checks", "_log_text")
     exec(compile(ast.Module(body=fns, type_ignores=[]), AR_PY, "exec"), ns)
     ns["run_close_assertions"]("ZZ-AR-1")
     return doc, ev

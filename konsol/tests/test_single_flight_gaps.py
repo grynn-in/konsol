@@ -250,6 +250,7 @@ def _run_close_assertions_ns(status):
         "_dbt_bin": lambda: "dbt",
         "_parse_results": lambda doc, path: None,
         "_not_applicable_checks": lambda: ([], None),
+        "_log_text": lambda note, lines: "\n".join(lines),
     }
     fn = _function(ASSERTION_RUN, "run_close_assertions")
     exec(compile(ast.Module(body=[fn], type_ignores=[]), ASSERTION_RUN, "exec"), ns)

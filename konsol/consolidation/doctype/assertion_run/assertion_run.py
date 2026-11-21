@@ -833,6 +833,13 @@ def _not_applicable_checks():
         "Allocation checks not applicable: no approved Cost Allocation Run.")
 
 
+def _log_text(note, lines, limit=20000):
+    """The stored log: the last ``limit`` characters of the dbt output, with
+    ``note`` (if any) kept as the first line, outside the cut (#579)."""
+    head = f"{note}\n" if note else ""
+    return head + "\n".join(lines)[-(limit - len(head)):]
+
+
 def run_close_assertions(close_run):
     """Background job: run `dbt test` for the singular assertions, stream the
     log, then parse run_results.json into Assertion Step rows.
@@ -870,7 +877,6 @@ def run_close_assertions(close_run):
 
     lines = []
     if not_applicable:
-        lines.append(not_applicable)
         _emit(close_run, line=not_applicable)
     try:
         proc = subprocess.Popen(
@@ -882,7 +888,7 @@ def run_close_assertions(close_run):
             lines.append(line)
             _emit(close_run, line=line)
             if len(lines) % 20 == 0:  # checkpoint the log periodically
-                frappe.db.set_value("Assertion Run", close_run, "log", "\n".join(lines)[-20000:],
+                frappe.db.set_value("Assertion Run", close_run, "log", _log_text(not_applicable, lines),
                                     update_modified=False)
                 frappe.db.commit()
         proc.wait(timeout=900)
@@ -893,7 +899,7 @@ def run_close_assertions(close_run):
         lines.append(f"ERROR: {e}")
 
     doc.reload()
-    doc.log = "\n".join(lines)[-20000:]
+    doc.log = _log_text(not_applicable, lines)
     doc.not_applicable = not_applicable
     _parse_results(doc, project_path)
 
