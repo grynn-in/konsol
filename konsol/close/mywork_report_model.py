@@ -30,10 +30,25 @@ Handbook page. An item kind with no fix raises ValueError: a card never shows
 a blank "How to fix". A card with no Desk page says so and links the Handbook.
 Nothing is stored and nothing is dragged: a card moves when the work is done.
 
-Pure: no frappe and no konsol imports.
+Pure: no frappe and no konsol imports (``konsol/setup_where.py``, where each
+setup step is done, is loaded by path).
 """
+import importlib.util as _importlib_util
+import os as _os
 from urllib.parse import quote as _quote
 from urllib.parse import urlencode as _urlencode
+
+
+def _load_setup_where():
+    path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                         "setup_where.py")
+    spec = _importlib_util.spec_from_file_location("konsol_setup_where", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+setup_where = _load_setup_where()
 
 KINDS = ("blocking", "todo", "waiting")
 KIND_LABELS = {"blocking": "Blocking", "todo": "To do", "waiting": "Waiting"}
@@ -105,8 +120,11 @@ _SENT_BACK_FIX = ("Open the draft and read the reason it was sent back.",
                   "Correct it and send it for approval again.")
 FIXES = {
     # setup gaps (mywork_model.GAPS)
-    "gap:first_close": (("In Close Settings, set First Close Fiscal Year and First Close Fiscal "
-                         "Period, and save.",), _LEAD),
+    # The first close must be a Regular period: with no fiscal year there is
+    # nothing to choose, so the fiscal year comes first (21 Nov 2026).
+    "gap:first_close": (("If no fiscal year has periods yet, create one first: %s, then click "
+                         "Generate Periods." % setup_where.path("fiscal_calendar"),
+                         setup_where.where("first_close")), _LEAD),
     "gap:self_approval": (("In Close Settings, choose Self-Approval: Blocked, or Allowed with "
                            "reason, and save.",), _LEAD),
     "gap:rate_move": (("In Close Settings, enter Rate Move Needing a Reason, and save.",), _FX),

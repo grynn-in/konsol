@@ -25,6 +25,14 @@ gate lets it through with an acknowledgement, or it is not a sign-off gate),
 
 Imports nothing from frappe; siblings are loaded by path (as
 readiness_model does), so the host tests need no site.
+
+Setup and empty states (Deepak Pai, 21 Nov 2026: "write in the messages
+where to go and set up everything"): a card with no current period, a
+warehouse never built or a failed build, and a period no entity owes a
+trial balance for, carry a short hint under the value saying where to go
+(``konsol/setup_where.py``, the text Konsol Setup and My Work quote), and
+link to that place. With no current period the checklist lists the setup
+steps that come first, in order.
 """
 import html as _html
 import importlib.util
@@ -43,6 +51,10 @@ def _load_sibling(name):
 
 signoff_model = _load_sibling("signoff_model")
 period_name = _load_sibling("period_name").period_name
+_spec = importlib.util.spec_from_file_location(
+    "konsol_close_overview_model_setup_where", os.path.join(os.path.dirname(_HERE), "setup_where.py"))
+setup_where = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(setup_where)
 
 OK = "ok"
 WARN = "warn"
@@ -129,26 +141,51 @@ def _route(route):
     return route
 
 
-def card(text, state, route=None):
+def card(text, state, route=None, hint=None):
     """A number card's value: an indicator pill, linked when ``route`` is given.
 
     A Custom number card that returns a string has it written into the card
     as HTML (frappe number_card_widget.js ``render_number``), so the text is
-    escaped here and the colour comes from a fixed map."""
+    escaped here and the colour comes from a fixed map. ``hint``, when given,
+    is a short line under the pill saying where to go (inside the link)."""
     pill = '<span class="indicator-pill %s">%s</span>' % (_COLOUR[_state(state)], escape(text))
+    if hint:
+        pill += '<span class="konsol-card-hint">%s</span>' % escape(hint)
     if route is None:
         return pill
     return '<a href="%s">%s</a>' % (escape(_route(route)), pill)
 
 
+def _working(landing):
+    working = landing.get("provisional") if "provisional" in landing else landing
+    return working or {}
+
+
 def current_period(landing):
     """``(key, None)`` for the working landing, or ``(None, reason)``."""
-    working = landing.get("provisional") if "provisional" in landing else landing
-    working = working or {}
+    working = _working(landing)
     period = working.get("period")
     if period is None:
         return None, working.get("reason") or landing.get("reason")
     return (int(period[0]), int(period[1])), None
+
+
+#: The working landing's rule when there is no period -> (card text, the
+#: setup step that comes first). period_model names the rules.
+_NO_PERIOD = {
+    "no_calendar": ("No fiscal year", "fiscal_calendar"),
+    "first_close_undeclared": ("First close not declared", "first_close"),
+}
+_NO_OPEN_PERIOD = ("No open period", "fiscal_calendar")
+
+
+def setup_gap(landing):
+    """``{"text", "hint", "route", "rule"}`` for the cards when the landing
+    has no period: what is missing, where to go, and the Desk route."""
+    working = _working(landing)
+    text, step = _NO_PERIOD.get(working.get("rule"), _NO_OPEN_PERIOD)
+    return {"text": text, "hint": "Go to %s." % setup_where.path(step),
+            "route": setup_where.route(step), "rule": working.get("rule")}
 
 
 # --- the band ---------------------------------------------------------------
@@ -188,6 +225,16 @@ def tb_progress(expected, missing, allowed):
     if not expected:
         return text, UNKNOWN
     return text, BLOCKED if missing else OK
+
+
+def tb_hint(expected):
+    """Why a period owes no trial balance, or None when one is owed: an
+    entity owes one when an approved Ownership Period covers the period and
+    it has a Reporting Frequency (signoff_model.expected_entities)."""
+    if expected:
+        return None
+    return ("No entity owes one: each needs a Reporting Frequency and an approved Ownership "
+            "Period. Go to Structure → Entities and Structure → Ownership Periods.")
 
 
 def waiting(count):
@@ -231,6 +278,25 @@ def freshness_card(result):
     raise ValueError("unknown freshness state %r" % (state,))
 
 
+def _build_form(name):
+    return "%s/%s" % (BUILDS, "".join(c for c in str(name) if c.isalnum() or c in "-_."))
+
+
+def freshness_hint(result):
+    """``(hint or None, route)``: where to start the first build, or where
+    a failed build says why."""
+    state = result.get("state")
+    if state == "never_built":
+        return ("Submit a trial balance to request the first build (%s). The Close Lead "
+                "approves it in %s."
+                % (setup_where.path("trial_balance"), setup_where.path("warehouse")), BUILDS)
+    failed = result.get("last_failed") or {}
+    if state == "failed" and failed.get("name"):
+        return ("Open %s in %s: the Build Output tab says why."
+                % (failed["name"], setup_where.path("warehouse")), _build_form(failed["name"]))
+    return None, BUILDS
+
+
 # --- the checklist ----------------------------------------------------------
 
 def _entities(item):
@@ -247,9 +313,9 @@ def _entities(item):
     return " (%s)" % parts
 
 
-def _line(code, label, state, detail, key):
+def _line(code, label, state, detail, key, route=None):
     return {"code": code, "label": label, "state": _state(state), "detail": detail,
-            "route": _route(_ROUTES[code].format(fy=key[0], fp=key[1]))}
+            "route": _route(route or _ROUTES[code].format(fy=key[0], fp=key[1]))}
 
 
 def _readiness_lines(readiness, run, key):
@@ -293,9 +359,14 @@ def _count_line(code, count, some, none, key):
 
 def _build_line(result, key):
     text, state = freshness_card(result)
+    hint, route = freshness_hint(result)
     if result.get("state") == "stale" and result.get("changed_since"):
         text = "Changed since the last build: %s" % ", ".join(result["changed_since"])
-    return _line("build", _LABELS["build"], state, text, key)
+    if result.get("state") == "failed" and (result.get("last_failed") or {}).get("reason"):
+        text = "%s: %s" % (text, result["last_failed"]["reason"])
+    if hint:
+        text = "%s. %s" % (text.rstrip("."), hint)
+    return _line("build", _LABELS["build"], state, text, key, route)
 
 
 def _signed_line(run, key):
@@ -352,5 +423,40 @@ def checklist(key, readiness, run, ic, journals_open, equity_pending, freshness,
             "done": sum(1 for l in ordered if l["state"] == OK), "total": len(ordered)}
 
 
-def no_period(reason):
-    return {"title": "No current period", "reason": reason, "lines": [], "done": 0, "total": 0}
+_SETUP_LINE = {
+    "code": "setup", "label": "Konsol Setup", "state": UNKNOWN,
+    "detail": ("Every other setup step, in order, each with a link: group, entities, chart, "
+               "rates, the first trial balance and the build. EPM Admin and System Manager."),
+    "route": setup_where.SETUP_PAGE,
+}
+
+
+def no_period(landing):
+    """The checklist with no current period: the setup steps that come
+    before one, in order, each saying where to go, then Konsol Setup."""
+    working = _working(landing)
+    rule = working.get("rule")
+
+    def line(code, label, state, detail, step):
+        return {"code": code, "label": label, "state": _state(state), "detail": detail,
+                "route": _route(setup_where.route(step))}
+
+    if rule == "no_calendar":
+        calendar = line("fiscal_calendar", "Fiscal year and periods", BLOCKED,
+                        setup_where.where("fiscal_calendar"), "fiscal_calendar")
+        first = line("first_close", "First close period", UNKNOWN,
+                     "Create the fiscal year first: the first close is one of its periods.",
+                     "fiscal_calendar")
+    elif rule == "first_close_undeclared":
+        calendar = line("fiscal_calendar", "Fiscal year and periods", OK, "Declared",
+                        "fiscal_calendar")
+        first = line("first_close", "First close period", BLOCKED,
+                     setup_where.where("first_close"), "first_close")
+    else:
+        calendar = line("fiscal_calendar", "Fiscal year and periods", BLOCKED,
+                        working.get("reason") or landing.get("reason") or
+                        setup_where.where("fiscal_calendar"), "fiscal_calendar")
+        first = line("first_close", "First close period", OK, "Declared", "first_close")
+    return {"title": "No current period",
+            "reason": "Do these first; the checklist then shows the current period.",
+            "lines": [calendar, first, dict(_SETUP_LINE)], "done": 0, "total": 0}

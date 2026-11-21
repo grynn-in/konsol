@@ -9,6 +9,8 @@ Desk route where it is done. Modelled on tapr_compliance P72's
 It re-derives no rule. Each step asks the reader that already holds it:
 
 - fiscal calendar: ``fiscal_calendar.fiscal_period_rows`` (effective status);
+- first close period: Close Settings, read as the sign-off gate reads it
+  (``signoff_gate._first_close``);
 - consolidation group: the group nodes with no entity (where consolidation
   reads the reporting currency, ``currency_references._USES``); whether an
   intercompany difference account is needed from ``ic_api.published_count``
@@ -57,6 +59,14 @@ def _fiscal_calendar():
     return setup_model.fiscal_calendar_step(
         frappe.db.count("EPM Fiscal Year"), fiscal_calendar.fiscal_period_rows(),
         frappe.db.count("Entity Fiscal Calendar"))
+
+
+def _first_close():
+    rows = fiscal_calendar.fiscal_period_rows()
+    first = signoff_gate._first_close()
+    return setup_model.first_close_step(
+        any(r.get("period_type") == "Regular" for r in rows),
+        period_name(*first) if first else None)
 
 
 def _group_nodes():
@@ -188,6 +198,7 @@ def _warehouse():
 #: Step key -> reader, in setup_model.STEPS order.
 READERS = (
     ("fiscal_calendar", _fiscal_calendar),
+    ("first_close", _first_close),
     ("consolidation_group", _consolidation_group),
     ("statement_accounts", _statement_accounts),
     ("entities", _entities),

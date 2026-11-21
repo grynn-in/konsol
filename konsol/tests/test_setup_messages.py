@@ -41,6 +41,7 @@ def _row(fy, fp, start, end, status="Open"):
 
 
 ROWS = [_row(2026, 11, datetime.date(2026, 11, 1), datetime.date(2026, 11, 30))]
+CLOSED = [_row(2026, 11, datetime.date(2026, 11, 1), datetime.date(2026, 11, 30), "Closed")]
 
 
 # --- the shared source ------------------------------------------------------------
@@ -119,7 +120,7 @@ def test_undeclared_first_close_says_where_to_declare_it():
 
 
 def test_no_period_containing_today_says_to_add_the_year():
-    res = PM.landing(ROWS, set(), "close_lead", datetime.date(2027, 3, 1), first_close=(2026, 11))
+    res = PM.landing(CLOSED, set(), "close_lead", datetime.date(2027, 3, 1), first_close=(2026, 11))
     assert res["period"] is None
     assert W.where("fiscal_calendar") in res["reason"]
 
@@ -205,7 +206,8 @@ def test_home_card_with_the_first_close_undeclared():
 
 
 def test_home_card_with_no_open_period():
-    gap = _gap(ROWS, datetime.date(2027, 3, 1), (2026, 11))
+    gap = _gap(CLOSED, datetime.date(2027, 3, 1), (2026, 11))
+    assert gap["rule"] is None
     assert gap["text"] == "No open period"
     assert gap["route"] == "/desk/epm-fiscal-year"
 

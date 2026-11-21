@@ -47,6 +47,18 @@ body[data-route="Workspaces/Konsol"] .widget.number-widget-box .widget-content .
 	margin-right: 8px;
 }
 
+/* overview_model.card's hint (setup and empty states, 21 Nov 2026): where to
+ * go, one quiet line under the value. */
+body[data-route="Workspaces/Konsol"] .widget.number-widget-box .konsol-card-hint {
+	display: block;
+	margin-top: 4px;
+	font-size: var(--text-sm);
+	font-weight: 400;
+	line-height: 1.4;
+	color: var(--text-muted);
+	white-space: normal;
+}
+
 body[data-route="Workspaces/Konsol"] .widget.number-widget-box .widget-content .number a,
 body[data-route="Workspaces/Konsol"] .widget.number-widget-box .widget-content .number a:hover {
 	color: inherit;
