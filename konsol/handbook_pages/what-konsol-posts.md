@@ -20,15 +20,14 @@ Each entry below lands in its own layer of the consolidation. The layer name is 
 | Acquisition journal, with goodwill, from a submitted Business Combination | `acquisition` | Acquisition and disposal |
 | Goodwill amortisation, only when the group declares the Amortise policy | `goodwill_amortisation` | Acquisition and disposal |
 | Disposal journal, for a full disposal, from a submitted Business Disposal | `disposal` | Acquisition and disposal |
-| NCI attribution: the minority's share of profit and CTA of a subsidiary | `nci_attribution` | See the note below |
+| NCI attribution: the minority's share of profit and CTA of a subsidiary | `nci_attribution` | NCI attribution |
+| Year-end journal close: each fiscal year's P&L of the journal layers moved into retained earnings, in the Closing period | `journal_close` | Journal close |
 
 An approved Consolidation Journal that names a reversal period gets one `auto_reversal` row in that period, with debit and credit swapped.
 
-The NCI attribution layer is part of the final amount. The waterfall has no column of its own for it. Its amount is not in any of the other columns.
-
 Goodwill amortisation posts nothing when the policy is Impairment only.
 
-The warehouse has no model for a journal-close entry, so none is listed here.
+The journal close covers every layer except `entity` (each entity's own year-end close) and `ic_elimination` (which reverses its own P&L legs). It posts only when the chart flags exactly one retained-earnings account.
 
 ## Posted by you
 
