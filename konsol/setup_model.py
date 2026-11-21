@@ -21,9 +21,28 @@ A step is ``{"key", "label", "state", "detail", "count", "route",
 
 Entity codes named in a detail are cut to ``allowed`` (``None``: every entity
 visible; a set: only those), with the hidden count stated, so the page never
-names an entity the caller may not see. Imports nothing from frappe or konsol.
+names an entity the caller may not see.
+
+A step that is not done ends with where to go and what to do there
+(``setup_where.where``, the text the Home cards and My Work quote too;
+Deepak Pai, 21 Nov 2026). A done step, and one that could not be checked,
+does not. Imports nothing from frappe or konsol (``setup_where`` is loaded
+by path).
 """
+import importlib.util as _importlib_util
+import os as _os
 import re as _re
+
+
+def _load_setup_where():
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "setup_where.py")
+    spec = _importlib_util.spec_from_file_location("konsol_setup_where", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+setup_where = _load_setup_where()
 
 DONE = "done"
 PARTIAL = "partial"
@@ -36,6 +55,7 @@ MAX_NAMES = 10
 #: The steps, in the order a site sets up: key -> (label, route).
 STEPS = (
     ("fiscal_calendar", "Fiscal calendar", ["List", "EPM Fiscal Year"]),
+    ("first_close", "First close period", ["Form", "Close Settings"]),
     ("consolidation_group", "Consolidation group", ["List", "Consolidation Group"]),
     ("statement_accounts", "Statement accounts (CTA and current-year result)", ["Form", "Close Settings"]),
     ("entities", "Entities", ["List", "Entity"]),
@@ -58,9 +78,19 @@ ENTITY_BLOCKER = _re.compile(r"^Entity (.+) has no functional currency$")
 _DEFAULT_ROUTE = object()
 
 
-def _step(key, state, detail, count=None, route_options=None, route=_DEFAULT_ROUTE):
+def desk_route(route):
+    """``["List", "EPM Fiscal Year"]`` or ``["Form", "Close Settings"]`` as the
+    Desk path it opens: ``/desk/epm-fiscal-year``, ``/desk/close-settings``."""
+    if not route or route[0] not in ("List", "Form") or len(route) != 2:
+        raise ValueError("Not a list or single route: %r" % (route,))
+    return "/desk/" + route[1].lower().replace(" ", "-")
+
+
+def _step(key, state, detail, count=None, route_options=None, route=_DEFAULT_ROUTE, where=True):
     if state not in STATES:
         raise ValueError("Unknown setup state %r; expected one of %s." % (state, ", ".join(STATES)))
+    if where and state != DONE:
+        detail = _sentences([detail, setup_where.where(key)])
     return {
         "key": key,
         "label": _LABELS[key],
@@ -115,7 +145,7 @@ def _sentences(parts):
 def unchecked(key, error):
     """A step whose reader failed: not done, and the failure named. Never a
     silent pass (no silent fallback)."""
-    return _step(key, NOT_DONE, "Could not be checked: %s" % error)
+    return _step(key, NOT_DONE, "Could not be checked: %s" % error, where=False)
 
 
 # -- the steps ------------------------------------------------------------------------
@@ -139,6 +169,25 @@ def fiscal_calendar_step(years, period_rows, entity_calendars):
     return _step("fiscal_calendar", DONE, _sentences([
         "%s, %s, %d open" % (_plural(years, "fiscal year"), _plural(periods, "period"), open_periods),
         mapped]), years)
+
+
+def first_close_step(has_periods, first_close_name):
+    """``has_periods``: the calendar has a Regular period (the first close
+    must be one, close_settings.py). ``first_close_name``: the declared
+    first close period as ``period_name`` gives it, or None (konsol#303: no
+    default). With no period yet the step points at the fiscal year, never
+    at a field that cannot be filled."""
+    if not has_periods:
+        return _step("first_close", NOT_DONE, _sentences([
+            "Not declared, and nothing to choose yet: create a fiscal year with periods first",
+            setup_where.where("fiscal_calendar")]),
+            route=["List", "EPM Fiscal Year"], where=False)
+    if not first_close_name:
+        return _step("first_close", NOT_DONE,
+                     "Not declared. Sign-off and period close are refused until it is; "
+                     "earlier periods are history (opening balances).")
+    return _step("first_close", DONE, "Konsol closes from %s on; earlier periods are history."
+                 % first_close_name)
 
 
 def consolidation_group_step(groups, ic_configured):

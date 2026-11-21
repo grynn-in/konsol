@@ -24,7 +24,9 @@ _ic_spec.loader.exec_module(IC)
 FIRST = (2025, 7)
 UNDECLARED = {
     "code": "first_close_undeclared",
-    "message": "Declare the first close period in Close Settings (the Close Lead or System Manager) before signing off.",
+    "message": ("Declare the first close period before signing off (Close Lead or System Manager). "
+                "Go to Structure → Close Settings → Starting Point tab: set First Close Fiscal Year "
+                "and First Close Fiscal Period, then save."),
 }
 
 

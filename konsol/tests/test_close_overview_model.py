@@ -260,9 +260,12 @@ def test_checklist_a_count_the_caller_cannot_read_is_unknown_not_zero():
 
 
 def test_checklist_with_no_current_period():
-    result = M.no_period("Declare the first close period.")
-    assert result == {"title": "No current period", "reason": "Declare the first close period.",
-                      "lines": [], "done": 0, "total": 0}
+    """The setup steps that come first, in order (test_setup_messages.py pins
+    their texts); no progress bar, since setup is not the period's close."""
+    result = M.no_period({"period": None, "rule": "first_close_undeclared", "reason": "Declare it."})
+    assert result["title"] == "No current period"
+    assert [l["code"] for l in result["lines"]] == ["fiscal_calendar", "first_close", "setup"]
+    assert result["done"] == 0 and result["total"] == 0
 
 
 def test_ic_card_and_checklist_line_agree_when_ic_is_not_configured():

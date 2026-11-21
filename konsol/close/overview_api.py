@@ -49,20 +49,24 @@ def _no_filters(filters):
 
 
 def _current():
-    """``(key, reason, state)``: the current period, why there is none, and
-    its period state (``period_model.period_states``)."""
+    """``(key, landing, state)``: the current period, the landing (which says
+    why there is none), and its period state (``period_model.period_states``)."""
     context = period_api.get_context()
-    key, reason = model.current_period(context["landing"])
+    landing = context["landing"]
+    key, _reason = model.current_period(landing)
     if key is None:
-        return None, reason, None
+        return None, landing, None
     state = next((s for s in context["periods"] if tuple(s["key"]) == key), None)
     if state is None:
         frappe.throw("%s is not a Regular period of the calendar." % model.period_name(*key))
-    return key, None, state
+    return key, landing, state
 
 
-def _none(reason, route=model.PERIOD_CLOSE):
-    return model.card(reason or "No current period", model.UNKNOWN, route)
+def _none(landing):
+    """No current period: what is missing, a hint saying where to go, and a
+    link there (``overview_model.setup_gap``)."""
+    gap = model.setup_gap(landing)
+    return model.card(gap["text"], model.UNKNOWN, gap["route"], gap["hint"])
 
 
 def _shown(build):
@@ -84,9 +88,9 @@ def close_status(filters=None):
     _no_filters(filters)
 
     def build():
-        key, reason, state = _current()
+        key, landing, state = _current()
         if key is None:
-            return _none(reason)
+            return _none(landing)
         text, tone = model.close_status(key, state)
         return model.card(text, tone, model.PERIOD_CLOSE)
 
@@ -100,12 +104,15 @@ def trial_balances_in(filters=None):
     _no_filters(filters)
 
     def build():
-        key, reason, _state = _current()
+        key, landing, _state = _current()
         if key is None:
-            return _none(reason)
+            return _none(landing)
         progress = signoff_gate.trial_balance_progress(*key)
         text, tone = model.tb_progress(progress["expected"], progress["missing"],
                                        allowed_entity_codes())
+        hint = model.tb_hint(progress["expected"])
+        if hint:
+            return model.card(text, tone, "/desk/entity", hint)
         return model.card(text, tone, "/desk/trial-balance-submission?fiscal_year=%d&fiscal_period=%d"
                           % key)
 
@@ -134,9 +141,9 @@ def ic_over_tolerance(filters=None):
     _no_filters(filters)
 
     def build():
-        key, reason, _state = _current()
+        key, landing, _state = _current()
         if key is None:
-            return _none(reason)
+            return _none(landing)
         text, tone = model.ic_card(ic_api.signoff_summary(*key))
         return model.card(text, tone, model.PERIOD_CLOSE)
 
@@ -151,9 +158,9 @@ def tb_exceptions(filters=None):
     _no_filters(filters)
 
     def build():
-        key, reason, _state = _current()
+        key, landing, _state = _current()
         if key is None:
-            return _none(reason)
+            return _none(landing)
         frappe.has_permission("TB Exception", "read", throw=True)
         entities = frappe.get_list(
             "TB Exception", filters={"fiscal_year": key[0], "fiscal_period": key[1], "docstatus": 1},
@@ -174,8 +181,10 @@ def warehouse_freshness(filters=None):
     _no_filters(filters)
 
     def build():
-        text, tone = model.freshness_card(freshness_api.current_freshness())
-        return model.card(text, tone, model.BUILDS)
+        result = freshness_api.current_freshness()
+        text, tone = model.freshness_card(result)
+        hint, route = model.freshness_hint(result)
+        return model.card(text, tone, route, hint)
 
     return _shown(build)
 
@@ -193,9 +202,9 @@ def _count(doctype, filters):
 def get_checklist():
     """The current period's close checklist: ``overview_model.checklist``."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
-    key, reason, _state = _current()
+    key, landing, _state = _current()
     if key is None:
-        return model.no_period(reason)
+        return model.no_period(landing)
     row = next(r for r in fiscal_calendar.fiscal_period_rows()
                if (int(r["fiscal_year"]), int(r["fiscal_period"])) == key)
     run = latest_close_run(*key)

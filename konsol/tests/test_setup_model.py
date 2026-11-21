@@ -152,9 +152,9 @@ def test_currencies_follow_the_330_check():
     assert M.currencies_step(0, {"blocking": None, "reported": None})["state"] == M.NOT_DONE
     assert M.currencies_step(150, {"blocking": None, "reported": None})["state"] == M.DONE
     s = M.currencies_step(150, {"blocking": None, "reported": {"message": "XDR disagrees."}})
-    assert s["state"] == M.PARTIAL and s["detail"] == "XDR disagrees."
+    assert s["state"] == M.PARTIAL and s["detail"] == "XDR disagrees. " + M.setup_where.where("currencies")
     s = M.currencies_step(150, {"blocking": {"message": "JPY blocks."}, "reported": {"message": "x"}})
-    assert s["state"] == M.NOT_DONE and s["detail"] == "JPY blocks."
+    assert s["state"] == M.NOT_DONE and s["detail"] == "JPY blocks. " + M.setup_where.where("currencies")
 
 
 # -- intercompany ------------------------------------------------------------------
@@ -166,7 +166,8 @@ def _ic(state, message="m"):
 def test_intercompany_states():
     assert M.intercompany_step(0, _ic("not_applicable"), None, None)["state"] == M.DONE
     s = M.intercompany_step(0, _ic("not_configured"), None, "Intercompany not configured.")
-    assert s["state"] == M.NOT_DONE and s["detail"] == "Intercompany not configured."
+    assert s["state"] == M.NOT_DONE and s["detail"] == (
+        "Intercompany not configured. " + M.setup_where.where("intercompany"))
     s = M.intercompany_step(2, _ic("checked"), {"message": "1 group has no tolerance: G1"}, None)
     assert s["state"] == M.PARTIAL and "G1" in s["detail"]
     assert M.intercompany_step(2, _ic("checked"), None, None)["state"] == M.DONE

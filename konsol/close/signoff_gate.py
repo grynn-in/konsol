@@ -472,8 +472,9 @@ def assert_period_closable(fiscal_year, fiscal_period, period_type):
     first = _first_close()
     if first is None:
         frappe.throw(
-            "Declare the first close period in Close Settings before closing "
-            "%s." % period_name(*key), title=CLOSE_BLOCKED_TITLE)
+            "Declare the first close period before closing %s. %s"
+            % (period_name(*key), signoff_model.setup_where.where("first_close")),
+            title=CLOSE_BLOCKED_TITLE)
     if key < first:
         return None
     # Imported here: assertion_run imports this module's callers (A22).

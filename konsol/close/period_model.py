@@ -10,7 +10,8 @@ Implements D5 of konsol#298:
 - "Last viewed" memory and the calendar month are rejected.
 
 When nothing qualifies the result carries ``period: None`` and a reason
-naming the fix; it never guesses. Imports nothing from frappe or konsol.
+naming the fix and where it is done (``konsol/setup_where.py``, loaded by
+path); it never guesses. Imports nothing from frappe or konsol.
 """
 import importlib.util as _importlib_util
 import os as _os
@@ -29,6 +30,20 @@ def _load_period_name():
 
 
 period_name = _load_period_name()
+
+
+def _load_setup_where():
+    """konsol/setup_where.py loaded by path: the one text of where each setup
+    step is done (Deepak Pai, 21 Nov 2026)."""
+    path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                         "setup_where.py")
+    spec = _importlib_util.spec_from_file_location("konsol_setup_where", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+setup_where = _load_setup_where()
 
 
 CLOSE_LEAD = "close_lead"
@@ -85,14 +100,25 @@ def _regular(rows):
         yield row, start, end
 
 
+#: konsol#303: closing starts at a declared period, never a guessed one.
 FIRST_CLOSE_UNDECLARED = (
-    "Declare the first close period (Close Settings, Close Order). konsol does not "
-    "guess where closing starts: every earlier period is history (konsol#303)."
+    "The first close period is not declared. %s Earlier periods are history "
+    "(opening balances)." % setup_where.where("first_close")
+)
+
+#: The first close must be a Regular period (close_settings.py), so with none
+#: the fiscal year comes first: a message never points at a field that
+#: cannot be filled yet.
+NO_CALENDAR = (
+    "No fiscal year has periods yet. %s Then declare the first close period."
+    % setup_where.where("fiscal_calendar")
 )
 
 
 def _working_landing(rows, today, first_close):
     if first_close is None:
+        if not any(True for _ in _regular(rows)):
+            return {"period": None, "rule": "no_calendar", "reason": NO_CALENDAR}
         return {"period": None, "rule": "first_close_undeclared", "reason": FIRST_CLOSE_UNDECLARED}
     first = (int(first_close[0]), int(first_close[1]))
     candidates = [(row, start, end) for row, start, end in _regular(rows) if _key(row) >= first]
@@ -110,7 +136,8 @@ def _working_landing(rows, today, first_close):
         "rule": None,
         "reason": (
             "No Regular period is Open and ended, and none contains today "
-            "(%s). Declare the periods in EPM Fiscal Year." % today.isoformat()
+            "(%s). Add the fiscal year that contains today. %s"
+            % (today.isoformat(), setup_where.where("fiscal_calendar"))
         ),
     }
 

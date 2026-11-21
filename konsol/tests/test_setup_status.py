@@ -179,7 +179,7 @@ def _load(site):
         "konsol.entity_permissions": mod("konsol.entity_permissions",
                                          allowed_entity_codes=lambda user=None: site.allowed),
         "konsol.fiscal_calendar": mod("konsol.fiscal_calendar",
-                                      fiscal_period_rows=lambda: [{"status": "Open"}] * 12),
+                                      fiscal_period_rows=lambda: [{"status": "Open", "period_type": "Regular"}] * 12),
         "konsol.group_chart": mod("konsol.group_chart", chart_accounts=lambda: {
             "1000": {"main_account": "1000", "is_group": 0, "allow_ic": 0}}),
         "konsol.group_rates": mod("konsol.group_rates", rate_gate=rate_gate),
@@ -190,6 +190,7 @@ def _load(site):
                                    declared_none=lambda: site.ic_declared_none,
                                    tolerance_gap=lambda: None, setup_gap=lambda: None),
         "konsol.close.signoff_gate": mod("konsol.close.signoff_gate", statement_gap=lambda: None,
+                                         _first_close=lambda: (2025, 1),
                                          currency_gaps=lambda: {"blocking": None, "reported": None}),
         "konsol.close.period_name": mod("konsol.close.period_name",
                                         period_name=lambda fy, fp: "FY%d P%02d" % (int(fy), int(fp))),
@@ -258,13 +259,14 @@ def test_admin_and_system_manager_get_every_step(roles):
     out, steps = _run(_Site(roles), lambda setup: (setup.status(), setup._model.STEPS))
     keys = [s["key"] for s in out["steps"]]
     assert keys == [k for k, _, _ in steps]
-    assert out["total"] == 12
+    assert out["total"] == 13
 
 
 def test_fixture_site_reads_each_step_from_its_reader():
     site = _Site()
     out = {s["key"]: s for s in _status(site)["steps"]}
     assert out["fiscal_calendar"]["state"] == "done"
+    assert out["first_close"]["state"] == "done" and "FY2025 P01" in out["first_close"]["detail"]
     assert out["consolidation_group"]["state"] == "done"
     # E2 is in no group; E1 is.
     assert out["entities"]["state"] == "partial" and "E2" in out["entities"]["detail"]
@@ -295,6 +297,7 @@ def test_a_failing_reader_marks_only_its_own_step():
     assert out["dimensions"]["state"] == "not_done"
     assert "RuntimeError: Dimension unreadable" in out["dimensions"]["detail"]
     assert out["fiscal_calendar"]["state"] == "done"
+    assert out["first_close"]["state"] == "done" and "FY2025 P01" in out["first_close"]["detail"]
 
 
 def test_no_trial_balance_means_rates_are_not_checked():

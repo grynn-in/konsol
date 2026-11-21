@@ -41,6 +41,19 @@ def _load_period_name():
 period_name = _load_period_name()
 
 
+def _load_setup_where():
+    """konsol/setup_where.py loaded by path: where each setup step is done."""
+    path = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                         "setup_where.py")
+    spec = _importlib_util.spec_from_file_location("konsol_setup_where", path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+setup_where = _load_setup_where()
+
+
 FIRST_CLOSE_UNDECLARED = "first_close_undeclared"
 HISTORY_PERIOD = "history_period"
 FREQUENCY_UNDECLARED = "frequency_undeclared"
@@ -51,8 +64,8 @@ FREQUENCIES = ("Monthly", "Quarterly")
 RE_SIGN_NEEDED = "Re-sign Needed"
 
 _UNDECLARED_MESSAGE = (
-    "Declare the first close period in Close Settings (the Close Lead or System Manager) "
-    "before signing off."
+    "Declare the first close period before signing off (Close Lead or System Manager). %s"
+    % setup_where.where("first_close")
 )
 
 

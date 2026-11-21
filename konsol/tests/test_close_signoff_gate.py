@@ -517,7 +517,8 @@ def test_undeclared_first_close_blocks_and_skips_the_order_gate():
         ], settings
         assert problems["order"] is None, settings
         message = _blocked(site)
-        assert "Declare the first close period in Close Settings" in message, message
+        assert "Declare the first close period before signing off" in message, message
+        assert "Structure → Close Settings → Starting Point tab" in message, message
 
 
 def test_an_open_earlier_period_blocks():
