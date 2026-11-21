@@ -40,3 +40,5 @@ A sign-off covers only the data its run checked. Run the checks again before you
 ## Setup
 
 **Konsol Setup** (EPM Admin and System Manager only) shows each setup area as done, partly done or not done, and links to where it is done.
+
+Entities and dimensions can be loaded from a file with **Data Import** (Insert or Update). konsol syncs them to the warehouse once, when the import finishes, and requests one build if the import changed what consolidation reads. A Published dimension needs the EPM Admin role. The chart of accounts uses **Upload chart** instead.

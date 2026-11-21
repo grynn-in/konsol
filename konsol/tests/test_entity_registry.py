@@ -298,3 +298,16 @@ def test_the_build_request_debounce_is_serialised():
     build_lock = body.index("lock_build_requests()")
     check = body.index("FROM `tabBuild Approval`")
     assert build_lock < check and "FOR UPDATE" in body[check:check + 300]
+
+
+def test_an_imported_row_defers_its_rebuild_to_the_end_of_the_import():
+    """Under frappe.flags.in_import, queue_consolidation_build returns at once,
+    so an imported Entity row would request nothing. It defers instead, and
+    konsol.data_import_sync requests one build for the whole import. The
+    controller still decides WHETHER: only a row that changed a watched field
+    defers, so an import of new countries asks for no rebuild."""
+    fn = _method("_request_rebuild")
+    calls = _calls(fn)
+    assert "defer_rebuild" in calls, "an imported row's rebuild request is dropped"
+    src = ast.get_source_segment(_src(), fn)
+    assert "in_import" in src

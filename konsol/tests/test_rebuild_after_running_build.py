@@ -70,8 +70,9 @@ def test_the_flag_is_a_read_only_check_on_build_approval():
 
 def test_request_build_for_scope_is_called_only_from_jobs():
     """It commits. Allowed callers all run in a job of their own."""
+    # after_import: konsol.data_import_sync's job, queued after the import commits.
     allowed_callers = {"on_consolidation_doc_update", "_finish_governed_build", "reap_stale_build_approvals",
-                       "follow_up_failed_starts"}
+                       "follow_up_failed_starts", "after_import"}
     offenders = []
     for root, _, files in os.walk(APP_DIR):
         if "/tests" in root:

@@ -1,6 +1,8 @@
 {
  "actions": [],
+ "allow_import": 1,
  "allow_rename": 0,
+ "description": "Every legal entity and roll-up node the group consolidates. Frappe Data Import works for Entity (Insert or Update): when the import finishes, konsol syncs the entity registry to the warehouse once and, if a currency or group flag changed, requests one consolidation build.",
  "autoname": "field:entity_code",
  "creation": "2026-09-06 12:00:00.000000",
  "doctype": "DocType",
@@ -130,7 +132,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-09-12 12:00:00.000000",
+ "modified": "2026-11-21 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "EPM",
  "name": "Entity",
@@ -138,6 +140,7 @@
  "permissions": [
   {
    "role": "System Manager",
+   "import": 1,
    "read": 1,
    "write": 1,
    "create": 1,
@@ -145,6 +148,7 @@
   },
   {
    "export": 1,
+   "import": 1,
    "role": "EPM Admin",
    "read": 1,
    "write": 1,
