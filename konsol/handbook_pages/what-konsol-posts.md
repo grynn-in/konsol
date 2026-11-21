@@ -28,7 +28,7 @@ The NCI attribution layer is part of the final amount. The waterfall has no colu
 
 Goodwill amortisation posts nothing when the policy is Impairment only.
 
-I found no model for a "journal close" entry in the warehouse. This page does not list one.
+The warehouse has no model for a journal-close entry, so none is listed here.
 
 ## Posted by you
 
