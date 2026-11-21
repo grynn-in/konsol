@@ -104,6 +104,13 @@
       "description": "Assertions that warned: reported, never blocking (konsol#265)"
     },
     {
+      "fieldname": "not_applicable",
+      "fieldtype": "Small Text",
+      "label": "Checks Not Applicable",
+      "read_only": 1,
+      "description": "Checks this run did not run, and why (konsol#579)."
+    },
+    {
       "fieldname": "tab_signoff",
       "fieldtype": "Tab Break",
       "label": "Sign-off"

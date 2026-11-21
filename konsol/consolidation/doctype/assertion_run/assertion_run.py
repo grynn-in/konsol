@@ -42,7 +42,7 @@ NEW_RUN_BLANK_FIELDS = (
     "total", "passed", "failed", "errored", "warned",
     "signed_off_by", "signed_off_at", "override_reason", "acknowledgement",
     "warnings_at_signoff", "affected_by", "started_at", "completed_at", "duration_seconds",
-    "log",
+    "log", "not_applicable",
 )
 
 
@@ -58,7 +58,7 @@ SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_
 #: a signed run's log with set_value. Its checkpoints and the reaper's note use
 #: frappe.db.set_value, which skips validate.
 RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
-                 "started_at", "completed_at", "duration_seconds", "log")
+                 "started_at", "completed_at", "duration_seconds", "log", "not_applicable")
 
 #: Scope and origin: set at insert, never changed after, by any writer (A50).
 #: Found live by A48: set_value(fiscal_period=N) by the Close Lead MOVED a
@@ -818,6 +818,21 @@ def assert_close_signed_off(fiscal_year, fiscal_period):
     return run.name
 
 
+def _not_applicable_checks():
+    """konsol#579 option B, chosen under the standing rule on 21 Nov 2026
+    (rejected: tests that guard themselves, because a skipped check reads as
+    Pass; and creating the gold tables empty, a second DDL source that breaks
+    the isolated scope). The allocation checks read gold_cost_allocation and
+    gold_cost_allocation_frozen, which only the isolated allocation build
+    creates. While no Cost Allocation Run is approved there is nothing to
+    check: return the dbt exclusion and the note the run records. Once any
+    run is approved the checks run, so a missing table is still an Error."""
+    if frappe.db.count("Cost Allocation Run", {"docstatus": 1}):
+        return [], None
+    return ["--exclude", "tag:domain:allocation"], (
+        "Allocation checks not applicable: no approved Cost Allocation Run.")
+
+
 def run_close_assertions(close_run):
     """Background job: run `dbt test` for the singular assertions, stream the
     log, then parse run_results.json into Assertion Step rows.
@@ -850,8 +865,13 @@ def run_close_assertions(close_run):
         "--project-dir", project_path,
         "--profiles-dir", project_path,
     ]
+    excludes, not_applicable = _not_applicable_checks()
+    cmd.extend(excludes)
 
     lines = []
+    if not_applicable:
+        lines.append(not_applicable)
+        _emit(close_run, line=not_applicable)
     try:
         proc = subprocess.Popen(
             cmd, cwd=project_path, stdout=subprocess.PIPE,
@@ -874,6 +894,7 @@ def run_close_assertions(close_run):
 
     doc.reload()
     doc.log = "\n".join(lines)[-20000:]
+    doc.not_applicable = not_applicable
     _parse_results(doc, project_path)
 
     doc.completed_at = frappe.utils.now_datetime()

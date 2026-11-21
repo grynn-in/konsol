@@ -41,7 +41,7 @@ AR_JSON = os.path.join(AR_DIR, "assertion_run.json")
 SIGNOFF_FIELDS = ("signoff_status", "signed_off_by", "signed_off_at", "override_reason",
                   "acknowledgement", "warnings_at_signoff", "affected_by")
 RESULT_FIELDS = ("status", "total", "passed", "failed", "errored", "warned",
-                 "started_at", "completed_at", "duration_seconds", "log")
+                 "started_at", "completed_at", "duration_seconds", "log", "not_applicable")
 SCOPE_FIELDS = ("fiscal_year", "fiscal_period", "pipeline_run", "triggered_by", "title",
                 "numbers_fingerprint", "fingerprint_as_of", "fingerprint_error")
 STEP_JSON = os.path.join(APP_DIR, "consolidation", "doctype", "assertion_step",
@@ -59,6 +59,7 @@ FORGED = {
     "duration_seconds": 1.5,
     "fiscal_year": 2098, "fiscal_period": 2, "pipeline_run": "PR-FORGED",
     "triggered_by": "forger@example.com",
+    "not_applicable": "forged: nothing applies",
     "log": "forged: all 131 assertions passed", "title": "forged title",
     # konsol#338: the fingerprint is fixed at insert like the scope.
     "numbers_fingerprint": "v1:" + "f" * 64,
@@ -135,6 +136,7 @@ def _load():
         get_bench_path=lambda: "/bench",
         now_datetime=lambda: datetime.datetime(2026, 9, 25, 10, 0, 0))
     frappe.db = types.SimpleNamespace(get_value=lambda *a, **k: None, commit=lambda: None,
+                                      count=lambda *a, **k: 1,
                                       set_value=lambda *a, **k: None,
                                       exists=lambda *a, **k: True)
     frappe.get_all = lambda *a, **k: []
