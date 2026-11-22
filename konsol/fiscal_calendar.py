@@ -131,6 +131,39 @@ def fiscal_period_rows():
     return rows
 
 
+def declared_period_types(years):
+    """{year: [{"period", "type"}]} for each of ``years`` that is declared as
+    an EPM Fiscal Year; a year with no rows maps to []. An undeclared year is
+    absent, never assumed (konsol#584: Copy rates from previous period reads
+    which period is the previous Regular one from here)."""
+    import frappe
+
+    years = sorted({int(y) for y in years})
+    if not years:
+        return {}
+    rows = frappe.db.sql(
+        """
+        SELECT y.fiscal_year AS fiscal_year, p.fiscal_period AS fiscal_period,
+               p.period_type AS period_type
+        FROM `tabEPM Fiscal Year` y
+        LEFT JOIN `tabEPM Fiscal Year Period` p
+            ON p.parent = y.name
+            AND p.parenttype = 'EPM Fiscal Year'
+            AND p.parentfield = 'periods'
+        WHERE y.fiscal_year IN %(years)s
+        ORDER BY y.fiscal_year, p.fiscal_period
+        """,
+        {"years": tuple(years)},
+        as_dict=True,
+    )
+    out = {}
+    for row in rows:
+        periods = out.setdefault(int(row["fiscal_year"]), [])
+        if row["fiscal_period"] is not None:
+            periods.append({"period": int(row["fiscal_period"]), "type": row["period_type"]})
+    return out
+
+
 # ---- declaring Fiscal Years for the periods in use (konsol#189) -------------
 # Shared by patches/create_fiscal_years.py and declare_years_in_use: collect
 # every (fiscal_year, fiscal_period) in use, ask fiscal_migration_model.plan()
