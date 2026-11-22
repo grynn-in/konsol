@@ -1042,8 +1042,30 @@ def test_no_two_controllers_write_one_table():
     Adjustment at 0 rows would empty the journal's rows on every migrate."""
     owners = _write_through_targets()
     assert "epm_staging.consolidation_adjustments" in owners, sorted(owners)
-    shared = {table: files for table, files in owners.items() if len(files) > 1}
+    shared = {table: files for table, files in owners.items()
+              if len(files) > 1 and SHARED_UNTIL_RETIRED.get(table) != sorted(files)}
     assert not shared, shared
+
+
+#: konsol#592 pair 1: Rate Sheet replaces Group Exchange Rate, and until T26
+#: retires GER both declare the rates table. They do not erase each other:
+#: both resync_staging methods call the one publisher,
+#: group_rates.publish_rates, which builds the whole table from approved
+#: sheets and swaps it in. T26 deletes GER and this entry with it.
+SHARED_UNTIL_RETIRED = {
+    "epm_staging.group_exchange_rates": [
+        "consolidation/doctype/group_exchange_rate/group_exchange_rate.py",
+        "consolidation/doctype/rate_sheet/rate_sheet.py",
+    ],
+}
+
+
+def test_the_shared_rates_table_has_one_publisher():
+    """The exemption above holds only while both controllers publish through
+    group_rates.publish_rates."""
+    for rel in SHARED_UNTIL_RETIRED["epm_staging.group_exchange_rates"]:
+        with open(os.path.join(APP_DIR, rel)) as f:
+            assert "return group_rates.publish_rates(force=force)" in f.read(), rel
 
 
 def _ddl_column_names(body):

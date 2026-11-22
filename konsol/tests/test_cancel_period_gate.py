@@ -28,6 +28,9 @@ GATED = {
     "ApprovedBudget": "assert_year_not_closed",
     # konsol#348 S6 KA2 (S6-Q1 b): the current-round declaration, the same gate
     "CurrentForecast": "assert_year_not_closed",
+    # konsol#592: a Statutory sheet cancels (only when superseded) in an open
+    # period; a Constant sheet while its year is not closed (P1-Q2 B, P1-Q3 C)
+    "RateSheet": ("assert_open", "assert_year_not_closed"),
 }
 
 
@@ -55,9 +58,11 @@ def test_every_listed_doctype_gates_its_cancel_on_the_period():
         assert fn is not None, f"{rel}: {cls.name} has no before_cancel"
         calls = [getattr(c.func, "id", None) or getattr(c.func, "attr", None)
                  for c in ast.walk(fn) if isinstance(c, ast.Call)]
-        assert GATED[cls.name] in calls, (cls.name, calls)
-        gate_line = next(c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call)
-                         and (getattr(c.func, "id", None) or getattr(c.func, "attr", None)) == GATED[cls.name])
+        gates = GATED[cls.name] if isinstance(GATED[cls.name], tuple) else (GATED[cls.name],)
+        for gate in gates:
+            assert gate in calls, (cls.name, gate, calls)
+        gate_line = min(c.lineno for c in ast.walk(fn) if isinstance(c, ast.Call)
+                        and (getattr(c.func, "id", None) or getattr(c.func, "attr", None)) in gates)
         early = [n for n in ast.walk(fn) if isinstance(n, ast.Assign) and n.lineno < gate_line
                  and any(isinstance(t, ast.Attribute) and ast.unparse(t.value) == "self" for t in n.targets)]
         assert not early, f"{cls.name}: nothing may change before the gate"
