@@ -78,7 +78,7 @@
    "mandatory_depends_on": "eval:doc.rate_basis == 'Statutory'",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "description": "The period number, as on Period Status (0 = Opening, 1-12 Regular). The Closing period takes no rates. Statutory sheets only."
+   "description": "The period number, as on Period Status (0 = Opening, 1-12 Regular, or an Adjustment period). A Closing period takes no rates: it is translated at the year's last Regular period. Statutory sheets only."
   },
   {
    "fieldname": "col_break_1",
