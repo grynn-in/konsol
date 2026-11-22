@@ -352,6 +352,26 @@ def test_period_of_a_doc_with_period_fields():
         assert writer.period_of(doc) == (2025, 7), doctype
 
 
+def test_period_of_a_statutory_rate_sheet_is_its_period():
+    writer, _ = _load(_Site())
+    doc = _doc("Rate Sheet", rate_basis="Statutory", fiscal_year="2025", fiscal_period="7")
+    assert writer.period_of(doc) == (2025, 7)
+    doc = _doc("Rate Sheet", rate_basis="Statutory", fiscal_year=2025, fiscal_period=0)
+    assert writer.period_of(doc) == (2025, 0)
+
+
+def test_period_of_a_constant_rate_sheet_is_period_zero_of_its_year():
+    """konsol#592 T16: a Constant sheet has no period; its approval events sit
+    at P0 of its year, a period kind the event model allows since #590."""
+    writer, _ = _load(_Site())
+    for blank in (None, 0, ""):
+        doc = _doc("Rate Sheet", rate_basis="Constant", fiscal_year="2025", fiscal_period=blank)
+        assert writer.period_of(doc) == (2025, 0), repr(blank)
+    event = {"kind": "approved", "fiscal_year": 2025, "fiscal_period": 0}
+    assert "Rate Sheet" in writer.ENTITY_FIELDS
+    assert "approved" in writer.close_event_model.PERIOD_ZERO_KINDS and event
+
+
 def test_period_of_an_ownership_period_is_the_first_period_it_affects():
     """Its date maps to the period starting 2025-07-01; the Regular row wins
     over the Opening row with the same start (listed first)."""
@@ -414,13 +434,13 @@ def test_entity_of_each_approval_doctype():
     assert writer.entity_of(_doc("Historical Equity Rate", data_area_id="ZZ02")) == "ZZ02"
     assert writer.entity_of(_doc("Business Combination", acquired_entity="ZZ03")) == "ZZ03"
     assert writer.entity_of(_doc("Business Disposal", disposed_entity="ZZ04")) == "ZZ04"
-    for doctype in ("Group Exchange Rate", "Consolidation Journal", "IC Balance"):
+    for doctype in ("Group Exchange Rate", "Rate Sheet", "Consolidation Journal", "IC Balance"):
         assert writer.entity_of(_doc(doctype, data_area_id="ZZ09",
                                      selling_entity="ZZ05", buying_entity="ZZ06")) is None, doctype
 
 
 def test_entity_of_covers_every_approval_doctype():
-    """The 7 doctypes of close_policy_model.APPROVAL_DOCTYPES, no more."""
+    """The doctypes of close_policy_model.APPROVAL_DOCTYPES, no more."""
     pm = _load_by_path("cpm_for_t02a", os.path.join(APP_DIR, "close", "close_policy_model.py"))
     writer, _ = _load(_Site())
     assert set(writer.ENTITY_FIELDS) == set(pm.APPROVAL_DOCTYPES)
