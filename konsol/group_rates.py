@@ -47,7 +47,7 @@ import re
 
 import frappe
 
-from konsol import rate_copy_model
+from konsol import rate_copy_model, rate_sheet_model
 from konsol.close import close_policy_model
 from konsol.fx_reference import REFERENCE_CURRENCY, usd_reference  # noqa: F401 — the one rule
 from konsol.period_status import PeriodNotDeclared, assert_open, period_dates  # noqa: F401 — surfaced for callers
@@ -600,6 +600,21 @@ def _ch_literal(value):
 
 _APPROVED_SQL = ("SELECT name, to_currency, from_currency, fiscal_year, fiscal_period, rate_type, quote, "
                  "quoted_per, rate_set, modified FROM `tabGroup Exchange Rate` WHERE docstatus = 1 ORDER BY name")
+#: konsol#592 T10: the approved Rate Sheets, their rows and the declared
+#: calendar (a Constant sheet publishes every published period of its year).
+_SHEETS_SQL = ("SELECT name, rate_basis, fiscal_year, fiscal_period, supersedes, docstatus, modified "
+               "FROM `tabRate Sheet` WHERE docstatus = 1 ORDER BY name")
+_SHEET_ROWS_SQL = ("SELECT r.parent, r.from_currency, r.to_currency, r.quoted_per, r.average_quote, "
+                   "r.closing_quote, r.rate FROM `tabRate Sheet Row` r JOIN `tabRate Sheet` s "
+                   "ON s.name = r.parent WHERE s.docstatus = 1 AND r.parenttype = 'Rate Sheet' "
+                   "AND r.parentfield = 'rates' ORDER BY r.parent, r.idx")
+_CALENDAR_SQL = ("SELECT y.fiscal_year AS fiscal_year, p.fiscal_period AS period, p.period_type AS type, "
+                 "p.start_date AS start_date, p.end_date AS end_date FROM `tabEPM Fiscal Year` y "
+                 "JOIN `tabEPM Fiscal Year Period` p ON p.parent = y.name AND p.parenttype = 'EPM Fiscal Year' "
+                 "AND p.parentfield = 'periods' ORDER BY y.fiscal_year, p.fiscal_period")
+#: The Rate Set code a Constant sheet publishes under (pair 1: Rate Set stays,
+#: and the patch adds a CONSTANT row; the plan's warehouse mapping).
+CONSTANT_RATE_SET = "CONSTANT"
 
 
 def _fresh_db():
@@ -615,16 +630,96 @@ def _fresh_db():
 
 
 def _read_approved():
-    """The approved rates as committed right now. Read on a connection of its
-    own and closed at once: the snapshot starts at this read (nothing ran on
-    that connection before it), and no lock outlives it. The caller's
-    transaction is untouched, so a snapshot it already took cannot hide a
-    rate, and a lock it would have held cannot block an approval."""
+    """What the publish reads, as committed right now: the approved Group
+    Exchange Rates, the approved Rate Sheets with their rows, and the declared
+    calendar (the last only when a sheet is approved). Read on a connection of
+    its own and closed at once: the snapshot starts at the first read, so the
+    reads agree with each other (REPEATABLE READ), and no lock outlives it.
+    The caller's transaction is untouched, so a snapshot it already took
+    cannot hide a rate, and a lock it would have held cannot block an approval.
+    Returns (ger_docs, sheets, sheet_rows, calendar_rows)."""
     db = _fresh_db()
     try:
-        return db.sql(_APPROVED_SQL, as_dict=True)
+        docs = db.sql(_APPROVED_SQL, as_dict=True)
+        sheets = db.sql(_SHEETS_SQL, as_dict=True)
+        if not sheets:
+            return docs, [], [], []
+        rows = db.sql(_SHEET_ROWS_SQL, as_dict=True)
+        calendar = db.sql(_CALENDAR_SQL, as_dict=True)
+        return docs, sheets, rows, calendar
     finally:
         db.close()
+
+
+def _get(obj, field):
+    return obj.get(field) if isinstance(obj, dict) else getattr(obj, field, None)
+
+
+def _row_key(row):
+    """(from, to, fiscal year, fiscal period, rate type, rate set) of a
+    published row ([to, from, fy, fp, rate_type, rate, document, rate_set])."""
+    return (row[1], row[0], int(row[2]), int(row[3]), row[4], row[7])
+
+
+def sheet_published_rows(sheets, sheet_rows, calendar_rows, actuals_code):
+    """epm_staging.group_exchange_rates rows for the APPROVED sheets
+    (docstatus 1; anything else is ignored), through
+    rate_sheet_model.published_rows: Statutory under ``actuals_code``,
+    Constant under CONSTANT, ``document`` the sheet name.
+
+    A sheet named in another approved sheet's ``supersedes`` gives way to it
+    (#312-3). Raises ValueError, naming the sheets, when two approved sheets
+    still publish one key, or when the rules refuse an approved sheet (its
+    period left the calendar): never a silent pick."""
+    approved = [s for s in sheets if int(_get(s, "docstatus") or 0) == 1]
+    superseded = {_get(s, "supersedes") for s in approved if _get(s, "supersedes")}
+    by_parent = {}
+    for r in sheet_rows:
+        by_parent.setdefault(_get(r, "parent"), []).append(
+            {f: _get(r, f) for f in ("from_currency", "to_currency", "quoted_per", "average_quote",
+                                     "closing_quote", "rate")})
+    calendar = [{f: _get(c, f) for f in ("fiscal_year", "period", "type", "start_date", "end_date")}
+                for c in calendar_rows]
+    out, owner = [], {}
+    for s in sorted(approved, key=lambda s: _get(s, "name")):
+        name = _get(s, "name")
+        if name in superseded:
+            continue
+        sheet = {"name": name, "rate_basis": _get(s, "rate_basis"), "fiscal_year": _get(s, "fiscal_year"),
+                 "fiscal_period": (None if _get(s, "rate_basis") == rate_sheet_model.CONSTANT
+                                   else _get(s, "fiscal_period")),
+                 "rows": by_parent.get(name, [])}
+        try:
+            rows = rate_sheet_model.published_rows(sheet, calendar, actuals_code, CONSTANT_RATE_SET)
+        except ValueError as e:
+            raise ValueError(f"Rate Sheet {name} is approved but cannot be published: {e}") from e
+        for row in rows:
+            key = _row_key(row)
+            if key in owner and owner[key] != name:
+                raise ValueError(f"Rate Sheets {owner[key]} and {name} are both approved for {key}: "
+                                 "exactly one may be. Supersede one with the other (#312-3).")
+            owner[key] = name
+        out.extend(rows)
+    return out
+
+
+def union_rows(ger_docs, sheets, sheet_rows, calendar_rows, actuals_code):
+    """Everything the publish writes: the approved sheets' rows, then every
+    approved Group Exchange Rate row for a key no sheet covers.
+
+    The key is (from, to, fiscal year, fiscal period, rate type, rate set):
+    a sheet row wins over the GER row for the same key, and that GER row is
+    skipped. A site with no approved sheet publishes exactly
+    ``published_rows(ger_docs)``, as before.
+
+    The GER branch is the transition: Group Exchange Rate is retired by T26
+    (patches/retire_group_exchange_rate.py, konsol#592), and this union goes
+    with it."""
+    out = sheet_published_rows(sheets, sheet_rows, calendar_rows, actuals_code)
+    covered = {_row_key(r) for r in out}
+    # T26: the GER branch below is removed with Group Exchange Rate.
+    out.extend(r for r in published_rows(ger_docs) if _row_key(r) not in covered)
+    return out
 
 
 def publish_rates(force=False):
@@ -668,8 +763,12 @@ def publish_rates(force=False):
         return None
     shadow = PUBLISH_TABLE + "__publishing"
     try:
-        docs = _read_approved()
-        rows = published_rows(docs)
+        docs, sheets, sheet_rows, calendar = _read_approved()
+        # The actuals set is read only when a Statutory sheet needs it: a site
+        # with no sheets publishes as before, whatever its Rate Set flags.
+        actuals = (actuals_rate_set() if any(_get(s, "rate_basis") == rate_sheet_model.STATUTORY
+                                             for s in sheets) else None)
+        rows = union_rows(docs, sheets, sheet_rows, calendar, actuals)
         execute(f"DROP TABLE IF EXISTS {shadow}")
         execute(f"CREATE TABLE {shadow} AS {PUBLISH_TABLE}")
         columns = ", ".join(PUBLISH_COLUMNS)
@@ -678,7 +777,7 @@ def publish_rates(force=False):
                     + ", ".join("(" + ", ".join(_ch_literal(v) for v in row) + ")" for row in rows[i:i + 1000]))
         execute(f"EXCHANGE TABLES {PUBLISH_TABLE} AND {shadow}")
         execute(f"DROP TABLE IF EXISTS {shadow}")
-        modified = [d.modified for d in docs if d.modified]
+        modified = [m for m in [d.modified for d in docs] + [_get(x, "modified") for x in sheets] if m]
         _stamp_watermark(PUBLISH_TABLE, len(rows),
                          max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None)
         return len(rows)
