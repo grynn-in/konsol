@@ -380,6 +380,8 @@ def test_actuals_and_budget_together():
 # -- purity -----------------------------------------------------------------------
 
 def test_the_model_imports_nothing_from_frappe_or_konsol():
-    src = open(_PATH).read()
-    assert "import frappe" not in src and "from frappe" not in src
-    assert "from konsol" not in src and "import konsol" not in src
+    import ast
+    tree = ast.parse(open(_PATH).read())
+    names = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
+    names |= {(n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
+    assert not names & {"frappe", "konsol"}, names
