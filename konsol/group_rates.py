@@ -47,7 +47,7 @@ import re
 
 import frappe
 
-from konsol import rate_copy_model, rate_sheet_model
+from konsol import rate_sheet_model
 from konsol.close import close_policy_model
 from konsol.fx_reference import REFERENCE_CURRENCY, usd_reference  # noqa: F401 — the one rule
 from konsol.period_status import PeriodNotDeclared, assert_open, period_dates  # noqa: F401 — surfaced for callers
@@ -58,8 +58,6 @@ RATE_TYPES = ("Closing", "Average")
 PREFILL_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
 PREFILL_SOURCE = "ERP pre-fill"
 ADOPTION_SOURCE = "Adoption"
-#: konsol#584: the Source of a draft copy_from_previous_period proposes.
-COPY_SOURCE = "Copied from previous period"
 
 #: The ERP adapter's rate-type names, for the pre-fill only: which ERP rate
 #: types may propose each governed rate type, in order of preference. The
@@ -941,26 +939,6 @@ def assert_rates_complete(fiscal_year, fiscal_period):
 
 # -- the pre-fill -------------------------------------------------------------------------
 
-def lock_rate_set(rate_set):
-    """True when ``rate_set`` exists, holding its row FOR UPDATE until the
-    request commits (#586 review). The pre-fill and the copy check which keys
-    a period already has, then insert: two clicks at once both saw "none" and
-    both inserted. Each takes this lock before it reads anything else, so the
-    second waits for the first to commit."""
-    return bool(frappe.db.sql("SELECT name FROM `tabRate Set` WHERE name=%s FOR UPDATE", (rate_set,)))
-
-
-def taken_keys(fiscal_year, fiscal_period, rate_set):
-    """The (from, to, rate_type) keys that have a draft or an approved rate for
-    the period in ``rate_set``. A locking read: under REPEATABLE READ a plain
-    one returns the snapshot and misses drafts committed while this request
-    waited on lock_rate_set."""
-    return {(f, t, rt) for f, t, rt in frappe.db.sql(
-        "SELECT from_currency, to_currency, rate_type FROM `tabGroup Exchange Rate` "
-        "WHERE fiscal_year = %s AND fiscal_period = %s AND rate_set = %s AND docstatus < 2 FOR UPDATE",
-        (int(fiscal_year), int(fiscal_period), rate_set))}
-
-
 SHEET_DOCTYPE = "Rate Sheet"
 #: Set around the writes of each path, and by nothing else: Rate Sheet's
 #: _guard_provenance refuses Source, ERP quotes and Copied From without them.
@@ -1099,105 +1077,88 @@ def prefill_from_erp(fiscal_year, fiscal_period):
     return out
 
 
-# -- copy from the previous period (konsol#584) ------------------------------------------
-
-def declared_calendar(years):
-    """{year: [{"period", "type"}]} for the declared years among ``years``
-    (konsol.fiscal_calendar); an undeclared year is absent."""
-    from konsol.fiscal_calendar import declared_period_types
-
-    return declared_period_types(years)
-
+# -- duplicate the previous sheet (konsol#592 T13, replacing konsol#584's copy) -------------
 
 @frappe.whitelist(methods=["POST"])
-def copy_from_previous_period(fiscal_year, fiscal_period, rate_set):
-    """Propose DRAFT rates for a period from the previous regular period's
-    approved rates in ``rate_set`` (konsol#584, Deepak Pai 22 Nov 2026).
+def duplicate_previous(rate_basis, fiscal_year, fiscal_period=None):
+    """Propose a DRAFT Rate Sheet for a key from the previous approved sheet of
+    the basis (konsol#592 T13; konsol#584, Deepak Pai 22 Nov 2026).
 
     For sites whose rates do not move every month (pegged, stable or planning
-    rates, or no ERP feed): every approved Closing and Average rate of the set
-    in the previous Regular period of the declared calendar
-    (``rate_copy_model.previous_regular_period``; P1's is the previous year's
-    last Regular period) becomes a draft for this period with the same quote
-    and Quoted Per, Source "Copied from previous period", and Copied From
-    naming the rate it came from. Nothing is submitted: a person approves each
-    draft for its own period, under the same rules as any rate. Rejected: a
-    silent carry-forward in the warehouse.
+    rates, or no ERP feed). Statutory takes the latest approved sheet of an
+    earlier period (the previous Regular or Opening period with one: a Closing
+    period has no sheet, and a period with none is passed over); Constant takes
+    the latest approved sheet of an earlier year. ``rate_sheet_model.plan_duplicate``
+    decides the draft: each row copies its quotes and Quoted Per, with Source
+    "Duplicated"; the sheet's Copied From names its source and its note says
+    so. Nothing is submitted: a person approves the draft for its own key,
+    under the same rules as any sheet. Rejected: a silent carry-forward in
+    the warehouse.
 
-    Mirrors prefill_from_erp: the same roles; a key that already has a draft
-    or an approved rate in the set is left alone and listed under "skipped";
-    a rate the magnitude guard or the controller refuses is listed under
-    "refused", so no dialog pops for it; a rate past the declared Magnitude
-    Warning Factor is drafted and listed under "warned", and so is a rate
-    whose source has a correction pending approval. The Rate Set row is
-    locked first and the taken keys are read with a locking read, so two
-    clicks at once cannot both draft a key. The request itself
-    is refused by name, before anything is written, for a blank or unknown
-    Rate Set, a target period that is not declared and Open, and a previous
-    period that is not declared."""
+    A target that already has a draft or an approved sheet is refused (a
+    correction supersedes), as is a Statutory period that is not Open and a
+    Constant year that is closed. The request is refused by name, and nothing
+    is written, for any of these. Group Accountant, Close Lead and System
+    Manager only (PREFILL_ROLES).
+
+    The fiscal year is locked first (LOCK IN SHARE MODE), then the target's
+    keys are read FOR UPDATE, so two clicks at once cannot both draft it.
+    Returns {"name", "copied_from"}."""
+    from konsol.period_status import assert_year_not_closed
+
     frappe.only_for(PREFILL_ROLES)
-    if not rate_set:
-        frappe.throw("Rate Set is required: the set whose rates are copied, and the set the drafts "
-                     "join. Nothing is assumed (konsol#348).", frappe.MandatoryError)
-    if not lock_rate_set(rate_set):
-        frappe.throw(f"Rate Set {rate_set} does not exist.", frappe.ValidationError)
-    fy, fp = int(fiscal_year), int(fiscal_period)
-    assert_open(fy, fp, action="copy group exchange rates into it")
-    source_period, problem = rate_copy_model.previous_regular_period(fy, fp, declared_calendar((fy, fy - 1)))
-    if problem:
-        frappe.throw(problem, PeriodNotDeclared)
-    py, pp = source_period
-    fields = ["name", "from_currency", "to_currency", "rate_type", "docstatus", "rate_set", "quote", "quoted_per"]
-    sources = frappe.get_all(
-        DOCTYPE, filters={"fiscal_year": py, "fiscal_period": pp, "docstatus": 1, "rate_set": rate_set},
-        fields=fields, order_by="name asc", limit_page_length=0)
-    taken = taken_keys(fy, fp, rate_set)
-    drafts, skipped = rate_copy_model.plan_copy(sources, taken, rate_set)
-    # #586 review: a correction of a source still in draft may be the rate meant.
-    pending = {}
-    if drafts:
-        for c in frappe.get_all(DOCTYPE, filters={"supersedes": ["in", [s["name"] for s in drafts]], "docstatus": 0},
-                                fields=["name", "supersedes"], order_by="name asc", limit_page_length=0):
-            pending.setdefault(c["supersedes"], []).append(c["name"])
-    refs = usd_references({c for s in drafts for c in (s["from_currency"], s["to_currency"])})
-    factor = magnitude_warning_factor()
-    out = {"from_period": f"FY{py} P{pp}", "created": [], "skipped": skipped, "refused": [], "warned": []}
-    frappe.flags.konsol_copying_rates = True
+    basis = rate_basis
+    if basis not in (rate_sheet_model.STATUTORY, rate_sheet_model.CONSTANT):
+        frappe.throw(f"Rate Basis must be Statutory or Constant, not {basis!r}.", frappe.ValidationError)
+    statutory = basis == rate_sheet_model.STATUTORY
+    if statutory and fiscal_period in (None, ""):
+        frappe.throw("A Statutory sheet needs a Fiscal Period.", frappe.MandatoryError)
+    fy = int(fiscal_year)
+    fp = None if fiscal_period in (None, "") else int(fiscal_period)
+    if statutory:
+        assert_open(fy, fp, action="duplicate rates into it")
+    elif fp is not None:
+        frappe.throw("A Constant sheet covers the whole year and has no Fiscal Period.", frappe.ValidationError)
+    else:
+        assert_year_not_closed(fy, action="duplicate rates into a closed year")
+    frappe.db.sql("SELECT name, status FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE", (fy,))
+    existing = [(b, y, p if b == rate_sheet_model.STATUTORY else None) for b, y, p in frappe.db.sql(
+        "SELECT rate_basis, fiscal_year, fiscal_period FROM `tabRate Sheet` "
+        "WHERE rate_basis = %s AND fiscal_year = %s AND docstatus < 2 FOR UPDATE", (basis, fy))]
+    if statutory:
+        found = frappe.db.sql(
+            "SELECT name, fiscal_year, fiscal_period FROM `tabRate Sheet` WHERE rate_basis = %s AND docstatus = 1 "
+            "AND (fiscal_year < %s OR (fiscal_year = %s AND fiscal_period < %s)) "
+            "ORDER BY fiscal_year DESC, fiscal_period DESC LIMIT 1", (basis, fy, fy, fp))
+    else:
+        found = frappe.db.sql(
+            "SELECT name, fiscal_year, fiscal_period FROM `tabRate Sheet` WHERE rate_basis = %s AND docstatus = 1 "
+            "AND fiscal_year < %s ORDER BY fiscal_year DESC LIMIT 1", (basis, fy))
+    key = rate_sheet_model.key_label(basis, fy, fp)
+    if not found:
+        frappe.throw(f"There is no approved {basis} sheet before {key} to duplicate. Enter the first one, "
+                     "or pre-fill it from the ERP.", frappe.ValidationError)
+    name, source_year, source_period = found[0]
+    rows = frappe.get_all(
+        "Rate Sheet Row", filters={"parent": name, "parenttype": SHEET_DOCTYPE, "parentfield": "rates"},
+        fields=["from_currency", "to_currency", "quoted_per", "average_quote", "closing_quote", "rate"],
+        order_by="idx asc", limit_page_length=0)
+    previous = {"name": name, "rate_basis": basis, "fiscal_year": source_year,
+                "fiscal_period": source_period if statutory else None, "docstatus": 1,
+                "rows": [dict(r) for r in rows]}
+    plan, why = rate_sheet_model.plan_duplicate(previous, (basis, fy, fp), existing)
+    if why:
+        frappe.throw(why, frappe.ValidationError)
+    frappe.flags[DUPLICATE_FLAG] = True
     try:
-        for s in drafts:
-            f, t, rate_type = s["from_currency"], s["to_currency"], s["rate_type"]
-            label = rate_copy_model.key_label(f, t, rate_type)
-            quote, per = float(s["quote"]), int(s["quoted_per"] or 1)
-            problem = magnitude_problem(f, t, true_rate(quote, per), refs)
-            if problem:
-                # A reference changed since the source was approved: the guard working.
-                out["refused"].append(f"{label}: {problem}")
-                continue
-            doc = frappe.get_doc({
-                "doctype": DOCTYPE, "rate_set": rate_set, "to_currency": t, "from_currency": f,
-                "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp, "quote": quote,
-                "quoted_per": str(per), "source": COPY_SOURCE, "copied_from": s["name"],
-                "source_note": rate_copy_model.copy_note(s, source_period, quote_label(quote, per, f, t)),
-            })
-            try:
-                doc.insert()
-            except frappe.ValidationError as e:
-                # frappe.throw logged the message before raising; the summary
-                # reports it, so no dialog pops for it.
-                frappe.clear_last_message()
-                out["refused"].append(f"{label}: {e}")
-                continue
-            out["created"].append(doc.name)
-            warning = magnitude_warning(f, t, quote, per, factor, refs)
-            if warning:
-                out["warned"].append(f"{label}: {warning}")
-            if pending.get(s["name"]):
-                out["warned"].append(
-                    f"{label}: {s['name']} has a correction pending approval ({', '.join(pending[s['name']])}); "
-                    f"this draft copies the approved rate, not the correction. Check it before approving.")
+        doc = frappe.get_doc({
+            "doctype": SHEET_DOCTYPE, "rate_basis": basis, "fiscal_year": plan["fiscal_year"],
+            "fiscal_period": plan["fiscal_period"], "rates": plan["rows"], "copied_from": plan["copied_from"],
+            "source_note": plan["source_note"]})
+        doc.insert()
     finally:
-        frappe.flags.konsol_copying_rates = False
-    return out
+        frappe.flags[DUPLICATE_FLAG] = False
+    return {"name": doc.name, "copied_from": plan["copied_from"]}
 
 
 # -- the one-time adoption -------------------------------------------------------------------
