@@ -48,8 +48,25 @@ or the cancel with it. A system submit/cancel (patch, install, migrate) is
 recorded too (W4-E13; R01g precedent); skipped, and logged, only while the
 Close Event table does not exist yet (a patch that runs before migrate's
 schema sync creates it) — ``record_data_change``'s mark writes one.
+
+PR #595 review 2: the one-time migration from Group Exchange Rate
+(``migrate_group_exchange_rates_to_rate_sheets``) replays every period's
+approvals and corrections as Rate Sheet submits and cancels. They record the
+rates each period was already translated at, so no period's data changed:
+under the controller's ``MIGRATE_FLAG``, as the Administrator (the rule of
+``RateSheet._migrating``), a Rate Sheet records no data change and marks no
+signed run Re-sign Needed. Its Close Events (approved, approval_cancelled)
+are still written by their own hooks.
 """
 from konsol.close import data_change_model
+
+#: rate_sheet.py's MIGRATE_FLAG (not imported: the controller needs Document).
+MIGRATE_FLAG = "konsol_migrating_rates"
+
+
+def _migrating(frappe, doc):
+    return (doc.doctype == "Rate Sheet" and bool(frappe.flags.get(MIGRATE_FLAG))
+            and frappe.session.user == "Administrator")
 
 
 def _record(doc, action):
@@ -58,6 +75,9 @@ def _record(doc, action):
     # Lazy: an unrelated doctype's submit/cancel never loads these (mirrors
     # self_approval.check's own "imported here, not at the top" pattern).
     import frappe
+
+    if _migrating(frappe, doc):
+        return
 
     from konsol import fiscal_calendar
     from konsol.close import close_event, signoff_gate
