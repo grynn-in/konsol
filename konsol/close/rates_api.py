@@ -214,8 +214,11 @@ def get_rates(fiscal_year, fiscal_period):
 
     group_rates.actuals_rate_set()   # konsol#348: refuses by name while none is flagged
     required, pairs_error, blockers = _required(fy, fp)
-    docs = _docs(fy, fp)
-    earlier = _earlier(fy, fp)
+    # PR #595 review 1: a Closing period has no sheet of its own; its rates are
+    # the last Regular period's (group_rates.rate_period, as the warehouse).
+    rate_fp = group_rates.rate_period(fy, fp)
+    docs = _docs(fy, rate_fp)
+    earlier = _earlier(fy, rate_fp)
     threshold = group_rates.move_threshold()
     threshold_pct = threshold * 100 if threshold is not None else None
     policy = frappe.db.get_single_value("Close Settings", "self_approval")
