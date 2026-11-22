@@ -170,7 +170,11 @@ FIXES = {
                      "When it completes, open My Work again: the rates are checked once the "
                      "warehouse answers."), _GROUP),
     # mywork_model.approvals_item, ic_fix_items, sent-back items
-    "approvals": (("Open each waiting record and use Actions, then Approve or Reject.",), _LEAD),
+    # The count includes Build Approvals in Pending Review (approvals_api.
+    # queue_for, 22 Nov 2026); the home's Approvals tab lists them.
+    "approvals": (("Open each waiting record and use Actions, then Approve or Reject.",
+                   "A waiting build is a Build Approval in Pending Review: approve it the "
+                   "same way, from its form's Actions."), _LEAD),
     "ic": (("Correct the intercompany rows on your trial balance for the period, or agree the "
             "figure with the partner.",
             "Submit the corrected trial balance."), _IC),

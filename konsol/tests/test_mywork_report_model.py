@@ -153,6 +153,34 @@ def test_period_screens_map_to_the_nearest_desk_destination():
     assert rows["approvals"]["open"] == "/desk/konsol"
 
 
+def test_waiting_builds_the_approvals_fix_says_where_a_waiting_build_is_approved():
+    """Waiting builds (Deepak Pai, 22 Nov 2026): the approvals item counts
+    Pending Review Build Approvals too (approvals_api.queue_for), so its fix
+    names them and how they are approved: the Desk form's Actions, which run
+    the Build Approval Workflow's own Approve or Reject as the user."""
+    steps, _handbook = R.FIXES["approvals"]
+    assert any("Build Approval" in step and "Pending Review" in step and "Actions" in step
+               for step in steps), steps
+
+
+def test_waiting_builds_the_approvals_destination_lists_waiting_builds():
+    """Go on the approvals item opens the Konsol home; its Approvals tab
+    shows the Build Approvals shortcut counting Pending Review rows, so the
+    builds the count includes are one click away."""
+    import json
+    with open(os.path.join(APP_DIR, "consolidation", "workspace", "konsol", "konsol.json")) as f:
+        shortcuts = json.load(f)["shortcuts"]
+    [build] = [s for s in shortcuts if s.get("link_to") == "Build Approval"]
+    assert json.loads(build["stats_filter"]) == [
+        ["Build Approval", "workflow_state", "=", "Pending Review"]]
+    js_path = os.path.join(APP_DIR, "consolidation", "custom_html_block", "konsol_home_tabs",
+                           "konsol_home_tabs.js")
+    with open(js_path) as f:
+        js = f.read()
+    waiting = js[js.index("const WAITING = ["):]
+    assert '["DocType", "Build Approval"]' in waiting[:waiting.index("];")]
+
+
 def test_entity_items_filter_the_trial_balance_list_to_the_entity():
     rows = R.rows(_entity_accountant_payload())
     assert rows[0]["open"] == ("/desk/trial-balance-submission?fiscal_year=2025&fiscal_period=7"
