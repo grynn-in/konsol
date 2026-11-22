@@ -95,6 +95,7 @@ SIDEBARS = {
         ("Section", "Rates"),
         ("DocType", "Group Exchange Rate"),
         ("DocType", "Historical Equity Rate"),
+        ("DocType", "Rate Set"),
         ("Section", "Intercompany"),
         ("DocType", "IC Balance"),
         ("Section", "Adjustments"),
@@ -117,9 +118,13 @@ SIDEBARS = {
         ("Section", "Budget"),
         ("DocType", "Budget Cycle", "budget"),
         ("DocType", "Budget Annual Input", "budget"),
+        ("DocType", "Approved Budget"),   # konsol#348 S5 K13 (BUD-4-2)
         ("Section", "Forecast"),
         ("DocType", "Budget Cycle", "forecast"),
         ("DocType", "Budget Annual Input", "forecast"),
+        ("DocType", "Current Forecast"),   # konsol#348 S6 KA4 (S6-Q1 b)
+        ("Report", "Forecast Horizon Coverage"),   # konsol#348 S6 KA9 (QB10 b, S6-Q9 a)
+        ("Report", "Forecast Accuracy"),   # konsol#348 S6 KC3 (FC-4-2)
         ("Section", "Shared"),
         ("DocType", "Scenario"),
         ("DocType", "Spread Profile"),
@@ -138,7 +143,6 @@ SIDEBARS = {
         ("Workspace", "Structure", "Home"),
         ("Section", "Group"),
         ("DocType", "Entity"),
-        ("DocType", "Entity Fiscal Calendar"),
         ("DocType", "Consolidation Group"),
         ("DocType", "Ownership Period"),
         ("Section", "Accounts"),

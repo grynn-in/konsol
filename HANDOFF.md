@@ -4,6 +4,211 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (22 Nov 2026): Parent Entity help text, Entity Fiscal Calendar removed, Copy rates from previous period.**
+- **Parent Entity help text** (konsol#576, 8a256cc): the field now says what it does. It places the entity in the access and navigation tree. Ownership and consolidated numbers come from Ownership Period; no dbt model reads `parent_entity`.
+- **Entity Fiscal Calendar removed** (konsol#577; konsol#578, dad0186e + konsolidat#380, 9a15baaf). Deepak Pai, 21 Nov 2026. It had been dead since konsolidat#221; a site declares one fiscal calendar. A patch removes the doctype, its rows and site customisations, and the warehouse table.
+- **Copy rates from previous period** (konsol#584; konsol#586, ae510efd). Deepak Pai, 22 Nov 2026. A Group Exchange Rate list button drafts the target period's rates from the previous regular period of one Rate Set:
+  - It skips keys that already have a draft or an approved rate, and it locks the Rate Set so two copies cannot race.
+  - It warns when a correction is pending on the source rate.
+  - The source is recorded ("Copied from previous period", Copied From). Editing a copied rate makes it Manual.
+  - Approval still applies. A silent carry-forward was rejected.
+  - The live test passed on every step.
+- **Follow-ups:**
+  - konsol#587: a rate in P0 (Opening) cannot be approved; close_event refuses period 0.
+  - konsol#588: `gold_ic_side_slices` has no Build Model, so it loses its domain tag and scoped builds skip it.
+  - konsol#585: the constant-currency HMD waits on Deepak Pai's pick.
+
+**Update (19 Nov 2026): three HMD decisions, two built; one waits on #358.** All three decisions are by Deepak Pai, 18 Nov 2026, and recorded on their issues.
+- **konsol#562, decision E, plus an `on_budget` state** (konsolidat#377, dae26e03 + konsol#571, 8f40d17e):
+  - On the profit and loss, favourability comes from the sign of the variance alone: above zero Favourable, below Unfavourable, zero On budget. This holds on the statement (headings and net result) and in `gold_variance_analysis` (every P&L account).
+  - Main Account `normal_balance` no longer gates favourability. This amends the gate half of BUD-7-a.
+  - `variance_favourability` now has four states. `not_applicable` means only a balance-sheet account or an account not in the chart. This supersedes the "three states" line in the S6 entry below.
+  - The test was renamed `assert_variance_favourability_follows_sign`. The `heading_sides` payload was removed.
+  - A P&L heading with no actual and no budget reads On budget, because budget zero meets actual zero.
+  - Rejected: D (a mandatory side on every heading).
+- **konsol#552, decision C** (`budget_exit_treatment` on the group root, no default; Follow ownership first, As approved + scope line refused until built):
+  - Step 1 waits on konsolidat#358 and konsol#532, the ownership exit journal from another session.
+  - Prerequisite built (konsol#572, 54192d9c): the Budget Cycle fingerprint hashes every submitted Ownership Period link. An exit recorded after Approve now reads as stale.
+  - The recipe is v2, so Cycles approved before it read as stale until re-approved.
+- **konsolidat#370, decision B** (3a553e2a):
+  - The fixture gate runs as matrix shards (`fixture_gate.py --shard K/N`; N is the matrix length). A final job, `test fixtures, every shard ran every fixture`, fails unless the shards together ran every fixture exactly once. About 22 min instead of about 46.
+  - The workflow already had its path filter.
+- **Live tests** through konsolidat-tester: every step passed. On #562 the before/after diff changed exactly the 2 intended rows, and on #572 the main-versus-branch A/B was confirmed.
+
+**Update (18 Nov 2026): budget S6 (forecast rounds, favourability, accuracy) merged; epic #348's planned stages are complete.** Plan and progress are in `.claude/memory/active/tasks-budget-s6.md`. S6-Q1 (b), a declared Current Forecast, is Deepak Pai's decision (#348 c6953756459), and so is "unbudgeted headings are budget zero" on the statement (c6956694095). S6-Q2 to S6-Q10 were taken under the standing rule. The round was built on Opus, after Fable hit its spend limit.
+
+**Merged**
+- **Pair A, forecast rounds** (konsol#557, 86a41dc9 + konsolidat#373, 4d912e85):
+  - **Current Forecast** (new submittable doctype): one per scenario and year. It names the current round, is written through to `epm_staging.current_forecasts`, and `gold_forecast_current_round` reads it.
+  - Every reader takes the declared round only: the scenario TB, K.EPM flat and hierarchy reads, and cost allocation. Rounds are never summed. A year with no declaration reads nothing, and a WARN names the year.
+  - The interim one-approved-round rule is removed from both repos.
+  - New: `gold_latest_estimate` (actuals to the as-of date, forecast after), the `latest_estimate` Dataset, and the Forecast Horizon Coverage report.
+  - Budget reads refuse forecast ids.
+  - CI fix on an all-empty warehouse: `cross join system.one` in the consolidation core stops the thread explosion (konsolidat#369).
+- **Pair B, favourability, worksheet and entity budget** (konsol#558, 9a1cc0c7 + konsolidat#374, e737756a):
+  - `variance_favourability` has three states (favourable / unfavourable / not_applicable), replacing the summable Bool. The `variance_favorable` Measure is retired by a patch, and Excel reading it now errors by name.
+  - Consolidated Statement: a Favourability column, with a legend that gives the rule. An unbudgeted P&L heading is budget zero.
+  - Worksheet: a Budget basis, with an Unbalanced budget column.
+  - Entity basis: Budget columns in the entity's functional currency, read from the entity's top root group.
+- **Pair C, Excel consolidated budget and forecast accuracy** (konsol#561, 368bafa0 + konsolidat#375, 5d9da46d):
+  - `gold_consolidated_budget_fact` and the `consolidated_budget` Dataset. With no scenario named, the read takes the year's single budget scenario and refuses when there are several.
+  - `gold_forecast_accuracy` (entity currency) and `gold_forecast_accuracy_group` (group currency, so FX movement is in the error). Every approved round is measured against closed periods, up to the round's longest horizon.
+  - The Desk Forecast Accuracy report, scoped by entity. In Excel, the accuracy read takes only the declared round.
+  - The error % is not an Excel measure. A patch retires `forecast_error_pct`; compute it in the sheet as `forecast_error / ABS(actual_amount)`.
+  - A period Close, Lock or Reopen now requests a `scenarios` build. That build is high-risk, so an EPM Admin approves it.
+- **Live tests**, through konsolidat-tester, on every pair: every step passes, and the actuals tables are identical before and after.
+
+**Open**
+- **Decisions for Deepak:** #562 (the statement reads n/a where a P&L heading has no normal balance, while the warehouse decides by the leaf) and #552 (an entity exiting mid-plan).
+- **Bugs and gaps:**
+  - #563: the `budget` Excel read sums budget scenarios.
+  - #564: upper-case Budget Layer codes.
+  - #565: an entity code in a group-keyed slot reads 0.
+  - konsolidat#376: the latest estimate uses per-Cycle horizons.
+  - #559: latest estimate gaps.
+  - #555: cosmetic.
+- **Follow-ups:**
+  - #566: Forecast columns on the statement (S6-Q10 b).
+  - #567: a consolidated hierarchy-node read.
+  - #568: budget Datasets read 0 for no row.
+  - #569: accuracy as at close.
+
+**Update (17 Nov 2026, late): cost allocation phase 2a (Reciprocal) merged.** Issue #269; plan and progress are in `.claude/memory/active/tasks-cost-allocation-reciprocal.md`.
+
+**Merged** (konsol#541, dd8a18aa + konsolidat#363, 1e4d24a7)
+- **Reciprocal method** on the Rule Set and the Run. Departments that serve each other are solved exactly: a Gauss-Jordan solve over fractions, rounded to 12 places so each run still sums to zero. A closed loop with no exit to a final receiver is refused by name.
+- **hop_kind** (`own` | `pass`) on coefficients and allocation lines. A sender is relieved of its own cost once (`own`); cost passing through it is `pass`. With a declared allocation account, `pass` lines post to that account.
+- **Coefficient sync, per run after commit** (Deepak Pai, 17 Nov 2026, option B; the background resync job was rejected after it caused repeated snapshot bugs). Approve, cancel and delete each rewrite that run's warehouse rows and request the allocation build. A new read-only field, Coefficient Rows, stores each run's row count at approval.
+- **Hourly check** (`check_coefficients_staging`): SQL only, compares stored counts with the warehouse, re-reads before it repairs, rebuilds the whole table when more than 20 runs are out of step, and corrects wrong stored counts. One Error Log line lists what it repaired.
+- Handbook "Cost allocation" page: a reciprocal section with the IT and HR example.
+- Live test: every step passes (reciprocal amounts, declared-account balance, sync after approve/cancel/delete, failed-write recovery, the hourly repairs and the threshold rebuild). Fixture gate 34/34.
+
+**Open:** #534, #535, #536 (a governed build whose selection matches no model reports Completed).
+
+**Next:** phase 2 remainder on #269: fixed and derived driver sources, declared rates.
+
+**Update (17 Nov 2026, later): budget S5 (budget reports) merged.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s5.md`. The design picks are S5-Q1–Q7 on #348, all (a), taken under the standing rule.
+
+**Merged** (konsol#554, 992d31c2 + konsolidat#372, 2e3d48c0)
+- **Approved Budget** (new submittable doctype): it names one approved budget-type Cycle and its layers per group and fiscal year.
+  - Submit is the approval and stamps Approved By and Approved On. Only one declaration is live per group and year.
+  - It copies the Cycle's input fingerprint at submit.
+  - A Budget Cycle cannot be cancelled while a submitted declaration names it (a locking read).
+- **Consolidated Statement**, group basis: Budget (before eliminations), Variance to budget and Budget year to date.
+  - The columns appear only while the budget state is ok. Otherwise the legend and the export note give the state, never a blank column (BUD-4-2). The states are: no approved budget, Cycle cancelled, inputs changed since approval, layer missing.
+  - On the balance sheet the budget shows YTD movements (S5-Q4 a), so there is no variance there.
+  - The budget's UNBALANCED plug is its own line. Budget-only lines are shown.
+  - Every budget read binds group, scenario, Cycle and layer.
+- **Statement Drill** has a Budget basis showing the declared method, rate and Rate Set per entity. **xlsx** has the budget columns and a "Budget drill" sheet; the Close Event records the Cycle.
+- The Year strip marks years that have a submitted Approved Budget. New Handbook page: "Budget against actuals".
+- `pytest.ini` at the repo root stops `konsol/.pytest_cache` from appearing and breaking the dimension scan.
+- Live test: every step passes. The actuals export is identical with no declaration, and the budget cells match the warehouse by hand.
+
+**Open:**
+- #555 (cosmetic).
+- #552 (undecided).
+- An Entity Accountant needs EPM User to open any statement drill (unchanged from main).
+
+**Next:** S6. It covers:
+- the forecast latest-estimate read, which removes the interim one-approved-round rule;
+- forecast accuracy;
+- favourability (BUD-7-a);
+- worksheet budget columns.
+
+**Update (17 Nov 2026): budget S4 (consolidated budget) merged.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s4.md`.
+
+**Merged**
+- **S4a** (konsolidat#365, 6afeea92 + konsol#546, 5a8b9edd): Rate Sets (S4-Q1 c).
+  - Each Budget Cycle names the Rate Set it translates at; one set is the actuals set.
+  - The CTB core is a shared macro, `macros/consolidation_core.sql`. The actuals CTB is unchanged by A/B.
+- **S4b** (konsolidat#368, 705f718 + konsol#550, 4bee1d1): three new gold models in the `scenarios` domain.
+  - `gold_budget_entity_ownership`: ownership on the budget's own period spine.
+  - `gold_consolidated_budget_tb`: the translated and consolidated budget, per scenario, Cycle and layer, at each Cycle's Rate Set.
+  - `gold_fully_consolidated_budget`: adds the CTA, UNBALANCED and NCI attribution layers.
+  - A budget key with no usable rate in its set stops that build by name (`budget_rate_guard`).
+  - The budget is before eliminations (#427); deal journals and topside are absent (#425).
+  - Live: CTB and FCTB are identical by multiset diff, and every budget fixture passes.
+- **konsolidat#369**: on a warehouse where every table is empty, ClickHouse 24.8 sets no `max_threads` cap, and stacked window steps multiplied threads (CANNOT_SCHEDULE_TASK on CI).
+  - Fix: the core anchors its plan on `system.one`; the budget's partner is `materialize('')`.
+  - Pinned by `tests/test_consolidation_core_thread_cap.py`. It was bisected on CI's throwaway ClickHouse.
+
+**Open:**
+- #552 (undecided): a budget's treatment of an entity that exits the group mid-plan.
+- #547, #549, #551.
+
+**Next:** S5, the budget reports (budget columns, drill, xlsx, a "no approved budget" state). The S5 notes are in the S4 task file.
+
+**Update (15 Nov 2026): #189 PR3 and budget S3 merged; #525 fixed.** Epic #348; plan and progress are in `.claude/memory/active/tasks-budget-s3.md`. This round was built on Fable at Deepak Pai's request.
+
+**Merged**
+- **#189 PR3** (konsolidat#360, a389808a): the warehouse dates everything from the declared fiscal periods. The month macro is gone, and the ERP GL branch and `silver_fiscal_periods` are deleted (the first konsolidat#221 removal).
+  - Live A/B: every gold table identical.
+  - FY2023 Closing rows in `silver_gl_entries` take their declared date.
+- **Budget S3** (konsol#540, 6c0d9afb + konsolidat#362, 1299f46e):
+  - forecast rounds on Budget Cycle (`as_of_date`, `horizon_periods`; Q23-a, Q24-a);
+  - every forecast write names its round (CSV, REST, `EPMSAVE` 13th argument; add-in 2.0.4.0);
+  - Annual Input belongs to a Cycle;
+  - the budget fact carries `cycle` and `currency`;
+  - variance compares like currency with like;
+  - favourability follows the account's normal balance, so more revenue is favourable again;
+  - no budget model reads an ERP model.
+  - Live test: every step passes.
+- **Interim rule until S6:** a forecast scenario-year holds at most one **approved** round. konsol refuses the second approval, and a warehouse ERROR test backs it up. Four readers still sum rounds (#348 comment 6892322044).
+- **#525** (konsol#533 + konsolidat#359): an unknown spread profile is refused at entry, with a warehouse ERROR test behind it.
+- **konsolidat#364**: `assert_staging_not_stale` counts `epm_raw` tables. Before this, every build failed once a budget line was approved.
+
+**Decisions** (#348, taken under the standing rule): Q21–Q24 and QA1–QB10 (comments 6875869375, 6884621529, 6884763697). Q18-b, keep the Connector write-back parts, is Deepak Pai's own decision.
+
+**Testing:** live tests on the local stacks go only through the session **konsolidat-tester**; send it requests.
+
+**Open**
+- The local stack's dbt project checkout is 14 commits behind main, so a Desk build fails on `gold_spread_budget` until it moves. This waits on Deepak.
+- konsolidat#361: ClickHouse `EXCEPT` returned 0 over real differences; re-check earlier A/B proofs.
+- #527 (copy entries into an amended Cycle), #529 (workflows never reach their cancelled state), #530 (stale default workspace).
+- Next for the epic: S4 (translated and consolidated budget, BUD-12 rate set), then S5 (reports) and S6 (forecast reads, accuracy).
+
+**Update (14 Nov 2026, late night): cost allocation phase 1 merged. konsol#523 (2a13dbe) and konsolidat#354 (76bc77f) merged together.** Issue #269; task file `.claude/memory/active/tasks-cost-allocation.md`.
+
+**What landed**
+- **Report-only, driver-based allocation inside one entity.** It never posts to the ERP or the TB.
+- **Decisions on #269** (Deepak Pai, 13–14 Nov):
+  - option B (report-only);
+  - Q3 3B (declared drivers);
+  - Q5 5B (share of the sender's cost now, declared rate in phase 2);
+  - receiver account chosen per rule set;
+  - Amounts After Approval: Follow Latest Data or Freeze at Approval;
+  - one run per period, plus a draft preview;
+  - the closed-period gate applies to actual scenarios only, for run submit, run cancel and statistic cancel.
+- **Engine.** `konsol/cost_allocation_model.py` is pure Python with no frappe and no ClickHouse. It computes exact `Fraction` weights and direct and step-down coefficients, rounded to 12 dp by largest remainder, so money is conserved exactly with no plug. dbt applies the coefficients to `gold_scenario_trial_balance` in `gold_cost_allocation` (enforced contract, `pool_account`) and `gold_cost_allocation_frozen`, which is incremental with `full_refresh=false`.
+- **Doctypes**, in Planning → Allocation:
+  - Cost Allocation Driver;
+  - Statistic, submittable, with a CSV load;
+  - Rule Set;
+  - Run, submittable, with Compute Weights and Preview Sender Pools.
+- **Build isolation.** Build Scope gains `isolated`, and every other build excludes `tag:domain:allocation`, so allocation can never fail a close. A completed close build requests an allocation build when a submitted run exists.
+
+**Evidence**
+- Host suite 8449/8449.
+- konsolidat fixture gate 21/21.
+- CI green on both PRs.
+- Opus review, fixes and re-review. The serious findings fixed before merge:
+  - a silent Decimal overflow above about 1.7M per hop;
+  - declared-account pass-through over-relieving the pool account;
+  - weights approved for another period;
+  - the 20-row cap on virtual Dimension Value reads;
+  - an analyst unable to save a Statistic.
+- Live check on the local test stack: all checks pass. Conservation is exact for actual, budget and declared runs. A frozen run holds while a Follow Latest run moves, and drift warns. The analyst saves with the 25th member.
+
+**Upgrade path**
+No existing site has the frozen table. A later column change to `gold_cost_allocation_frozen` fails loudly; it needs a manual DROP, which discards the frozen amounts.
+
+**Phase 2** (not started): the reciprocal method (exact linear solve in the pure module), fixed and derived driver sources, declared rates with over- and under-recovery.
+
+**Follow-ups**
+- #534: retire `Dimension.allocation_role`.
+- #535: `format:{#####}` autonames share one series (Trial Balance Upload).
+- #536: a governed build whose selector matches nothing reports Completed.
+
 **Update (14 Nov 2026, night): budget S2-C merged, konsol#528 (0063ded9).** The S2 stage of epic #348 is complete. Task file `.claude/memory/active/tasks-budget.md`.
 
 **What landed**

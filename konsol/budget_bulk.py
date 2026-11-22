@@ -101,8 +101,12 @@ def has_upload_permission(doc, user=None, permission_type=None):
 # ── slices ─────────────────────────────────────────────────────────────────
 
 def _slice(item):
-    """A report item's slice. (scenario, year) names the Cycle."""
-    return (item["scenario"], int(item["fiscal_year"]), item["entity"], item["layer"])
+    """A report item's slice: (scenario, year, as-of key, entity, layer), as
+    budget_intake.slice_key reads it. (scenario, year) names the Cycle, and
+    the as-of key the round of a forecast (S3 K5), so two rounds of one pair
+    in one file are two slices."""
+    return (item["scenario"], int(item["fiscal_year"]), item.get("as_of_date") or "", item["entity"],
+            item["layer"])
 
 
 def _whole_slices(report):
@@ -139,8 +143,8 @@ def _record_check(doc):
     """Check the file and write the report onto the upload."""
     try:
         report = budget_intake.plan(_read_table(doc.upload_file),
-                                    form_basis=doc.amount_basis or "", name_lines=True,
-                                    whole_slices=True)["report"]
+                                    form_basis=doc.amount_basis or "", form_as_of=_as_of(doc),
+                                    name_lines=True, whole_slices=True)["report"]
     except ValueError as e:
         doc.status, doc.error, doc.report = "Failed", str(e), "[]"
         doc.group_count = doc.valid_count = doc.total_rows = 0
@@ -182,11 +186,19 @@ def upload_state(doc):
     return {"report": now, "loaded_count": loaded, "status": status}
 
 
+def _as_of(doc):
+    """The upload's As-of Date as the round key ('YYYY-MM-DD', '' when blank):
+    the Date field arrives as a date or as text, and the plan compares keys."""
+    from konsol.budget_bulk_model import as_of_key
+
+    return as_of_key(doc.as_of_date)
+
+
 def _payload(doc, refused=None, refused_kind=None):
     state = upload_state(doc)
     return {
         "name": doc.name, "status": state["status"], "file_url": doc.upload_file,
-        "amount_basis": doc.amount_basis or "",
+        "amount_basis": doc.amount_basis or "", "as_of_date": _as_of(doc),
         "group_count": doc.group_count, "valid_count": doc.valid_count, "total_rows": doc.total_rows,
         "loaded_count": state["loaded_count"], "failed_count": doc.failed_count, "error": doc.error,
         "report": state["report"],
@@ -202,25 +214,29 @@ def _payload(doc, refused=None, refused_kind=None):
 # ── endpoints ──────────────────────────────────────────────────────────────
 
 @frappe.whitelist(methods=["POST"])
-def check_file(file_url, amount_basis=None):
+def check_file(file_url, amount_basis=None, as_of_date=None):
     """Create an upload for an uploaded file and report on it. Loads nothing.
 
     `amount_basis` is the upload's Amount Basis for every group whose rows do
     not give their own; such a group is otherwise reported as refused.
+    `as_of_date` is the upload's As-of Date (S3 K5): the forecast round for
+    every row without its own as_of_date column. The plan requires one for a
+    forecast scenario and refuses one for any other; nothing is defaulted.
     """
     _require_uploader()
     doc = frappe.get_doc({"doctype": DOCTYPE, "upload_file": file_url, "status": "Draft",
-                          "amount_basis": amount_basis or ""}).insert()
+                          "amount_basis": amount_basis or "", "as_of_date": as_of_date or None}).insert()
     _record_check(doc)
     return _payload(doc)
 
 
 @frappe.whitelist(methods=["POST"])
-def check_upload(name, amount_basis=None):
+def check_upload(name, amount_basis=None, as_of_date=None):
     """Check a saved upload in place and report on it. Loads nothing.
 
     The Desk form's Check button: the upload already exists with its file
     attached. A loading or loaded upload is refused: its report is its outcome.
+    `amount_basis` and `as_of_date`, when given, replace the form's.
     """
     _require_uploader()
     doc = frappe.get_doc(DOCTYPE, name)
@@ -229,12 +245,14 @@ def check_upload(name, amount_basis=None):
         frappe.throw(f"This upload is {doc.status.lower()}; it cannot be checked again.")
     if amount_basis:
         doc.amount_basis = amount_basis
+    if as_of_date:
+        doc.as_of_date = as_of_date
     _record_check(doc)
     return _payload(doc)
 
 
 @frappe.whitelist(methods=["POST"])
-def load(name, skip_invalid=0, amount_basis=None):
+def load(name, skip_invalid=0, amount_basis=None, as_of_date=None):
     """Re-check, then queue the load of every ready slice after the commit.
 
     Also resumes an upload whose load stopped or finished partly: a reload
@@ -248,6 +266,8 @@ def load(name, skip_invalid=0, amount_basis=None):
     doc.check_permission("write")
     if amount_basis:
         doc.amount_basis = amount_basis
+    if as_of_date:
+        doc.as_of_date = as_of_date
     resumable = doc.status in ("Partly Loaded", "Failed") or (doc.status == "Loading" and not _job_running(doc.name))
     if doc.status != "Checked" and not resumable:
         frappe.throw("This upload is still loading." if doc.status == "Loading"
@@ -430,7 +450,7 @@ def run_load(upload, expected):
     loaded = failed = 0
     try:
         result = budget_intake.plan(_read_table(doc.upload_file), form_basis=doc.amount_basis or "",
-                                    name_lines=True, whole_slices=True)
+                                    form_as_of=_as_of(doc), name_lines=True, whole_slices=True)
         report = _whole_slices(result["report"])
         # End the snapshot the plan read in: the slices read the entries as
         # they are now (and lock them), not as they were when the file was

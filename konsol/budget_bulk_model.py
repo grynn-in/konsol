@@ -3,7 +3,7 @@
 A budget file is a trial balance file (konsol.tb_bulk_model) with two more
 required columns, `scenario` and `layer`, and no partner column:
 
-    scenario, layer, data_area_id, fiscal_year, fiscal_period, main_account, debit, credit, currency[, description][, amount_basis]
+    scenario, layer, data_area_id, fiscal_year, fiscal_period, main_account, debit, credit, currency[, description][, amount_basis][, as_of_date]
 
 Everything the trial balance reader does, this one does by calling it
 (tb_bulk_model.split_by_contract), not by copying it: the case-, space- and
@@ -24,6 +24,10 @@ What differs:
   carries no intercompany partner until #427 decides how one would (Q2-c).
 - a dim_* column is accepted only for a Dimension that is Published and ticked
   ``in_budget``; ``in_trial_balance`` does not count (konsol.tb_dimension_model).
+- `as_of_date` (S3 K5, QB5 a) names the forecast ROUND a row is for: the
+  pair's Budget Cycle with that as-of date. One budget entry's rows give one
+  date (group_as_of). A forecast scenario requires it and any other type
+  refuses it (as_of_problems); it is never defaulted.
 
 The per-group check (check_group, M2) judges one Budget Entry against facts
 the caller reads: the period must be a declared Regular period of its year
@@ -32,6 +36,7 @@ close status, because the Cycle is what freezes a plan (Q4-b); the layer must
 be a declared Budget Layer, and a site with none is told to create one
 (Q8-a); the scenario must be declared and not an actual.
 """
+import datetime as _datetime
 import importlib.util as _importlib_util
 import os as _os
 from collections import namedtuple
@@ -71,19 +76,26 @@ PERIOD_END_REFUSAL = (
 
 __all__ = ("ALIASES", "MAX_LINE_ERRORS", "BudgetKey", "REQUIRED", "OPTIONAL", "ACCEPTED", "HEADER_HELP",
            "DIMENSION_FLAG", "PARTNER_REFUSAL", "CONTRACT", "split_table", "table_from_csv",
-           "group_basis", "resolve_basis", "check_group", "ACTUAL", "BUDGET_BASES", "PERIOD_END_REFUSAL")
+           "group_basis", "resolve_basis", "check_group", "ACTUAL", "BUDGET_BASES", "PERIOD_END_REFUSAL",
+           "FORECAST", "AS_OF", "cycle_round_problems", "as_of_key", "in_round", "group_as_of",
+           "as_of_problems")
 
 SCENARIO = "scenario"
 #: The Scenario.scenario_type a budget file may not load into.
 ACTUAL = "actual"
+#: The one Scenario.scenario_type whose Cycles are rounds (#348 QB8 a).
+FORECAST = "forecast"
 LAYER = "layer"
+#: The forecast round's as-of date, as a file column, an upload field, an
+#: Excel argument and a REST key (S3 K5, QB5 a).
+AS_OF = "as_of_date"
 REQUIRED = (SCENARIO, LAYER) + TB_REQUIRED
 #: Optional columns a file may carry, beyond REQUIRED. No partner (Q2-c).
-OPTIONAL = ("description", BASIS)
+OPTIONAL = ("description", BASIS, AS_OF)
 ACCEPTED = frozenset(REQUIRED + OPTIONAL)
 #: The header as the refusals spell it.
 HEADER_HELP = ("scenario, layer, data_area_id, fiscal_year, fiscal_period, main_account, debit, credit, "
-               "currency[, description][, amount_basis]")
+               "currency[, description][, amount_basis][, as_of_date]")
 #: The Dimension flag a budget file's dim_* column must carry.
 DIMENSION_FLAG = "in_budget"
 PARTNER_REFUSAL = (
@@ -99,7 +111,9 @@ CONTRACT = Contract(
     text_keys=(SCENARIO, LAYER, "data_area_id"), whole_keys=("fiscal_year", "fiscal_period"),
     make_key=lambda v: BudgetKey(v[SCENARIO], v["fiscal_year"], v["data_area_id"], v[LAYER],
                                  v["fiscal_period"]),
-    row_text=("description",), refused={PARTNER: PARTNER_REFUSAL}, flag=DIMENSION_FLAG,
+    # as_of_date is copied onto every row as text; group_as_of reads the
+    # group's one value, as_of_problems judges it against the scenario type.
+    row_text=("description", AS_OF), refused={PARTNER: PARTNER_REFUSAL}, flag=DIMENSION_FLAG,
     group_noun="budget entry",
 )
 
@@ -315,3 +329,132 @@ def cycle_closed_to_writes(cycle, workflow):
     cancelled Cycle does not (19-b: under an amended pair it is the audit
     trail). Never read a lock status field: the Cycle has none since S2-C W2a."""
     return int(cycle["docstatus"]) == 1 or cycle_pending_refusal(cycle, workflow) is not None
+
+
+# ---- forecast rounds (#348 S3, Q23 a / Q24 a / QB8 a) ---------------------------------
+#
+# A Budget Cycle of a forecast scenario is one round, keyed by (scenario,
+# fiscal year, as-of date); a rolling round that crosses the year end is one
+# Cycle per fiscal year, sharing the as-of date. A Cycle of any other type is
+# the pair (scenario, fiscal year) alone, and carries no round field.
+
+def as_of_key(value):
+    """The round key of an as-of date as the Cycle comparison and the Cycle
+    name read it: 'YYYY-MM-DD', or '' for nothing. A date, a datetime or a
+    string ('2026-03-31', as Frappe hands a Date field in) all give the same
+    key, so a draft and a saved row compare equal."""
+    if value is None:
+        return ""
+    return str(value).strip()[:10]
+
+
+def cycle_round_problems(scenario_type, as_of_date, horizon_periods):
+    """Why a Budget Cycle's round fields are refused, one sentence each, or [].
+
+    A forecast Cycle needs an As-of Date and a Horizon of 1 or more periods
+    (Q23 a). Any other type (budget, strategic, operational) has no rounds
+    (QB8 a), so a value in either field is refused, naming the type: a date
+    left on a budget Cycle would otherwise look like a round. A horizon of 0
+    counts as blank: an Int column holds unset and 0 the same."""
+    problems = []
+    has_date = bool(as_of_key(as_of_date))
+    try:
+        horizon = int(str(horizon_periods).strip()) if horizon_periods not in (None, "") else 0
+    except ValueError:
+        horizon = None  # not a number: refused below as "fewer than 1"
+    if scenario_type == FORECAST:
+        if not has_date:
+            problems.append("A forecast Cycle needs an As-of Date: the round is identified by its scenario, "
+                            "fiscal year and as-of date. Give the actuals cut-off the round forecasts from.")
+        if horizon is None or horizon < 1:
+            problems.append("A forecast Cycle needs a Horizon of 1 or more periods: how many periods the "
+                            "round covers from its as-of date.")
+        return problems
+    if has_date:
+        problems.append(f"A {scenario_type} Cycle has no forecast round: leave As-of Date blank "
+                        "(only a forecast scenario has rounds).")
+    if horizon_periods not in (None, "") and horizon != 0:
+        problems.append(f"A {scenario_type} Cycle has no forecast round: leave Horizon blank "
+                        "(only a forecast scenario has rounds).")
+    return problems
+
+
+def cycle_rate_set_problems(scenario_type, rate_set):
+    """Why a Budget Cycle's Rate Set is refused, one sentence, or [] (S4 K5,
+    BUD-3: the rate policy is declared per Cycle, with no default).
+
+    The set names the Group Exchange Rates and Historical Equity Rates the
+    Cycle's budget is translated at (S4-Q1 c). Any set the site holds is a
+    legitimate choice, the actuals set included: the rule is that the Cycle
+    says so. A blank is refused naming the field and the type. An actual-type
+    Cycle cannot exist (the controller refuses it first); were one judged
+    here, it is refused too, never handed the set flagged Is Actuals."""
+    if scenario_type == ACTUAL:
+        return [f"A {ACTUAL} Cycle has no Rate Set to declare: actuals are translated at the Rate Set "
+                "flagged Is Actuals, and a Budget Cycle never targets an actual scenario."]
+    if not (rate_set or "").strip():
+        return [f"A {scenario_type} Cycle needs a Rate Set: the Group Exchange Rates and Historical Equity "
+                "Rates its budget is translated at. Name the set (BUD-3: declared per Cycle, never "
+                "defaulted), or create one under Rate Set first."]
+    return []
+
+
+def in_round(scenario_type, cycle, as_of_date):
+    """Whether `cycle`, a Cycle row of the pair as konsol.budget_intake.lock_cycles
+    returns it ({name, docstatus, workflow_state, as_of_date}), is in the round
+    of `as_of_date`. For a forecast the round is the as-of date; for every
+    other type the pair is the round, so every row of the pair is in it."""
+    if scenario_type != FORECAST:
+        return True
+    return as_of_key(cycle.get("as_of_date")) == as_of_key(as_of_date)
+
+
+def group_as_of(rows):
+    """(as-of key, problem) for one budget entry's rows: the one as_of_date
+    its rows give ('' when none does), or ('', a sentence) when two rows give
+    two dates. The sentence names both lines when the rows have lines (a
+    file), else both dates alone. A blank cell says nothing, as a blank
+    amount_basis does."""
+    first_line, first = None, ""
+    for row in rows:
+        key = as_of_key(row.get(AS_OF))
+        if not key:
+            continue
+        if not first:
+            first_line, first = row.get("line"), key
+        elif key != first:
+            line = row.get("line")
+            if line is not None and first_line is not None:
+                return "", (f"Line {line}: as_of_date {key} but line {first_line} of the same budget entry says "
+                            f"{first}; one budget entry holds one as-of date")
+            return "", (f"as_of_date {key} and {first} are both given for one budget entry; one budget entry "
+                        "holds one as-of date")
+    return first, None
+
+
+def as_of_problems(scenario, scenario_type, as_of_date):
+    """Why `as_of_date` (an as_of_key, or anything as_of_key reads) is refused
+    for Scenario `scenario` of `scenario_type`, one sentence each, or [].
+
+    A forecast requires one (QB5 a): its round is (scenario, year, as-of
+    date), and a write that does not say its round is refused, never put in
+    the only draft (QB5 c was rejected). Any other type has no rounds (QB8 a),
+    so a date is refused by name. A value that is not a calendar date is
+    refused by value. `scenario_type` None (an undeclared scenario, refused by
+    scenario_problems) is not judged: its type is unknown."""
+    if scenario_type is None:
+        return []
+    key = as_of_key(as_of_date)
+    if scenario_type != FORECAST:
+        if key:
+            return [f"Scenario {scenario} is a {scenario_type} scenario and has no forecast round: leave "
+                    "as_of_date blank (only a forecast scenario has rounds)."]
+        return []
+    if not key:
+        return [f"Scenario {scenario} is a forecast: give as_of_date, the as-of date of the round these rows "
+                "are for (the pair's Budget Cycle with that date). It is never defaulted."]
+    try:
+        _datetime.date.fromisoformat(key)
+    except ValueError:
+        return [f"as_of_date {key!r} is not a date: give the round's as-of date as YYYY-MM-DD."]
+    return []

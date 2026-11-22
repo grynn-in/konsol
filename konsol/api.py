@@ -237,6 +237,62 @@ _FACT_FIELDS = [
 #: scenarios (konsol#214).
 _BUDGET_SCENARIO_COLUMN = {"variance_analysis": "budget_scenario_id"}
 
+#: Warehouse tables, keyed by the table a read resolves to, never the
+#: Dataset name: Datasets belong to the site (konsol#230), so a site Dataset
+#: under any name reads these tables too.
+#:
+#: The budget fact also holds every approved round of a forecast year side
+#: by side. A read refuses a forecast scenario id and, naming none, reads the
+#: non-forecast scenarios only: unfiltered, it added the rounds to the budget
+#: (konsol#348 S6-Q1 b, review B1).
+_BUDGET_EXCLUDES_FORECAST = {"epm_gold.gold_spread_budget"}
+
+#: The current-round views hold nothing for a forecast (scenario, year) with
+#: no submitted Current Forecast. A read names the declaration it lacks
+#: rather than read 0 (konsol#348 S6 review m2).
+_NEEDS_CURRENT_FORECAST = {
+    "epm_gold.gold_forecast_current",
+    "epm_gold.gold_latest_estimate_current",
+    # konsol#348 S6 KC1: the accuracy models resolve their scenario the same
+    # way, then read the declared round's rows (_PER_ROUND below).
+    "epm_gold.gold_forecast_accuracy",
+    "epm_gold.gold_forecast_accuracy_group",
+}
+
+#: Tables that keep every approved round side by side, keyed by ``cycle``
+#: (FC-4-2, the accuracy models). ``K.EPM`` binds scenario_id, never a
+#: cycle, so a read narrows ``(fiscal_year, cycle)`` to the declared Cycle of
+#: each year it reads: rounds never sum (konsol#348 S6-Q1 b, S6 KC1). Every
+#: round's accuracy is the Forecast Accuracy report's.
+_PER_ROUND = {
+    "epm_gold.gold_forecast_accuracy",
+    "epm_gold.gold_forecast_accuracy_group",
+}
+
+#: Tables whose rows are keyed by consolidation group AND entity, read with
+#: the group in the entity slot (as the consolidated reads are): an entity in
+#: two groups has a row in each group's currency, and read by entity the
+#: currencies added up (konsol#348 S6 KC1, gold_forecast_accuracy_group).
+_ENTITY_SLOT_COLUMN = {"epm_gold.gold_forecast_accuracy_group": "consolidation_group"}
+
+#: Tables holding every budget scenario's rows and each forecast scenario's
+#: declared current round only (konsolidat S6 WC1). A read naming no
+#: scenario reads the one active budget scenario of the row's year, resolved
+#: as the variance read resolves it, and refuses none or several by name:
+#: never a forecast added to the budget, nor two budgets added together
+#: (konsol#561 review M1). A named forecast needs its Current Forecast for
+#: the year, or the cell would read 0 (konsol#348 S6-Q7 a; #106 A: a
+#: forecast is read by naming it).
+_FORECAST_BY_NAME_ONLY = {"epm_gold.gold_consolidated_budget_fact"}
+
+
+def _read_table(fact, measure):
+    """The warehouse table a read of ``measure`` from ``fact`` resolves to:
+    the reroute table when the measure is rerouted, else the fact's own."""
+    if fact.reroute_measure and measure == fact.reroute_measure and fact.reroute_table:
+        return fact.reroute_table
+    return fact.clickhouse_table
+
 
 def _get_fact_by_scenario(scenario):
     """Load Dataset doc by scenario_key. Returns dict or None."""
@@ -735,8 +791,16 @@ def _batch_query_clickhouse(requests_list):
         _active_budget_scenarios_by_year,
         choose_budget_scenario,
         named_budget_scenario_error,
+        _declared_cycles,
+        _declared_forecasts_by_year,
+        _forecast_scenario_ids,
+        round_in_clause,
         _scenario_ids,
+        budget_scenarios_excluding_forecasts,
+        choose_declared_forecast,
+        forecast_on_budget_read_error,
         scenario_id_error,
+        scenario_in_clause,
     )
 
     known_cache = []  # every Scenario id, looked up once when first needed
@@ -746,6 +810,13 @@ def _batch_query_clickhouse(requests_list):
             known_cache.append(_scenario_ids())
         return known_cache[0]
 
+    forecast_cache = []  # the forecast Scenario ids, likewise
+
+    def forecast_ids():
+        if not forecast_cache:
+            forecast_cache.append(_forecast_scenario_ids())
+        return forecast_cache[0]
+
     ch_settings = _get_ch_connection()
     n = len(requests_list)
     values = [None] * n
@@ -754,6 +825,8 @@ def _batch_query_clickhouse(requests_list):
     facts = {}  # fact_key -> Dataset (or None), resolved once per call
     budgets_by_year = None  # looked up once per call, when first needed
     active_budgets = None  # likewise, for named budget scenarios
+    declared_by_year = None  # the Current Forecasts, likewise (S6 review m2)
+    declared_cycles = None  # their Cycles, for the per-round tables (S6 KC1)
 
     def resolve_fact(fact_key):
         if fact_key not in facts:
@@ -780,6 +853,8 @@ def _batch_query_clickhouse(requests_list):
                 err = scenario_id_error(
                     scenario_id, has_column=fact.has_scenario_id,
                     known=known_scenarios, label=f"Dataset '{fact.fact_name}'")
+                if not err and _read_table(fact, req["measure"]) in _BUDGET_EXCLUDES_FORECAST:
+                    err = forecast_on_budget_read_error(scenario_id, forecast_ids)
                 if err:
                     errors[idx] = err
                     continue
@@ -801,15 +876,46 @@ def _batch_query_clickhouse(requests_list):
             # refusal that says why (konsol#214). Resolved per row, before
             # grouping: a group's key has no year, so it can hold several.
             fact = resolve_fact(fact_key)
-            if fact and _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+            by_name_only = bool(
+                fact and _read_table(fact, req["measure"]) in _FORECAST_BY_NAME_ONLY)
+            if fact and (_BUDGET_SCENARIO_COLUMN.get(fact.fact_name) or by_name_only):
                 if budgets_by_year is None:
                     budgets_by_year = _active_budget_scenarios_by_year()
                 year = int(req["year"])
                 scenario_id, err = choose_budget_scenario(
-                    budgets_by_year.get(year, []), fiscal_year=year)
+                    budgets_by_year.get(year, []), fiscal_year=year,
+                    none_reason=("so there is no budget to read. Name "
+                                 "scenario_id to read a forecast.")
+                    if by_name_only else None)
                 if err:
                     errors[idx] = err
                     continue
+        fact = resolve_fact(fact_key)
+        if fact and _read_table(fact, req["measure"]) in _NEEDS_CURRENT_FORECAST and (
+                not scenario_id or _SAFE_SCENARIO_ID.match(scenario_id)):
+            # The declared current round, or a refusal that names the missing
+            # Current Forecast. (An unsafe id is refused by its format below.)
+            if declared_by_year is None:
+                declared_by_year = _declared_forecasts_by_year()
+            year = int(req["year"])
+            scenario_id, err = choose_declared_forecast(
+                scenario_id, declared_by_year.get(year, []), year)
+            if err:
+                errors[idx] = err
+                continue
+        if (fact and _read_table(fact, req["measure"]) in _FORECAST_BY_NAME_ONLY
+                and scenario_id and _SAFE_SCENARIO_ID.match(scenario_id)
+                and scenario_id in forecast_ids()):
+            # A named forecast reads its declared current round, or is
+            # refused naming the missing Current Forecast (S6 KC1).
+            if declared_by_year is None:
+                declared_by_year = _declared_forecasts_by_year()
+            year = int(req["year"])
+            _, err = choose_declared_forecast(
+                scenario_id, declared_by_year.get(year, []), year)
+            if err:
+                errors[idx] = err
+                continue
         key = (
             fact_key,
             req["measure"],
@@ -855,15 +961,11 @@ def _batch_query_clickhouse(requests_list):
                 errors[idx] = f"No Dataset for '{fact_key}'"
             continue
 
-        table = fact.clickhouse_table
-        query_measure = measure
-
         # Reroute measures that live in a different table/column
-        if fact.reroute_measure and measure == fact.reroute_measure:
-            if fact.reroute_table:
-                table = fact.reroute_table
-            if fact.reroute_column:
-                query_measure = fact.reroute_column
+        table = _read_table(fact, measure)
+        query_measure = measure
+        if fact.reroute_measure and measure == fact.reroute_measure and fact.reroute_column:
+            query_measure = fact.reroute_column
 
         # How this measure combines across periods, as it declares it. A
         # rerouted cumulative measure is the case that forced this: summing
@@ -906,9 +1008,10 @@ def _batch_query_clickhouse(requests_list):
         # per-cell key (entity, year, account, dims) and carries no period,
         # while SELECT/GROUP BY adds `fiscal_period` so a row can be
         # attributed to the cell that asked for it (konsol#231).
-        in_col_names = ["data_area_id", "fiscal_year", "main_account"]
+        entity_col = _ENTITY_SLOT_COLUMN.get(table, "data_area_id")
+        in_col_names = [entity_col, "fiscal_year", "main_account"]
         in_col_names.extend(dim_names_sorted)
-        select_cols = ["data_area_id", "fiscal_year", "fiscal_period", "main_account"]
+        select_cols = [entity_col, "fiscal_year", "fiscal_period", "main_account"]
         select_cols.extend(dim_names_sorted)
 
         # Build IN tuples and params (without fiscal_period)
@@ -953,6 +1056,32 @@ def _batch_query_clickhouse(requests_list):
             params["param_sid"] = scenario_id
             column = budget_column or "scenario_id"
             scenario_id_clause = f" AND {column} = {{sid:String}}"
+        elif table in _BUDGET_EXCLUDES_FORECAST:
+            # No scenario named: every non-forecast scenario, never a
+            # forecast's rounds (konsol#348 S6 review B1). (The consolidated
+            # budget resolved its one budget scenario per row above.)
+            ids, err = budget_scenarios_excluding_forecasts(
+                known_scenarios, forecast_ids)
+            if err:
+                for idx, _ in group_items:
+                    errors[idx] = err
+                continue
+            scenario_id_clause = scenario_in_clause(ids, params, "bsid")
+        if table in _PER_ROUND:
+            # The declared round of each year read (S6 KC1). scenario_id was
+            # resolved per row above, and every row's year has a declaration.
+            if declared_cycles is None:
+                declared_cycles = _declared_cycles()
+            try:
+                scenario_id_clause += round_in_clause(
+                    scenario_id, {req["year"] for _, req in group_items},
+                    declared_cycles, params, "rnd")
+            except KeyError as exc:
+                # A declaration cancelled between the two lookups.
+                sid, year = exc.args[0]
+                for idx, _ in group_items:
+                    errors[idx] = choose_declared_forecast(sid, [], year)[1]
+                continue
 
         # Optional layer filter (budget facts). Omitted → sum across all layers
         # (the final budget); supplied → restrict to one layer. Mirrors the
@@ -1602,7 +1731,9 @@ def _judge_budget_cell(data, dims, debit, credit):
 
     Currency and amount basis come from the request and are never defaulted
     (Q2-c, the TB's declared-currency rule): a request without them is
-    refused by the intake, by name.
+    refused by the intake, by name. So does ``as_of_date`` (S3 K5, QB5 a),
+    the forecast round the cell is for: given, it is a column of the one-row
+    table; the intake requires it for a forecast and refuses it otherwise.
     """
     from konsol import budget_intake
 
@@ -1613,6 +1744,9 @@ def _judge_budget_cell(data, dims, debit, credit):
            data.get("fiscal_year"), data.get("fiscal_period"), data.get("main_account"),
            format(debit, "f"), format(credit, "f"), data.get("currency") or ""]
     row += [data[d] for d in given]
+    if data.get("as_of_date") not in (None, ""):
+        header.append("as_of_date")
+        row.append(str(data["as_of_date"]))
     # A cell is not a file line: its refusal names no "Line 2", and a batch
     # names its own row. The one judge every non-file writer shares.
     item, (judged,) = budget_intake.judge_one([header, row], form_basis=data.get("amount_basis") or "")
@@ -1799,7 +1933,11 @@ def budget_cell_save():
 
     Excel sends a signed ``amount``; it is stored as a debit when positive and
     a credit of its absolute value when negative (Q3-a). ``currency`` and
-    ``amount_basis`` are required: neither is defaulted.
+    ``amount_basis`` are required: neither is defaulted. ``as_of_date``
+    (YYYY-MM-DD) names the forecast round the cell is for (S3 K5, QB5 a): the
+    pair's Budget Cycle with that as-of date. It is required when the
+    scenario is a forecast and refused for any other scenario type; a round
+    with no Cycle is refused by name, never created.
 
     The cell finds or creates the Budget Entry for (cycle, entity, layer,
     period) and upserts the one line for its account and dimension values.
@@ -2234,7 +2372,7 @@ FISCAL_PERIODS_DEDUP_SQL = (
 
 @frappe.whitelist()
 def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, fiscal_year=None,
-             fiscal_period=None, limit=500):
+             fiscal_period=None, limit=500, rate_set=None):
     """Read-only: the group's governed exchange rates, the ones translation uses.
 
     One source of truth (decided 13 Sep 2026): the approved Group Exchange
@@ -2248,6 +2386,8 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
       fiscal_year / fiscal_period  one year, one period
       as_of                        periods starting on/before this date (YYYY-MM-DD)
       limit                        row cap (1..5000, default 500)
+      rate_set                     one Rate Set by name; omitted, the set flagged Is
+                                   Actuals (konsol#348; refused by name while none is)
 
     Filter values are bound as ClickHouse HTTP query parameters: ``{name:Type}``
     in the SQL and ``param_<name>`` on the wire (#175: a bare name is read as a
@@ -2257,9 +2397,10 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
     import json
 
     from konsol.clickhouse import execute
+    from konsol.group_rates import actuals_rate_set
 
-    conds = []
-    params = {}
+    conds = ["rate_set = {rs:String}"]
+    params = {"rs": str(rate_set) if rate_set else actuals_rate_set()}
     if from_currency:
         params["fc"] = str(from_currency).upper()
         conds.append("from_currency = {fc:String}")
@@ -2288,7 +2429,7 @@ def fx_rates(from_currency=None, to_currency=None, rate_type=None, as_of=None, f
     where = (" WHERE " + " AND ".join(conds)) if conds else ""
     sql = (
         "SELECT from_currency, to_currency, rate_type, fiscal_year, fiscal_period, "
-        "toString(fp.start_date) AS period_start, rate, document "
+        "toString(fp.start_date) AS period_start, rate, document, rate_set "
         f"FROM {GOVERNED_FX_TABLE} "
         f"INNER JOIN {FISCAL_PERIODS_DEDUP_SQL} AS fp USING (fiscal_year, fiscal_period)"
         f"{where} "

@@ -12,6 +12,7 @@
   "file_section",
   "upload_file",
   "amount_basis",
+  "as_of_date",
   "col_break_1",
   "status",
   "counts_section",
@@ -39,7 +40,7 @@
    "label": "File"
   },
   {
-   "description": "A CSV with the trial balance columns plus scenario and layer on every row, and debit and credit. A partner column is refused.",
+   "description": "A CSV with the trial balance columns plus scenario and layer on every row, and debit and credit; a forecast file also names its round (as_of_date, here or as a column). A partner column is refused.",
    "fieldname": "upload_file",
    "fieldtype": "Attach",
    "in_list_view": 1,
@@ -55,6 +56,14 @@
    "in_standard_filter": 1,
    "label": "Amount Basis",
    "options": "Period movement\nYear-to-date movement"
+  },
+  {
+   "description": "The forecast round these rows are for: the Budget Cycle of their scenario and year with this as-of date. Required when the scenario is a forecast and refused for any other; never defaulted. A row's own as_of_date column wins.",
+   "fieldname": "as_of_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "As-of Date"
   },
   {
    "fieldname": "col_break_1",
@@ -146,7 +155,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-11-13 12:00:00.000000",
+ "modified": "2026-11-15 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "EPM",
  "name": "Budget Upload",

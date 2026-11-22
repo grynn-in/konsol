@@ -47,15 +47,19 @@ import re
 
 import frappe
 
+from konsol import rate_copy_model
 from konsol.close import close_policy_model
 from konsol.fx_reference import REFERENCE_CURRENCY, usd_reference  # noqa: F401 — the one rule
-from konsol.period_status import PeriodNotDeclared, period_dates  # noqa: F401 — surfaced for callers
+from konsol.period_status import PeriodNotDeclared, assert_open, period_dates  # noqa: F401 — surfaced for callers
 
 DOCTYPE = "Group Exchange Rate"
+RATE_SET_DOCTYPE = "Rate Set"
 RATE_TYPES = ("Closing", "Average")
 PREFILL_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
 PREFILL_SOURCE = "ERP pre-fill"
 ADOPTION_SOURCE = "Adoption"
+#: konsol#584: the Source of a draft copy_from_previous_period proposes.
+COPY_SOURCE = "Copied from previous period"
 
 #: The ERP adapter's rate-type names, for the pre-fill only: which ERP rate
 #: types may propose each governed rate type, in order of preference. The
@@ -82,6 +86,37 @@ MIN_SIGNIFICANT_DIGITS = 6
 #: The pre-fill and the adoption aim higher: the smallest Quoted per that puts
 #: the quote at 0.1 or more (9 significant digits). JPY -> USD is per 100.
 PREFERRED_MIN_QUOTE = 0.1
+
+
+# -- the actuals set (konsol#348) -------------------------------------------------
+
+#: Why an actuals reader stops while no Rate Set is flagged Is Actuals.
+NO_ACTUALS_SET = (
+    "No Rate Set is flagged Is Actuals: the actuals translation, the close gate and Pre-fill "
+    "from ERP read exactly one set and assume none. Flag one Rate Set as Is Actuals (konsol#348).")
+
+
+def find_actuals_rate_set():
+    """(name, None) of the one Rate Set flagged Is Actuals, else (None, why):
+    none flagged, or more than one (a patch or a race got past the
+    controller's refusal). Never guesses a set."""
+    names = frappe.get_all(RATE_SET_DOCTYPE, filters={"is_actuals": 1}, pluck="name",
+                           order_by="name asc", limit_page_length=0)
+    if len(names) == 1:
+        return names[0], None
+    if not names:
+        return None, NO_ACTUALS_SET
+    return None, (f"{', '.join(names)} are all flagged Is Actuals: exactly one Rate Set may be. "
+                  "Clear the flag on all but one (konsol#348).")
+
+
+def actuals_rate_set():
+    """The Rate Set the actuals readers select by (S4-Q1 c). Refuses by name
+    while none, or more than one, is flagged."""
+    name, problem = find_actuals_rate_set()
+    if problem:
+        frappe.throw(problem, frappe.ValidationError)
+    return name
 
 
 # -- pure rules -----------------------------------------------------------------
@@ -120,11 +155,12 @@ def quote_label(quote, quoted_per, from_currency, to_currency):
 
 def published_rows(docs):
     """epm_staging.group_exchange_rates rows for approved rates: (to, from,
-    fiscal year, fiscal period, rate type, TRUE rate, document). The one place
-    a quote becomes a rate; Float64 in the warehouse keeps what MariaDB's 9
-    decimal places can't."""
+    fiscal year, fiscal period, rate type, TRUE rate, document, rate set). The
+    one place a quote becomes a rate; Float64 in the warehouse keeps what
+    MariaDB's 9 decimal places can't. Every set is published; the warehouse
+    selects by rate_set (konsol#348)."""
     return [[d.to_currency, d.from_currency, int(d.fiscal_year), int(d.fiscal_period), d.rate_type,
-             true_rate(d.quote, d.quoted_per), d.name] for d in docs]
+             true_rate(d.quote, d.quoted_per), d.name, d.rate_set] for d in docs]
 
 
 def usd_references(codes):
@@ -548,7 +584,7 @@ def erp_quote_rows(as_of):
 #: approved rate, `rate` the TRUE rate (units of to per 1 from).
 PUBLISH_TABLE = "epm_staging.group_exchange_rates"
 PUBLISH_COLUMNS = ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type", "rate",
-                   "document")
+                   "document", "rate_set")
 #: Seconds a publish waits for another one to finish before it gives up and
 #: logs (the next approval, or the reconcile after a migrate, republishes).
 PUBLISH_LOCK_WAIT = 120
@@ -563,7 +599,7 @@ def _ch_literal(value):
 
 
 _APPROVED_SQL = ("SELECT name, to_currency, from_currency, fiscal_year, fiscal_period, rate_type, quote, "
-                 "quoted_per, modified FROM `tabGroup Exchange Rate` WHERE docstatus = 1 ORDER BY name")
+                 "quoted_per, rate_set, modified FROM `tabGroup Exchange Rate` WHERE docstatus = 1 ORDER BY name")
 
 
 def _fresh_db():
@@ -656,16 +692,18 @@ def publish_rates(force=False):
 
 # -- governed rows --------------------------------------------------------------------
 
-def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal_period):
+def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal_period, rate_set):
     """(rate "to per 1 from", label) of the latest approved rate for the same
-    key in an earlier period, or None. The last approved one, so a gap (a
-    period with no rate) compares with the rate before it."""
+    key in an earlier period of the same Rate Set, or None. The last approved
+    one, so a gap (a period with no rate) compares with the rate before it. A
+    budget set's rate is never the actuals' previous rate (konsol#348)."""
     rows = frappe.db.sql(
         "SELECT name, quote, quoted_per, fiscal_year, fiscal_period FROM `tabGroup Exchange Rate` "
-        "WHERE to_currency = %s AND from_currency = %s AND rate_type = %s AND docstatus = 1 "
-        "AND (fiscal_year < %s OR (fiscal_year = %s AND fiscal_period < %s)) "
+        "WHERE to_currency = %s AND from_currency = %s AND rate_type = %s AND rate_set = %s "
+        "AND docstatus = 1 AND (fiscal_year < %s OR (fiscal_year = %s AND fiscal_period < %s)) "
         "ORDER BY fiscal_year DESC, fiscal_period DESC LIMIT 1",
-        (to_currency, from_currency, rate_type, int(fiscal_year), int(fiscal_year), int(fiscal_period)),
+        (to_currency, from_currency, rate_type, rate_set, int(fiscal_year), int(fiscal_year),
+         int(fiscal_period)),
     )
     if not rows:
         return None
@@ -675,8 +713,10 @@ def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal
 
 # -- the close gate -------------------------------------------------------------------
 
-def _approved_keys(fiscal_year, fiscal_period, lock=False):
-    """The (from, to, rate_type) of every approved rate for the period.
+def _approved_keys(fiscal_year, fiscal_period, lock=False, rate_set=None):
+    """The (from, to, rate_type) of every approved rate for the period in
+    ``rate_set`` (the set flagged Is Actuals when not given, konsol#348; a
+    budget set's rates do not satisfy the actuals' close gate).
 
     Plain read by default: this is also called on every read of the close
     app's My work screen (close.mywork_api), where LOCK IN SHARE MODE
@@ -689,18 +729,19 @@ def _approved_keys(fiscal_year, fiscal_period, lock=False):
     lock would still show as approved (PR #191 re-review finding 4; mirrors
     period_status.period_row and fiscal_calendar.periods_in_use(lock=True)).
     Only the close gate (assert_rates_complete) passes it."""
+    rate_set = actuals_rate_set() if rate_set is None else rate_set
     rows = frappe.db.sql(
         "SELECT from_currency, to_currency, rate_type FROM `tabGroup Exchange Rate` "
-        "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s"
+        "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s AND rate_set = %s"
         + (" LOCK IN SHARE MODE" if lock else ""),
-        (1, int(fiscal_year), int(fiscal_period)),
+        (1, int(fiscal_year), int(fiscal_period), rate_set),
     )
     return {(f, t, rt) for f, t, rt in rows}
 
 
-def missing_rates(fiscal_year, fiscal_period, pairs=None, lock=False):
+def missing_rates(fiscal_year, fiscal_period, pairs=None, lock=False, rate_set=None):
     pairs = required_pairs(fiscal_year, fiscal_period) if pairs is None else pairs
-    have = _approved_keys(fiscal_year, fiscal_period, lock=lock)
+    have = _approved_keys(fiscal_year, fiscal_period, lock=lock, rate_set=rate_set)
     return sorted((f, t, rt) for f, t in pairs for rt in RATE_TYPES if (f, t, rt) not in have)
 
 
@@ -722,7 +763,11 @@ def rate_gate(fiscal_year, fiscal_period, lock=False):
     nothing: the read fails with UNKNOWN_TABLE or UNKNOWN_DATABASE AND
     ``EXISTS TABLE epm_gold.gold_trial_balance`` is false. Any other failure,
     a missing gold_entity_ownership beside a built trial balance included,
-    means the rates cannot be checked."""
+    means the rates cannot be checked. So does a site with no Rate Set
+    flagged Is Actuals (konsol#348): the error names the flag."""
+    rate_set, problem = find_actuals_rate_set()
+    if problem:
+        return None, problem, []
     try:
         pairs, groups, entities = translation_gaps(fiscal_year, fiscal_period)
     except Exception as e:  # noqa: BLE001 — any failure to read means "can't verify"
@@ -734,7 +779,7 @@ def rate_gate(fiscal_year, fiscal_period, lock=False):
             except Exception:  # noqa: BLE001 — can't tell, so fail closed
                 pass
         return None, type(e).__name__ + (f" {', '.join(names)}" if names else ""), []
-    return missing_rates(fiscal_year, fiscal_period, pairs, lock=lock), None, (
+    return missing_rates(fiscal_year, fiscal_period, pairs, lock=lock, rate_set=rate_set), None, (
         [f"Consolidation Group {g} has no reporting currency" for g in groups]
         + [f"Entity {e} has no functional currency" for e in entities])
 
@@ -746,6 +791,10 @@ def assert_rates_complete(fiscal_year, fiscal_period):
 
     The pairs come from the last build (``translation_gaps``): the gate checks
     what that build translates, not ownership edited since."""
+    _set, problem = find_actuals_rate_set()
+    if problem:
+        frappe.throw(f"Cannot close fiscal period {fiscal_period} of FY{fiscal_year}: {problem}",
+                     frappe.ValidationError)
     missing, error, blockers = rate_gate(fiscal_year, fiscal_period, lock=True)
     if error:
         frappe.throw(
@@ -764,6 +813,26 @@ def assert_rates_complete(fiscal_year, fiscal_period):
 
 
 # -- the pre-fill -------------------------------------------------------------------------
+
+def lock_rate_set(rate_set):
+    """True when ``rate_set`` exists, holding its row FOR UPDATE until the
+    request commits (#586 review). The pre-fill and the copy check which keys
+    a period already has, then insert: two clicks at once both saw "none" and
+    both inserted. Each takes this lock before it reads anything else, so the
+    second waits for the first to commit."""
+    return bool(frappe.db.sql("SELECT name FROM `tabRate Set` WHERE name=%s FOR UPDATE", (rate_set,)))
+
+
+def taken_keys(fiscal_year, fiscal_period, rate_set):
+    """The (from, to, rate_type) keys that have a draft or an approved rate for
+    the period in ``rate_set``. A locking read: under REPEATABLE READ a plain
+    one returns the snapshot and misses drafts committed while this request
+    waited on lock_rate_set."""
+    return {(f, t, rt) for f, t, rt in frappe.db.sql(
+        "SELECT from_currency, to_currency, rate_type FROM `tabGroup Exchange Rate` "
+        "WHERE fiscal_year = %s AND fiscal_period = %s AND rate_set = %s AND docstatus < 2 FOR UPDATE",
+        (int(fiscal_year), int(fiscal_period), rate_set))}
+
 
 @frappe.whitelist(methods=["POST"])
 def prefill_from_erp(fiscal_year, fiscal_period):
@@ -786,15 +855,16 @@ def prefill_from_erp(fiscal_year, fiscal_period):
     The pre-fill picks the unit itself, so a gap that size points at a stale
     reference or an ERP error."""
     frappe.only_for(PREFILL_ROLES)
+    rate_set = actuals_rate_set()  # the pre-fill proposes actuals (konsol#348)
+    if not lock_rate_set(rate_set):
+        frappe.throw(f"Rate Set {rate_set} does not exist.", frappe.ValidationError)
     fy, fp = int(fiscal_year), int(fiscal_period)
     pairs = required_pairs(fy, fp) or tree_pairs(fy, fp)
     # A Closing rate is struck at the period end; an Average spans the period,
     # and the ERP keys it on the period's start.
     rows_by_type = {"Closing": erp_quote_rows(period_end(fy, fp)),
                     "Average": erp_quote_rows(period_start(fy, fp))}
-    taken = {(r.from_currency, r.to_currency, r.rate_type) for r in frappe.get_all(
-        DOCTYPE, filters={"fiscal_year": fy, "fiscal_period": fp, "docstatus": ["<", 2]},
-        fields=["from_currency", "to_currency", "rate_type"], limit_page_length=0)}
+    taken = taken_keys(fy, fp, rate_set)
     refs = usd_references({c for pair in pairs for c in pair})
     out = {"created": [], "existing": [], "no_quote": [], "refused": [], "warned": []}
     factor = magnitude_warning_factor()
@@ -820,9 +890,9 @@ def prefill_from_erp(fiscal_year, fiscal_period):
                 if per > 1:
                     note += f" Entered as {quote_label(quote, per, f, t)}, so it keeps its digits."
                 doc = frappe.get_doc({
-                    "doctype": DOCTYPE, "to_currency": t, "from_currency": f, "rate_type": rate_type,
-                    "fiscal_year": fy, "fiscal_period": fp, "quote": quote, "quoted_per": str(per),
-                    "erp_quote": quote, "source": PREFILL_SOURCE, "source_note": note,
+                    "doctype": DOCTYPE, "rate_set": rate_set, "to_currency": t, "from_currency": f,
+                    "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp, "quote": quote,
+                    "quoted_per": str(per), "erp_quote": quote, "source": PREFILL_SOURCE, "source_note": note,
                 })
                 try:
                     doc.insert()
@@ -838,6 +908,107 @@ def prefill_from_erp(fiscal_year, fiscal_period):
                     out["warned"].append(f"{label}: {warning}")
     finally:
         frappe.flags.konsol_prefilling_rates = False
+    return out
+
+
+# -- copy from the previous period (konsol#584) ------------------------------------------
+
+def declared_calendar(years):
+    """{year: [{"period", "type"}]} for the declared years among ``years``
+    (konsol.fiscal_calendar); an undeclared year is absent."""
+    from konsol.fiscal_calendar import declared_period_types
+
+    return declared_period_types(years)
+
+
+@frappe.whitelist(methods=["POST"])
+def copy_from_previous_period(fiscal_year, fiscal_period, rate_set):
+    """Propose DRAFT rates for a period from the previous regular period's
+    approved rates in ``rate_set`` (konsol#584, Deepak Pai 22 Nov 2026).
+
+    For sites whose rates do not move every month (pegged, stable or planning
+    rates, or no ERP feed): every approved Closing and Average rate of the set
+    in the previous Regular period of the declared calendar
+    (``rate_copy_model.previous_regular_period``; P1's is the previous year's
+    last Regular period) becomes a draft for this period with the same quote
+    and Quoted Per, Source "Copied from previous period", and Copied From
+    naming the rate it came from. Nothing is submitted: a person approves each
+    draft for its own period, under the same rules as any rate. Rejected: a
+    silent carry-forward in the warehouse.
+
+    Mirrors prefill_from_erp: the same roles; a key that already has a draft
+    or an approved rate in the set is left alone and listed under "skipped";
+    a rate the magnitude guard or the controller refuses is listed under
+    "refused", so no dialog pops for it; a rate past the declared Magnitude
+    Warning Factor is drafted and listed under "warned", and so is a rate
+    whose source has a correction pending approval. The Rate Set row is
+    locked first and the taken keys are read with a locking read, so two
+    clicks at once cannot both draft a key. The request itself
+    is refused by name, before anything is written, for a blank or unknown
+    Rate Set, a target period that is not declared and Open, and a previous
+    period that is not declared."""
+    frappe.only_for(PREFILL_ROLES)
+    if not rate_set:
+        frappe.throw("Rate Set is required: the set whose rates are copied, and the set the drafts "
+                     "join. Nothing is assumed (konsol#348).", frappe.MandatoryError)
+    if not lock_rate_set(rate_set):
+        frappe.throw(f"Rate Set {rate_set} does not exist.", frappe.ValidationError)
+    fy, fp = int(fiscal_year), int(fiscal_period)
+    assert_open(fy, fp, action="copy group exchange rates into it")
+    source_period, problem = rate_copy_model.previous_regular_period(fy, fp, declared_calendar((fy, fy - 1)))
+    if problem:
+        frappe.throw(problem, PeriodNotDeclared)
+    py, pp = source_period
+    fields = ["name", "from_currency", "to_currency", "rate_type", "docstatus", "rate_set", "quote", "quoted_per"]
+    sources = frappe.get_all(
+        DOCTYPE, filters={"fiscal_year": py, "fiscal_period": pp, "docstatus": 1, "rate_set": rate_set},
+        fields=fields, order_by="name asc", limit_page_length=0)
+    taken = taken_keys(fy, fp, rate_set)
+    drafts, skipped = rate_copy_model.plan_copy(sources, taken, rate_set)
+    # #586 review: a correction of a source still in draft may be the rate meant.
+    pending = {}
+    if drafts:
+        for c in frappe.get_all(DOCTYPE, filters={"supersedes": ["in", [s["name"] for s in drafts]], "docstatus": 0},
+                                fields=["name", "supersedes"], order_by="name asc", limit_page_length=0):
+            pending.setdefault(c["supersedes"], []).append(c["name"])
+    refs = usd_references({c for s in drafts for c in (s["from_currency"], s["to_currency"])})
+    factor = magnitude_warning_factor()
+    out = {"from_period": f"FY{py} P{pp}", "created": [], "skipped": skipped, "refused": [], "warned": []}
+    frappe.flags.konsol_copying_rates = True
+    try:
+        for s in drafts:
+            f, t, rate_type = s["from_currency"], s["to_currency"], s["rate_type"]
+            label = rate_copy_model.key_label(f, t, rate_type)
+            quote, per = float(s["quote"]), int(s["quoted_per"] or 1)
+            problem = magnitude_problem(f, t, true_rate(quote, per), refs)
+            if problem:
+                # A reference changed since the source was approved: the guard working.
+                out["refused"].append(f"{label}: {problem}")
+                continue
+            doc = frappe.get_doc({
+                "doctype": DOCTYPE, "rate_set": rate_set, "to_currency": t, "from_currency": f,
+                "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp, "quote": quote,
+                "quoted_per": str(per), "source": COPY_SOURCE, "copied_from": s["name"],
+                "source_note": rate_copy_model.copy_note(s, source_period, quote_label(quote, per, f, t)),
+            })
+            try:
+                doc.insert()
+            except frappe.ValidationError as e:
+                # frappe.throw logged the message before raising; the summary
+                # reports it, so no dialog pops for it.
+                frappe.clear_last_message()
+                out["refused"].append(f"{label}: {e}")
+                continue
+            out["created"].append(doc.name)
+            warning = magnitude_warning(f, t, quote, per, factor, refs)
+            if warning:
+                out["warned"].append(f"{label}: {warning}")
+            if pending.get(s["name"]):
+                out["warned"].append(
+                    f"{label}: {s['name']} has a correction pending approval ({', '.join(pending[s['name']])}); "
+                    f"this draft copies the approved rate, not the correction. Check it before approving.")
+    finally:
+        frappe.flags.konsol_copying_rates = False
     return out
 
 
@@ -898,8 +1069,10 @@ def adopt_erp_rates(dry_run=False):
             "Nothing was adopted, and the governed translation will refuse every period it translated "
             "until this runs. Once ClickHouse is up, run: " + RECOVERY_COMMAND.format(site=site)
             + " (add --kwargs \"{'dry_run': 1}\" to preview).") from e
+    rate_set = actuals_rate_set()  # what a period was translated at is an actuals rate (konsol#348)
     governed = {(r.from_currency, r.to_currency, int(r.fiscal_year), int(r.fiscal_period), r.rate_type)
-                for r in frappe.get_all(DOCTYPE, filters={"docstatus": 1}, limit_page_length=0,
+                for r in frappe.get_all(DOCTYPE, filters={"docstatus": 1, "rate_set": rate_set},
+                                        limit_page_length=0,
                                         fields=["from_currency", "to_currency", "fiscal_year",
                                                 "fiscal_period", "rate_type"])}
     actions = plan_adoption(used, governed, quotes, str(frappe.utils.today()))
@@ -928,7 +1101,7 @@ def adopt_erp_rates(dry_run=False):
             frappe.db.savepoint("konsol_rate_adoption")
             try:
                 doc = frappe.get_doc({
-                    "doctype": DOCTYPE, "from_currency": key[0], "to_currency": key[1],
+                    "doctype": DOCTYPE, "rate_set": rate_set, "from_currency": key[0], "to_currency": key[1],
                     "fiscal_year": key[2], "fiscal_period": key[3], "rate_type": key[4],
                     "quote": quote, "quoted_per": str(per),
                     # the ERP quote, per the same unit

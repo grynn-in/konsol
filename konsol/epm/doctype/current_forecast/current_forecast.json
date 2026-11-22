@@ -1,0 +1,199 @@
+{
+ "name": "Current Forecast",
+ "doctype": "DocType",
+ "module": "EPM",
+ "issingle": 0,
+ "istable": 0,
+ "is_submittable": 1,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "",
+ "title_field": "title",
+ "search_fields": "scenario_id,fiscal_year,budget_cycle",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "modified": "2026-11-17 20:00:00.000000",
+ "fields": [
+  {
+   "fieldname": "current_forecast_tab",
+   "fieldtype": "Tab Break",
+   "label": "Current Forecast"
+  },
+  {
+   "fieldname": "scope_section",
+   "fieldtype": "Section Break",
+   "label": "Scope"
+  },
+  {
+   "fieldname": "scenario_id",
+   "fieldtype": "Link",
+   "label": "Scenario",
+   "options": "Scenario",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The forecast scenario this declaration is for. A scenario of any other type is refused: a budget scenario has one Cycle per year by rule, and Approved Budget is its declaration."
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Int",
+   "label": "Fiscal Year",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The fiscal year this declaration covers. It must be the Budget Cycle's year; one live declaration (draft or approved) per scenario and year."
+  },
+  {
+   "fieldname": "scope_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Set on save: the scenario and the year."
+  },
+  {
+   "fieldname": "round_section",
+   "fieldtype": "Section Break",
+   "label": "Round"
+  },
+  {
+   "fieldname": "budget_cycle",
+   "fieldtype": "Link",
+   "label": "Budget Cycle",
+   "options": "Budget Cycle",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The approved forecast round (a Budget Cycle of this scenario and year) whose figures the year reports: the scenario trial balance, the Excel forecast reads and the cost-allocation pool read this round and no other. It must be approved (not a draft, not cancelled), of this scenario and of this fiscal year."
+  },
+  {
+   "fieldname": "as_of_date",
+   "fieldtype": "Date",
+   "label": "As-of Date",
+   "fetch_from": "budget_cycle.as_of_date",
+   "read_only": 1,
+   "in_list_view": 1,
+   "description": "Copied from the Budget Cycle: the actuals cut-off the round forecasts from."
+  },
+  {
+   "fieldname": "horizon_periods",
+   "fieldtype": "Int",
+   "label": "Horizon (periods)",
+   "fetch_from": "budget_cycle.horizon_periods",
+   "read_only": 1,
+   "description": "Copied from the Budget Cycle: how many periods the round covers after its as-of period."
+  },
+  {
+   "fieldname": "round_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "rate_set",
+   "fieldtype": "Data",
+   "label": "Rate Set",
+   "fetch_from": "budget_cycle.rate_set",
+   "read_only": 1,
+   "description": "Copied from the Budget Cycle: the Rate Set its forecast is translated at."
+  },
+  {
+   "fieldname": "approval_section",
+   "fieldtype": "Section Break",
+   "label": "Approval"
+  },
+  {
+   "fieldname": "input_fingerprint",
+   "fieldtype": "Data",
+   "label": "Input Fingerprint",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Copied from the Budget Cycle at submit: the hash of the inputs the round approved. A reader may recompute it and report a change since this declaration; it decides nothing (BUD-11-3)."
+  },
+  {
+   "fieldname": "approved_by",
+   "fieldtype": "Link",
+   "label": "Approved By",
+   "options": "User",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Set at submit: the user who submitted the declaration (submit is the approval)."
+  },
+  {
+   "fieldname": "approved_on",
+   "fieldtype": "Datetime",
+   "label": "Approved On",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Set at submit: when the declaration was submitted, in the site's time zone."
+  },
+  {
+   "fieldname": "approval_col_break",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes",
+   "description": "Why this round is the current forecast. Optional; Approved By and Approved On record the approval itself."
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "options": "Current Forecast",
+   "read_only": 1,
+   "no_copy": 1,
+   "print_hide": 1,
+   "search_index": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1,
+   "email": 1,
+   "share": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "export": 1,
+   "print": 1
+  }
+ ]
+}

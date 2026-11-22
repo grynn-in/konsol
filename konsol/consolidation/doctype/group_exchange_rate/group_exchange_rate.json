@@ -12,8 +12,9 @@
  "title_field": "",
  "sort_field": "modified",
  "sort_order": "DESC",
- "description": "The group's governed exchange rates (konsol#103): one Closing and one Average rate per fiscal period, from each currency into a group reporting currency. Group finance enters or pre-fills them from the ERP; submitting is the approval. Translation reads only these.",
+ "description": "The group's governed exchange rates (konsol#103): one Closing and one Average rate per fiscal period, from each currency into a group reporting currency, per Rate Set (konsol#348: the set flagged Is Actuals for actuals, a named set for each budget or forecast). Group finance enters or pre-fills them from the ERP; submitting is the approval. Translation reads only these.",
  "field_order": [
+  "rate_set",
   "to_currency",
   "from_currency",
   "rate_type",
@@ -26,6 +27,7 @@
   "source_section",
   "source",
   "erp_quote",
+  "copied_from",
   "col_break_2",
   "source_note",
   "change_reason",
@@ -33,6 +35,17 @@
   "amended_from"
  ],
  "fields": [
+  {
+   "fieldname": "rate_set",
+   "fieldtype": "Link",
+   "options": "Rate Set",
+   "label": "Rate Set",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "description": "The set this rate belongs to (konsol#348). The set flagged Is Actuals is the one the actuals translation, the close gate and Pre-fill from ERP read; a budget or forecast names its own set on its Budget Cycle. Each set holds its own approved rate per key, so a budget rate never collides with the actuals rate. Never assumed: a rate without a set is refused."
+  },
   {
    "fieldname": "to_currency",
    "fieldtype": "Link",
@@ -118,12 +131,12 @@
   {
    "fieldname": "source",
    "fieldtype": "Select",
-   "options": "Manual\nERP pre-fill\nAdoption",
+   "options": "Manual\nERP pre-fill\nAdoption\nCopied from previous period",
    "default": "Manual",
    "label": "Source",
    "read_only": 1,
    "in_standard_filter": 1,
-   "description": "Manual: entered by a person. ERP pre-fill: proposed from the ERP feed and accepted by a person; editing the rate makes it Manual. Adoption: taken over from the ERP feed by the one-time upgrade (konsol#103), authored by the system and not reviewed by a person.",
+   "description": "Manual: entered by a person. ERP pre-fill: proposed from the ERP feed and accepted by a person; editing the rate makes it Manual. Adoption: taken over from the ERP feed by the one-time upgrade (konsol#103), authored by the system and not reviewed by a person. Copied from previous period: proposed by Copy rates from previous period from the approved rate named in Copied From, and accepted by a person; editing the rate makes it Manual.",
    "no_copy": 1
   },
   {
@@ -134,6 +147,15 @@
    "read_only": 1,
    "no_copy": 1,
    "description": "What the ERP feed quoted when this rate was proposed, per the same Quoted Per. Reference only: translation never reads the ERP feed. Recorded by Pre-fill from ERP only."
+  },
+  {
+   "fieldname": "copied_from",
+   "fieldtype": "Link",
+   "options": "Group Exchange Rate",
+   "label": "Copied From",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The approved rate of the previous regular period, in the same Rate Set, that Copy rates from previous period proposed this draft from (konsol#584). Recorded by that button only. Reference only: approving this rate does not change that one."
   },
   {
    "fieldname": "col_break_2",

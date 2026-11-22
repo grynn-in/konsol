@@ -239,6 +239,123 @@ def test_the_shipped_guide_loads_and_has_a_start_page_per_role():
     assert len({p["slug"] for p in pages}) == len(pages)
 
 
+def test_the_shipped_guide_has_the_budget_against_actuals_page():
+    """konsol#348 S5 K14: the Budget columns' page, for everyone, in Concepts.
+    It names what the columns are, that the budget is before eliminations,
+    the balance sheet basis, every blank-column state and what to do, the
+    drill and its rate, the export, the cancel rule, and (one line) that an
+    entity leaving mid-plan is shown as the warehouse holds it today. No
+    issue numbers in user text (konsol#371-7)."""
+    import re
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    page = pages.get("budget-vs-actual")
+    assert page is not None, sorted(pages)
+    assert page["audience"] == "Everyone" and page["section"] == "Concepts"
+    text = page["markdown"]
+    for phrase in (
+        "Budget (before eliminations)", "Variance to budget", "Budget year to date",
+        "Approved Budget", "Budget Cycle", "Rate Set", "Approved By", "Approved On",
+        "before intercompany eliminations and without group-level adjustments",
+        "budgeted movements", "no variance to budget on the balance sheet",
+        "Unbalanced budget (no balancing entry)",
+        "No approved budget", "cancelled", "inputs", "layer", "Build the budget",
+        "Statement Drill", "translation", "Budget Entr",
+        "Export to Excel", "Budget drill",
+        "Cancel the Approved Budget first",
+    ):
+        assert phrase in text, phrase
+    exit_line = [ln for ln in text.splitlines() if not ln.startswith("#")
+                 and ("leaves the group" in ln or "exit" in ln.lower())]
+    assert exit_line and "today" in exit_line[-1].lower(), exit_line
+    assert not re.search(r"#\d+", text), "no issue numbers in user text"
+    # BUD-4-2 (review D1): a missing budget shows a state, never a blank column or a zero.
+    assert "never a blank column" in text and " 0 " not in text.replace("P0", "")
+    assert "cells are blank" not in text and "columns are blank" not in text
+
+
+def test_budget_vs_actual_page_covers_favourability_the_worksheet_and_the_entity_basis():
+    """konsol#348 S6 KB5: the favourability rule (S6-Q3 a, BUD-7-a), the
+    worksheet's Budget basis (S6-Q5 a) and the entity budget (S6-Q6 a), in
+    the words the reports use."""
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    text = pages["budget-vs-actual"]["markdown"]
+    for phrase in (
+        "## Favourability", "Favourable", "Unfavourable", "On budget", "normal balance",
+        "sign of the variance", "more profit",
+        "## The worksheet on the Budget basis", "Consolidation Worksheet", "Basis", "Unbalanced budget",
+        "## The entity basis", "functional currency", "top of the consolidation tree",
+        "no consolidation group",
+        "four budget columns",
+    ):
+        assert phrase in text, phrase
+    assert "three budget columns and the legend" not in text, "the export now has four"
+    # PR #558 review M1: one node per entity gives one root; no "several roots" state.
+    assert "several root consolidation groups" not in text
+
+
+def test_the_shipped_guide_has_the_forecast_rounds_page():
+    """konsol#348 S6 KA10: the forecast rounds page, for everyone, in Concepts.
+    It names a round and its as-of date, the Current Forecast declaration (one
+    per scenario and year; no declaration reads nothing, never the sum or the
+    latest), where the current round is read, the latest estimate, the horizon
+    coverage report, and the cancel order. No issue numbers in user text."""
+    import re
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    page = pages.get("forecast-rounds")
+    assert page is not None, sorted(pages)
+    assert page["audience"] == "Everyone" and page["section"] == "Concepts"
+    text = page["markdown"]
+    for phrase in (
+        "Budget Cycle", "as-of date", "Horizon", "Current Forecast", "one per scenario and fiscal year",
+        "never added together", "reads nothing", "not the latest round",
+        "Consolidated Statement", "cost allocation", "Excel",
+        "latest estimate", "actuals", "Forecast Horizon Coverage", "draft",
+        "Cancel the Current Forecast first",
+    ):
+        assert phrase in text, phrase
+    assert not re.search(r"#\d+", text), "no issue numbers in user text"
+
+
+def test_the_forecast_rounds_page_explains_accuracy_and_the_excel_words():
+    """konsol#348 S6 KC4 (FC-4-2): the accuracy section (lag, error sign,
+    bias read by filtering, restated actuals, n/a for a zero actual, every
+    round in the report and the declared round in Excel) and the Excel
+    words (consolidated_budget, forecast_accuracy)."""
+    import re
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    text = pages["forecast-rounds"]["markdown"]
+    for phrase in (
+        "## Forecast accuracy", "Forecast Accuracy", "closed", "lag", "forecast minus actual",
+        "bias", "restated", "n/a", "every round",
+        "## Forecast reads in Excel", "consolidated_budget", "forecast_accuracy",
+        "forecast_accuracy_group", "latest_estimate",
+    ):
+        assert phrase in text, phrase
+    assert not re.search(r"#\d+", text), "no issue numbers in user text"
+
+
+def test_excel_error_percent_is_computed_in_the_sheet():
+    """konsol#561 review M2: K.EPM has no forecast_error_pct. Both pages say
+    the sheet computes it as forecast_error / ABS(actual_amount) and the
+    Forecast Accuracy report shows it per row; neither offers the measure."""
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    for slug in ("forecast-rounds", "excel-addin"):
+        text = pages[slug]["markdown"]
+        assert "forecast_error / ABS(actual_amount)" in text, slug
+        assert "Forecast Accuracy report" in text, slug
+        assert "forecast_error_pct" not in text, slug
+    rounds = pages["forecast-rounds"]["markdown"]
+    assert "averages the rows" not in rounds
+
+
+def test_the_excel_page_lists_the_planning_words():
+    """konsol#348 S6 KC4: the add-in page names the S6 scenario words."""
+    pages = {p["slug"]: p for p in M.load_product_pages(PAGES)}
+    text = pages["excel-addin"]["markdown"]
+    for word in ("consolidated_budget", "latest_estimate", "forecast_accuracy", "Forecast rounds"):
+        assert word in text, word
+
+
 def test_the_shipped_guide_names_no_customer():
     """Generic examples only (E1, ZZ01, "Group"): the repo is public."""
     text = " ".join(_read(os.path.join(PAGES, f)) for f in os.listdir(PAGES)).lower()

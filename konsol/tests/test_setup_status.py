@@ -42,7 +42,7 @@ class _Site:
         self.blockers = []
         self.ic_published = 0
         self.ic_declared_none = True
-        self.counts = {"EPM Fiscal Year": 1, "Entity Fiscal Calendar": 0, "ISO Currency": 150,
+        self.counts = {"EPM Fiscal Year": 1, "ISO Currency": 150,
                        ("Trial Balance Submission", 1): 3}
         self.records = {
             "Consolidation Group": [

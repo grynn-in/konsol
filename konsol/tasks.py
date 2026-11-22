@@ -75,9 +75,10 @@ DOCTYPE_BUILD_MAP = {
     # silver_tb_movements, the governed rates and gold models in every domain
     # (16 outside +tag:domain:consolidation, konsolidat main bb0307e), so
     # "full", as for Trial Balance Submission (#334). Requested from the
-    # controller, and only when a column dbt reads changes: a Close, Lock or
-    # Reopen moves only `status`, which no model reads, and requests nothing
-    # (epm_fiscal_year.py on_update).
+    # controller, and only when a column dbt reads changes. A Close, Lock or
+    # Reopen moves only `status`, which the forecast accuracy models read
+    # (domain:scenarios), so it requests the "scenarios" scope instead
+    # (epm_fiscal_year.py on_update, konsol#561 review M3).
     "EPM Fiscal Year": {"scope": "full", "risk": "high"},
     # K9b (konsol#269): a submitted cost allocation run is an input to the
     # isolated allocation scope, which rebuilds only its own models.
@@ -639,7 +640,7 @@ def _set_duration(doc):
 # ---------------------------------------------------------------------------
 # Hook: trigger governed build after consolidation/allocation doc changes
 # ---------------------------------------------------------------------------
-def queue_consolidation_build(doc, method):
+def queue_consolidation_build(doc, method, scope=None):
     """doc_events target for the build-trigger doctypes, and Entity's
     targeted trigger: queue the build request as a job that runs after the
     commit (konsol#126). The one enqueue path.
@@ -651,6 +652,11 @@ def queue_consolidation_build(doc, method):
     left the document Submitted with nothing behind it. As a job it runs in
     its own transaction. A save that rolls back queues nothing; a failed
     request is rolled back and logged by the job runner.
+
+    ``scope`` names a build scope other than the doctype's DOCTYPE_BUILD_MAP
+    one (EPM Fiscal Year's status move: "scenarios", konsol#561 review M3).
+    The job_id carries it, so a scoped request is never deduplicated into
+    the document's mapped one.
     """
     if (frappe.flags.in_install or frappe.flags.in_migrate
             or frappe.flags.in_patch or frappe.flags.in_import):
@@ -665,30 +671,34 @@ def queue_consolidation_build(doc, method):
         frappe.enqueue(
             "konsol.tasks.request_consolidation_build",
             enqueue_after_commit=True,
-            job_id=f"konsol-build-request::{doc.doctype}::{doc.name}",
+            job_id=(f"konsol-build-request::{doc.doctype}::{doc.name}"
+                    + (f"::{scope}" if scope else "")),
             deduplicate=True,
             doctype=doc.doctype,
             name=doc.name,
             # NOT `method=`: that is frappe.enqueue's own first parameter,
             # and passing it again raised TypeError on every save (#110).
             trigger_method=method,
+            build_scope=scope,
         )
     except Exception:  # noqa: BLE001 — a build request must never fail the save
         # deduplicate=True makes enqueue query Redis now, inside the save.
         frappe.log_error(title=f"{doc.doctype} {doc.name}: build not requested")
 
 
-def request_consolidation_build(doctype, name, trigger_method):
+def request_consolidation_build(doctype, name, trigger_method, build_scope=None):
     """RQ job target, queued by queue_consolidation_build after the commit.
 
     Runs on_consolidation_doc_update in the job's own transaction, so its Build
     Approval insert and commit never land inside the caller's document hooks.
     The trigger reads only doctype and name, so a deleted document's request
-    still resolves."""
-    on_consolidation_doc_update(frappe._dict(doctype=doctype, name=name), trigger_method)
+    still resolves. ``build_scope`` is queue_consolidation_build's ``scope``
+    (None for the mapped one, and for a job queued before it existed)."""
+    on_consolidation_doc_update(frappe._dict(doctype=doctype, name=name), trigger_method,
+                                scope=build_scope)
 
 
-def on_consolidation_doc_update(doc, method):
+def on_consolidation_doc_update(doc, method, scope=None):
     """The build request itself. It runs INSIDE request_consolidation_build's
     job, never from a document hook: it commits (konsol#126).
 
@@ -721,7 +731,8 @@ def on_consolidation_doc_update(doc, method):
 
     user = frappe.session.user
     reason = approval_build_reason(doc.doctype, doc.name, method, user, frappe.get_roles(user))
-    request_build_for_scope(mapping["scope"], doc.doctype, doc.name, auto_approve_reason=reason)
+    request_build_for_scope(scope or mapping["scope"], doc.doctype, doc.name,
+                            auto_approve_reason=reason)
 
 
 def request_build_for_scope(scope, trigger_doctype, trigger_docname, carries_changes=False,

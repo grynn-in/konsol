@@ -36,6 +36,15 @@ Decided by the user on 13 Sep 2026:
   pending, #312-S3-3 keep the plain cancel and reword the messages. Accepted
   trade-off: a rate entered by mistake is corrected, never removed.
 
+konsol#348 (S4-Q1 option c, chosen under the standing rule, 15 Nov 2026):
+every rate names its **Rate Set**, and the set is part of the grain. The set
+flagged Is Actuals is the one the actuals translation, the close gate, the
+pre-fill and the adoption read (``group_rates.actuals_rate_set``, which
+refuses by name while none is flagged); a budget or forecast names its own set
+on its Budget Cycle. Each set holds its own approved rate per key, a
+correction supersedes within its set, and the name carries the set. Existing
+names (no set) stay valid; a patch stamped them with the actuals set.
+
 A rate is entered as a **quote per a unit**: ``quote`` units of the group
 currency per ``quoted_per`` (1, 10, 100, 1,000 or 10,000) units of the
 from-currency, so its direction never flips: 0.6607 USD per 100 JPY. MariaDB
@@ -43,6 +52,12 @@ keeps 9 decimal places, and the unit keeps the digits. The TRUE rate is
 quote / quoted_per. konsol computes it once, when it publishes the approved
 rows to ``epm_staging.group_exchange_rates`` (``resync_staging``), and the
 warehouse translates from it without scaling or inverting anything.
+
+konsol#584 (Deepak Pai, 22 Nov 2026): **Copy rates from previous period**
+(``group_rates.copy_from_previous_period``) drafts a period's rates from the
+previous regular period's approved rates of one set. Such a draft carries
+Source "Copied from previous period" and names its origin in Copied From;
+both are set by the copy alone, and a person approves the draft as any other.
 """
 import frappe
 from frappe.model.document import Document
@@ -53,7 +68,11 @@ RATE_TYPES = ("Closing", "Average")
 ADOPTION_SOURCE = "Adoption"
 PREFILL_SOURCE = "ERP pre-fill"
 MANUAL_SOURCE = "Manual"
-GRAIN = ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type")
+#: konsol#584: set by group_rates.copy_from_previous_period alone.
+COPY_SOURCE = "Copied from previous period"
+GRAIN = ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type", "rate_set")
+#: The WHERE of a read on exactly one grain, in GRAIN order.
+_GRAIN_WHERE = " AND ".join(f"{f} = %s" for f in GRAIN)
 
 
 class GroupExchangeRate(Document):
@@ -61,7 +80,7 @@ class GroupExchangeRate(Document):
     #: the true rate, computed from quote / quoted_per.
     CH_STAGING_TABLE = "epm_staging.group_exchange_rates"
     CH_STAGING_COLUMNS = ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
-                          "rate", "document"]
+                          "rate", "document", "rate_set"]
 
     @classmethod
     def resync_staging(cls, force=False):
@@ -80,7 +99,7 @@ class GroupExchangeRate(Document):
 
         self.name = make_autoname(
             f"GER-{int(self.fiscal_year)}-{int(self.fiscal_period):02d}-"
-            f"{self.from_currency}-{self.to_currency}-{self.rate_type}-.##",
+            f"{self.from_currency}-{self.to_currency}-{self.rate_type}-{self.rate_set}-.##",
             doc=self,
         )
 
@@ -110,7 +129,7 @@ class GroupExchangeRate(Document):
         records what a period was already translated at."""
         from konsol import group_rates
 
-        if self._adopting() or frappe.flags.get("konsol_prefilling_rates"):
+        if self._adopting() or frappe.flags.get("konsol_prefilling_rates") or self._copying():
             return
         factor = group_rates.magnitude_warning_factor()
         if factor is None:
@@ -159,6 +178,13 @@ class GroupExchangeRate(Document):
         return group_rates.true_rate(self.quote, self._per())
 
     def _validate_grain(self):
+        if not self.rate_set:
+            # reqd covers the form; a REST write or a patch with ignore_mandatory
+            # reaches here, and a rate must never fall into a set by default.
+            frappe.throw(
+                "Rate Set is required: the set this rate belongs to (the one flagged Is Actuals "
+                "for actuals, a budget's own set for a budget). Nothing is assumed (konsol#348).",
+                frappe.MandatoryError)
         if self.rate_type not in RATE_TYPES:
             frappe.throw(f"Rate Type must be one of {', '.join(RATE_TYPES)}.", frappe.ValidationError)
         if self.from_currency and self.from_currency == self.to_currency:
@@ -175,28 +201,42 @@ class GroupExchangeRate(Document):
             frappe.throw(f"No Fiscal Period numbered {period}.", frappe.ValidationError)
         assert_declared(year, int(period))
 
+    def _copying(self):
+        """Inside copy_from_previous_period (konsol#584), under its own flag."""
+        return bool(frappe.flags.get("konsol_copying_rates"))
+
     def _guard_provenance(self):
-        """Source, ERP Quote and Source Note are read-only in the form only;
-        REST writes any field. "Adoption" is set by the one-time adoption
-        alone, "ERP pre-fill" and the ERP Quote by prefill_from_erp alone
-        (each sets its own flag), and Source Note by either of them, so none
-        can be forged onto a rate a person typed (konsol#413: a Desk/REST
-        insert carrying source_note landed it verbatim for an Analyst)."""
+        """Source, ERP Quote, Copied From and Source Note are read-only in the
+        form only; REST writes any field. "Adoption" is set by the one-time
+        adoption alone, "ERP pre-fill" and the ERP Quote by prefill_from_erp
+        alone, "Copied from previous period" and Copied From by
+        copy_from_previous_period alone (konsol#584; each sets its own flag),
+        and Source Note by any of them, so none can be forged onto a rate a
+        person typed (konsol#413: a Desk/REST insert carrying source_note
+        landed it verbatim for an Analyst)."""
         before = self._saved_version()
         was = before.source if before else None
         prefilling = bool(frappe.flags.get("konsol_prefilling_rates"))
+        copying = self._copying()
         if self.source == ADOPTION_SOURCE and was != ADOPTION_SOURCE and not self._adopting():
             frappe.throw('Source "Adoption" is set only by the one-time rate adoption (konsol#103).',
                          frappe.PermissionError)
         if self.source == PREFILL_SOURCE and was != PREFILL_SOURCE and not prefilling:
             frappe.throw('Source "ERP pre-fill" is set only by Pre-fill from ERP.', frappe.PermissionError)
+        if self.source == COPY_SOURCE and was != COPY_SOURCE and not copying:
+            frappe.throw(f'Source "{COPY_SOURCE}" is set only by Copy rates from previous period (konsol#584).',
+                         frappe.PermissionError)
+        copied_before = (getattr(before, "copied_from", None) or "") if before else ""
+        if (self.get("copied_from") or "") != copied_before and not copying:
+            frappe.throw("Copied From is recorded by Copy rates from previous period only (konsol#584).",
+                         frappe.PermissionError)
         erp_before = float(before.erp_quote or 0) if before else 0.0
         if abs(float(self.erp_quote or 0) - erp_before) > 1e-12 and not (prefilling or self._adopting()):
             frappe.throw("ERP Quote is recorded by Pre-fill from ERP only.", frappe.PermissionError)
         note_before = (getattr(before, "source_note", None) or "") if before else ""
-        if (self.source_note or "") != note_before and not (prefilling or self._adopting()):
-            frappe.throw("Source Note is recorded by Pre-fill from ERP or the rate adoption only.",
-                         frappe.PermissionError)
+        if (self.source_note or "") != note_before and not (prefilling or copying or self._adopting()):
+            frappe.throw("Source Note is recorded by Pre-fill from ERP, Copy rates from previous period "
+                         "or the rate adoption only.", frappe.PermissionError)
 
     def _validate_quote(self):
         """A positive quote per a listed unit, that keeps its digits, whose true
@@ -239,9 +279,13 @@ class GroupExchangeRate(Document):
                 frappe.ValidationError)
 
     def _track_source(self):
-        """A pre-filled draft whose rate a person changed is a manual rate. The
-        ERP Quote follows the Quoted Per, so the two stay comparable, and
-        re-quoting the same rate per another unit changes nothing."""
+        """A pre-filled or copied draft whose rate a person changed is a
+        manual rate. The ERP Quote follows the Quoted Per, so the two stay
+        comparable, and re-quoting the same rate per another unit changes
+        nothing. A copied draft compares with its own saved rate, and keeps
+        Copied From as the reference it was proposed from (konsol#584)."""
+        from konsol import group_rates
+
         before = self._saved_version()
         old_per = int(before.quoted_per or 1) if before is not None else self._per()
         if old_per != self._per() and self.erp_quote:
@@ -249,6 +293,16 @@ class GroupExchangeRate(Document):
         if self.source == PREFILL_SOURCE and self.erp_quote and \
                 abs(float(self.quote) - float(self.erp_quote)) > 1e-9 * max(float(self.erp_quote), 1e-9):
             self.source = MANUAL_SOURCE
+        if self.source in (PREFILL_SOURCE, COPY_SOURCE) and before is not None and any(
+                str(self.get(f)) != str(getattr(before, f, None)) for f in GRAIN):
+            # #586 review: the label says where THIS key's rate came from; a
+            # draft moved to another key (currency, type, period or set) is a
+            # person's rate.
+            self.source = MANUAL_SOURCE
+        if self.source == COPY_SOURCE and before is not None and getattr(before, "source", None) == COPY_SOURCE:
+            was = group_rates.true_rate(getattr(before, "quote", 0), old_per)
+            if abs(self._rate() - was) > 1e-9 * max(was, 1e-12):
+                self.source = MANUAL_SOURCE
         if not self.source:
             self.source = MANUAL_SOURCE
 
@@ -259,7 +313,7 @@ class GroupExchangeRate(Document):
 
     def _key_label(self):
         return (f"{self.rate_type} rate {self.from_currency} → {self.to_currency} "
-                f"for FY{self.fiscal_year} P{self.fiscal_period}")
+                f"for FY{self.fiscal_year} P{self.fiscal_period} in Rate Set {self.rate_set}")
 
     def _validate_supersedes(self):
         """A correction names the approved rate of its own key (#312-3). Read
@@ -295,14 +349,35 @@ class GroupExchangeRate(Document):
                 frappe.MandatoryError)
         if self._adopting():
             return  # the rate a period was already translated at; the note says so
-        previous = group_rates.previous_approved(
-            self.to_currency, self.from_currency, self.rate_type, self.fiscal_year, self.fiscal_period)
+        previous = self._copied_rate() if self._copying() else None
+        if previous is not None and abs(self._rate() - previous[0]) <= 1e-12 * max(previous[0], 1e-12):
+            # #586 review: the copy proposes the rate it copies, a move of 0. It
+            # is judged against that rate, not previous_approved (the latest
+            # approved rate of ANY period type: a P1 copy met an Opening rate),
+            # so it needs no reason whether or not a threshold is declared.
+            return
+        if previous is None:
+            previous = group_rates.previous_approved(
+                self.to_currency, self.from_currency, self.rate_type, self.fiscal_year, self.fiscal_period,
+                self.rate_set)
         erp = group_rates.true_rate(self.erp_quote, self._per()) if self.erp_quote else None
         problem = group_rates.move_problem(self._rate(), previous, erp,
                                            unit=f"{self.to_currency} per {self.from_currency}",
                                            threshold=group_rates.move_threshold())
         if problem:
             frappe.throw(problem, frappe.MandatoryError)
+
+    def _copied_rate(self):
+        """(true rate, label) of the rate Copied From names, or None."""
+        from konsol import group_rates
+
+        name = self.get("copied_from")
+        row = frappe.db.get_value(self.doctype, name, ["quote", "quoted_per", "fiscal_year", "fiscal_period"],
+                                  as_dict=True) if name else None
+        if row is None:
+            return None
+        return (group_rates.true_rate(row.quote, row.quoted_per),
+                f"FY{row.fiscal_year} P{row.fiscal_period} ({name}, the rate this draft copies)")
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -362,8 +437,7 @@ class GroupExchangeRate(Document):
         cancels it in this transaction. It must still be approved now; the
         lock holds it so until the cancel."""
         approved = [row[0] for row in frappe.db.sql(
-            "SELECT name FROM `tabGroup Exchange Rate` WHERE to_currency = %s AND from_currency = %s "
-            "AND fiscal_year = %s AND fiscal_period = %s AND rate_type = %s AND docstatus = 1 "
+            f"SELECT name FROM `tabGroup Exchange Rate` WHERE {_GRAIN_WHERE} AND docstatus = 1 "
             "AND name != %s FOR UPDATE",
             tuple(self.get(f) for f in GRAIN) + (self.name,),
         )]
@@ -441,5 +515,16 @@ class GroupExchangeRate(Document):
 
 def on_doctype_update():
     """The grain's index: the approval check's locking read uses it, and the
-    translation's lookups follow the same key."""
+    translation's lookups follow the same key.
+
+    frappe.db.add_index skips an index whose NAME already exists, so when the
+    grain grew (konsol#348 added rate_set) an upgraded site would keep the old
+    five-column index for ever. Ask what "grain" holds and drop a stale one
+    first; a fresh site, or one already rebuilt, issues no DDL.
+    """
+    table = "`tabGroup Exchange Rate`"
+    rows = frappe.db.sql(f"SHOW INDEX FROM {table} WHERE Key_name = 'grain'", as_dict=True)
+    have = [r["Column_name"] for r in sorted(rows, key=lambda r: int(r["Seq_in_index"]))]
+    if have and have != list(GRAIN):
+        frappe.db.sql_ddl(f"ALTER TABLE {table} DROP INDEX grain")
     frappe.db.add_index("Group Exchange Rate", list(GRAIN), index_name="grain")

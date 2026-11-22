@@ -9,7 +9,8 @@ is ``drill_model``'s, loaded by path (no copy of the label table).
 
 Keys are tagged tuples so an entity code can never equal a layer or bucket
 key: ``("entity", code)``, ``("bucket", "other_entities" | "outside_scope")``,
-``("layer", key)`` (raw type for an unknown one).
+``("layer", key)`` (raw type for an unknown one; the budget's ``unbalanced``
+plug is labelled by ``LAYER_LABELS_EXTRA``, konsol#348 S6 KB6).
 
 Pure: no frappe, no konsol imports. ``drill_model`` is a sibling loaded by
 path, as ``drill_model`` loads ``statement_model``.
@@ -35,6 +36,16 @@ OTHER_ENTITIES = ("bucket", "other_entities")
 OUTSIDE_SCOPE = ("bucket", "outside_scope")
 
 _ENTITY_LAYERS = ("entity", "cta")
+
+#: konsol#348 S6 KB6 (S6-Q5 a): layer labels for adjustment types the drill
+#: never lays out as a layer. ``unbalanced`` is the budget's balancing plug
+#: (gold_fully_consolidated_budget, S4-Q8 b; the literal main_account
+#: ``UNBALANCED``): on the Budget basis it is a column of its own, labelled
+#: here. drill_model._LAYER_LABELS never gains it (the drill shows the plug as
+#: its own line; test_close_drill_model pins the absence), so ``_layer_key``
+#: keeps the raw type and ``_label`` reads this table before the raw-code
+#: fallback.
+LAYER_LABELS_EXTRA = {"unbalanced": "Unbalanced budget"}
 
 
 def _layer_key(adjustment_type):
@@ -68,17 +79,25 @@ CTA_UNDECLARED = ("cta_undeclared",)
 CTA_UNDECLARED_LABEL = "CTA (no CTA account declared)"
 NOT_IN_CHART_LABEL = "not in the published chart"
 _CTA_CODE = "CTA"
+#: The Budget basis's plug (konsol#348 S6 KB6; PR #558 review m2): an
+#: ``unbalanced`` row is its own line, labelled as the statement labels it,
+#: never a chart account and never "not in the published chart".
+UNBALANCED = ("unbalanced",)
+_UNBALANCED_CODE = "UNBALANCED"
 
 
 def row_key(row, accounts, declared):
-    """Line key for one row: ``("account", code)``, ``CTA_UNDECLARED`` or
-    ``("not_in_chart", code)``.
+    """Line key for one row: ``("account", code)``, ``CTA_UNDECLARED``,
+    ``UNBALANCED`` or ``("not_in_chart", code)``.
 
     A cta-layer row (``main_account`` is the literal ``CTA``) is placed under
     ``declared["cta_account"]``; undeclared, it keeps a visible row of its own.
+    An ``unbalanced`` row (the budget's plug) is the ``UNBALANCED`` line.
     A code missing from the Published chart is never dropped.
     """
     code = row["main_account"]
+    if row.get("adjustment_type") == "unbalanced":
+        return UNBALANCED
     if row.get("adjustment_type") == "cta" or code == _CTA_CODE:
         cta_account = (declared or {}).get("cta_account")
         return ("account", cta_account) if cta_account else CTA_UNDECLARED
@@ -142,7 +161,7 @@ def _layer_label(key):
     for adjustment_type, label in drill_model._LAYER_LABELS.items():
         if _layer_key(adjustment_type) == key:
             return label
-    return key
+    return LAYER_LABELS_EXTRA.get(key, key)
 
 
 def _columns(present, shown, allowed):
@@ -178,12 +197,16 @@ def _line_order(key, accounts):
         return (0, (accounts.get(key[1]) or {}).get("lft") or 0, key[1])
     if key[0] == "not_in_chart":
         return (1, 0, key[1])
+    if key == UNBALANCED:
+        return (3, 0, "")
     return (2, 0, "")
 
 
 def _line_head(key, accounts):
     if key == CTA_UNDECLARED:
         return _CTA_CODE, CTA_UNDECLARED_LABEL
+    if key == UNBALANCED:
+        return _UNBALANCED_CODE, statement_model.UNBALANCED_LABEL
     if key[0] == "not_in_chart":
         return key[1], NOT_IN_CHART_LABEL
     return key[1], (accounts.get(key[1]) or {}).get("account_name")
@@ -326,12 +349,13 @@ tb_dimension_model = importlib.util.module_from_spec(_tb_dimension_model)
 _tb_dimension_model.loader.exec_module(tb_dimension_model)
 
 
-def dimension_column(name, declared_rows, present_columns):
+def dimension_column(name, declared_rows, present_columns, table="gold_fully_consolidated_tb"):
     """``name`` if it may be interpolated as a gold column, else ValueError
     naming the check it failed. Three checks, in order: a legal ``dim_*`` name
     (``tb_dimension_model``'s rule), declared Published and ticked
     ``in_trial_balance`` (``accepted_dimension_columns``), and actually built
-    in the warehouse (``present_columns``, from ``system.columns``).
+    in the warehouse (``present_columns``, from ``system.columns`` of
+    ``table``: the basis's table, named in the refusal; S6 KB6).
     """
     if not tb_dimension_model.is_legal_dimension_name(name):
         raise ValueError(f"dimension {name!r} is not a legal dimension name "
@@ -341,7 +365,7 @@ def dimension_column(name, declared_rows, present_columns):
                          "Dimension ticked in_trial_balance")
     if name not in set(present_columns):
         raise ValueError(f"dimension {name!r} is not built in the warehouse yet "
-                         "(no such column in gold_fully_consolidated_tb)")
+                         f"(no such column in {table})")
     return name
 
 
@@ -371,7 +395,7 @@ def to_ids(ws):
     """``worksheet``'s result with every key a string id: ``entity:ZZA``,
     ``layer:topside``, ``bucket:other_entities``, ``rounding``,
     ``consolidated``; line keys ``account:1110``, ``not_in_chart:9999``,
-    ``cta_undeclared`` (``<account id>|<value>`` when dimensioned). Same shape
+    ``cta_undeclared``, ``unbalanced`` (``<account id>|<value>`` when dimensioned). Same shape
     otherwise, JSON-safe; the API payload and the Desk layout both use it."""
     def cells(values):
         return {_id(k): v for k, v in values.items()}

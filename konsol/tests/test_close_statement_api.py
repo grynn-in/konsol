@@ -249,7 +249,7 @@ class _Site:
         self.roles = {"EPM Analyst"}
         self.periods = [dict(r) for r in _CALENDAR]
         self._open(2025, 7)
-        self.groups = [{"consolidation_group": "G1", "reporting_currency": "USD"}]
+        self.groups = [{"name": "CG-G1-", "consolidation_group": "G1", "reporting_currency": "USD"}]
         self.accounts = _accounts()
         self.cta_account, self.result_account = "3300", "3100"
         self.declared_rows = dict(_DECLARED_ROWS)
@@ -288,6 +288,28 @@ class _Site:
         #: konsol#495 row 11b: Consolidation Group document rows by name (the
         #: Desk Link value ``CG-<code>-``): {"consolidation_group", "data_area_id"}.
         self.group_docs = {}
+        #: konsol#348 S5 K4: the approved-budget read. Approved Budget rows
+        #: (live: docstatus 0/1), Budget Cycle rows by name, Budget Layer rows,
+        #: ``check_input_fingerprint`` results by Cycle name, and the ONE
+        #: ClickHouse read over gold_fully_consolidated_budget.
+        self.approved_budgets = []
+        self.budget_cycles = {}
+        self.budget_layers = [{"layer_code": "board", "sort_order": 2},
+                              {"layer_code": "base", "sort_order": 1}]
+        self.fingerprints = {}
+        #: PR #554 review M2: an exception the fingerprint check raises (a fault
+        #: in the budget read), and the Error Log entries frappe.log_error wrote.
+        self.fingerprint_error = None
+        self.error_logs = []
+        self.cleared_messages = 0
+        self.budget_tb_rows = []
+        #: S5 K9: the budget drill's entity-grain rows (``amt`` alias) and the
+        #: gold_consolidated_budget_tb rate rows.
+        self.budget_drill_rows = []
+        self.budget_rate_rows = []
+        #: S6 KB8: the entity budget's one read over gold_consolidated_budget_tb
+        #: (``amt`` alias over local_amount; the plug is synthesised in Python).
+        self.entity_budget_rows = []
 
     def _open(self, fy, fp):
         for row in self.periods:
@@ -337,6 +359,12 @@ def _frappe(site):
             rows = [r for r in site.commentary_rows if _match(r, filters)]
         elif doctype == "User":
             rows = [r for r in site.users if _match(r, filters)]
+        elif doctype == "Approved Budget":
+            rows = [r for r in site.approved_budgets if _match(r, filters)]
+        elif doctype == "Budget Cycle":
+            rows = [r for r in site.budget_cycles.values() if _match(r, filters)]
+        elif doctype == "Budget Layer":
+            rows = [r for r in site.budget_layers if _match(r, filters)]
         else:
             raise AssertionError("unexpected get_all on %s" % doctype)
         return [{f: r.get(f) for f in fields} for r in rows]
@@ -362,6 +390,16 @@ def _frappe(site):
     frappe.get_all = get_all
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.session = types.SimpleNamespace(user=site.user)
+
+    def log_error(title=None, message=None, **k):
+        site.error_logs.append({"title": title, "message": message})
+
+    def clear_last_message():
+        site.cleared_messages += 1
+
+    frappe.log_error = log_error
+    frappe.get_traceback = lambda *a, **k: "Traceback (stub)"
+    frappe.clear_last_message = clear_last_message
     site.response = {}
     frappe.response = site.response
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
@@ -381,6 +419,14 @@ def _ch_read(site):
             raise site.ch_error
         if "gold_consolidation_adjustments" in sql:
             return [dict(r) for r in site.journal_rows]
+        if "gold_consolidated_budget_tb" in sql:
+            if "local_amount" in sql:  # S6 KB8: the entity budget's one read
+                return [dict(r) for r in site.entity_budget_rows]
+            return [dict(r) for r in site.budget_rate_rows]  # S5 K9: the budget drill's rates read
+        if "gold_fully_consolidated_budget" in sql:
+            if "data_area_id" in sql:  # S5 K9: the budget drill's entity-grain read
+                return [dict(r) for r in site.budget_drill_rows]
+            return [dict(r) for r in site.budget_tb_rows]  # S5 K4: the budget statement's one read
         if "DISTINCT data_area_id" in sql:
             return [dict(r) for r in site.entity_rows]
         if "gold_trial_balance" in sql:  # konsol#495: the entity basis's one read
@@ -446,6 +492,22 @@ def _close_event(site):
     return ce
 
 
+def _budget_fingerprint(site):
+    """Stub of ``konsol.epm.budget_fingerprint.check_input_fingerprint``
+    (S5-Q2 a: recomputed at every read). Records the call; answers from
+    ``site.fingerprints[cycle]``; an unknown Cycle is a test fault."""
+    mod = types.ModuleType("konsol.epm.budget_fingerprint")
+
+    def check_input_fingerprint(cycle):
+        site.reads.append(("fingerprint", cycle))
+        if site.fingerprint_error is not None:
+            raise site.fingerprint_error
+        return dict(site.fingerprints[cycle])
+
+    mod.check_input_fingerprint = check_input_fingerprint
+    return mod
+
+
 def _assertion_run(site):
     mod = types.ModuleType("konsol.consolidation.doctype.assertion_run.assertion_run")
     mod.SIGNED_STATES = ("Signed Off", "Acknowledged", "Overridden")
@@ -475,6 +537,9 @@ def _invoke(site, run):
             raise frappe.PermissionError("Not permitted to access entity '%s'" % code)
 
     entity_permissions.assert_entity_access = assert_entity_access
+    epm = types.ModuleType("konsol.epm")
+    epm.__path__ = []
+    epm.budget_fingerprint = _budget_fingerprint(site)
     consolidation = types.ModuleType("konsol.consolidation")
     doctype_pkg = types.ModuleType("konsol.consolidation.doctype")
     assertion_run_pkg = types.ModuleType("konsol.consolidation.doctype.assertion_run")
@@ -493,6 +558,7 @@ def _invoke(site, run):
              "konsol.close.statement_model", "konsol.close.timefmt", "konsol.close.drill_model",
              "konsol.close.statement_export_model",
              "konsol.close.commentary_model", "konsol.close.close_event",
+             "konsol.epm", "konsol.epm.budget_fingerprint",
              "konsol.consolidation", "konsol.consolidation.doctype",
              "konsol.consolidation.doctype.assertion_run",
              "konsol.consolidation.doctype.assertion_run.assertion_run",
@@ -504,6 +570,7 @@ def _invoke(site, run):
         "konsol.entity_permissions": entity_permissions,
         "konsol.close.ch_read": close.ch_read, "konsol.close.signoff_gate": close.signoff_gate,
         "konsol.close.close_event": close.close_event,
+        "konsol.epm": epm, "konsol.epm.budget_fingerprint": epm.budget_fingerprint,
         "konsol.consolidation": consolidation, "konsol.consolidation.doctype": doctype_pkg,
         "konsol.consolidation.doctype.assertion_run": assertion_run_pkg,
         "konsol.consolidation.doctype.assertion_run.assertion_run": assertion_run_mod,
@@ -615,7 +682,9 @@ def test_no_sql_constant_has_an_alias_column_collision():
     constants = _sql_constants()
     assert set(constants) == {
         "_TB_SQL", "_ENTITY_SQL", "_DRILL_SQL", "_DRILL_SQL_WITH_CTA",
-        "_DRILL_JOURNALS_SQL", "_ENTITY_TB_SQL",
+        "_DRILL_JOURNALS_SQL", "_ENTITY_TB_SQL", "_BUDGET_TB_SQL",
+        "_BUDGET_DRILL_SQL", "_BUDGET_DRILL_SQL_WITH_CTA", "_BUDGET_UNBALANCED_SQL", "_BUDGET_RATES_SQL",
+        "_ENTITY_BUDGET_TB_SQL",
     }, "a *_SQL constant was added or removed: update this test's expected set"
     for name, sql in constants.items():
         collision = _alias_collision(sql)
@@ -1076,8 +1145,14 @@ def test_export_statement_sheet_matches_the_golden_payload():
             if line["kind"] == "heading":
                 assert by_code[line["heading"]][0] == line["heading_name"]
                 assert by_code[line["heading"]][2] == line["current"]
+    # BUD-4-2 (PR #554 review D1): no declaration means no budget columns, so
+    # Commentary and By keep the golden positions; the state is the note.
+    assert rows[8][6:8] == ["Commentary", "By"]
     assert by_code["4"][6] == golden["commentary"]["4"]["text"]
     assert by_code["4"][7].startswith(golden["commentary"]["4"]["by"] + " · ")
+    assert not any(isinstance(c, str) and c.startswith("Budget (before") for r in rows for c in r)
+    assert any(isinstance(r[0], str) and r[0].startswith("Budget columns not shown: No approved budget for G1 FY2025")
+               for r in rows), [r[0] for r in rows[:8]]
 
 
 def test_export_drill_sheet_totals_equal_every_golden_heading():
@@ -1702,6 +1777,7 @@ def test_group_export_records_one_statement_exported_event():
         "detail": {
             "basis": "Group", "consolidation_group": "G1", "entity": None,
             "filename": response["filename"], "label": "Provisional",
+            "budget": None,   # S5 K12: no approved budget declared here
         },
     }]
     assert response["filename"] == "numbers-FY2025P07-G1.xlsx"
@@ -1762,6 +1838,7 @@ def test_entity_export_records_one_statement_exported_event_scoped_to_the_entity
         "detail": {
             "basis": "Entity", "consolidation_group": None, "entity": "ZZA",
             "filename": "numbers-FY2025P07-entity-ZZA.xlsx", "label": "Provisional",
+            "budget": None,   # ZZA is in no consolidation group: no entity budget
         },
     }]
     assert response["filename"] == "numbers-FY2025P07-entity-ZZA.xlsx"
@@ -1783,7 +1860,7 @@ def test_export_records_only_after_the_workbook_is_built():
         site = make_site()
 
         def run(api, call=call):
-            def boom(payload, drills):
+            def boom(payload, drills, **kwargs):
                 raise RuntimeError("workbook failed")
             api.statement_export_model = types.SimpleNamespace(workbook=boom)
             return call(api)
@@ -1859,3 +1936,867 @@ def test_entity_with_a_tb_only_in_an_earlier_year_is_no_rows_not_a_zero_statemen
     result = _call_entity(site)
     assert result["state"] == "no_rows", result["state"]
     assert result["statement"] is None
+
+
+# --- the approved budget read (konsol#348 S5 K4; S5-Q2 a) --------------------
+#
+# ``budget_payload(fy, fp, group)`` is ``statement_report_model.rows(budget=)``'s
+# third payload: ``{state, message, statement, meta}``. The state is
+# ``approved_budget_model.budget_state`` over the live Approved Budget of the
+# (group, year), the Cycle it names, the Cycle's input fingerprint recomputed
+# at this read (S5-Q2 a) and the Budget Layers; only an ``ok`` state reads
+# ClickHouse, and that ONE read binds scenario_id, cycle AND layer (a reader
+# that misses one sums a budget with a reforecast). The statement is the same
+# ``statement_model.statement`` over the budget rows. Nothing here raises into
+# the actuals statement: every failure is a state with its sentence.
+
+CYCLE = "BCYC-ZZB-2025-abc12345"
+DECLARATION = "APB-CG-G1--2025-0f0f0f0f"
+FINGERPRINT = "0f0f0f0f0f0f0f0f"
+
+
+def _budget_site(**declaration):
+    site = _Site()
+    site.approved_budgets = [{
+        "name": DECLARATION, "docstatus": 1, "consolidation_group": "CG-G1-", "fiscal_year": 2025,
+        "budget_cycle": CYCLE, "scenario_id": "ZZB", "rate_set": "ZZRS", "layer_policy": "All layers",
+        "layer": None, "input_fingerprint": FINGERPRINT, "owner": "drafter@example.com",
+        "modified": datetime(2026, 11, 20, 9, 0, 0),
+        # PR #554 review m1: the approver is the submitter, stamped at submit.
+        "approved_by": LEAD, "approved_on": datetime(2026, 11, 17, 9, 0, 0), **declaration}]
+    site.budget_cycles = {CYCLE: {"name": CYCLE, "docstatus": 1, "input_fingerprint": FINGERPRINT,
+                                  "scenario_id": "ZZB", "rate_set": "ZZRS", "fiscal_year": 2025}}
+    site.fingerprints = {CYCLE: {"cycle": CYCLE, "docstatus": 1, "stored": FINGERPRINT,
+                                 "current": FINGERPRINT, "matches": True, "message": "as approved"}}
+    site.budget_tb_rows = [
+        _tb_row("4100", -1000.0, adjustment_type="entity"),
+        _tb_row("1110", 300.0, adjustment_type="entity"),
+        _tb_row("UNBALANCED", 700.0, adjustment_type="unbalanced"),
+    ]
+    return site
+
+
+def _call_budget(site, fy=2025, fp=7, group="G1"):
+    result = _invoke(site, lambda api: api.budget_payload(fy, fp, group))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def _budget_calls(site):
+    return [(sql, params) for sql, params in site.ch_calls if "gold_fully_consolidated_budget" in sql]
+
+
+def test_budget_sql_binds_group_scenario_cycle_layers_and_year():
+    """The one budget read binds all of scenario_id, cycle and layer."""
+    site = _budget_site()
+    result = _call_budget(site)
+    assert result["state"] == "ok", result["message"]
+    calls = _budget_calls(site)
+    assert len(calls) == 1 and len(site.ch_calls) == 1, site.ch_calls
+    sql, params = calls[0]
+    for bind in ("consolidation_group = {group:String}", "scenario_id = {scenario:String}",
+                 "cycle = {cycle:String}", "layer IN {layers:Array(String)}", "fiscal_year <= {fy:UInt32}"):
+        assert bind in sql, bind
+    assert params == {"group": "G1", "scenario": "ZZB", "cycle": CYCLE, "fy": 2025,
+                      "layers": "['base','board']"}
+    assert "dim_" not in sql
+    assert "GROUP BY fiscal_year, fiscal_period, main_account, adjustment_type" in sql
+
+
+def test_ok_budget_payload_is_the_statement_over_the_budget_rows_with_meta():
+    site = _budget_site()
+    result = _call_budget(site)
+    assert result["state"] == "ok"
+    assert result["meta"] == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS",
+                              "scenario_id": "ZZB", "declaration": DECLARATION}
+    assert set(result) == {"state", "message", "statement", "meta"}
+    for word in (CYCLE, "base, board", "ZZRS", DECLARATION, LEAD, "2026-11-17"):
+        assert word in result["message"], word
+    # PR #554 review m1: the submitter and the submit time, never the drafter
+    # (owner) or the last save (modified).
+    assert "drafter@example.com" not in result["message"] and "2026-11-20" not in result["message"]
+    stmt = result["statement"]
+    assert stmt["minor_unit"] == 2
+    pl = stmt["sections"][0]["lines"]
+    assert next(l for l in pl if l.get("heading") == "4")["current"] == 1000.0
+    bs = stmt["sections"][1]["lines"]
+    assert _bs_line(result, "1")["current"] == 300.0
+    unbalanced = next(l for l in bs if l.get("kind") == "unbalanced")
+    assert unbalanced["current"] == 700.0
+    assert bs[-1]["kind"] == "residual" and bs[-1]["current"] == 0.0
+    assert ("fingerprint", CYCLE) in site.reads, "S5-Q2 a: the fingerprint is checked at the read"
+
+
+def test_an_unbudgeted_pl_heading_from_the_s5_path_is_budget_zero_and_its_drill_opens_empty():
+    """Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
+    6956694095) holds through the S5 path itself (PR #558 review m1):
+    statement_model.statement emits every chart heading, at 0 when no row
+    sits under it, so a budget with no row under P&L heading 4 still carries
+    heading 4. The report then shows Budget 0.00 and Budget YTD 0.00, the
+    actual as the variance, the favourability by the sign of the variance, and a Budget cell that opens the drill; the
+    drill is ok and shows no rows."""
+    site = _budget_site()
+    site.accounts["4"]["normal_balance"] = "Credit"
+    site.budget_tb_rows = [_tb_row("1110", 300.0, adjustment_type="entity"),
+                           _tb_row("UNBALANCED", -300.0, adjustment_type="unbalanced")]
+    budget = _call_budget(site)
+    assert budget["state"] == "ok", budget["message"]
+    assert _line(budget, "Profit and Loss", "heading", "4")["current"] == 0.0, "emitted at 0"
+
+    actual = _call(site, group="G1")
+    R = _load_path("statement_report_model_for_unbudgeted_test",
+                   os.path.join(CLOSE_DIR, "statement_report_model.py"))
+    [row] = [r for r in R.rows(actual, drill_group="CG-G1-", budget=budget) if r["code"] == "4"]
+    assert row["budget"] == 0.0 and row["budget_ytd"] == 0.0
+    assert row["variance_to_budget"] == row["current"] == 241.43
+    assert row["favourability"] == "Favourable", "unbudgeted revenue"
+    assert row["drill_budget"] == 1, "the Budget cell opens the drill"
+
+    drill = _call_budget_drill(site, heading="4")
+    assert drill["state"] == "ok", drill["message"]
+    assert drill["drill"]["rows"] == [] and drill["drill"]["total"] == 0.0
+
+
+def _unbudgeted_export_site(side, actual_4100):
+    """A site whose budget has NO row under P&L heading 4 or BS heading 1,
+    with heading 4 declaring ``side`` and an actual of ``actual_4100`` on
+    4100 (actuals and the entity-grain drill agree, so the export is ok)."""
+    site = _export_budget_site()
+    site.accounts["4"]["normal_balance"] = side
+    site.tb_rows = [_tb_row("4100", actual_4100) if r["main_account"] == "4100" else r
+                    for r in site.tb_rows]
+    site.drill_tb_rows = [_drill_tb_row("4100", actual_4100, "entity", "ZZA")
+                          if r["main_account"] == "4100" else r for r in site.drill_tb_rows]
+    site.budget_tb_rows = [_tb_row("2100", -50.0, adjustment_type="entity"),
+                           _tb_row("UNBALANCED", 50.0, adjustment_type="unbalanced")]
+    site.budget_drill_rows = [_drill_tb_row("2100", -50.0, "entity", "ZZA"),
+                              _drill_tb_row("UNBALANCED", 50.0, "unbalanced", "ZZA")]
+    site.budget_rate_rows = [_rate_row("ZZA", "2100", 1.10)]
+    return site
+
+
+def _export_row(book, code):
+    """(budget, variance, favourability, budget ytd) cells of the Statement
+    sheet row whose code column is ``code``, found by the header labels."""
+    rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
+    at = next(i for i, r in enumerate(rows) if r[1] == code)
+    head = next(r for r in reversed(rows[:at]) if "Budget (before eliminations)" in r)
+    start = head.index("Budget (before eliminations)")
+    return rows[at][start:start + 4]
+
+
+@pytest.mark.parametrize("code, side, actual, budget_value, variance, favourability", [
+    # Credit heading, revenue actual 241.43, no budget: variance is the actual.
+    ("4", "Credit", -241.43, 0.0, 241.43, "Favourable"),
+    # Debit (cost) heading, a cost of 241.43 against budget 0: Unfavourable.
+    ("4", "Debit", 241.43, 0.0, -241.43, "Unfavourable"),
+    # No declared normal balance: the sign alone decides (konsol#562).
+    ("4", "", -241.43, 0.0, 241.43, "Favourable"),
+    # Balance Sheet heading 1: Budget 0.0, no variance, no favourability.
+    ("1", "Debit", -241.43, 0.0, None, None),
+])
+def test_unbudgeted_heading_is_budget_zero_with_favourability_by_sign(
+        code, side, actual, budget_value, variance, favourability):
+    """Unbudgeted is budget zero (Deepak Pai, 22 Sep and 17 Nov 2026, konsol#348):
+    while the budget is ok a heading with no budget rows shows Budget 0.00 and
+    Variance = actual, and Favourability follows the sign of the variance,
+    so unbudgeted cost is Unfavourable. Restores the hand-payload cases that
+    the PR #558 fix range deleted (review m1), through the real
+    _budget_statement path, then the report model rows and the .xlsx cells."""
+    site = _unbudgeted_export_site(side if code == "4" else "", actual)
+    budget = _call_budget(site)
+    assert budget["state"] == "ok", budget["message"]
+    section = "Profit and Loss" if code == "4" else "Balance Sheet"
+    assert _line(budget, section, "heading", code)["current"] == 0.0, "emitted at 0"
+    actual_payload = _call(site, group="G1")
+    R = _load_path("statement_report_model_for_unbudgeted_cases",
+                   os.path.join(CLOSE_DIR, "statement_report_model.py"))
+    [row] = [r for r in R.rows(actual_payload, drill_group="CG-G1-", budget=budget) if r["code"] == code]
+    assert row["budget"] == budget_value
+    assert row["variance_to_budget"] == variance
+    assert row.get("favourability") == favourability
+
+    cells = _export_row(_export_book(site, group="G1"), code)
+    assert cells[0] == budget_value
+    assert cells[1] == variance
+    assert cells[2] == favourability
+
+
+def test_no_declaration_is_no_approved_budget_with_no_clickhouse_and_no_fingerprint_read():
+    site = _Site()
+    result = _call_budget(site)
+    assert result["state"] == "no_approved_budget"
+    assert "No approved budget for G1 FY2025" in result["message"]
+    assert result["statement"] is None
+    assert result["meta"] == {"cycle": None, "layers": None, "rate_set": None, "scenario_id": None,
+                              "declaration": None}
+    assert site.ch_calls == []
+    assert not [r for r in site.reads if r[0] == "fingerprint"]
+
+
+def test_a_draft_declaration_is_named_but_declares_nothing():
+    site = _budget_site(docstatus=0)
+    result = _call_budget(site)
+    assert result["state"] == "no_approved_budget"
+    assert DECLARATION in result["message"] and "draft" in result["message"]
+    assert site.ch_calls == []
+
+
+def test_a_declaration_of_another_group_or_year_does_not_count():
+    site = _budget_site(consolidation_group="CG-G2-")
+    assert _call_budget(site)["state"] == "no_approved_budget"
+    site = _budget_site(fiscal_year=2024)
+    assert _call_budget(site)["state"] == "no_approved_budget"
+    assert site.ch_calls == []
+
+
+def test_a_cancelled_or_missing_cycle_is_cycle_cancelled_with_no_fingerprint_read():
+    site = _budget_site()
+    site.budget_cycles[CYCLE]["docstatus"] = 2
+    result = _call_budget(site)
+    assert result["state"] == "cycle_cancelled" and "is cancelled" in result["message"]
+    assert result["meta"]["cycle"] == CYCLE and result["meta"]["declaration"] == DECLARATION
+    assert site.ch_calls == [] and not [r for r in site.reads if r[0] == "fingerprint"]
+    site = _budget_site()
+    site.budget_cycles = {}
+    result = _call_budget(site)
+    assert result["state"] == "cycle_cancelled" and "no longer exists" in result["message"]
+
+
+def test_a_changed_fingerprint_is_inputs_changed_with_no_clickhouse_read():
+    site = _budget_site()
+    site.fingerprints[CYCLE].update(matches=False, current="deadbeefdeadbeef")
+    result = _call_budget(site)
+    assert result["state"] == "inputs_changed"
+    assert CYCLE in result["message"] and "changed since it was approved" in result["message"]
+    assert result["statement"] is None and site.ch_calls == []
+    # The declaration's copy of the fingerprint is not the Cycle's: the same state.
+    site = _budget_site(input_fingerprint="1111111111111111")
+    assert _call_budget(site)["state"] == "inputs_changed"
+
+
+def test_one_layer_policy_reads_that_layer_only_and_a_gone_layer_is_layer_missing():
+    site = _budget_site(layer_policy="One layer", layer="board")
+    result = _call_budget(site)
+    assert result["state"] == "ok" and result["meta"]["layers"] == ["board"]
+    assert _budget_calls(site)[0][1]["layers"] == "['board']"
+    site = _budget_site(layer_policy="One layer", layer="gone")
+    result = _call_budget(site)
+    assert result["state"] == "layer_missing" and "gone" in result["message"]
+    assert site.ch_calls == []
+
+
+def test_no_budget_rows_for_the_year_is_no_rows_naming_the_cycle_never_zeros():
+    site = _budget_site()
+    site.budget_tb_rows = [_tb_row("4100", -1000.0, adjustment_type="entity", fy=2024, fp=12)]
+    result = _call_budget(site)
+    assert result["state"] == "no_rows"
+    assert CYCLE in result["message"] and "FY2025 P07" in result["message"]
+    assert result["statement"] is None
+    assert result["meta"]["cycle"] == CYCLE
+
+
+def test_a_warehouse_failure_is_a_state_with_the_meta_kept_never_a_raise():
+    site = _budget_site()
+    site.ch_error = RuntimeError("Code: 60. DB::Exception: Table epm_gold.gold_fully_consolidated_budget "
+                                 "does not exist. (UNKNOWN_TABLE)")
+    result = _call_budget(site)
+    assert result["state"] == "not_built" and "UNKNOWN_TABLE" in result["message"]
+    assert result["statement"] is None and result["meta"]["cycle"] == CYCLE
+
+
+def test_budget_payload_refuses_an_unknown_group_and_an_undeclared_period():
+    site = _budget_site()
+    with pytest.raises(Exception):
+        _call_budget(site, group="ZZ-NOPE")
+    with pytest.raises(Exception):
+        _call_budget(site, fy=2031)
+
+
+def test_the_actuals_statement_reads_no_budget():
+    """``get_statement`` is unchanged by S5: the report asks for the budget
+    separately (K7), so a budget fault can never fail the actuals."""
+    site = _budget_site()
+    _call(site)
+    assert _budget_calls(site) == []
+    assert not [r for r in site.reads if r[0] == "fingerprint"]
+    assert not [r for r in site.reads if r == ("get_all", "Approved Budget")]
+
+
+# --- the budget drill (konsol#348 S5 K9; S5-Q7 a) -----------------------------
+#
+# ``get_budget_drill(fy, fp, group, heading)`` (GET) is ``get_drill`` on the
+# approved budget: the budget statement (K4) decides the state; a heading's
+# entity-grain rows come from gold_fully_consolidated_budget bound to the same
+# scenario_id, cycle and layers; ``drill_model.drill`` checks the total against
+# the budget statement's line; ``with_rates`` attaches each account's
+# translation rate, declared Translation Method and Rate Set as the warehouse
+# recorded them at build time (gold_consolidated_budget_tb carries fx_method
+# and rate_set on every row; S5 G1), the window's rows only. The chart's
+# Translation Method of today is never attached: a chart changed since the
+# build would misname the rate. ``heading == "UNBALANCED"`` is the plug's own
+# drill by entity.
+
+def _rate_row(entity, account, rate, rate_set="ZZRS", fy=2025, fp=7, fx_method="closing"):
+    return {"fiscal_year": fy, "fiscal_period": fp, "data_area_id": entity, "main_account": account,
+            "fx_method": fx_method, "translation_rate": rate, "rate_set": rate_set}
+
+
+def _budget_drill_site():
+    site = _budget_site()
+    # Today's chart says average; the warehouse translated at closing (S5 G1).
+    site.accounts["1110"]["fx_method"] = "average"
+    site.budget_drill_rows = [
+        _drill_tb_row("1110", 300.0, "entity", "ZZA"),
+        _drill_tb_row("4100", -1000.0, "entity", "ZZA"),
+        _drill_tb_row("UNBALANCED", 700.0, "unbalanced", "ZZA"),
+    ]
+    site.budget_rate_rows = [
+        _rate_row("ZZA", "1110", 1.10),
+        _rate_row("ZZA", "1110", 1.12, fp=6),      # in the BS window
+        _rate_row("ZZA", "1110", 1.15, fp=8),      # after the period: not in the window
+        _rate_row("ZZA", "4100", 1.08),
+    ]
+    return site
+
+
+def _call_budget_drill(site, fy=2025, fp=7, group="G1", heading="1"):
+    result = _invoke(site, lambda api: api.get_budget_drill(fy, fp, group, heading))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def test_budget_drill_of_a_heading_has_rates_per_account_and_matches_the_budget_line():
+    site = _budget_drill_site()
+    result = _call_budget_drill(site)
+    assert result["state"] == "ok", result["message"]
+    assert result["basis"] == "Budget" and result["heading"] == "1"
+    assert result["meta"]["cycle"] == CYCLE and result["meta"]["layers"] == ["base", "board"]
+    drill = result["drill"]
+    budget = _call_budget(_budget_drill_site())
+    assert drill["total"] == _bs_line(budget, "1")["current"] == 300.0
+    [row] = drill["rows"]
+    assert row["entity"] == "ZZA" and row["layer"] == "entity"
+    assert row["source"] == {"kind": "cycle", "cycle": CYCLE, "entity": "ZZA"}
+    assert row["accounts"][0]["main_account"] == "1110"
+    assert row["accounts"][0]["rates"] == [
+        {"fx_method": "closing", "rate": 1.10, "rate_set": "ZZRS"},
+        {"fx_method": "closing", "rate": 1.12, "rate_set": "ZZRS"},
+    ], "the window's distinct rates, with the warehouse's fx_method, never today's chart; P08 is outside"
+    assert row["rates"] == row["accounts"][0]["rates"]
+
+
+def test_budget_drill_rates_read_fx_method_from_the_budget_tb_not_the_chart():
+    """S5 G1: the rates read names fx_method from gold_consolidated_budget_tb,
+    and the method shown is the row's own (the chart's declared method as
+    recorded at build time, review m6). A blank method on the row stays
+    blank (the report reads it "closing (undeclared)"); it is never filled
+    from the chart."""
+    site = _budget_drill_site()
+    site.budget_rate_rows = [
+        _rate_row("ZZA", "1110", 1.10, fx_method="historical"),
+        _rate_row("ZZA", "1110", 1.12, fx_method="", fp=6),
+        _rate_row("ZZA", "4100", 1.08),
+    ]
+    result = _call_budget_drill(site)
+    assert result["state"] == "ok", result["message"]
+    rates_sql = [sql for sql, _ in site.ch_calls if "gold_consolidated_budget_tb" in sql]
+    assert len(rates_sql) == 1 and "fx_method" in rates_sql[0], rates_sql
+    [row] = result["drill"]["rows"]
+    # with_rates orders by (fx_method, rate, rate_set): the blank method first.
+    assert row["accounts"][0]["rates"] == [
+        {"fx_method": "", "rate": 1.12, "rate_set": "ZZRS"},
+        {"fx_method": "historical", "rate": 1.10, "rate_set": "ZZRS"},
+    ]
+    assert "average" not in json.dumps(result)
+
+
+def test_budget_drill_reads_clickhouse_three_times_each_bound_to_scenario_cycle_and_layers():
+    site = _budget_drill_site()
+    _call_budget_drill(site)
+    assert len(site.ch_calls) == 3, [sql[:60] for sql, _ in site.ch_calls]
+    tables = [("gold_fully_consolidated_budget" in sql, "gold_consolidated_budget_tb" in sql,
+               "data_area_id" in sql) for sql, _ in site.ch_calls]
+    assert tables == [(True, False, False), (True, False, True), (False, True, True)]
+    for sql, params in site.ch_calls:
+        for bind in ("scenario_id = {scenario:String}", "cycle = {cycle:String}",
+                     "layer IN {layers:Array(String)}", "consolidation_group = {group:String}"):
+            assert bind in sql, (bind, sql)
+        assert params["scenario"] == "ZZB" and params["cycle"] == CYCLE
+        assert params["layers"] == "['base','board']" and params["group"] == "G1"
+        assert "dim_" not in sql
+    assert site.ch_calls[1][1]["accounts"] == "['1110']"
+    assert site.ch_calls[2][1]["accounts"] == "['1110']"
+
+
+def test_budget_drill_of_the_cta_heading_takes_the_cta_branch():
+    site = _budget_drill_site()
+    site.budget_tb_rows.append(_tb_row("CTA", -5.0, adjustment_type="cta"))
+    site.budget_drill_rows.append(_drill_tb_row("CTA", -5.0, "cta", "ZZA"))
+    result = _call_budget_drill(site, heading="3")
+    assert result["state"] == "ok", result["message"]
+    assert "adjustment_type = 'cta'" in site.ch_calls[1][0]
+    layers = [r["layer"] for r in result["drill"]["rows"]]
+    assert "cta" in layers
+    assert result["drill"]["total"] == _bs_line(_call_budget(site), "3")["current"]
+
+
+def test_budget_drill_of_unbalanced_is_one_row_per_entity_with_no_rates_read():
+    site = _budget_drill_site()
+    result = _call_budget_drill(site, heading="UNBALANCED")
+    assert result["state"] == "ok", result["message"]
+    drill = result["drill"]
+    assert drill["heading"] == "UNBALANCED" and drill["section"] == "Balance Sheet"
+    assert [(r["entity"], r["amount"], r["accounts"]) for r in drill["rows"]] == [("ZZA", 700.0, [])]
+    assert drill["rows"][0]["source"] == {"kind": "cycle", "cycle": CYCLE, "entity": "ZZA"}
+    assert drill["total"] == 700.0
+    assert len(site.ch_calls) == 2
+    assert "adjustment_type = 'unbalanced'" in site.ch_calls[1][0]
+    assert "gold_consolidated_budget_tb" not in site.ch_calls[1][0]
+
+
+def test_budget_drill_without_a_declaration_is_its_state_with_no_clickhouse_read():
+    site = _Site()
+    result = _call_budget_drill(site)
+    assert result["state"] == "no_approved_budget" and result["drill"] is None
+    assert "No approved budget for G1 FY2025" in result["message"]
+    assert result["basis"] == "Budget" and result["meta"]["cycle"] is None
+    assert site.ch_calls == []
+
+
+def test_budget_drill_refuses_an_unknown_heading_group_or_role():
+    site = _budget_drill_site()
+    with pytest.raises(Exception):
+        _call_budget_drill(site, heading="1110")   # a leaf, not a heading
+    with pytest.raises(Exception):
+        _call_budget_drill(site, heading="ZZ")
+    with pytest.raises(Exception):
+        _call_budget_drill(site, group="ZZ-NOPE")
+    site.roles = {"Entity Accountant"}
+    with pytest.raises(Exception) as info:
+        _call_budget_drill(site)
+    assert type(info.value).__name__ == "PermissionError"
+
+
+def test_budget_drill_with_a_missing_rate_row_is_an_error_naming_entity_and_account():
+    site = _budget_drill_site()
+    site.budget_rate_rows = [r for r in site.budget_rate_rows if r["main_account"] != "1110"]
+    result = _call_budget_drill(site)
+    assert result["state"] == "error" and result["drill"] is None
+    assert "ZZA" in result["message"] and "1110" in result["message"]
+
+
+def test_budget_drill_cuts_to_the_callers_scope():
+    site = _budget_drill_site()
+    # ZZC, not ZZB: the scenario is ZZB, and the check below is on the whole payload.
+    site.budget_drill_rows.append(_drill_tb_row("1110", 50.0, "entity", "ZZC"))
+    site.budget_tb_rows = [r if r["main_account"] != "1110" else dict(r, amount=350.0) for r in site.budget_tb_rows]
+    site.allowed = ["ZZA"]
+    result = _call_budget_drill(site)
+    assert result["state"] == "ok", result["message"]
+    rows = result["drill"]["rows"]
+    assert [r.get("entity") for r in rows] == ["ZZA", None]
+    assert rows[1]["label"] == "1 entities outside your scope" and rows[1]["amount"] == 50.0
+    assert "ZZC" not in json.dumps(result)
+
+
+def test_budget_drill_warehouse_failure_is_a_state():
+    site = _budget_drill_site()
+    site.ch_error = RuntimeError("Code: 60. DB::Exception: Table does not exist. (UNKNOWN_TABLE)")
+    result = _call_budget_drill(site)
+    assert result["state"] == "not_built" and result["drill"] is None
+
+
+# --- the export with the approved budget (konsol#348 S5 K12) ------------------
+#
+# export_statement on the Group basis reads the approved budget (K4) and every
+# heading's budget drill in ONE entity-grain read (the heading leaves plus the
+# UNBALANCED literal, so the plug's drill needs no read of its own) and ONE
+# rates read, the _drill_reads pattern; the workbook gets both (K11), and the
+# statement_exported event's detail carries budget {cycle, layers, rate_set},
+# or null when there is no ok budget. ClickHouse: 4 reads without a budget,
+# 7 with one (the actuals' 4, the budget statement's 1, the two drill reads).
+# A budget fault (a warehouse failure on its reads, a drill mismatch, a
+# missing rate) never fails the actuals' file: the note says why and the
+# event records budget null.
+
+def _export_budget_site():
+    site = _budget_site()
+    actuals = _export_site()
+    site.drill_tb_rows, site.journal_rows = actuals.drill_tb_rows, actuals.journal_rows
+    site.budget_drill_rows = [
+        _drill_tb_row("1110", 300.0, "entity", "ZZA"),
+        _drill_tb_row("4100", -1000.0, "entity", "ZZA"),
+        _drill_tb_row("UNBALANCED", 700.0, "unbalanced", "ZZA"),
+    ]
+    site.budget_rate_rows = [_rate_row("ZZA", "1110", 1.10), _rate_row("ZZA", "4100", 1.08)]
+    return site
+
+
+def _budget_event_detail(site):
+    assert len(site.events) == 1, site.events
+    return site.events[0]["detail"]["budget"]
+
+
+def test_export_with_an_approved_budget_writes_the_budget_sheet_and_records_the_budget():
+    site = _export_budget_site()
+    book = _export_book(site)
+    assert book.sheetnames == ["Statement", "Drill", "Journals", "Budget drill"]
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "Budget (before eliminations)" in text and "Variance to budget" in text
+    assert f"Approved budget for G1 FY2025: Budget Cycle {CYCLE}" in text, "the ok budget's own sentence"
+    assert _budget_event_detail(site) == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS"}
+    values = {v for row in book["Budget drill"].iter_rows(values_only=True) for v in row if v is not None}
+    assert "UNBALANCED" in values, "the plug's own drill is on the sheet"
+    assert "ZZRS" in values and any(isinstance(v, str) and "closing 1.1" in v for v in values), values
+
+
+def test_export_with_a_budget_reads_clickhouse_seven_times_each_budget_read_bound():
+    site = _export_budget_site()
+    _call_export(site)
+    assert len(site.ch_calls) == 7, [sql[:70] for sql, _ in site.ch_calls]
+    budget_calls = [(sql, p) for sql, p in site.ch_calls
+                    if "gold_fully_consolidated_budget" in sql or "gold_consolidated_budget_tb" in sql]
+    assert len(budget_calls) == 3
+    for sql, params in budget_calls:
+        for bind in ("scenario_id = {scenario:String}", "cycle = {cycle:String}",
+                     "layer IN {layers:Array(String)}", "consolidation_group = {group:String}"):
+            assert bind in sql, (bind, sql)
+        assert params["scenario"] == "ZZB" and params["cycle"] == CYCLE
+        assert params["layers"] == "['base','board']"
+        assert "dim_" not in sql
+    grain = [(sql, p) for sql, p in budget_calls if "gold_fully_consolidated_budget" in sql and "data_area_id" in sql]
+    assert len(grain) == 1, "ONE entity-grain budget read, whatever the heading count"
+    assert "'UNBALANCED'" in grain[0][1]["accounts"], "the plug's rows come with the heading leaves"
+    assert "'1110'" in grain[0][1]["accounts"] and "'4100'" in grain[0][1]["accounts"]
+    assert "adjustment_type = 'unbalanced'" not in grain[0][0]
+    rates = [(sql, p) for sql, p in budget_calls if "gold_consolidated_budget_tb" in sql]
+    assert len(rates) == 1 and "fx_method" in rates[0][0]
+
+
+def test_export_without_a_declaration_reads_four_times_and_records_budget_null():
+    site = _export_site()
+    book = _export_book(site)
+    assert len(site.ch_calls) == 4
+    assert _budget_event_detail(site) is None
+    assert "Budget drill" not in book.sheetnames
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "No approved budget for G1 FY2025" in text, "the state's sentence is the note"
+    assert "Budget (before eliminations)" not in text, "BUD-4-2: a state, never a blank column (D1)"
+
+
+def test_export_with_a_budget_drill_fault_keeps_the_actuals_file_and_records_budget_null():
+    site = _export_budget_site()
+    site.budget_rate_rows = []     # with_rates: no rate row for ZZA 1110, never a blank rate
+    book = _export_book(site)
+    assert book.sheetnames == ["Statement", "Drill", "Journals"]
+    assert _budget_event_detail(site) is None
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "Budget columns not shown: ZZA 4100: no translation rate row" in text, "the note names the fault"
+    assert "Budget (before eliminations)" not in text, "BUD-4-2: a state, never a blank column (D1)"
+    assert "filecontent" in site.response
+
+
+def test_export_with_an_ok_budget_adds_the_four_columns_before_commentary():
+    """The other half of D1: with an ok budget the four columns follow the
+    actuals' and Commentary moves four cells right. Favourability (S6 KB4)
+    reaches the file."""
+    golden = _golden()
+    book = _export_book(_export_budget_site())
+    rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
+    header = next(r for r in rows if r[0] == "Line")
+    assert header[6:12] == ["Budget (before eliminations)", "Variance to budget", "Favourability",
+                            "Budget year to date", "Commentary", "By"]
+    by_code = {r[1]: r for r in rows if r[1]}
+    assert by_code["4"][10] == golden["commentary"]["4"]["text"]
+    assert by_code["4"][6] == 1000.0, "COST OF SALES budget"
+    # The chart here leaves heading 4's normal balance blank; the sign alone decides (konsol#562).
+    assert by_code["4"][8] == "Unfavourable", by_code["4"]
+    net = next(r for r in rows if r[0] == "Net result")
+    assert net[7] < 0 and net[8] == "Unfavourable", net
+
+
+def test_export_with_a_faulty_budget_read_keeps_the_actuals_file_and_logs_the_fault():
+    """PR #554 review M2: a fault anywhere in the budget read (here
+    check_input_fingerprint raising RuntimeError, before any ClickHouse read)
+    must not fail the actuals' file. The whole of _export_budget is guarded
+    as consolidated_statement._budget is: the budget is state "error", the
+    note says why, the event records budget null, and one Error Log carries
+    the traceback (a fault is a bug; the note alone needs a reader to report it)."""
+    site = _export_budget_site()
+    site.fingerprint_error = RuntimeError("fingerprint table is gone")
+    book = _export_book(site)
+    assert "filecontent" in site.response
+    assert book.sheetnames == ["Statement", "Drill", "Journals"]
+    assert _budget_event_detail(site) is None
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "Budget columns not shown: RuntimeError: fingerprint table is gone" in text, text
+    assert "Budget (before eliminations)" not in text
+    assert site.error_logs == [{"title": "Consolidated Statement export budget read", "message": "Traceback (stub)"}]
+    assert len(site.ch_calls) == 4, "the actuals' reads only"
+
+
+def test_export_with_a_refused_budget_line_keeps_the_actuals_file_without_a_log():
+    """PR #554 review M2: a frappe.throw inside the budget read (here
+    _budget_line's "no budget statement line") is a ValidationError: it
+    becomes state "error" with its own message, the queued message is
+    cleared so no dialog follows the download, and nothing is logged (a
+    refusal is the user's to read)."""
+    site = _export_budget_site()
+
+    def run(api):
+        api._budget_line = lambda *a, **k: api.frappe.throw("4 has no budget statement line (a bug).")
+        api.export_statement(2025, 7, None)
+
+    _invoke(site, run)
+    assert "filecontent" in site.response
+    import io
+    from openpyxl import load_workbook
+    book = load_workbook(io.BytesIO(site.response["filecontent"]))
+    assert book.sheetnames == ["Statement", "Drill", "Journals"]
+    text = " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+    assert "Budget columns not shown: 4 has no budget statement line (a bug)." in text, text
+    assert _budget_event_detail(site) is None
+    assert site.error_logs == [] and site.cleared_messages == 1
+
+
+# --- the Entity-basis export carries the entity budget (konsol#348 S6) -----------
+#
+# export_statement(basis="Entity") passes entity_budget_payload (KB8) to the
+# workbook, so the Entity export has the Desk report's budget columns and note
+# (KB9). The Entity basis has no budget drill: no "Budget drill" sheet, and the
+# note says so. A budget fault never fails the actuals' file.
+
+def _entity_export_budget_site(groups=("G1",)):
+    site = _entity_budget_site(groups=groups)
+    site.entity_tb_rows = _entity_site().entity_tb_rows
+    return site
+
+
+def _sheet_text(book):
+    return " ".join(str(c.value) for row in book["Statement"].iter_rows() for c in row if c.value)
+
+
+def test_entity_export_with_an_entity_budget_writes_the_budget_columns_and_note():
+    site = _entity_export_budget_site()
+    book = _entity_book(site)
+    assert book.sheetnames == ["Statement", "Drill", "Journals"], "no budget drill on the Entity basis"
+    text = _sheet_text(book)
+    assert "Budget (before eliminations)" in text and "Favourability" in text
+    assert "Entity budget for ZZA in JPY" in text, "the entity budget's own sentence"
+    M = _load_path("statement_export_model_for_entity_budget_test",
+                   os.path.join(CLOSE_DIR, "statement_export_model.py"))
+    assert M.ENTITY_NO_BUDGET_DRILL in text
+    rows = [list(r) for r in book["Statement"].iter_rows(values_only=True)]
+    by_code = {r[1]: r for r in rows if r[1]}
+    assert by_code["4"][6] == 1000.0, "the entity budget's P&L heading"
+    assert len(site.ch_calls) == 2, [sql[:70] for sql, _ in site.ch_calls]
+    assert _budget_event_detail(site) == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS"}
+
+
+def test_entity_export_without_an_entity_budget_names_the_state_and_adds_no_column():
+    site = _entity_export_budget_site(groups=())
+    book = _entity_book(site)
+    text = _sheet_text(book)
+    assert "Budget columns not shown: ZZA is a member of no consolidation group" in text, text
+    assert "Budget (before eliminations)" not in text
+    assert _budget_event_detail(site) is None
+    assert len(site.ch_calls) == 1
+
+
+def test_entity_export_with_a_faulty_entity_budget_keeps_the_file_and_logs_the_fault():
+    site = _entity_export_budget_site()
+    site.fingerprint_error = RuntimeError("fingerprint table is gone")
+    book = _entity_book(site)
+    assert "filecontent" in site.response
+    text = _sheet_text(book)
+    assert "Budget columns not shown: RuntimeError: fingerprint table is gone" in text, text
+    assert "Budget (before eliminations)" not in text
+    assert _budget_event_detail(site) is None
+    assert site.error_logs == [{"title": "Consolidated Statement export entity budget read",
+                                "message": "Traceback (stub)"}]
+
+
+# --- the entity budget (konsol#348 S6 KB8; S6-Q6 a) -------------------------------
+#
+# ``entity_budget_payload(fy, fp, entity)`` (not whitelisted; the Desk report
+# calls it on the Entity basis, KB9) is the Approved Budget of the entity's ROOT
+# group, read at the entity's grain: gold_consolidated_budget_tb.local_amount
+# (the entity's own currency), bound to the group, the declaration's
+# scenario_id, cycle and layers AND the entity. The translated table has the
+# budget's plug; the local rows do not, so the reader synthesises one
+# ``unbalanced`` row per period (−Σ local) and S5's Unbalanced line and
+# residual rule serve the entity basis unchanged. The root is the TOP of the
+# tree: the walk follows parent_consolidation_group from the entity's one node
+# (an entity sits in one node, Consolidation Group._validate_entity_in_one_node;
+# a leaf's consolidation_group is its PARENT's code, so it is never the root's
+# in a nested tree). An entity in no node is ``no_group``, decided before any
+# Approved Budget or ClickHouse read. No ``choose_group``: one node and one
+# parent per node give one root by construction, and an ownership link may
+# only name an owner under the same root (ownership_period.owner_refusal).
+
+def _entity_budget_site(groups=("G1",)):
+    site = _budget_site()
+    site.minor_units = {"USD": 2, "JPY": 0}
+    site.entities = {
+        "ZZA": {"entity_name": "Zz Entity A", "functional_currency": "JPY", "is_group": 0},
+        "ZZG": {"entity_name": "Zz Group", "functional_currency": "JPY", "is_group": 1},
+    }
+    site.groups = [{"name": "CG-G1-", "consolidation_group": "G1", "reporting_currency": "USD"},
+                   {"name": "CG-G2-", "consolidation_group": "G2", "reporting_currency": "EUR"}]
+    # A member node directly under its root: its code is the parent's, its
+    # parent the root's node.
+    site.groups += [{"name": f"CG-{g}-ZZA", "consolidation_group": g, "data_area_id": "ZZA",
+                     "parent_consolidation_group": f"CG-{g}-", "reporting_currency": None}
+                    for g in groups]
+    site.entity_budget_rows = [
+        _drill_tb_row("4100", -1000, "entity", "ZZA"),
+        _drill_tb_row("1110", 300, "entity", "ZZA"),
+        _drill_tb_row("4100", -500, "entity", "ZZA", fp=6),
+        _drill_tb_row("1110", 500, "entity", "ZZA", fp=6),
+    ]
+    return site
+
+
+def _call_entity_budget(site, fy=2025, fp=7, entity="ZZA"):
+    result = _invoke(site, lambda api: api.entity_budget_payload(fy, fp, entity))
+    json.dumps(result)  # JSON-safe
+    return result
+
+
+def _entity_budget_calls(site):
+    return [(sql, params) for sql, params in site.ch_calls if "gold_consolidated_budget_tb" in sql]
+
+
+def test_entity_budget_reads_the_local_budget_once_bound_to_group_scenario_cycle_layers_and_entity():
+    site = _entity_budget_site()
+    result = _call_entity_budget(site)
+    assert result["state"] == "ok", result["message"]
+    calls = _entity_budget_calls(site)
+    assert len(calls) == 1 and len(site.ch_calls) == 1, site.ch_calls
+    sql, params = calls[0]
+    assert "gold_consolidated_budget_tb" in sql and "sum(local_amount)" in sql
+    for bind in ("consolidation_group = {group:String}", "scenario_id = {scenario:String}",
+                 "cycle = {cycle:String}", "layer IN {layers:Array(String)}", "fiscal_year <= {fy:UInt32}",
+                 "data_area_id = {entity:String}"):
+        assert bind in sql, bind
+    assert params == {"group": "G1", "scenario": "ZZB", "cycle": CYCLE, "fy": 2025,
+                      "layers": "['base','board']", "entity": "ZZA"}
+    assert "dim_" not in sql
+    assert ("fingerprint", CYCLE) in site.reads
+
+
+def test_entity_budget_payload_is_the_statement_in_the_entitys_currency_with_a_synthesised_plug():
+    site = _entity_budget_site()
+    result = _call_entity_budget(site)
+    assert set(result) == {"state", "message", "statement", "meta"}
+    assert result["meta"] == {"cycle": CYCLE, "layers": ["base", "board"], "rate_set": "ZZRS",
+                              "scenario_id": "ZZB", "declaration": DECLARATION,
+                              "group": "G1", "entity": "ZZA", "currency": "JPY"}
+    stmt = result["statement"]
+    assert stmt["minor_unit"] == 0, "the entity's functional currency, never the group's"
+    pl = _line(result, "Profit and Loss", "heading", "4")
+    assert pl["current"] == 1000.0 and pl["ytd"] == 1500.0
+    assert _bs_line(result, "1")["current"] == 800.0
+    bs = result["statement"]["sections"][1]["lines"]
+    unbalanced = next(l for l in bs if l.get("kind") == "unbalanced")
+    assert unbalanced["current"] == 700.0, "one plug per period: -(-1000+300)=700 at P7, -(-500+500)=0 at P6"
+    assert bs[-1]["kind"] == "residual" and bs[-1]["current"] == 0.0
+    for word in (CYCLE, "ZZA", "JPY", DECLARATION):
+        assert word in result["message"], word
+
+
+def test_entity_budget_plug_is_one_row_per_period_and_zero_when_balanced():
+    site = _entity_budget_site()
+    site.entity_budget_rows = [_drill_tb_row("4100", -1000, "entity", "ZZA"),
+                               _drill_tb_row("1110", 1000, "entity", "ZZA")]
+    result = _call_entity_budget(site)
+    assert result["state"] == "ok", result["message"]
+    bs = result["statement"]["sections"][1]["lines"]
+    # statement_model shows the plug line only when it is non-zero (S5-Q3 a).
+    assert "unbalanced" not in [l.get("kind") for l in bs]
+    assert bs[-1]["kind"] == "residual" and bs[-1]["current"] == 0.0
+
+
+def test_entity_budget_reads_the_top_root_groups_budget_through_a_nested_tree():
+    """PR #558 review M1: GROUP_CORP > GROUP_EMEA > DEMF. DEMF's node carries
+    its PARENT's code (GROUP_EMEA), and an Approved Budget is declared on the
+    root GROUP_CORP only: the Entity basis for DEMF walks the parent links to
+    GROUP_CORP and reads its budget, never GROUP_EMEA's (none) or a guess."""
+    site = _entity_budget_site(groups=())
+    site.entities["DEMF"] = {"entity_name": "Zz Demf", "functional_currency": "JPY", "is_group": 0}
+    site.groups = [
+        {"name": "CG-GROUP_CORP-", "consolidation_group": "GROUP_CORP", "data_area_id": None,
+         "parent_consolidation_group": None, "reporting_currency": "USD"},
+        {"name": "CG-GROUP_EMEA-", "consolidation_group": "GROUP_EMEA", "data_area_id": None,
+         "parent_consolidation_group": "CG-GROUP_CORP-", "reporting_currency": "EUR"},
+        {"name": "CG-GROUP_EMEA-DEMF", "consolidation_group": "GROUP_EMEA", "data_area_id": "DEMF",
+         "parent_consolidation_group": "CG-GROUP_EMEA-", "reporting_currency": None},
+    ]
+    site.approved_budgets[0]["consolidation_group"] = "CG-GROUP_CORP-"
+    site.entity_budget_rows = [_drill_tb_row("4100", -1000, "entity", "DEMF"),
+                               _drill_tb_row("1110", 300, "entity", "DEMF")]
+    result = _call_entity_budget(site, entity="DEMF")
+    assert result["state"] == "ok", result["message"]
+    assert result["meta"]["group"] == "GROUP_CORP" and result["meta"]["declaration"] == DECLARATION
+    [(sql, params)] = _entity_budget_calls(site)
+    assert params["group"] == "GROUP_CORP" and params["entity"] == "DEMF"
+    assert _line(result, "Profit and Loss", "heading", "4")["current"] == 1000.0
+
+
+def test_an_entity_on_two_nodes_is_refused_naming_them():
+    """The controller refuses a second node for an entity
+    (_validate_entity_in_one_node); data written around it is refused here by
+    name, never resolved to one of the roots."""
+    site = _entity_budget_site(groups=("G1", "G2"))
+    with pytest.raises(Exception) as info:
+        _call_entity_budget(site)
+    assert "CG-G1-ZZA" in str(info.value) and "CG-G2-ZZA" in str(info.value)
+    assert site.ch_calls == []
+
+
+def test_entity_in_no_group_is_no_group_with_no_reads():
+    site = _entity_budget_site(groups=())
+    result = _call_entity_budget(site)
+    assert result["state"] == "no_group" and "ZZA" in result["message"]
+    assert "Consolidation Group" in result["message"]
+    assert site.ch_calls == [] and not [r for r in site.reads if r == ("get_all", "Approved Budget")]
+
+
+def test_entity_budget_without_a_declaration_for_its_group_is_no_approved_budget():
+    site = _entity_budget_site()
+    site.approved_budgets = []
+    result = _call_entity_budget(site)
+    assert result["state"] == "no_approved_budget" and "G1 FY2025" in result["message"]
+    assert result["meta"]["group"] == "G1" and site.ch_calls == []
+
+
+def test_entity_budget_no_rows_names_the_cycle_and_the_entity_never_zeros():
+    site = _entity_budget_site()
+    site.entity_budget_rows = []
+    result = _call_entity_budget(site)
+    assert result["state"] == "no_rows"
+    assert CYCLE in result["message"] and "ZZA" in result["message"] and "FY2025 P07" in result["message"]
+    assert result["statement"] is None
+
+
+def test_entity_budget_refuses_a_blank_unknown_group_or_out_of_scope_entity_before_any_read():
+    for entity in ("", "ZZ-NOPE", "ZZG"):
+        site = _entity_budget_site()
+        with pytest.raises(Exception):
+            _call_entity_budget(site, entity=entity)
+        assert site.ch_calls == [], entity
+    site = _entity_budget_site()
+    site.allowed = {"ZZB"}
+    with pytest.raises(Exception) as info:
+        _call_entity_budget(site)
+    assert "ZZA" in str(info.value) or "permitted" in str(info.value).lower()
+    assert site.ch_calls == [] and not [r for r in site.reads if r[0] == "fingerprint"]
+
+
+def test_entity_budget_with_an_undeclared_functional_currency_is_setup_gap():
+    site = _entity_budget_site()
+    site.entities["ZZA"]["functional_currency"] = "XXX"
+    result = _call_entity_budget(site)
+    assert result["state"] == "setup_gap" and "XXX" in result["message"]
+    assert site.ch_calls == []

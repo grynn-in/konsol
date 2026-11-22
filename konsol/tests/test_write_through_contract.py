@@ -215,17 +215,25 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_gold.spread_profiles",
         "epm_gold.scenario_definitions",
         "epm_gold.currencies",
-        "epm_gold.entity_fiscal_calendars",
         "epm_gold.budget_annual_input",
         # Budget S2 (I3): the raw budget landing table, one row per Budget
         # Entry Line (test_budget_raw_ddl.py)
         "epm_raw.budget_entries",
+        # konsol#348 S4-Q2 (a): the approved Budget Cycles, one row each, so
+        # the warehouse reads a Cycle's Rate Set (test_budget_cycle_write_through.py)
+        "epm_staging.budget_cycles",
+        # konsol#348 S6-Q1 (b): a forecast scenario's declared current round per
+        # year, so the warehouse picks one round (test_current_forecast_doctype.py)
+        "epm_staging.current_forecasts",
         # konsol#110: the entity registry, so a connector-less entity has a
         # currency the consolidation can join on
         "epm_staging.entities",
         # konsol#103: the governed group exchange rates; translation reads
         # only these, so the table must exist before the first approval syncs
         "epm_staging.group_exchange_rates",
+        # konsol#348 S4-Q7 (a): which Rate Set is the actuals set, read by the
+        # warehouse the way it reads every reference table (test_rate_set.py)
+        "epm_staging.rate_sets",
         # konsol#159: the intercompany flag on the group chart
         "epm_staging.intercompany_accounts",
         # konsol#182: the group chart of accounts (Main Account)
@@ -839,6 +847,8 @@ def test_abandoned_relations_are_dropped_not_left_looking_live():
         "epm_staging.allocation_drivers",
         "epm_staging.allocation_tiers",
         "epm_staging.allocation_runs",
+        # konsol#577: Entity Fiscal Calendar is removed; nothing read the table
+        "epm_gold.entity_fiscal_calendars",
     }
     # nothing may be both dropped and created
     assert not set(m._RETIRED_TABLES) & set(m._REFERENCE_TABLE_DDL)

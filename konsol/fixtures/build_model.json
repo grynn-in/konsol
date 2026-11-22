@@ -25,6 +25,12 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_budget_entity_ownership",
+  "model_name": "gold_budget_entity_ownership",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_business_combination_journal",
   "model_name": "gold_business_combination_journal",
   "build_domain": "consolidation"
@@ -46,6 +52,18 @@
   "name": "gold_cashflow_fact",
   "model_name": "gold_cashflow_fact",
   "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_consolidated_budget_fact",
+  "model_name": "gold_consolidated_budget_fact",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_consolidated_budget_tb",
+  "model_name": "gold_consolidated_budget_tb",
+  "build_domain": "scenarios"
  },
  {
   "doctype": "Build Model",
@@ -121,6 +139,42 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_forecast_accuracy",
+  "model_name": "gold_forecast_accuracy",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_forecast_accuracy_group",
+  "model_name": "gold_forecast_accuracy_group",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_forecast_current",
+  "model_name": "gold_forecast_current",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_forecast_current_at_hierarchy_node",
+  "model_name": "gold_forecast_current_at_hierarchy_node",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_forecast_current_round",
+  "model_name": "gold_forecast_current_round",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_fully_consolidated_budget",
+  "model_name": "gold_fully_consolidated_budget",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_fully_consolidated_tb",
   "model_name": "gold_fully_consolidated_tb",
   "build_domain": "consolidation"
@@ -151,9 +205,27 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_ic_side_slices",
+  "model_name": "gold_ic_side_slices",
+  "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_ic_unmatched",
   "model_name": "gold_ic_unmatched",
   "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_latest_estimate",
+  "model_name": "gold_latest_estimate",
+  "build_domain": "scenarios"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_latest_estimate_current",
+  "model_name": "gold_latest_estimate_current",
+  "build_domain": "scenarios"
  },
  {
   "doctype": "Build Model",

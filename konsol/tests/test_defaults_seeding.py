@@ -277,7 +277,7 @@ def test_a_forecast_dataset_is_seeded_beside_budget():
     not. Option B (drop the word; a forecast is a budget read with a forecast
     Scenario id) was rejected.
 
-    The row reads the budget table with budget's flags and measures: which
+    The row reads the budget fact's columns with budget's flags and measures: which
     Scenario ids count as forecast is the Scenario record's business
     (``scenario_type``), not the cell's. It is seeded create-if-missing like
     the rest of the semantic model (konsol#230), so a site may rename or
@@ -286,9 +286,11 @@ def test_a_forecast_dataset_is_seeded_beside_budget():
     budget = _seeded_dataset("budget")
     forecast = _seeded_dataset("forecast")
     assert forecast["doctype"] == "Dataset"
-    assert forecast["clickhouse_table"] == budget["clickhouse_table"] \
-        == "epm_gold.gold_spread_budget"
-    assert forecast["dbt_model"] == budget["dbt_model"]
+    # konsol#348 S6 KA5: the forecast reads the declared current round's view
+    # (the fact's columns), so two approved rounds never sum.
+    assert budget["clickhouse_table"] == "epm_gold.gold_spread_budget"
+    assert forecast["clickhouse_table"] == "epm_gold.gold_forecast_current"
+    assert forecast["dbt_model"] == "gold_forecast_current"
     assert forecast["has_layer"] == 1
     assert forecast["has_scenario_id"] == 1
     assert forecast["default_measure"] == "period_amount"

@@ -194,9 +194,10 @@ def env(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    def plan(table, form_basis=BASIS, name_lines=True, whole_slices=True):
+    def plan(table, form_basis=BASIS, name_lines=True, whole_slices=True, form_as_of=""):
         frappe.session.user = state.user
-        return mod.plan(table, form_basis=form_basis, name_lines=name_lines, whole_slices=whole_slices)
+        return mod.plan(table, form_basis=form_basis, form_as_of=form_as_of, name_lines=name_lines,
+                        whole_slices=whole_slices)
 
     return types.SimpleNamespace(mod=mod, data=data, state=state, plan=plan)
 
@@ -363,6 +364,155 @@ def test_a_cycle_that_is_not_a_draft_is_refused(env, year, word):
     assert not plan["ok"]
     errors = _errors(plan)
     assert any(f"BCYC-BUD-{year}" in e and word in e for e in errors), errors
+
+
+def test_lock_cycles_returns_each_rounds_as_of_date_as_a_key(env):
+    """S3 K3: a forecast pair holds one live Cycle per round (Q23 a). The lock
+    returns the as-of date normalised ('YYYY-MM-DD'), the key in_round reads.
+    The lock itself stays on the pair (QB9 a): the rounds of one pair serialise."""
+    import datetime
+    env.data["Scenario"].append({"name": "FC", "scenario_type": "forecast", "is_active": 1})
+    env.data["Budget Cycle"] += [
+        {"name": "BCYC-FC-2027-Q1", "scenario_id": "FC", "fiscal_year": 2027, "docstatus": 1,
+         "as_of_date": datetime.date(2027, 3, 31)},
+        {"name": "BCYC-FC-2027-Q2", "scenario_id": "FC", "fiscal_year": 2027, "docstatus": 0,
+         "workflow_state": "Draft", "as_of_date": "2027-06-30"},
+    ]
+    cycles = env.mod.lock_cycles("FC", 2027)
+    assert [(c["name"], c["as_of_date"]) for c in cycles] == [
+        ("BCYC-FC-2027-Q1", "2027-03-31"), ("BCYC-FC-2027-Q2", "2027-06-30")]
+    ((doctype, filters, for_update, _order),) = env.state.locked_reads
+    assert doctype == "Budget Cycle" and for_update
+    assert filters == {"scenario_id": "FC", "fiscal_year": 2027}, "QB9 a: the lock stays on the pair"
+
+
+# ---- S3 K5 (QB5 a): a forecast write names its round by as_of_date ---------------
+
+AS_OF_HEADER = HEADER + ["as_of_date"]
+
+
+def _fc(env, *rounds):
+    """Scenario FC (forecast) with one Cycle per (name suffix, docstatus, as-of date)."""
+    env.data["Scenario"].append({"name": "FC", "scenario_type": "forecast", "is_active": 1})
+    for suffix, docstatus, as_of in rounds:
+        env.data["Budget Cycle"].append(
+            {"name": f"BCYC-FC-2027-{suffix}", "scenario_id": "FC", "fiscal_year": 2027,
+             "docstatus": docstatus, "workflow_state": "Draft" if docstatus == 0 else "", "as_of_date": as_of})
+
+
+def _fc_row(as_of, **kw):
+    return _row(scenario="FC", **kw) + [as_of]
+
+
+def test_a_forecast_file_picks_the_round_by_its_as_of_date(env):
+    """Two draft rounds of one pair live side by side (K3); the file's
+    as_of_date says which one each row is for. Nothing is inferred."""
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31"), _fc_row("2027-06-30", period="2")])
+    assert plan["ok"], _errors(plan)
+    assert [(i["cycle"], i["as_of_date"]) for i in plan["report"]] == [
+        ("BCYC-FC-2027-Q1", "2027-03-31"), ("BCYC-FC-2027-Q2", "2027-06-30")]
+
+
+def test_a_forecast_row_without_an_as_of_date_is_refused_by_name(env):
+    _fc(env, ("Q1", 0, "2027-03-31"))
+    plan = env.plan([HEADER, _row(scenario="FC")])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    assert item["cycle"] is None and item["as_of_date"] == ""
+    (problem,) = [e for e in item["errors"] if "as_of_date" in e]
+    assert "FC" in problem and "forecast" in problem and "round" in problem, problem
+    assert not [e for e in item["errors"] if "No Budget Cycle" in e], item["errors"]
+
+
+def test_a_forecast_as_of_date_with_no_round_is_refused_naming_the_round_to_create(env):
+    _fc(env, ("Q1", 0, "2027-03-31"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-09-30")])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    assert item["cycle"] is None
+    (problem,) = [e for e in item["errors"] if "Budget Cycle" in e]
+    assert "FC 2027" in problem and "2027-09-30" in problem and "Create" in problem and "round" in problem, problem
+    assert "BCYC-FC-2027-Q1" not in problem, "the other round is not this write's business"
+
+
+def test_a_budget_row_with_an_as_of_date_is_refused(env):
+    plan = env.plan([AS_OF_HEADER, _row() + ["2027-03-31"]])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    (problem,) = [e for e in item["errors"] if "as_of_date" in e]
+    assert "BUD" in problem and "budget" in problem and "no forecast round" in problem, problem
+    assert item["cycle"] == "BCYC-BUD-2027", "the pair's draft is still named; the row is refused"
+
+
+def test_the_uploads_as_of_date_applies_to_rows_without_the_column(env):
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([HEADER, _row(scenario="FC")], form_as_of="2027-06-30")
+    assert plan["ok"], _errors(plan)
+    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q2"
+    # A Date field arrives as a date, not text; the key is the same.
+    import datetime
+    plan = env.plan([HEADER, _row(scenario="FC")], form_as_of=datetime.date(2027, 3, 31))
+    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q1"
+
+
+def test_the_files_as_of_date_wins_over_the_uploads_when_both_are_given(env):
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31")], form_as_of="2027-06-30")
+    assert plan["ok"], _errors(plan)
+    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q1"
+
+
+def test_two_as_of_dates_in_one_budget_entry_are_refused_naming_both_lines(env):
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31"), _fc_row("2027-06-30", account="6000")])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    assert item["cycle"] is None
+    (problem,) = [e for e in item["errors"] if "one as-of date" in e]
+    assert "Line 3" in problem and "line 2" in problem, problem
+
+
+def test_an_approved_round_is_named_not_the_pairs_latest_cycle(env):
+    """The round's own Cycles are judged: an approved Q1 refuses a Q1 write by
+    name even though the pair's latest Cycle is Q2's draft."""
+    _fc(env, ("Q1", 1, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31")])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    assert item["cycle"] == "BCYC-FC-2027-Q1"
+    assert any("BCYC-FC-2027-Q1" in e and "approved" in e for e in item["errors"]), item["errors"]
+
+
+def test_a_cancelled_round_beside_its_draft_amendment_takes_the_write(env):
+    _fc(env, ("Q1", 2, "2027-03-31"), ("Q1-1", 0, "2027-03-31"))
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31")])
+    assert plan["ok"], _errors(plan)
+    assert plan["report"][0]["cycle"] == "BCYC-FC-2027-Q1-1"
+
+
+def test_a_budget_pair_with_a_second_draft_is_still_refused_by_name(env):
+    """Not a round: a budget pair holds one live Cycle (#524). Two drafts is a
+    fault the write names rather than picks from."""
+    env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-X", "scenario_id": "BUD", "fiscal_year": 2027,
+                                     "docstatus": 0, "workflow_state": "Draft"})
+    plan = env.plan([HEADER, _row()])
+    assert not plan["ok"]
+    (item,) = plan["report"]
+    assert item["cycle"] is None
+    (problem,) = [e for e in item["errors"] if "BCYC-BUD-2027-X" in e]
+    assert "BCYC-BUD-2027" in problem and "BUD 2027" in problem, problem
+    assert "K5" not in problem and "not built" not in problem, problem
+
+
+def test_a_budget_report_item_carries_a_blank_as_of_date(env):
+    plan = env.plan([HEADER, _row()])
+    assert plan["report"][0]["as_of_date"] == ""
+
+
+def test_the_plan_requires_the_uploads_as_of_date_to_be_stated(env):
+    with pytest.raises(TypeError):
+        env.mod.plan([HEADER, _row()], form_basis=BASIS, name_lines=True, whole_slices=True)
 
 
 def test_a_file_after_an_amendment_is_grouped_onto_the_amendment(env):
@@ -601,9 +751,10 @@ def test_a_file_giving_two_bases_to_one_entity_and_layer_is_refused_in_both_peri
 # ---- Q16-c: a grain takes its numbers from one writer -----------------------------
 
 def _annual_input(name="BAI-1", layer="base", account="4000", cc="CC1", entity="E1", year=2027,
-            scenario="BUD"):
+            scenario="BUD", cycle="BCYC-BUD-2027"):
+    # S3 K6 (QB4 a): the row names its Cycle, the round it belongs to.
     return {"name": name, "scenario_id": scenario, "fiscal_year": year, "data_area_id": entity,
-            "layer": layer, "main_account": account, "dim_cost_center": cc}
+            "layer": layer, "main_account": account, "dim_cost_center": cc, "cycle": cycle}
 
 
 def _line(parent="BENT-P3", period=3, layer="base", account="4000", cc="CC1", entity="E1", year=2027,
@@ -615,7 +766,7 @@ def _line(parent="BENT-P3", period=3, layer="base", account="4000", cc="CC1", en
 
 def _entry_side(env, lines, **kw):
     args = dict(scenario_id="BUD", fiscal_year=2027, entity="E1", layer="base", entry="BENT-P3",
-                period=3)
+                period=3, cycle="BCYC-BUD-2027")
     args.update(kw)
     env.mod.assert_no_annual_input(args.pop("scenario_id"), args.pop("fiscal_year"),
                                    args.pop("entity"), args.pop("layer"), lines, **args)
@@ -650,6 +801,26 @@ def test_the_entry_side_reads_the_annual_inputs_with_a_locking_read(env):
     assert doctype == "Budget Annual Input" and for_update
     assert (filters["scenario_id"], filters["fiscal_year"], filters["data_area_id"], filters["layer"]) == (
         "BUD", 2027, "E1", "base")
+    # S3 K6: the lock index's columns stay (the read runs on it), and the
+    # entry's Cycle joins the predicate: another round's figure is not this one's.
+    assert filters["cycle"] == "BCYC-BUD-2027"
+
+
+def test_the_entry_side_is_keyed_by_the_cycle_not_the_pair(env):
+    """S3 K6 (QB4 a): an annual figure of another round of the same pair
+    does not refuse the entry; one of the entry's own Cycle does."""
+    env.data["Budget Annual Input"] = [_annual_input(scenario="FC", cycle="BCYC-FC-2027-Q1")]
+    _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}], scenario_id="FC",
+                cycle="BCYC-FC-2027-Q2")
+    with pytest.raises(Thrown, match="BAI-1"):
+        _entry_side(env, [{"main_account": "4000", "dim_cost_center": "CC1"}], scenario_id="FC",
+                    cycle="BCYC-FC-2027-Q1")
+
+
+def test_the_entry_side_requires_the_cycle(env):
+    with pytest.raises(TypeError):
+        env.mod.assert_no_annual_input("BUD", 2027, "E1", "base", [{"main_account": "4000"}],
+                                       entry="BENT-P3", period=3)
 
 
 def test_an_entry_without_lines_reads_nothing(env):
@@ -659,7 +830,7 @@ def test_an_entry_without_lines_reads_nothing(env):
 
 def _annual_side(env, **over):
     row = {"scenario_id": "BUD", "fiscal_year": 2027, "data_area_id": "E1", "layer": "base",
-           "main_account": "4000", "dim_cost_center": "CC1"}
+           "main_account": "4000", "dim_cost_center": "CC1", "cycle": "BCYC-BUD-2027"}
     row.update(over)
     env.mod.assert_no_entry_lines(row, name="BAI-NEW")
 
@@ -690,6 +861,10 @@ def test_the_annual_side_reads_the_entry_lines_with_a_locking_read(env):
     ((doctype, filters, for_update, _order),) = env.state.locked_reads
     assert doctype == "Budget Entry Line" and for_update
     assert filters["parenttype"] == "Budget Entry"
+    # S3 K6: on the lock index's columns, plus the row's Cycle. No Cycle
+    # docstatus read follows: the row's Cycle is a draft (the guard), so every
+    # line of it counts, and another Cycle's lines are not read.
+    assert (filters["scenario_id"], filters["fiscal_year"], filters["cycle"]) == ("BUD", 2027, "BCYC-BUD-2027")
 
 
 def test_lock_cycles_locks_every_cycle_of_the_scenario_and_year(env):
@@ -698,7 +873,9 @@ def test_lock_cycles_locks_every_cycle_of_the_scenario_and_year(env):
     # the caller judges the Cycle by what is committed now, not its snapshot.
     # The Cycle has no lock status since S2-C W2a: its workflow_state comes
     # back instead, for V2 (Q17-b) to judge under the lock.
-    assert cycles == [{"name": "BCYC-BUD-2027", "docstatus": 0, "workflow_state": "Draft"}]
+    # S3 K3: and its as_of_date (the round key for a forecast; '' on a budget),
+    # so the Cycle's one-live-Cycle rule can judge the round under the lock.
+    assert cycles == [{"name": "BCYC-BUD-2027", "docstatus": 0, "workflow_state": "Draft", "as_of_date": ""}]
     ((doctype, filters, for_update, order_by),) = env.state.locked_reads
     assert doctype == "Budget Cycle" and for_update and order_by == "name asc"
     assert filters == {"scenario_id": "BUD", "fiscal_year": 2027}
@@ -711,23 +888,24 @@ def test_lock_cycles_is_skipped_in_install_and_migrate(env, flag):
     assert env.state.locked_reads == []
 
 
-# ---- 19-b: a cancelled Cycle's lines do not block ---------------------------------
+# ---- 19-b, then S3 K6: only the row's own Cycle's lines block -----------------------
 
 def test_lines_under_a_cancelled_cycle_do_not_block_an_annual_input(env):
-    # An amended pair: the cancelled original's entries stay as the audit trail.
+    # An amended pair: the cancelled original's entries stay as the audit
+    # trail; the figure names the amendment, whose lines are read.
     env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-OLD", "scenario_id": "BUD",
                                      "fiscal_year": 2027, "docstatus": 2})
     env.data["Budget Entry Line"] = [_line(cycle="BCYC-BUD-2027-OLD")]
     _annual_side(env)
 
 
-@pytest.mark.parametrize("docstatus", [0, 1])
-def test_lines_under_a_draft_or_approved_cycle_still_block(env, docstatus):
-    env.data["Budget Cycle"].append({"name": "BCYC-BUD-2027-X", "scenario_id": "BUD",
-                                     "fiscal_year": 2027, "docstatus": docstatus})
-    env.data["Budget Entry Line"] = [_line(cycle="BCYC-BUD-2027-X")]
+def test_lines_of_another_round_of_the_pair_do_not_block(env):
+    """S3 K6 (QB4 a): the figure is for Q2; Q1's monthly lines are another
+    round's. Keyed by the pair they blocked."""
+    env.data["Budget Entry Line"] = [_line(scenario="FC", cycle="BCYC-FC-2027-Q1")]
+    _annual_side(env, scenario_id="FC", cycle="BCYC-FC-2027-Q2")
     with pytest.raises(Thrown, match="BENT-P3"):
-        _annual_side(env)
+        _annual_side(env, scenario_id="FC", cycle="BCYC-FC-2027-Q1")
 
 
 # ---- PR #522 review 1: every locking read runs on an index -------------------------
@@ -831,6 +1009,16 @@ def test_an_annual_input_on_another_grain_leaves_the_check_ready(env, other):
 def test_the_check_matches_a_blank_dimension_to_an_unset_one(env):
     env.data["Budget Annual Input"] = [_annual_input(cc=None)]
     plan = env.plan([HEADER, _row(cc="")])
+    assert any("BAI-1" in e for e in _errors(plan)), _errors(plan)
+
+
+def test_an_annual_input_of_another_round_leaves_the_check_ready(env):
+    """S3 K6: the plan's one-writer report is keyed by the round it picked."""
+    _fc(env, ("Q1", 0, "2027-03-31"), ("Q2", 0, "2027-06-30"))
+    env.data["Budget Annual Input"] = [_annual_input(scenario="FC", cycle="BCYC-FC-2027-Q1")]
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-06-30")])
+    assert plan["ok"], _errors(plan)
+    plan = env.plan([AS_OF_HEADER, _fc_row("2027-03-31")])
     assert any("BAI-1" in e for e in _errors(plan)), _errors(plan)
 
 

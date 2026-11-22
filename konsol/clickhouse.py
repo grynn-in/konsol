@@ -725,7 +725,9 @@ _REFERENCE_TABLE_DDL = {
     # konsol#374 (option b; Deepak Pai, 7 Nov 2026): a Historical Equity Rate
     # converts into ONE presentation currency, and to_currency is in the sort
     # key so the EUR and the USD rate of one tranche are two rows, not one
-    # that ReplacingMergeTree collapses on merge. Last in ORDER BY and with no
+    # that ReplacingMergeTree collapses on merge. konsol#348 (S4-Q1 c, 15 Nov
+    # 2026): rate_set likewise, so the actuals and the budget rate of one
+    # tranche are two rows. Each is last in ORDER BY when added and has no
     # DEFAULT: an existing table is upgraded by _HISTORICAL_RATE_UPGRADE, and
     # ClickHouse appends to a sorting key only the column that ALTER adds,
     # without a default expression (konsolidat#246 measured it on 24.8). Owned
@@ -734,9 +736,9 @@ _REFERENCE_TABLE_DDL = {
     "epm_staging.historical_equity_rates": (
         "(consolidation_group String, data_area_id String, main_account String, "
         "rate_date Date, historical_rate Decimal(18,6), to_currency LowCardinality(String), "
-        "updated_at DateTime DEFAULT now()) "
+        "rate_set String, updated_at DateTime DEFAULT now()) "
         "ENGINE = ReplacingMergeTree(updated_at) "
-        "ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency)"
+        "ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency, rate_set)"
     ),
     # F2: the flat tree. Listed here because _RETIRED_COLUMNS ALTERs it — on a
     # stack that has never run dbt the table would not exist, the ALTER would
@@ -772,15 +774,53 @@ _REFERENCE_TABLE_DDL = {
     #
     # Budget S2 (A7, Q13-a): the layer and the currency of the row, after
     # main_account as on the doctype, both required there so neither has a
-    # DEFAULT. Identical to konsolidat's clickhouse/init-db.sql (S2-R6;
+    # DEFAULT. Budget S3 (B3k, QB4 a): the row's Budget Cycle after
+    # fiscal_year, as on the doctype (K6) and as epm_raw.budget_entries
+    # carries it; required there, so no DEFAULT. The sorting key is unchanged:
+    # two rounds of one pair share a key, and MergeTree keeps both rows.
+    # Identical to konsolidat's clickhouse/init-db.sql (S2-R6, S3 B3w;
     # test_budget_annual_input_ddl.py pins it). Added to an existing table by
     # _POSITIONED_COLUMNS below.
     "epm_gold.budget_annual_input": (
-        "(scenario_id String, data_area_id String, fiscal_year UInt16, "
+        "(scenario_id String, data_area_id String, fiscal_year UInt16, cycle String, "
         "main_account String, layer String, currency String, "
         "annual_amount Decimal(18,2), spread_profile_id String, "
         "submitted_by String) "
         "ENGINE = MergeTree ORDER BY (scenario_id, data_area_id, fiscal_year, main_account)"
+    ),
+    # konsol#348 S4-Q2 (a), chosen under the standing rule (15 Nov 2026): the
+    # approved Budget Cycles, one row each (docstatus 1 only, by the doctype's
+    # is_submittable), so the warehouse reads a Cycle's Rate Set (K5), its
+    # scenario and its forecast round by the `cycle` name its fact rows carry;
+    # S6's latest-estimate read needs the same table. Stamping the rate set on
+    # every budget row was rejected. No scenario_type: epm_gold
+    # .scenario_definitions holds it by scenario_id, and a second copy would be
+    # two sources of truth. A budget Cycle has no round: as_of_date is
+    # then unset, written as DEFAULT, and the column declares that default as
+    # 1900-01-01 on a Date32, never a Date's silent 1970-01-01 (a Date clamps
+    # there). horizon_periods unset is 0. Identical to konsolidat's
+    # clickhouse/init-db.sql; keep them identical
+    # (test_budget_cycle_write_through.py pins it).
+    "epm_staging.budget_cycles": (
+        "(name String, scenario_id String, fiscal_year UInt16, "
+        "rate_set String, as_of_date Date32 DEFAULT '1900-01-01', horizon_periods UInt16) "
+        "ENGINE = MergeTree ORDER BY name"
+    ),
+    # konsol#348 S6-Q1 (b), decided by Deepak Pai, 17 Nov 2026 (#348 comment
+    # 6953756459): a forecast scenario's DECLARED current round per fiscal
+    # year, one row per submitted Current Forecast. A forecast (scenario,
+    # year) holds several approved rounds side by side and they never sum;
+    # the warehouse's gold_forecast_current_round joins this to budget_cycles
+    # on `cycle`, and every forecast reader takes that round alone. A year
+    # with approved rounds and no row here has no forecast rows anywhere, and
+    # the warehouse WARNs naming it. The round's as_of_date, horizon and Rate
+    # Set are read from budget_cycles by `cycle`, never copied here (one
+    # source of truth; S6 pair A review m4). Identical to konsolidat's clickhouse/init-db.sql; keep them identical
+    # (test_current_forecast_doctype.py pins it here, konsolidat's
+    # tests/test_current_forecasts_ddl.py there).
+    "epm_staging.current_forecasts": (
+        "(scenario_id String, fiscal_year UInt16, cycle String) "
+        "ENGINE = MergeTree ORDER BY (scenario_id, fiscal_year)"
     ),
     # Budget S2 (I3): the raw budget landing table, one row per Budget Entry
     # Line (konsol#348, D0 Q1-b2), written through while its Budget Cycle is
@@ -796,13 +836,6 @@ _REFERENCE_TABLE_DDL = {
         "currency String, amount_basis String) "
         "ENGINE = MergeTree "
         "ORDER BY (scenario_id, data_area_id, fiscal_year, fiscal_period, layer, main_account)"
-    ),
-    # konsolidat#146: which fiscal calendar each ERP legal entity posts against.
-    # It was seeds/entity_fiscal_calendars.csv, and it decides which calendar
-    # every GL line is dated into.
-    "epm_gold.entity_fiscal_calendars": (
-        "(data_area_id String, fiscal_calendar_id String) "
-        "ENGINE = MergeTree ORDER BY data_area_id"
     ),
     # konsolidat#146: the ISO 4217 reference list. It was seeds/currencies.csv —
     # the one seed with no second writer, but still a table the warehouse
@@ -885,11 +918,28 @@ _REFERENCE_TABLE_DDL = {
     # `rate` is the TRUE rate, units of to_currency per 1 from_currency, as
     # Float64: konsol computes it once (quote / quoted_per) when it publishes,
     # and the warehouse never scales or inverts it. One source of truth for FX
-    # rates (decided 13 Sep 2026).
+    # rates (decided 13 Sep 2026). konsol#348: `rate_set` names the Rate Set
+    # the rate belongs to (the one flagged Is Actuals for actuals, a budget's
+    # own set for its budget); LAST, here and in _ADDED_COLUMNS, so a fresh
+    # table and an upgraded one agree. Not in ORDER BY: the publish swaps the
+    # whole set in, so nothing dedupes on the key. Identical to konsolidat's
+    # clickhouse/init-db.sql; keep them identical.
     "epm_staging.group_exchange_rates": (
         "(to_currency String, from_currency String, fiscal_year UInt16, "
-        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String, rate_set String) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)"
+    ),
+    # konsol#348 S4-Q7 (a), chosen under the standing rule (15 Nov 2026): the
+    # Rate Sets, from the Rate Set doctype (every row; the doctype is neither
+    # submittable nor governed). The warehouse reads which set is flagged
+    # is_actuals here, the way it reads every reference table, and its
+    # consolidation filters both rate tables by that set; a dbt var konsol
+    # regenerates was rejected as a second copy of the flag that goes stale.
+    # Identical to konsolidat's clickhouse/init-db.sql; keep them identical
+    # (test_rate_set.py pins it).
+    "epm_staging.rate_sets": (
+        "(rate_set String, label String, is_actuals UInt8) "
+        "ENGINE = MergeTree ORDER BY rate_set"
     ),
     # konsol#182: the group chart of accounts, from Main Account (Published
     # rows, groups included). silver_main_accounts reads only this: there is no
@@ -1007,8 +1057,8 @@ _REFERENCE_TABLE_DDL = {
     ),
     "epm_staging.cost_allocation_coefficients": (
         "(run String, origin_member String, step UInt16, sender_member String, "
-        "receiver_member String, driver String, pool_coefficient Decimal(38,12), "
-        "coefficient Decimal(38,12)) "
+        "receiver_member String, driver String, hop_kind String, "
+        "pool_coefficient Decimal(38,12), coefficient Decimal(38,12)) "
         "ENGINE = MergeTree ORDER BY (run, origin_member, step, receiver_member)"
     ),
     "epm_staging.cost_allocation_statistics": (
@@ -1050,6 +1100,13 @@ _RETIRED_TABLES = (
     "epm_staging.allocation_drivers",
     "epm_staging.allocation_tiers",
     "epm_staging.allocation_runs",
+    # konsol#577 (Deepak Pai, 21 Nov 2026): the Entity Fiscal Calendar doctype
+    # is removed. Nothing read this table since konsolidat#221 removed the ERP
+    # calendar branch; the site's one declared calendar (EPM Fiscal Year,
+    # epm_staging.fiscal_periods) dates every submission. Listed here so its
+    # watermark row goes with it (_retired_watermark_cleanup), or
+    # assert_staging_not_stale would report it LAGGING.
+    "epm_gold.entity_fiscal_calendars",
 )
 
 # Whole databases a previous release created and this one abandoned. Separate
@@ -1174,6 +1231,11 @@ _ADDED_COLUMNS = {
         ("reverse_fiscal_year", "UInt16 DEFAULT 0"),
         ("reverse_fiscal_period", "UInt8 DEFAULT 0"),
     ],
+    # konsol#348: the Rate Set a group rate belongs to. The publish's CREATE
+    # TABLE shadow AS live copies the live shape, so the live table must have
+    # the column before the first publish: ensure_reference_tables runs in
+    # after_migrate before reconcile_all republishes.
+    "epm_staging.group_exchange_rates": [("rate_set", "String")],
 }
 
 # Columns a later release added in the MIDDLE of a table that already exists on
@@ -1194,11 +1256,15 @@ _POSITIONED_COLUMNS = {
         ("link_owner_data_area_id", "String", "link_owner_group"),
     ],
     # Budget S2 (A7, Q13-a): AFTER main_account, not last, because the site's
-    # dim_* budget columns are already appended to an existing table
+    # dim_* budget columns are already appended to an existing table. Budget
+    # S3 (B3k, QB4 a): the Cycle AFTER fiscal_year, first here (CREATE order).
     "epm_gold.budget_annual_input": [
+        ("cycle", "String", "fiscal_year"),
         ("layer", "String", "main_account"),
         ("currency", "String", "layer"),
     ],
+    # konsol#269 RC3: the reciprocal method's own/pass hop, after driver (as in the CREATE)
+    "epm_staging.cost_allocation_coefficients": [("hop_kind", "String", "driver")],
 }
 
 
@@ -1307,15 +1373,20 @@ def _widened_column_ddl():
 
 
 #: konsol#374: the one ALTER that gives an existing rates table the currency
-#: column AND the key. The two clauses must be one statement: MODIFY ORDER BY
-#: may only name a column the same ALTER adds. AFTER historical_rate puts the
-#: column where init-db.sql declares it, so a fresh and an upgraded table read
-#: the same.
+#: column AND the key; konsol#348 extends it with the Rate Set. The clauses
+#: must be one statement: MODIFY ORDER BY may only name an existing column or
+#: one the same ALTER adds, and ADD COLUMN IF NOT EXISTS skips a column the
+#: table already has, so a table from before #374 gains both columns and one
+#: from before #348 gains the set alone. AFTER historical_rate / AFTER
+#: to_currency put each column where init-db.sql declares it, so a fresh and
+#: an upgraded table read the same. Issued while rate_set is not yet in the
+#: key (_sorting_key_upgrade_ddl).
 _HISTORICAL_RATE_TABLE = "epm_staging.historical_equity_rates"
 _HISTORICAL_RATE_UPGRADE = (
     f"ALTER TABLE {_HISTORICAL_RATE_TABLE} "
     "ADD COLUMN IF NOT EXISTS to_currency LowCardinality(String) AFTER historical_rate, "
-    "MODIFY ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency)"
+    "ADD COLUMN IF NOT EXISTS rate_set String AFTER to_currency, "
+    "MODIFY ORDER BY (consolidation_group, data_area_id, main_account, rate_date, to_currency, rate_set)"
 )
 
 
@@ -1341,10 +1412,12 @@ _OWNERSHIP_PERIODS_UPGRADE = (
 #: ALTER best-effort, so if it failed, a sync into the old key would let
 #: ReplacingMergeTree collapse the EUR and the USD rate of one tranche into
 #: one row: a wrong number, silently. sync_table asks system.tables first and
-#: refuses with SortingKeyStale instead. konsol#117: the periods table's owner
-#: likewise, or two owners' links into one node collapse into one.
+#: refuses with SortingKeyStale instead. konsol#348: the set is the last
+#: column the upgrade adds to that key, so a key that has it has the currency
+#: too. konsol#117: the periods table's owner likewise, or two owners' links
+#: into one node collapse into one.
 _REQUIRED_SORTING_KEY_COLUMNS = {
-    _HISTORICAL_RATE_TABLE: "to_currency",
+    _HISTORICAL_RATE_TABLE: "rate_set",
     _OWNERSHIP_PERIODS_TABLE: "owner_group",
 }
 
@@ -1436,10 +1509,11 @@ def ensure_reference_tables():
         # CREATEs run; an existing ancestry table gets path_id and the link
         # owner where init-db.sql puts them, a missing one is created whole.
         *_positioned_column_ddl(),
-        # konsol#374: an existing rates table gets to_currency in its key by
-        # one ALTER, after the CREATE above has given a missing one the new
-        # shape, and before reconcile_all re-sends the rows with the column.
-        *_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "to_currency", _HISTORICAL_RATE_UPGRADE),
+        # konsol#374 / #348: an existing rates table gets to_currency and
+        # rate_set in its key by one ALTER, after the CREATE above has given a
+        # missing one the new shape, and before reconcile_all re-sends the
+        # rows with the columns.
+        *_sorting_key_upgrade_ddl(_HISTORICAL_RATE_TABLE, "rate_set", _HISTORICAL_RATE_UPGRADE),
         # konsol#117 (task C): the periods table's owner joins its key the
         # same way, before reconcile_all re-sends the links with their owner.
         *_sorting_key_upgrade_ddl(_OWNERSHIP_PERIODS_TABLE, "owner_group", _OWNERSHIP_PERIODS_UPGRADE),
@@ -1614,6 +1688,8 @@ def _reconcile_tables():
             # resync_staging() for exactly this call. A doctype at 0 records
             # still syncs — TRUNCATE+INSERT of nothing empties the table,
             # which is the point.
+            # Cost Allocation Run's resync_staging rebuilds its coefficients
+            # here, synchronously, like the others (RF10).
             if getattr(cls, "resync_staging", None):
                 _record(synced, cls.CH_STAGING_TABLE, cls.resync_staging(force=True))
             elif getattr(cls, "CH_STAGING_TABLE", None) and getattr(cls, "CH_STAGING_FIELD_MAP", None):

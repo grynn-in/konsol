@@ -528,3 +528,39 @@ def test_period_windows_are_computed_once_per_run(monkeypatch):
     M.worksheet(rows, ACCOUNTS, PERIODS, (2025, 3), {"cta_account": "3100"}, 2, None, None)
     assert calls["period_keys"] <= 2
     assert calls["keys_up_to"] <= 2
+
+
+# --- S6 KB6 (konsol#348 S6-Q5 a): the budget's plug column ----------------------
+#
+# On the Budget basis the worksheet lays out gold_fully_consolidated_budget
+# rows; the budget's balancing plug (adjustment_type 'unbalanced', the literal
+# main_account 'UNBALANCED') is a layer of its own, so column_of already sends
+# it to ("layer", "unbalanced"). The label lives here, in LAYER_LABELS_EXTRA,
+# never in drill_model._LAYER_LABELS (test_close_drill_model pins its absence:
+# the drill lays the plug out as its own line, not a layer).
+
+def test_the_unbalanced_budget_layer_has_its_own_label_outside_drill_model():
+    assert M.LAYER_LABELS_EXTRA == {"unbalanced": "Unbalanced budget"}
+    assert "unbalanced" not in M.drill_model._LAYER_LABELS
+    assert M.column_of("unbalanced", "E-ALPHA", None, None) == ("layer", "unbalanced")
+    assert M._label(("layer", "unbalanced")) == "Unbalanced budget"
+    # An unknown type still falls back to its raw code.
+    assert M._label(("layer", "zz_new_type")) == "zz_new_type"
+
+
+def test_a_budget_worksheet_lays_out_the_plug_as_a_labelled_column_and_foots():
+    rows = [
+        wrow("entity", EA, "4000", 2025, 3, -1000.0),
+        wrow("entity", EA, "1000", 2025, 3, 300.0),
+        wrow("unbalanced", EA, "UNBALANCED", 2025, 3, 700.0),
+    ]
+    result = ws(rows)
+    columns = {c["key"]: c["label"] for c in result["columns"]}
+    assert columns[("layer", "unbalanced")] == "Unbalanced budget"
+    plug = next(line for line in result["lines"] if line["account"] == "UNBALANCED")
+    # PR #558 review m2: the plug is its own line, labelled as the statement
+    # labels it, never "not in the published chart".
+    assert plug["key"] == M.UNBALANCED and plug["name"] == SM.UNBALANCED_LABEL
+    assert [line["key"] for line in M.to_ids(result)["lines"]][-1] == "unbalanced"
+    assert plug["cells"][("layer", "unbalanced")] == 700.0 and plug["consolidated"] == 700.0
+    assert result["total"]["consolidated"] == 0.0

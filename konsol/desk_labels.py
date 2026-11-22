@@ -27,6 +27,7 @@ LABELS = {
     # --- Close: rates ----------------------------------------------------
     "Group Exchange Rate": "Group Exchange Rates",
     "Historical Equity Rate": "Historical Equity Rates",
+    "Rate Set": "Rate Sets",
     # --- Close: intercompany ---------------------------------------------
     "IC Balance": "IC Balances",
     # --- Close: adjustments ----------------------------------------------
@@ -51,6 +52,13 @@ LABELS = {
     "Budget Cycle": "All Cycles",
     "Budget Entry": "All Entries",
     "Budget Annual Input": "All Annual Inputs",
+    # konsol#348 S5 K13: the group's declared budget per year (BUD-4-2)
+    "Approved Budget": "Approved Budgets",
+    # konsol#348 S6 KA1 (S6-Q1 b): the forecast scenario's declared current round per year
+    "Current Forecast": "Current Forecasts",
+    # konsol#348 S6 KA9 (QB10 b, S6-Q9 a): is every period of a round's horizon approved?
+    "Forecast Horizon Coverage": "Forecast Horizon Coverage",
+    "Forecast Accuracy": "Forecast Accuracy",   # konsol#348 S6 KC3
     "Scenario": "Scenarios",
     "Spread Profile": "Spread Profiles",
     "Budget Layer": "Budget Layers",
@@ -62,7 +70,6 @@ LABELS = {
     "Cost Allocation Run": "Runs",
     # --- Structure: group ------------------------------------------------
     "Entity": "Entities",
-    "Entity Fiscal Calendar": "Entity Fiscal Calendars",
     "Consolidation Group": "Consolidation Groups",
     "Ownership Period": "Ownership Periods",
     # --- Structure: accounts ---------------------------------------------

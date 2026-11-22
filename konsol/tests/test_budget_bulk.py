@@ -57,6 +57,7 @@ def _file(env, slices, refused=()):
 
 class FakeUpload:
     def __init__(self, **kw):
+        self.as_of_date = None   # the Date field, blank unless the test gives one (S3 K5)
         self.__dict__.update(kw)
         self.name = "BU-0001"
         self.owner = "ann@example.com"
@@ -147,7 +148,7 @@ def env(monkeypatch):
                                   denied_accounts=set(), fail_on=set(), deleted=[],
                                   plan_lines=[], approve_at_commit=None, cycle_approved=False,
                                   cycle_state="approved", hidden=set(), after_plan=None, existing_reads=[],
-                                  second_writer=set())
+                                  second_writer=set(), plan_as_of=[])
 
     _STATE[:] = [state]
 
@@ -253,9 +254,10 @@ def env(monkeypatch):
 
     intake = types.ModuleType("konsol.budget_intake")
 
-    def plan(table, *, form_basis, name_lines, whole_slices):
+    def plan(table, *, form_basis, form_as_of, name_lines, whole_slices):
         assert whole_slices is True, "an upload states each slice whole"
         state.plan_calls.append((table, form_basis))
+        state.plan_as_of.append(form_as_of)
         state.plan_lines.append(name_lines)
         if state.plan_raises:
             raise state.plan_raises
@@ -802,3 +804,62 @@ def test_an_annual_input_saved_during_the_load_refuses_its_slice_and_the_load_go
     assert doc.failed_count == 0
     assert all(r.get("loaded") for r in report if r["entity"] == "E1")
     assert doc.status == "Partly Loaded"
+
+
+# ---- S3 K5 (QB5 a): the upload's As-of Date picks a forecast file's round -----------
+# Like Amount Basis: the form's value applies to every row without its own
+# as_of_date column, and the plan judges whether the scenario takes one.
+
+def test_check_file_hands_the_uploads_as_of_date_to_the_plan(env):
+    env.state.plan_report = [_item("E1", "base")]
+    out = env.mod.check_file("/files/b.csv", "Period movement", as_of_date="2027-06-30")
+    assert env.state.plan_as_of == ["2027-06-30"]
+    assert env.state.doc.as_of_date == "2027-06-30"
+    assert out["as_of_date"] == "2027-06-30"
+
+
+def test_check_file_without_an_as_of_date_hands_the_plan_a_blank_never_a_date(env):
+    env.state.plan_report = [_item("E1", "base")]
+    out = env.mod.check_file("/files/b.csv", "Period movement")
+    assert env.state.plan_as_of == [""]
+    assert out["as_of_date"] == ""
+
+
+def test_check_upload_and_load_take_the_forms_as_of_date(env):
+    env.state.plan_report = [_item("E1", "base")]
+    env.state.doc = FakeUpload(status="Draft", upload_file="/files/b.csv", amount_basis="Period movement",
+                               as_of_date=None, name="BU-0001")
+    env.mod.check_upload("BU-0001", as_of_date="2027-03-31")
+    assert env.state.doc.as_of_date == "2027-03-31"
+    env.state.doc.status = "Checked"
+    env.mod.load("BU-0001", as_of_date="2027-06-30")
+    assert env.state.doc.as_of_date == "2027-06-30"
+    assert env.state.plan_as_of == ["2027-03-31", "2027-06-30"]
+
+
+def test_the_upload_form_has_an_as_of_date_field_beside_the_amount_basis():
+    with open(os.path.join(APP_DIR, "epm", "doctype", "budget_upload", "budget_upload.json")) as f:
+        doc = json.load(f)
+    field = {f["fieldname"]: f for f in doc["fields"]}["as_of_date"]
+    assert field["fieldtype"] == "Date"
+    assert not field.get("reqd"), "required for a forecast only: the plan refuses, the form does not default"
+    assert "forecast" in field["description"] and "round" in field["description"]
+    order = doc["field_order"]
+    assert order.index("as_of_date") == order.index("amount_basis") + 1
+    assert doc["modified"] > "2026-11-13 12:00:00.000000", "bump modified so the field ships"
+
+
+def test_the_desk_form_sends_the_as_of_date_with_its_check_and_load():
+    with open(os.path.join(APP_DIR, "epm", "doctype", "budget_upload", "budget_upload.js")) as f:
+        js = f.read()
+    assert js.count("as_of_date: frm.doc.as_of_date || null") >= 2, "check and load both send it"
+
+
+def test_two_rounds_of_one_entity_and_layer_are_separate_slices(env):
+    """A refused period of the Q1 round does not hold back the Q2 round's
+    periods: a slice is (round, entity, layer)."""
+    q1 = dict(_item("E1", "base", errors=["refused"]), scenario="FC", cycle="CYC-FC-Q1", as_of_date="2027-03-31")
+    q2 = dict(_item("E1", "base", period=2), scenario="FC", cycle="CYC-FC-Q2", as_of_date="2027-06-30")
+    same = dict(_item("E1", "base", period=2), scenario="FC", cycle="CYC-FC-Q1", as_of_date="2027-03-31")
+    out = env.mod._whole_slices([q1, q2, same])
+    assert [r["ok"] for r in out] == [False, True, False]

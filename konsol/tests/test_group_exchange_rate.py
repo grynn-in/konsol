@@ -44,8 +44,14 @@ REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW":
 
 def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="approver@example.com",
             flags=None, refs=None, previous=None, move_threshold_pct=50, magnitude_factor=None,
-            amended=None):
+            amended=None, actuals="ACTUAL", rate_sets=None, taken=()):
+    """``actuals``: the Rate Set(s) flagged Is Actuals (konsol#348); a str, a
+    tuple of names, or None for a site that has flagged none. ``rate_sets``:
+    the Rate Sets that exist (the flagged ones when None). ``taken``: the
+    (from, to, rate_type) keys the locking read of a period's drafts and
+    approved rates returns (the pre-fill and the copy, konsol#584 review)."""
     frappe = types.ModuleType("frappe")
+    flagged = [] if actuals is None else ([actuals] if isinstance(actuals, str) else list(actuals))
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
     refs = REFS if refs is None else refs
@@ -58,6 +64,12 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
         record.setdefault("sql", []).append(query)
         if "FROM `tabConsolidation Group`" in query:
             return [(1,)] if params[0] in group_currencies else []
+        if "FROM `tabRate Set`" in query and "FOR UPDATE" in query:
+            exists = flagged if rate_sets is None else rate_sets
+            return [(params[0],)] if params[0] in exists else []
+        if "docstatus < 2" in query and "FOR UPDATE" in query:
+            record.setdefault("taken_reads", []).append(params)
+            return [tuple(t) for t in taken]
         if "FOR UPDATE" in query:
             return [(duplicate,)] if duplicate else []
         if "ORDER BY fiscal_year DESC" in query:   # group_rates.previous_approved
@@ -68,6 +80,10 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
         if doctype == "ISO Currency":
             return [types.SimpleNamespace(name=c, usd_log10=refs[c], get=lambda f, c=c: refs[c])
                     for c in filters["name"][1] if c in refs]
+        if doctype == "Rate Set":
+            record.setdefault("rate_set_reads", []).append((filters, k.get("pluck")))
+            assert filters == {"is_actuals": 1} and k.get("pluck") == "name", (filters, k)
+            return list(flagged)
         return []
 
     frappe.throw = throw
@@ -89,6 +105,7 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
         get_single_value=lambda dt, field: {"rate_move_threshold": move_threshold_pct,
                                             "magnitude_warning_factor": magnitude_factor}[field],
     )
+    frappe.db.get_value = lambda *a, **k: None   # no such document, unless ``amended`` names it
     if amended is not None:
         # PR #385 review: the rate an amendment amends, {name: {field: value}}.
         def get_value(dt, name, fields=None, as_dict=False, **k):
@@ -120,6 +137,7 @@ def _rules_module(frappe, overrides=None):
     period_status = types.ModuleType("konsol.period_status")
     period_status.period_dates = _default_period_dates
     period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    period_status.assert_open = lambda *a, **k: None   # konsol#584's copy; a test overrides it
     saved = {n: sys.modules.get(n) for n in ("frappe", "konsol.period_status")}
     sys.modules["frappe"] = frappe
     sys.modules["konsol.period_status"] = period_status
@@ -239,8 +257,13 @@ def _controller(**kw):
 def _doc(module, **fields):
     base = dict(doctype="Group Exchange Rate", name="GER-2099-12-EUR-CHF-Closing-01", docstatus=0,
                 to_currency="CHF", from_currency="EUR", rate_type="Closing", fiscal_year=2099,
-                fiscal_period=12, quote=0.9478, quoted_per="1", source="Manual")
-    return module.GroupExchangeRate(**dict(base, **fields))
+                fiscal_period=12, quote=0.9478, quoted_per="1", source="Manual", rate_set="ACTUAL")
+    merged = dict(base, **fields)
+    if merged.get("_before") is not None:
+        # A saved version has every field: its grain is the document's own
+        # unless the test gives another (konsol#584 review: a key edit).
+        merged["_before"] = dict({f: merged[f] for f in module.GRAIN}, **merged["_before"])
+    return module.GroupExchangeRate(**merged)
 
 
 def _refused(fn, *a):
@@ -269,7 +292,8 @@ def test_the_grain_and_the_approval_shape():
     assert f["amended_from"]["options"] == "Group Exchange Rate"
     assert f["change_reason"]["mandatory_depends_on"] == "eval:doc.amended_from || doc.supersedes"
     assert f["source"]["read_only"] == 1 and f["source"]["no_copy"] == 1
-    assert f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Adoption"]
+    assert f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Adoption",
+                                                  "Copied from previous period"]
     assert set(_json()["field_order"]) == set(f)
 
 
@@ -629,7 +653,7 @@ def test_a_second_approved_rate_for_one_key_is_refused():
     else:
         msg = None
     assert msg == ("GER-2099-12-EUR-CHF-Closing-01 is already the approved Closing rate EUR → CHF "
-                   "for FY2099 P12. Correct it with a Reason for Change instead."), msg
+                   "for FY2099 P12 in Rate Set ACTUAL. Correct it with a Reason for Change instead."), msg
 
 
 def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
@@ -659,7 +683,8 @@ def test_cancel_is_gated_and_a_cancelled_rate_is_kept():
 R1 = "GER-2099-12-EUR-CHF-Closing-01"
 R2 = "GER-2099-12-EUR-CHF-Closing-02"
 R3 = "GER-2099-12-EUR-CHF-Closing-03"
-KEY = dict(to_currency="CHF", from_currency="EUR", rate_type="Closing", fiscal_year=2099, fiscal_period=12)
+KEY = dict(to_currency="CHF", from_currency="EUR", rate_type="Closing", fiscal_year=2099, fiscal_period=12,
+           rate_set="ACTUAL")
 
 
 def _stored(name, docstatus=1, **fields):
@@ -753,7 +778,7 @@ def test_a_correction_must_say_why():
 
 def test_a_correction_supersedes_only_the_approved_rate_of_its_own_key():
     expected = (f"{{0}} cannot be superseded by this rate: a correction supersedes the approved "
-                f"Closing rate EUR → CHF for FY2099 P12.")
+                f"Closing rate EUR → CHF for FY2099 P12 in Rate Set ACTUAL.")
     other_key = "GER-2099-12-EUR-CHF-Average-01"
     cases = {
         "another rate type": ({other_key: dict(_stored(other_key), rate_type="Average")}, other_key),
@@ -810,7 +835,7 @@ def test_a_correction_still_refuses_a_third_approved_rate():
         msg = str(e)
     else:
         msg = None
-    assert msg == (f"{R3} is already the approved Closing rate EUR → CHF for FY2099 P12. "
+    assert msg == (f"{R3} is already the approved Closing rate EUR → CHF for FY2099 P12 in Rate Set ACTUAL. "
                    "Correct it with a Reason for Change instead."), msg
     assert record["cancels"] == []
 
@@ -828,7 +853,7 @@ def test_approving_a_correction_whose_rate_is_no_longer_approved_is_refused():
     else:
         msg = None
     assert msg == (f"{R1} is no longer approved, and the key has no approved Closing rate EUR → CHF "
-                   f"for FY2099 P12, so this correction has nothing to replace. Delete it and draft "
+                   f"for FY2099 P12 in Rate Set ACTUAL, so this correction has nothing to replace. Delete it and draft "
                    f"a new rate for the key."), msg
 
 
@@ -862,7 +887,7 @@ def _plain_cancel(module, record, **fields):
 def test_an_approved_rate_is_never_plain_cancelled():
     """No correction, a rate that replaced another, an open or a closed period:
     the same sentence, before the period gate (reopening would not change it)."""
-    expected = ("{0} is the approved Closing rate EUR → CHF for FY2099 P12: an approved rate "
+    expected = ("{0} is the approved Closing rate EUR → CHF for FY2099 P12 in Rate Set ACTUAL: an approved rate "
                 "cannot be cancelled. Correct it with a Reason for Change instead.")
     for label, ctx, fields in (
         ("a rate that replaced nothing", {}, dict(name=R1)),
@@ -968,10 +993,10 @@ def test_new_ger_does_not_lock_a_year_in_check_if_latest():
 APPROVED = [
     types.SimpleNamespace(name="GER-2099-12-JPY-USD-Closing-01", to_currency="USD", from_currency="JPY",
                           fiscal_year=2099, fiscal_period=12, rate_type="Closing", quote=0.6607, quoted_per="100",
-                          modified=datetime.datetime(2099, 12, 31, 9, 0, 0)),
+                          rate_set="ACTUAL", modified=datetime.datetime(2099, 12, 31, 9, 0, 0)),
     types.SimpleNamespace(name="GER-2099-12-VND-USD-Closing-01", to_currency="USD", from_currency="VND",
                           fiscal_year=2099, fiscal_period=12, rate_type="Closing", quote=0.394, quoted_per="10000",
-                          modified=None)]
+                          rate_set="BUDGET_2027", modified=None)]
 
 
 def _publisher(lock=1, fail_at=None, flags=None):
@@ -1037,8 +1062,12 @@ def test_a_publish_swaps_the_whole_set_in_one_at_a_time():
                      f"EXCHANGE TABLES {main} AND {shadow}", f"DROP TABLE IF EXISTS {shadow}"]
     assert not any(q.startswith(("TRUNCATE", f"INSERT INTO {main} ")) for q in record["ch"])
     insert = record["ch"][2]
-    assert "('USD', 'JPY', 2099, 12, 'Closing', 0.006607, 'GER-2099-12-JPY-USD-Closing-01')" in insert
-    assert "('USD', 'VND', 2099, 12, 'Closing', 3.94e-05, 'GER-2099-12-VND-USD-Closing-01')" in insert
+    # konsol#348: the set is published LAST, where init-db.sql puts the column
+    assert "('USD', 'JPY', 2099, 12, 'Closing', 0.006607, 'GER-2099-12-JPY-USD-Closing-01', 'ACTUAL')" in insert
+    assert "('USD', 'VND', 2099, 12, 'Closing', 3.94e-05, 'GER-2099-12-VND-USD-Closing-01', 'BUDGET_2027')" in insert
+    assert insert.startswith(f"INSERT INTO {shadow} (to_currency, from_currency, fiscal_year, fiscal_period, "
+                             "rate_type, rate, document, rate_set) VALUES "), insert
+    assert "rate_set" in read, "the approved rates are read with their set"
     assert record["stamped"] == [(main, 2, "2099-12-31 09:00:00")]
 
 
@@ -1105,10 +1134,11 @@ def test_approve_and_cancel_republish_after_the_commit():
         assert module.GroupExchangeRate.resync_staging(force=True) == 7
     assert published == [True]
     assert rules.published_rows(APPROVED) == [
-        ["USD", "JPY", 2099, 12, "Closing", 0.006607, "GER-2099-12-JPY-USD-Closing-01"],
-        ["USD", "VND", 2099, 12, "Closing", 0.0000394, "GER-2099-12-VND-USD-Closing-01"]]
+        ["USD", "JPY", 2099, 12, "Closing", 0.006607, "GER-2099-12-JPY-USD-Closing-01", "ACTUAL"],
+        ["USD", "VND", 2099, 12, "Closing", 0.0000394, "GER-2099-12-VND-USD-Closing-01", "BUDGET_2027"]]
     module.on_doctype_update()
-    assert record["index"][0][0][1] == ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"]
+    assert record["index"][0][0][1] == ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
+                                        "rate_set"]
 
 
 def test_reconcile_publishes_through_the_same_path():
@@ -1131,16 +1161,22 @@ def _ddl():
 
 
 def test_the_staging_ddl_is_the_true_rate():
-    """Keep in step with konsolidat's clickhouse/init-db.sql, character for character."""
+    """Keep in step with konsolidat's clickhouse/init-db.sql, character for
+    character. konsol#348: rate_set is the LAST column, added to an existing
+    table by _ADDED_COLUMNS (the table shipped before it), so a fresh and an
+    upgraded table agree; the publish's CREATE TABLE shadow AS live copies
+    the live shape, so the live table must have the column before the first
+    publish (ensure_reference_tables runs before reconcile_all)."""
     body = _ddl()["_REFERENCE_TABLE_DDL"]["epm_staging.group_exchange_rates"]
     assert body == (
         "(to_currency String, from_currency String, fiscal_year UInt16, "
-        "fiscal_period UInt8, rate_type String, rate Float64, document String) "
+        "fiscal_period UInt8, rate_type String, rate Float64, document String, rate_set String) "
         "ENGINE = MergeTree ORDER BY (to_currency, from_currency, fiscal_year, fiscal_period, rate_type)")
     module, _ = _controller()
     cols = [c.strip().split()[0] for c in body[1:body.index(")")].split(",")]
     assert cols == module.GroupExchangeRate.CH_STAGING_COLUMNS
-    assert "epm_staging.group_exchange_rates" not in _ddl()["_ADDED_COLUMNS"], "nothing shipped to upgrade"
+    assert tuple(cols) == _rules().PUBLISH_COLUMNS
+    assert _ddl()["_ADDED_COLUMNS"]["epm_staging.group_exchange_rates"] == [("rate_set", "String")]
 
 
 def test_the_currencies_ddl_carries_the_reference():
@@ -1301,11 +1337,14 @@ def test_the_move_rule():
     assert not hasattr(r, "MOVE_NEEDS_REASON"), "the threshold is declared, not coded"
 
 
-def test_the_previous_rate_is_read_as_a_true_rate():
-    frappe = _frappe({}, previous=("GER-2099-11-JPY-USD-Closing-01", 0.6607, "100", 2099, 11))
+def test_the_previous_rate_is_read_as_a_true_rate_within_its_set():
+    record = {}
+    frappe = _frappe(record, previous=("GER-2099-11-JPY-USD-Closing-01", 0.6607, "100", 2099, 11))
     r = _rules_module(frappe)
-    rate, label = r.previous_approved("USD", "JPY", "Closing", 2099, 12)
+    rate, label = r.previous_approved("USD", "JPY", "Closing", 2099, 12, "ACTUAL")
     assert rate == 0.006607 and label == "FY2099 P11 (GER-2099-11-JPY-USD-Closing-01)"
+    [query] = [q for q in record["sql"] if "ORDER BY fiscal_year DESC" in q]
+    assert "rate_set = %s" in query, "konsol#348: a budget set's rate is not the actuals' previous rate"
 
 
 def test_every_iso_currency_has_a_reference():
@@ -1417,7 +1456,8 @@ def test_the_pre_fill_drafts_a_rate_past_the_warning_factor_and_lists_it():
     inserted = []
     frappe = _frappe({}, magnitude_factor=3)
     frappe.only_for = lambda roles: None
-    frappe.get_all = lambda *a, **k: []
+    lookup = frappe.get_all
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
 
     class Doc(dict):
         def __init__(self, d):
@@ -1445,8 +1485,10 @@ def test_the_pre_fill_in_action():
     inserted, record = [], {}
     frappe = _frappe(record)
     frappe.only_for = lambda roles: inserted.append(("roles", roles))
-    frappe.get_all = lambda *a, **k: [types.SimpleNamespace(from_currency="GBP", to_currency="CHF",
-                                                             rate_type="Closing")]
+    lookup = frappe.get_all
+    frappe = _frappe(record, taken=[("GBP", "CHF", "Closing")])
+    frappe.only_for = lambda roles: inserted.append(("roles", roles))
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
 
     class Doc(dict):
         def __init__(self, d):
@@ -1484,6 +1526,11 @@ def test_the_pre_fill_in_action():
         ("EUR", "Closing"), ("EUR", "Average"), ("GBP", "Average"), ("JPY", "Closing")}
     assert all(d["source"] == "ERP pre-fill" and d["erp_quote"] == d["quote"] and "docstatus" not in d
                for d in drafts)
+    # konsol#348: the pre-fill proposes actuals, so every draft names the set
+    # flagged Is Actuals, and a draft or approved rate in another set does
+    # not count as "existing"
+    assert all(d["rate_set"] == "ACTUAL" for d in drafts), drafts
+    assert record["taken_reads"] == [(2024, 3, "ACTUAL")], record["taken_reads"]
     eur_avg = next(d for d in drafts if d["from_currency"] == "EUR" and d["rate_type"] == "Average")
     assert (eur_avg["quote"], eur_avg["quoted_per"]) == (0.945, "1") and "Default" in eur_avg["source_note"]
     jpy = next(d for d in drafts if d["from_currency"] == "JPY")
@@ -1728,7 +1775,7 @@ def test_the_adoption_enters_each_rate_per_the_unit_that_keeps_it():
     made = []
     frappe = _frappe({}, user="Administrator")
     lookup = frappe.get_all
-    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "ISO Currency" else []
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype in ("ISO Currency", "Rate Set") else []
     frappe.utils = types.SimpleNamespace(today=lambda: "2026-09-13")
     frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
     frappe.db.savepoint = lambda name: None
@@ -1750,6 +1797,7 @@ def test_the_adoption_enters_each_rate_per_the_unit_that_keeps_it():
     closing = next(d for d in made if d["rate_type"] == "Closing")
     assert (closing["quote"], closing["quoted_per"], closing["erp_quote"]) == (0.663730291, "100", 0.663730291)
     assert closing["source"] == "Adoption"
+    assert closing["rate_set"] == "ACTUAL", "konsol#348: the adoption records actuals"
     average = next(d for d in made if d["rate_type"] == "Average")
     assert (average["quote"], average["quoted_per"], average["erp_quote"]) == (0.66, "100", None)
 
@@ -1761,7 +1809,7 @@ def _adopter(refs, used, made=None):
     frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
     frappe.db.savepoint = lambda name: None
     lookup = frappe.get_all
-    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "ISO Currency" else []
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype in ("ISO Currency", "Rate Set") else []
 
     class Doc(dict):
         name = "GER-X"
@@ -1830,7 +1878,8 @@ def test_the_adoption_runs_as_the_system_only_and_a_dry_run_writes_nothing():
     frappe = _frappe({}, user="someone@example.com")
     assert _refused(_rules_module(frappe).adopt_erp_rates)
     frappe = _frappe({}, user="Administrator")
-    frappe.get_all = lambda *a, **k: []
+    lookup = frappe.get_all
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
     frappe.get_doc = lambda d: (_ for _ in ()).throw(AssertionError("a dry run wrote"))
     frappe.utils = types.SimpleNamespace(today=lambda: "2026-09-13")
     frappe.logger = lambda *a: types.SimpleNamespace(info=lambda *a: None)
@@ -1929,3 +1978,486 @@ def test_an_approved_rate_requests_a_consolidation_build():
     build_map = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
                      and getattr(n.targets[0], "id", "") == "DOCTYPE_BUILD_MAP")
     assert build_map["Group Exchange Rate"]["scope"] == "consolidation"
+
+
+# -- the rate set (konsol#348, S4-Q1 option c, 15 Nov 2026) --------------------------
+#
+# Every rate names its Rate Set. The grain, the one-approved-rate rule, the
+# supersede check, the index and the name all key on it, so a budget set and
+# the actuals set each hold their own EUR -> CHF P12 Closing rate. The actuals
+# readers (close gate, pre-fill, adoption, previous-rate comparison) read the
+# one set flagged Is Actuals, and refuse by name while none is flagged.
+
+def test_a_rate_names_its_set():
+    f = _fields()
+    rs = f["rate_set"]
+    assert (rs["fieldtype"], rs["options"], rs["reqd"]) == ("Link", "Rate Set", 1)
+    assert rs["in_list_view"] == 1 and rs["in_standard_filter"] == 1
+    assert rs.get("description") and "Actuals" in rs["description"], "say which set the actuals read"
+    assert _json()["field_order"][0] == "rate_set", "the set comes first: it decides what the rate is for"
+    module, _ = _controller()
+    assert module.GRAIN == ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
+                            "rate_set")
+
+
+def test_a_blank_set_is_refused_not_defaulted():
+    """reqd covers the form; a REST write or a patch with ignore_mandatory
+    reaches validate, which must not let a rate fall into any set."""
+    refused, _, msg = _validate(rate_set=None)
+    assert refused and "Rate Set" in msg, msg
+    assert not _validate(rate_set="BUDGET_2027")[0]
+
+
+def test_the_name_carries_the_set():
+    module, _ = _controller()
+    made = []
+    naming = types.ModuleType("frappe.model.naming")
+    naming.make_autoname = lambda pattern, doc=None: made.append(pattern) or pattern
+    saved = sys.modules.get("frappe.model.naming")
+    sys.modules["frappe.model.naming"] = naming
+    try:
+        _doc(module, rate_set="BUDGET_2027").autoname()
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe.model.naming", None)
+        else:
+            sys.modules["frappe.model.naming"] = saved
+    assert made == ["GER-2099-12-EUR-CHF-Closing-BUDGET_2027-.##"], made
+
+
+def _approvals(module, record, approved):
+    """The controller's FOR UPDATE read, answered from ``approved`` rows on
+    every GRAIN field (the stub's default answers on none)."""
+    frappe = module.frappe
+    original = frappe.db.sql
+
+    def sql(query, params=(), *a, **k):
+        if "FOR UPDATE" in query:
+            record.setdefault("sql", []).append(query)
+            key, name = tuple(params[:-1]), params[-1]
+            return [(r["name"],) for r in approved
+                    if tuple(r[f] for f in module.GRAIN) == key and r["name"] != name]
+        return original(query, params, *a, **k)
+    frappe.db.sql = sql
+
+
+def test_two_sets_may_each_approve_the_same_key_and_one_set_may_not_twice():
+    module, record = _controller()
+    actual = dict(name="GER-2099-12-EUR-CHF-Closing-ACTUAL-01", to_currency="CHF", from_currency="EUR",
+                  fiscal_year=2099, fiscal_period=12, rate_type="Closing", rate_set="ACTUAL")
+    _approvals(module, record, [actual])
+    budget = _doc(module, name="GER-2099-12-EUR-CHF-Closing-BUDGET_2027-01", rate_set="BUDGET_2027")
+    budget.before_submit()
+    same = _doc(module, name="GER-2099-12-EUR-CHF-Closing-ACTUAL-02", rate_set="ACTUAL")
+    try:
+        same.before_submit()
+    except Refused as e:
+        assert actual["name"] in str(e) and "ACTUAL" in str(e), str(e)
+    else:
+        raise AssertionError("a second approved rate in the same set must be refused")
+    locking = [q for q in record["sql"] if "FOR UPDATE" in q]
+    assert locking and all("rate_set = %s" in q for q in locking), locking
+
+
+def test_a_correction_supersedes_within_its_own_set_only():
+    module, _, _ = _supersede_site({R1: _stored(R1)})   # R1 is approved in ACTUAL
+    other_set = _doc(module, name=R2, rate_set="BUDGET_2027", supersedes=R1, change_reason="budget rate")
+    assert _refused(other_set._validate_supersedes), "a budget rate cannot supersede the actuals rate"
+    same_set = _doc(module, name=R2, rate_set="ACTUAL", supersedes=R1, change_reason="corrected")
+    assert not _refused(same_set._validate_supersedes)
+
+
+def test_the_grain_index_follows_the_set_and_a_stale_index_is_rebuilt():
+    """frappe.db.add_index skips an index whose NAME exists, so the five-column
+    "grain" index on an upgraded site would stay as it is and the locking read
+    would scan the whole key without the set. on_doctype_update asks what the
+    index holds and drops a stale one first."""
+    old = ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"]
+    for existing, dropped in ((old, 1), (old + ["rate_set"], 0), ([], 0)):
+        module, record = _controller()
+        frappe = module.frappe
+        original = frappe.db.sql
+
+        def sql(query, params=(), *a, existing=existing, **k):
+            if "SHOW INDEX" in query:
+                return [{"Column_name": c, "Seq_in_index": i} for i, c in enumerate(existing, 1)]
+            return original(query, params, *a, **k)
+        frappe.db.sql = sql
+        frappe.db.sql_ddl = lambda q, *a, **k: record.setdefault("ddl", []).append(q)
+        module.on_doctype_update()
+        assert len(record.get("ddl", [])) == dropped, (existing, record.get("ddl"))
+        if dropped:
+            assert "DROP INDEX grain" in record["ddl"][0] and "tabGroup Exchange Rate" in record["ddl"][0]
+        assert record["index"][-1][0][1] == list(module.GRAIN) and record["index"][-1][1] == {"index_name": "grain"}
+
+
+def test_actuals_readers_select_the_flagged_set_and_refuse_when_none_is_flagged():
+    record = {}
+    r = _rules_module(_frappe(record))
+    assert r.actuals_rate_set() == "ACTUAL"
+    r._approved_keys(2024, 3)
+    reads = [q for q in record["sql"] if "tabGroup Exchange Rate" in q]
+    assert reads and all("rate_set = %s" in q for q in reads), reads
+    # none flagged: nothing is assumed, and the close is refused by name
+    r = _rules_module(_frappe({}, actuals=None))
+    assert _refused(r.actuals_rate_set)
+    missing, error, blockers = r.rate_gate(2024, 3)
+    assert missing is None and "Is Actuals" in error and blockers == [], (missing, error, blockers)
+    try:
+        r.assert_rates_complete(2024, 3)
+    except Refused as e:
+        assert "Is Actuals" in str(e) and "Rate Set" in str(e), str(e)
+    else:
+        raise AssertionError("a close with no actuals set must be refused")
+    frappe = _frappe({}, actuals=None)
+    frappe.only_for = lambda roles: None
+    assert _refused(_rules_module(frappe).prefill_from_erp, "2024", "3"), "the pre-fill proposes actuals"
+    # two flagged (a patch or a race got past the controller): refuse, naming both
+    r = _rules_module(_frappe({}, actuals=("ACTUAL", "ZZ_OTHER")))
+    try:
+        r.actuals_rate_set()
+    except Refused as e:
+        assert "ACTUAL" in str(e) and "ZZ_OTHER" in str(e), str(e)
+    else:
+        raise AssertionError("two flagged sets must be refused")
+
+
+# -- Copy rates from previous period (konsol#584, Deepak Pai 22 Nov 2026) ---------------
+
+COPY = "Copied from previous period"
+LIST_JS = os.path.join(GER_DIR, "group_exchange_rate_list.js")
+
+
+def test_a_copied_rate_names_the_rate_it_was_copied_from():
+    f, order = _fields(), _json()["field_order"]
+    c = f["copied_from"]
+    assert (c["fieldtype"], c["options"]) == ("Link", "Group Exchange Rate")
+    assert c["read_only"] == 1 and c["no_copy"] == 1 and c.get("label") == "Copied From"
+    assert c.get("description")
+    assert order.index("copied_from") == order.index("erp_quote") + 1, "in the Source section"
+
+
+def test_only_the_copy_sets_the_copied_source_and_copied_from():
+    """source and copied_from are read-only in the form only: REST writes them."""
+    refused, _, msg = _validate(source=COPY)
+    assert refused and "Copy rates from previous period" in msg, msg
+    refused, _, msg = _validate(copied_from="GER-2099-11-EUR-CHF-Closing-ACTUAL-01")
+    assert refused and "Copied From" in msg, msg
+    refused, _, _ = _validate(source=COPY, _before=dict(source="Manual", erp_quote=0, quoted_per="1"))
+    assert refused, "relabelling a saved rate"
+    # another writer's flag does not let it through
+    assert _validate(source=COPY, copied_from="GER-X", _ctx={"flags": {"konsol_prefilling_rates": True}})[0]
+    # the copy, under its own flag, sets the source, the link and the note
+    refused, d, msg = _validate(source=COPY, copied_from="GER-X", source_note="Copied from GER-X",
+                                _ctx={"flags": {"konsol_copying_rates": True}})
+    assert not refused and d.source == COPY, msg
+    # and nothing else: the ERP Quote is the pre-fill's alone
+    assert _validate(source=COPY, copied_from="GER-X", erp_quote=0.9478,
+                     _ctx={"flags": {"konsol_copying_rates": True}})[0]
+    # the copy flag does not let a forged ERP pre-fill or Adoption through
+    assert _validate(source="ERP pre-fill", erp_quote=0.9478, _ctx={"flags": {"konsol_copying_rates": True}})[0]
+    assert _validate(source="Adoption", _ctx={"flags": {"konsol_copying_rates": True}})[0]
+
+
+def test_a_copied_draft_a_person_saves_again_keeps_its_label_until_the_rate_changes():
+    saved = dict(source=COPY, copied_from="GER-X", erp_quote=0, quoted_per="1", quote=0.9478,
+                 source_note="Copied from GER-X")
+    refused, d, msg = _validate(source=COPY, copied_from="GER-X", source_note="Copied from GER-X", _before=saved)
+    assert not refused and d.source == COPY, msg
+    # the same rate per another unit is the same rate
+    refused, d, _ = _validate(source=COPY, copied_from="GER-X", source_note="Copied from GER-X",
+                              quote=9.478, quoted_per="10", _before=saved)
+    assert not refused and d.source == COPY
+    # a changed rate is a person's rate; the link stays as the reference
+    refused, d, _ = _validate(source=COPY, copied_from="GER-X", source_note="Copied from GER-X",
+                              quote=0.95, _before=saved)
+    assert not refused and d.source == "Manual" and d.copied_from == "GER-X"
+    # a person cannot repoint the link
+    assert _validate(source=COPY, copied_from="GER-Y", source_note="Copied from GER-X", _before=saved)[0]
+
+
+def test_the_copy_is_asked_no_magnitude_reason_like_the_pre_fill():
+    """konsol#179: the copy has no person to give a Reason for Change either;
+    it lists the warning (test_the_copy_in_action), and the person who saves
+    or approves the draft gives the reason."""
+    jpy = dict(from_currency="JPY", to_currency="USD", quote=0.6607, quoted_per="10", source=COPY,
+               copied_from="GER-X", source_note="n")
+    assert not _validate(_ctx={"magnitude_factor": 3, "flags": {"konsol_copying_rates": True}}, **jpy)[0]
+    assert _validate(_ctx={"magnitude_factor": 3},
+                     _before=dict(jpy, erp_quote=0), **jpy)[0], "a person's save is asked"
+
+
+def test_the_copy_proposes_drafts_and_never_submits():
+    src = open(RULES).read()
+    fn = next(n for n in ast.parse(src).body
+              if isinstance(n, ast.FunctionDef) and n.name == "copy_from_previous_period")
+    assert [ast.unparse(d) for d in fn.decorator_list] == ["frappe.whitelist(methods=['POST'])"]
+    assert [a.arg for a in fn.args.args] == ["fiscal_year", "fiscal_period", "rate_set"]
+    body = ast.unparse(fn)
+    assert "frappe.only_for(PREFILL_ROLES)" in body
+    assert ".submit(" not in body and "commit" not in body
+    assert "assert_open(" in body
+
+
+def _copy_env(*, sources=(), taken=(), calendar=None, rate_sets=("ACTUAL", "BUDGET-2025"), period_open=True,
+              refs=None, factor=None, refuse=()):
+    """(rules module, record) for copy_from_previous_period against a stub frappe.
+    ``sources``: Group Exchange Rate rows the stub returns for the source
+    period, filtered as the query asks. ``taken``: the target's rows."""
+    record = {"inserted": [], "gates": [], "reads": []}
+    frappe = _frappe(record, magnitude_factor=factor, rate_sets=rate_sets,
+                     taken=[(t["from_currency"], t["to_currency"], t["rate_type"]) for t in taken])
+
+    def only_for(roles):
+        record["sql"] = []   # what the copy reads, from its first statement on
+        record.setdefault("roles", roles)
+    frappe.only_for = only_for
+
+    def matches(row, filters):
+        for k, v in filters.items():
+            if isinstance(v, list):
+                if v[0] == "<" and not row.get(k) < v[1]:
+                    return False
+                if v[0] == "in" and row.get(k) not in v[1]:
+                    return False
+            elif row.get(k) != v:
+                return False
+        return True
+
+    def get_all(doctype, filters=None, fields=None, **k):
+        if doctype == "ISO Currency":
+            return [types.SimpleNamespace(name=c, usd_log10=(refs or REFS).get(c),
+                                          get=lambda f, c=c: (refs or REFS).get(c))
+                    for c in filters["name"][1] if c in (refs or REFS)]
+        assert doctype == "Group Exchange Rate", doctype
+        record["reads"].append(dict(filters))
+        return [_Flags(r) for r in sources if matches(r, filters)]
+    frappe.get_all = get_all
+
+    class Doc(dict):
+        def __init__(self, d):
+            super().__init__(d)
+            self.name = f"GER-NEW-{d['from_currency']}-{d['rate_type']}"
+
+        def insert(self):
+            assert frappe.flags.konsol_copying_rates is True, "the copy's own flag"
+            if self["from_currency"] in refuse:
+                raise frappe.ValidationError("moves +80%")
+            record["inserted"].append(dict(self))
+    frappe.get_doc = Doc
+
+    def assert_open(fy, fp, action="run"):
+        record["gates"].append((fy, fp, action))
+        record["sql"].append("ASSERT_OPEN")
+        if not period_open:
+            raise Refused(f"Cannot {action}: fiscal period {fp} of FY{fy} is closed.")
+
+    year = [{"period": 0, "type": "Opening"}] + [{"period": p, "type": "Regular"} for p in range(1, 13)] \
+        + [{"period": 13, "type": "Closing"}]
+    cal = {2025: year, 2024: year} if calendar is None else calendar
+    r = _rules_module(frappe, {"assert_open": assert_open,
+                               "declared_calendar": lambda years: {y: cal[y] for y in years if y in cal}})
+    return r, record
+
+
+def _ger(name, f="EUR", rt="Closing", docstatus=1, rate_set="ACTUAL", quote=0.9478, per="1", fy=2024, fp=12):
+    return {"name": name, "from_currency": f, "to_currency": "CHF", "rate_type": rt, "docstatus": docstatus,
+            "rate_set": rate_set, "quote": quote, "quoted_per": per, "fiscal_year": fy, "fiscal_period": fp}
+
+
+def test_the_copy_in_action():
+    sources = [
+        _ger("GER-EUR-C"), _ger("GER-EUR-A", rt="Average", quote=0.945),
+        _ger("GER-JPY-C", f="JPY", quote=0.588235294, per="100"),
+        _ger("GER-GBP-C", f="GBP", quote=1.12),          # the target already has GBP Closing
+        _ger("GER-SEK-C", f="SEK", quote=0.085),          # the controller refuses it
+        _ger("GER-XAU-C", f="XAU", quote=2100.0),         # no magnitude reference
+        _ger("GER-EUR-C-DRAFT", docstatus=0, quote=0.5),  # a draft is never a source
+        _ger("GER-EUR-C-BUD", rate_set="BUDGET-2025", quote=0.8),  # nor another set's rate
+    ]
+    taken = [_ger("GER-GBP-TARGET", f="GBP", docstatus=0, fy=2025, fp=1)]
+    r, record = _copy_env(sources=sources, taken=taken, refuse=("SEK",),
+                          refs={k: v for k, v in REFS.items() if k != "XAU"})
+    out = r.copy_from_previous_period("2025", "1", "ACTUAL")
+    assert record["roles"] == ("EPM Analyst", "EPM Admin", "System Manager")
+    assert record["gates"] == [(2025, 1, "copy group exchange rates into it")]
+    assert out["from_period"] == "FY2024 P12"
+    drafts = {(d["from_currency"], d["rate_type"]): d for d in record["inserted"]}
+    assert set(drafts) == {("EUR", "Closing"), ("EUR", "Average"), ("JPY", "Closing")}, drafts
+    jpy = drafts[("JPY", "Closing")]
+    assert (jpy["quote"], jpy["quoted_per"]) == (0.588235294, "100"), "the same quote and unit"
+    assert jpy["copied_from"] == "GER-JPY-C" and jpy["source"] == COPY and jpy["rate_set"] == "ACTUAL"
+    assert (jpy["fiscal_year"], jpy["fiscal_period"], jpy["to_currency"]) == (2025, 1, "CHF")
+    assert "GER-JPY-C" in jpy["source_note"] and "FY2024 P12" in jpy["source_note"]
+    assert all("docstatus" not in d and not d.get("erp_quote") for d in drafts.values())
+    assert drafts[("EUR", "Closing")]["quote"] == 0.9478, "never the draft's or the budget set's quote"
+    assert sorted(out["created"]) == sorted(f"GER-NEW-{f}-{rt}" for f, rt in drafts)
+    assert [s.split(":")[0] for s in out["skipped"]] == ["GBP → CHF Closing"], out["skipped"]
+    refused = dict(x.split(": ", 1) for x in out["refused"])
+    assert refused["SEK → CHF Closing"] == "moves +80%"
+    assert "No magnitude reference for XAU" in refused["XAU → CHF Closing"]
+    assert record.get("cleared") == [1] and r.frappe.flags.konsol_copying_rates is False
+    # every read is of the asked set, and the sources are approved only
+    assert all(f["rate_set"] == "ACTUAL" for f in record["reads"] if "rate_set" in f), record["reads"]
+    assert record["taken_reads"] == [(2025, 1, "ACTUAL")], record["taken_reads"]
+    source_read = next(f for f in record["reads"] if f.get("fiscal_period") == 12)
+    assert source_read["docstatus"] == 1 and source_read["fiscal_year"] == 2024
+
+
+def test_the_copy_lists_a_rate_past_the_warning_factor():
+    sources = [_ger("GER-ARS-C", f="ARS", quote=0.0035), _ger("GER-EUR-C")]
+    r, record = _copy_env(sources=sources, taken=[], factor=3)
+    out = r.copy_from_previous_period(2025, 1, "ACTUAL")
+    assert {d["from_currency"] for d in record["inserted"]} == {"ARS", "EUR"}, "both are drafted"
+    assert [w.split(":")[0] for w in out["warned"]] == ["ARS → CHF Closing"], out["warned"]
+
+
+def test_a_budget_set_copies_its_own_rates():
+    sources = [_ger("GER-EUR-C"), _ger("GER-EUR-C-BUD", rate_set="BUDGET-2025", quote=0.8)]
+    r, record = _copy_env(sources=sources)
+    r.copy_from_previous_period(2025, 1, "BUDGET-2025")
+    assert [(d["copied_from"], d["rate_set"], d["quote"]) for d in record["inserted"]] == [
+        ("GER-EUR-C-BUD", "BUDGET-2025", 0.8)]
+
+
+def test_the_copy_refuses_by_name():
+    # a missing or blank Rate Set
+    r, record = _copy_env(sources=[_ger("GER-EUR-C")])
+    for rate_set in ("ZZ_NO_SUCH_SET", "", None):
+        try:
+            r.copy_from_previous_period(2025, 1, rate_set)
+        except Refused as e:
+            assert "Rate Set" in str(e) and (rate_set or "required") in str(e), str(e)
+        else:
+            raise AssertionError(f"Rate Set {rate_set!r} must be refused")
+    assert record["inserted"] == []
+    # a closed target period
+    r, record = _copy_env(sources=[_ger("GER-EUR-C")], period_open=False)
+    assert _refused(r.copy_from_previous_period, 2025, 1, "ACTUAL") and record["inserted"] == []
+    # an undeclared previous year
+    year = [{"period": p, "type": "Regular"} for p in range(1, 13)]
+    r, record = _copy_env(sources=[_ger("GER-EUR-C")], calendar={2025: year})
+    try:
+        r.copy_from_previous_period(2025, 1, "ACTUAL")
+    except Refused as e:
+        assert "FY2024 is not declared" in str(e), str(e)
+    else:
+        raise AssertionError("an undeclared previous period must be refused")
+    assert record["inserted"] == [] and record["reads"] == []
+
+
+def test_the_copy_skips_opening_and_closing_periods():
+    """P1 of FY2025 copies from FY2024 P12, not FY2025 P0 (Opening) nor FY2024 P13 (Closing)."""
+    sources = [_ger("GER-P12"), _ger("GER-P13", fp=13, quote=0.9), _ger("GER-P0", fy=2025, fp=0, quote=0.91)]
+    r, record = _copy_env(sources=sources)
+    out = r.copy_from_previous_period(2025, 1, "ACTUAL")
+    assert out["from_period"] == "FY2024 P12"
+    assert [d["copied_from"] for d in record["inserted"]] == ["GER-P12"]
+
+
+def test_the_list_has_a_copy_button_beside_the_pre_fill():
+    js = open(LIST_JS).read()
+    assert '__("Copy rates from previous period")' in js
+    assert 'method: "konsol.group_rates.copy_from_previous_period"' in js
+    assert js.count('type: "POST"') == 2
+    assert 'fieldname: "rate_set", fieldtype: "Link", options: "Rate Set"' in js
+    assert "is_actuals: 1" in js, "the actuals set is pre-selected"
+    # the summary is a message, never a question
+    assert "frappe.confirm" not in js and "alert(" not in js
+    for key in ("created", "skipped", "refused", "warned"):
+        assert f"out.{key}" in js, key
+
+
+# -- the #586 review ---------------------------------------------------------------------
+
+_SOURCE = {"GER-SRC": {"quote": 0.9478, "quoted_per": "1", "fiscal_year": 2099, "fiscal_period": 11,
+                       "change_reason": None}}
+_COPIED = dict(source=COPY, copied_from="GER-SRC", source_note="Copied from GER-SRC")
+
+
+def test_a_copy_is_judged_against_the_rate_it_copies_not_an_opening_rate():
+    """Review 1: previous_approved is the latest approved rate before the
+    target of ANY period type, so a P1 copy met an approved P0 (Opening) rate
+    of another value and was refused for the move."""
+    ctx = {"flags": {"konsol_copying_rates": True}, "amended": _SOURCE, "move_threshold_pct": 10,
+           "previous": ("GER-P0", 0.80, "1", 2099, 0)}
+    refused, d, msg = _validate(_ctx=ctx, **_COPIED)
+    assert not refused, msg
+    # the copy's flag alone does not exempt a moved rate: it is judged against the source
+    refused, _, msg = _validate(_ctx=ctx, quote=1.2, **_COPIED)
+    assert refused and "GER-SRC" in msg and "GER-P0" not in msg, msg
+
+
+def test_a_copy_is_drafted_while_the_rate_move_threshold_is_undeclared():
+    ctx = {"flags": {"konsol_copying_rates": True}, "amended": _SOURCE, "move_threshold_pct": None,
+           "previous": ("GER-P0", 0.80, "1", 2099, 0)}
+    refused, _, msg = _validate(_ctx=ctx, **_COPIED)
+    assert not refused, msg
+
+
+def test_a_manual_draft_with_the_threshold_undeclared_is_refused_as_before():
+    ctx = {"move_threshold_pct": None, "previous": ("GER-P0", 0.80, "1", 2099, 0)}
+    refused, _, msg = _validate(_ctx=ctx)
+    assert refused and "rate move threshold" in msg, msg
+    # and a person's save of a copied draft is a person's rate: the rule applies
+    refused, _, msg = _validate(_ctx=dict(ctx, amended=_SOURCE),
+                                _before=dict(_COPIED, quote=0.9478, quoted_per="1", erp_quote=0), **_COPIED)
+    assert refused and "rate move threshold" in msg, msg
+
+
+def test_the_copy_and_the_pre_fill_lock_the_rate_set_before_they_read():
+    """Review 2: two clicks at once both read "no draft yet" and both insert.
+    Each locks its Rate Set row first, then reads the taken keys with a
+    locking read, so the second waits and sees the first one's drafts."""
+    r, record = _copy_env(sources=[_ger("GER-EUR-C")])
+    r.copy_from_previous_period(2025, 1, "ACTUAL")
+    sql = record["sql"]
+    assert "FROM `tabRate Set`" in sql[0] and "FOR UPDATE" in sql[0] and "name=%s" in sql[0], sql[:2]
+    taken = next(i for i, q in enumerate(sql) if "docstatus < 2" in q)
+    assert "FOR UPDATE" in sql[taken] and taken > sql.index("ASSERT_OPEN") > 0
+
+    record = {}
+    frappe = _frappe(record)
+    frappe.only_for = lambda roles: None
+    lookup = frappe.get_all
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
+    r = _rules_module(frappe, {"required_pairs": lambda fy, fp: set(), "tree_pairs": lambda fy, fp: set(),
+                               "erp_quote_rows": lambda as_of: []})
+    r.prefill_from_erp("2024", "3")
+    sql = record["sql"]
+    lock = next(i for i, q in enumerate(sql) if "FROM `tabRate Set`" in q)
+    taken = next(i for i, q in enumerate(sql) if "docstatus < 2" in q)
+    assert "FOR UPDATE" in sql[lock] and "FOR UPDATE" in sql[taken] and lock < taken, sql
+    assert record["taken_reads"] == [(2024, 3, "ACTUAL")]
+
+
+def test_a_key_edit_makes_a_copied_or_pre_filled_draft_manual():
+    """Review 3: the label says where THIS key's rate came from; a draft moved
+    to another key is a person's rate."""
+    copied = dict(_COPIED, quote=0.9478, quoted_per="1", erp_quote=0)
+    prefilled = dict(source="ERP pre-fill", erp_quote=0.9478, quoted_per="1")
+    for field, value in (("from_currency", "USD"), ("rate_type", "Average"), ("fiscal_period", 11),
+                         ("fiscal_year", 2098), ("rate_set", "BUDGET"), ("to_currency", "USD")):
+        before = {field: value}   # the saved draft had another key; the document is EUR → CHF Closing 2099 P12
+        _, d, msg = _validate(_before=dict(copied, **before), _ctx={"amended": _SOURCE}, **_COPIED)
+        assert d.source == "Manual", (field, d.source, msg)
+        _, d, msg = _validate(source="ERP pre-fill", erp_quote=0.9478, _before=dict(prefilled, **before))
+        assert d.source == "Manual", (field, d.source, msg)
+    # the same key keeps its label
+    _, d, _ = _validate(_before=copied, _ctx={"amended": _SOURCE}, **_COPIED)
+    assert d.source == COPY
+    _, d, _ = _validate(source="ERP pre-fill", erp_quote=0.9478, _before=prefilled)
+    assert d.source == "ERP pre-fill"
+
+
+def test_a_source_with_a_pending_correction_is_copied_and_warned():
+    """Review 4: the copy takes the approved rate; a correction of it still in
+    draft may be the rate meant, so the summary names it."""
+    sources = [_ger("GER-EUR-C"), _ger("GER-EUR-A", rt="Average", quote=0.945),
+               dict(_ger("GER-EUR-C-FIX", docstatus=0, quote=0.95), supersedes="GER-EUR-C")]
+    r, record = _copy_env(sources=sources)
+    out = r.copy_from_previous_period(2025, 1, "ACTUAL")
+    assert {d["copied_from"] for d in record["inserted"]} == {"GER-EUR-C", "GER-EUR-A"}
+    assert len(out["warned"]) == 1, out["warned"]
+    assert out["warned"][0].startswith("EUR → CHF Closing: ") and "GER-EUR-C-FIX" in out["warned"][0]
+    assert "GER-EUR-C" in out["warned"][0]

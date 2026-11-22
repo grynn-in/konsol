@@ -120,25 +120,22 @@ def unchecked(key, error):
 
 # -- the steps ------------------------------------------------------------------------
 
-def fiscal_calendar_step(years, period_rows, entity_calendars):
+def fiscal_calendar_step(years, period_rows):
     """``years``: EPM Fiscal Year count. ``period_rows``:
-    ``fiscal_calendar.fiscal_period_rows()``. ``entity_calendars``: Entity
-    Fiscal Calendar count (an ERP data area mapped to its calendar)."""
+    ``fiscal_calendar.fiscal_period_rows()``. The site declares one calendar;
+    there is no per-entity mapping (konsol#577)."""
     periods = len(period_rows or ())
     open_periods = sum(1 for r in period_rows or () if r.get("status") == "Open")
-    mapped = "%s mapped to a calendar (Entity Fiscal Calendar)" % _plural(
-        entity_calendars, "ERP data area")
     if not years:
         return _step("fiscal_calendar", NOT_DONE,
-                     _sentences(["No EPM Fiscal Year is declared: declare each year and its periods",
-                                 mapped]), 0)
+                     _sentences(["No EPM Fiscal Year is declared: declare each year and its periods"]), 0)
     if not periods:
         return _step("fiscal_calendar", PARTIAL,
-                     _sentences(["%s declared with no periods" % _plural(years, "fiscal year"), mapped]),
+                     _sentences(["%s declared with no periods" % _plural(years, "fiscal year")]),
                      years)
     return _step("fiscal_calendar", DONE, _sentences([
-        "%s, %s, %d open" % (_plural(years, "fiscal year"), _plural(periods, "period"), open_periods),
-        mapped]), years)
+        "%s, %s, %d open" % (_plural(years, "fiscal year"), _plural(periods, "period"), open_periods)]),
+        years)
 
 
 def consolidation_group_step(groups, ic_configured):

@@ -68,6 +68,7 @@ def test_module_imports_nothing_from_frappe_or_konsol():
 
 
 def test_columns_are_label_code_four_amounts_and_currency():
+    # Without a budget payload there is no budget column (BUD-4-2; review D1).
     fieldnames = [c["fieldname"] for c in R.columns()]
     assert fieldnames == ["label", "code", "current", "comparison", "variance", "ytd",
                           "prior_year", "prior_year_change", "currency", "commentary"]
@@ -515,3 +516,459 @@ def test_has_rows_through_is_one_year_and_up_to_the_period():
     assert R.has_rows_through([_tb(2024, 8)], 2024, 7) is False
     assert R.has_rows_through([], 2024, 7) is False
     assert R.has_rows_through(None, 2024, 7) is False
+
+
+# --- Budget columns (konsol#348 S5 K6; S5-Q4 a, S5-Q6 a) --------------------
+#
+# ``rows(payload, prior, drill_group, budget)`` merges a budget payload per
+# line, the Prior year pattern: the budget statement is statement_model's own
+# statement over gold_fully_consolidated_budget rows (same chart, periods,
+# minor unit and display sign), so Budget is the budget line's ``current``,
+# Variance to budget is ``current - budget``, Budget year to date the budget
+# line's ``ytd`` (P&L lines only). A Balance Sheet budget value is the
+# budgeted movement year to date (a budget has Regular-period rows only), and
+# the message says so (S5-Q4 a). Blank, never 0, where the budget is absent or
+# not ok; the message carries the state's sentence then.
+
+UNBALANCED_LABEL = "Unbalanced budget (no balancing entry)"
+_BUDGET_META = {"cycle": "BCYC-ZZB-2025-abc12345", "layers": ["base", "board"], "rate_set": "ZZRS",
+                "scenario_id": "ZZB", "declaration": "APB-CG-ZZ_GROUP--2025-0f0f0f0f"}
+_BUDGET_OK_SENTENCE = ("Approved budget for ZZ_GROUP FY2025: Budget Cycle BCYC-ZZB-2025-abc12345, all layers "
+                       "(base, board), Rate Set ZZRS (Approved Budget APB-CG-ZZ_GROUP--2025-0f0f0f0f, approved by "
+                       "lead@example.com on 2026-11-17).")
+
+
+def _budget_rows():
+    """FCB shape: a revenue budget of 1,000 and a cash budget of 300 with no
+    balancing entry, so the plug is +700 for the (entity, period)."""
+    return [
+        F._row("4100", -1000.0, adjustment_type="entity"),
+        F._row("1110", 300.0, adjustment_type="entity"),
+        F._row("UNBALANCED", 700.0, adjustment_type="unbalanced"),
+    ]
+
+
+def _budget(rows=None, state="ok", message=_BUDGET_OK_SENTENCE, **meta):
+    stmt = SM.statement(rows if rows is not None else _budget_rows(), F._s_accounts(), F._S_CALENDAR,
+                        F._S_KEY, F._s_declared(), minor_unit=2) if state == "ok" else None
+    return {"state": state, "message": message, "statement": stmt, "meta": {**_BUDGET_META, **meta}}
+
+
+def test_columns_carry_the_budget_columns_only_for_an_ok_budget():
+    """BUD-4-2 (Deepak Pai, 7 Nov 2026): "Numbers shows a visible 'no approved
+    budget' state, never a blank column". The three budget columns follow
+    Year to date when, and only when, the budget payload is ok; without a
+    budget, or with a non-ok one, the report has no budget column at all and
+    the message carries the state (PR #554 review D1)."""
+    actuals = [c["fieldname"] for c in R.columns()]
+    assert "budget" not in actuals and "variance_to_budget" not in actuals and "budget_ytd" not in actuals
+    assert actuals[actuals.index("ytd") + 1] == "prior_year"
+    for state in ("no_approved_budget", "cycle_cancelled", "inputs_changed", "layer_missing", "error", "no_rows"):
+        assert [c["fieldname"] for c in R.columns(2, budget=_budget(state=state, message="x"))] == actuals, state
+    fieldnames = [c["fieldname"] for c in R.columns(budget=_budget())]
+    assert fieldnames[fieldnames.index("ytd") + 1:fieldnames.index("prior_year")] == [
+        "budget", "variance_to_budget", "favourability", "budget_ytd"]
+    by_name = {c["fieldname"]: c for c in R.columns(minor_unit=2, budget=_budget())}
+    assert by_name["budget"]["label"] == "Budget (before eliminations)"
+    assert by_name["variance_to_budget"]["label"] == "Variance to budget"
+    assert by_name["budget_ytd"]["label"] == "Budget year to date"
+    for name in ("budget", "variance_to_budget", "budget_ytd"):
+        assert by_name[name]["fieldtype"] == "Currency" and by_name[name]["options"] == "currency"
+        assert by_name[name]["precision"] == 2
+
+
+def test_without_a_budget_the_budget_columns_are_blank():
+    data = R.rows(_payload())
+    assert data and all(row["budget"] is None and row["variance_to_budget"] is None
+                        and row["budget_ytd"] is None for row in data)
+
+
+def test_a_pl_heading_takes_the_budgets_current_variance_and_ytd_matched_by_code():
+    payload, budget = _payload(), _budget()
+    row = _by_label(R.rows(payload, budget=budget), "COST OF SALES")
+    this_line = _line(payload, 0, {"heading": "4"})
+    budget_line = _line(budget, 0, {"heading": "4"})
+    assert budget_line["current"] == 1000.0 and this_line["current"] == 241.43
+    assert row["budget"] == 1000.0
+    assert row["variance_to_budget"] == round(241.43 - 1000.0, 2)
+    assert row["budget_ytd"] == budget_line["ytd"] == 1000.0
+
+
+def test_net_result_takes_the_budgets_net_result():
+    row = _by_label(R.rows(_payload(), budget=_budget()), SM.NET_RESULT_LABEL)
+    assert row["budget"] == 1000.0 and row["budget_ytd"] == 1000.0
+    assert row["variance_to_budget"] == round(241.43 - 1000.0, 2)
+
+
+def test_a_bs_heading_takes_the_budgeted_movement_year_to_date_with_no_budget_ytd():
+    """S5-Q4 (a): the budget's cumulative BS value IS the year's budgeted
+    movements (Regular-period rows only); the Budget year to date column
+    stays P&L-only, as on the actuals."""
+    data = R.rows(_payload(), budget=_budget())
+    assets = _by_label(data, "ASSETS")
+    assert assets["budget"] == 300.0
+    assert assets["budget_ytd"] is None
+    # A budget line present with nothing budgeted is 0.00, not blank.
+    liabilities = _by_label(data, "LIABILITIES")
+    assert liabilities["budget"] == 0.0 and str(liabilities["budget"]) == "0.0"
+
+
+def test_a_bs_line_has_no_variance_to_budget():
+    """S5 F1 (coordinator, 17 Nov 2026): under S5-Q4 (a) the BS budget is a
+    movement year to date and the actual is a balance; their difference is
+    not a variance, so the cell is blank on every Balance Sheet line (a
+    heading, an include, the plug) while the Budget value stays. The P&L
+    keeps its variance, and the legend says why the BS has none."""
+    data = R.rows(_payload(), budget=_budget())
+    for label in ("ASSETS", "LIABILITIES", "EQUITY", "of which current-year result",
+                  "of which currency translation (CTA)"):
+        row = _by_label(data, label)
+        assert row["budget"] is not None, label
+        assert row["variance_to_budget"] is None, label
+    assert _by_label(data, "COST OF SALES")["variance_to_budget"] == round(241.43 - 1000.0, 2)
+    text = R.message(_payload(), budget=_budget())
+    assert "no variance to budget on the balance sheet" in text.lower()
+
+
+def test_equity_includes_take_the_budgets_include_of_the_same_kind():
+    data = R.rows(_payload(), budget=_budget())
+    result = _by_label(data, "of which current-year result")
+    assert result["budget"] == 1000.0
+    assert result["variance_to_budget"] is None   # a BS line (S5 F1)
+    cta = _by_label(data, "of which currency translation (CTA)")
+    assert cta["budget"] == 0.0   # the budget has a CTA bucket of 0: present, zero
+
+
+def test_a_budget_only_unbalanced_line_is_laid_out_before_the_residual():
+    """Actuals never carry the plug; the budget's shows as its own row with
+    blank actuals columns, so the budget balance sheet is seen to foot."""
+    data = R.rows(_payload(), budget=_budget())
+    labels = [row["label"] for row in data]
+    at = labels.index(UNBALANCED_LABEL)
+    assert labels[at + 1] == "Unmatched residual"
+    row = data[at]
+    assert row["current"] is None and row["comparison"] is None and row["variance"] is None
+    assert row["budget"] == 700.0
+    assert row["variance_to_budget"] is None, "no actual to compare with"
+    assert row["budget_ytd"] is None and row["prior_year"] is None
+    residual = _by_label(data, "Unmatched residual")
+    assert residual["budget"] == 0.0
+
+
+def test_the_budget_only_unbalanced_row_carries_the_plugs_code_and_the_drill_group():
+    """S5 K10b: the plug's own drill (get_budget_drill, heading
+    "UNBALANCED") opens from the row's Budget cell, so the row carries the
+    warehouse's literal main_account as its code and the group the drill
+    takes; the label is not a heading link (no chart heading behind it)."""
+    data = R.rows(_payload(), drill_group="CG-ZZG-", budget=_budget())
+    row = _by_label(data, UNBALANCED_LABEL)
+    assert row["code"] == "UNBALANCED"
+    assert row["drill_group"] == "CG-ZZG-"
+    assert R.UNBALANCED_CODE == "UNBALANCED"
+    # Heading rows are unchanged: code is the chart heading, drill_group the group.
+    assert _by_label(data, "LIABILITIES")["code"] == "2"
+
+
+def test_an_ok_budget_marks_the_heading_and_unbalanced_rows_for_the_budget_drill():
+    """S5 K10b: ``drill_budget`` on the rows whose Budget cell opens the
+    budget drill (Statement Drill, basis Budget): heading rows with a budget
+    value and the plug's row. Includes, net result, section headers and the
+    residual carry 0. Without a group to drill on, nothing is marked."""
+    data = R.rows(_payload(), drill_group="CG-ZZG-", budget=_budget())
+    flagged = [row["label"] for row in data if row.get("drill_budget")]
+    assert UNBALANCED_LABEL in flagged
+    assert all(row["code"] for row in data if row.get("drill_budget"))
+    headings = [row["label"] for row in data if row.get("code") and row["code"] != "UNBALANCED"]
+    assert [h for h in headings if h in flagged] == headings, "every heading with a budget value"
+    for label in ("Profit and Loss", "Net result", "Unmatched residual"):
+        assert not _by_label(data, label).get("drill_budget")
+    assert not any(row.get("drill_budget") for row in R.rows(_payload(), drill_group=None, budget=_budget()))
+
+
+def test_a_non_ok_or_absent_budget_marks_no_row_for_the_budget_drill():
+    for budget in (None, {"state": "no_approved_budget", "message": "No approved budget.",
+                          "statement": None, "meta": {}}):
+        data = R.rows(_payload(), drill_group="CG-ZZG-", budget=budget)
+        assert not any(row.get("drill_budget") for row in data)
+        assert all("drill_budget" in row for row in data if row.get("code")), "the key is always present"
+
+
+def test_an_actuals_unbalanced_line_is_laid_out_and_takes_the_budgets_by_kind():
+    data = R.rows(_payload(rows=_budget_rows()), budget=_budget())
+    row = _by_label(data, UNBALANCED_LABEL)
+    assert row["current"] == 700.0 and row["budget"] == 700.0
+    assert row["variance_to_budget"] is None   # a BS line (S5 F1)
+    # Without a budget the line still lays out (no unknown-kind refusal).
+    assert _by_label(R.rows(_payload(rows=_budget_rows())), UNBALANCED_LABEL)["current"] == 700.0
+
+
+# --- Unbudgeted is budget zero (Deepak Pai, 17 Nov 2026, konsol#348 comment
+# 6956694095; the 22 Sep 2026 rule, gold_variance_analysis's
+# coalesce(budget_amount, 0)) -----------------------------------------------
+#
+# statement_model.statement emits every chart heading, at 0 when no row sits
+# under it, and always the net result, so an ok budget carries every heading
+# the actuals do: an unbudgeted heading shows Budget 0.00 with no special case
+# here (test_close_statement_api's S5-path test pins it end to end, drill
+# included; PR #558 review m1). A payload that lacks a line is not one the
+# reader builds: it is blank like any other absent line, never 0.00.
+
+def test_a_heading_absent_from_the_budget_payload_is_blank_not_zero():
+    budget = _budget()
+    bs_lines = budget["statement"]["sections"][1]["lines"]
+    bs_lines[:] = [line for line in bs_lines if line.get("heading") != "2"]
+    row = _by_label(R.rows(_payload(), budget=budget), "LIABILITIES")
+    assert row["budget"] is None and row["variance_to_budget"] is None
+    assert row["favourability"] is None and row["drill_budget"] == 0
+
+
+def test_the_report_model_has_no_unbudgeted_special_case():
+    """PR #558 review m1: the branch that set an absent heading to 0.00 was
+    never taken on a payload statement_model builds."""
+    assert not hasattr(R, "_has_budget_line")
+
+
+def test_without_an_ok_budget_an_unbudgeted_heading_stays_blank():
+    for budget in (None, _budget(state="no_approved_budget", message="No approved budget.")):
+        row = _by_label(R.rows(_payload(), budget=budget), "COST OF SALES")
+        assert row["budget"] is None and row["variance_to_budget"] is None
+        assert row["favourability"] is None and row["budget_ytd"] is None
+
+
+def test_message_states_that_an_unbudgeted_line_is_budget_zero():
+    assert R.UNBUDGETED_RULE in R.message(_payload(), budget=_budget())
+    assert "zero" in R.UNBUDGETED_RULE and "#" not in R.UNBUDGETED_RULE
+
+
+def test_section_headers_and_residual_explanations_carry_no_budget():
+    declared = F._s_declared(cta_account=None)
+    data = R.rows(_payload(declared=declared), budget=_budget())
+    for row in data:
+        if row.get("is_section"):
+            assert row["budget"] is None and row["variance_to_budget"] is None
+    at = [r["label"] for r in data].index("Unmatched residual")
+    assert all(r["budget"] is None for r in data[at + 1:])
+
+
+@pytest.mark.parametrize("state, sentence", [
+    ("no_approved_budget", "No approved budget for ZZ_GROUP FY2025: declare one in Approved Budget."),
+    ("cycle_cancelled", "Approved Budget APB for ZZ_GROUP FY2025 names Budget Cycle B, which is cancelled."),
+    ("inputs_changed", "Approved Budget APB for ZZ_GROUP FY2025: the inputs of Budget Cycle B have changed."),
+    ("layer_missing", "Approved Budget APB for ZZ_GROUP FY2025 reads layer gone, which is no Budget Layer."),
+])
+def test_a_non_ok_budget_renders_no_budget_columns_and_the_message_carries_its_sentence(state, sentence):
+    """BUD-4-2: a visible state, never a blank column (PR #554 review D1)."""
+    payload = _payload()
+    budget = _budget(state=state, message=sentence)
+    data = R.rows(payload, budget=budget)
+    assert data == R.rows(payload)
+    assert all(row["budget"] is None for row in data)
+    assert R.columns(2, budget=budget) == R.columns(2), "no budget column to leave blank"
+    text = R.message(payload, budget=budget)
+    assert sentence in text
+    assert "Budget columns not shown: " + sentence in text, text
+    assert "blank" not in text.lower(), "there is no blank column to explain"
+
+
+def test_a_non_ok_budget_with_no_sentence_still_names_its_state():
+    text = R.message(_payload(), budget={"state": "error", "message": None, "statement": None, "meta": {}})
+    assert "Budget" in text and "error" in text
+
+
+def test_message_names_cycle_layers_rate_set_and_the_limits_for_an_ok_budget():
+    text = R.message(_payload(), budget=_budget())
+    for word in ("BCYC-ZZB-2025-abc12345", "base, board", "ZZRS", "APB-CG-ZZ_GROUP--2025-0f0f0f0f"):
+        assert word in text, word
+    assert "before intercompany eliminations and without group-level adjustments" in text
+    assert "budgeted movements year to date" in text   # S5-Q4 (a)
+    assert "#" not in text, "no issue numbers in user text"
+
+
+def test_message_has_no_budget_line_without_a_budget():
+    assert "udget" not in R.message(_payload())
+
+
+# --- budget-only lines the actuals lack (PR #554 review M1) -------------------
+#
+# A budget can carry a non-heading line the actuals do not: a P&L or BS "No
+# heading" line (a leaf with no parent heading), a "Not in the group chart"
+# line, or the plug. Each is laid out as its own row with blank actuals, where
+# the actuals' line would stand, so the Budget column foots on screen (the
+# P&L Net result equals its headings plus No heading). Only the plug was.
+
+def _budget_with_lines_the_actuals_lack():
+    """Budget rows: COST OF SALES -1,000; a P&L leaf 4900 with no heading
+    -50; a code 9999 outside the chart 120 on the Balance Sheet; cash 300;
+    the plug closes the entity's local imbalance (-(−1000 − 50 + 120 + 300)
+    = 630). The actuals (``_payload()``) carry neither extra line."""
+    accounts = F._s_accounts()
+    accounts["4900"] = {"account_name": "Other income", "parent_account": None, "is_group": False,
+                        "statement_section": SM.PL, "lft": 15}
+    rows = [F._row("4100", -1000.0, adjustment_type="entity"),
+            F._row("4900", -50.0, adjustment_type="entity"),
+            F._row("9999", 120.0, adjustment_type="entity"),
+            F._row("1110", 300.0, adjustment_type="entity"),
+            F._row("UNBALANCED", 630.0, adjustment_type="unbalanced")]
+    stmt = SM.statement(rows, accounts, F._S_CALENDAR, F._S_KEY, F._s_declared(), minor_unit=2)
+    return {"state": "ok", "message": _BUDGET_OK_SENTENCE, "statement": stmt, "meta": dict(_BUDGET_META)}
+
+
+def test_budget_only_no_heading_and_not_in_chart_lines_are_laid_out_and_the_net_result_foots():
+    payload, budget = _payload(), _budget_with_lines_the_actuals_lack()
+    without = [r["label"] for r in R.rows(payload)]
+    assert "No heading" not in without and not any(l.startswith("Not in the group chart") for l in without)
+    assert _line(budget, 0, {"kind": "no_heading"})["current"] == 50.0
+    assert _line(budget, 1, {"kind": "not_in_chart"})["current"] == 120.0
+
+    data = R.rows(payload, drill_group="CG-ZZG-", budget=budget)
+    labels = [r["label"] for r in data]
+    no_heading = _by_label(data, "No heading")
+    assert labels.index("COST OF SALES") < labels.index("No heading") < labels.index(SM.NET_RESULT_LABEL)
+    assert no_heading["current"] is None and no_heading["comparison"] is None and no_heading["ytd"] is None
+    assert no_heading["budget"] == 50.0 and no_heading["budget_ytd"] == 50.0
+    assert no_heading["variance_to_budget"] is None, "no actual to compare with"
+    net = _by_label(data, SM.NET_RESULT_LABEL)
+    assert net["budget"] == 1050.0 == _by_label(data, "COST OF SALES")["budget"] + no_heading["budget"]
+    assert net["budget_ytd"] == 1050.0
+
+    not_in_chart = _by_label(data, "Not in the group chart (9999)")
+    assert labels.index("EQUITY") < labels.index("Not in the group chart (9999)") \
+        < labels.index(UNBALANCED_LABEL) < labels.index("Unmatched residual")
+    assert not_in_chart["current"] is None and not_in_chart["comparison"] is None
+    assert not_in_chart["budget"] == 120.0 and not_in_chart["variance_to_budget"] is None
+    assert not_in_chart["budget_ytd"] is None
+    # Neither is a heading or the plug: no code, no drill, no commentary.
+    for row in (no_heading, not_in_chart):
+        assert row["code"] is None and not row.get("drill_budget") and row.get("drill_group") is None
+        assert row["commentary"] is None and row["prior_year"] is None
+    assert _by_label(data, UNBALANCED_LABEL)["budget"] == 630.0
+
+
+def test_a_budget_only_line_is_not_added_when_the_actuals_carry_it():
+    """Actuals with their own No heading / Not in the group chart lines take
+    the budget's values by kind, and no second row appears."""
+    accounts = F._s_accounts()
+    accounts["4900"] = {"account_name": "Other income", "parent_account": None, "is_group": False,
+                        "statement_section": SM.PL, "lft": 15}
+    rows = F._s_rows() + [F._row("4900", -10.0), F._row("9999", 5.0)]
+    stmt = SM.statement(rows, accounts, F._S_CALENDAR, F._S_KEY, F._s_declared(), minor_unit=2)
+    payload = _payload(statement=stmt)
+    data = R.rows(payload, budget=_budget_with_lines_the_actuals_lack())
+    no_heading = _by_label(data, "No heading")
+    assert no_heading["current"] == 10.0 and no_heading["budget"] == 50.0
+    assert no_heading["variance_to_budget"] == -40.0
+    not_in_chart = _by_label(data, "Not in the group chart (9999)")
+    assert not_in_chart["current"] == 5.0 and not_in_chart["budget"] == 120.0
+
+
+# --- Favourability (konsol#348 S6 KB3; S6-Q3 a, BUD-7-a) ------------------------
+#
+# A text attribute of a Profit and Loss heading row and the net result, never a
+# number (konsolidat#214: a flag that sums is wrong on the report too). The
+# Amounts are display-signed (income positive, costs in brackets), so a
+# variance to budget above zero is Favourable and below zero Unfavourable;
+# zero is On budget (konsol#562: the sign alone decides, no account
+# declaration gates it). The net result is favourable when profit is higher (a declared
+# sub-rule, in the legend). Balance Sheet lines carry none (no variance there,
+# S5 F1).
+
+def test_columns_add_favourability_as_text_after_variance_to_budget_only_for_an_ok_budget():
+    fieldnames = [c["fieldname"] for c in R.columns(minor_unit=2, budget=_budget())]
+    assert fieldnames[fieldnames.index("ytd") + 1:fieldnames.index("prior_year")] == [
+        "budget", "variance_to_budget", "favourability", "budget_ytd"]
+    column = next(c for c in R.columns(minor_unit=2, budget=_budget()) if c["fieldname"] == "favourability")
+    assert column["label"] == "Favourability" and column["fieldtype"] == "Data"
+    assert "precision" not in column and column.get("options") is None
+    assert "favourability" not in [c["fieldname"] for c in R.columns(minor_unit=2)]
+    assert "favourability" not in [c["fieldname"] for c in R.columns(minor_unit=2, budget=_budget(state="no_rows"))]
+
+
+def test_a_declared_credit_heading_reads_by_the_sign_of_the_variance():
+    # COST OF SALES (heading 4) holds revenue leaf 4100: actual 241.43 (display)
+    # against a budget of 1,000: less income than budgeted -> Unfavourable.
+    row = _by_label(R.rows(_payload(), budget=_budget()), "COST OF SALES")
+    assert row["variance_to_budget"] < 0 and row["favourability"] == R.UNFAVOURABLE == "Unfavourable"
+    # A budget of 200: more income than budgeted -> Favourable.
+    small = [F._row("4100", -200.0, adjustment_type="entity"), F._row("1110", 200.0, adjustment_type="entity")]
+    row = _by_label(R.rows(_payload(), budget=_budget(rows=small)),
+                    "COST OF SALES")
+    assert row["variance_to_budget"] > 0 and row["favourability"] == R.FAVOURABLE == "Favourable"
+
+
+def test_a_declared_debit_heading_reads_the_same_way_under_display_signs():
+    """Debit and Credit read alike: display signs already put income positive
+    and costs negative, so "above budget is favourable" holds for both. A cost
+    heading whose costs exceed the budget shows a negative variance."""
+    accounts = F._s_accounts()
+    accounts["4"]["normal_balance"] = "Debit"
+    rows = F._s_rows()[:-1] + [F._row("4100", 300.0)]            # costs 300 (display -300)
+    stmt = SM.statement(rows, accounts, F._S_CALENDAR, F._S_KEY, F._s_declared(), minor_unit=2)
+    budget_rows = [F._row("4100", 250.0, adjustment_type="entity"), F._row("1110", -250.0, adjustment_type="entity")]
+    budget = _budget(rows=budget_rows)
+    row = _by_label(R.rows(_payload(statement=stmt), budget=budget), "COST OF SALES")
+    assert row["budget"] == -250.0 and row["variance_to_budget"] == -50.0
+    assert row["favourability"] == "Unfavourable", "more cost than budgeted"
+    budget_rows = [F._row("4100", 350.0, adjustment_type="entity"), F._row("1110", -350.0, adjustment_type="entity")]
+    row = _by_label(R.rows(_payload(statement=stmt), budget=_budget(rows=budget_rows)),
+                    "COST OF SALES")
+    assert row["variance_to_budget"] == 50.0 and row["favourability"] == "Favourable"
+
+
+def test_a_zero_variance_on_a_declared_heading_is_on_budget():
+    rows = [F._row("4100", -241.43, adjustment_type="entity"), F._row("1110", 241.43, adjustment_type="entity")]
+    row = _by_label(R.rows(_payload(), budget=_budget(rows=rows)), "COST OF SALES")
+    assert row["variance_to_budget"] == 0.0 and row["favourability"] == R.ON_BUDGET == "On budget"
+
+
+def test_the_net_result_reads_more_profit_is_favourable():
+    data = R.rows(_payload(), budget=_budget())
+    net = _by_label(data, SM.NET_RESULT_LABEL)
+    assert net["variance_to_budget"] < 0 and net["favourability"] == "Unfavourable"
+    rows = [F._row("4100", -200.0, adjustment_type="entity"), F._row("1110", 200.0, adjustment_type="entity")]
+    assert _by_label(R.rows(_payload(), budget=_budget(rows=rows)), SM.NET_RESULT_LABEL)["favourability"] == "Favourable"
+    rows = [F._row("4100", -241.43, adjustment_type="entity"), F._row("1110", 241.43, adjustment_type="entity")]
+    assert _by_label(R.rows(_payload(), budget=_budget(rows=rows)), SM.NET_RESULT_LABEL)["favourability"] == "On budget"
+
+
+def test_balance_sheet_section_headers_and_budget_only_rows_carry_no_favourability():
+    data = R.rows(_payload(), budget=_budget())
+    for label in ("ASSETS", "LIABILITIES", "EQUITY", "of which current-year result",
+                  "of which currency translation (CTA)", "Unmatched residual", UNBALANCED_LABEL,
+                  "Profit and Loss", "Balance Sheet"):
+        assert _by_label(data, label)["favourability"] is None, label
+    assert all("favourability" in row for row in data), "the key is always present"
+
+
+def test_without_a_budget_or_with_a_non_ok_one_favourability_is_blank_and_unmentioned():
+    data = R.rows(_payload())
+    assert all(row["favourability"] is None for row in data)
+    assert "avourab" not in R.message(_payload())
+    budget = _budget(state="no_approved_budget", message="No approved budget for ZZ_GROUP FY2025.")
+    assert all(row["favourability"] is None for row in R.rows(_payload(), budget=budget))
+    assert "avourab" not in R.message(_payload(), budget=budget)
+
+
+def test_message_states_the_favourability_rule_for_an_ok_budget():
+    text = R.message(_payload(), budget=_budget())
+    assert "Favourability" in text
+    for phrase in ("Unfavourable", "On budget", "net result", "more profit"):
+        assert phrase in text, phrase
+    assert "#" not in text
+
+
+# --- konsol#562 option E: the sign alone decides (Deepak Pai, 18 Nov 2026) ----
+
+def test_562_a_heading_with_no_side_reads_by_the_sign_of_the_variance():
+    """Heading 4 has side '' in _BUDGET_META: it reads by sign, not n/a."""
+    row = _by_label(R.rows(_payload(), budget=_budget()), "COST OF SALES")
+    assert row["variance_to_budget"] < 0 and row["favourability"] == "Unfavourable"
+    small = [F._row("4100", -200.0, adjustment_type="entity"), F._row("1110", 200.0, adjustment_type="entity")]
+    row = _by_label(R.rows(_payload(), budget=_budget(rows=small)), "COST OF SALES")
+    assert row["variance_to_budget"] > 0 and row["favourability"] == "Favourable"
+
+
+def test_562_a_budget_payload_without_heading_sides_works():
+    budget = _budget()
+    assert "heading_sides" not in budget["meta"]
+    row = _by_label(R.rows(_payload(), budget=budget), "COST OF SALES")
+    assert row["favourability"] == "Unfavourable"

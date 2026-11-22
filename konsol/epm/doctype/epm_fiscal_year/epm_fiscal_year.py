@@ -122,6 +122,29 @@ def _published_calendar(doc):
     )
 
 
+def _published_statuses(doc):
+    """(period, effective status) per row, as fiscal_period_rows() publishes
+    `status`: the stricter of the year's and the row's (konsol#561 review
+    M3). An unknown or blank status, refused by validate, compares as given.
+    Order-free, as _published_calendar."""
+    year_status = _status(doc.status)
+    rows = []
+    for r in doc.periods or []:
+        try:
+            status = fstm.effective_status(year_status, _status(r.status))
+        except ValueError:
+            status = (year_status, _status(r.status))
+        rows.append((_int(r.fiscal_period), status))
+    return sorted(rows, key=repr)
+
+
+#: The build domain of the models that read fiscal_periods.status:
+#: gold_forecast_accuracy and gold_forecast_accuracy_group take the closed
+#: periods (status IN ('Closed', 'Locked')) and are tagged domain:scenarios
+#: (konsol#348 FC-4-2, konsol#561 review M3).
+STATUS_BUILD_SCOPE = "scenarios"
+
+
 def _stamp(target, new, now):
     """Set the year's or a row's status to `new`: closed_by/closed_on name the
     user and time, or are cleared when `new` is Open."""
@@ -189,16 +212,23 @@ class EPMFiscalYear(Document):
     def on_update(self):
         # Fires on insert, edit, Generate Periods and every status action.
         self._resync()
-        # konsol#337: a build only when a column dbt reads changed. `status`
-        # is published but no model reads it (measured 6 Oct 2026, konsolidat
-        # main e292abb: silver_tb_movements, governed_rates.sql and the gold
-        # readers use only the structural columns; _staging__sources.yml: "the
-        # warehouse does not filter on it"), so Close, Lock and Reopen
-        # republish the table and request nothing.
+        # konsol#337: a build only when a column dbt reads changed. A
+        # structural column (dates, codes, types, labels, quarters) feeds
+        # models in every domain: one full build. `status` is read only by
+        # the forecast accuracy models (gold_forecast_accuracy and
+        # gold_forecast_accuracy_group: status IN ('Closed', 'Locked')),
+        # tagged domain:scenarios, so a Close, Lock or Reopen requests a
+        # scenarios build (konsol#561 review M3). A save that moves neither
+        # requests nothing.
         before = self.get_doc_before_save()
         if _published_calendar(self) != (_published_calendar(before) if before else []):
             self._stamp_calendar_change()
             self._request_rebuild("on_update")
+        elif before and _published_statuses(self) != _published_statuses(before):
+            # Not stamped: freshness judges calendar_changed_at against a
+            # build of EPM Fiscal Year's mapped scope, "full", which this
+            # request never is (konsol#340).
+            self._request_rebuild("on_update", scope=STATUS_BUILD_SCOPE)
 
     def _stamp_calendar_change(self):
         """konsol#340: freshness reads calendar_changed_at, not `modified`
@@ -217,17 +247,21 @@ class EPMFiscalYear(Document):
         if self.periods:
             self._request_rebuild("after_delete")
 
-    def _request_rebuild(self, method):
+    def _request_rebuild(self, method, scope=None):
         """konsol#337: the calendar changed, so request a build through the one
         enqueue path every trigger uses (konsol.tasks.queue_consolidation_build:
-        a job after the commit, deduplicated per document, inert during
-        install / migrate / patch / import). One request per save, never per
-        row. The scope is DOCTYPE_BUILD_MAP's "full": fiscal_periods feeds gold
-        models outside every narrower scope. Imported here: tasks.py imports
+        a job after the commit, deduplicated per document and scope, inert
+        during install / migrate / patch / import). One request per save,
+        never per row. With no ``scope``, DOCTYPE_BUILD_MAP's "full":
+        fiscal_periods feeds gold models outside every narrower scope. A
+        status move names STATUS_BUILD_SCOPE. Imported here: tasks.py imports
         the Airbyte client."""
         from konsol.tasks import queue_consolidation_build
 
-        queue_consolidation_build(self, method)
+        if scope is None:
+            queue_consolidation_build(self, method)
+        else:
+            queue_consolidation_build(self, method, scope=scope)
 
     def _resync(self):
         """Queue the sync for after the commit, once per transaction

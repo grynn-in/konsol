@@ -34,13 +34,21 @@ KINDS = (
     # from its file; a period kind, no reason. Detail {batch_id, row_count, why}.
     "tb_relanded",
     # konsol#496 row 10A-1: a Numbers statement downloaded; a period kind, no
-    # reason. Detail {basis, consolidation_group, entity, filename, label}.
+    # reason. Detail {basis, consolidation_group, entity, filename, label,
+    # budget}: budget is {cycle, layers, rate_set} for the ok approved budget
+    # the file carries (konsol#348 S5 K12, the group export), else null.
     "statement_exported",
 )
 YEAR_KINDS = ("year_closed", "year_locked", "year_reopened")
 #: Non-year kinds that may sit at fiscal_period 0 (opening balances). Decided
 #: 9 Nov 2026, Deepak Pai (#496 Q1): P0 downloads are recorded.
-PERIOD_ZERO_KINDS = ("statement_exported",)
+#: konsol#587: opening balances translate at P0 rates, so a Group Exchange Rate
+#: at P0 is approved, self-approved, rejected or cancelled there; those four
+#: approval kinds are dated at P0. Period-close kinds stay refused.
+PERIOD_ZERO_KINDS = (
+    "statement_exported",
+    "approved", "self_approved", "rejected", "approval_cancelled",
+)
 REASON_REQUIRED = (
     "self_approved", "rejected", "period_reopened", "year_reopened",
     "tb_exception_declared", "signoff_voided", "ic_sent_back",
