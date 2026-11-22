@@ -105,10 +105,12 @@ def _load(frappe):
     return module
 
 
-def _publisher(sheets=(), sheet_rows=(), calendar=None, actuals=("ACTUAL",)):
+def _publisher(sheets=(), sheet_rows=(), calendar=None, actuals=("ACTUAL",), ger=None):
     """(rules, clickhouse stub, record): the publish's own connection returns
     only what its WHERE asks for, so a draft or a cancelled sheet reaches the
-    publish only if the query lets it."""
+    publish only if the query lets it. ``ger``: what is left of Group Exchange
+    Rate, {"rows": n, "migrated_row": bool, "audit_file": bool}; None when its
+    table is gone (retired, or a fresh site)."""
     record = {"db": [], "ch": [], "stamped": [], "failed": [], "reads": []}
     frappe = _frappe(actuals)
     calendar = _cal() if calendar is None else calendar
@@ -128,6 +130,18 @@ def _publisher(sheets=(), sheet_rows=(), calendar=None, actuals=("ACTUAL",)):
             assert as_dict, query
             record["db"].append("fresh read")
             record["reads"].append(query)
+            if "information_schema.tables" in query:
+                assert "tabGroup Exchange Rate" in query, query
+                return [types.SimpleNamespace(n=0 if ger is None else 1)]
+            if "FROM `tabGroup Exchange Rate`" in query:
+                return [types.SimpleNamespace(n=ger["rows"])]
+            if "source = 'Migrated'" in query:
+                assert "`tabRate Sheet Row`" in query and "parenttype = 'Rate Sheet'" in query, query
+                return [types.SimpleNamespace(x=1)] if ger.get("migrated_row") else []
+            if "FROM `tabFile`" in query:
+                assert "'Rate Set'" in query and "'CONSTANT'" in query, query
+                assert "'group-exchange-rate-migration-audit.csv'" in query, query
+                return [types.SimpleNamespace(x=1)] if ger.get("audit_file") else []
             if "`tabRate Sheet Row`" in query:
                 assert re.search(r"\bs\.docstatus = 1\b", query), query
                 approved = {s["name"] for s in sheets if s["docstatus"] == 1}
@@ -192,7 +206,8 @@ def test_a_site_with_no_approved_sheet_publishes_an_empty_set():
     swap still runs, so a cancelled last sheet leaves the warehouse."""
     rules, ch, record = _publisher()
     assert _publish(rules, ch) == 0
-    assert len(record["reads"]) == 1 and "`tabRate Sheet`" in record["reads"][0]
+    sheet_reads = [q for q in record["reads"] if "information_schema" not in q]
+    assert len(sheet_reads) == 1 and "`tabRate Sheet`" in sheet_reads[0]
     assert _inserted(record) == [] and not any(q.startswith("INSERT") for q in record["ch"])
     assert f"EXCHANGE TABLES {MAIN} AND {SHADOW}" in record["ch"]
     assert record["stamped"] == [(MAIN, 0, None)] and record["failed"] == []
@@ -325,3 +340,42 @@ def test_an_approved_sheet_the_rules_refuse_fails_the_publish_by_name():
 def test_the_publish_reads_only_the_sheets():
     src = open(RULES).read()
     assert "union_rows" not in src and "_APPROVED_SQL" not in src, "the union went with the retired doctype"
+
+
+# -- PR #595 review 4: an unmigrated Group Exchange Rate table is never published over --
+
+def test_an_unmigrated_group_exchange_rate_table_fails_the_publish_and_keeps_the_old_table():
+    """Until the migration has run, the approved rates are still GER rows: a
+    publish from the (empty) sheets would empty the warehouse's rates. With
+    rows in ``tabGroup Exchange Rate`` and neither of the migration's markers
+    (the ones retire_group_exchange_rate reads), the publish is refused,
+    recorded as a publish failure, and the old set stays."""
+    for sheets, rows in (((), ()), ([STAT], STAT_ROWS)):
+        rules, ch, record = _publisher(sheets=sheets, sheet_rows=rows, ger={"rows": 40})
+        assert _publish(rules, ch) is None
+        assert [f[:2] for f in record["failed"]] == [(MAIN, "publish_failed")]
+        assert "Group Exchange Rate" in record["failed"][0][2] and "40" in record["failed"][0][2]
+        assert "migrate" in record["failed"][0][2]
+        assert record["ch"] == [] and record["stamped"] == [], "no shadow, no exchange, no watermark"
+
+
+def test_either_migration_marker_lets_the_publish_run():
+    for marker in ("migrated_row", "audit_file"):
+        rules, ch, record = _publisher(sheets=[STAT], sheet_rows=STAT_ROWS, ger={"rows": 40, marker: True})
+        assert _publish(rules, ch) == 2, marker
+        assert record["failed"] == []
+
+
+def test_an_empty_or_retired_group_exchange_rate_table_lets_the_publish_run():
+    for ger in ({"rows": 0}, None):
+        rules, ch, record = _publisher(ger=ger)
+        assert _publish(rules, ch) == 0
+        assert record["failed"] == [] and f"EXCHANGE TABLES {MAIN} AND {SHADOW}" in record["ch"]
+
+
+def test_the_markers_are_the_retire_patchs():
+    patch = open(os.path.join(APP_DIR, "patches", "retire_group_exchange_rate.py")).read()
+    rules, _, _ = _publisher()
+    assert f'MIGRATED_SOURCE = "{rules.MIGRATED_SOURCE}"' in patch
+    assert f'AUDIT_FILE = "{rules.MIGRATION_AUDIT_FILE}"' in patch
+    assert f'CONSTANT_RATE_SET = "{rules.CONSTANT_RATE_SET}"' in patch
