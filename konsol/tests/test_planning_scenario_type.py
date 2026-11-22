@@ -137,10 +137,14 @@ def test_budget_cycle_sends_only_its_declared_columns():
     src = _src("epm", "doctype", "budget_cycle", "budget_cycle.py")
     tree = ast.parse(src)
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "BudgetCycle")
-    field_map = next(ast.literal_eval(n.value) for n in cls.body if isinstance(n, ast.Assign)
-                     and getattr(n.targets[0], "id", None) == "CH_FIELD_MAP")
-    assert list(field_map) == ["name", "scenario_id", "fiscal_year", "rate_set", "as_of_date", "horizon_periods"]
-    assert "scenario_type" not in field_map and "scenario_type" not in field_map.values()
+    # konsol#592 D2: rate_set's value is a callable (the constant CONSTANT), so
+    # the keys and the literal values are read from the AST, not literal_eval.
+    node = next(n.value for n in cls.body if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", None) == "CH_FIELD_MAP")
+    keys = [ast.literal_eval(k) for k in node.keys]
+    values = [v.value for v in node.values if isinstance(v, ast.Constant)]
+    assert keys == ["name", "scenario_id", "fiscal_year", "rate_set", "as_of_date", "horizon_periods"]
+    assert "scenario_type" not in keys and "scenario_type" not in values
 
 
 def test_the_budget_input_table_has_no_scenario_type_column():

@@ -22,18 +22,20 @@ holds per round, so the rounds of one pair live side by side, and its name
 carries the as-of date. A rolling round that crosses the year end is one
 Cycle per fiscal year, sharing the as-of date (Q24 a).
 
-Every Cycle names the Rate Set its budget is translated at (S4 K5, BUD-3:
-declared per Cycle, no default; the rule is budget_bulk_model
-.cycle_rate_set_problems). It is editable while the Cycle is a draft and
-frozen by the submit: not set-once, because unlike the scenario, the year and
-the as-of date it is not part of the Cycle's identity or name, and a draft's
-set may be corrected before anyone approves it; never allow_on_submit, because
-the Input Fingerprint stamped at Approve covers the set and its rates.
+A Cycle names no Rate Set (konsol#592 D2, Deepak Pai, 22 Nov 2026, which
+replaces BUD-3's per-Cycle set): every budget and forecast translates at its
+year's Constant Rate Sheet. Approve is refused until that sheet is approved,
+read FOR UPDATE (budget_bulk_model.cycle_constant_sheet_problems), and the
+Input Fingerprint stamped then covers the sheet and its rows. The old
+``rate_set`` column stays in the table until T25's drop_budget_cycle_rate_set,
+which runs after the migration has read each Cycle's set.
 
 An approved Cycle is one row of ``epm_staging.budget_cycles`` (S4 K6, S4-Q2 a):
 it enters on submit and leaves on cancel, after the commit, so the warehouse
-reads the Rate Set, the scenario and the round of the ``cycle`` its fact rows
-name; reconcile_all repairs the table like every other.
+reads the rate set, the scenario and the round of the ``cycle`` its fact rows
+name; reconcile_all repairs the table like every other. Its ``rate_set`` is
+the constant CONSTANT (group_rates.CONSTANT_RATE_SET), the set a Constant
+sheet publishes under, so dbt's budget_rate_set_predicate reads it unchanged.
 
 Approve stamps ``input_fingerprint`` (S4 K8, S4-Q5 a; BUD-11-3): the hash of
 the inputs approved (konsol.epm.budget_fingerprint), read-only and frozen by
@@ -57,11 +59,21 @@ from konsol.epm.budget_grain import digest_name
 from konsol.workflows import set_cancelled_state
 
 
+def _constant_rate_set(row):
+    """budget_cycles.rate_set for every Cycle (konsol#592 D2): the Cycle has no
+    set of its own, and every budget translates at its year's Constant sheet,
+    published under CONSTANT. Imported here: group_rates is not loaded under
+    test."""
+    from konsol.group_rates import CONSTANT_RATE_SET
+
+    return CONSTANT_RATE_SET
+
+
 class BudgetCycle(Document):
     #: S4 K6 (S4-Q2 a): the approved Cycles, one row each, so the warehouse
-    #: reads a Cycle's Rate Set, scenario and round by the `cycle` name on its
-    #: fact rows. Submitted only, by the doctype's is_submittable
-    #: (resolve_sync_filters). Keys in the DDL's column order
+    #: reads a Cycle's rate set, scenario and round by the `cycle` name on its
+    #: fact rows; rate_set is computed (konsol#592 D2), never a doc field.
+    #: Submitted only, by the doctype's is_submittable (resolve_sync_filters). Keys in the DDL's column order
     #: (clickhouse._REFERENCE_TABLE_DDL, identical to konsolidat's init-db.sql).
     #: Not scenario_type: the warehouse reads it from scenario_definitions by
     #: scenario_id; a copy here would be a second source of truth.
@@ -70,7 +82,7 @@ class BudgetCycle(Document):
         "name": "name",
         "scenario_id": "scenario_id",
         "fiscal_year": "fiscal_year",
-        "rate_set": "rate_set",
+        "rate_set": _constant_rate_set,
         "as_of_date": "as_of_date",
         "horizon_periods": "horizon_periods",
     }
@@ -108,14 +120,11 @@ class BudgetCycle(Document):
 
     def _refuse_bad_round(self):
         """S3 K3: a forecast Cycle needs its round (as-of date, horizon of 1 or
-        more); any other type refuses the round fields (Q23 a, QB8 a). S4 K5
-        (BUD-3): every Cycle names the Rate Set it is translated at; nothing
-        defaults it (budget_bulk_model.cycle_rate_set_problems). Every problem
-        is told together, before the pair is locked: a Cycle whose round is
-        not stated cannot be judged against the pair's rounds."""
+        more); any other type refuses the round fields (Q23 a, QB8 a). Every
+        problem is told together, before the pair is locked: a Cycle whose
+        round is not stated cannot be judged against the pair's rounds."""
         problems = M.cycle_round_problems(self.scenario_type, self.get("as_of_date"),
                                           self.get("horizon_periods"))
-        problems += M.cycle_rate_set_problems(self.scenario_type, self.get("rate_set"))
         if problems:
             frappe.throw("\n".join(problems), frappe.ValidationError)
 
@@ -214,16 +223,31 @@ class BudgetCycle(Document):
 
     def before_submit(self):
         """Approve is the submit (the workflow's Approve calls doc.submit(),
-        frappe/model/workflow.py): the input fingerprint is stamped here
-        (S4 K8, S4-Q5 a), the hash of the inputs being approved, set after
-        validate and before anything is written so it lands with the approval
-        and nothing saves in on_submit. A forecast pair's second approved
-        round is accepted (S6 KA3): the readers take the declared current
-        round (Current Forecast) and never sum rounds. Imported here: the
-        controller is loaded under test without it."""
-        from konsol.epm.budget_fingerprint import compute
+        frappe/model/workflow.py).
 
-        self.input_fingerprint = compute(self)
+        konsol#592 D2: the Cycle translates at its year's Constant Rate Sheet,
+        so Approve is refused until exactly one is approved. The sheet and its
+        rows are read FOR UPDATE: a plain read uses this transaction's
+        REPEATABLE READ snapshot and could miss a cancel of the sheet
+        committed since, while a cancel in flight holds the sheet's row, so
+        this read waits for it and sees docstatus 2.
+
+        The input fingerprint is stamped from the same read (S4 K8, S4-Q5 a),
+        the hash of the inputs being approved, set after validate and before
+        anything is written so it lands with the approval and nothing saves
+        in on_submit. A forecast pair's second approved round is accepted
+        (S6 KA3): the readers take the declared current round (Current
+        Forecast) and never sum rounds. Imported here: the controller is
+        loaded under test without it."""
+        from konsol.epm.budget_fingerprint import read_inputs
+        from konsol.epm.budget_fingerprint_model import input_fingerprint
+
+        inputs = read_inputs(self, for_update=True)
+        problems = M.cycle_constant_sheet_problems(self.fiscal_year,
+                                                   [s["name"] for s in inputs["rate_sheets"]])
+        if problems:
+            frappe.throw("\n".join(problems), frappe.ValidationError)
+        self.input_fingerprint = input_fingerprint(**inputs)
 
     def on_submit(self):
         """Approved: the Cycle and its rows enter the warehouse, after the commit."""

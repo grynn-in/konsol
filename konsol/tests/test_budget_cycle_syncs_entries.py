@@ -106,7 +106,7 @@ def env(monkeypatch):
     spec.loader.exec_module(mod)
 
     def cycle(name="BCYC-ZZB-2026"):
-        doc = mod.BudgetCycle(name=name, scenario_id="ZZB", fiscal_year="2026", rate_set="ZZRS",
+        doc = mod.BudgetCycle(name=name, scenario_id="ZZB", fiscal_year="2026",
                               doctype="Budget Cycle")
         doc.save = lambda *a, **k: pytest.fail("on_submit/on_cancel must not save")
         return doc

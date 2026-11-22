@@ -28,6 +28,15 @@ from datetime import datetime
 import pytest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _constant_rate_set():
+    """konsol.group_rates.CONSTANT_RATE_SET, read from the source: group_rates
+    imports too much to load under the stub frappe."""
+    with open(os.path.join(APP_DIR, "group_rates.py")) as f:
+        tree = ast.parse(f.read())
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", None) == "CONSTANT_RATE_SET")
 DOCTYPE_DIR = os.path.join(APP_DIR, "epm", "doctype", "approved_budget")
 PATH = os.path.join(DOCTYPE_DIR, "approved_budget.json")
 CONTROLLER = os.path.join(DOCTYPE_DIR, "approved_budget.py")
@@ -77,10 +86,14 @@ def test_budget_fields_per_the_field_table():
     c = fields["budget_cycle"]
     assert (c["fieldtype"], c["options"], c["reqd"]) == ("Link", "Budget Cycle", 1)
     assert "approved" in c["description"].lower() and "budget" in c["description"].lower(), c["description"]
-    for name in ("scenario_id", "rate_set"):
-        f = fields[name]
-        assert f["fieldtype"] == "Data" and f["read_only"] == 1, name
-        assert f["fetch_from"] == f"budget_cycle.{name}", name
+    scenario = fields["scenario_id"]
+    assert scenario["fieldtype"] == "Data" and scenario["read_only"] == 1
+    assert scenario["fetch_from"] == "budget_cycle.scenario_id"
+    # konsol#592 D2: the Cycle has no Rate Set; every budget translates at the
+    # year's Constant sheet, so the copy is the constant, set by the controller.
+    rate_set = fields["rate_set"]
+    assert rate_set["fieldtype"] == "Data" and rate_set["read_only"] == 1
+    assert not rate_set.get("fetch_from"), "Budget Cycle has no rate_set to fetch"
     policy = fields["layer_policy"]
     assert (policy["fieldtype"], policy["reqd"]) == ("Select", 1)
     assert policy["options"] == "All layers\nOne layer"
@@ -186,15 +199,15 @@ def _tables():
         },
         "Budget Cycle": {
             CYCLE: {"docstatus": 1, "scenario_id": "ZZB", "scenario_type": "budget", "fiscal_year": 2027,
-                    "rate_set": "ZZRS", "input_fingerprint": "v1:deadbeef"},
+                    "input_fingerprint": "v1:deadbeef"},
             "BCYC-ZZB-2027-draft": {"docstatus": 0, "scenario_id": "ZZB", "scenario_type": "budget",
-                                    "fiscal_year": 2027, "rate_set": "ZZRS", "input_fingerprint": None},
+                                    "fiscal_year": 2027, "input_fingerprint": None},
             "BCYC-ZZB-2027-gone": {"docstatus": 2, "scenario_id": "ZZB", "scenario_type": "budget",
-                                   "fiscal_year": 2027, "rate_set": "ZZRS", "input_fingerprint": "v1:old"},
+                                   "fiscal_year": 2027, "input_fingerprint": "v1:old"},
             "BCYC-ZZF-2027-2027_03_31": {"docstatus": 1, "scenario_id": "ZZF", "scenario_type": "forecast",
-                                         "fiscal_year": 2027, "rate_set": "ZZRS", "input_fingerprint": "v1:fc"},
+                                         "fiscal_year": 2027, "input_fingerprint": "v1:fc"},
             "BCYC-ZZB-2026": {"docstatus": 1, "scenario_id": "ZZB", "scenario_type": "budget",
-                              "fiscal_year": 2026, "rate_set": "ZZRS", "input_fingerprint": "v1:y26"},
+                              "fiscal_year": 2026, "input_fingerprint": "v1:y26"},
         },
         "Approved Budget": [],   # rows: {name, consolidation_group, fiscal_year, docstatus}
     }
@@ -272,10 +285,13 @@ def env(monkeypatch):
     workflows.set_cancelled_state = lambda doc: cancelled.append(doc) or None
     added_indexes = []
     frappe.db.add_index = lambda dt, fields, index_name=None: added_indexes.append((dt, list(fields), index_name))
+    group_rates = types.ModuleType("konsol.group_rates")
+    group_rates.CONSTANT_RATE_SET = _constant_rate_set()
+    monkeypatch.setattr(sys.modules["konsol"], "group_rates", group_rates, raising=False)
     for name, mod in {"frappe": frappe, "frappe.utils": utils, "frappe.model": model,
                       "frappe.model.document": docmod,
                       "konsol.epm.budget_grain": grain, "konsol.period_status": period_status,
-                      "konsol.workflows": workflows}.items():
+                      "konsol.workflows": workflows, "konsol.group_rates": group_rates}.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
     spec = importlib.util.spec_from_file_location("_approved_budget_under_test", CONTROLLER)
@@ -298,7 +314,7 @@ def env(monkeypatch):
 def test_a_valid_declaration_copies_the_cycles_scenario_and_rate_set_and_titles_itself(env):
     d = env.doc()
     d.validate()
-    assert d.scenario_id == "ZZB" and d.rate_set == "ZZRS"
+    assert d.scenario_id == "ZZB" and d.rate_set == "CONSTANT"   # konsol#592 D2
     assert d.title == "ZZGRP FY2027"
 
 

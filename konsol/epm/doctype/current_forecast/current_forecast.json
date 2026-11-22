@@ -96,9 +96,8 @@
    "fieldname": "rate_set",
    "fieldtype": "Data",
    "label": "Rate Set",
-   "fetch_from": "budget_cycle.rate_set",
    "read_only": 1,
-   "description": "Copied from the Budget Cycle: the Rate Set its forecast is translated at."
+   "description": "CONSTANT: every forecast translates at its fiscal year's approved Constant rate sheet (konsol#592). Set by the system."
   },
   {
    "fieldname": "approval_section",

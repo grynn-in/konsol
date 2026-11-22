@@ -7,7 +7,12 @@ Option (b), stamping the rate set on every budget row, was rejected: two more
 positioned columns and the value repeated on every row.
 
 The row is one per Cycle: name, scenario_id, fiscal_year, rate_set,
-as_of_date, horizon_periods. Not scenario_type: the warehouse already holds it
+as_of_date, horizon_periods. Since konsol#592 D2 (Deepak Pai, 22 Nov 2026)
+the Cycle has no Rate Set of its own: every budget and forecast translates
+at its year's Constant Rate Sheet, so ``rate_set`` is written as the
+constant CONSTANT (konsol.group_rates.CONSTANT_RATE_SET) through a callable
+in the field map, and dbt's budget_rate_set_predicate reads it unchanged.
+Not scenario_type: the warehouse already holds it
 in ``epm_gold.scenario_definitions``, keyed by scenario_id, and a second copy
 would be two sources of truth (coordinator, 15 Nov 2026). Submitted Cycles only (docstatus 1,
 through resolve_sync_filters' submittable rule, never a declared filter): the
@@ -41,6 +46,7 @@ CYCLE_JSON = os.path.join(CYCLE_DIR, "budget_cycle.json")
 CLICKHOUSE = os.path.join(APP_DIR, "clickhouse.py")
 BAI_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_annual_input", "budget_annual_input.py")
 BEL_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_entry_line", "budget_entry_line.py")
+GROUP_RATES = os.path.join(APP_DIR, "group_rates.py")
 
 TABLE = "epm_staging.budget_cycles"
 KEY = ("sync_doctype", "Budget Cycle", TABLE)
@@ -53,8 +59,8 @@ DDL = (
 COLUMNS = ["name", "scenario_id", "fiscal_year", "rate_set", "as_of_date", "horizon_periods"]
 
 
-def _literal(name):
-    with open(CLICKHOUSE) as f:
+def _literal(name, path=CLICKHOUSE):
+    with open(path) as f:
         tree = ast.parse(f.read())
     return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
                 and getattr(n.targets[0], "id", None) == name)
@@ -110,6 +116,10 @@ def env(monkeypatch):
     intake = types.ModuleType("konsol.budget_intake")
     intake.lock_cycles = lambda *a, **k: []
     monkeypatch.setattr(sys.modules["konsol"], "budget_intake", intake, raising=False)
+    # group_rates imports too much to load under the stub: its constant, from the source.
+    group_rates = types.ModuleType("konsol.group_rates")
+    group_rates.CONSTANT_RATE_SET = _literal("CONSTANT_RATE_SET", GROUP_RATES)
+    monkeypatch.setattr(sys.modules["konsol"], "group_rates", group_rates, raising=False)
     ch = _clickhouse_stub(frappe)
 
     for name, mod in {
@@ -118,6 +128,7 @@ def env(monkeypatch):
         "konsol.epm.budget_grain": grain,
         "konsol.epm.doctype.scenario.scenario": scenario,
         "konsol.budget_intake": intake,
+        "konsol.group_rates": group_rates,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
     for modname, path in (("konsol.epm.doctype.budget_annual_input.budget_annual_input", BAI_PY),
@@ -132,7 +143,6 @@ def env(monkeypatch):
     spec.loader.exec_module(mod)
 
     def cycle(name="BCYC-ZZB-2027", **kw):
-        kw.setdefault("rate_set", "ZZRS")
         doc = mod.BudgetCycle(name=name, scenario_id="ZZB", scenario_type="budget", fiscal_year=2027,
                               doctype="Budget Cycle", **kw)
         doc.save = lambda *a, **k: pytest.fail("on_submit/on_cancel must not save")
@@ -168,12 +178,35 @@ def test_the_controller_names_the_table_and_its_columns_in_ddl_order(env):
     cls = env.mod.BudgetCycle
     assert cls.CH_TABLE == TABLE
     assert list(cls.CH_FIELD_MAP) == COLUMNS
-    assert cls.CH_FIELD_MAP == {c: c for c in COLUMNS}
+    assert {k: v for k, v in cls.CH_FIELD_MAP.items() if k != "rate_set"} == {
+        c: c for c in COLUMNS if c != "rate_set"}
     # Submitted only, by the doctype's own is_submittable (resolve_sync_filters);
     # a declared filter here would be a second rule.
     assert not hasattr(cls, "CH_SYNC_FILTERS")
     with open(CYCLE_JSON) as f:
         assert json.load(f)["is_submittable"] == 1
+
+
+# ---- konsol#592 D2: rate_set is the constant CONSTANT -----------------------------
+
+def test_rate_set_is_written_as_constant_through_a_callable(env):
+    value = env.mod.BudgetCycle.CH_FIELD_MAP["rate_set"]
+    assert callable(value), "the Cycle has no rate_set field to name"
+    assert value({"name": "BCYC-ZZB-2027", "rate_set": "ZZRS"}) == "CONSTANT"
+    assert _literal("CONSTANT_RATE_SET", GROUP_RATES) == "CONSTANT"
+
+
+def test_the_constant_is_group_rates_never_a_second_literal():
+    with open(CYCLE_PY) as f:
+        src = f.read()
+    assert "CONSTANT_RATE_SET" in src and '"CONSTANT"' not in src
+
+
+def test_the_cycle_has_no_rate_set_field():
+    with open(CYCLE_JSON) as f:
+        meta = json.load(f)
+    assert "rate_set" not in [f.get("fieldname") for f in meta["fields"]]
+    assert "rate_set" not in meta.get("search_fields", "").split(",")
 
 
 # ---- the hooks -----------------------------------------------------------------------
