@@ -439,10 +439,13 @@ class BusinessCombination(Document):
         Q1 C lands. The same rule, in the warehouse, is dbt's
         ``assert_no_step_acquisition``.
 
-        An earlier period is one of this group and entity, submitted (the
-        warehouse holds only those), effective before the acquisition date;
-        the period this deal itself links is never earlier, whatever its date
-        (as ``_is_first_acquisition``)."""
+        A step is a stake still held immediately before the deal: a period of
+        this group and entity, submitted (the warehouse holds only those),
+        effective before the acquisition date, with no end date or one on or
+        after the day before the deal. An entity fully divested earlier and
+        bought again is a fresh acquisition, not refused. The period this deal
+        itself links is never earlier, whatever its date (as
+        ``_is_first_acquisition``)."""
         filters = {
             "consolidation_group": self.consolidation_group,
             "data_area_id": self.acquired_entity,
@@ -454,12 +457,14 @@ class BusinessCombination(Document):
             filters["name"] = ["!=", linked["name"]]
         rows = frappe.get_all(
             "Ownership Period", filters=filters,
-            fields=["name", "ownership_pct", "effective_date", "consolidation_method"],
-            order_by="effective_date desc", limit_page_length=1,
+            fields=["name", "ownership_pct", "effective_date", "end_date", "consolidation_method"],
+            order_by="effective_date desc", limit_page_length=0,
         )
-        if not rows:
+        day_before = getdate(self.acquisition_date) - datetime.timedelta(days=1)
+        held = [r for r in rows if not r.end_date or getdate(r.end_date) >= day_before]
+        if not held:
             return []
-        row = rows[0]
+        row = held[0]
         return [
             f"{_PREFIX}{self.acquired_entity} was already held by {self.consolidation_group} "
             f"(Ownership Period {row.name}, {row.consolidation_method}, {float(row.ownership_pct):g}%, "
