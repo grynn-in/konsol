@@ -1024,7 +1024,9 @@ def _publisher(lock=1, fail_at=None, flags=None):
         def sql(self, query, as_dict=False):
             record["db"].append(("fresh read", query))
             assert as_dict and "docstatus = 1" in query
-            return APPROVED
+            # konsol#592 T10: the publish reads the approved Rate Sheets too;
+            # this site has none (test_group_rates_publish covers sheets).
+            return [] if "`tabRate Sheet`" in query else APPROVED
 
         def close(self):
             record["db"].append(("fresh close", None))
@@ -1051,8 +1053,8 @@ def test_a_publish_swaps_the_whole_set_in_one_at_a_time():
         assert rules.publish_rates(force=True) == 2
     lock = ("konsol_group_rates_publish:zzdb", 120)
     kinds = [k for k, _ in record["db"]]
-    assert kinds == ["lock", "fresh read", "fresh close", "release"], \
-        "the rows are read after the lock is held, on a connection of their own, closed at once"
+    assert kinds == ["lock", "fresh read", "fresh read", "fresh close", "release"], \
+        "the rows (rates, then sheets) are read after the lock is held, on a connection of their own, closed at once"
     read = record["db"][1][1]
     assert "LOCK IN SHARE MODE" not in read and "FOR UPDATE" not in read, "a plain read: it takes no row lock"
     assert record["db"][0] == ("lock", lock) and record["db"][-1] == ("release", (lock[0],))
