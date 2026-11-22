@@ -487,6 +487,8 @@ def _group_rates(site):
         return site.move_answer
 
     gr.translation_gaps = translation_gaps
+    #: PR #595 review 1: the period whose sheet holds a period's rates
+    gr.rate_period = lambda fy, fp: getattr(site, "rate_periods", {}).get((fy, fp), fp)
     gr.move_threshold = move_threshold
     gr.move_problem = move_problem
     return gr
@@ -3188,3 +3190,26 @@ def test_t20_the_refusing_endpoints_stay_post_only():
         [fn] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
         [dec] = fn.decorator_list
         assert ast.unparse(dec) == "frappe.whitelist(methods=['POST'])", (name, ast.unparse(dec))
+
+
+
+def test_a_closing_period_shows_the_last_regular_periods_sheet():
+    """PR #595 review 1: a Closing period is translated at the year's last
+    Regular period (group_rates.rate_period, rate_period_map), and has no
+    sheet of its own: the Rates screen of P13 shows P12's sheet, judged
+    against the sheets before P12. The pairs are still the ones P13's ledgers
+    translate."""
+    site = _Site()
+    p13 = dict(_period(2025, 12, "Open"), fiscal_period=13, period_code="P13", period_type="Closing")
+    site.periods = [_period(2025, 11, "Closed"), _period(2025, 12, "Open"), p13]
+    site.rate_periods = {(2025, 13): 12}
+    site.docs = [dict(_ger("RS-S-2025-12", "EUR", "GBP", "Closing", 0.85, 1), fiscal_period=12),
+                 dict(_ger("RS-S-2025-12", "EUR", "GBP", "Average", 0.84, 1), fiscal_period=12)]
+    site.earlier = [_earlier("RS-S-2025-11", "EUR", "GBP", "Closing", 0.80, 2025, 11),
+                    _earlier("RS-S-2025-12x", "EUR", "GBP", "Closing", 0.10, 2025, 12)]
+    result = _call(site, fp=13)
+    eur = _row(result, "EUR")
+    assert eur["closing"]["status"] == "approved" and eur["average"]["status"] == "approved"
+    assert eur["closing"]["previous"]["name"] == "RS-S-2025-11"
+    assert result["period"]["fiscal_period"] == 13
+    assert site.needs_calls == [(2025, 13)]
