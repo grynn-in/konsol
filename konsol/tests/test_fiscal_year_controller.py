@@ -984,3 +984,20 @@ def test_a_status_only_save_does_not_republish_rates():
         with _requests():
             doc.on_update()
         assert RATE_KEY not in QUEUED, QUEUED
+
+
+def test_adding_a_period_republishes_rates():
+    """PR #595 review 8: a Constant sheet publishes at every declared period,
+    so a period added to the calendar (an Adjustment period here) republishes
+    the rates, as does removing one."""
+    with _load() as module:
+        doc = _edit(module, _saved(module))
+        doc.periods.insert(-1, _row(14, "ADJ", "Adjustment", "2025-12-31", "2025-12-31"))
+        with _requests():
+            doc.on_update()
+        assert QUEUED.count(RATE_KEY) == 1, QUEUED
+        doc = _edit(module, _saved(module))
+        doc.periods = [r for r in doc.periods if r.fiscal_period != 13]
+        with _requests():
+            doc.on_update()
+        assert QUEUED.count(RATE_KEY) == 1, QUEUED
