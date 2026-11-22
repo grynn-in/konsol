@@ -103,7 +103,8 @@ MATRIX = {
     "Intercompany Account": {"EPM Admin": "rwcd", "EPM Analyst": "rwc", "EPM User": "r"},
     "Consolidation Group": {"EPM Admin": "rwcd", "EPM Analyst": "r", "EPM User": "r"},
     "Pipeline Run": {"EPM Admin": "rw", "EPM Analyst": "r", "EPM User": "r"},
-    "Assertion Run": {"EPM Admin": "rwc", "EPM Analyst": "rc", "EPM User": "r"},
+    # No create: only Run checks (trigger_close_run, ignore_permissions) starts a run (A02c).
+    "Assertion Run": {"EPM Admin": "rw", "EPM Analyst": "r", "EPM User": "r"},
     # konsol#189: retired, read-only history; status lives on EPM Fiscal Year
     "Period Status": {"EPM Admin": "r", "EPM Analyst": "r", "EPM User": "r", "Entity Accountant": "r"},
     # bulk trial balance upload: only the role that submits trial balances loads
