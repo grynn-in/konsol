@@ -430,9 +430,14 @@ class RateSheet(Document):
         if self._migrating():
             return  # the rates a period was already translated at
         previous = self._copied_sheet() if self._flag(DUPLICATE_FLAG) else None
+        copied = previous is not None
         if previous is None:
             previous = self._previous_approved()
-        problems = model.move_problems(self._as_sheet(), previous, group_rates.move_threshold())
+        # PR #595 review 5 (GER's #586 review): a duplicate's rate equal to the
+        # rate it copies is a move of 0, and needs no reason even while the
+        # threshold is undeclared.
+        problems = model.move_problems(self._as_sheet(), previous, group_rates.move_threshold(),
+                                       copied=copied)
         if problems:
             frappe.throw("<br>".join(problems), frappe.MandatoryError)
 

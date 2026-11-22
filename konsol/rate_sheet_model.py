@@ -229,7 +229,11 @@ def _label(row, rate_type):
     return f"{_pair(row)} {rate_type}" if rate_type else _pair(row)
 
 
-def move_problems(sheet, previous_sheet, threshold):
+def _same_rate(a, b):
+    return abs(a - b) <= 1e-12 * max(abs(b), 1e-12)
+
+
+def move_problems(sheet, previous_sheet, threshold, copied=False):
     """Reasons the sheet needs a Reason for Change because a rate moves too far;
     empty when none. The semantics of the group rates' move check
     (``group_rates.move_problem``), per row.
@@ -240,7 +244,12 @@ def move_problems(sheet, previous_sheet, threshold):
     A move OVER ``threshold`` (a fraction, 0.5 for 50%) is a problem; exactly at
     it is not. A pair with nothing to compare against needs no reason. With
     something to compare and no declared threshold, the one answer is
-    ``RATE_MOVE_MESSAGE``: the threshold is never guessed."""
+    ``RATE_MOVE_MESSAGE``: the threshold is never guessed.
+
+    ``copied``: ``previous_sheet`` is the sheet Duplicate Previous copied
+    (PR #595 review 5, GER's #586-review rule). A rate whose true rate equals
+    the copied one is a move of 0 and needs no reason, whether or not a
+    threshold is declared; any other rate is judged as above."""
     if previous_sheet is not None and previous_sheet["rate_basis"] != sheet["rate_basis"]:
         raise ValueError(f"Rate Basis differs: {previous_sheet['name']} is {previous_sheet['rate_basis']}, "
                          f"this sheet is {sheet['rate_basis']}.")
@@ -254,6 +263,9 @@ def move_problems(sheet, previous_sheet, threshold):
             if _blank(row.get(field)):
                 continue
             rate = true_rate(row[field], row.get("quoted_per"))
+            if copied and old is not None and not _blank(old.get(field)) and _same_rate(
+                    rate, true_rate(old[field], old.get("quoted_per"))):
+                continue
             refs = []
             if old is not None and not _blank(old.get(field)):
                 refs.append((true_rate(old[field], old.get("quoted_per")),
