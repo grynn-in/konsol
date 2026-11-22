@@ -64,6 +64,8 @@ _LAYER_LABELS = {
     "pnl_proration": "Acquisitions and disposals",
     "goodwill_amortisation": "Acquisitions and disposals",
     "disposal": "Acquisitions and disposals",
+    "journal_close": "Year-end close",
+    "ownership_exit": "Ownership exit",
 }
 
 #: The canonical ``layer`` key shown for a merged label (the row's own

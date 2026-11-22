@@ -426,6 +426,12 @@ def test_a_heading_with_no_rows_drills_to_zero_with_no_rows():
     assert result["total"] == 0.0
 
 
+def test_year_end_close_and_ownership_exit_have_labels():
+    """konsolidat#316 / #335: the two new FCTB adjustment types are named."""
+    assert M._LAYER_LABELS["journal_close"] == "Year-end close"
+    assert M._LAYER_LABELS["ownership_exit"] == "Ownership exit"
+
+
 # --- the budget drill (konsol#348 S5 K8; S5-Q3 a, S5-Q7 a) ------------------
 #
 # gold_fully_consolidated_budget rows have the FCTB shape plus a one-per-
