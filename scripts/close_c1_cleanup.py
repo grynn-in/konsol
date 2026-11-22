@@ -9,9 +9,11 @@ Run INSIDE the backend container, from the sites directory, after the setup:
 It reads ``zz_c1_state.json`` (written by the setup) and removes only what the
 setup or the walk-through created:
 - FY2099 did not exist before the setup (the setup refuses otherwise), so
-  every Trial Balance Submission, TB Exception, Group Exchange Rate and
+  every Trial Balance Submission, TB Exception, Rate Sheet and
   Assertion Run in FY2099 is ours: 2099 periods are reopened, then those are
-  cancelled and deleted (Files attached to the deleted TBs too);
+  cancelled and deleted (Files attached to the deleted TBs too; Rate Sheets
+  and Assertion Runs, which refuse that by design, are deleted underneath
+  their controllers);
 - the zz-c1 users, their User Permission, ZZOP, its node and Ownership Period;
 - FY2099 itself;
 - every Build Approval and Pipeline Run numbered above the marks the setup
@@ -36,7 +38,7 @@ FY = 2099
 ENTITY = "ZZOP"
 REASON = "C1 cleanup"
 COUNTED = ("EPM Fiscal Year", "Entity", "Consolidation Group", "Ownership Period", "TB Exception",
-           "Trial Balance Submission", "Group Exchange Rate", "Assertion Run", "Pipeline Run",
+           "Trial Balance Submission", "Rate Sheet", "Assertion Run", "Pipeline Run",
            "User", "User Permission", "Build Approval", "File", "Trial Balance Upload")
 
 
@@ -49,7 +51,7 @@ def zz_left():
         "FY2099": frappe.db.count("EPM Fiscal Year", {"fiscal_year": FY}),
         "FY2099 TBs": frappe.db.count("Trial Balance Submission", {"fiscal_year": FY}),
         "FY2099 TB Exceptions": frappe.db.count("TB Exception", {"fiscal_year": FY}),
-        "FY2099 rates": frappe.db.count("Group Exchange Rate", {"fiscal_year": FY}),
+        "FY2099 rates": frappe.db.count("Rate Sheet", {"fiscal_year": FY}),
         "FY2099 runs": frappe.db.count("Assertion Run", {"fiscal_year": FY}),
         "ZZ entities": frappe.db.count("Entity", {"name": ["like", "ZZ%"]}),
         "ZZ nodes": frappe.db.count("Consolidation Group", {"data_area_id": ["like", "ZZ%"]}),
@@ -219,9 +221,14 @@ def main():
     for name in frappe.get_all("TB Exception", filters={"fiscal_year": FY}, pluck="name", limit_page_length=0):
         _cancel_delete("TB Exception", name)
     frappe.db.commit()
-    for name in frappe.get_all("Group Exchange Rate", filters={"fiscal_year": FY}, pluck="name",
-                               limit_page_length=0):
-        _cancel_delete("Group Exchange Rate", name)
+    # An approved Statutory Rate Sheet is never plain cancelled (#312-S3-2) and
+    # a cancelled one is never deleted (the audit trail), so test data is
+    # removed underneath the controller, with its rows; reconcile_all below
+    # takes the rates out of the warehouse.
+    for name in frappe.get_all("Rate Sheet", filters={"fiscal_year": FY}, pluck="name", limit_page_length=0):
+        DELETED.append(("Rate Sheet", name))
+        frappe.db.delete("Rate Sheet Row", {"parent": name, "parenttype": "Rate Sheet"})
+        frappe.db.delete("Rate Sheet", {"name": name})
     frappe.db.commit()
     # A finished or signed run refuses deletion (A51) by design; test data is
     # removed underneath the controller, with its result rows.

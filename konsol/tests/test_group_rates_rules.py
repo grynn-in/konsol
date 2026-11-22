@@ -317,6 +317,36 @@ def test_the_magnitude_guard_reads_iso_currency():
     assert r.magnitude_problem("USD", "SEK", 10 ** 1.02 * 10.1)
 
 
+def test_the_magnitude_warning_names_the_quoted_per_that_fits():
+    """konsol#179 (from test_group_exchange_rate, dropped with it by T26): a
+    quote past the declared factor but within the hard 10x names the Quoted
+    Per that brings it in line, or says no listed unit does."""
+    r = _rules()
+    assert r.magnitude_problem("JPY", "USD", 0.06607, REFS) is None, "under 10x: the hard guard passes it"
+    msg = r.magnitude_warning("JPY", "USD", 0.6607, 10, 3.0, REFS)
+    assert msg and "about 9.8x above" in msg and "Magnitude Warning Factor (3x" in msg, msg
+    assert "0.6607 USD per 100 JPY" in msg and "Reason for Change" in msg, msg
+    # below: EUR -> USD quoted per 10 where 1 was meant (0.997 decades, passes the hard guard)
+    assert r.magnitude_problem("EUR", "USD", 0.108, REFS) is None
+    msg = r.magnitude_warning("EUR", "USD", 1.08, 10, 3.0, REFS)
+    assert msg and "below" in msg and "1.08 USD per EUR" in msg, msg
+    # 10x too low quoted per 1: no listed unit (per 0.1) fits, so the quote is named
+    msg = r.magnitude_warning("CHF", "USD", 0.1135, 1, 3.0, REFS)
+    assert msg and "Quoted Per" in msg and "10x too low" in msg, msg
+    # a gap no unit explains (4x: per 10 would leave it 2.5x below) names no unit
+    msg = r.magnitude_warning("EUR", "CHF", 3.8, 1, 2.0, REFS)
+    assert msg and "No Quoted Per brings it in line" in msg, msg
+
+
+def test_the_magnitude_warning_is_quiet_in_line_undeclared_or_refused():
+    r = _rules()
+    assert r.magnitude_warning("JPY", "USD", 0.6607, 100, 3.0, REFS) is None, "in line"
+    assert r.magnitude_warning("JPY", "USD", 0.6607, 10, None, REFS) is None, "undeclared: the caller reports"
+    assert r.magnitude_warning("JPY", "USD", 0.6607, 10, 12.0, REFS) is None, "within the factor"
+    assert r.magnitude_warning("JPY", "USD", 0.6607, 1, 3.0, REFS) is None, "100x: the hard guard's"
+    assert r.magnitude_warning("XAU", "USD", 2100, 1, 3.0, dict(REFS, XAU=None)) is None, "no reference: hard"
+
+
 def test_the_move_rule():
     """The threshold is declared in Close Settings, not coded (konsol#305-D2-9):
     ``move_problem`` takes it as a fraction, and there is no coded default."""

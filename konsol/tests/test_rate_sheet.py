@@ -73,6 +73,13 @@ class World:
         self.previous = kw.get("previous")            # name the previous-approved query returns
         self.move_threshold = kw.get("move_threshold", 0.5)
         self.magnitude = kw.get("magnitude", {})      # (from, to) -> problem text
+        #: konsol#179: the declared Magnitude Warning Factor (None: undeclared),
+        #: and what group_rates.magnitude_warning says, keyed on
+        #: (from, to, quote, quoted_per). Every call is recorded.
+        self.magnitude_factor = kw.get("magnitude_factor")
+        self.warnings = kw.get("warnings", {})
+        self.warned = []
+        self.msgprints = []
         self.period_open = kw.get("period_open", True)
         self.year_open = kw.get("year_open", True)
         self.flags = kw.get("flags", {})
@@ -154,7 +161,7 @@ def _frappe(w):
     frappe.session = types.SimpleNamespace(user=w.user)
     frappe.get_all = get_all
     frappe.get_doc = get_doc
-    frappe.msgprint = lambda *a, **k: None
+    frappe.msgprint = lambda msg, *a, **k: w.msgprints.append(msg)
     frappe.db = types.SimpleNamespace(
         sql=sql, get_value=get_value,
         exists=lambda dt, name=None: name in w.existing_names,
@@ -172,6 +179,14 @@ def _group_rates(w):
     gr.significant_digits = lambda q: 9
     gr.quote_label = lambda q, per, f, t: f"{float(q or 0):.9g} {t} per {int(per or 1)} {f}"
     gr.publish_rates = lambda force=False: w.published.append(("publish_rates", force))
+    gr.MAGNITUDE_WARNING_UNDECLARED = ("Magnitude Warning Factor is not declared (Close Settings): "
+                                       "no rate is checked against it.")
+    gr.magnitude_warning_factor = lambda: w.magnitude_factor
+
+    def magnitude_warning(f, t, quote, per, factor, refs=None):
+        w.warned.append((f, t, float(quote or 0), int(per or 1), factor))
+        return w.warnings.get((f, t, float(quote or 0), int(per or 1))) if factor is not None else None
+    gr.magnitude_warning = magnitude_warning
     return gr
 
 
@@ -814,3 +829,168 @@ def test_lifecycle_two_approvals_in_one_transaction_publish_once():
         _sheet(m, docstatus=1).on_submit()
         _sheet(m, name="RS-S-2025-07", fiscal_period=7, docstatus=1).on_submit()
         assert len(w.queued) == 1
+
+
+# == T26b: the magnitude warning (konsol#179, PR #385), ported from Group Exchange Rate ======
+#
+# GER warned when a quote was more than the declared Magnitude Warning Factor
+# (Close Settings) from the ISO references but within the hard 10x: a wrong
+# Quoted Per is the usual cause. Past the factor a Reason for Change is
+# required; while the factor is undeclared every save says so (msgprint) and
+# nothing is refused. The rule itself is group_rates.magnitude_warning
+# (test_group_rates_rules); these tests pin the controller's use of it, per
+# row and per quote.
+
+#: JPY -> USD quoted per 10 where 100 was meant (0.990 decades off, #179).
+JPY_WARNING = ("0.6607 USD per 10 JPY is about 9.8x above the roughly 0.676 USD per 100 JPY the ISO "
+               "Currency references imply: more than the Magnitude Warning Factor (3x, Close Settings). "
+               "A wrong Quoted Per is the likely cause: did you mean 0.6607 USD per 100 JPY? "
+               "If the rate is right, say why (Reason for Change).")
+JPY_PER_10 = {("JPY", "USD", 0.6607, 10): JPY_WARNING}
+
+
+def _jpy(**fields):
+    return _row(**dict(dict(from_currency="JPY", quoted_per="10", average_quote=0.6607,
+                            closing_quote=0.6607), **fields))
+
+
+def _jpy_c(**fields):
+    return _crow(**dict(dict(from_currency="JPY", quoted_per="10", rate=0.6607), **fields))
+
+
+def test_magnitude_an_undeclared_factor_is_reported_never_refused():
+    with harness(warnings=JPY_PER_10) as (m, w):
+        _sheet(m, rows=[_jpy()]).validate()
+        assert any("Magnitude Warning Factor" in msg and "Close Settings" in msg for msg in w.msgprints), \
+            w.msgprints
+
+
+def test_magnitude_a_declared_factor_needs_a_reason_for_a_wrong_unit():
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        why = _refused(_sheet(m, rows=[_jpy()]).validate)
+        assert why and w.thrown[-1] == "MandatoryError"
+        assert "0.6607 USD per 100 JPY" in why and "Reason for Change" in why, why
+        assert "Average" in why and "Closing" in why, "each quote of a Statutory row is named"
+        assert ("JPY", "USD", 0.6607, 10, 3.0) in w.warned
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        _sheet(m, rows=[_jpy()], change_reason="Checked: this source quotes per 10").validate()
+        assert not w.msgprints
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        _sheet(m, rows=[_jpy(quoted_per="100")]).validate()
+        assert not w.msgprints, "an in-line rate needs no reason and warns nothing"
+
+
+def test_magnitude_each_row_and_quote_is_checked():
+    """Only the quote past the factor is named: a sheet's other rows and its
+    other quote are not."""
+    warnings = {("JPY", "USD", 0.06607, 10): "JPY closing past the factor."}
+    with harness(magnitude_factor=3.0, warnings=warnings) as (m, w):
+        why = _refused(_sheet(m, rows=[_row(), _jpy(name="row2", closing_quote=0.06607)]).validate)
+        assert why and "Closing" in why and "JPY closing past the factor." in why, why
+        assert "Average" not in why, why
+        assert ("EUR", "USD", 1.08, 1, 3.0) in w.warned and ("EUR", "USD", 1.09, 1, 3.0) in w.warned
+
+
+def test_magnitude_a_constant_sheet_checks_its_rate():
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        why = _refused(_sheet(m, rate_basis="Constant", fiscal_period=None, rows=[_jpy_c()]).validate)
+        assert why and w.thrown[-1] == "MandatoryError" and "0.6607 USD per 100 JPY" in why, why
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        _sheet(m, rate_basis="Constant", fiscal_period=None, rows=[_jpy_c()],
+               change_reason="Checked").validate()
+
+
+def test_magnitude_system_writes_are_not_asked_for_a_reason():
+    """The pre-fill has no person to give one (its summary lists the warning;
+    the reason is asked for when a person saves or approves the draft), nor
+    has Duplicate Previous; the migration records what a period was already
+    translated at."""
+    prefilled = _jpy(source="ERP pre-fill", erp_average_quote=0.6607, erp_closing_quote=0.6607)
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10,
+                 flags={"konsol_prefilling_rate_sheet": True}) as (m, w):
+        _sheet(m, rows=[prefilled], source_note="ERP feed").validate()
+        assert not w.msgprints
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10,
+                 flags={"konsol_duplicating_rate_sheet": True}) as (m, w):
+        _sheet(m, rows=[_jpy(source="Duplicated")], copied_from="RS-S-2025-05",
+               source_note="Duplicated from RS-S-2025-05").validate()
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10, flags={"konsol_migrating_rates": True},
+                 user="Administrator") as (m, w):
+        _sheet(m, rows=[_jpy(source="Migrated", legacy_documents="GER-1")]).validate()
+    with harness(warnings=JPY_PER_10, flags={"konsol_prefilling_rate_sheet": True}) as (m, w):
+        _sheet(m, rows=[_jpy(source="ERP pre-fill", erp_average_quote=0.6607, erp_closing_quote=0.6607)],
+               source_note="ERP feed").validate()
+        assert not w.msgprints, "the undeclared notice is for a person's save"
+    # the same pre-filled draft, saved later by a person, is asked
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        d = _sheet(m, rows=[_jpy(source="ERP pre-fill", erp_average_quote=0.6607, erp_closing_quote=0.6607)],
+                   source_note="ERP feed")
+        _before(d)
+        assert _refused(d.validate)
+        assert w.thrown[-1] == "MandatoryError"
+
+
+# -- PR #385 review: a reason given earlier does not cover a later wrong unit ---------------
+
+REASON = "Rate moved: BoJ intervention"
+
+
+def test_magnitude_a_reason_from_an_earlier_save_does_not_cover_a_changed_quoted_per():
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        d = _sheet(m, rows=[_jpy()], change_reason=REASON)
+        _before(d, rows=[_jpy(quoted_per="100")], change_reason=REASON)
+        why = _refused(d.validate)
+        assert why and "0.6607 USD per 100 JPY" in why and "given before" in why, why
+        assert w.thrown[-1] == "MandatoryError"
+
+
+def test_magnitude_a_reason_updated_with_the_quote_covers_it():
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        d = _sheet(m, rows=[_jpy()], change_reason="Checked: this source quotes per 10")
+        _before(d, rows=[_jpy(quoted_per="100")], change_reason=REASON)
+        d.validate()
+
+
+def test_magnitude_a_reason_saved_with_the_same_quote_still_covers_it():
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        d = _sheet(m, rows=[_jpy()], change_reason=REASON)
+        _before(d, change_reason=REASON)
+        d.validate()
+
+
+def test_magnitude_a_reason_does_not_cover_a_row_added_since():
+    """The reason was saved with the sheet's other rows; the JPY row is new."""
+    with harness(magnitude_factor=3.0, warnings=JPY_PER_10) as (m, w):
+        d = _sheet(m, rows=[_row(), _jpy(name="row2")], change_reason=REASON)
+        _before(d, rows=[_row()], change_reason=REASON)
+        why = _refused(d.validate)
+        assert why and "given before" in why, why
+
+
+def test_magnitude_an_amendment_with_the_amended_reason_does_not_cover_a_changed_unit():
+    amended = {"RS-S-2025-06": dict(rate_basis="Statutory", fiscal_year=2025, fiscal_period=6, docstatus=2,
+                                    change_reason=REASON)}
+    old_rows = {"RS-S-2025-06": [dict(from_currency="JPY", to_currency="USD", quoted_per="100",
+                                      average_quote=0.6607, closing_quote=0.6607, source="Manual")]}
+
+    def amend(rows, reason):
+        with harness(magnitude_factor=3.0, warnings=JPY_PER_10, sheets=amended, sheet_rows=old_rows) as (m, w):
+            return _refused(_sheet(m, name="RS-S-2025-06-1", amended_from="RS-S-2025-06", rows=rows,
+                                   change_reason=reason).validate)
+
+    why = amend([_jpy()], REASON)
+    assert why and "given before" in why, why
+    assert not amend([_jpy()], "Amended: the source quotes per 10")
+    assert not amend([_jpy(quoted_per="100")], REASON), "the amendment keeps the amended unit"
+
+
+# == T26b: a sheet's build scope (konsol#592 D2) ==============================================
+
+def test_build_scope_a_constant_sheet_requests_scenarios():
+    """A Constant sheet drives the budget and forecast translation, which the
+    scenarios domain builds (gold_consolidated_budget_tb, domain:scenarios); a
+    Statutory sheet drives the actuals, so it leaves DOCTYPE_BUILD_MAP's
+    "consolidation" in place (None)."""
+    with harness() as (m, w):
+        assert _sheet(m, rate_basis="Constant", fiscal_period=None).build_scope() == "scenarios"
+        assert _sheet(m).build_scope() is None

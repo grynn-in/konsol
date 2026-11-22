@@ -19,6 +19,17 @@ Ported from Group Exchange Rate, which this replaced (retired by konsol#592 T26)
   the Rate Move threshold (Close Settings, konsol#305-D2-9) from the previous
   approved sheet of the same basis: the previous period for Statutory, the
   previous year for Constant.
+* **Magnitude warning** (konsol#179, PR #385; T26b). A quote more than the
+  Magnitude Warning Factor (Close Settings) from the ISO references, but
+  within the hard 10x, needs a Reason for Change, and the message names the
+  Quoted Per that brings it in line. A reason covers it only if it was given
+  with that quote: one carried over from a save (or an amended sheet) where
+  the row's quote or Quoted Per differed does not. While the factor is
+  undeclared each save says so and nothing is refused. The pre-fill,
+  Duplicate Previous and the migration are not asked: no person is there.
+* **Build scope** (T26b): a Constant sheet requests the scenarios build (the
+  budget and forecast translation, D2); a Statutory sheet DOCTYPE_BUILD_MAP's
+  "consolidation" (``build_scope``).
 * **Supersede** (#312-3, #312-3b). A correction is a draft that names the
   approved sheet of its own key in ``supersedes``; that one stays approved
   and published until the correction is approved, and the approval cancels
@@ -62,6 +73,7 @@ QUOTES = {
     CONSTANT: (("rate", None),),
 }
 ERP_FIELDS = ("erp_average_quote", "erp_closing_quote")
+QUOTE_LABELS = {"average_quote": "Average", "closing_quote": "Closing", "rate": "Rate"}
 KEY_FIELDS = ("rate_basis", "fiscal_year", "fiscal_period")
 
 
@@ -148,6 +160,7 @@ class RateSheet(Document):
         self._validate_supersedes()
         self._refuse_second_sheet()
         self._require_reasons()
+        self._check_magnitude_warning()
 
     def _normalise_key(self):
         if self.rate_basis == CONSTANT and self.fiscal_period in (None, "", 0, "0"):
@@ -422,6 +435,81 @@ class RateSheet(Document):
         problems = model.move_problems(self._as_sheet(), previous, group_rates.move_threshold())
         if problems:
             frappe.throw("<br>".join(problems), frappe.MandatoryError)
+
+    def _check_magnitude_warning(self):
+        """konsol#179, per row and per quote (GER _check_magnitude_warning)."""
+        from konsol import group_rates
+
+        if self._flag(PREFILL_FLAG) or self._flag(DUPLICATE_FLAG) or self._migrating():
+            return
+        factor = group_rates.magnitude_warning_factor()
+        if factor is None:
+            frappe.msgprint(group_rates.MAGNITUDE_WARNING_UNDECLARED, title="Magnitude Warning Factor",
+                            indicator="orange")
+            return
+        rows = self._rows()
+        refs = group_rates.usd_references(
+            [c for r in rows for c in (_v(r, "from_currency"), _v(r, "to_currency"))])
+        warned = []   # (row, quote field, message)
+        for row in rows:
+            for field, _ in QUOTES[self.rate_basis]:
+                problem = group_rates.magnitude_warning(_v(row, "from_currency"), _v(row, "to_currency"),
+                                                        _num(_v(row, field)), _per(row), factor, refs)
+                if problem:
+                    label = "" if self.rate_basis == CONSTANT else f"{QUOTE_LABELS[field]}: "
+                    warned.append((row, field, label + problem))
+        if not warned:
+            return
+        reason = (self.change_reason or "").strip()
+        if not reason:
+            frappe.throw("<br>".join(msg for _, _, msg in warned), frappe.MandatoryError)
+        stale = self._reason_predates(reason, warned)
+        if stale:
+            frappe.throw("<br>".join(stale) + "<br>The Reason for Change was given before Quote or Quoted "
+                         "Per changed: update it to say why this quote is right.", frappe.MandatoryError)
+
+    def _reason_predates(self, reason, warned):
+        """PR #385 review: a Reason for Change covers a warned quote only if it
+        was given with that quote. The prior version is the saved sheet, or
+        for an amendment the sheet it amends. If that version carried this
+        same reason, every warned quote whose row (matched by currency pair)
+        had another quote or Quoted Per there, or was not there, is stale.
+        Returns the stale messages."""
+        prior_reason, prior_rows = self._prior_reason_and_rows()
+        if prior_reason is None or prior_reason.strip() != reason:
+            return []
+        stale = []
+        for row, field, msg in warned:
+            before = prior_rows.get((_v(row, "from_currency"), _v(row, "to_currency")))
+            if before is None or (_num(_v(before, field)), _per(before)) != (_num(_v(row, field)), _per(row)):
+                stale.append(msg)
+        return stale
+
+    def _prior_reason_and_rows(self):
+        """(change_reason, {(from, to): row}) of the saved version, else of
+        the amended sheet; (None, {}) for a new sheet that amends nothing."""
+        before = self._saved_version()
+        if before is not None:
+            rows = _v(before, "rates") or []
+            return (_v(before, "change_reason") or ""), {(_v(r, "from_currency"), _v(r, "to_currency")): r
+                                                         for r in rows}
+        if self.amended_from:
+            meta = frappe.db.get_value(self.doctype, self.amended_from, ["change_reason"], as_dict=True)
+            if meta is None:
+                return None, {}
+            sheet = self._load_sheet(self.amended_from)
+            return (meta.change_reason or ""), {(r["from_currency"], r["to_currency"]): r
+                                                for r in sheet["rows"]}
+        return None, {}
+
+    # -- build scope ----------------------------------------------------------------------------
+
+    def build_scope(self):
+        """The build this sheet requests (tasks.queue_consolidation_build): a
+        Constant sheet drives the budget and forecast translation (D2), which
+        the scenarios domain builds; None for a Statutory sheet, whose actuals
+        translation is DOCTYPE_BUILD_MAP's "consolidation"."""
+        return "scenarios" if self.rate_basis == CONSTANT else None
 
     def _previous_approved(self):
         """The latest approved sheet of the same basis before this key: the

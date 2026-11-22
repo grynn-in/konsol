@@ -29,7 +29,7 @@ def _fn(name):
     return next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
 
 
-def _run(method="on_submit", submittable=True, flags=(), raises=False, scope=None):
+def _run(method="on_submit", submittable=True, flags=(), raises=False, scope=None, doc_scope=...):
     calls, logs = [], []
 
     # Frappe v15's real signature, so a job kwarg that reuses one of enqueue's
@@ -48,6 +48,8 @@ def _run(method="on_submit", submittable=True, flags=(), raises=False, scope=Non
     exec(compile(ast.Module(body=[_fn("queue_consolidation_build")], type_ignores=[]), TASKS, "exec"), ns)
     doc = types.SimpleNamespace(doctype="Ownership Period", name="OP-1",
                                 meta=types.SimpleNamespace(is_submittable=submittable))
+    if doc_scope is not ...:
+        doc.build_scope = lambda: doc_scope
     if scope is None:
         ns["queue_consolidation_build"](doc, method)
     else:
@@ -119,6 +121,20 @@ def test_a_named_scope_reaches_the_job_under_its_own_job_id():
     assert scoped[0][1]["build_scope"] == "scenarios"
     assert scoped[0][1]["job_id"] != plain[0][1]["job_id"]
     assert "scenarios" in scoped[0][1]["job_id"]
+
+
+def test_a_document_may_name_its_own_scope():
+    """konsol#592 T26b: a Constant Rate Sheet feeds the budget and forecast
+    translation (scenarios), a Statutory one the actuals (consolidation), so
+    one doctype's documents differ in scope. A controller's build_scope()
+    names it; None leaves DOCTYPE_BUILD_MAP's. A scope the caller names wins."""
+    own, logs = _run(doc_scope="scenarios")
+    assert len(own) == 1 and not logs
+    assert own[0][1]["build_scope"] == "scenarios" and "scenarios" in own[0][1]["job_id"]
+    mapped, _ = _run(doc_scope=None)
+    assert mapped[0][1]["build_scope"] is None
+    named, _ = _run(doc_scope="scenarios", scope="full")
+    assert named[0][1]["build_scope"] == "full"
 
 
 def test_the_trigger_builds_the_named_scope_else_the_mapped_one():
