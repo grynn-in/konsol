@@ -6,7 +6,7 @@ def get_data():
         "transactions": [
             {
                 "label": "Close",
-                "items": ["Trial Balance Submission", "TB Exception", "Group Exchange Rate", "Rate Sheet", "Assertion Run"],
+                "items": ["Trial Balance Submission", "TB Exception", "Rate Sheet", "Assertion Run"],
             },
             {
                 "label": "Consolidation",

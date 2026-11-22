@@ -45,7 +45,7 @@ STEPS = (
     ("intercompany", "Intercompany accounts", ["List", "Intercompany Account"]),
     ("users", "Users and roles", ["List", "User"]),
     ("trial_balance", "First trial balance", ["List", "Trial Balance Submission"]),
-    ("rates", "Group exchange rates", ["List", "Group Exchange Rate"]),
+    ("rates", "Group exchange rates", ["List", "Rate Sheet"]),
     ("warehouse", "Warehouse", ["List", "Build Approval"]),
 )
 _LABELS = {key: label for key, label, _ in STEPS}

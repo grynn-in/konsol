@@ -20,7 +20,6 @@ _PERIOD_DATA = {
     "Trial Balance Submission": True,
     "Consolidation Journal": True,
     "IC Balance": True,
-    "Group Exchange Rate": True,
     "Rate Sheet": True,
     "Assertion Run": False,
     "TB Exception": True,

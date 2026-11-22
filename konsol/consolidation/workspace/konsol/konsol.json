@@ -50,7 +50,7 @@
  "is_hidden": 0,
  "label": "Konsol",
  "links": [],
- "modified": "2026-11-22 12:00:00.000000",
+ "modified": "2026-11-22 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Konsol",
@@ -155,15 +155,6 @@
    "link_to": "Business Disposal",
    "type": "DocType",
    "stats_filter": "[[\"Business Disposal\", \"status\", \"=\", \"Pending Approval\"]]",
-   "format": "{} waiting"
-  },
-  {
-   "color": "Orange",
-   "doc_view": "List",
-   "label": "Group Exchange Rates",
-   "link_to": "Group Exchange Rate",
-   "type": "DocType",
-   "stats_filter": "[[\"Group Exchange Rate\", \"docstatus\", \"=\", 0]]",
    "format": "{} waiting"
   },
   {

@@ -95,7 +95,6 @@ SIDEBARS = {
         ("DocType", "Trial Balance Submission"),
         ("DocType", "TB Exception"),
         ("Section", "Rates"),
-        ("DocType", "Group Exchange Rate"),
         ("DocType", "Rate Sheet"),
         ("DocType", "Historical Equity Rate"),
         ("Section", "Intercompany"),

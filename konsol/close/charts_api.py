@@ -213,7 +213,7 @@ def closing_vs_average_rate(chart_name=None, filters=None, refresh=None, time_in
     """Chart 5: closing and average rate of the group's top currencies, current year."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     title = "Closing vs Average Rate"
-    _start(filters, "Group Exchange Rate", "Entity")  # T26: the permission check moves to Rate Sheet
+    _start(filters, "Rate Sheet", "Entity")
 
     def build():
         key, states = _year(title)

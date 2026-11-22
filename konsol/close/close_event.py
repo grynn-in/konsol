@@ -38,7 +38,6 @@ from konsol.consolidation.doctype.close_event import close_event as close_event_
 
 #: Approval and close documents that carry their own period key.
 PERIOD_FIELD_DOCTYPES = (
-    "Group Exchange Rate",
     "IC Balance",
     "Consolidation Journal",
     "Trial Balance Submission",
@@ -60,7 +59,6 @@ ENTITY_FIELDS = {
     "Historical Equity Rate": "data_area_id",
     "Business Combination": "acquired_entity",
     "Business Disposal": "disposed_entity",
-    "Group Exchange Rate": None,
     "Rate Sheet": None,
     "Consolidation Journal": None,
     "IC Balance": None,

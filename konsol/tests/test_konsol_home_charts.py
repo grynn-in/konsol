@@ -189,10 +189,10 @@ def test_ic_top_refuses_a_pair_without_a_difference():
 
 def test_approvals_lists_every_doctype_with_zeros():
     m = _model()
-    items = [{"doctype": "Group Exchange Rate"}, {"doctype": "Group Exchange Rate"},
+    items = [{"doctype": "Rate Sheet"}, {"doctype": "Rate Sheet"},
              {"doctype": "IC Balance"}]
-    chart = m.approvals(items, ("Consolidation Journal", "Group Exchange Rate", "IC Balance"))
-    assert chart["labels"] == ["Consolidation Journal", "Group Exchange Rate", "IC Balance"]
+    chart = m.approvals(items, ("Consolidation Journal", "Rate Sheet", "IC Balance"))
+    assert chart["labels"] == ["Consolidation Journal", "Rate Sheet", "IC Balance"]
     assert chart["datasets"][0]["values"] == [0, 2, 1]
 
 
@@ -347,7 +347,7 @@ def _api(site):
         actuals rates of one period and type, as {(from, to): true rate}."""
         site.quote_calls.append((fy, fp, rate_type))
         return {(r["from_currency"], "USD"): float(r["quote"]) / int(r["quoted_per"])
-                for r in site.lists.get("Group Exchange Rate", [])
+                for r in site.lists.get("Rate Sheet", [])
                 if (r["fiscal_year"], r["fiscal_period"], r["rate_type"]) == (fy, fp, rate_type)}
 
     close = _module(
@@ -427,20 +427,20 @@ def test_top_ic_differences_with_no_intercompany_declared_is_an_empty_chart():
 def test_approvals_backlog_counts_the_queue_items():
     api, _ = _api(_Site(queue={"items": [{"doctype": "IC Balance"}], "sent_back": [{}]}))
     chart = api.approvals_backlog()
-    assert len(chart["labels"]) == 8 and sum(chart["datasets"][0]["values"]) == 1
+    assert len(chart["labels"]) == 7 and sum(chart["datasets"][0]["values"]) == 1
 
 
 def test_closing_vs_average_rate_reads_submitted_rates_into_the_group_currency():
     site = _Site(lists={
         "Entity": [{"functional_currency": "EUR"}, {"functional_currency": "USD"}],
-        "Group Exchange Rate": [
+        "Rate Sheet": [
             {"from_currency": "EUR", "rate_type": "Closing", "fiscal_year": 2025,
              "fiscal_period": 1, "quote": 110, "quoted_per": "100"}]})
     api, _ = _api(site)
     chart = api.closing_vs_average_rate()
     assert chart["labels"] == ["FY2025 P01 (no EUR average)"]
     assert _values(chart) == {"EUR closing": [1.1], "EUR average": [0]}
-    assert not [dt for dt, _f in site.calls if dt == "Group Exchange Rate"], "read through approved_quotes"
+    assert not [dt for dt, _f in site.calls if dt == "Rate Sheet"], "read through approved_quotes"
     assert site.quote_calls and {fy for fy, _fp, _rt in site.quote_calls} == {2025}
     assert {rt for _fy, _fp, rt in site.quote_calls} == {"Closing", "Average"}
 
@@ -496,7 +496,7 @@ def test_a_role_outside_the_set_is_refused(method):
 #: reader it calls gates no doctype of its own)
 NEEDS_READ = {
     "tb_submission_progress": "Trial Balance Submission",
-    "closing_vs_average_rate": "Group Exchange Rate",
+    "closing_vs_average_rate": "Rate Sheet",
     "entities_by_status": "Entity",
     "days_to_close": "Assertion Run",
 }
@@ -504,7 +504,7 @@ NEEDS_READ = {
 
 @pytest.mark.parametrize("method,doctype", sorted(NEEDS_READ.items()))
 def test_a_caller_without_read_on_the_doctype_is_refused(method, doctype):
-    everything = {"Trial Balance Submission", "TB Exception", "Group Exchange Rate", "Entity",
+    everything = {"Trial Balance Submission", "TB Exception", "Rate Sheet", "Entity",
                   "Assertion Run"}
     site = _Site(readable=everything - {doctype})
     api, frappe = _api(site)

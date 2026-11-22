@@ -3,8 +3,7 @@
 
 Returns ``{(from, to): true_rate}`` for one rate type: from the approved
 Statutory Rate Sheet (Average or Closing quote of each row, divided by its
-Quoted Per), plus, until T26 retires Group Exchange Rate, the approved GER
-rows for pairs no sheet covers (the sheet wins).
+Quoted Per). The sheets are the only source since konsol#592 T26.
 
 group_rates runs against a stub frappe; nothing here needs a site."""
 import importlib.util
@@ -22,10 +21,9 @@ class Refused(Exception):
     pass
 
 
-def _frappe(sheets=(), ger=(), actuals=("ACTUAL",)):
+def _frappe(sheets=(), actuals=("ACTUAL",)):
     """``sheets``: (name, basis, fy, fp, docstatus, supersedes,
-    [(from, to, quoted_per, average, closing)]). ``ger``: (from, to, rate_type,
-    fy, fp, rate_set, docstatus, quote, quoted_per)."""
+    [(from, to, quoted_per, average, closing)])."""
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -45,16 +43,6 @@ def _frappe(sheets=(), ger=(), actuals=("ACTUAL",)):
                     for n, basis, y, p, ds, sup, rows in sheets
                     if ds == want and basis == "Statutory" and (y, p) == (fy, fp)
                     for f, t, per, avg, cls in rows]
-        if "`tabGroup Exchange Rate`" in query and "docstatus = 0" in query:  # draft_pairs
-            fy, fp, rate_type, rate_set = params
-            return [(f, t) for f, t, rt, y, p, rs, d, q, per in ger
-                    if (d, y, p, rt, rs) == (0, fy, fp, rate_type, rate_set)]
-        if "`tabGroup Exchange Rate`" in query and len(params) == 4:  # the gate's read
-            return []
-        if "`tabGroup Exchange Rate`" in query:
-            ds, fy, fp, rate_type, rate_set = params
-            return [(f, t, q, per) for f, t, rt, y, p, rs, d, q, per in ger
-                    if (d, y, p, rt, rs) == (ds, fy, fp, rate_type, rate_set)]
         raise AssertionError(f"unexpected read: {query}")
 
     frappe.throw, frappe.get_all = throw, get_all
@@ -115,18 +103,6 @@ def test_a_superseded_sheet_gives_way_to_its_superseder():
     assert _rules(_frappe([old, new])).approved_quotes(2099, 3, "Closing") == {("EUR", "CHF"): 0.95}
 
 
-def test_ger_rows_fill_the_pairs_no_sheet_covers_and_the_sheet_wins():
-    # The GER branch goes with T26 (konsol#592).
-    ger = [("JPY", "CHF", "Closing", 2099, 3, "ACTUAL", 1, 0.66, "100"),
-           ("EUR", "CHF", "Closing", 2099, 3, "ACTUAL", 1, 0.80, "1"),
-           ("USD", "CHF", "Closing", 2099, 3, "ACTUAL", 0, 0.9, "1"),
-           ("GBP", "CHF", "Closing", 2099, 3, "BUDGET", 1, 1.1, "1")]
-    r = _rules(_frappe([_sheet([("EUR", "CHF", "1", 0.94, 0.95)])], ger))
-    assert r.approved_quotes(2099, 3, "Closing") == {("EUR", "CHF"): 0.95,
-                                                      ("JPY", "CHF"): pytest.approx(0.0066)}
-    assert _rules(_frappe([], ger)).approved_quotes(2099, 3, "Closing")[("EUR", "CHF")] == 0.80
-
-
 def test_an_unknown_rate_type_is_refused_by_name():
     with pytest.raises(ValueError, match="Rate type"):
         _rules(_frappe()).approved_quotes(2099, 3, "Spot")
@@ -140,10 +116,8 @@ def test_the_gate_and_the_quotes_share_one_sheet_read():
         assert {(f, t, rt) for f, t in r.approved_quotes(2099, 3, rt)} == {k for k in keys if k[2] == rt}
 
 
-def test_draft_pairs_lists_draft_sheet_rows_and_draft_ger_rows_with_the_quote():
-    ger = [("USD", "CHF", "Closing", 2099, 3, "ACTUAL", 0, 0.9, "1"),
-           ("GBP", "CHF", "Closing", 2099, 3, "ACTUAL", 1, 1.1, "1")]
+def test_draft_pairs_lists_the_draft_sheet_rows_with_the_quote():
     draft = _sheet([("EUR", "CHF", "1", None, 0.95), ("JPY", "CHF", "1", 0.0065, None)], docstatus=0)
-    r = _rules(_frappe([draft, _sheet([("AUD", "CHF", "1", 0.6, 0.6)])], ger))
-    assert r.draft_pairs(2099, 3, "Closing") == {("USD", "CHF"), ("EUR", "CHF")}
+    r = _rules(_frappe([draft, _sheet([("AUD", "CHF", "1", 0.6, 0.6)])]))
+    assert r.draft_pairs(2099, 3, "Closing") == {("EUR", "CHF")}
     assert r.draft_pairs(2099, 3, "Average") == {("JPY", "CHF")}

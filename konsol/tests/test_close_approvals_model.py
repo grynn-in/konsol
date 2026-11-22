@@ -36,7 +36,7 @@ ENTITY_FIELDS = {
     "Historical Equity Rate": "data_area_id",
     "Business Combination": "acquired_entity",
     "Business Disposal": "disposed_entity",
-    "Group Exchange Rate": None,
+    "Rate Sheet": None,
     "Consolidation Journal": None,
     "IC Balance": None,
 }
@@ -59,13 +59,12 @@ def _journal(name, fy, fp, adjustment_type, description, duration, owner, create
     }
 
 
-def _ger(name, from_currency, to_currency, rate_type, fy, fp, quote_label, owner, created,
-          change_reason=None):
+def _sheet(name, fy, fp, owner, created, change_reason=None, rate_basis="Statutory"):
+    """A pending Rate Sheet as approvals_api reads it (konsol#592; Group
+    Exchange Rate, which these tests used before T26, is retired)."""
     return {
-        "name": name, "owner": owner, "created": created,
-        "from_currency": from_currency, "to_currency": to_currency, "rate_type": rate_type,
-        "fiscal_year": fy, "fiscal_period": fp, "quote_label": quote_label,
-        "change_reason": change_reason,
+        "name": name, "owner": owner, "created": created, "rate_basis": rate_basis,
+        "fiscal_year": fy, "fiscal_period": fp, "change_reason": change_reason, "supersedes": None,
     }
 
 
@@ -125,8 +124,7 @@ def _all_seven_docs():
         "Consolidation Journal": [_journal("CJ-1", 2026, 7, "topside", "Accrue bonus\nmore detail",
                                             "This period only, no reversal", "alice",
                                             "2026-10-01T09:00:00")],
-        "Group Exchange Rate": [_ger("GER-1", "USD", "EUR", "Closing", 2026, 7,
-                                      "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")],
+        "Rate Sheet": [_sheet("RS-1", 2026, 7, "alice", "2026-10-01T10:00:00")],
         "IC Balance": [_ic_balance("ICB-1", "UK01", "DE02", 2026, 7, 1500.0,
                                     "alice", "2026-10-01T11:00:00")],
         "Business Disposal": [_bd("BD-1", "G1", "DE02", "2026-02-01", 40, 500,
@@ -167,17 +165,18 @@ def test_seven_doctypes_give_seven_items_in_created_order_with_inline_and_desk()
                             ENTITY_FIELDS, None, {}, _modified_for(docs))
     assert result["hidden"] == 0
     names = [item["name"] for item in result["items"]]
-    assert names == ["OP-1", "HER-1", "BC-1", "CJ-1", "GER-1", "ICB-1", "BD-1"]
+    assert names == ["OP-1", "HER-1", "BC-1", "CJ-1", "RS-1", "ICB-1", "BD-1"]
 
     by_name = {item["name"]: item for item in result["items"]}
 
-    for bc_bd in ("BC-1", "BD-1"):
-        assert by_name[bc_bd]["inline"] is False
-    for other in ("OP-1", "HER-1", "CJ-1", "GER-1", "ICB-1"):
+    for desk_only in ("BC-1", "BD-1", "RS-1"):
+        assert by_name[desk_only]["inline"] is False
+    for other in ("OP-1", "HER-1", "CJ-1", "ICB-1"):
         assert by_name[other]["inline"] is True
         assert by_name[other]["desk"] is None
     assert by_name["BC-1"]["desk"] == "/desk/business-combination/BC-1"
     assert by_name["BD-1"]["desk"] == "/desk/business-disposal/BD-1"
+    assert by_name["RS-1"]["desk"] == "/desk/rate-sheet/RS-1"
 
     cj = by_name["CJ-1"]
     assert cj["kind_label"] == "Adjustment · CJ-1"
@@ -189,10 +188,10 @@ def test_seven_doctypes_give_seven_items_in_created_order_with_inline_and_desk()
     assert cj["total_debit"] == 18500.0
     assert cj["currency"] == "USD"
 
-    ger = by_name["GER-1"]
-    assert ger["kind_label"] == "Group rate · USD→EUR Closing"
-    assert ger["title"] == "1.10 EUR per USD"
-    assert ger["detail"] == "FY2026 P07"
+    sheet = by_name["RS-1"]
+    assert sheet["kind_label"] == "Rate Sheet"
+    assert sheet["title"] == "Statutory · FY2026 P7"
+    assert sheet["detail"] == "FY2026 P7"
 
     icb = by_name["ICB-1"]
     assert icb["kind_label"] == "IC balance · UK01 → DE02"
@@ -210,14 +209,13 @@ def test_seven_doctypes_give_seven_items_in_created_order_with_inline_and_desk()
     assert bd["detail"] == "G1 · 40% from 2026-02-01"
 
 
-def test_ger_change_reason_is_appended_to_detail():
-    docs = {"Group Exchange Rate": [_ger("GER-2", "USD", "GBP", "Average", 2026, 7,
-                                          "0.80 GBP per USD", "alice", "2026-10-01T10:00:00",
+def test_rate_sheet_change_reason_is_appended_to_detail():
+    docs = {"Rate Sheet": [_sheet("RS-2", 2026, 7, "alice", "2026-10-01T10:00:00",
                                           change_reason="ERP quote moved")]}
     result = M.queue_items(docs, _preparers_for(docs), "alice", ("EPM Admin",),
                             "Allowed with reason", APPROVER_ROLES, SELF_APPROVAL_PROBLEM,
                             ENTITY_FIELDS, None, {}, _modified_for(docs))
-    assert result["items"][0]["detail"] == "FY2026 P07 · ERP quote moved"
+    assert result["items"][0]["detail"] == "FY2026 P7 · ERP quote moved"
 
 
 def test_journal_no_description_line_gives_no_description_title():
@@ -271,10 +269,9 @@ def test_allowed_with_reason_self_prepared_is_reason_others_direct():
 
 
 def test_w2_14_editor_approver_is_self_prepared_under_allowed_with_reason():
-    """#305-W2-14: a Close Lead who edited an Analyst's GER is self-prepared."""
-    docs = {"Group Exchange Rate": [_ger("GER-3", "USD", "EUR", "Closing", 2026, 7,
-                                          "1.10 EUR per USD", "bob", "2026-10-01T10:00:00")]}
-    refs = _preparers_for(docs, {("Group Exchange Rate", "GER-3"): frozenset({"bob", "lead"})})
+    """#305-W2-14: a Close Lead who edited an Analyst's Rate Sheet is self-prepared."""
+    docs = {"Rate Sheet": [_sheet("RS-3", 2026, 7, "bob", "2026-10-01T10:00:00")]}
+    refs = _preparers_for(docs, {("Rate Sheet", "RS-3"): frozenset({"bob", "lead"})})
     result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Allowed with reason",
                             APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None, {}, _modified_for(docs))
     assert result["items"][0]["approve"]["mode"] == "reason"
@@ -287,8 +284,7 @@ def test_scope_hides_entity_items_outside_allowed():
                                          "2026-09-30", 1.2, "alice", "2026-10-01T07:00:00")],
         "Business Combination": [_bc("BC-2", "G1", "DE02", "2026-01-15", 60, 1000,
                                       "alice", "2026-10-01T08:00:00")],
-        "Group Exchange Rate": [_ger("GER-4", "USD", "EUR", "Closing", 2026, 7,
-                                      "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")],
+        "Rate Sheet": [_sheet("RS-4", 2026, 7, "alice", "2026-10-01T10:00:00")],
         "Consolidation Journal": [_journal("CJ-6", 2026, 7, "topside", "Accrue",
                                             "This period only, no reversal", "alice",
                                             "2026-10-01T09:00:00")],
@@ -300,7 +296,7 @@ def test_scope_hides_entity_items_outside_allowed():
                             ENTITY_FIELDS, {"UK01"}, {}, _modified_for(docs))
     assert result["hidden"] == 2
     names = {item["name"] for item in result["items"]}
-    assert names == {"GER-4", "CJ-6", "ICB-2"}
+    assert names == {"RS-4", "CJ-6", "ICB-2"}
 
 
 def test_missing_preparers_ref_raises_key_error():
@@ -396,11 +392,10 @@ def test_rejection_after_modified_is_sent_back_and_excluded_from_waiting_for_me(
     """A09: an item whose newest rejection is later than its modified is
     sent_back and carries the rejection. Failure path: it is not counted
     by waiting_for_me."""
-    docs = {"Group Exchange Rate": [_ger("GER-5", "USD", "EUR", "Closing", 2026, 7,
-                                          "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")]}
+    docs = {"Rate Sheet": [_sheet("RS-5", 2026, 7, "alice", "2026-10-01T10:00:00")]}
     refs = _preparers_for(docs)
-    modified_by_ref = {("Group Exchange Rate", "GER-5"): datetime.datetime(2026, 10, 2, 8, 0, 0)}
-    rejections = {("Group Exchange Rate", "GER-5"): {
+    modified_by_ref = {("Rate Sheet", "RS-5"): datetime.datetime(2026, 10, 2, 8, 0, 0)}
+    rejections = {("Rate Sheet", "RS-5"): {
         "reason": "wrong rate", "actor": "lead",
         "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}}
     result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Allowed with reason",
@@ -413,11 +408,10 @@ def test_rejection_after_modified_is_sent_back_and_excluded_from_waiting_for_me(
 
 
 def test_modified_after_rejection_is_pending_again_and_counted():
-    docs = {"Group Exchange Rate": [_ger("GER-6", "USD", "EUR", "Closing", 2026, 7,
-                                          "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")]}
+    docs = {"Rate Sheet": [_sheet("RS-6", 2026, 7, "alice", "2026-10-01T10:00:00")]}
     refs = _preparers_for(docs)
-    modified_by_ref = {("Group Exchange Rate", "GER-6"): datetime.datetime(2026, 10, 2, 10, 0, 0)}
-    rejections = {("Group Exchange Rate", "GER-6"): {
+    modified_by_ref = {("Rate Sheet", "RS-6"): datetime.datetime(2026, 10, 2, 10, 0, 0)}
+    rejections = {("Rate Sheet", "RS-6"): {
         "reason": "wrong rate", "actor": "lead",
         "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}}
     result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Allowed with reason",
@@ -430,8 +424,7 @@ def test_modified_after_rejection_is_pending_again_and_counted():
 
 
 def test_no_rejection_item_is_sent_back_false_rejection_none():
-    docs = {"Group Exchange Rate": [_ger("GER-7", "USD", "EUR", "Closing", 2026, 7,
-                                          "1.10 EUR per USD", "alice", "2026-10-01T10:00:00")]}
+    docs = {"Rate Sheet": [_sheet("RS-7", 2026, 7, "alice", "2026-10-01T10:00:00")]}
     refs = _preparers_for(docs)
     result = M.queue_items(docs, refs, "lead", ("EPM Admin",), "Allowed with reason",
                             APPROVER_ROLES, SELF_APPROVAL_PROBLEM, ENTITY_FIELDS, None,
@@ -462,8 +455,7 @@ def test_refused_and_not_approver_items_never_counted_by_waiting_for_me():
 
 def test_waiting_for_me_oldest_is_earliest_created_among_counted():
     docs = {
-        "Group Exchange Rate": [_ger("GER-8", "USD", "EUR", "Closing", 2026, 7,
-                                      "1.10 EUR per USD", "bob", "2026-10-01T10:00:00")],
+        "Rate Sheet": [_sheet("RS-8", 2026, 7, "bob", "2026-10-01T10:00:00")],
         "Consolidation Journal": [_journal("CJ-10", 2026, 7, "topside", "Accrue",
                                             "This period only, no reversal", "bob",
                                             "2026-10-01T06:00:00")],
@@ -511,12 +503,10 @@ def test_is_sent_back_raises_when_modified_is_missing():
 # --- sent_back_items (A21): the caller's own drafts that were sent back -------------
 
 
-def _sb_ger(name, modified, from_currency="USD", to_currency="EUR", rate_type="Closing",
-            fiscal_year=2026, fiscal_period=7, quote_label="1.10 EUR per USD", change_reason=None):
-    return {"name": name, "modified": modified, "from_currency": from_currency,
-            "to_currency": to_currency, "rate_type": rate_type, "fiscal_year": fiscal_year,
-            "fiscal_period": fiscal_period, "quote_label": quote_label,
-            "change_reason": change_reason}
+def _sb_sheet(name, modified, fiscal_year=2026, fiscal_period=7, rate_basis="Statutory",
+              change_reason=None):
+    return {"name": name, "modified": modified, "rate_basis": rate_basis, "fiscal_year": fiscal_year,
+            "fiscal_period": fiscal_period, "change_reason": change_reason, "supersedes": None}
 
 
 def _sb_journal(name, modified, fiscal_year=2026, fiscal_period=7, adjustment_type="topside",
@@ -537,32 +527,32 @@ def _sb_her(name, modified, consolidation_group="G1", data_area_id="DE02",
             "historical_rate": historical_rate}
 
 
-def test_sent_back_items_ger_rejected_after_modified_carries_rejection():
-    docs = {"Group Exchange Rate": [_sb_ger("GER-20", datetime.datetime(2026, 10, 2, 8, 0, 0))]}
-    rejections = {("Group Exchange Rate", "GER-20"): {
+def test_sent_back_items_rate_sheet_rejected_after_modified_carries_rejection():
+    docs = {"Rate Sheet": [_sb_sheet("RS-20", datetime.datetime(2026, 10, 2, 8, 0, 0))]}
+    rejections = {("Rate Sheet", "RS-20"): {
         "reason": "wrong rate", "actor": "lead", "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}}
     items = M.sent_back_items(docs, rejections)
     assert len(items) == 1
     item = items[0]
-    assert item["doctype"] == "Group Exchange Rate"
-    assert item["name"] == "GER-20"
-    assert item["rejection"] == rejections[("Group Exchange Rate", "GER-20")]
+    assert item["doctype"] == "Rate Sheet"
+    assert item["name"] == "RS-20"
+    assert item["rejection"] == rejections[("Rate Sheet", "RS-20")]
     assert item["fiscal_year"] == 2026
     assert item["fiscal_period"] == 7
-    assert item["kind_label"] == "Group rate · USD→EUR Closing"
+    assert item["kind_label"] == "Rate Sheet"
 
 
 def test_sent_back_items_modified_after_rejection_gives_no_item():
     """Failure path."""
-    docs = {"Group Exchange Rate": [_sb_ger("GER-21", datetime.datetime(2026, 10, 2, 10, 0, 0))]}
-    rejections = {("Group Exchange Rate", "GER-21"): {
+    docs = {"Rate Sheet": [_sb_sheet("RS-21", datetime.datetime(2026, 10, 2, 10, 0, 0))]}
+    rejections = {("Rate Sheet", "RS-21"): {
         "reason": "wrong rate", "actor": "lead", "at": datetime.datetime(2026, 10, 2, 9, 0, 0)}}
     assert M.sent_back_items(docs, rejections) == []
 
 
 def test_sent_back_items_no_rejection_gives_no_item():
     """Failure path."""
-    docs = {"Group Exchange Rate": [_sb_ger("GER-22", datetime.datetime(2026, 10, 2, 10, 0, 0))]}
+    docs = {"Rate Sheet": [_sb_sheet("RS-22", datetime.datetime(2026, 10, 2, 10, 0, 0))]}
     assert M.sent_back_items(docs, {}) == []
 
 
@@ -590,12 +580,12 @@ def test_sent_back_items_journal_carries_period_her_has_none():
 
 def test_sent_back_items_missing_modified_raises_value_error_naming_document():
     """Failure path: never guessed."""
-    docs = {"Group Exchange Rate": [_sb_ger("GER-23", None)]}
+    docs = {"Rate Sheet": [_sb_sheet("RS-23", None)]}
     try:
         M.sent_back_items(docs, {})
         raise AssertionError("expected ValueError")
     except ValueError as exc:
-        assert "GER-23" in str(exc)
+        assert "RS-23" in str(exc)
 
 
 def test_sent_back_items_unknown_doctype_raises_value_error_naming_it():
@@ -610,18 +600,18 @@ def test_sent_back_items_unknown_doctype_raises_value_error_naming_it():
 
 
 def test_sent_back_items_oldest_rejection_first():
-    docs = {"Group Exchange Rate": [
-        _sb_ger("GER-30", datetime.datetime(2026, 10, 1, 5, 0, 0), to_currency="EUR"),
-        _sb_ger("GER-31", datetime.datetime(2026, 10, 1, 5, 0, 0), to_currency="GBP"),
+    docs = {"Rate Sheet": [
+        _sb_sheet("RS-30", datetime.datetime(2026, 10, 1, 5, 0, 0)),
+        _sb_sheet("RS-31", datetime.datetime(2026, 10, 1, 5, 0, 0)),
     ]}
     rejections = {
-        ("Group Exchange Rate", "GER-30"): {
+        ("Rate Sheet", "RS-30"): {
             "reason": "a", "actor": "lead", "at": datetime.datetime(2026, 10, 1, 9, 0, 0)},
-        ("Group Exchange Rate", "GER-31"): {
+        ("Rate Sheet", "RS-31"): {
             "reason": "b", "actor": "lead", "at": datetime.datetime(2026, 10, 1, 6, 0, 0)},
     }
     items = M.sent_back_items(docs, rejections)
-    assert [item["name"] for item in items] == ["GER-31", "GER-30"]
+    assert [item["name"] for item in items] == ["RS-31", "RS-30"]
 
 
 def test_module_imports_no_frappe():
@@ -658,16 +648,19 @@ def test_d06_a_journal_item_carries_its_declared_dimensions_through():
 # --- FR5 (review S2): a correction says what approving it replaces -------------------
 
 def _fr5_docs(replaced, **extra):
-    doc = _ger("GER-3", "EUR", "GBP", "Closing", 2025, 7, "0.86 GBP per EUR", "alice",
+    doc = _sheet("RS-3", 2025, 7, "alice",
                "2026-10-01T10:00:00", change_reason="ECB fixing corrected 31 Jul")
-    doc["supersedes"] = "GER-1"
+    doc["supersedes"] = "RS-1"
     if replaced is not _ABSENT:
         doc["replaced"] = replaced
     doc.update(extra)
-    return {"Group Exchange Rate": [doc]}
+    return {"Rate Sheet": [doc]}
 
 
 _ABSENT = object()
+#: The approved sheet a correction supersedes, as approvals_api reads it.
+_REPLACED = {"name": "RS-1", "rate_basis": "Statutory", "fiscal_year": 2025, "fiscal_period": 7,
+             "docstatus": 1}
 
 
 def _fr5_item(docs):
@@ -678,25 +671,23 @@ def _fr5_item(docs):
 
 
 def test_fr5_a_correction_of_the_approved_rate_names_old_and_new():
-    item = _fr5_item(_fr5_docs({"name": "GER-1", "quote_label": "0.85 GBP per EUR", "docstatus": 1}))
-    assert item["detail"] == ("FY2025 P07 · replaces GER-1 (0.85 GBP per EUR → 0.86 GBP per EUR)"
+    item = _fr5_item(_fr5_docs(_REPLACED))
+    assert item["detail"] == ("FY2025 P7 · replaces RS-1 (Statutory FY2025 P7)"
                               " · ECB fixing corrected 31 Jul")
-    assert item["supersedes"] == "GER-1"
+    assert item["supersedes"] == "RS-1"
 
 
 def test_fr5_failure_path_a_replaced_rate_no_longer_approved_or_gone():
-    gone = ("FY2025 P07 · replaces GER-1, which is no longer approved: this correction "
-            "cannot be approved; delete it on the Rates screen · ECB fixing corrected 31 Jul")
-    cancelled = {"name": "GER-1", "quote_label": "0.85 GBP per EUR", "docstatus": 2}
+    gone = ("FY2025 P7 · replaces RS-1, which is no longer approved: this correction "
+            "cannot be approved; delete it in Desk · ECB fixing corrected 31 Jul")
+    cancelled = dict(_REPLACED, docstatus=2)
     assert _fr5_item(_fr5_docs(cancelled))["detail"] == gone
     assert _fr5_item(_fr5_docs(None))["detail"] == gone  # not found: not approved
 
 
 def test_fr5_a_correction_without_reason_has_no_trailing_reason():
-    docs = _fr5_docs({"name": "GER-1", "quote_label": "0.85 GBP per EUR", "docstatus": 1},
-                     change_reason=None)
-    assert _fr5_item(docs)["detail"] == (
-        "FY2025 P07 · replaces GER-1 (0.85 GBP per EUR → 0.86 GBP per EUR)")
+    docs = _fr5_docs(_REPLACED, change_reason=None)
+    assert _fr5_item(docs)["detail"] == "FY2025 P7 · replaces RS-1 (Statutory FY2025 P7)"
 
 
 def test_fr5_failure_path_a_correction_the_caller_did_not_resolve_raises():
@@ -711,9 +702,8 @@ def test_fr5_failure_path_a_correction_the_caller_did_not_resolve_raises():
 
 
 def test_fr5_a_plain_rate_carries_supersedes_none_and_its_old_detail():
-    docs = {"Group Exchange Rate": [_ger("GER-2", "USD", "GBP", "Average", 2026, 7,
-                                          "0.80 GBP per USD", "alice", "2026-10-01T10:00:00",
+    docs = {"Rate Sheet": [_sheet("RS-2", 2026, 7, "alice", "2026-10-01T10:00:00",
                                           change_reason="ERP quote moved")]}
     item = _fr5_item(docs)
-    assert item["detail"] == "FY2026 P07 · ERP quote moved"
+    assert item["detail"] == "FY2026 P7 · ERP quote moved"
     assert item["supersedes"] is None

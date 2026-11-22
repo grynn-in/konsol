@@ -145,7 +145,7 @@ def test_setup_gap_desk_paths_pass_through():
 
 def test_period_screens_map_to_the_nearest_desk_destination():
     rows = _by_id(R.rows(_close_lead_payload()))
-    assert rows["rates:2025-07"]["open"] == "/desk/group-exchange-rate?fiscal_year=2025&fiscal_period=7"
+    assert rows["rates:2025-07"]["open"] == "/desk/rate-sheet?fiscal_year=2025&fiscal_period=7"
     assert rows["tbs-waiting:2025-07"]["open"] == "/desk/trial-balance-submission?fiscal_year=2025&fiscal_period=7"
     assert rows["checks-waiting:2025-07"]["open"] == "/desk/assertion-run?fiscal_year=2025&fiscal_period=7"
     # #419: Close period is in the Period Close report's Actions menu.

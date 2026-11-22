@@ -4,10 +4,8 @@ epm_staging.group_exchange_rates keeps its shape and name. An approved
 Statutory sheet publishes Average and Closing per pair at its period under the
 actuals set; an approved Constant sheet publishes both types at its one rate
 for every published period of its year under CONSTANT; `document` is the sheet
-name. Until Group Exchange Rate is retired (T26) a site may hold GER rows and
-no sheets, so the publish is the union: a sheet row wins over the GER row for
-the same (from, to, fy, fp, rate_type, rate_set), and a site with no sheets
-publishes exactly what it published before.
+name. The approved sheets are the whole set: Group Exchange Rate is retired
+(konsol#592 T26), so a site with no approved sheet publishes an empty table.
 
 group_rates runs against a stub frappe, a stub MariaDB connection and a stub
 ClickHouse; nothing here needs a site."""
@@ -25,22 +23,6 @@ SHADOW = MAIN + "__publishing"
 
 
 # -- fixtures ------------------------------------------------------------------------
-
-def _ger(name, frm, to, fy, fp, rate_type, quote, per, rate_set="ACTUAL", modified=None):
-    return types.SimpleNamespace(name=name, to_currency=to, from_currency=frm, fiscal_year=fy,
-                                 fiscal_period=fp, rate_type=rate_type, quote=quote, quoted_per=per,
-                                 rate_set=rate_set, modified=modified)
-
-
-GER = [
-    _ger("GER-2099-12-JPY-USD-Closing-01", "JPY", "USD", 2099, 12, "Closing", 0.6607, "100",
-         modified=datetime.datetime(2099, 12, 31, 9, 0, 0)),
-    _ger("GER-2099-12-JPY-USD-Average-01", "JPY", "USD", 2099, 12, "Average", 0.65, "100"),
-    _ger("GER-2099-12-VND-USD-Closing-01", "VND", "USD", 2099, 12, "Closing", 0.394, "10000",
-         rate_set="BUDGET_2027"),
-    _ger("GER-2099-11-EUR-USD-Closing-01", "EUR", "USD", 2099, 11, "Closing", 1.08, "1"),
-]
-
 
 def _cal():
     """FY2099: Opening P0, Regular P1..P12, Closing P13."""
@@ -123,7 +105,7 @@ def _load(frappe):
     return module
 
 
-def _publisher(ger=(), sheets=(), sheet_rows=(), calendar=None, actuals=("ACTUAL",)):
+def _publisher(sheets=(), sheet_rows=(), calendar=None, actuals=("ACTUAL",)):
     """(rules, clickhouse stub, record): the publish's own connection returns
     only what its WHERE asks for, so a draft or a cancelled sheet reaches the
     publish only if the query lets it."""
@@ -146,9 +128,6 @@ def _publisher(ger=(), sheets=(), sheet_rows=(), calendar=None, actuals=("ACTUAL
             assert as_dict, query
             record["db"].append("fresh read")
             record["reads"].append(query)
-            if "`tabGroup Exchange Rate`" in query:
-                assert "docstatus = 1" in query
-                return list(ger)
             if "`tabRate Sheet Row`" in query:
                 assert re.search(r"\bs\.docstatus = 1\b", query), query
                 approved = {s["name"] for s in sheets if s["docstatus"] == 1}
@@ -206,25 +185,21 @@ def _key(row):
     return (row[1], row[0], row[2], row[3], row[4], row[7])
 
 
-# -- a site with no sheets: unchanged ------------------------------------------------------
+# -- the swap ----------------------------------------------------------------------------------
 
-def test_a_ger_only_site_publishes_exactly_what_it_did_before():
-    """The 8069 A/B migrates and compares: with no sheets the union is today's
-    table, row for row, and the INSERT is the same statement."""
-    rules, ch, record = _publisher(ger=GER)
-    assert _publish(rules, ch) == len(GER)
-    before = rules.published_rows(GER)   # today's GER-only rows
-    assert _inserted(record) == before
-    columns = ", ".join(rules.PUBLISH_COLUMNS)
-    expected = (f"INSERT INTO {SHADOW} ({columns}) VALUES "
-                + ", ".join("(" + ", ".join(rules._ch_literal(v) for v in row) + ")" for row in before))
-    assert [q for q in record["ch"] if q.startswith("INSERT")] == [expected]
-    assert record["stamped"] == [(MAIN, len(GER), "2099-12-31 09:00:00")]
-    assert record["failed"] == []
+def test_a_site_with_no_approved_sheet_publishes_an_empty_set():
+    """Only the sheets are read: the calendar and the rows are not, and the
+    swap still runs, so a cancelled last sheet leaves the warehouse."""
+    rules, ch, record = _publisher()
+    assert _publish(rules, ch) == 0
+    assert len(record["reads"]) == 1 and "`tabRate Sheet`" in record["reads"][0]
+    assert _inserted(record) == [] and not any(q.startswith("INSERT") for q in record["ch"])
+    assert f"EXCHANGE TABLES {MAIN} AND {SHADOW}" in record["ch"]
+    assert record["stamped"] == [(MAIN, 0, None)] and record["failed"] == []
 
 
 def test_the_publish_still_swaps_the_whole_set_in_one_at_a_time():
-    rules, ch, record = _publisher(ger=GER, sheets=[STAT], sheet_rows=STAT_ROWS)
+    rules, ch, record = _publisher(sheets=[STAT], sheet_rows=STAT_ROWS)
     _publish(rules, ch)
     assert record["db"][0] == "lock" and record["db"][-1] == "release"
     assert record["db"][-2] == "fresh close" and set(record["db"][1:-2]) == {"fresh read"}, \
@@ -255,7 +230,7 @@ def test_the_statutory_set_is_whatever_set_is_flagged_actuals():
 
 
 def test_no_actuals_set_fails_the_publish_visibly_and_keeps_the_old_table():
-    rules, ch, record = _publisher(ger=GER, sheets=[STAT], sheet_rows=STAT_ROWS, actuals=())
+    rules, ch, record = _publisher(sheets=[STAT], sheet_rows=STAT_ROWS, actuals=())
     assert _publish(rules, ch) is None
     assert [f[:2] for f in record["failed"]] == [(MAIN, "publish_failed")]
     assert "Is Actuals" in record["failed"][0][2]
@@ -288,38 +263,31 @@ def test_drafts_and_cancelled_sheets_publish_nothing():
     draft = _sheet("RS-S-2099-11", "Statutory", 2099, 11, docstatus=0)
     cancelled = _sheet("RS-C-2099", "Constant", 2099, docstatus=2)
     rows = [_srow("RS-S-2099-11", "JPY", "USD", 0.7, 0.7, "100")] + CONST_ROWS
-    rules, ch, record = _publisher(ger=GER, sheets=[draft, cancelled], sheet_rows=rows)
-    assert _publish(rules, ch) == len(GER)
-    assert _inserted(record) == rules.published_rows(GER), "only the GER rows: no sheet is approved"
+    rules, ch, record = _publisher(sheets=[draft, cancelled], sheet_rows=rows)
+    assert _publish(rules, ch) == 0
+    assert _inserted(record) == [], "no sheet is approved"
 
 
-def test_the_union_ignores_a_sheet_that_is_not_approved_even_if_handed_one():
+def test_a_sheet_that_is_not_approved_publishes_nothing_even_if_handed_one():
     rules, _, _ = _publisher()
     draft = dict(STAT, docstatus=0)
-    rows = rules.union_rows(GER, [draft], STAT_ROWS, _cal(), "ACTUAL")
-    assert rows == rules.published_rows(GER)
+    assert rules.sheet_published_rows([draft], STAT_ROWS, _cal(), "ACTUAL") == []
 
 
-# -- a mixed site: the sheet wins ---------------------------------------------------------------
+# -- both bases ------------------------------------------------------------------------------
 
-def test_a_mixed_site_the_sheet_wins_its_keys_and_ger_keeps_the_rest():
-    rules, ch, record = _publisher(ger=GER, sheets=[STAT, CONST], sheet_rows=STAT_ROWS + CONST_ROWS)
+def test_statutory_and_constant_sheets_publish_side_by_side_one_row_per_key():
+    rules, ch, record = _publisher(sheets=[STAT, CONST], sheet_rows=STAT_ROWS + CONST_ROWS)
     _publish(rules, ch)
     rows = _inserted(record)
     by_key = {}
     for r in rows:
         assert _key(r) not in by_key, f"one row per key: {_key(r)}"
         by_key[_key(r)] = r
-    # the Statutory sheet covers both JPY->USD GER rows at FY2099 P12 ACTUAL
     assert by_key[("JPY", "USD", 2099, 12, "Closing", "ACTUAL")][5:7] == [0.0071, "RS-S-2099-12"]
     assert by_key[("JPY", "USD", 2099, 12, "Average", "ACTUAL")][5:7] == [0.007, "RS-S-2099-12"]
-    # GER rows for keys no sheet covers stay, in their own set
-    assert by_key[("VND", "USD", 2099, 12, "Closing", "BUDGET_2027")][6] == "GER-2099-12-VND-USD-Closing-01"
-    assert by_key[("EUR", "USD", 2099, 11, "Closing", "ACTUAL")][6] == "GER-2099-11-EUR-USD-Closing-01", \
-        "a CONSTANT row is another rate set: it does not cover an ACTUAL GER row"
     assert by_key[("EUR", "USD", 2099, 11, "Closing", "CONSTANT")][6] == "RS-C-2099"
-    assert not any(r[6].startswith("GER-2099-12-JPY") for r in rows), "a covered GER row is skipped"
-    assert len(rows) == 2 + 26 + 2   # 2 statutory, 26 constant, VND and EUR from GER
+    assert len(rows) == 2 + 26   # 2 statutory, 26 constant
 
 
 def test_a_superseded_sheet_gives_way_to_the_sheet_that_supersedes_it():
@@ -348,12 +316,12 @@ def test_an_approved_sheet_the_rules_refuse_fails_the_publish_by_name():
     """A calendar edited after approval (P12 no longer declared): nothing is
     published from a sheet the rules refuse, and the old set stays."""
     cal = [r for r in _cal() if r["period"] != 12]
-    rules, ch, record = _publisher(ger=GER, sheets=[STAT], sheet_rows=STAT_ROWS, calendar=cal)
+    rules, ch, record = _publisher(sheets=[STAT], sheet_rows=STAT_ROWS, calendar=cal)
     assert _publish(rules, ch) is None
     assert "RS-S-2099-12" in record["failed"][0][2]
     assert not any(q.startswith("EXCHANGE") for q in record["ch"])
 
 
-def test_the_ger_branch_is_marked_for_t26():
+def test_the_publish_reads_only_the_sheets():
     src = open(RULES).read()
-    assert "T26" in src, "the GER branch of the union names the task that removes it"
+    assert "union_rows" not in src and "_APPROVED_SQL" not in src, "the union went with the retired doctype"

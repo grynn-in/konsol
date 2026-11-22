@@ -346,7 +346,7 @@ def test_record_backfill_refuses_a_malformed_event():
 
 def test_period_of_a_doc_with_period_fields():
     writer, _ = _load(_Site())
-    for doctype in ("Group Exchange Rate", "IC Balance", "Consolidation Journal",
+    for doctype in ("IC Balance", "Consolidation Journal",
                     "Trial Balance Submission", "TB Exception"):
         doc = _doc(doctype, fiscal_year="2025", fiscal_period="7")
         assert writer.period_of(doc) == (2025, 7), doctype
@@ -434,7 +434,7 @@ def test_entity_of_each_approval_doctype():
     assert writer.entity_of(_doc("Historical Equity Rate", data_area_id="ZZ02")) == "ZZ02"
     assert writer.entity_of(_doc("Business Combination", acquired_entity="ZZ03")) == "ZZ03"
     assert writer.entity_of(_doc("Business Disposal", disposed_entity="ZZ04")) == "ZZ04"
-    for doctype in ("Group Exchange Rate", "Rate Sheet", "Consolidation Journal", "IC Balance"):
+    for doctype in ("Rate Sheet", "Consolidation Journal", "IC Balance"):
         assert writer.entity_of(_doc(doctype, data_area_id="ZZ09",
                                      selling_entity="ZZ05", buying_entity="ZZ06")) is None, doctype
 

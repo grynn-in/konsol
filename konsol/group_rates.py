@@ -1,17 +1,14 @@
-"""Governed group exchange rates (konsol#103): the rules around Group Exchange Rate.
+"""Governed group exchange rates (konsol#103): the rules around Rate Sheet.
 
-Decided by the user on 13 Sep 2026. Group finance owns one rate table in konsol.
-The ERP feed is demoted to a proposal: ``prefill_from_erp`` reads what the ERP
-quotes for a period and creates DRAFT rates, and a person approves (submits)
-them. Rates lock when their period closes, and a period cannot close while a
-currency its ledgers translate lacks an approved Closing or Average rate into
-the group reporting currency (``assert_rates_complete``, called from Period
-Status).
-
-``adopt_erp_rates`` is the one-time upgrade: it records, as approved governed
-rows authored by the system and labelled "Adoption", the rates the warehouse
-already translated each period at, so the translation that reads only
-governed rates (konsolidat#93) gives the same figures on its first build.
+Decided by the user on 13 Sep 2026. Group finance owns the group's rates in
+konsol, held on Rate Sheets since konsol#592 (Deepak Pai, 22 Nov 2026): one
+Statutory sheet per period for the actuals, one Constant sheet per year for
+budgets. The ERP feed is demoted to a proposal: ``prefill_from_erp`` reads
+what the ERP quotes for a period and fills a DRAFT Statutory sheet, and a
+person approves (submits) it. Rates lock when their period closes, and a
+period cannot close while a currency its ledgers translate lacks an approved
+Closing or Average rate into the group reporting currency
+(``assert_rates_complete``, called from Period Status).
 
 A rate is entered as a quote per 1, 10, 100, 1,000 or 10,000 units of the
 from-currency (0.6607 USD per 100 JPY) and published as its true rate
@@ -52,12 +49,10 @@ from konsol.close import close_policy_model
 from konsol.fx_reference import REFERENCE_CURRENCY, usd_reference  # noqa: F401 — the one rule
 from konsol.period_status import PeriodNotDeclared, assert_open, period_dates  # noqa: F401 — surfaced for callers
 
-DOCTYPE = "Group Exchange Rate"
 RATE_SET_DOCTYPE = "Rate Set"
 RATE_TYPES = ("Closing", "Average")
 PREFILL_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
 PREFILL_SOURCE = "ERP pre-fill"
-ADOPTION_SOURCE = "Adoption"
 
 #: The ERP adapter's rate-type names, for the pre-fill only: which ERP rate
 #: types may propose each governed rate type, in order of preference. The
@@ -81,7 +76,7 @@ QUOTED_PER = (1, 10, 100, 1000, 10000)
 #: MariaDB keeps 9 decimal places. A quote must keep at least this many
 #: significant digits there (0.0001 or more); a bigger Quoted per fixes it.
 MIN_SIGNIFICANT_DIGITS = 6
-#: The pre-fill and the adoption aim higher: the smallest Quoted per that puts
+#: The pre-fill aims higher: the smallest Quoted per that puts
 #: the quote at 0.1 or more (9 significant digits). JPY -> USD is per 100.
 PREFERRED_MIN_QUOTE = 0.1
 
@@ -149,16 +144,6 @@ def quote_label(quote, quoted_per, from_currency, to_currency):
     """The quote as a person reads it: "0.6607 USD per 100 JPY"."""
     per = int(quoted_per or 1)
     return f"{float(quote or 0):.9g} {to_currency} per {f'{per:,} ' if per > 1 else ''}{from_currency}"
-
-
-def published_rows(docs):
-    """epm_staging.group_exchange_rates rows for approved rates: (to, from,
-    fiscal year, fiscal period, rate type, TRUE rate, document, rate set). The
-    one place a quote becomes a rate; Float64 in the warehouse keeps what
-    MariaDB's 9 decimal places can't. Every set is published; the warehouse
-    selects by rate_set (konsol#348)."""
-    return [[d.to_currency, d.from_currency, int(d.fiscal_year), int(d.fiscal_period), d.rate_type,
-             true_rate(d.quote, d.quoted_per), d.name, d.rate_set] for d in docs]
 
 
 def usd_references(codes):
@@ -377,72 +362,6 @@ def describe_quotes(quotes, fiscal_year, fiscal_period, from_currency=None, to_c
     return note
 
 
-def check_references(actions, refs):
-    """(actions, unset): the currencies the adoption would ENTER with no
-    magnitude reference (``unset``, sorted), and the actions with every skip
-    of a currency that has none saying so. Pure.
-
-    Only an "adopt" action enters a rate, so only its two currencies need a
-    reference (joint re-review of #174): a currency translated at the 1.0
-    parity fallback, at two rates, or already governed is skipped whatever
-    its reference, and must not stop the upgrade."""
-    missing = {c for c, v in refs.items() if v is None}
-    unset = sorted({c for a in actions if a[0] == "adopt" for c in a[1][:2]} & missing)
-    out = []
-    for action in actions:
-        lacking = [c for c in action[1][:2] if c in missing]
-        if action[0] == "skip" and lacking:
-            action = ("skip", action[1], f"{action[2]}; no magnitude reference for {' and '.join(lacking)} either")
-        out.append(action)
-    return out, unset
-
-
-def no_reference_message(unset, site="<site>"):
-    """What to do about currencies the adoption would enter with no reference."""
-    return (f"konsol#103 adoption: no magnitude reference (ISO Currency usd_log10) for {', '.join(unset)}, "
-            "which the adoption would enter; every such rate would be refused. "
-            + " ".join(f"Create or edit ISO Currency {c}, set USD Reference (log10)." for c in unset)
-            + " Then rerun `bench migrate` (or, once upgraded: " + RECOVERY_COMMAND.format(site=site) + ").")
-
-
-def plan_adoption(used, governed, quote_rows_by_period, today):
-    """The one-time adoption, as a list of actions. Pure.
-
-    ``used``: (from, to, fiscal_year, fiscal_period, [closing rates], [average
-    rates]) as gold_consolidated_trial_balance translated them. ``governed``:
-    keys (from, to, fy, fp, rate_type) that already have an approved rate.
-    Returns [("adopt", key, rate, erp_rate, note) | ("skip", key, reason)],
-    true rates "to per 1 from" (``choose_quoted_per`` picks the unit to enter
-    them per).
-    """
-    actions = []
-    for f, t, fy, fp, closing, average in used:
-        fy, fp = int(fy), int(fp)
-        for rate_type, rates in (("Closing", closing), ("Average", average)):
-            key = (f, t, fy, fp, rate_type)
-            distinct = sorted({_sig(r) for r in rates})
-            if key in governed:
-                actions.append(("skip", key, "already has an approved group rate"))
-            elif len(distinct) != 1:
-                actions.append(("skip", key, f"translated at more than one rate {distinct}; needs a person"))
-            elif distinct[0] == 1.0:
-                actions.append(("skip", key, "translated at the 1.0 parity fallback (no ERP quote); "
-                                             "needs a person"))
-            else:
-                rate = distinct[0]
-                quotes = resolve_quotes(quote_rows_by_period.get((fy, fp), []), f, t, rate_type)
-                match = next((q for q in quotes if abs(q["rate"] - rate) <= 1e-9 * rate), None)
-                origin = (f"the ERP feed's {match['source']} {match['erp_type']} quote, valid from "
-                          f"{match['valid_from']} ({match['how']})" if match else
-                          "a rate that matches no current ERP quote")
-                note = (f"Adopted at the konsol#103 upgrade on {today}: the {rate_type} rate "
-                        f"FY{fy} P{fp} was already translated at, {origin}. Authored by the system, "
-                        "not reviewed by a person. Correct it with a Reason for Change (while the period is "
-                        "open) if group finance sets another.")
-                actions.append(("adopt", key, rate, match["rate"] if match else None, note))
-    return actions
-
-
 # -- the warehouse ------------------------------------------------------------------
 
 def _ch_rows(sql, params=None):
@@ -596,8 +515,6 @@ def _ch_literal(value):
     return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-_APPROVED_SQL = ("SELECT name, to_currency, from_currency, fiscal_year, fiscal_period, rate_type, quote, "
-                 "quoted_per, rate_set, modified FROM `tabGroup Exchange Rate` WHERE docstatus = 1 ORDER BY name")
 #: konsol#592 T10: the approved Rate Sheets, their rows and the declared
 #: calendar (a Constant sheet publishes every published period of its year).
 _SHEETS_SQL = ("SELECT name, rate_basis, fiscal_year, fiscal_period, supersedes, docstatus, modified "
@@ -628,23 +545,22 @@ def _fresh_db():
 
 
 def _read_approved():
-    """What the publish reads, as committed right now: the approved Group
-    Exchange Rates, the approved Rate Sheets with their rows, and the declared
-    calendar (the last only when a sheet is approved). Read on a connection of
+    """What the publish reads, as committed right now: the approved Rate
+    Sheets with their rows, and the declared calendar (the last two only when
+    a sheet is approved). Read on a connection of
     its own and closed at once: the snapshot starts at the first read, so the
     reads agree with each other (REPEATABLE READ), and no lock outlives it.
     The caller's transaction is untouched, so a snapshot it already took
     cannot hide a rate, and a lock it would have held cannot block an approval.
-    Returns (ger_docs, sheets, sheet_rows, calendar_rows)."""
+    Returns (sheets, sheet_rows, calendar_rows)."""
     db = _fresh_db()
     try:
-        docs = db.sql(_APPROVED_SQL, as_dict=True)
         sheets = db.sql(_SHEETS_SQL, as_dict=True)
         if not sheets:
-            return docs, [], [], []
+            return [], [], []
         rows = db.sql(_SHEET_ROWS_SQL, as_dict=True)
         calendar = db.sql(_CALENDAR_SQL, as_dict=True)
-        return docs, sheets, rows, calendar
+        return sheets, rows, calendar
     finally:
         db.close()
 
@@ -701,25 +617,6 @@ def sheet_published_rows(sheets, sheet_rows, calendar_rows, actuals_code):
     return out
 
 
-def union_rows(ger_docs, sheets, sheet_rows, calendar_rows, actuals_code):
-    """Everything the publish writes: the approved sheets' rows, then every
-    approved Group Exchange Rate row for a key no sheet covers.
-
-    The key is (from, to, fiscal year, fiscal period, rate type, rate set):
-    a sheet row wins over the GER row for the same key, and that GER row is
-    skipped. A site with no approved sheet publishes exactly
-    ``published_rows(ger_docs)``, as before.
-
-    The GER branch is the transition: Group Exchange Rate is retired by T26
-    (patches/retire_group_exchange_rate.py, konsol#592), and this union goes
-    with it."""
-    out = sheet_published_rows(sheets, sheet_rows, calendar_rows, actuals_code)
-    covered = {_row_key(r) for r in out}
-    # T26: the GER branch below is removed with Group Exchange Rate.
-    out.extend(r for r in published_rows(ger_docs) if _row_key(r) not in covered)
-    return out
-
-
 def publish_rates(force=False):
     """Publish every approved rate as its TRUE rate, all at once and one publish
     at a time (review of #174: TRUNCATE + batched INSERTs could interleave, so
@@ -761,12 +658,12 @@ def publish_rates(force=False):
         return None
     shadow = PUBLISH_TABLE + "__publishing"
     try:
-        docs, sheets, sheet_rows, calendar = _read_approved()
+        sheets, sheet_rows, calendar = _read_approved()
         # The actuals set is read only when a Statutory sheet needs it: a site
-        # with no sheets publishes as before, whatever its Rate Set flags.
+        # with only Constant sheets publishes whatever its Rate Set flags.
         actuals = (actuals_rate_set() if any(_get(s, "rate_basis") == rate_sheet_model.STATUTORY
                                              for s in sheets) else None)
-        rows = union_rows(docs, sheets, sheet_rows, calendar, actuals)
+        rows = sheet_published_rows(sheets, sheet_rows, calendar, actuals)
         execute(f"DROP TABLE IF EXISTS {shadow}")
         execute(f"CREATE TABLE {shadow} AS {PUBLISH_TABLE}")
         columns = ", ".join(PUBLISH_COLUMNS)
@@ -775,7 +672,7 @@ def publish_rates(force=False):
                     + ", ".join("(" + ", ".join(_ch_literal(v) for v in row) + ")" for row in rows[i:i + 1000]))
         execute(f"EXCHANGE TABLES {PUBLISH_TABLE} AND {shadow}")
         execute(f"DROP TABLE IF EXISTS {shadow}")
-        modified = [m for m in [d.modified for d in docs] + [_get(x, "modified") for x in sheets] if m]
+        modified = [m for m in (_get(x, "modified") for x in sheets) if m]
         _stamp_watermark(PUBLISH_TABLE, len(rows),
                          max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None)
         return len(rows)
@@ -785,27 +682,6 @@ def publish_rates(force=False):
         return None
     finally:
         frappe.db.sql("SELECT RELEASE_LOCK(%s)", (lock,))
-
-
-# -- governed rows --------------------------------------------------------------------
-
-def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal_period, rate_set):
-    """(rate "to per 1 from", label) of the latest approved rate for the same
-    key in an earlier period of the same Rate Set, or None. The last approved
-    one, so a gap (a period with no rate) compares with the rate before it. A
-    budget set's rate is never the actuals' previous rate (konsol#348)."""
-    rows = frappe.db.sql(
-        "SELECT name, quote, quoted_per, fiscal_year, fiscal_period FROM `tabGroup Exchange Rate` "
-        "WHERE to_currency = %s AND from_currency = %s AND rate_type = %s AND rate_set = %s "
-        "AND docstatus = 1 AND (fiscal_year < %s OR (fiscal_year = %s AND fiscal_period < %s)) "
-        "ORDER BY fiscal_year DESC, fiscal_period DESC LIMIT 1",
-        (to_currency, from_currency, rate_type, rate_set, int(fiscal_year), int(fiscal_year),
-         int(fiscal_period)),
-    )
-    if not rows:
-        return None
-    name, quote, per, fy, fp = rows[0]
-    return true_rate(quote, per), f"FY{fy} P{fp} ({name})"
 
 
 # -- the close gate -------------------------------------------------------------------
@@ -841,9 +717,7 @@ def approved_quotes(fiscal_year, fiscal_period, rate_type, lock=False):
     From the approved Statutory Rate Sheet of the period: the row's Average or
     Closing quote over its Quoted Per, so the rate is the same true rate the
     publish writes. A row without the asked quote is left out, as the gate
-    counts it. During the transition the approved Group Exchange Rate rows of
-    the actuals set are the union: the sheet wins for a pair it covers.
-    # GER branch goes with T26 (retire_group_exchange_rate).
+    counts it.
 
     Plain read by default; ``lock=True`` reads LOCK IN SHARE MODE, as
     _approved_keys does. A Rate Type other than Closing or Average raises."""
@@ -851,13 +725,6 @@ def approved_quotes(fiscal_year, fiscal_period, rate_type, lock=False):
         raise ValueError(f"Rate type must be one of {', '.join(RATE_TYPES)}, not {rate_type!r}.")
     share = " LOCK IN SHARE MODE" if lock else ""
     out = {}
-    # T26: the Group Exchange Rate branch goes with the doctype.
-    for f, t, quote, per in frappe.db.sql(
-            "SELECT from_currency, to_currency, quote, quoted_per FROM `tabGroup Exchange Rate` "
-            "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s AND rate_type = %s "
-            "AND rate_set = %s ORDER BY modified" + share,
-            (1, int(fiscal_year), int(fiscal_period), rate_type, actuals_rate_set())):
-        out[(f, t)] = true_rate(quote, per)
     for f, t, per, average, closing in _statutory_rows(fiscal_year, fiscal_period, 1, share):
         quote = average if rate_type == "Average" else closing
         if _wants(quote):
@@ -868,14 +735,10 @@ def approved_quotes(fiscal_year, fiscal_period, rate_type, lock=False):
 def draft_pairs(fiscal_year, fiscal_period, rate_type):
     """The ``(from, to)`` pairs the period has a DRAFT actuals rate for
     (konsol#592 T19), so the close grid can say "Awaiting approval": a draft
-    Statutory sheet row carrying the quote, and (until T26) a draft Group
-    Exchange Rate row."""
+    Statutory sheet row carrying the quote."""
     if rate_type not in RATE_TYPES:
         raise ValueError(f"Rate type must be one of {', '.join(RATE_TYPES)}, not {rate_type!r}.")
-    out = {(f, t) for f, t in frappe.db.sql(
-        "SELECT from_currency, to_currency FROM `tabGroup Exchange Rate` "
-        "WHERE docstatus = 0 AND fiscal_year = %s AND fiscal_period = %s AND rate_type = %s AND rate_set = %s",
-        (int(fiscal_year), int(fiscal_period), rate_type, actuals_rate_set()))}  # T26
+    out = set()
     for f, t, _per, average, closing in _statutory_rows(fiscal_year, fiscal_period, 0):
         if _wants(average if rate_type == "Average" else closing):
             out.add((f, t))
@@ -887,16 +750,12 @@ def _approved_keys(fiscal_year, fiscal_period, lock=False, rate_set=None):
     ``rate_set`` (the set flagged Is Actuals when not given, konsol#348; a
     budget set's rates do not satisfy the actuals' close gate).
 
-    Two sources (konsol#592 T11):
-
-    * the approved Statutory Rate Sheet of the period: one sheet, both quotes
-      on a row, so a row with an Average quote covers Average and a row with a
-      Closing quote covers Closing. A sheet is an actuals rate: it counts only
-      for the actuals set, and a Constant sheet never counts (it is a year's
-      planning rate, not the period's);
-    * the approved Group Exchange Rate rows, which still count while GER
-      exists, as in publish_rates. T26 (retire_group_exchange_rate) removes
-      this branch.
+    From the approved Statutory Rate Sheet of the period (konsol#592 T11):
+    one sheet, both quotes on a row, so a row with an Average quote covers
+    Average and a row with a Closing quote covers Closing. A sheet is an
+    actuals rate: it counts only for the actuals set, so any other set has
+    no approved key, and a Constant sheet never counts (it is a year's
+    planning rate, not the period's).
 
     Plain read by default: this is also called on every read of the close
     app's My work screen (close.mywork_api), where LOCK IN SHARE MODE
@@ -919,13 +778,7 @@ def _approved_keys(fiscal_year, fiscal_period, lock=False, rate_set=None):
                 keys.add((f, t, "Average"))
             if _wants(closing):
                 keys.add((f, t, "Closing"))
-    # T26: the Group Exchange Rate branch goes with the doctype.
-    rows = frappe.db.sql(
-        "SELECT from_currency, to_currency, rate_type FROM `tabGroup Exchange Rate` "
-        "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s AND rate_set = %s" + share,
-        (1, int(fiscal_year), int(fiscal_period), rate_set),
-    )
-    return keys | {(f, t, rt) for f, t, rt in rows}
+    return keys
 
 
 def missing_rates(fiscal_year, fiscal_period, pairs=None, lock=False, rate_set=None):
@@ -1223,119 +1076,3 @@ def duplicate_previous(rate_basis, fiscal_year, fiscal_period=None):
     finally:
         frappe.flags[DUPLICATE_FLAG] = False
     return {"name": doc.name, "copied_from": plan["copied_from"]}
-
-
-# -- the one-time adoption -------------------------------------------------------------------
-
-def translated_rates():
-    """The rates gold_consolidated_trial_balance translated each foreign
-    currency at, per group reporting currency and period."""
-    return _ch_rows(
-        "SELECT accounting_currency, reporting_currency, fiscal_year, fiscal_period, "
-        "groupUniqArray(closing_rate), groupUniqArray(average_rate) "
-        "FROM epm_gold.gold_consolidated_trial_balance "
-        "WHERE accounting_currency != '' AND reporting_currency != '' "
-        "AND accounting_currency != reporting_currency "
-        "GROUP BY accounting_currency, reporting_currency, fiscal_year, fiscal_period "
-        "ORDER BY fiscal_year, fiscal_period, accounting_currency, reporting_currency")
-
-
-RECOVERY_COMMAND = "bench --site {site} execute konsol.group_rates.adopt_erp_rates"
-
-
-def adopt_erp_rates(dry_run=False):
-    """Adopt, once, the rates each period was already translated at (konsol#103).
-
-    Run by the upgrade patch; safe to run again (a key that has an approved
-    rate is skipped), and ``dry_run`` prints the plan without writing:
-
-        bench --site <site> execute konsol.group_rates.adopt_erp_rates --kwargs "{'dry_run': 1}"
-
-    Every period gold_consolidated_trial_balance holds is adopted, open and
-    closed: the translation that reads only governed rates must give the same
-    figures on its first build. Each row is approved (submitted) by the system,
-    labelled source "Adoption" with a note saying where the rate came from, and
-    may be replaced by group finance while its period is open. A closed
-    period's row is locked like any other. What was translated at the 1.0
-    parity fallback, or at two rates, is not adopted: it is printed as needing
-    a person, and the translation will name it until one is approved.
-
-    A warehouse with nothing built (UNKNOWN_TABLE, or UNKNOWN_DATABASE before
-    epm_gold exists) has nothing to adopt. Any other failure to read it, a
-    ClickHouse that isn't up included, fails loudly and names the command that
-    finishes the job once it is.
-    """
-    if frappe.session.user != "Administrator":
-        frappe.throw("The rate adoption runs as the system (Administrator) only.", frappe.PermissionError)
-    try:
-        used = translated_rates()
-        periods = sorted({(int(r[2]), int(r[3])) for r in used})
-        quotes = {p: erp_quote_rows(period_start(*p)) for p in periods}
-    except Exception as e:  # noqa: BLE001
-        if _not_built(e):
-            print("konsol#103 adoption: the warehouse has never built a consolidated trial balance "
-                  f"({', '.join(sorted(ch_error_names(e)))}); nothing to adopt.")
-            return {"adopted": [], "skipped": [], "refused": []}
-        site = getattr(getattr(frappe, "local", None), "site", None) or "<site>"
-        raise RuntimeError(
-            f"konsol#103 adoption could not read the warehouse ({type(e).__name__}: {str(e)[:300]}). "
-            "Nothing was adopted, and the governed translation will refuse every period it translated "
-            "until this runs. Once ClickHouse is up, run: " + RECOVERY_COMMAND.format(site=site)
-            + " (add --kwargs \"{'dry_run': 1}\" to preview).") from e
-    rate_set = actuals_rate_set()  # what a period was translated at is an actuals rate (konsol#348)
-    governed = {(r.from_currency, r.to_currency, int(r.fiscal_year), int(r.fiscal_period), r.rate_type)
-                for r in frappe.get_all(DOCTYPE, filters={"docstatus": 1, "rate_set": rate_set},
-                                        limit_page_length=0,
-                                        fields=["from_currency", "to_currency", "fiscal_year",
-                                                "fiscal_period", "rate_type"])}
-    actions = plan_adoption(used, governed, quotes, str(frappe.utils.today()))
-    actions, unset = check_references(actions, usd_references({c for a in actions for c in a[1][:2]}))
-    if unset:
-        message = no_reference_message(unset, getattr(getattr(frappe, "local", None), "site", None) or "<site>")
-        if not dry_run:
-            # Nothing is written, and the patch runs again at the next migrate.
-            raise RuntimeError(message + " Nothing was adopted.")
-        print(f"konsol#103 adoption (dry run): {message}")
-
-    summary = {"adopted": [], "skipped": [], "refused": []}
-    frappe.flags.konsol_adopting_rates = True
-    try:
-        for action in actions:
-            key = action[1]
-            label = f"{key[0]} → {key[1]} FY{key[2]} P{key[3]} {key[4]}"
-            if action[0] == "skip":
-                summary["skipped"].append(f"{label}: {action[2]}")
-                continue
-            _, _, rate, erp_rate, note = action
-            if dry_run:
-                summary["adopted"].append(f"{label} = {rate:.9g} (dry run)")
-                continue
-            quote, per = choose_quoted_per(rate)
-            frappe.db.savepoint("konsol_rate_adoption")
-            try:
-                doc = frappe.get_doc({
-                    "doctype": DOCTYPE, "rate_set": rate_set, "from_currency": key[0], "to_currency": key[1],
-                    "fiscal_year": key[2], "fiscal_period": key[3], "rate_type": key[4],
-                    "quote": quote, "quoted_per": str(per),
-                    # the ERP quote, per the same unit
-                    "erp_quote": round(erp_rate * per, 9) if erp_rate else None,
-                    "source": ADOPTION_SOURCE, "source_note": note,
-                })
-                doc.insert(ignore_permissions=True)
-                doc.submit()
-            except frappe.ValidationError as e:
-                frappe.db.rollback(save_point="konsol_rate_adoption")
-                frappe.clear_last_message()
-                summary["refused"].append(f"{label}: {e}")
-                continue
-            summary["adopted"].append(f"{label} = {rate:.9g} ({doc.name})")
-    finally:
-        frappe.flags.konsol_adopting_rates = False
-
-    for kind in ("adopted", "skipped", "refused"):
-        for line in summary[kind]:
-            print(f"konsol#103 adoption: {kind}: {line}")
-    print(f"konsol#103 adoption: {len(summary['adopted'])} adopted, {len(summary['skipped'])} skipped, "
-          f"{len(summary['refused'])} refused" + (" (dry run: nothing written)" if dry_run else ""))
-    frappe.logger("konsol").info(f"konsol#103 rate adoption: {json.dumps(summary)}")
-    return summary

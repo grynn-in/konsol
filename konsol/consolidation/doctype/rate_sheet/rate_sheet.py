@@ -7,7 +7,7 @@ year and period are entered and the validity dates derived (P1-Q4 A). The
 rules are in ``konsol.rate_sheet_model``; this controller reads the calendar
 and the other sheets and applies them.
 
-Ported from Group Exchange Rate (group_exchange_rate.py), which this replaces:
+Ported from Group Exchange Rate, which this replaced (retired by konsol#592 T26):
 
 * **Provenance.** A row's Source, its ERP quotes and its Legacy Documents,
   and the sheet's Copied From and Source Note, are read-only in the form
@@ -96,7 +96,7 @@ def _period(basis, period):
 
 class RateSheet(Document):
     #: Published by resync_staging, not a field map: the warehouse's `rate` is
-    #: the true rate (the same table and columns as Group Exchange Rate).
+    #: the true rate (the table and columns Group Exchange Rate published).
     CH_STAGING_TABLE = "epm_staging.group_exchange_rates"
     CH_STAGING_COLUMNS = ["to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type",
                           "rate", "document", "rate_set"]
@@ -104,7 +104,7 @@ class RateSheet(Document):
     @classmethod
     def resync_staging(cls, force=False):
         """Publish every approved sheet (group_rates.publish_rates, T10).
-        reconcile_all repairs the table through this once GER is retired."""
+        reconcile_all repairs the table through this."""
         from konsol import group_rates
 
         return group_rates.publish_rates(force=force)

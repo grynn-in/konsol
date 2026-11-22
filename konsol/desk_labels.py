@@ -25,7 +25,6 @@ LABELS = {
     "Trial Balance Submission": "Trial Balance Submissions",
     "TB Exception": "TB Exceptions",
     # --- Close: rates ----------------------------------------------------
-    "Group Exchange Rate": "Group Exchange Rates",
     "Historical Equity Rate": "Historical Equity Rates",
     "Rate Sheet": "Rate Sheets",
     "Rate Set": "Rate Sets",

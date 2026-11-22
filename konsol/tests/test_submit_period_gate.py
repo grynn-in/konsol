@@ -28,7 +28,7 @@ UNDECLARED = (2001, 1)
 #: tests below check the list against what the controllers actually refuse.
 SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
     "Trial Balance Submission", "Consolidation Journal",
-    "IC Balance", "Group Exchange Rate", "Rate Sheet"})
+    "IC Balance", "Rate Sheet"})
 
 #: Of those, the ones whose every save is refused in a closed period (a trial
 #: balance checks the period in validate): there the draft can only be deleted.
@@ -37,7 +37,7 @@ SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
 #: The submittable doctypes checked against a closed period: every doctype the
 #: old home offered a submit for (read from home_api before R02 deleted it).
 SUBMIT_CANDIDATES = frozenset({
-    "Consolidation Journal", "Group Exchange Rate",
+    "Consolidation Journal",
     "Historical Equity Rate", "IC Balance", "Ownership Period", "Trial Balance Submission",
     "Rate Sheet"})
 

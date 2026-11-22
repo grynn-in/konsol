@@ -488,16 +488,16 @@ def test_preparers_for_no_names_reads_nothing():
 # (frappe/model/document.py:1197), so preparers_for cannot see it; the hook
 # reads Frappe's diff of the pending save instead.
 
-GER_DRAFT = {"quote": 1.1, "from_currency": "EUR"}
+SHEET_DRAFT = {"quote": 1.1, "from_currency": "EUR"}
 
 
 def test_the_close_lead_who_changes_the_quote_while_submitting_is_blocked():
     # Failure path, review M1: red while the hook reads only saved Versions.
     mod, frappe, _ = _load(policy="Blocked")
-    doc = _doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER,
-               before=GER_DRAFT, values=dict(GER_DRAFT, quote=1.5))
+    doc = _doc(doctype="Rate Sheet", name="RS-1", owner=OTHER,
+               before=SHEET_DRAFT, values=dict(SHEET_DRAFT, quote=1.5))
     msg = _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
-    assert "blocks self-approval" in msg and "GER-1" in msg, msg
+    assert "blocks self-approval" in msg and "RS-1" in msg, msg
     assert frappe.events == [] and doc.comments == []
     assert frappe.diffs and frappe.diffs[0][0] is doc.get_doc_before_save(), frappe.diffs
     assert frappe.diffs[0][1] is doc, frappe.diffs
@@ -505,8 +505,8 @@ def test_the_close_lead_who_changes_the_quote_while_submitting_is_blocked():
 
 def test_the_quote_changer_needs_a_reason_under_allowed_with_reason():
     mod, frappe, _ = _load(policy="Allowed with reason")
-    doc = _doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER,
-               before=GER_DRAFT, values=dict(GER_DRAFT, quote=1.5))
+    doc = _doc(doctype="Rate Sheet", name="RS-1", owner=OTHER,
+               before=SHEET_DRAFT, values=dict(SHEET_DRAFT, quote=1.5))
     msg = _raises(lambda: mod.check(doc, "before_submit"), frappe.PermissionError)
     assert "only with a reason" in msg and "konsol." not in msg, msg
     assert frappe.events == [] and doc.comments == []
@@ -514,9 +514,9 @@ def test_the_quote_changer_needs_a_reason_under_allowed_with_reason():
 
 def test_the_quote_changer_with_a_reason_is_recorded_as_self_approved_by_both():
     mod, frappe, _ = _load(policy="Allowed with reason", flags={
-        "konsol_self_approval_reason": {("Group Exchange Rate", "GER-1"): "ZZ fix"}})
-    doc = _doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER,
-               before=GER_DRAFT, values=dict(GER_DRAFT, quote=1.5))
+        "konsol_self_approval_reason": {("Rate Sheet", "RS-1"): "ZZ fix"}})
+    doc = _doc(doctype="Rate Sheet", name="RS-1", owner=OTHER,
+               before=SHEET_DRAFT, values=dict(SHEET_DRAFT, quote=1.5))
     mod.check(doc, "before_submit")
     assert len(doc.comments) == 1, doc.comments
     assert len(frappe.events) == 1, frappe.events
@@ -529,8 +529,8 @@ def test_the_quote_changer_with_a_reason_is_recorded_as_self_approved_by_both():
 def test_a_submit_that_changes_only_docstatus_is_an_approval():
     for policy in ("Blocked", "Allowed with reason", ""):
         mod, frappe, _ = _load(policy=policy)
-        doc = _doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER,
-                   before=GER_DRAFT)
+        doc = _doc(doctype="Rate Sheet", name="RS-1", owner=OTHER,
+                   before=SHEET_DRAFT)
         mod.check(doc, "before_submit")
         assert frappe.diffs, "the pending diff was not read"
         assert [e["kind"] for e in frappe.events] == ["approved"], frappe.events
@@ -714,34 +714,34 @@ def test_a_derived_ownership_period_under_blocked_records_approved_with_exempt_d
 
 def test_approving_a_rate_correction_names_the_rate_it_replaces():
     mod, frappe, _ = _load(policy="Blocked")
-    doc = _doc(doctype="Group Exchange Rate", name="GER-3", owner=OTHER,
-               before=GER_DRAFT, supersedes="GER-1")
+    doc = _doc(doctype="Rate Sheet", name="RS-3", owner=OTHER,
+               before=SHEET_DRAFT, supersedes="RS-1")
     mod.check(doc, "before_submit")
     assert len(frappe.events) == 1, frappe.events
     event = frappe.events[0]
-    assert (event["kind"], event["reference_name"]) == ("approved", "GER-3"), event
+    assert (event["kind"], event["reference_name"]) == ("approved", "RS-3"), event
     assert event["detail"] == {"preparer": OTHER, "preparers": [OTHER], "policy": None,
-                               "exempt": None, "supersedes": "GER-1"}, event
+                               "exempt": None, "supersedes": "RS-1"}, event
 
 
 def test_a_self_approved_rate_correction_names_the_rate_it_replaces():
     mod, frappe, _ = _load(policy="Allowed with reason", flags={
-        "konsol_self_approval_reason": {("Group Exchange Rate", "GER-3"): "ZZ fix"}})
-    doc = _doc(doctype="Group Exchange Rate", name="GER-3", supersedes="GER-1")
+        "konsol_self_approval_reason": {("Rate Sheet", "RS-3"): "ZZ fix"}})
+    doc = _doc(doctype="Rate Sheet", name="RS-3", supersedes="RS-1")
     mod.check(doc, "before_submit")
     assert [e["kind"] for e in frappe.events] == ["self_approved"], frappe.events
     assert frappe.events[0]["detail"] == {
         "preparer": ADMIN, "preparers": [ADMIN], "policy": "Allowed with reason",
-        "exempt": None, "supersedes": "GER-1"}, frappe.events[0]
+        "exempt": None, "supersedes": "RS-1"}, frappe.events[0]
 
 
 def test_a_system_submit_of_a_correction_names_the_rate_it_replaces():
     mod, frappe, _ = _load(policy="Blocked", flags={"in_patch": True})
-    mod.check(_doc(doctype="Group Exchange Rate", name="GER-3", supersedes="GER-1"),
+    mod.check(_doc(doctype="Rate Sheet", name="RS-3", supersedes="RS-1"),
               "before_submit")
     assert [e["detail"] for e in frappe.events] == [{
         "preparer": ADMIN, "preparers": [ADMIN], "policy": None, "exempt": "system",
-        "supersedes": "GER-1"}], frappe.events
+        "supersedes": "RS-1"}], frappe.events
 
 
 def test_an_ownership_period_change_names_the_period_it_replaces():
@@ -757,10 +757,10 @@ def test_an_approval_that_replaces_nothing_has_no_supersedes_key():
     # No new key with None: a plain rate (blank or unset `supersedes`) and a
     # doctype without the field keep the detail they had before FR6.
     cases = (
-        _doc(doctype="Group Exchange Rate", name="GER-5", owner=OTHER, before=GER_DRAFT),
-        _doc(doctype="Group Exchange Rate", name="GER-5", owner=OTHER, before=GER_DRAFT,
+        _doc(doctype="Rate Sheet", name="RS-5", owner=OTHER, before=SHEET_DRAFT),
+        _doc(doctype="Rate Sheet", name="RS-5", owner=OTHER, before=SHEET_DRAFT,
              supersedes=None),
-        _doc(doctype="Group Exchange Rate", name="GER-5", owner=OTHER, before=GER_DRAFT,
+        _doc(doctype="Rate Sheet", name="RS-5", owner=OTHER, before=SHEET_DRAFT,
              supersedes=""),
         _doc(owner=OTHER),
     )
@@ -787,10 +787,10 @@ def test_the_event_carries_the_entity_from_entity_of():
     mod, frappe, _ = _load(policy="Blocked")
     mod.check(_doc(doctype="Ownership Period", name="OP-1", owner=OTHER,
                    data_area_id="ZZ01"), "before_submit")
-    mod.check(_doc(doctype="Group Exchange Rate", name="GER-1", owner=OTHER),
+    mod.check(_doc(doctype="Rate Sheet", name="RS-1", owner=OTHER),
               "before_submit")
     assert [(e["reference_doctype"], e["entity"]) for e in frappe.events] == [
-        ("Ownership Period", "ZZ01"), ("Group Exchange Rate", None)], frappe.events
+        ("Ownership Period", "ZZ01"), ("Rate Sheet", None)], frappe.events
 
 
 # --- hooks.py ---------------------------------------------------------------

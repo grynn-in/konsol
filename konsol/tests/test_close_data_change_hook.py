@@ -171,11 +171,11 @@ def test_a_trial_balance_submission_and_a_build_approval_record_nothing():
 
 # --- on_submit: NUMBER_DRIVING doctypes ------------------------------------
 
-def test_a_ger_on_submit_records_one_call():
+def test_a_rate_sheet_on_submit_records_one_call():
     module, frappe = _load(period_rows=[_row(2025, 7)], period_of=lambda d: (2025, 7))
-    module.on_submit(_doc("Group Exchange Rate", "GER-1"))
+    module.on_submit(_doc("Rate Sheet", "RS-S-2025-07"))
     assert frappe.calls == [
-        (2025, 7, "Group Exchange Rate GER-1 approved", USER, None)], frappe.calls
+        (2025, 7, "Rate Sheet RS-S-2025-07 approved", USER, None)], frappe.calls
 
 
 def test_an_ownership_period_on_submit_names_its_entity():
@@ -210,9 +210,9 @@ def test_a_later_declared_period_records_only_the_earliest_call():
         period_rows=[_row(2025, 7), _row(2025, 8), _row(2025, 9), _row(2025, 10),
                      _row(2025, 11)],
         period_of=lambda d: (2025, 7))
-    module.on_submit(_doc("Group Exchange Rate", "GER-1"))
+    module.on_submit(_doc("Rate Sheet", "RS-S-2025-07"))
     assert frappe.calls == [
-        (2025, 7, "Group Exchange Rate GER-1 approved", USER, None)], frappe.calls
+        (2025, 7, "Rate Sheet RS-S-2025-07 approved", USER, None)], frappe.calls
 
 
 def test_an_ic_balance_is_number_driving_and_records_a_call():
@@ -237,11 +237,11 @@ def test_on_cancel_of_a_journal_records_the_cancelled_text():
         (2025, 7, "Consolidation Journal CJ-1 cancelled", USER, None)], frappe.calls
 
 
-def test_on_cancel_of_a_ger_records_the_cancelled_text():
+def test_on_cancel_of_a_rate_sheet_records_the_cancelled_text():
     module, frappe = _load(period_rows=[_row(2025, 7)], period_of=lambda d: (2025, 7))
-    module.on_cancel(_doc("Group Exchange Rate", "GER-1"))
+    module.on_cancel(_doc("Rate Sheet", "RS-S-2025-07"))
     assert frappe.calls == [
-        (2025, 7, "Group Exchange Rate GER-1 cancelled", USER, None)], frappe.calls
+        (2025, 7, "Rate Sheet RS-S-2025-07 cancelled", USER, None)], frappe.calls
 
 
 # --- failure paths -----------------------------------------------------------
@@ -251,7 +251,7 @@ def test_a_record_data_change_failure_propagates():
         period_rows=[_row(2025, 7)], period_of=lambda d: (2025, 7),
         record_raises=RuntimeError("writer down"))
     with pytest.raises(RuntimeError, match="writer down"):
-        module.on_submit(_doc("Group Exchange Rate", "GER-1"))
+        module.on_submit(_doc("Rate Sheet", "RS-S-2025-07"))
 
 
 def test_close_event_table_missing_records_nothing():
@@ -259,8 +259,8 @@ def test_close_event_table_missing_records_nothing():
     Event table does not exist yet (a patch before migrate's schema sync),
     nothing is recorded — record_data_change's mark writes a Close Event."""
     module, frappe = _load(period_rows=[_row(2025, 7)], table_exists=False)
-    module.on_submit(_doc("Group Exchange Rate", "GER-1"))
-    module.on_cancel(_doc("Group Exchange Rate", "GER-1"))
+    module.on_submit(_doc("Rate Sheet", "RS-S-2025-07"))
+    module.on_cancel(_doc("Rate Sheet", "RS-S-2025-07"))
     assert frappe.calls == []
 
 

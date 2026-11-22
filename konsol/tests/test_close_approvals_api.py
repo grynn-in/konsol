@@ -141,7 +141,6 @@ SITE_TZ = "Europe/London"
 JOURNAL = "Consolidation Journal"
 BC = "Business Combination"
 BD = "Business Disposal"
-GER = "Group Exchange Rate"
 RS = "Rate Sheet"
 OP = "Ownership Period"
 HER = "Historical Equity Rate"
@@ -169,18 +168,6 @@ def _journal(name, owner=ANALYST, creation=None, modified=None, docstatus=0, sta
             "total_debit": total_debit, "currency": currency,
             "reverse_fiscal_year": reverse_fiscal_year, "reverse_fiscal_period": reverse_fiscal_period,
             "consolidation_group": consolidation_group}
-
-
-def _ger(name, owner=ANALYST, creation=None, modified=None, docstatus=0,
-         from_currency="USD", to_currency="EUR", rate_type="Closing",
-         fiscal_year=2026, fiscal_period=7, quote_label="1.10 EUR per USD", change_reason=None,
-         supersedes=None):
-    return {"name": name, "owner": owner, "creation": creation or datetime(2026, 7, 1, 9, 0, 0),
-            "modified": modified or datetime(2026, 7, 1, 9, 0, 0), "docstatus": docstatus,
-            "from_currency": from_currency, "to_currency": to_currency, "rate_type": rate_type,
-            "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
-            "quote_label": quote_label, "change_reason": change_reason,
-            "supersedes": supersedes}
 
 
 def _sheet(name, owner=ANALYST, creation=None, modified=None, docstatus=0,
@@ -258,7 +245,7 @@ _ACCOUNTS = [
 ]
 
 _DOCTYPE_LIST_ATTR = {
-    JOURNAL: "journals", GER: "gers", RS: "sheets", HER: "hers", OP: "ops",
+    JOURNAL: "journals", RS: "sheets", HER: "hers", OP: "ops",
     IC_BALANCE: "ic_balances", BC: "bcs", BD: "bds",
 }
 
@@ -284,7 +271,6 @@ class _Site:
         #: plus one per row in ``dimensions`` (the Custom Field sync has run).
         self.line_columns = None
         self.journals = []
-        self.gers = []
         self.sheets = []
         self.hers = []
         self.ops = []
@@ -480,7 +466,6 @@ _ENTITY_FIELDS = {
     "Historical Equity Rate": "data_area_id",
     "Business Combination": "acquired_entity",
     "Business Disposal": "disposed_entity",
-    "Group Exchange Rate": None,
     "Consolidation Journal": None,
     "IC Balance": None,
 }
@@ -616,13 +601,13 @@ def test_e6_p2_draft_is_pending_when_no_workflow_is_installed():
 
 def test_ger_her_op_ic_balance_use_the_docstatus_fallback():
     site = _Site()
-    site.gers = [_ger("GER-0", docstatus=0), _ger("GER-1", docstatus=1)]
+    site.sheets = [_sheet("RS-0", docstatus=0), _sheet("RS-1", docstatus=1)]
     site.hers = [_her("HER-0", docstatus=0), _her("HER-1", docstatus=1)]
     site.ops = [_op("OP-0", docstatus=0), _op("OP-1", docstatus=1)]
     site.ic_balances = [_ic_balance("IC-0", docstatus=0), _ic_balance("IC-1", docstatus=1)]
     result = _call(site)
     names = {item["name"] for item in _all_items(result)}
-    assert names == {"GER-0", "HER-0", "OP-0", "IC-0"}
+    assert names == {"RS-0", "HER-0", "OP-0", "IC-0"}
 
 
 # --- U8: a workflow reject (first-state docstatus 0) shows in sent_back -------------
@@ -669,10 +654,10 @@ def test_u8_first_state_read_is_one_extra_get_all_only_when_workflow_active():
     site.workflows[JOURNAL] = {"name": "Consolidation Journal Workflow", "workflow_state_field": "status"}
     site.wf_states["Consolidation Journal Workflow"] = ["Draft", "Pending Approval", "Approved", "Reversed"]
     site.journals = [_journal("CJ-P", status="Pending Approval")]
-    site.gers = [_ger("GER-0")]  # no workflow installed for GER
+    site.sheets = [_sheet("RS-0")]  # no workflow installed for the sheet in this stub
     _call(site)
     journal_reads = [r for r in site.reads if r[0] == "get_all" and r[1] == JOURNAL]
-    ger_reads = [r for r in site.reads if r[0] == "get_all" and r[1] == GER]
+    ger_reads = [r for r in site.reads if r[0] == "get_all" and r[1] == RS]
     assert len(journal_reads) == 2  # pending states + first state
     assert len(ger_reads) == 1  # no workflow: no extra read
 
@@ -839,7 +824,7 @@ def test_d06_no_dimension_read_when_no_journal_is_pending():
     only while a journal is pending."""
     site = _Site()
     site.dimensions = [_dim("dim_cost_center")]
-    site.gers = [_ger("GER-1")]
+    site.sheets = [_sheet("RS-1")]
     _call(site)
     assert ("get_all", "Dimension") not in site.reads
     assert ("get_meta", "Consolidation Journal Line") not in site.reads
@@ -863,12 +848,12 @@ def test_d06_dimension_reads_do_not_scale_with_pending_journals():
 
 def test_ger_rejected_after_modified_is_sent_back_with_a_zoned_rejection_at():
     site = _Site()
-    site.gers = [_ger("GER-5", modified=datetime(2026, 7, 2, 8, 0, 0))]
-    site.rejections[GER] = {"GER-5": {
+    site.sheets = [_sheet("RS-5", modified=datetime(2026, 7, 2, 8, 0, 0))]
+    site.rejections[RS] = {"RS-5": {
         "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
     result = _call(site)
     assert [i["name"] for i in result["items"]] == []
-    sent = next(i for i in result["sent_back"] if i["name"] == "GER-5")
+    sent = next(i for i in result["sent_back"] if i["name"] == "RS-5")
     assert sent["rejection"]["reason"] == "wrong rate"
     at = sent["rejection"]["at"]
     assert "+" in at or "Z" in at, at
@@ -880,7 +865,7 @@ def test_ger_rejected_after_modified_is_sent_back_with_a_zoned_rejection_at():
 def test_failure_path_r2_epm_analyst_cannot_approve_anything():
     site = _Site()
     site.roles = {"EPM Analyst"}
-    site.gers = [_ger("GER-9")]
+    site.sheets = [_sheet("RS-9")]
     site.hers = [_her("HER-9")]
     result = _call(site)
     assert result["can_approve"] is False
@@ -894,9 +879,9 @@ def test_failure_path_r2_epm_analyst_cannot_approve_anything():
 def test_failure_path_viewer_reads_and_writes_nothing():
     site = _Site()
     site.roles = {"EPM User"}
-    site.gers = [_ger("GER-10")]
+    site.sheets = [_sheet("RS-10")]
     result = _call(site)  # any write attempt would raise AssertionError from the stub
-    assert any(i["name"] == "GER-10" for i in _all_items(result))
+    assert any(i["name"] == "RS-10" for i in _all_items(result))
 
 
 # --- failure path: Entity Accountant is refused ----------------------------------------
@@ -916,11 +901,11 @@ def test_failure_path_scope_hides_an_out_of_scope_her_and_counts_it():
     site = _Site()
     site.allowed = {"UK01"}
     site.hers = [_her("HER-11", data_area_id="DE02")]
-    site.gers = [_ger("GER-11")]  # group-level: never hidden
+    site.sheets = [_sheet("RS-11")]  # group-level: never hidden
     result = _call(site)
     names = {item["name"] for item in _all_items(result)}
     assert "HER-11" not in names
-    assert "GER-11" in names
+    assert "RS-11" in names
     assert result["hidden"] == 1
     assert result["counts"][HER] == 0
 
@@ -958,43 +943,43 @@ def _sent_back_for(site, user):
 
 def test_sent_back_for_filters_every_get_all_by_owner_and_docstatus_zero():
     site = _Site()
-    site.gers = [_ger("GER-40", owner=ANALYST, modified=datetime(2026, 7, 2, 8, 0, 0))]
-    site.rejections[GER] = {"GER-40": {
+    site.sheets = [_sheet("RS-40", owner=ANALYST, modified=datetime(2026, 7, 2, 8, 0, 0))]
+    site.rejections[RS] = {"RS-40": {
         "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
     items = _sent_back_for(site, ANALYST)
-    assert [i["name"] for i in items] == ["GER-40"]
-    # one get_all per doctype (the 8 APPROVAL_DOCTYPES), each filtered by
+    assert [i["name"] for i in items] == ["RS-40"]
+    # one get_all per doctype (the 7 APPROVAL_DOCTYPES), each filtered by
     # owner + docstatus 0 (the stub's _match enforces the filter values).
     get_all_calls = [r for r in site.reads if r[0] == "get_all"]
-    assert len(get_all_calls) == 8
+    assert len(get_all_calls) == 7
 
 
 def test_sent_back_for_excludes_another_users_rejected_draft():
     """Failure path: the stub holds one, and the owner filter excludes it."""
     site = _Site()
-    site.gers = [_ger("GER-41", owner="zz-other@example.com",
+    site.sheets = [_sheet("RS-41", owner="zz-other@example.com",
                        modified=datetime(2026, 7, 2, 8, 0, 0))]
-    site.rejections[GER] = {"GER-41": {
+    site.rejections[RS] = {"RS-41": {
         "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
     assert _sent_back_for(site, ANALYST) == []
 
 
 def test_sent_back_for_calls_latest_rejections_only_for_doctypes_with_names():
     site = _Site()
-    site.gers = [_ger("GER-42", owner=ANALYST)]
+    site.sheets = [_sheet("RS-42", owner=ANALYST)]
     _sent_back_for(site, ANALYST)
     doctypes_with_calls = {dt for dt, names in site.rejection_calls}
-    assert doctypes_with_calls == {GER}
+    assert doctypes_with_calls == {RS}
 
 
 def test_sent_back_for_read_count_same_for_1_and_6_drafts():
     site1 = _Site()
-    site1.gers = [_ger("GER-50", owner=ANALYST)]
+    site1.sheets = [_sheet("RS-50", owner=ANALYST)]
     _sent_back_for(site1, ANALYST)
     reads_1 = len(site1.reads)
 
     site6 = _Site()
-    site6.gers = [_ger("GER-%d" % i, owner=ANALYST) for i in range(6)]
+    site6.sheets = [_sheet("RS-%d" % i, owner=ANALYST) for i in range(6)]
     _sent_back_for(site6, ANALYST)
     reads_6 = len(site6.reads)
 
@@ -1003,8 +988,8 @@ def test_sent_back_for_read_count_same_for_1_and_6_drafts():
 
 def test_sent_back_for_formats_rejection_at_with_the_zoned_iso_pattern():
     site = _Site()
-    site.gers = [_ger("GER-51", owner=ANALYST, modified=datetime(2026, 7, 2, 8, 0, 0))]
-    site.rejections[GER] = {"GER-51": {
+    site.sheets = [_sheet("RS-51", owner=ANALYST, modified=datetime(2026, 7, 2, 8, 0, 0))]
+    site.rejections[RS] = {"RS-51": {
         "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
     items = _sent_back_for(site, ANALYST)
     at = items[0]["rejection"]["at"]
@@ -1265,89 +1250,43 @@ def test_r52q_failure_path_a_broken_op_draft_names_its_error_under_the_ownership
     assert "effect" not in broken and "effect_error" not in broken, sorted(broken)
 
 
-# --- FR5 (review S2): the queue says what a rate correction replaces ----------------
-# Approving GER-3 cancels GER-1 in the same transaction (group_exchange_rate.py
-# _cancel_superseded); the Approvals item now says so, as the Rates screen does.
-
-FR5_REASON = "ECB fixing corrected 31 Jul"
-FR5_DETAIL = ("FY2025 P07 · replaces GER-1 (0.85 GBP per EUR → 0.86 GBP per EUR)"
-              " · ECB fixing corrected 31 Jul")
-FR5_GONE = ("FY2025 P07 · replaces GER-1, which is no longer approved: this correction "
-            "cannot be approved; delete it on the Rates screen · ECB fixing corrected 31 Jul")
-
-
-def _fr5_site(approved_docstatus=1):
-    site = _Site()
-    site.gers = [
-        _ger("GER-1", docstatus=approved_docstatus, from_currency="EUR", to_currency="GBP",
-             fiscal_year=2025, fiscal_period=7, quote_label="0.85 GBP per EUR"),
-        _ger("GER-3", from_currency="EUR", to_currency="GBP", fiscal_year=2025,
-             fiscal_period=7, quote_label="0.86 GBP per EUR", change_reason=FR5_REASON,
-             supersedes="GER-1"),
-    ]
-    return site
-
-
-def _ger_reads(site):
-    return [r for r in site.reads if r[:2] == ("get_all", GER)]
-
-
-def test_fr5_a_correction_says_what_it_replaces_old_to_new():
-    site = _fr5_site()
-    items = {i["name"]: i for i in _all_items(_call(site))}
-    assert sorted(items) == ["GER-3"]
-    item = items["GER-3"]
-    assert item["detail"] == FR5_DETAIL
-    assert item["supersedes"] == "GER-1"
-    assert item["title"] == "0.86 GBP per EUR"
-    assert item["kind_label"] == "Group rate · EUR→GBP Closing"
-    # the pending read plus ONE read of the replaced rates
-    assert len(_ger_reads(site)) == 2, site.reads
-
-
-def test_fr5_failure_path_a_correction_of_a_cancelled_rate_says_it_cannot_be_approved():
-    site = _fr5_site(approved_docstatus=2)
-    item = next(i for i in _all_items(_call(site)) if i["name"] == "GER-3")
-    assert item["detail"] == FR5_GONE
-    assert item["supersedes"] == "GER-1"
-
+# --- FR5 (review S2): the queue says what a correction replaces, in one read -------
+# The Group Exchange Rate cases went with the doctype (konsol#592 T26); the
+# Rate Sheet shape is pinned by the T18 tests below.
 
 def test_fr5_two_corrections_cost_one_predecessor_read():
-    site = _fr5_site()
-    site.gers.append(_ger("GER-2", docstatus=1, rate_type="Average", quote_label="1.10 EUR per USD"))
-    site.gers.append(_ger("GER-4", rate_type="Average", quote_label="1.11 EUR per USD",
-                          change_reason="typo", supersedes="GER-2"))
-    items = {i["name"]: i for i in _all_items(_call(site))}
-    assert items["GER-4"]["detail"] == (
-        "FY2026 P07 · replaces GER-2 (1.10 EUR per USD → 1.11 EUR per USD) · typo")
-    assert items["GER-3"]["detail"] == FR5_DETAIL
-    assert len(_ger_reads(site)) == 2, site.reads
-
-
-def test_fr5_a_plain_draft_keeps_its_detail_and_reads_no_predecessor():
     site = _Site()
-    site.gers = [_ger("GER-5", change_reason="ERP quote moved")]
-    item = next(i for i in _all_items(_call(site)) if i["name"] == "GER-5")
-    assert item["detail"] == "FY2026 P07 · ERP quote moved"
-    assert item["supersedes"] is None
-    assert len(_ger_reads(site)) == 1, site.reads
+    site.sheets = [
+        _sheet("RS-1", docstatus=1, fiscal_year=2025, fiscal_period=7),
+        _sheet("RS-1-2", fiscal_year=2025, fiscal_period=7, change_reason="ECB", supersedes="RS-1"),
+        _sheet("RS-2", docstatus=1, fiscal_year=2025, fiscal_period=8),
+        _sheet("RS-2-2", fiscal_year=2025, fiscal_period=8, change_reason="typo", supersedes="RS-2"),
+    ]
+    items = {i["name"]: i for i in _all_items(_call(site))}
+    assert items["RS-2-2"]["detail"] == "FY2025 P8 · replaces RS-2 (Statutory FY2025 P8) · typo"
+    assert items["RS-1-2"]["detail"] == "FY2025 P7 · replaces RS-1 (Statutory FY2025 P7) · ECB"
+    assert len([r for r in site.reads if r[:2] == ("get_all", RS)]) == 2, site.reads
 
 
 def test_fr5_sent_back_for_reads_supersedes_and_keeps_its_label_only_items():
-    """A21: sent_back_for builds labels, never a detail; the correction's
-    sent-back item is unchanged by FR5 (no ``detail`` key at all)."""
-    site = _fr5_site()
+    """A21: sent_back_for builds labels, never a detail; a correction's
+    sent-back item has no ``detail`` key at all."""
+    site = _Site()
     site.user = ANALYST
-    site.gers[1]["modified"] = datetime(2026, 7, 2, 8, 0, 0)
-    site.rejections[GER] = {"GER-3": {
+    site.sheets = [
+        _sheet("RS-1", docstatus=1, fiscal_year=2025, fiscal_period=7),
+        _sheet("RS-1-2", fiscal_year=2025, fiscal_period=7, change_reason="ECB", supersedes="RS-1",
+               modified=datetime(2026, 7, 2, 8, 0, 0)),
+    ]
+    site.rejections[RS] = {"RS-1-2": {
         "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
     items = _invoke(site, lambda api: api.sent_back_for(ANALYST))
-    assert [i["name"] for i in items] == ["GER-3"]
+    assert [i["name"] for i in items] == ["RS-1-2"]
     assert "detail" not in items[0], sorted(items[0])
-    assert items[0]["title"] == "0.86 GBP per EUR"
+    assert items[0]["title"] == "Statutory · FY2025 P7"
 
 
-# --- konsol#592 T18: a Rate Sheet in the queue, as a Group Exchange Rate ---------------
+# --- konsol#592 T18: a Rate Sheet in the queue -----------------------------------------
 
 def _sheet_reads(site):
     return [r for r in site.reads if r[:2] == ("get_all", RS)]

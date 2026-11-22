@@ -32,7 +32,6 @@ LEAD = "lead@example.com"
 ANALYST = "analyst@example.com"
 
 CONTROLLERS = {
-    "Group Exchange Rate": "group_exchange_rate",
     "Rate Sheet": "rate_sheet",
     "Ownership Period": "ownership_period",
     "Historical Equity Rate": "historical_equity_rate",
@@ -172,11 +171,11 @@ def _load(flags=None, record_raises=None, period_raises=None, table_exists=True)
     return module, frappe
 
 
-def _doc(doctype="Group Exchange Rate", name="GER-1", owner=ANALYST, **fields):
+def _doc(doctype="Rate Sheet", name="RS-S-2025-07", owner=ANALYST, **fields):
     # A Frappe document has every field of its doctype; blank unless given.
     # A Frappe document always carries ``flags`` (a frappe._dict), empty unless set.
     fields = dict({"data_area_id": None, "acquired_entity": None, "disposed_entity": None,
-                   "flags": _Flags()}, **fields)
+                   "rate_basis": "Statutory", "flags": _Flags()}, **fields)
     return types.SimpleNamespace(doctype=doctype, name=name, owner=owner, **fields)
 
 
@@ -225,23 +224,22 @@ def test_a_group_rate_cancel_records_one_group_level_event():
     e = frappe.events[0]
     assert e["kind"] == "approval_cancelled"
     assert (e["fiscal_year"], e["fiscal_period"]) == (2025, 7)
-    assert (e["reference_doctype"], e["reference_name"]) == ("Group Exchange Rate", "GER-1")
+    assert (e["reference_doctype"], e["reference_name"]) == ("Rate Sheet", "RS-S-2025-07")
     assert e["reason"] is None, "Frappe's cancel takes no reason"
     assert e["entity"] is None, "a group rate is group-level (W2-9)"
     assert e["detail"] == {"preparer": ANALYST, "exempt": None}, e["detail"]
 
 
 def test_a_superseded_rate_cancel_names_the_correction_that_replaced_it():
-    # konsol#305 FR6 (review S4): GroupExchangeRate._cancel_superseded sets
+    # konsol#305 FR6 (review S4): RateSheet's supersede cancel sets
     # flags.superseded_by = the correction's name before cancelling the
-    # approved rate (group_exchange_rate.py:356), and this hook runs on that
-    # cancel with the flag set.
+    # approved sheet, and this hook runs on that cancel with the flag set.
     mod, frappe = _load()
-    mod.record(_doc(flags=_Flags(superseded_by="GER-3")), "on_cancel")
+    mod.record(_doc(flags=_Flags(superseded_by="RS-S-2025-07-2")), "on_cancel")
     assert len(frappe.events) == 1, frappe.events
     e = frappe.events[0]
-    assert (e["kind"], e["reference_name"]) == ("approval_cancelled", "GER-1"), e
-    assert e["detail"] == {"preparer": ANALYST, "exempt": None, "superseded_by": "GER-3"}, \
+    assert (e["kind"], e["reference_name"]) == ("approval_cancelled", "RS-S-2025-07"), e
+    assert e["detail"] == {"preparer": ANALYST, "exempt": None, "superseded_by": "RS-S-2025-07-2"}, \
         e["detail"]
 
 
@@ -355,7 +353,7 @@ def test_a_completed_cancel_commits_its_event_with_it():
     mod, frappe = _load()
     txn = _Txn(frappe)
     txn.cancel(_doc(), mod.record)
-    assert txn.docstatus == {"GER-1": 2}
+    assert txn.docstatus == {"RS-S-2025-07": 2}
     assert [e["kind"] for e in txn.committed] == ["approval_cancelled"]
 
 
