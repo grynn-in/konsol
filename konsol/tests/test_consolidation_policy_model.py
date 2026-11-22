@@ -51,7 +51,7 @@ def test_options_and_field_lists_are_the_design_s():
     assert M.ACCOUNT_FIELDS == (
         "goodwill_account", "fair_value_adjustment_account", "investment_account", "nci_account",
         "bargain_purchase_gain_account", "disposal_gain_loss_account", "disposal_proceeds_account",
-        "goodwill_amortisation_expense_account", "acquisition_costs_account")
+        "goodwill_amortisation_expense_account", "acquisition_costs_account", "exit_gain_loss_account")
     assert M.LABELS["goodwill_method"] == "NCI Measurement"
     assert set(M.LABELS) == set(M.POLICY_FIELDS) | set(M.ACCOUNT_FIELDS)
 
@@ -282,3 +282,17 @@ def test_partial_period_treatment_is_independent_of_the_framework():
     for base in (IFRS_PARTIAL, US_GAAP_FULL, LOCAL_AMORTISE):
         for value in M.PARTIAL_PERIOD_TREATMENTS:
             assert M.policy_problems(dict(base, partial_period_treatment=value), has_deals=True) == []
+
+
+def test_required_accounts_for_an_exit_is_the_exit_account_alone():
+    """konsolidat#335: a link that ends with no deal needs only the exit account."""
+    assert M.required_accounts(IFRS_PARTIAL, {"kind": "exit"}) == ["exit_gain_loss_account"]
+    assert M.required_accounts({}, {"kind": "Exit"}) == ["exit_gain_loss_account"]
+
+
+def test_an_undeclared_exit_account_is_reported_by_label():
+    problems = M.account_problems(IFRS_PARTIAL, M.required_accounts(IFRS_PARTIAL, {"kind": "exit"}),
+                                  lambda a: True)
+    assert len(problems) == 1 and "Exit Gain/Loss Account" in problems[0]
+    assert M.account_problems(dict(IFRS_PARTIAL, exit_gain_loss_account="7900"),
+                              ["exit_gain_loss_account"], lambda a: True) == []
