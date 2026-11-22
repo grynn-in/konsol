@@ -220,6 +220,7 @@ class BusinessCombination(Document):
         root = self._root()
         found = account_problems(root, required_accounts(root, self._deal()), self._is_published_leaf)
         found += self._fva_total_problems()
+        found += self._step_acquisition_problems()
         if found:
             frappe.throw("<br>".join(found))
 
@@ -424,6 +425,51 @@ class BusinessCombination(Document):
                                            "a step from a joint operation to control", self._step_window_start(), periods, declarations)
         if sentence:
             frappe.throw(_PREFIX + sentence)
+
+    def _step_acquisition_problems(self):
+        """Refuse a step acquisition by name (konsolidat#348 stopgap).
+
+        TEMPORARY. An entity the group already held (a stake under the equity
+        method, or any earlier holding) has an earlier submitted Ownership
+        Period. IFRS 3.41-3.42 (equity method to the deal date, derecognise
+        the old stake, remeasure it to fair value) is not built, so approving
+        the deal would post wrong books and fail no test. Decided 22 Nov 2026
+        (Deepak Pai, konsolidat#348, Q1 C with this refusal as the stopgap).
+        Delete this method, its call in ``before_submit`` and its tests when
+        Q1 C lands. The same rule, in the warehouse, is dbt's
+        ``assert_no_step_acquisition``.
+
+        A step is a stake still held immediately before the deal: a period of
+        this group and entity, submitted (the warehouse holds only those),
+        effective before the acquisition date, with no end date or one on or
+        after the day before the deal. An entity fully divested earlier and
+        bought again is a fresh acquisition, not refused. The period this deal
+        itself links is never earlier, whatever its date (as
+        ``_is_first_acquisition``)."""
+        filters = {
+            "consolidation_group": self.consolidation_group,
+            "data_area_id": self.acquired_entity,
+            "docstatus": 1,
+            "effective_date": ["<", self.acquisition_date],
+        }
+        linked = self._linked_period()
+        if linked:
+            filters["name"] = ["!=", linked["name"]]
+        rows = frappe.get_all(
+            "Ownership Period", filters=filters,
+            fields=["name", "ownership_pct", "effective_date", "end_date", "consolidation_method"],
+            order_by="effective_date desc", limit_page_length=0,
+        )
+        day_before = getdate(self.acquisition_date) - datetime.timedelta(days=1)
+        held = [r for r in rows if not r.end_date or getdate(r.end_date) >= day_before]
+        if not held:
+            return []
+        row = held[0]
+        return [
+            f"{_PREFIX}{self.acquired_entity} was already held by {self.consolidation_group} "
+            f"(Ownership Period {row.name}, {row.consolidation_method}, {float(row.ownership_pct):g}%, "
+            f"from {getdate(row.effective_date)}): step acquisitions are not supported yet (konsolidat#348)."
+        ]
 
     def _validate_acquirer(self):
         """The Ownership Period's owner rule (§1 refusal 1), in this deal's

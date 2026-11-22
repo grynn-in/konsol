@@ -4,6 +4,37 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (22 Nov 2026): konsolidat P1 round 2 merged: dimension layers, year-end journal close, ownership exit.** Merge go by Deepak Pai, 21 Nov 2026. Plan and log: `.claude/memory/active/tasks-p1-round2.md` and `tasks-p1-round2.log`. Nothing is deployed yet. konsolidat#358 and konsol#532 must deploy together: the exit journal reads `consolidation_groups.exit_gain_loss_account`, and a site's first build fails without it.
+- **Dimension layers** (konsolidat#245; konsolidat#260, 4589d9f6). #245 Q1–Q3 are Deepak Pai's (21 Nov 2026, all option A):
+  - The IC difference is blank on both legs.
+  - Disposal line 105 (`post_disposal_pnl`) carries its slices.
+  - The equity method stays blank.
+- **Opening-period rate fixture** (konsolidat#366, 7a69b63b).
+- **Year-end journal close** (konsolidat#316, option A, Deepak Pai 14 Nov 2026; konsolidat#357, b23ad59e):
+  - A `journal_close` layer in `gold_fully_consolidated_tb` moves each closed year's journal-layer P&L into retained earnings in the Closing period, per slice. It follows the #259 entity close's year rule.
+  - `entity` and `ic_elimination` are excluded.
+  - It posts nothing unless the chart flags exactly one retained-earnings account.
+  - The waterfall columns now come from one macro, `waterfall_buckets()`, with buckets for `nci_attribution` and `journal_close`.
+- **Ownership exit** (konsolidat#335, option A, Deepak Pai 14 Nov 2026; konsolidat#358, fa40e1ca + konsol#532, d3695fbe):
+  - An Ownership Period that ends with no Business Disposal derecognises the entity's carried balances in the period that contains its end date (Deepak Pai, 21 Nov 2026: "b) as built in March"). The net goes to the group's new Exit Gain/Loss Account.
+  - The exit events are materialised once, in `gold_ownership_exits` (an actuals Build Model).
+  - A re-entry starts a new stint: no retranslation on its first row.
+  - The year-end close sweeps the exit gain or loss into retained earnings, and the exit sits in the acquisition-and-disposal waterfall bucket. Fixtures cover both.
+- **Drill and worksheet labels** "Year-end close" and "Ownership exit" (konsol#538, d3176652).
+- **Handbook:** intercompany is eliminated in full, plus a new page, "What konsol posts, what you post" (konsol#581; konsol#582, cd3b9e40).
+- **CI:** the fixture shards now have 60 min (konsolidat#358). Shard 1 ran 44.6 min at 45. A 4th shard is the lasting fix; #370 B chose 3, so that is Deepak Pai's call.
+- **Live tests** went through konsolidat-tester: every fixture gate passed. Closed: konsolidat#316 and #335.
+- **Open, P1 and next:**
+  - konsolidat#371: an acquisition's line (0) is never retranslated (predates #358; Deepak Pai: "fix #371 next").
+  - konsolidat#387: verified on draft konsolidat#388, foreign goodwill and FVA stay at the acquisition rate (IAS 21.47). It should be designed with #371.
+  - 2d, the last callers of the old period-date macro, closes #171 and #252.
+- **Waiting on Deepak Pai's HMD picks:** konsolidat#382–#386 (impairment, deferred tax on consolidation adjustments, step acquisition remeasurement, intragroup dividends, the equity method beyond share of profit).
+- **Follow-ups filed:**
+  - konsolidat#390: the exit derecognises on the blank slice.
+  - konsolidat#391: the year-end test checks per account, not per slice.
+  - konsolidat#392: the closing-rate oracle restates the model.
+  - konsolidat#393: re-entry gaps.
+
 **Update (22 Nov 2026): Parent Entity help text, Entity Fiscal Calendar removed, Copy rates from previous period.**
 - **Parent Entity help text** (konsol#576, 8a256cc): the field now says what it does. It places the entity in the access and navigation tree. Ownership and consolidated numbers come from Ownership Period; no dbt model reads `parent_entity`.
 - **Entity Fiscal Calendar removed** (konsol#577; konsol#578, dad0186e + konsolidat#380, 9a15baaf). Deepak Pai, 21 Nov 2026. It had been dead since konsolidat#221; a site declares one fiscal calendar. A patch removes the doctype, its rows and site customisations, and the warehouse table.
