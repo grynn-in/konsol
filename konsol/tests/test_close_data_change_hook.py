@@ -337,3 +337,25 @@ def test_the_migration_flag_name_is_the_controllers():
     controller = open(os.path.join(APP_DIR, "consolidation", "doctype", "rate_sheet", "rate_sheet.py")).read()
     assert f'MIGRATE_FLAG = "{MIGRATE_FLAG}"' in controller
     assert f'"{MIGRATE_FLAG}"' in open(HOOK_PY).read()
+
+
+# --- PR #595 review 3: a Constant sheet drives no actuals sign-off --------------
+
+def test_a_constant_rate_sheet_records_no_data_change():
+    """A Constant sheet translates budgets and forecasts (D2): no actuals
+    period's numbers move, so no sign-off is voided. Its period would be
+    (fy, 0), and record_data_change raises PeriodNotDeclared in a year with
+    no P0 row: the hook never asks."""
+    def no_period(doc):
+        raise AssertionError("a Constant sheet has no period to record")
+
+    module, frappe = _load(period_rows=[_row(2026, 1)], period_of=no_period)
+    module.on_submit(_doc("Rate Sheet", "RS-C-2026", rate_basis="Constant"))
+    module.on_cancel(_doc("Rate Sheet", "RS-C-2026", rate_basis="Constant"))
+    assert frappe.calls == []
+
+
+def test_a_statutory_p0_sheet_still_records_its_change():
+    module, frappe = _load(period_rows=[_row(2026, 0), _row(2026, 1)], period_of=lambda d: (2026, 0))
+    module.on_submit(_doc("Rate Sheet", "RS-S-2026-00", rate_basis="Statutory"))
+    assert frappe.calls == [(2026, 0, "Rate Sheet RS-S-2026-00 approved", USER, None)]

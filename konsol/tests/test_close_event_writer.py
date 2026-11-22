@@ -685,3 +685,22 @@ def test_ic_api_may_read_but_not_write_close_events():
         'frappe.db.set_value("Close Event", n, "reason", "x")\n', "close/ic_api.py"
     )
     assert bad, bad
+
+
+def test_a_constant_sheets_events_need_no_p0_row():
+    """PR #595 review 3: a Constant sheet's approval events sit at (fy, 0),
+    the year-level key (#590), in a year whose calendar declares no P0. The
+    writer reads no calendar for it: every approval kind is written, and no
+    period is looked up."""
+    no_p0 = tuple(p for p in PERIODS if p[1] != 0)
+    site = _Site(periods=no_p0)
+    writer, _ = _load(site)
+    doc = _doc("Rate Sheet", "RS-C-2025", rate_basis="Constant", fiscal_year=2025, fiscal_period=0)
+    key = writer.period_of(doc)
+    assert key == (2025, 0)
+    for kind in ("approved", "self_approved", "rejected", "approval_cancelled"):
+        writer.record(kind, *key, "Rate Sheet", doc.name, reason="why",
+                      entity=writer.entity_of(doc))
+    assert [(e["kind"], e["fiscal_period"]) for e, _a, _i in site.inserted] == [
+        ("approved", 0), ("self_approved", 0), ("rejected", 0), ("approval_cancelled", 0)]
+    assert site.sql_calls == []
