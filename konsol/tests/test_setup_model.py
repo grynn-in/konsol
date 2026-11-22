@@ -24,21 +24,33 @@ def _group(name="G1", currency="EUR", diff="9999", nci="2900"):
 # -- fiscal calendar ---------------------------------------------------------------
 
 def test_fiscal_calendar_not_done_without_a_year():
-    s = M.fiscal_calendar_step(0, [], 0)
+    s = M.fiscal_calendar_step(0, [])
     assert s["state"] == M.NOT_DONE and s["count"] == 0
     assert s["route"] == ["List", "EPM Fiscal Year"]
+    assert s["detail"] == "No EPM Fiscal Year is declared: declare each year and its periods."
 
 
 def test_fiscal_calendar_partial_with_a_year_but_no_periods():
-    assert M.fiscal_calendar_step(1, [], 0)["state"] == M.PARTIAL
+    s = M.fiscal_calendar_step(1, [])
+    assert s["state"] == M.PARTIAL
+    assert s["detail"] == "1 fiscal year declared with no periods."
 
 
-def test_fiscal_calendar_done_counts_open_periods_and_mapped_areas():
+def test_fiscal_calendar_done_counts_open_periods():
     rows = [{"status": "Open"}, {"status": "Open"}, {"status": "Closed"}]
-    s = M.fiscal_calendar_step(1, rows, 2)
+    s = M.fiscal_calendar_step(1, rows)
     assert s["state"] == M.DONE
-    assert "1 fiscal year, 3 periods, 2 open" in s["detail"]
-    assert "2 ERP data areas mapped" in s["detail"]
+    assert s["detail"] == "1 fiscal year, 3 periods, 2 open."
+
+
+def test_fiscal_calendar_step_names_no_per_entity_mapping():
+    """konsol#577: Entity Fiscal Calendar is removed; the step counts only the
+    site's one declared calendar and takes no mapping count."""
+    import inspect
+    assert list(inspect.signature(M.fiscal_calendar_step).parameters) == ["years", "period_rows"]
+    for s in (M.fiscal_calendar_step(0, []), M.fiscal_calendar_step(1, []),
+              M.fiscal_calendar_step(1, [{"status": "Open"}])):
+        assert "ERP data area" not in s["detail"] and "Entity Fiscal Calendar" not in s["detail"]
 
 
 # -- consolidation group -----------------------------------------------------------

@@ -55,8 +55,7 @@ _NO_ENTITY = ["is", "not set"]
 
 def _fiscal_calendar():
     return setup_model.fiscal_calendar_step(
-        frappe.db.count("EPM Fiscal Year"), fiscal_calendar.fiscal_period_rows(),
-        frappe.db.count("Entity Fiscal Calendar"))
+        frappe.db.count("EPM Fiscal Year"), fiscal_calendar.fiscal_period_rows())
 
 
 def _group_nodes():
