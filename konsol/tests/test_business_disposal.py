@@ -364,6 +364,7 @@ def _load():
     gr = types.ModuleType("konsol.group_rates")
     gr.true_rate = lambda quote, per: float(Decimal(str(quote or 0)) / int(per or 1))
     gr.actuals_rate_set = lambda: "ACTUAL"
+    gr.approved_quotes = lambda *a, **k: {}  # each _Site installs its own on M
     # konsol#529: before_cancel sets the workflow's docstatus-2 state through
     # this helper; it has its own tests (test_cancelled_workflow_state.py).
     wfs = types.ModuleType("konsol.workflows")

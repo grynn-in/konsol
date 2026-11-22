@@ -38,9 +38,9 @@ def _frappe(sheets=(), ger=(), actuals=("ACTUAL",)):
     def sql(query, params=(), *a, **k):
         frappe.queries.append(query)
         if "`tabRate Sheet Row`" in query:
-            assert "s.docstatus = 1" in query, "a draft or a cancelled sheet is not a rate"
+            assert "s.docstatus = %s" in query and params[0] == 1, "a draft or a cancelled sheet is not a rate"
             assert "s.rate_basis = 'Statutory'" in query, "a Constant sheet is not a period's rate"
-            fy, fp = params
+            _ds, fy, fp = params
             return [(n, None, f, t, "1", avg, cls) for n, basis, y, p, ds, rows in sheets
                     if ds == 1 and basis == "Statutory" and (y, p) == (fy, fp) for f, t, avg, cls in rows]
         if "`tabGroup Exchange Rate`" in query:

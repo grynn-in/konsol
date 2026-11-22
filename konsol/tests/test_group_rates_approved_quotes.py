@@ -39,12 +39,18 @@ def _frappe(sheets=(), ger=(), actuals=("ACTUAL",)):
 
     def sql(query, params=(), *a, **k):
         if "`tabRate Sheet Row`" in query:
-            assert "s.docstatus = 1" in query and "s.rate_basis = 'Statutory'" in query
-            fy, fp = params
+            assert "s.docstatus = %s" in query and "s.rate_basis = 'Statutory'" in query
+            want, fy, fp = params
             return [(n, sup, f, t, per, avg, cls)
                     for n, basis, y, p, ds, sup, rows in sheets
-                    if ds == 1 and basis == "Statutory" and (y, p) == (fy, fp)
+                    if ds == want and basis == "Statutory" and (y, p) == (fy, fp)
                     for f, t, per, avg, cls in rows]
+        if "`tabGroup Exchange Rate`" in query and len(params) == 4:  # the gate's read
+            return []
+        if "`tabGroup Exchange Rate`" in query and "docstatus = 0" in query:  # draft_pairs
+            fy, fp, rate_type, rate_set = params
+            return [(f, t) for f, t, rt, y, p, rs, d, q, per in ger
+                    if (d, y, p, rt, rs) == (0, fy, fp, rate_type, rate_set)]
         if "`tabGroup Exchange Rate`" in query:
             ds, fy, fp, rate_type, rate_set = params
             return [(f, t, q, per) for f, t, rt, y, p, rs, d, q, per in ger
@@ -132,3 +138,12 @@ def test_the_gate_and_the_quotes_share_one_sheet_read():
     keys = r._approved_keys(2099, 3)
     for rt in ("Average", "Closing"):
         assert {(f, t, rt) for f, t in r.approved_quotes(2099, 3, rt)} == {k for k in keys if k[2] == rt}
+
+
+def test_draft_pairs_lists_draft_sheet_rows_and_draft_ger_rows_with_the_quote():
+    ger = [("USD", "CHF", "Closing", 2099, 3, "ACTUAL", 0, 0.9, "1"),
+           ("GBP", "CHF", "Closing", 2099, 3, "ACTUAL", 1, 1.1, "1")]
+    draft = _sheet([("EUR", "CHF", "1", None, 0.95), ("JPY", "CHF", "1", 0.0065, None)], docstatus=0)
+    r = _rules(_frappe([draft, _sheet([("AUD", "CHF", "1", 0.6, 0.6)])], ger))
+    assert r.draft_pairs(2099, 3, "Closing") == {("USD", "CHF"), ("EUR", "CHF")}
+    assert r.draft_pairs(2099, 3, "Average") == {("JPY", "CHF")}
