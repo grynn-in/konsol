@@ -205,6 +205,12 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_ic_side_slices",
+  "model_name": "gold_ic_side_slices",
+  "build_domain": "consolidation"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_ic_unmatched",
   "model_name": "gold_ic_unmatched",
   "build_domain": "consolidation"
