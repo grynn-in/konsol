@@ -98,7 +98,7 @@ def test_params_from_doc_accepts_dict():
 def test_plan_run_default_definition():
     dag, state = run.plan_run({})
     ids = [s.id for s in dag.steps]
-    assert ids == ["extract", "seed", "silver", "gold", "assertions", "signoff"]
+    assert ids == ["extract", "seed", "silver", "gold", "assertions"]
     assert isinstance(state, RunState)
     assert all(state.status(i) == Status.PENDING for i in ids)
 
@@ -119,7 +119,7 @@ def test_plan_run_full_refresh_flag_on_dbt():
 
 def test_plan_run_honors_passed_definition():
     # #65a: plan_run plans from a supplied definition over DEFAULT_DEFINITION.
-    dag, state = run.plan_run({}, definition=[Step("only", "signoff")])
+    dag, state = run.plan_run({}, definition=[Step("only", "close_assertions")])
     assert [s.id for s in dag.steps] == ["only"]
     assert all(state.status(s.id) == Status.PENDING for s in dag.steps)
 
@@ -144,7 +144,7 @@ def test_plan_run_resolves_str_definition_via_load_definition(monkeypatch):
 
     def fake_load(name):
         calls.append(name)
-        return [Step("only", "signoff")]
+        return [Step("only", "close_assertions")]
 
     monkeypatch.setattr(definition_mod, "load_definition", fake_load)
     dag, state = run.plan_run({}, definition="Group Close")
@@ -176,7 +176,7 @@ def test_plan_run_explicit_step_list_does_not_call_load_definition(monkeypatch):
         raise AssertionError("load_definition called for an explicit step list")
 
     monkeypatch.setattr(definition_mod, "load_definition", _boom)
-    dag, _ = run.plan_run({}, definition=[Step("only", "signoff")])
+    dag, _ = run.plan_run({}, definition=[Step("only", "close_assertions")])
     assert [s.id for s in dag.steps] == ["only"]
 
 
@@ -270,7 +270,7 @@ def test_sink_failure_records_error_and_failed_status():
 def test_sink_result_without_prior_start_creates_row():
     doc = FakeDoc()
     sink = run.FrappeSink(doc)
-    sink.on_step_result(Step("x", "signoff"), StepResult(ok=True))
+    sink.on_step_result(Step("x", "close_assertions"), StepResult(ok=True))
     assert len(doc.steps) == 1
     assert doc.steps[0].step_id == "x"
     assert doc.steps[0].status == Status.SUCCESS
@@ -330,7 +330,7 @@ def test_run_executor_records_all_steps_and_invokes_runner():
 
     assert state.is_success()
     recorded = {r.step_id: r for r in doc.steps}
-    assert set(recorded) == {"seed", "silver", "gold", "assertions", "signoff"}
+    assert set(recorded) == {"seed", "silver", "gold", "assertions"}
     for row in doc.steps:
         assert row.status == Status.SUCCESS
         assert row.rows == 7
