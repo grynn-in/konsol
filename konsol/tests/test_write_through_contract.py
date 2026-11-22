@@ -1185,9 +1185,9 @@ def test_callable_value_through_reconcile_for_both_maps():
     sql = _capture_inserts(m)
     m._write_through_doctypes = lambda: ["Budget Cycle"]
     m._reconcile_tables()
-    assert any("INTO epm_staging.budget_cycles " in s and "('FY26', 'CONSTANT')" in s
+    assert any("INTO epm_staging.budget_cycles_sync_tmp " in s and "('FY26', 'CONSTANT')" in s
                for s in sql), sql
-    assert any("INTO epm_staging.budget_cycles_staging" in s and "('FY26', 'FY26!')" in s
+    assert any("INTO epm_staging.budget_cycles_staging_sync_tmp " in s and "('FY26', 'FY26!')" in s
                for s in sql), sql
 
 

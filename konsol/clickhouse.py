@@ -611,7 +611,13 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
     Args:
         doctype: Frappe DocType name.
         table: ClickHouse table name.
-        field_map: Dict mapping CH column names to Frappe field names.
+        field_map: Dict mapping CH column names to Frappe field names, or to
+            a callable. A callable is called with the row dict (the mapped
+            string fields plus ``modified``) and its result is the column
+            value, e.g. ``lambda row: "CONSTANT"`` (konsol#592 T21). It is
+            never requested from the database. Every path (sync_doctype, the
+            after-commit hook, reconcile_all) reaches this function, so each
+            one handles callables here.
         filters: Optional Frappe filter dict (e.g. {'docstatus': 1}).
     """
     ch_columns = list(field_map.keys())
@@ -619,7 +625,7 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
 
     # Fetch `modified` alongside so the sync can stamp how fresh the source was
     # at the time. Only added when the field_map does not already carry it.
-    fetch_fields = list(frappe_fields)
+    fetch_fields = [f for f in frappe_fields if not callable(f)]
     if "modified" not in fetch_fields:
         fetch_fields.append("modified")
 
@@ -632,7 +638,8 @@ def sync_doctype_filtered(doctype, table, field_map, filters=None, force=False):
     # An unset field reaches _sql_value as None and is written as DEFAULT — the
     # column's own declared default, whatever its type. See _sql_value: neither
     # a literal NULL nor a literal '' is right for every column here.
-    rows = [[doc.get(f) for f in frappe_fields] for doc in docs]
+    rows = [[f(doc) if callable(f) else doc.get(f) for f in frappe_fields]
+            for doc in docs]
 
     modified = [d.get("modified") for d in docs if d.get("modified")]
     source_max_modified = (
