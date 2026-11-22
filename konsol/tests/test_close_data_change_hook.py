@@ -74,11 +74,17 @@ def _row(fiscal_year, fiscal_period):
     return {"fiscal_year": fiscal_year, "fiscal_period": fiscal_period}
 
 
+class _Flags(dict):
+    """frappe.flags: a frappe._dict."""
+    __getattr__ = dict.get
+
+
 def _load(period_rows=(), period_of=None, entity_of=None, table_exists=True,
-          record_raises=None, user=USER):
+          record_raises=None, user=USER, flags=None):
     """``data_change_hook`` loaded by path; its calls land in
     ``frappe.calls`` (``[(fy, fp, text, user, entity), ...]``)."""
     frappe = types.ModuleType("frappe")
+    frappe.flags = _Flags(flags or {})
     frappe.calls = []
     frappe.session = types.SimpleNamespace(user=user)
     frappe.db = types.SimpleNamespace(table_exists=lambda dt: table_exists)
@@ -293,3 +299,41 @@ def test_hooks_wire_the_data_change_hook():
         "on_cancel": ["konsol.close.cancel_event.record",
                       "konsol.close.data_change_hook.on_cancel"],
     }], found
+
+
+# --- PR #595 review 2: the migration from Group Exchange Rate changes no data ---
+
+MIGRATE_FLAG = "konsol_migrating_rates"
+
+
+def test_a_migrated_rate_sheet_submit_and_cancel_record_no_data_change():
+    """The migration replays each GER period's approvals and corrections as
+    Rate Sheet submits and cancels. They record what the periods were
+    already translated at, so they stamp no period and mark no signed run
+    Re-sign Needed (MIGRATE_FLAG, as the Administrator: rate_sheet.py's
+    _migrating rule)."""
+    module, frappe = _load(period_rows=[_row(2024, 12), _row(2025, 1)], period_of=lambda d: (2024, 12),
+                           user="Administrator", flags={MIGRATE_FLAG: True})
+    module.on_submit(_doc("Rate Sheet", "RS-S-2024-12-2", rate_basis="Statutory"))
+    module.on_cancel(_doc("Rate Sheet", "RS-S-2024-12", rate_basis="Statutory"))
+    assert frappe.calls == []
+
+
+def test_the_migration_flag_without_the_administrator_records_the_change():
+    module, frappe = _load(period_rows=[_row(2024, 12)], period_of=lambda d: (2024, 12),
+                           flags={MIGRATE_FLAG: True})
+    module.on_submit(_doc("Rate Sheet", "RS-S-2024-12", rate_basis="Statutory"))
+    assert frappe.calls == [(2024, 12, "Rate Sheet RS-S-2024-12 approved", USER, None)]
+
+
+def test_the_migration_flag_exempts_rate_sheets_only():
+    module, frappe = _load(period_rows=[_row(2024, 12)], period_of=lambda d: (2024, 12),
+                           user="Administrator", flags={MIGRATE_FLAG: True})
+    module.on_submit(_doc("Consolidation Journal", "CJ-1"))
+    assert frappe.calls == [(2024, 12, "Consolidation Journal CJ-1 approved", "Administrator", None)]
+
+
+def test_the_migration_flag_name_is_the_controllers():
+    controller = open(os.path.join(APP_DIR, "consolidation", "doctype", "rate_sheet", "rate_sheet.py")).read()
+    assert f'MIGRATE_FLAG = "{MIGRATE_FLAG}"' in controller
+    assert f'"{MIGRATE_FLAG}"' in open(HOOK_PY).read()
