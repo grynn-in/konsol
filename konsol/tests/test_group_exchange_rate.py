@@ -1440,139 +1440,6 @@ def test_two_erp_sources_are_both_shown_and_a_disagreement_is_flagged():
     assert note.startswith("ERP SOURCES DISAGREE") and "0.9478 CHF per EUR" in note and "0.948 CHF per EUR" in note
 
 
-def test_the_pre_fill_proposes_drafts_and_never_submits():
-    src = open(RULES).read()
-    fn = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == "prefill_from_erp")
-    assert [ast.unparse(d) for d in fn.decorator_list] == ["frappe.whitelist(methods=['POST'])"]
-    body = ast.unparse(fn)
-    assert "frappe.only_for(PREFILL_ROLES)" in body
-    assert ".submit(" not in body and "docstatus" not in body.replace("'docstatus': ['<', 2]", "")
-    assert _rules().PREFILL_ROLES == ("EPM Analyst", "EPM Admin", "System Manager")
-
-
-def test_the_pre_fill_drafts_a_rate_past_the_warning_factor_and_lists_it():
-    """konsol#179: the pre-fill has no person to give a Reason for Change, so
-    a quote past the declared Magnitude Warning Factor is still drafted, and
-    the summary lists the warning. The reason is asked for when a person
-    saves or approves the draft (test_system_writes_are_not_asked_for_a_reason)."""
-    inserted = []
-    frappe = _frappe({}, magnitude_factor=3)
-    frappe.only_for = lambda roles: None
-    lookup = frappe.get_all
-    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
-
-    class Doc(dict):
-        def __init__(self, d):
-            super().__init__(d)
-            self.name = f"GER-{d['from_currency']}-{d['rate_type']}"
-
-        def insert(self):
-            inserted.append(dict(self))
-    frappe.get_doc = Doc
-    r = _rules_module(frappe, {
-        "required_pairs": lambda fy, fp: {("ARS", "CHF"), ("EUR", "CHF")},
-        # ARS -> CHF at 0.0035: about 4.9x above the references (0.000708), under the hard 10x
-        "erp_quote_rows": lambda as_of: [("d365_fo", "Closing", "ARS", "CHF", 0.0035, "2024-03-01"),
-                                         ("d365_fo", "Closing", "EUR", "CHF", 0.95, "2024-03-01")],
-        "usd_references": lambda codes: {c: REFS.get(c) for c in codes},
-    })
-    out = r.prefill_from_erp("2024", "3")
-    assert {d["from_currency"] for d in inserted} == {"ARS", "EUR"}, "both are drafted"
-    warned = dict(x.split(": ", 1) for x in out["warned"])
-    assert list(warned) == ["ARS → CHF Closing"], out
-    assert "Magnitude Warning Factor (3x" in warned["ARS → CHF Closing"]
-
-
-def test_the_pre_fill_in_action():
-    inserted, record = [], {}
-    frappe = _frappe(record)
-    frappe.only_for = lambda roles: inserted.append(("roles", roles))
-    lookup = frappe.get_all
-    frappe = _frappe(record, taken=[("GBP", "CHF", "Closing")])
-    frappe.only_for = lambda roles: inserted.append(("roles", roles))
-    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
-
-    class Doc(dict):
-        def __init__(self, d):
-            super().__init__(d)
-            self.name = f"GER-{d['from_currency']}-{d['rate_type']}"
-
-        def insert(self):
-            assert frappe.flags.konsol_prefilling_rates is True, "the pre-fill's own flag"
-            if self["from_currency"] == "SEK":   # the controller refused (e.g. a move needing a reason)
-                raise frappe.ValidationError("moves +80%")
-            inserted.append(dict(self))
-    frappe.get_doc = Doc
-    attempted = []
-    insert = Doc.insert
-    Doc.insert = lambda self: attempted.append(self["from_currency"]) or insert(self)
-    asked = []
-    r = _rules_module(frappe, {
-        "required_pairs": lambda fp, fy: {("EUR", "CHF"), ("GBP", "CHF"), ("SEK", "CHF"), ("XAU", "CHF"),
-                                          ("JPY", "CHF"), ("NOK", "CHF")},
-        # the period end quotes EUR -> CHF Closing at 0.95; the period start at 0.9478
-        # (one row per source, type and pair, as erp_quote_rows returns them)
-        "erp_quote_rows": lambda as_of: asked.append(str(as_of)) or [
-            ("d365_fo", "Closing", "EUR", "CHF", 0.95, "2024-03-31") if str(as_of) == "2024-03-31"
-            and r[:4] == ("d365_fo", "Closing", "EUR", "CHF") else r for r in ROWS] + [
-            ("d365_fo", "Closing", "XAU", "CHF", 2100.0, "2024-03-01"),
-            ("d365_fo", "Closing", "SEK", "CHF", 0.085, "2024-03-01"),
-            ("d365_fo", "Closing", "CHF", "JPY", 170.0, "2024-03-01"),
-            ("d365_fo", "Closing", "NOK", "CHF", 8.3, "2024-03-01")],
-        "usd_references": lambda codes: {c: REFS.get(c) if c != "XAU" else None for c in codes} | {"NOK": 1.03},
-    })
-    out = r.prefill_from_erp("2024", "3")
-    assert inserted[0] == ("roles", ("EPM Analyst", "EPM Admin", "System Manager"))
-    drafts = inserted[1:]
-    assert {(d["from_currency"], d["rate_type"]) for d in drafts} == {
-        ("EUR", "Closing"), ("EUR", "Average"), ("GBP", "Average"), ("JPY", "Closing")}
-    assert all(d["source"] == "ERP pre-fill" and d["erp_quote"] == d["quote"] and "docstatus" not in d
-               for d in drafts)
-    # konsol#348: the pre-fill proposes actuals, so every draft names the set
-    # flagged Is Actuals, and a draft or approved rate in another set does
-    # not count as "existing"
-    assert all(d["rate_set"] == "ACTUAL" for d in drafts), drafts
-    assert record["taken_reads"] == [(2024, 3, "ACTUAL")], record["taken_reads"]
-    eur_avg = next(d for d in drafts if d["from_currency"] == "EUR" and d["rate_type"] == "Average")
-    assert (eur_avg["quote"], eur_avg["quoted_per"]) == (0.945, "1") and "Default" in eur_avg["source_note"]
-    jpy = next(d for d in drafts if d["from_currency"] == "JPY")
-    assert (jpy["quote"], jpy["quoted_per"]) == (0.588235294, "100"), "CHF per 100 JPY"
-    # the note gives every ERP quote as the true rate it means, and the unit it is entered per
-    assert "d365_fo Closing 0.00588235294 CHF per JPY" in jpy["source_note"], jpy["source_note"]
-    assert "Entered as 0.588235294 CHF per 100 JPY" in jpy["source_note"]
-    assert "0.945 CHF per EUR" in eur_avg["source_note"] and "Entered as" not in eur_avg["source_note"]
-    assert out["existing"] == ["GBP → CHF Closing"]
-    assert "SEK → CHF Average" in out["no_quote"]
-    refused = dict(x.split(": ", 1) for x in out["refused"])
-    assert "No magnitude reference for XAU" in refused["XAU → CHF Closing"]
-    assert "x above" in refused["NOK → CHF Closing"], "NOK 8.3 CHF is a scaling error"
-    assert refused["SEK → CHF Closing"] == "moves +80%"
-    # the magnitude guard runs before the insert: a refused quote is never inserted,
-    # so only the controller's refusal (SEK) logged a message, and it was cleared
-    assert "XAU" not in attempted and "NOK" not in attempted and "SEK" in attempted
-    assert record.get("cleared") == [1] and frappe.flags.konsol_prefilling_rates is False
-    # a Closing rate is struck at the period end, an Average spans it from the start
-    assert sorted(asked) == ["2024-03-01", "2024-03-31"]
-    eur = {d["rate_type"]: d["quote"] for d in drafts if d["from_currency"] == "EUR"}
-    assert eur == {"Closing": 0.95, "Average": 0.945}
-
-
-def test_the_pre_fill_falls_back_to_the_tree_for_the_period():
-    """No ledgers yet for the period: tree_pairs, asked for that period (it
-    filters out equity-accounted currencies; test_group_rates_bench runs it)."""
-    asked = []
-    frappe = _frappe({})
-    frappe.only_for = lambda roles: None
-    r = _rules_module(frappe, {"required_pairs": lambda fy, fp: set(),
-                               "tree_pairs": lambda fy, fp: asked.append((fy, fp)) or set(),
-                               "erp_quote_rows": lambda as_of: []})
-    assert r.prefill_from_erp("2099", "13") == {"created": [], "existing": [], "no_quote": [], "refused": [],
-                                                "warned": []}
-    assert asked == [(2099, 13)]
-    assert str(r.period_end(2099, 2)) == "2099-02-28" and str(r.period_end(2099, 13)) == "2099-12-31"
-    assert str(r.period_end(2096, 2)) == "2096-02-29" and str(r.period_end(2099, 0)) == "2099-01-31"
-
-
 def _gate(pairs=None, approved=(), error=None, built=True, groups=(), entities=()):
     record = {}
     frappe = _frappe(record)
@@ -2111,9 +1978,6 @@ def test_actuals_readers_select_the_flagged_set_and_refuse_when_none_is_flagged(
         assert "Is Actuals" in str(e) and "Rate Set" in str(e), str(e)
     else:
         raise AssertionError("a close with no actuals set must be refused")
-    frappe = _frappe({}, actuals=None)
-    frappe.only_for = lambda roles: None
-    assert _refused(_rules_module(frappe).prefill_from_erp, "2024", "3"), "the pre-fill proposes actuals"
     # two flagged (a patch or a race got past the controller): refuse, naming both
     r = _rules_module(_frappe({}, actuals=("ACTUAL", "ZZ_OTHER")))
     try:
@@ -2417,20 +2281,6 @@ def test_the_copy_and_the_pre_fill_lock_the_rate_set_before_they_read():
     assert "FROM `tabRate Set`" in sql[0] and "FOR UPDATE" in sql[0] and "name=%s" in sql[0], sql[:2]
     taken = next(i for i, q in enumerate(sql) if "docstatus < 2" in q)
     assert "FOR UPDATE" in sql[taken] and taken > sql.index("ASSERT_OPEN") > 0
-
-    record = {}
-    frappe = _frappe(record)
-    frappe.only_for = lambda roles: None
-    lookup = frappe.get_all
-    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
-    r = _rules_module(frappe, {"required_pairs": lambda fy, fp: set(), "tree_pairs": lambda fy, fp: set(),
-                               "erp_quote_rows": lambda as_of: []})
-    r.prefill_from_erp("2024", "3")
-    sql = record["sql"]
-    lock = next(i for i, q in enumerate(sql) if "FROM `tabRate Set`" in q)
-    taken = next(i for i, q in enumerate(sql) if "docstatus < 2" in q)
-    assert "FOR UPDATE" in sql[lock] and "FOR UPDATE" in sql[taken] and lock < taken, sql
-    assert record["taken_reads"] == [(2024, 3, "ACTUAL")]
 
 
 def test_a_key_edit_makes_a_copied_or_pre_filled_draft_manual():

@@ -961,80 +961,141 @@ def taken_keys(fiscal_year, fiscal_period, rate_set):
         (int(fiscal_year), int(fiscal_period), rate_set))}
 
 
+SHEET_DOCTYPE = "Rate Sheet"
+#: Set around the writes of each path, and by nothing else: Rate Sheet's
+#: _guard_provenance refuses Source, ERP quotes and Copied From without them.
+#: Pinned equal to rate_sheet.py's constants by test_rate_sheet_prefill (this
+#: module cannot import the controller).
+PREFILL_FLAG = "konsol_prefilling_rate_sheet"
+DUPLICATE_FLAG = "konsol_duplicating_rate_sheet"
+
+
 @frappe.whitelist(methods=["POST"])
 def prefill_from_erp(fiscal_year, fiscal_period):
-    """Propose DRAFT rates for a period from what the ERP feed quotes.
+    """Propose a period's Statutory rates from what the ERP feed quotes
+    (konsol#592 T12; konsol#103).
 
-    "D365 quotes 0.9378 for March: accept?" A Closing proposal is the quote in
-    force at the period's end, an Average one the quote at its start. Each proposal is a draft carrying
-    the quote, its source and how it was reached; nothing is submitted, so
-    nothing applies itself. A key that already has a draft or an approved rate
-    is left alone. Group Accountant, Close Lead and System Manager only.
+    "D365 quotes 0.9378 for March: accept?" Creates the period's DRAFT
+    Statutory Rate Sheet if there is none, or fills the MISSING rows of the
+    draft there is; a row already on the draft, whoever wrote it, is left
+    alone. An approved sheet is never touched: a correction supersedes it, so
+    the pre-fill refuses by name. A sheet in Pending Approval is refused too,
+    so it does not change under its approver.
 
-    A quote the magnitude guard refuses is reported, not inserted, so the
-    refusal pops no dialog. A quote that moves more than the declared Rate
-    Move threshold (Close Settings) needs a person's reason, so it is
-    reported too: enter it by hand with the reason.
+    A pair needs both quotes to make a row: a Closing quote is the one in
+    force at the period's end, an Average one the quote at its start. A pair
+    missing either is listed under "no_quote" and skipped. Each row carries
+    Source "ERP pre-fill" and its ERP quotes, one Quoted Per for both. Nothing
+    is submitted. Group Accountant, Close Lead and System Manager only (PREFILL_ROLES).
 
-    A quote past the declared Magnitude Warning Factor (konsol#179) is still
-    drafted, since nobody is here to give a reason, and listed under
-    "warned": the person who saves or approves the draft gives the reason.
-    The pre-fill picks the unit itself, so a gap that size points at a stale
-    reference or an ERP error."""
+    A quote the magnitude guard refuses, and a row the sheet refuses (a move
+    over the declared Rate Move threshold needs a person's reason), are
+    reported under "refused", not inserted, so the refusal pops no dialog: enter
+    that row by hand. A quote past the declared Magnitude Warning Factor
+    (konsol#179) is still drafted and listed under "warned": the person who
+    saves or approves the sheet gives the reason. So are ERP sources that
+    disagree.
+
+    The fiscal year is locked first (LOCK IN SHARE MODE, as every sheet
+    write does), then the period's sheets are read FOR UPDATE, so two clicks
+    at once cannot both create the sheet. Returns {"sheet", "sheet_created",
+    "created" (the pairs added), "existing", "no_quote", "refused", "warned"}."""
     frappe.only_for(PREFILL_ROLES)
-    rate_set = actuals_rate_set()  # the pre-fill proposes actuals (konsol#348)
-    if not lock_rate_set(rate_set):
-        frappe.throw(f"Rate Set {rate_set} does not exist.", frappe.ValidationError)
     fy, fp = int(fiscal_year), int(fiscal_period)
+    frappe.db.sql("SELECT name, status FROM `tabEPM Fiscal Year` WHERE fiscal_year=%s LOCK IN SHARE MODE", (fy,))
+    sheets = frappe.db.sql(
+        "SELECT name, docstatus, status FROM `tabRate Sheet` WHERE rate_basis = 'Statutory' "
+        "AND fiscal_year = %s AND fiscal_period = %s AND docstatus < 2 ORDER BY docstatus, name FOR UPDATE",
+        (fy, fp))
+    drafts = [r for r in sheets if int(r[1] or 0) == 0]
+    approved = [r[0] for r in sheets if int(r[1] or 0) == 1]
+    if not drafts and approved:
+        frappe.throw(
+            f"{approved[0]} is the approved Statutory sheet for FY{fy} P{fp}, and the pre-fill does not touch "
+            "an approved sheet. To correct a rate, supersede it (a new draft that names it in Supersedes, with "
+            "a Reason for Change).", frappe.ValidationError)
+    doc, created_sheet = None, False
+    if drafts:
+        name, _, status = drafts[0]
+        if status not in (None, "", "Draft"):
+            frappe.throw(f"{name} is {status}, so its approver may be reading it. Reject it back to Draft "
+                         "before pre-filling it.", frappe.ValidationError)
+        doc = frappe.get_doc(SHEET_DOCTYPE, name)
+    have = {(r.get("from_currency"), r.get("to_currency")) for r in (doc.get("rates") or [])} if doc else set()
     pairs = required_pairs(fy, fp) or tree_pairs(fy, fp)
     # A Closing rate is struck at the period end; an Average spans the period,
     # and the ERP keys it on the period's start.
     rows_by_type = {"Closing": erp_quote_rows(period_end(fy, fp)),
                     "Average": erp_quote_rows(period_start(fy, fp))}
-    taken = taken_keys(fy, fp, rate_set)
     refs = usd_references({c for pair in pairs for c in pair})
-    out = {"created": [], "existing": [], "no_quote": [], "refused": [], "warned": []}
     factor = magnitude_warning_factor()
-    frappe.flags.konsol_prefilling_rates = True
+    out = {"sheet": doc.name if doc else None, "sheet_created": False, "created": [], "existing": [],
+           "no_quote": [], "refused": [], "warned": []}
+    if doc is None:
+        created_sheet = True
+        doc = frappe.get_doc({"doctype": SHEET_DOCTYPE, "rate_basis": "Statutory", "fiscal_year": fy,
+                              "fiscal_period": fp, "rates": []})
+        # validate() excludes its own name from the one-sheet-per-key read, and
+        # the move check reads the sheets before it: give it the name autoname
+        # will, then take it away for the insert.
+        doc.name = f"RS-S-{fy}-{fp:02d}"
+    frappe.flags[PREFILL_FLAG] = True
     try:
         for f, t in sorted(pairs):
-            for rate_type in RATE_TYPES:
-                label = f"{f} → {t} {rate_type}"
-                if (f, t, rate_type) in taken:
-                    out["existing"].append(label)
-                    continue
-                quotes = resolve_quotes(rows_by_type[rate_type], f, t, rate_type)
-                if not quotes:
-                    out["no_quote"].append(label)
-                    continue
-                problem = magnitude_problem(f, t, quotes[0]["rate"], refs)
-                if problem:
-                    # The #138 guard refusing an ERP quote is the guard working.
-                    out["refused"].append(f"{label}: {problem}")
-                    continue
-                quote, per = choose_quoted_per(quotes[0]["rate"])
-                note = describe_quotes(quotes, fy, fp, f, t)
-                if per > 1:
-                    note += f" Entered as {quote_label(quote, per, f, t)}, so it keeps its digits."
-                doc = frappe.get_doc({
-                    "doctype": DOCTYPE, "rate_set": rate_set, "to_currency": t, "from_currency": f,
-                    "rate_type": rate_type, "fiscal_year": fy, "fiscal_period": fp, "quote": quote,
-                    "quoted_per": str(per), "erp_quote": quote, "source": PREFILL_SOURCE, "source_note": note,
-                })
-                try:
-                    doc.insert()
-                except frappe.ValidationError as e:
-                    # frappe.throw logged the message before raising; the
-                    # summary reports it, so no dialog pops for it.
-                    frappe.clear_last_message()
-                    out["refused"].append(f"{label}: {e}")
-                    continue
-                out["created"].append(doc.name)
+            label = f"{f} → {t}"
+            if (f, t) in have:
+                out["existing"].append(label)
+                continue
+            quotes = {rt: resolve_quotes(rows_by_type[rt], f, t, rt) for rt in RATE_TYPES}
+            missing = [rt for rt in RATE_TYPES if not quotes[rt]]
+            if missing:
+                out["no_quote"].extend(f"{label} {rt}" for rt in missing)
+                continue
+            rates = {rt: quotes[rt][0]["rate"] for rt in RATE_TYPES}
+            problems = [f"{label} {rt}: {p}" for rt in RATE_TYPES
+                        if (p := magnitude_problem(f, t, rates[rt], refs))]
+            if problems:
+                # The #138 guard refusing an ERP quote is the guard working.
+                out["refused"].extend(problems)
+                continue
+            # One Quoted Per per row: the larger of the two keeps both quotes' digits.
+            per = max(choose_quoted_per(rates[rt])[1] for rt in RATE_TYPES)
+            average, closing = (round(rates[rt] * per, 9) for rt in ("Average", "Closing"))
+            doc.append("rates", {
+                "from_currency": f, "to_currency": t, "quoted_per": str(per), "average_quote": average,
+                "closing_quote": closing, "source": PREFILL_SOURCE, "erp_average_quote": average,
+                "erp_closing_quote": closing})
+            try:
+                doc.validate()
+            except frappe.ValidationError as e:
+                # frappe.throw logged the message before raising; the summary
+                # reports it, so no dialog pops for it.
+                doc.get("rates").pop()
+                frappe.clear_last_message()
+                out["refused"].append(f"{label}: {e}")
+                continue
+            out["created"].append(label)
+            for rt, quote in (("Average", average), ("Closing", closing)):
                 warning = magnitude_warning(f, t, quote, per, factor, refs)
                 if warning:
-                    out["warned"].append(f"{label}: {warning}")
+                    out["warned"].append(f"{label} {rt}: {warning}")
+                note = describe_quotes(quotes[rt], fy, fp, f, t)
+                if note.startswith("ERP SOURCES DISAGREE"):
+                    out["warned"].append(f"{label} {rt}: {note}")
+        if out["created"]:
+            note = (f"Pre-filled from the ERP feed for FY{fy} P{fp}: Closing quotes at the period end "
+                    f"({period_end(fy, fp)}), Average quotes at its start ({period_start(fy, fp)}). "
+                    f"{len(out['created'])} pair(s) proposed; a person reviews and approves.")
+            before = (doc.get("source_note") or "").strip()
+            doc.source_note = f"{before}\n{note}" if before else note
+            if created_sheet:
+                doc.name = None
+                doc.insert()
+            else:
+                doc.save()
+            out["sheet"], out["sheet_created"] = doc.name, created_sheet
     finally:
-        frappe.flags.konsol_prefilling_rates = False
+        frappe.flags[PREFILL_FLAG] = False
     return out
 
 

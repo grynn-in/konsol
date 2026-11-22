@@ -261,8 +261,9 @@ def test_the_magnitude_guard_refuses_a_pair_by_name():
     env = Env()
     out = env.rules(magnitude_problem=lambda f, t, rate, refs=None: "100x off" if f == "JPY" else None
                     ).prefill_from_erp(2099, 3)
-    assert out["created"] == ["EUR → CHF"] and len(out["refused"]) == 1
-    assert out["refused"][0].startswith("JPY → CHF") and "100x off" in out["refused"][0]
+    assert out["created"] == ["EUR → CHF"]
+    assert sorted(r.split(":")[0] for r in out["refused"]) == ["JPY → CHF Average", "JPY → CHF Closing"]
+    assert all("100x off" in r for r in out["refused"])
 
 
 def test_a_row_the_sheet_refuses_is_reported_and_the_rest_are_kept():
