@@ -4,6 +4,20 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (22 Nov 2026): Parent Entity help text, Entity Fiscal Calendar removed, Copy rates from previous period.**
+- **Parent Entity help text** (konsol#576, 8a256cc): the field now says what it does. It places the entity in the access and navigation tree. Ownership and consolidated numbers come from Ownership Period; no dbt model reads `parent_entity`.
+- **Entity Fiscal Calendar removed** (konsol#577; konsol#578, dad0186e + konsolidat#380, 9a15baaf). Deepak Pai, 21 Nov 2026. It had been dead since konsolidat#221; a site declares one fiscal calendar. A patch removes the doctype, its rows and site customisations, and the warehouse table.
+- **Copy rates from previous period** (konsol#584; konsol#586, ae510efd). Deepak Pai, 22 Nov 2026. A Group Exchange Rate list button drafts the target period's rates from the previous regular period of one Rate Set:
+  - It skips keys that already have a draft or an approved rate, and it locks the Rate Set so two copies cannot race.
+  - It warns when a correction is pending on the source rate.
+  - The source is recorded ("Copied from previous period", Copied From). Editing a copied rate makes it Manual.
+  - Approval still applies. A silent carry-forward was rejected.
+  - The live test passed on every step.
+- **Follow-ups:**
+  - konsol#587: a rate in P0 (Opening) cannot be approved; close_event refuses period 0.
+  - konsol#588: `gold_ic_side_slices` has no Build Model, so it loses its domain tag and scoped builds skip it.
+  - konsol#585: the constant-currency HMD waits on Deepak Pai's pick.
+
 **Update (19 Nov 2026): three HMD decisions, two built; one waits on #358.** All three decisions are by Deepak Pai, 18 Nov 2026, and recorded on their issues.
 - **konsol#562, decision E, plus an `on_budget` state** (konsolidat#377, dae26e03 + konsol#571, 8f40d17e):
   - On the profit and loss, favourability comes from the sign of the variance alone: above zero Favourable, below Unfavourable, zero On budget. This holds on the statement (headings and net result) and in `gold_variance_analysis` (every P&L account).
