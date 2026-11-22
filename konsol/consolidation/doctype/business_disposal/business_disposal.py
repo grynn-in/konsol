@@ -126,7 +126,7 @@ class BusinessDisposal(Document):
         except ValueError as e:  # a proceeds currency with no Closing rate
             frappe.throw(
                 f"{_PREFIX}{e} ({period['period_code']} of FY{period['fiscal_year']}): "
-                f"approve a Closing Group Exchange Rate to {root.get('reporting_currency')} for it."
+                f"approve a Statutory Rate Sheet with a Closing rate to {root.get('reporting_currency')} for it."
             )
         self.total_proceeds = float(result["total_proceeds"])
 
@@ -341,7 +341,7 @@ class BusinessDisposal(Document):
     def _rate_to_group(group_currency, period):
         """Closing rate to the group currency at the disposal period, as the
         model's callback: 1.0 for the group currency, None when no approved
-        Closing Group Exchange Rate exists (the model refuses by name)."""
+        Closing rate exists on a Statutory Rate Sheet (the model refuses by name)."""
         def rate(currency):
             if not currency or currency == group_currency:
                 return 1.0

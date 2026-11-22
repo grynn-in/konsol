@@ -3,8 +3,8 @@
 A period's rates are complete when every pair its ledgers translate has an
 Average and a Closing rate. One approved Statutory sheet holds both quotes of a
 pair on one row, so a row with both quotes covers both rate types; a row with
-one quote covers that type only. Until Group Exchange Rate is retired (T26)
-the approved GER rows count too, as in the publish.
+one quote covers that type only. The sheets are the only source: Group
+Exchange Rate is retired (konsol#592 T26).
 
 group_rates runs against a stub frappe; nothing here needs a site."""
 import importlib.util
@@ -20,9 +20,8 @@ class Refused(Exception):
     pass
 
 
-def _frappe(sheets=(), ger=(), actuals=("ACTUAL",)):
-    """``sheets``: (name, basis, fy, fp, docstatus, [(from, to, average, closing)]).
-    ``ger``: (from, to, rate_type, fy, fp, rate_set, docstatus)."""
+def _frappe(sheets=(), actuals=("ACTUAL",)):
+    """``sheets``: (name, basis, fy, fp, docstatus, [(from, to, average, closing)])."""
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -43,11 +42,6 @@ def _frappe(sheets=(), ger=(), actuals=("ACTUAL",)):
             _ds, fy, fp = params
             return [(n, None, f, t, "1", avg, cls) for n, basis, y, p, ds, rows in sheets
                     if ds == 1 and basis == "Statutory" and (y, p) == (fy, fp) for f, t, avg, cls in rows]
-        if "`tabGroup Exchange Rate`" in query:
-            assert "docstatus = %s" in query
-            ds, fy, fp, rate_set = params
-            return [(f, t, rt) for f, t, rt, y, p, rs, d in ger
-                    if (d, y, p, rs) == (ds, fy, fp, rate_set)]
         raise AssertionError(f"unexpected read: {query}")
 
     frappe.throw, frappe.get_all = throw, get_all
@@ -112,16 +106,6 @@ def test_a_draft_a_cancelled_sheet_and_another_period_cover_nothing():
     for sheets in ([_sheet(rows, docstatus=0)], [_sheet(rows, docstatus=2)], [_sheet(rows, fp=4)],
                    [_sheet(rows, fy=2098)], [_sheet(rows, basis="Constant", fp=None)]):
         assert _rules(_frappe(sheets))._approved_keys(2099, 3) == set()
-
-
-def test_approved_ger_rows_still_count_beside_a_sheet():
-    # The GER branch goes with T26 (konsol#592).
-    ger = [("JPY", "CHF", "Closing", 2099, 3, "ACTUAL", 1), ("JPY", "CHF", "Average", 2099, 3, "ACTUAL", 1),
-           ("EUR", "CHF", "Closing", 2099, 3, "ACTUAL", 0), ("EUR", "CHF", "Average", 2099, 3, "BUDGET", 1)]
-    r = _rules(_frappe([_sheet([("EUR", "CHF", 0.94, 0.95)])], ger))
-    assert r._approved_keys(2099, 3) == BOTH
-    assert _rules(_frappe([], ger))._approved_keys(2099, 3) == {
-        ("JPY", "CHF", "Closing"), ("JPY", "CHF", "Average")}
 
 
 def test_a_sheet_is_an_actuals_rate_only():

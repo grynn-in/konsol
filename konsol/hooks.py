@@ -88,7 +88,6 @@ doctype_js = {
     "Consolidation Journal": "public/js/approval_actions.js",
     "Business Combination": "public/js/approval_actions.js",
     "Business Disposal": "public/js/approval_actions.js",
-    "Group Exchange Rate": "public/js/approval_actions.js",
     "Rate Sheet": "public/js/approval_actions.js",
     "Ownership Period": "public/js/approval_actions.js",
     "Historical Equity Rate": "public/js/approval_actions.js",
@@ -190,10 +189,10 @@ _dbt_trigger_doctypes = [
     # Safe since konsol#126: the trigger queues a job after the commit, so it
     # can no longer commit docstatus=1 before on_submit has claimed the rows.
     "Trial Balance Submission",
-    # konsol#103: an approved (or cancelled) group rate changes what
+    # konsol#103, #592: an approved (or cancelled) Rate Sheet changes what
     # gold_consolidated_trial_balance translates at. Submittable, so only
     # on_submit / on_cancel request the build; a draft save requests nothing.
-    "Group Exchange Rate",
+    "Rate Sheet",
     # konsol#306, #305-D2-10: approving (or reversing) a deal is a
     # consolidation input too. Both are submittable, so on_update is a
     # no-op (queue_consolidation_build's is_submittable guard) and only

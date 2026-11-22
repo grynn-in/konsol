@@ -1268,11 +1268,11 @@ def test_the_hook_calls_the_real_record_data_change_exactly_once():
     it must still call the real record_data_change exactly once."""
     site = _five_period_site()
     on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
-    on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
+    on_submit(_hook_doc("Rate Sheet", "RS-S-2025-07"))
     assert len(calls) == 1, calls
     args, kwargs = calls[0]
     assert args[:2] == (2025, 7), args
-    assert args[2] == "Group Exchange Rate GER-1 approved", args
+    assert args[2] == "Rate Sheet RS-S-2025-07 approved", args
     assert kwargs == {"entity": None}, kwargs
 
 
@@ -1284,19 +1284,19 @@ def test_the_one_real_call_stamps_every_later_signed_period_with_one_void_event_
     call's worth of duplicates."""
     site = _five_period_site()
     on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
-    on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
+    on_submit(_hook_doc("Rate Sheet", "RS-S-2025-07"))
     assert len(calls) == 1, calls
     for name in ("RUN-7", "RUN-8", "RUN-9", "RUN-10", "RUN-11"):
         rec = _run_rec(site, name)
         assert rec["signoff_status"] == "Re-sign Needed", (name, rec)
-        assert "Group Exchange Rate GER-1 approved" in rec["affected_by"], (name, rec)
+        assert "Rate Sheet RS-S-2025-07 approved" in rec["affected_by"], (name, rec)
     assert sorted(e[4] for e in site.close_events) == [
         "RUN-10", "RUN-11", "RUN-7", "RUN-8", "RUN-9"], site.close_events
     assert len(site.close_events) == 5, site.close_events
     for kind, fy, fp, ref_dt, ref_name, reason, entity in site.close_events:
         assert kind == "signoff_voided", kind
         assert ref_dt == "Assertion Run", ref_dt
-        assert "Group Exchange Rate GER-1 approved" in reason, reason
+        assert "Rate Sheet RS-S-2025-07 approved" in reason, reason
 
 
 def test_the_changed_periods_own_row_gets_the_real_text_and_later_rows_carry_it():
@@ -1309,13 +1309,13 @@ def test_the_changed_periods_own_row_gets_the_real_text_and_later_rows_carry_it(
     (A66) check can see it."""
     site = _five_period_site()
     on_submit, _on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
-    on_submit(_hook_doc("Group Exchange Rate", "GER-1"))
+    on_submit(_hook_doc("Rate Sheet", "RS-S-2025-07"))
     assert set(site.data_changes) == {(2025, p) for p in range(7, 13)}, site.data_changes
     assert site.data_changes[(2025, 7)]["data_change"] == (
-        "Group Exchange Rate GER-1 approved"), site.data_changes
+        "Rate Sheet RS-S-2025-07 approved"), site.data_changes
     for fp in range(8, 13):
         assert site.data_changes[(2025, fp)]["data_change"] == (
-            "Balance carried from FY2025 P07: Group Exchange Rate GER-1 approved"), (
+            "Balance carried from FY2025 P07: Rate Sheet RS-S-2025-07 approved"), (
             fp, site.data_changes)
 
 
@@ -1337,9 +1337,9 @@ def test_a_reversing_journals_single_call_still_stamps_the_later_period():
 def test_on_cancel_also_calls_the_real_record_data_change_exactly_once():
     site = _five_period_site()
     _on_submit, on_cancel, calls, site = _hook_on_real_gate(site, period=(2025, 7))
-    on_cancel(_hook_doc("Group Exchange Rate", "GER-1"))
+    on_cancel(_hook_doc("Rate Sheet", "RS-S-2025-07"))
     assert len(calls) == 1, calls
-    assert calls[0][0][2] == "Group Exchange Rate GER-1 cancelled", calls
+    assert calls[0][0][2] == "Rate Sheet RS-S-2025-07 cancelled", calls
 
 
 # --- #305 R41k (review-w4-server.md S2 effect 3; coordinator call (a),  ----

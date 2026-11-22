@@ -1,7 +1,7 @@
 """Rates model, part 1, pure (konsol#305 E401; story 4.1; #305-W2-3, D2-9).
 
 ``grid(required, docs, earlier, threshold, move_problem)`` turns the period's
-required (from, to) pairs and this period's Group Exchange Rate rows into the
+required (from, to) pairs and this period's Rate Sheet rates into the
 grid the Rates screen shows: one row per pair, with a Closing cell and an
 Average cell. A rate for a pair the period does not need is listed apart, in
 ``unrequired``, never dropped.
@@ -24,10 +24,8 @@ as ``correction`` (``_correction``) with the rate before and after, and is
 not listed in ``extra_drafts``.
 
 konsol#592 T20: the grid reads Rate Sheets. ``sheet_docs`` turns Rate Sheet
-rows into the grid's docs (one per rate type quoted, named after the sheet),
-and ``sheet_wins`` unions them with the Group Exchange Rate docs: on a key an
-approved sheet covers, the sheet alone (group_rates.union_rows' rule). Every
-cell and correction carries its ``doctype``. The GER branch goes with T26.
+rows into the grid's docs (one per rate type quoted, named after the sheet).
+Every cell and correction carries its ``doctype``.
 
 Imports nothing from frappe or konsol.
 """
@@ -84,20 +82,6 @@ def sheet_docs(rows, true_rate):
                     doc[f] = row[f]
             out.append(doc)
     return out
-
-
-def sheet_wins(sheet_docs, ger_docs, with_period=False):
-    """``sheet_docs`` and every Group Exchange Rate doc whose key no APPROVED
-    sheet doc covers. The key is (from, to, rate type), and also (fiscal
-    year, fiscal period) when ``with_period`` (the earlier rates). A draft
-    sheet never hides a GER rate: only an approved sheet replaces what is
-    published. T26 (retire_group_exchange_rate) removes the GER branch."""
-    def key(doc):
-        k = (doc["from_currency"], doc["to_currency"], doc["rate_type"])
-        return k + (int(doc["fiscal_year"]), int(doc["fiscal_period"])) if with_period else k
-
-    covered = {key(d) for d in sheet_docs if d.get("docstatus") == 1}
-    return list(sheet_docs) + [d for d in ger_docs if key(d) not in covered]
 
 
 def _previous_index(earlier):

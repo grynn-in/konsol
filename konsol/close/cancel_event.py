@@ -2,7 +2,7 @@
 ``doc_events["*"]["on_cancel"]`` in hooks.py.
 
 Every completed cancel of a ``close_policy_model.APPROVAL_DOCTYPES`` document
-records one ``approval_cancelled`` Close Event: a GER, Ownership Period,
+records one ``approval_cancelled`` Close Event: a Rate Sheet, Ownership Period,
 Historical Equity Rate or IC Balance cancel, a journal Reverse, and a Business
 Combination or Business Disposal cancel.
 

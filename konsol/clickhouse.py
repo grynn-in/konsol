@@ -920,8 +920,8 @@ _REFERENCE_TABLE_DDL = {
         "country String, erp_source String) "
         "ENGINE = MergeTree ORDER BY data_area_id"
     ),
-    # konsol#103: the governed group exchange rates, from Group Exchange Rate
-    # (submitted rows only). gold_consolidated_trial_balance translates from
+    # konsol#103: the governed group exchange rates, from the approved Rate
+    # Sheets (konsol#592; submitted sheets only). gold_consolidated_trial_balance translates from
     # this, never from the ERP feed; `document` names the approving record.
     # `rate` is the TRUE rate, units of to_currency per 1 from_currency, as
     # Float64: konsol computes it once (quote / quoted_per) when it publishes,

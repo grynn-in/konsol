@@ -1219,11 +1219,11 @@ def _sb_row(doctype, name, kind_label, title, fiscal_year=None, fiscal_period=No
 def test_group_accountant_gets_one_sent_back_item_counted_under_rates():
     site = _Site(roles=("EPM Analyst",), user="zz-ga@example.com")
     site.rates = {}  # isolate: no base "Rates missing" item also on the rates screen
-    site.sent_back_rows = [_sb_row("Group Exchange Rate", "GER-1", "Group rate · USD→EUR Closing",
-                                   "1.1000", fiscal_year=2025, fiscal_period=7)]
+    site.sent_back_rows = [_sb_row("Historical Equity Rate", "HER-00001", "Historical equity rate",
+                                   "UK01 2024-12-31")]
     result = _call(site)
     ids = _ids(result)
-    assert "sent-back:Group Exchange Rate:GER-1" in ids
+    assert "sent-back:Historical Equity Rate:HER-00001" in ids
     assert result["counts"]["by_screen"]["rates"]["count"] == 1
     assert site.sent_back_calls == [site.user]
     _assert_counts_add_up(result, "group_accountant")
@@ -1231,7 +1231,7 @@ def test_group_accountant_gets_one_sent_back_item_counted_under_rates():
 
 def test_viewer_gets_no_sent_back_item_and_sent_back_for_is_not_called():
     site = _Site(roles=("EPM User",))
-    site.sent_back_rows = [_sb_row("Group Exchange Rate", "GER-1", "x", "x",
+    site.sent_back_rows = [_sb_row("Rate Sheet", "RS-S-2025-07", "x", "x",
                                    fiscal_year=2025, fiscal_period=7)]
     result = _call(site)
     assert result["items"] == []

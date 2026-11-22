@@ -85,7 +85,10 @@ def _flagged_set(blank_count):
 def execute():
     for name in ("rate_set", "group_exchange_rate", "historical_equity_rate"):
         frappe.reload_doc("consolidation", "doctype", name)
-    blank_ger = frappe.db.count(GER, {"rate_set": _BLANK})
+    # Group Exchange Rate is retired (konsol#592 T26): its code left the app, so
+    # the reload above finds no file, and a site that never had the table has
+    # no rows to stamp.
+    blank_ger = frappe.db.count(GER, {"rate_set": _BLANK}) if frappe.db.table_exists(GER) else 0
     her_rows = frappe.get_all(HER, filters={"rate_set": _BLANK}, fields=_HER_FIELDS, limit_page_length=0)
     if not blank_ger and not her_rows:
         print("konsol#348 rate sets: every Group Exchange Rate and Historical Equity Rate names its set; "

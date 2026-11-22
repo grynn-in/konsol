@@ -42,7 +42,7 @@ KINDS = (
 YEAR_KINDS = ("year_closed", "year_locked", "year_reopened")
 #: Non-year kinds that may sit at fiscal_period 0 (opening balances). Decided
 #: 9 Nov 2026, Deepak Pai (#496 Q1): P0 downloads are recorded.
-#: konsol#587: opening balances translate at P0 rates, so a Group Exchange Rate
+#: konsol#587: opening balances translate at P0 rates, so a Statutory Rate Sheet
 #: at P0 is approved, self-approved, rejected or cancelled there; those four
 #: approval kinds are dated at P0. Period-close kinds stay refused.
 PERIOD_ZERO_KINDS = (

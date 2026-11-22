@@ -650,7 +650,7 @@ class EPMFiscalYear(Document):
         snapshot opened — that snapshot can predate this lock (on the SPA
         path, period_status.set_status reads the year with a plain get_doc
         before calling the action that takes this lock). The group-rate gate
-        takes its own locking read of Group Exchange Rate for that reason
+        takes its own locking read of the Rate Sheet rows for that reason
         (group_rates._approved_keys, PR #191 re-review finding 4)."""
         self._lock_year()
         self.reload()

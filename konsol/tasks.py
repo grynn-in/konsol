@@ -64,9 +64,10 @@ DOCTYPE_BUILD_MAP = {
     # kept by hand; full builds every model whatever the domains say. Submit,
     # cancel and Set Amount Basis (on_update_after_submit) all land here.
     "Trial Balance Submission": {"scope": "full", "risk": "high"},
-    # konsol#103: the governed translation rates. `staging` would not reach
-    # gold_consolidated_trial_balance, which is what reads them.
-    "Group Exchange Rate": {"scope": "consolidation", "risk": "high"},
+    # konsol#103, #592: the governed translation rates, on Rate Sheets.
+    # `staging` would not reach gold_consolidated_trial_balance, which is what
+    # reads them.
+    "Rate Sheet": {"scope": "consolidation", "risk": "high"},
     # konsol#306, #305-D2-10: a deal's approval (or reversal) changes the
     # consolidated numbers just as an adjustment does.
     "Business Combination": {"scope": "consolidation", "risk": "high"},

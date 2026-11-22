@@ -50,7 +50,7 @@ from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 #: Stored as "<VERSION>:<64 hex>", so a later change of recipe reads as a
 #: different fingerprint, never as a match.
 #: v2: ownership links (konsol#552). v3: the Constant Rate Sheet replaces the
-#: Rate Set and its Group Exchange Rates (konsol#592 D2); every v2 stamp reads
+#: per-Cycle Rate Set and its rates (konsol#592 D2); every v2 stamp reads
 #: as stale until the Cycle is re-approved.
 VERSION = "v3"
 _MOD = 2 ** 256

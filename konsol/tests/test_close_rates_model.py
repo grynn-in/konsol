@@ -986,9 +986,8 @@ def test_fr4_failure_path_a_correction_on_an_unrequired_row_is_not_counted():
 
 # --- konsol#592 T20: the grid reads Rate Sheets -----------------------------------
 # ``sheet_docs`` turns Rate Sheet rows (each joined to its sheet) into the
-# grid's docs, one per rate type quoted; ``sheet_wins`` unions them with the
-# Group Exchange Rate docs, an approved sheet hiding the GER docs of its key
-# (group_rates.union_rows' rule). The GER branch goes with T26.
+# grid's docs, one per rate type quoted. They are the grid's only docs since
+# konsol#592 T26 retired Group Exchange Rate.
 
 def _true_rate(quote, quoted_per):
     return float(quote) / int(quoted_per or 1)
@@ -1048,32 +1047,8 @@ def test_t20_period_fields_ride_along_when_the_row_has_them():
     assert "fiscal_year" not in plain
 
 
-def _ger(name, frm, rate_type, docstatus, fy=None, fp=None):
-    doc = _doc(name, frm, "GBP", rate_type, 0.8, docstatus, "bob@example.com",
-               "2026-08-01 10:00:00")
-    doc["doctype"] = "Group Exchange Rate"
-    if fy is not None:
-        doc.update(fiscal_year=fy, fiscal_period=fp)
-    return doc
-
-
-def test_t20_sheet_wins_on_the_keys_an_approved_sheet_covers_only():
-    sheets = M.sheet_docs([_sheet_row("RS-S", average=None),
-                           _sheet_row("RS-D", frm="USD", docstatus=0)], _true_rate)
-    gers = [_ger("GER-1", "EUR", "Closing", 1), _ger("GER-2", "EUR", "Average", 0),
-            _ger("GER-3", "USD", "Closing", 1)]
-    names = sorted(d["name"] for d in M.sheet_wins(sheets, gers))
-    # GER-1 is hidden by the approved RS-S; GER-2's key has no sheet quote;
-    # GER-3's key has only a draft sheet, so the published GER rate stays.
-    assert names == ["GER-2", "GER-3", "RS-D", "RS-D", "RS-S"], names
-
-
-def test_t20_sheet_wins_by_period_for_the_earlier_rates():
-    sheets = M.sheet_docs([_sheet_row("RS-S-2025-06", average=None, fiscal_year=2025,
-                                      fiscal_period=6)], _true_rate)
-    gers = [_ger("GER-6", "EUR", "Closing", 1, 2025, 6), _ger("GER-5", "EUR", "Closing", 1, 2025, 5)]
-    names = sorted(d["name"] for d in M.sheet_wins(sheets, gers, with_period=True))
-    assert names == ["GER-5", "RS-S-2025-06"], names
+def test_t26_the_union_with_the_retired_doctype_is_gone():
+    assert not hasattr(M, "sheet_wins")
 
 
 def test_t20_the_cell_and_its_correction_carry_their_doctype():

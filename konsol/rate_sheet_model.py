@@ -166,7 +166,7 @@ def _published_periods(sheet, calendar_rows):
 
 def published_rows(sheet, calendar_rows, actuals_code, constant_code="CONSTANT"):
     """epm_staging.group_exchange_rates rows for an APPROVED sheet, in the shape
-    ``group_rates.published_rows`` writes: [to, from, fiscal year, fiscal
+    ``group_rates.publish_rates`` writes: [to, from, fiscal year, fiscal
     period, rate type, TRUE rate, document, rate set].
 
     Statutory: Average and Closing per pair at (year, period) under
@@ -214,7 +214,7 @@ def _label(row, rate_type):
 
 def move_problems(sheet, previous_sheet, threshold):
     """Reasons the sheet needs a Reason for Change because a rate moves too far;
-    empty when none. The semantics of the Group Exchange Rate move check
+    empty when none. The semantics of the group rates' move check
     (``group_rates.move_problem``), per row.
 
     Each rate (true rate, so Quoted Per does not matter) is compared with the

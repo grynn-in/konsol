@@ -68,7 +68,6 @@ from konsol.entity_permissions import allowed_entity_codes
 JOURNAL = "Consolidation Journal"
 BC = "Business Combination"
 BD = "Business Disposal"
-GER = "Group Exchange Rate"
 RS = "Rate Sheet"
 OP = "Ownership Period"
 HER = "Historical Equity Rate"
@@ -86,8 +85,6 @@ _FIELDS = {
     JOURNAL: ["fiscal_year", "fiscal_period", "adjustment_type", "description",
               "total_debit", "currency", "reverse_fiscal_year", "reverse_fiscal_period",
               "consolidation_group"],
-    GER: ["from_currency", "to_currency", "rate_type", "fiscal_year", "fiscal_period",
-          "quote_label", "change_reason", "supersedes"],
     RS: ["rate_basis", "fiscal_year", "fiscal_period", "change_reason", "supersedes"],
     HER: ["consolidation_group", "data_area_id", "main_account", "rate_date", "historical_rate"],
     OP: ["consolidation_group", "data_area_id", "effective_date", "end_date",
@@ -225,23 +222,6 @@ def _first_state_rows(doctype, wf_row, states):
     return [dict(r) for r in rows]
 
 
-def _attach_replaced(ger_rows):
-    """FR5 (review S2): each pending Group Exchange Rate that carries
-    ``supersedes`` (a correction) gains ``replaced``: the replaced rate's
-    ``{name, quote_label, docstatus}``, or None when no such rate exists.
-    ONE ``get_all`` over every replaced name; none when no row is a
-    correction. A plain rate gets no ``replaced`` key."""
-    replaced_names = sorted({row["supersedes"] for row in ger_rows if row.get("supersedes")})
-    if not replaced_names:
-        return
-    rows = frappe.get_all(GER, filters={"name": ["in", replaced_names]},
-                          fields=["name", "quote_label", "docstatus"], limit_page_length=0)
-    by_name = {row["name"]: dict(row) for row in rows}
-    for row in ger_rows:
-        if row.get("supersedes"):
-            row["replaced"] = by_name.get(row["supersedes"])
-
-
 def _attach_replaced_sheets(sheet_rows):
     """Each pending Rate Sheet that carries ``supersedes`` (a correction, #312-3)
     gains ``replaced``: the replaced sheet's ``{name, rate_basis, fiscal_year,
@@ -359,8 +339,6 @@ def queue_for(user, roles):
                     doc.get("reverse_fiscal_year"), doc.get("reverse_fiscal_period"), period_rows)
                 doc["total_debit"] = _number(doc.get("total_debit"))
             doc_rows.append(doc)
-        if doctype == GER:
-            _attach_replaced(doc_rows)
         if doctype == RS:
             _attach_replaced_sheets(doc_rows)
         docs[doctype] = doc_rows

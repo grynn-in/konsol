@@ -21,16 +21,16 @@ CLOSE_DIR = os.path.join(APP_DIR, "close")
 
 APPROVAL_DOCTYPES = (
     "Consolidation Journal", "Business Combination", "Business Disposal",
-    "Group Exchange Rate", "Ownership Period", "Historical Equity Rate", "IC Balance",
+    "Rate Sheet", "Ownership Period", "Historical Equity Rate", "IC Balance",
 )
 ENTITY_FIELDS = {
     "Ownership Period": "data_area_id", "Historical Equity Rate": "data_area_id",
     "Business Combination": "acquired_entity", "Business Disposal": "disposed_entity",
-    "Group Exchange Rate": None, "Consolidation Journal": None, "IC Balance": None,
+    "Rate Sheet": None, "Consolidation Journal": None, "IC Balance": None,
 }
 # The fields each stub doctype has (frappe.get_meta(...).has_field).
 FIELDS = {
-    "Group Exchange Rate": {"fiscal_year", "fiscal_period", "amended_from"},
+    "Rate Sheet": {"rate_basis", "fiscal_year", "fiscal_period", "amended_from"},
     "IC Balance": {"fiscal_year", "fiscal_period"},
     "Ownership Period": {"data_area_id", "effective_date", "amended_from"},
     "Trial Balance Submission": {"data_area_id", "uploaded_on_behalf", "amended_from",
@@ -55,9 +55,11 @@ SUBMIT = [["docstatus", 0, 1]]
 
 def _site_rows():
     docs = {
-        "Group Exchange Rate": [
-            {"name": "GER-1", "owner": "a@x", "fiscal_year": 2026, "fiscal_period": 7},
-            {"name": "GER-2", "owner": "a@x", "fiscal_year": 2026, "fiscal_period": 7},
+        "Rate Sheet": [
+            {"name": "RS-S-2026-07-1", "owner": "a@x", "rate_basis": "Statutory", "fiscal_year": 2026,
+             "fiscal_period": 7},
+            {"name": "RS-S-2026-07-2", "owner": "a@x", "rate_basis": "Statutory", "fiscal_year": 2026,
+             "fiscal_period": 7},
         ],
         "IC Balance": [
             {"name": "ICB-1", "owner": "a@x", "fiscal_year": 2026, "fiscal_period": 8},
@@ -90,9 +92,9 @@ def _site_rows():
     }
     versions = [
         # self-approved: the submitter is the owner; its reason is in a Comment
-        _v("V1", "Group Exchange Rate", "GER-1", "a@x", 2, changed=SUBMIT),
+        _v("V1", "Rate Sheet", "RS-S-2026-07-1", "a@x", 2, changed=SUBMIT),
         # approved by someone else
-        _v("V2", "Group Exchange Rate", "GER-2", "b@x", 3, changed=SUBMIT),
+        _v("V2", "Rate Sheet", "RS-S-2026-07-2", "b@x", 3, changed=SUBMIT),
         # a Reject by b (workflow state only), then b approves: b is not a
         # preparer when the workflow state field is read from Workflow
         _v("V3", "IC Balance", "ICB-1", "b@x", 4, changed=[["status", "Pending Approval", "Draft"]]),
@@ -108,10 +110,10 @@ def _site_rows():
            changed=[["signoff_status", "Acknowledged", "Re-sign Needed"]]),
     ]
     comments = [
-        {"reference_doctype": "Group Exchange Rate", "reference_name": "GER-1", "owner": "a@x",
+        {"reference_doctype": "Rate Sheet", "reference_name": "RS-S-2026-07-1", "owner": "a@x",
          "creation": _dt(2, 8), "comment_type": "Comment",
          "content": "Self-approved by a@x under Close Settings (Allowed with reason): month-end rush"},
-        {"reference_doctype": "Group Exchange Rate", "reference_name": "GER-2", "owner": "b@x",
+        {"reference_doctype": "Rate Sheet", "reference_name": "RS-S-2026-07-2", "owner": "b@x",
          "creation": _dt(2, 10), "comment_type": "Comment", "content": "Rejected: wrong source"},
     ]
     runs = [
@@ -126,9 +128,9 @@ def _site_rows():
 
 
 EXPECTED_KINDS = {
-    "self_approved": 2,      # GER-1 (with the Comment's reason), OP-1
-    "approved": 3,           # GER-2, ICB-1, OP-BC1 (R01f: BC-derived, exempt)
-    "rejected": 1,           # GER-2's Comment
+    "self_approved": 2,      # RS-S-2026-07-1 (with the Comment's reason), OP-1
+    "approved": 3,           # RS-S-2026-07-2, ICB-1, OP-BC1 (R01f: BC-derived, exempt)
+    "rejected": 1,           # RS-S-2026-07-2's Comment
     "tb_submitted": 1,
     "period_closed": 1,
     "signed_off": 1,
@@ -363,7 +365,7 @@ DOCTYPE_RELOAD = {
     "Assertion Run": ("consolidation", "assertion_run"),
     "Business Combination": ("consolidation", "business_combination"),
     "Business Disposal": ("consolidation", "business_disposal"),
-    "Group Exchange Rate": ("consolidation", "group_exchange_rate"),
+    "Rate Sheet": ("consolidation", "rate_sheet"),
     "Ownership Period": ("consolidation", "ownership_period"),
     "Historical Equity Rate": ("consolidation", "historical_equity_rate"),
     "IC Balance": ("consolidation", "ic_balance"),
@@ -400,7 +402,7 @@ def test_execute_inserts_the_expected_kinds_through_record_backfill():
 def test_self_approval_reason_comes_from_the_comment():
     site = _Site()
     _call(site, "execute", capture=[])
-    ger1 = _one(site.inserted, "self_approved", "GER-1")
+    ger1 = _one(site.inserted, "self_approved", "RS-S-2026-07-1")
     assert ger1["reason"] == "month-end rush"
     assert "reason_not_recorded" not in ger1["detail"]
     op1 = _one(site.inserted, "self_approved", "OP-1")
@@ -412,7 +414,7 @@ def test_entity_and_placement_come_from_the_document():
     _call(site, "execute", capture=[])
     op1 = _one(site.inserted, "self_approved", "OP-1")
     assert (op1["fiscal_year"], op1["fiscal_period"], op1["entity"]) == (2026, 7, "ZZE1")
-    ger2 = _one(site.inserted, "approved", "GER-2")
+    ger2 = _one(site.inserted, "approved", "RS-S-2026-07-2")
     assert ger2["entity"] is None  # group-level (W2-9)
     tb = _one(site.inserted, "tb_submitted", "TB-1")
     assert tb["entity"] == "ZZE1"

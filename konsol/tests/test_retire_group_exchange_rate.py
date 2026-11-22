@@ -260,4 +260,6 @@ def test_it_never_touches_the_warehouse_rates_table():
     calls, _ = _run(migrated_row=True)
     assert [c for c in calls if c[0] == "ch"] == [], "nothing is sent to ClickHouse"
     code = _code_without_comments(PATCH_PY)
-    assert "clickhouse" not in code and "epm_staging" not in code and "group_exchange_rates" not in code
+    assert "konsol.clickhouse" not in code and "import clickhouse" not in code, "no ClickHouse client"
+    drops = re.findall(r"DROP TABLE IF EXISTS (\S+)", code)
+    assert drops and all(d.startswith("`tab") for d in drops), drops

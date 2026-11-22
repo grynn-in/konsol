@@ -843,14 +843,11 @@ def test_sent_back_items_her_has_no_period():
     assert item["action"] == {"screen": "rates"}
 
 
-def test_sent_back_items_ger_and_op_route_to_rates():
-    ger = _sb_row("Group Exchange Rate", "GER-1", "Group rate · USD→EUR Closing",
-                 "1.1000", fiscal_year=2025, fiscal_period=7)
+def test_sent_back_items_op_routes_to_rates():
     op = _sb_row("Ownership Period", "OP-1", "Ownership period", "UK01 100% from 2024-01-01")
-    items = M.sent_back_items([ger, op], M.ENTITY_ACCOUNTANT, {(2025, 7): "P07"})
-    assert items[0]["action"] == {"screen": "rates"}
-    assert items[1]["action"] == {"screen": "rates"}
-    assert "period" in items[0] and "period" not in items[1]
+    [item] = M.sent_back_items([op], M.ENTITY_ACCOUNTANT, {(2025, 7): "P07"})
+    assert item["action"] == {"screen": "rates"}
+    assert "period" not in item
 
 
 def test_sent_back_items_desk_actions_for_ic_bc_bd():

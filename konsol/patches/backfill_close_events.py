@@ -74,7 +74,8 @@ _RELOAD_BEFORE_READ = (
     ("consolidation", "assertion_run"),
     ("consolidation", "business_combination"),
     ("consolidation", "business_disposal"),
-    ("consolidation", "group_exchange_rate"),
+    # konsol#592 T26: Rate Sheet replaced Group Exchange Rate in APPROVAL_DOCTYPES.
+    ("consolidation", "rate_sheet"),
     ("consolidation", "ownership_period"),
     ("consolidation", "historical_equity_rate"),
     ("consolidation", "ic_balance"),

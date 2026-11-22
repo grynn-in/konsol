@@ -81,8 +81,8 @@ def test_a_tb_exception_changes_no_period():
 
 # --- changed_periods: a NUMBER_DRIVING doctype, no reversal -------------
 
-def test_a_group_exchange_rate_changes_its_own_period_and_every_later_one():
-    result = M.changed_periods("Group Exchange Rate", (2025, 7), _ROWS)
+def test_a_rate_sheet_changes_its_own_period_and_every_later_one():
+    result = M.changed_periods("Rate Sheet", (2025, 7), _ROWS)
     expected = [(2025, p) for p in range(7, 13)] + [(2026, 1)]
     assert result == expected
 

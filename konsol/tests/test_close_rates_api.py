@@ -152,6 +152,24 @@ def _earlier(name, frm, to, rate_type, quote, fy, fp, quoted_per="1"):
             "docstatus": 1}
 
 
+def _as_sheet_row(doc):
+    """A one-rate fixture (``_ger`` / ``_earlier``) as the Statutory Rate Sheet
+    row the screen reads: a sheet named after it carrying its one quote.
+    These tests were written against Group Exchange Rate, which konsol#592 T26
+    retired; the grid now reads sheets only, so the stub serves them as sheets."""
+    quote, erp = (("closing_quote", "erp_closing_quote") if doc["rate_type"] == "Closing"
+                  else ("average_quote", "erp_average_quote"))
+    row = {"sheet": doc["name"], "rate_basis": "Statutory", "docstatus": doc["docstatus"],
+           "owner": doc.get("owner"), "modified": doc.get("modified"),
+           "change_reason": doc.get("change_reason"), "supersedes": doc.get("supersedes"),
+           "fiscal_year": doc["fiscal_year"], "fiscal_period": doc["fiscal_period"],
+           "from_currency": doc["from_currency"], "to_currency": doc["to_currency"],
+           "quoted_per": doc.get("quoted_per"), "closing_quote": None, "average_quote": None,
+           "erp_closing_quote": None, "erp_average_quote": None, "source": doc.get("source")}
+    row[quote], row[erp] = doc["quote"], doc.get("erp_quote")
+    return row
+
+
 class _Site:
     def __init__(self):
         self.user = LEAD
@@ -303,9 +321,7 @@ def _frappe(site):
     def get_all(doctype, filters=None, fields=None, order_by=None, limit=None,
                 limit_page_length=None, pluck=None, **k):
         site.reads.append(("get_all", doctype))
-        if doctype == "Group Exchange Rate":
-            rows = [r for r in site.docs if _match(r, filters)]
-        elif doctype == "Version":
+        if doctype == "Version":
             rows = [r for r in site.versions if _match(r, filters)]
         elif doctype == "Historical Equity Rate":
             rows = [r for r in site.her if _match(r, filters)]
@@ -330,7 +346,8 @@ def _frappe(site):
             # konsol#592 T20: the Statutory sheets, joined to their rows
             assert as_dict, "the sheets are read as_dict"
             assert "s.rate_basis = 'Statutory'" in query, query
-            statutory = [dict(r) for r in site.sheet_rows if r["rate_basis"] == "Statutory"]
+            statutory = [dict(r) for r in site.sheet_rows if r["rate_basis"] == "Statutory"] + [
+                _as_sheet_row(d) for d in site.docs + site.earlier]
             if "s.fiscal_year < %s" in query:
                 assert "s.docstatus = 1" in query, query
                 fy, fy2, fp = values
@@ -341,15 +358,7 @@ def _frappe(site):
             fy, fp = values
             return [r for r in statutory if r["docstatus"] in (0, 1)
                     and (r["fiscal_year"], r["fiscal_period"]) == (fy, fp)]
-        assert "tabGroup Exchange Rate" in query, query
-        assert "docstatus = 1" in query, query
-        assert as_dict, "the earlier approved rates are read as_dict"
-        assert "rate_set = %s" in query, "konsol#348: earlier rates of the actuals set only"
-        rate_set, fy, fy2, fp = values
-        assert fy == fy2 and rate_set == "ACTUAL"
-        return [dict(r) for r in site.earlier
-                if r["docstatus"] == 1 and r.get("rate_set", "ACTUAL") == rate_set
-                and (r["fiscal_year"] < fy or (r["fiscal_year"] == fy and r["fiscal_period"] < fp))]
+        raise AssertionError("unexpected sql: %s" % query)
 
     def get_single_value(doctype, field, **k):
         site.reads.append(("single", doctype, field))
@@ -793,7 +802,7 @@ def test_a_viewer_reads_but_can_neither_enter_nor_approve():
 
 def test_failure_path_a_lead_who_edited_the_analysts_draft_is_refused_under_blocked():
     site = _Site()
-    site.versions = [{"ref_doctype": "Group Exchange Rate", "docname": "GER-2", "owner": LEAD,
+    site.versions = [{"ref_doctype": "Rate Sheet", "docname": "GER-2", "owner": LEAD,
                       "data": json.dumps({"changed": [["quote", 0.83, 0.84]]})}]
     result = _call(site)
     cell = _row(result, "EUR")["average"]
@@ -805,7 +814,7 @@ def test_failure_path_a_lead_who_edited_the_analysts_draft_is_refused_under_bloc
 def test_the_same_edit_under_allowed_with_reason_needs_a_reason():
     site = _Site()
     site.policy = "Allowed with reason"
-    site.versions = [{"ref_doctype": "Group Exchange Rate", "docname": "GER-2", "owner": LEAD,
+    site.versions = [{"ref_doctype": "Rate Sheet", "docname": "GER-2", "owner": LEAD,
                       "data": json.dumps({"changed": [["quote", 0.83, 0.84]]})}]
     result = _call(site)
     cell = _row(result, "EUR")["average"]
@@ -815,7 +824,7 @@ def test_the_same_edit_under_allowed_with_reason_needs_a_reason():
 
 def test_a_version_of_another_document_does_not_make_a_preparer():
     site = _Site()
-    site.versions = [{"ref_doctype": "Group Exchange Rate", "docname": "GER-OTHER", "owner": LEAD,
+    site.versions = [{"ref_doctype": "Rate Sheet", "docname": "GER-OTHER", "owner": LEAD,
                       "data": json.dumps({"changed": [["quote", 0.83, 0.84]]})}]
     result = _call(site)
     cell = _row(result, "EUR")["average"]
@@ -851,9 +860,11 @@ def test_the_query_count_is_constant_in_the_number_of_pairs():
     one, six = _pairs_site(1), _pairs_site(6)
     r1, r6 = _call(one), _call(six)
     assert len(r1["rows"]) == 1 and len(r6["rows"]) == 6
-    # 7 + 1 get_meta for quoted_per_options (E409b) + 2 Rate Sheet reads (konsol#592 T20)
-    assert len(one.reads) == 10, one.reads
-    assert len(six.reads) == 10, six.reads
+    # the calendar, 2 Rate Sheet reads (konsol#592 T20), 2 Close Settings, the
+    # Version and Workflow reads of the pending sheet, and 1 get_meta for
+    # quoted_per_options (E409b). T26 took the two Group Exchange Rate reads.
+    assert len(one.reads) == 8, one.reads
+    assert len(six.reads) == 8, six.reads
     assert one.needs_calls == [(2025, 7)] and six.needs_calls == [(2025, 7)]
     versions = [r for r in six.reads if r == ("get_all", "Version")]
     assert len(versions) == 1
@@ -2759,7 +2770,7 @@ def test_f11_the_pending_correction_carries_before_after_and_its_approve_mode():
         "before": {"quote": 0.85, "quoted_per": "1", "rate": 0.85},
         "after": {"quote": 0.86, "quoted_per": "1", "rate": 0.86},
         "approve": {"mode": "direct", "message": None}, "edited_by": [],
-        "edit": False, "delete": False, "doctype": "Group Exchange Rate"}
+        "edit": False, "delete": False, "doctype": "Rate Sheet"}
 
 
 def test_f11_failure_path_the_lead_cannot_approve_their_own_correction_under_blocked():
@@ -2814,7 +2825,7 @@ def test_f11_the_correction_costs_no_extra_read():
     plain, corrected = _f11_grid_site(), _f11_grid_site()
     plain.docs = [d for d in plain.docs if d["name"] != "GER-3"]
     _call(plain), _call(corrected)
-    assert len(plain.reads) == len(corrected.reads) == 10, corrected.reads
+    assert len(plain.reads) == len(corrected.reads) == 8, corrected.reads
 
 
 # --- FR2 (konsol#305 review-d2fu S1; #312-3, #312-3b, Deepak Pai): the
@@ -2891,7 +2902,7 @@ def test_fr2_failure_path_cells_without_a_correction_still_carry_none():
 def test_fr2_the_orphans_cost_no_extra_read():
     plain, orphaned = _fr2_site(orphan=False), _fr2_site()
     _call(plain), _call(orphaned)
-    assert plain.reads == orphaned.reads and len(orphaned.reads) == 10, orphaned.reads
+    assert plain.reads == orphaned.reads and len(orphaned.reads) == 8, orphaned.reads
 
 
 # --- #117 pair 1 F: the Desk ownership change names the holding's owner --------
@@ -3027,27 +3038,12 @@ def test_117f_change_choices_list_one_item_per_holding():
     ]
 
 
-# ---- the Rates screen is the actuals screen (konsol#348) ------------------------
-
-def test_the_screen_shows_the_actuals_set_only():
-    """A budget set's rate for the same key is not this screen's business: it is
-    not shown as the period's rate."""
-    site = _Site()
-    budget = _ger("GER-B", "EUR", "GBP", "Closing", 0.80, 1)
-    budget["rate_set"] = "BUDGET_2027"
-    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1), budget]
-    out = _call(site)
-    shown = {c["name"] for row in out["rows"] + out["unrequired"] for c in (row["closing"], row["average"])
-             if c.get("name")}
-    assert "GER-1" in shown and "GER-B" not in shown, shown
-
-
 # ---- konsol#592 T20: the grid reads Rate Sheets ------------------------------------
 # The period's grid comes from its Statutory Rate Sheets: the approved one, and
-# any draft or correction sheet, shown as pending. Group Exchange Rate rows are
-# a union during the transition, and a key an approved sheet covers shows the
-# sheet alone (the publish's rule, group_rates.union_rows). The GER branch goes
-# with T26. A Constant sheet is a year's planning rate, never the period's.
+# any draft or correction sheet, shown as pending. A Constant sheet is a year's
+# planning rate, never the period's (konsol#348: the screen is the actuals
+# screen). Group Exchange Rate is retired (T26); the older tests above use
+# one-rate fixtures that the stub serves as sheets (_as_sheet_row).
 
 SHEET_FORM = "edit rates on the Rate Sheet form (konsol#592)"
 
@@ -3067,14 +3063,14 @@ def _sheet_row(sheet, frm, to, closing, average, docstatus=1, owner=LEAD, fy=202
 
 def _sheet_site():
     """FY2025 P07: the approved Statutory sheet RS-S-2025-07 has EUR -> GBP
-    (Closing 0.90, Average 0.89). The site's GER-1 (Closing) and GER-2
-    (Average draft) are on the same key, so the sheet hides them."""
+    (Closing 0.90, Average 0.89), and nothing else."""
     site = _Site()
+    site.docs, site.earlier = [], []
     site.sheet_rows = [_sheet_row("RS-S-2025-07", "EUR", "GBP", 0.90, 0.89)]
     return site
 
 
-def test_t20_an_approved_sheet_is_the_cell_and_hides_the_ger_rows_of_its_key():
+def test_t20_an_approved_sheet_is_the_cell_of_both_its_rate_types():
     result = _call(_sheet_site())
     eur = _row(result, "EUR")
     for key, rate in (("closing", 0.90), ("average", 0.89)):
@@ -3084,14 +3080,6 @@ def test_t20_an_approved_sheet_is_the_cell_and_hides_the_ger_rows_of_its_key():
         assert cell["rate"] == pytest.approx(rate)
         assert cell["extra_drafts"] == [], cell
     assert result["summary"]["approved"] == 2
-
-
-def test_t20_failure_path_a_key_no_sheet_covers_still_shows_its_ger_row():
-    site = _sheet_site()
-    site.docs.append(_ger("GER-9", "USD", "GBP", "Closing", 0.79, 1))
-    usd = _row(_call(site), "USD")
-    assert (usd["closing"]["name"], usd["closing"]["doctype"]) == ("GER-9", "Group Exchange Rate")
-    assert usd["average"]["status"] == "missing"
 
 
 def test_t20_a_draft_sheet_is_pending_and_judged_on_the_sheets_own_preparers():
@@ -3108,18 +3096,6 @@ def test_t20_a_draft_sheet_is_pending_and_judged_on_the_sheets_own_preparers():
             "RS-S-2025-07", "Rate Sheet", "awaiting_approval"), cell
         assert cell["edited_by"] == [LEAD]
         assert cell["approve"]["mode"] == "refused"  # Blocked, and the Lead edited it
-
-
-def test_t20_a_draft_sheet_beside_an_approved_ger_rate_is_listed_never_hides_it():
-    # Only an approved sheet replaces a published GER rate (the publish's rule).
-    site = _Site()
-    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1)]
-    site.sheet_rows = [_sheet_row("RS-S-2025-07", "EUR", "GBP", 0.90, 0.89, docstatus=0,
-                                  owner=ANALYST)]
-    eur = _row(_call(site), "EUR")
-    assert (eur["closing"]["name"], eur["closing"]["status"]) == ("GER-1", "approved")
-    assert eur["closing"]["extra_drafts"] == ["RS-S-2025-07"]
-    assert (eur["average"]["name"], eur["average"]["status"]) == ("RS-S-2025-07", "awaiting_approval")
 
 
 def test_t20_a_correction_sheet_rides_on_the_approved_sheets_cell():
@@ -3140,7 +3116,7 @@ def test_t20_a_correction_sheet_rides_on_the_approved_sheets_cell():
     assert result["summary"]["corrections_pending"] == 2
 
 
-def test_t20_the_previous_rate_comes_from_an_earlier_approved_sheet_over_its_ger_row():
+def test_t20_the_previous_rate_comes_from_an_earlier_approved_sheet():
     site = _sheet_site()
     site.sheet_rows.append(_sheet_row("RS-S-2025-06", "EUR", "GBP", 0.70, 0.71, fp=6))
     eur = _row(_call(site), "EUR")
@@ -3178,11 +3154,11 @@ def test_t20_the_sheet_reads_are_two_whatever_the_number_of_sheets():
     _call(one), _call(many)
     sheet_reads = [r for r in many.reads if r[0] == "sql" and "tabRate Sheet" in r[1]]
     assert len(sheet_reads) == 2, many.reads
-    # Nothing is pending, so no Version read: 8 (the pairs test counts 10 with one).
-    assert one.reads == many.reads and len(many.reads) == 8, many.reads
+    # Nothing is pending, so no Version or Workflow read: 6 (the pairs test counts 8).
+    assert one.reads == many.reads and len(many.reads) == 6, many.reads
 
 
-# save_rate and delete_rate were the GER write paths: they refuse by name.
+# save_rate and delete_rate were the retired doctype's write paths: they refuse by name.
 
 def test_t20_failure_path_save_rate_refuses_by_name_before_any_read_or_write():
     for roles in ({"EPM Analyst"}, {"EPM Admin"}, {"System Manager"}, {"EPM User"}):

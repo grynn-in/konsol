@@ -33,7 +33,6 @@ import pytest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RS_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "rate_set")
-GER_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "group_exchange_rate")
 PATCH = os.path.join(APP_DIR, "patches", "stamp_rate_set_actual.py")
 CH_PATH = os.path.join(APP_DIR, "clickhouse.py")
 FX_PATH = os.path.join(APP_DIR, "orchestrator", "fx.py")
@@ -104,14 +103,14 @@ def test_the_shape():
 
 def test_only_the_system_manager_writes_creates_or_deletes():
     """T24 (konsol#592): Rate Set is system-owned. Everyone who could read it
-    still can; write, create and delete are the System Manager's alone."""
-    with open(os.path.join(GER_DIR, "group_exchange_rate.json")) as f:
-        ger = {p["role"]: p for p in json.load(f)["permissions"]}
+    still can (the readers Group Exchange Rate had, pinned here since T26
+    retired it); write, create and delete are the System Manager's alone."""
+    readers = {"System Manager", "EPM Admin", "EPM Analyst", "EPM User", "Entity Accountant"}
     ours = {p["role"]: p for p in _json()["permissions"]}
-    assert set(ours) == set(ger)
+    assert set(ours) == readers
     for role, p in ours.items():
         for right in ("read", "report", "export"):
-            assert p.get(right, 0) == ger[role].get(right, 0), (role, right)
+            assert p.get(right, 0) == 1, (role, right)
         for right in ("write", "create", "delete"):
             assert p.get(right, 0) == (1 if role == "System Manager" else 0), (role, right)
         assert not p.get("submit") and not p.get("cancel") and not p.get("amend"), role

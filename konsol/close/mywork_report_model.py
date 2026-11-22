@@ -41,8 +41,7 @@ KIND_LABELS = {"blocking": "Blocking", "todo": "To do", "waiting": "Waiting"}
 #: The 7 approval doctypes (close_policy_model.APPROVAL_DOCTYPES; literals,
 #: since this module is pure; the test holds them equal).
 APPROVAL_DOCTYPES = (
-    "Consolidation Journal", "Business Combination", "Business Disposal", "Group Exchange Rate",
-    "Rate Sheet",
+    "Consolidation Journal", "Business Combination", "Business Disposal", "Rate Sheet",
     "Ownership Period", "Historical Equity Rate", "IC Balance",
 )
 
@@ -67,7 +66,7 @@ SCREEN_DESTINATIONS = {
     "period": ("/desk/period-status", True),
     "trial-balances": ("/desk/trial-balance-submission", True),
     "intercompany": ("/desk/ic-balance", True),
-    "rates": ("/desk/group-exchange-rate", True),
+    "rates": ("/desk/rate-sheet", True),
     "adjustments": ("/desk/consolidation-journal", True),
     "checks": ("/desk/assertion-run", True),
     "numbers": ("/desk/query-report/" + _quote("Consolidated Statement"), True),
@@ -143,8 +142,8 @@ FIXES = {
     # period items (mywork_model.period_items)
     "tb": (("Add a Trial Balance Submission for the entity and period, and load the file.",
             "Check it and submit it."), _ENTITY),
-    "rates": (("Add the missing Closing and Average Group Exchange Rates for the period.",
-               "Send them for approval; the Close Lead approves them."), _GROUP),
+    "rates": (("Add the missing Closing and Average rates to the period's Statutory Rate Sheet.",
+               "Send it for approval; the Close Lead approves it."), _GROUP),
     "checks-run": (("In Period Close, use Actions, then Run checks, and choose the period.",),
                    _LEAD),
     "checks-failing": (("Open the period's latest Assertion Run and read each failing check.",
@@ -180,7 +179,6 @@ FIXES = {
     "sent-back:Consolidation Journal": (_SENT_BACK_FIX, _GROUP),
     "sent-back:Business Combination": (_SENT_BACK_FIX, _GROUP),
     "sent-back:Business Disposal": (_SENT_BACK_FIX, _GROUP),
-    "sent-back:Group Exchange Rate": (_SENT_BACK_FIX, _GROUP),
     "sent-back:Rate Sheet": (_SENT_BACK_FIX, _GROUP),
     "sent-back:Ownership Period": (_SENT_BACK_FIX, _GROUP),
     "sent-back:Historical Equity Rate": (_SENT_BACK_FIX, _FX),

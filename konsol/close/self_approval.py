@@ -73,10 +73,10 @@ def _record_system_submit(doc, close_event):
 
 def _with_supersedes(doc, detail):
     """konsol#305 FR6 (review S4): an approval that replaces an approved
-    document (a Group Exchange Rate correction, an Ownership Period change)
+    document (a Rate Sheet correction, an Ownership Period change)
     names it, so the trail links it to the cancel it causes. A document that
     replaces nothing, or whose doctype has no ``supersedes`` field (only
-    Group Exchange Rate and Ownership Period declare it), keeps its detail:
+    Rate Sheet and Ownership Period declare it), keeps its detail:
     no key with None."""
     supersedes = getattr(doc, "supersedes", None)
     if supersedes:

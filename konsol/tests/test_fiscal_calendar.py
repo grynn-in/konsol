@@ -88,8 +88,8 @@ def test_every_period_doctype_is_classified():
 
 def test_rate_sheet_counts_statutory_periods_only():
     """A Statutory sheet holds a period; a Constant sheet stores none, and
-    counts for no period (T17). Group Exchange Rate stays listed until its
-    retirement (T26)."""
+    counts for no period (T17). Group Exchange Rate is retired (T26), so it
+    is not read."""
     M = _load()
     db = _DB([])
     frappe = types.ModuleType("frappe")
@@ -108,7 +108,7 @@ def test_rate_sheet_counts_statutory_periods_only():
     rate_sheet = [s for s in selects if "`tabRate Sheet`" in s]
     assert len(rate_sheet) == 1, selects
     assert "rate_basis = 'Statutory'" in rate_sheet[0], rate_sheet[0]
-    assert any("`tabGroup Exchange Rate`" in s for s in selects)
+    assert not any("`tabGroup Exchange Rate`" in s for s in selects)
 
 
 def test_assertion_runs_freeze_periods():

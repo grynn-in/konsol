@@ -8,7 +8,7 @@ rejected as a model nothing calls).
 
 - the approved Constant Rate Sheet of the Cycle's year, with its rows
   (konsol#592 D2, Deepak Pai, 22 Nov 2026: replaces BUD-3's per-Cycle Rate
-  Set and its Group Exchange Rates);
+  Set and its rates);
 - its Budget Annual Input rows and Budget Entry Lines, by the ``cycle`` each
   row names, with the site's declared budget dimensions;
 - the Spread Profile weights of the profiles those annual rows name;

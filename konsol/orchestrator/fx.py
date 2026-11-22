@@ -1,7 +1,7 @@
 """FX surfacing: read view + query builder (PRD-18, konsolidat#91 B/C).
 
 Surfaces the group's GOVERNED exchange rates to the konsol-exec SPA: the
-approved Group Exchange Rates (konsol#103) konsol publishes to
+approved Rate Sheet rates (konsol#103, #592) konsol publishes to
 ``epm_staging.group_exchange_rates``, each the true rate, units of
 ``to_currency`` per 1 ``from_currency``, one per fiscal period and rate type.
 One source of truth for FX rates (decided 13 Sep 2026): these are the rates
@@ -45,7 +45,7 @@ except Exception:  # pragma: no cover - host import path (no bench)
 # The governed rates konsol publishes (konsol#103): true rates, one source.
 FX_TABLE = "epm_staging.group_exchange_rates"
 
-# The `source` every row carries: governed by konsol (Group Exchange Rate).
+# The `source` every row carries: governed by konsol (Rate Sheet).
 GOVERNED_SOURCE = "konsol"
 
 # The date a fiscal period's rate applies from: the declared calendar row's
