@@ -45,12 +45,12 @@ def _frappe(sheets=(), ger=(), actuals=("ACTUAL",)):
                     for n, basis, y, p, ds, sup, rows in sheets
                     if ds == want and basis == "Statutory" and (y, p) == (fy, fp)
                     for f, t, per, avg, cls in rows]
-        if "`tabGroup Exchange Rate`" in query and len(params) == 4:  # the gate's read
-            return []
         if "`tabGroup Exchange Rate`" in query and "docstatus = 0" in query:  # draft_pairs
             fy, fp, rate_type, rate_set = params
             return [(f, t) for f, t, rt, y, p, rs, d, q, per in ger
                     if (d, y, p, rt, rs) == (0, fy, fp, rate_type, rate_set)]
+        if "`tabGroup Exchange Rate`" in query and len(params) == 4:  # the gate's read
+            return []
         if "`tabGroup Exchange Rate`" in query:
             ds, fy, fp, rate_type, rate_set = params
             return [(f, t, q, per) for f, t, rt, y, p, rs, d, q, per in ger

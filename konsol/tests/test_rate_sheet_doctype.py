@@ -168,7 +168,8 @@ def test_buttons_call_post():
 def test_prefill_is_offered_on_a_statutory_draft_only():
     form = _js("rate_sheet")
     assert "Pre-fill from ERP" in form and "Duplicate previous" in form
-    block = form[form.index("Pre-fill from ERP") - 400:form.index("Pre-fill from ERP")]
+    at = form.index('add_custom_button(__("Pre-fill from ERP")')
+    block = form[at - 200:at]
     assert "Statutory" in block and "docstatus" in block, block
 
 

@@ -771,7 +771,7 @@ def test_no_reminders_reads_no_user():
 def test_reads_are_the_old_count_plus_two_whatever_the_entity_count():
     """Failure path (C-R6, the docstring's fixed count): one Close Event read
     plus one User read, with 1 entity and with 5."""
-    old = 6  # Entity, Ownership Period, TB Submission, TB Exception, Group, GER
+    old = 5  # Entity, Ownership Period, TB Submission, TB Exception, Group (rates: group_rates, T19)
     for n in (1, 5):
         site = _sized_site(n)
         result = _call(site)
@@ -861,7 +861,7 @@ def test_a_sender_with_no_full_name_is_labelled_and_the_other_rows_are_intact():
 def test_a_nameless_sender_keeps_the_read_count_constant():
     """R52c: with no User row for the sender, the grid still makes one Close
     Event read plus one User read on top of the old count, for 1 entity and 5."""
-    old = 6  # as test_reads_are_the_old_count_plus_two_whatever_the_entity_count
+    old = 5  # as test_reads_are_the_old_count_plus_two_whatever_the_entity_count
     for n in (1, 5):
         site = _sized_site(n)
         site.data["User"] = []
