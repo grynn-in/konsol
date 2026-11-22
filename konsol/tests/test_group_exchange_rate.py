@@ -105,6 +105,7 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
         get_single_value=lambda dt, field: {"rate_move_threshold": move_threshold_pct,
                                             "magnitude_warning_factor": magnitude_factor}[field],
     )
+    frappe.db.get_value = lambda *a, **k: None   # no such document, unless ``amended`` names it
     if amended is not None:
         # PR #385 review: the rate an amendment amends, {name: {field: value}}.
         def get_value(dt, name, fields=None, as_dict=False, **k):
@@ -2437,8 +2438,7 @@ def test_a_key_edit_makes_a_copied_or_pre_filled_draft_manual():
     prefilled = dict(source="ERP pre-fill", erp_quote=0.9478, quoted_per="1")
     for field, value in (("from_currency", "USD"), ("rate_type", "Average"), ("fiscal_period", 11),
                          ("fiscal_year", 2098), ("rate_set", "BUDGET"), ("to_currency", "USD")):
-        before = {field: {"from_currency": "GBP", "rate_type": "Closing", "fiscal_period": 10,
-                          "fiscal_year": 2097, "rate_set": "ACTUAL", "to_currency": "CHF"}[field]}
+        before = {field: value}   # the saved draft had another key; the document is EUR → CHF Closing 2099 P12
         _, d, msg = _validate(_before=dict(copied, **before), _ctx={"amended": _SOURCE}, **_COPIED)
         assert d.source == "Manual", (field, d.source, msg)
         _, d, msg = _validate(source="ERP pre-fill", erp_quote=0.9478, _before=dict(prefilled, **before))

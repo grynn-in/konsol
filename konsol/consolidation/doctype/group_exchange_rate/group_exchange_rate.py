@@ -293,6 +293,12 @@ class GroupExchangeRate(Document):
         if self.source == PREFILL_SOURCE and self.erp_quote and \
                 abs(float(self.quote) - float(self.erp_quote)) > 1e-9 * max(float(self.erp_quote), 1e-9):
             self.source = MANUAL_SOURCE
+        if self.source in (PREFILL_SOURCE, COPY_SOURCE) and before is not None and any(
+                str(self.get(f)) != str(getattr(before, f, None)) for f in GRAIN):
+            # #586 review: the label says where THIS key's rate came from; a
+            # draft moved to another key (currency, type, period or set) is a
+            # person's rate.
+            self.source = MANUAL_SOURCE
         if self.source == COPY_SOURCE and before is not None and getattr(before, "source", None) == COPY_SOURCE:
             was = group_rates.true_rate(getattr(before, "quote", 0), old_per)
             if abs(self._rate() - was) > 1e-9 * max(was, 1e-12):
@@ -343,15 +349,35 @@ class GroupExchangeRate(Document):
                 frappe.MandatoryError)
         if self._adopting():
             return  # the rate a period was already translated at; the note says so
-        previous = group_rates.previous_approved(
-            self.to_currency, self.from_currency, self.rate_type, self.fiscal_year, self.fiscal_period,
-            self.rate_set)
+        previous = self._copied_rate() if self._copying() else None
+        if previous is not None and abs(self._rate() - previous[0]) <= 1e-12 * max(previous[0], 1e-12):
+            # #586 review: the copy proposes the rate it copies, a move of 0. It
+            # is judged against that rate, not previous_approved (the latest
+            # approved rate of ANY period type: a P1 copy met an Opening rate),
+            # so it needs no reason whether or not a threshold is declared.
+            return
+        if previous is None:
+            previous = group_rates.previous_approved(
+                self.to_currency, self.from_currency, self.rate_type, self.fiscal_year, self.fiscal_period,
+                self.rate_set)
         erp = group_rates.true_rate(self.erp_quote, self._per()) if self.erp_quote else None
         problem = group_rates.move_problem(self._rate(), previous, erp,
                                            unit=f"{self.to_currency} per {self.from_currency}",
                                            threshold=group_rates.move_threshold())
         if problem:
             frappe.throw(problem, frappe.MandatoryError)
+
+    def _copied_rate(self):
+        """(true rate, label) of the rate Copied From names, or None."""
+        from konsol import group_rates
+
+        name = self.get("copied_from")
+        row = frappe.db.get_value(self.doctype, name, ["quote", "quoted_per", "fiscal_year", "fiscal_period"],
+                                  as_dict=True) if name else None
+        if row is None:
+            return None
+        return (group_rates.true_rate(row.quote, row.quoted_per),
+                f"FY{row.fiscal_year} P{row.fiscal_period} ({name}, the rate this draft copies)")
 
     # -- lifecycle ----------------------------------------------------------
 
