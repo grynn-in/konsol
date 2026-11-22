@@ -89,17 +89,23 @@
    "fieldname": "fiscal_year",
    "fieldtype": "Int",
    "label": "Fiscal Year",
-   "in_standard_filter": 1
+   "in_standard_filter": 1,
+   "read_only": 1,
+   "description": "0 means every fiscal year: the run was not narrowed to one year (a governed build always covers every period)."
   },
   {
    "fieldname": "fiscal_period",
    "fieldtype": "Int",
-   "label": "Fiscal Period"
+   "label": "Fiscal Period",
+   "read_only": 1,
+   "description": "0 means every period: the run was not narrowed to one period (a governed build always covers every period)."
   },
   {
    "fieldname": "scope",
    "fieldtype": "Data",
-   "label": "Scope"
+   "label": "Scope",
+   "read_only": 1,
+   "description": "Blank means every entity: the run was not narrowed to one entity scope (a governed build is never narrowed)."
   },
   {
    "fieldname": "params_col_break",
