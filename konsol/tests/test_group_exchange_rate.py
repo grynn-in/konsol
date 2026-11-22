@@ -44,9 +44,12 @@ REFS = {"USD": 0.0, "EUR": -0.03, "CHF": -0.05, "GBP": -0.1, "JPY": 2.17, "KRW":
 
 def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="approver@example.com",
             flags=None, refs=None, previous=None, move_threshold_pct=50, magnitude_factor=None,
-            amended=None, actuals="ACTUAL"):
+            amended=None, actuals="ACTUAL", rate_sets=None, taken=()):
     """``actuals``: the Rate Set(s) flagged Is Actuals (konsol#348); a str, a
-    tuple of names, or None for a site that has flagged none."""
+    tuple of names, or None for a site that has flagged none. ``rate_sets``:
+    the Rate Sets that exist (the flagged ones when None). ``taken``: the
+    (from, to, rate_type) keys the locking read of a period's drafts and
+    approved rates returns (the pre-fill and the copy, konsol#584 review)."""
     frappe = types.ModuleType("frappe")
     flagged = [] if actuals is None else ([actuals] if isinstance(actuals, str) else list(actuals))
     for name in ("ValidationError", "MandatoryError", "DuplicateEntryError", "PermissionError"):
@@ -61,6 +64,12 @@ def _frappe(record, *, group_currencies=("CHF", "USD"), duplicate=None, user="ap
         record.setdefault("sql", []).append(query)
         if "FROM `tabConsolidation Group`" in query:
             return [(1,)] if params[0] in group_currencies else []
+        if "FROM `tabRate Set`" in query and "FOR UPDATE" in query:
+            exists = flagged if rate_sets is None else rate_sets
+            return [(params[0],)] if params[0] in exists else []
+        if "docstatus < 2" in query and "FOR UPDATE" in query:
+            record.setdefault("taken_reads", []).append(params)
+            return [tuple(t) for t in taken]
         if "FOR UPDATE" in query:
             return [(duplicate,)] if duplicate else []
         if "ORDER BY fiscal_year DESC" in query:   # group_rates.previous_approved
@@ -248,7 +257,12 @@ def _doc(module, **fields):
     base = dict(doctype="Group Exchange Rate", name="GER-2099-12-EUR-CHF-Closing-01", docstatus=0,
                 to_currency="CHF", from_currency="EUR", rate_type="Closing", fiscal_year=2099,
                 fiscal_period=12, quote=0.9478, quoted_per="1", source="Manual", rate_set="ACTUAL")
-    return module.GroupExchangeRate(**dict(base, **fields))
+    merged = dict(base, **fields)
+    if merged.get("_before") is not None:
+        # A saved version has every field: its grain is the document's own
+        # unless the test gives another (konsol#584 review: a key edit).
+        merged["_before"] = dict({f: merged[f] for f in module.GRAIN}, **merged["_before"])
+    return module.GroupExchangeRate(**merged)
 
 
 def _refused(fn, *a):
@@ -1471,14 +1485,9 @@ def test_the_pre_fill_in_action():
     frappe = _frappe(record)
     frappe.only_for = lambda roles: inserted.append(("roles", roles))
     lookup = frappe.get_all
-    taken_filters = []
-
-    def get_all(doctype, **k):
-        if doctype == "Rate Set":
-            return lookup(doctype, **k)
-        taken_filters.append(k["filters"])
-        return [types.SimpleNamespace(from_currency="GBP", to_currency="CHF", rate_type="Closing")]
-    frappe.get_all = get_all
+    frappe = _frappe(record, taken=[("GBP", "CHF", "Closing")])
+    frappe.only_for = lambda roles: inserted.append(("roles", roles))
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
 
     class Doc(dict):
         def __init__(self, d):
@@ -1520,7 +1529,7 @@ def test_the_pre_fill_in_action():
     # flagged Is Actuals, and a draft or approved rate in another set does
     # not count as "existing"
     assert all(d["rate_set"] == "ACTUAL" for d in drafts), drafts
-    assert taken_filters and all(f["rate_set"] == "ACTUAL" for f in taken_filters), taken_filters
+    assert record["taken_reads"] == [(2024, 3, "ACTUAL")], record["taken_reads"]
     eur_avg = next(d for d in drafts if d["from_currency"] == "EUR" and d["rate_type"] == "Average")
     assert (eur_avg["quote"], eur_avg["quoted_per"]) == (0.945, "1") and "Default" in eur_avg["source_note"]
     jpy = next(d for d in drafts if d["from_currency"] == "JPY")
@@ -2195,16 +2204,22 @@ def _copy_env(*, sources=(), taken=(), calendar=None, rate_sets=("ACTUAL", "BUDG
     ``sources``: Group Exchange Rate rows the stub returns for the source
     period, filtered as the query asks. ``taken``: the target's rows."""
     record = {"inserted": [], "gates": [], "reads": []}
-    frappe = _frappe(record, magnitude_factor=factor)
-    frappe.only_for = lambda roles: record.setdefault("roles", roles)
-    frappe.db.exists = lambda dt, name=None: dt == "Rate Set" and name in rate_sets
+    frappe = _frappe(record, magnitude_factor=factor, rate_sets=rate_sets,
+                     taken=[(t["from_currency"], t["to_currency"], t["rate_type"]) for t in taken])
+
+    def only_for(roles):
+        record["sql"] = []   # what the copy reads, from its first statement on
+        record.setdefault("roles", roles)
+    frappe.only_for = only_for
 
     def matches(row, filters):
         for k, v in filters.items():
             if isinstance(v, list):
-                if v[0] == "<" and not row[k] < v[1]:
+                if v[0] == "<" and not row.get(k) < v[1]:
                     return False
-            elif row[k] != v:
+                if v[0] == "in" and row.get(k) not in v[1]:
+                    return False
+            elif row.get(k) != v:
                 return False
         return True
 
@@ -2215,8 +2230,7 @@ def _copy_env(*, sources=(), taken=(), calendar=None, rate_sets=("ACTUAL", "BUDG
                     for c in filters["name"][1] if c in (refs or REFS)]
         assert doctype == "Group Exchange Rate", doctype
         record["reads"].append(dict(filters))
-        rows = sources if filters["fiscal_period"] != 1 or filters["fiscal_year"] != 2025 else taken
-        return [_Flags(r) for r in rows if matches(r, filters)]
+        return [_Flags(r) for r in sources if matches(r, filters)]
     frappe.get_all = get_all
 
     class Doc(dict):
@@ -2233,6 +2247,7 @@ def _copy_env(*, sources=(), taken=(), calendar=None, rate_sets=("ACTUAL", "BUDG
 
     def assert_open(fy, fp, action="run"):
         record["gates"].append((fy, fp, action))
+        record["sql"].append("ASSERT_OPEN")
         if not period_open:
             raise Refused(f"Cannot {action}: fiscal period {fp} of FY{fy} is closed.")
 
@@ -2282,8 +2297,9 @@ def test_the_copy_in_action():
     assert "No magnitude reference for XAU" in refused["XAU → CHF Closing"]
     assert record.get("cleared") == [1] and r.frappe.flags.konsol_copying_rates is False
     # every read is of the asked set, and the sources are approved only
-    assert all(f["rate_set"] == "ACTUAL" for f in record["reads"]), record["reads"]
-    source_read = next(f for f in record["reads"] if f["fiscal_period"] == 12)
+    assert all(f["rate_set"] == "ACTUAL" for f in record["reads"] if "rate_set" in f), record["reads"]
+    assert record["taken_reads"] == [(2025, 1, "ACTUAL")], record["taken_reads"]
+    source_read = next(f for f in record["reads"] if f.get("fiscal_period") == 12)
     assert source_read["docstatus"] == 1 and source_read["fiscal_year"] == 2024
 
 
@@ -2349,3 +2365,99 @@ def test_the_list_has_a_copy_button_beside_the_pre_fill():
     assert "frappe.confirm" not in js and "alert(" not in js
     for key in ("created", "skipped", "refused", "warned"):
         assert f"out.{key}" in js, key
+
+
+# -- the #586 review ---------------------------------------------------------------------
+
+_SOURCE = {"GER-SRC": {"quote": 0.9478, "quoted_per": "1", "fiscal_year": 2099, "fiscal_period": 11,
+                       "change_reason": None}}
+_COPIED = dict(source=COPY, copied_from="GER-SRC", source_note="Copied from GER-SRC")
+
+
+def test_a_copy_is_judged_against_the_rate_it_copies_not_an_opening_rate():
+    """Review 1: previous_approved is the latest approved rate before the
+    target of ANY period type, so a P1 copy met an approved P0 (Opening) rate
+    of another value and was refused for the move."""
+    ctx = {"flags": {"konsol_copying_rates": True}, "amended": _SOURCE, "move_threshold_pct": 10,
+           "previous": ("GER-P0", 0.80, "1", 2099, 0)}
+    refused, d, msg = _validate(_ctx=ctx, **_COPIED)
+    assert not refused, msg
+    # the copy's flag alone does not exempt a moved rate: it is judged against the source
+    refused, _, msg = _validate(_ctx=ctx, quote=1.2, **_COPIED)
+    assert refused and "GER-SRC" in msg and "GER-P0" not in msg, msg
+
+
+def test_a_copy_is_drafted_while_the_rate_move_threshold_is_undeclared():
+    ctx = {"flags": {"konsol_copying_rates": True}, "amended": _SOURCE, "move_threshold_pct": None,
+           "previous": ("GER-P0", 0.80, "1", 2099, 0)}
+    refused, _, msg = _validate(_ctx=ctx, **_COPIED)
+    assert not refused, msg
+
+
+def test_a_manual_draft_with_the_threshold_undeclared_is_refused_as_before():
+    ctx = {"move_threshold_pct": None, "previous": ("GER-P0", 0.80, "1", 2099, 0)}
+    refused, _, msg = _validate(_ctx=ctx)
+    assert refused and "rate move threshold" in msg, msg
+    # and a person's save of a copied draft is a person's rate: the rule applies
+    refused, _, msg = _validate(_ctx=dict(ctx, amended=_SOURCE),
+                                _before=dict(_COPIED, quote=0.9478, quoted_per="1", erp_quote=0), **_COPIED)
+    assert refused and "rate move threshold" in msg, msg
+
+
+def test_the_copy_and_the_pre_fill_lock_the_rate_set_before_they_read():
+    """Review 2: two clicks at once both read "no draft yet" and both insert.
+    Each locks its Rate Set row first, then reads the taken keys with a
+    locking read, so the second waits and sees the first one's drafts."""
+    r, record = _copy_env(sources=[_ger("GER-EUR-C")])
+    r.copy_from_previous_period(2025, 1, "ACTUAL")
+    sql = record["sql"]
+    assert "FROM `tabRate Set`" in sql[0] and "FOR UPDATE" in sql[0] and "name=%s" in sql[0], sql[:2]
+    taken = next(i for i, q in enumerate(sql) if "docstatus < 2" in q)
+    assert "FOR UPDATE" in sql[taken] and taken > sql.index("ASSERT_OPEN") > 0
+
+    record = {}
+    frappe = _frappe(record)
+    frappe.only_for = lambda roles: None
+    lookup = frappe.get_all
+    frappe.get_all = lambda doctype, **k: lookup(doctype, **k) if doctype == "Rate Set" else []
+    r = _rules_module(frappe, {"required_pairs": lambda fy, fp: set(), "tree_pairs": lambda fy, fp: set(),
+                               "erp_quote_rows": lambda as_of: []})
+    r.prefill_from_erp("2024", "3")
+    sql = record["sql"]
+    lock = next(i for i, q in enumerate(sql) if "FROM `tabRate Set`" in q)
+    taken = next(i for i, q in enumerate(sql) if "docstatus < 2" in q)
+    assert "FOR UPDATE" in sql[lock] and "FOR UPDATE" in sql[taken] and lock < taken, sql
+    assert record["taken_reads"] == [(2024, 3, "ACTUAL")]
+
+
+def test_a_key_edit_makes_a_copied_or_pre_filled_draft_manual():
+    """Review 3: the label says where THIS key's rate came from; a draft moved
+    to another key is a person's rate."""
+    copied = dict(_COPIED, quote=0.9478, quoted_per="1", erp_quote=0)
+    prefilled = dict(source="ERP pre-fill", erp_quote=0.9478, quoted_per="1")
+    for field, value in (("from_currency", "USD"), ("rate_type", "Average"), ("fiscal_period", 11),
+                         ("fiscal_year", 2098), ("rate_set", "BUDGET"), ("to_currency", "USD")):
+        before = {field: {"from_currency": "GBP", "rate_type": "Closing", "fiscal_period": 10,
+                          "fiscal_year": 2097, "rate_set": "ACTUAL", "to_currency": "CHF"}[field]}
+        _, d, msg = _validate(_before=dict(copied, **before), _ctx={"amended": _SOURCE}, **_COPIED)
+        assert d.source == "Manual", (field, d.source, msg)
+        _, d, msg = _validate(source="ERP pre-fill", erp_quote=0.9478, _before=dict(prefilled, **before))
+        assert d.source == "Manual", (field, d.source, msg)
+    # the same key keeps its label
+    _, d, _ = _validate(_before=copied, _ctx={"amended": _SOURCE}, **_COPIED)
+    assert d.source == COPY
+    _, d, _ = _validate(source="ERP pre-fill", erp_quote=0.9478, _before=prefilled)
+    assert d.source == "ERP pre-fill"
+
+
+def test_a_source_with_a_pending_correction_is_copied_and_warned():
+    """Review 4: the copy takes the approved rate; a correction of it still in
+    draft may be the rate meant, so the summary names it."""
+    sources = [_ger("GER-EUR-C"), _ger("GER-EUR-A", rt="Average", quote=0.945),
+               dict(_ger("GER-EUR-C-FIX", docstatus=0, quote=0.95), supersedes="GER-EUR-C")]
+    r, record = _copy_env(sources=sources)
+    out = r.copy_from_previous_period(2025, 1, "ACTUAL")
+    assert {d["copied_from"] for d in record["inserted"]} == {"GER-EUR-C", "GER-EUR-A"}
+    assert len(out["warned"]) == 1, out["warned"]
+    assert out["warned"][0].startswith("EUR → CHF Closing: ") and "GER-EUR-C-FIX" in out["warned"][0]
+    assert "GER-EUR-C" in out["warned"][0]
