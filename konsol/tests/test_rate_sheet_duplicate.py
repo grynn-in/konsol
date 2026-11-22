@@ -240,6 +240,6 @@ def test_the_signature_and_the_retirement_of_copy():
     assert "copy_from_previous_period" not in src and "rate_copy_model" not in src
     assert not os.path.exists(os.path.join(APP_DIR, "rate_copy_model.py"))
     assert not os.path.exists(os.path.join(APP_DIR, "tests", "test_rate_copy_model.py"))
-    js = open(os.path.join(APP_DIR, "consolidation", "doctype", "group_exchange_rate",
-                           "group_exchange_rate_list.js")).read()
-    assert "copy_from_previous_period" not in js and "Copy rates from previous period" not in js
+    # the GER list script went with its last button (konsol#592 T14)
+    path = os.path.join(APP_DIR, "consolidation", "doctype", "group_exchange_rate", "group_exchange_rate_list.js")
+    assert not os.path.exists(path)

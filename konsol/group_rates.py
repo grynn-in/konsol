@@ -810,11 +810,76 @@ def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal
 
 # -- the close gate -------------------------------------------------------------------
 
-_SHEET_KEYS_SQL = (
-    "SELECT r.from_currency, r.to_currency, r.average_quote, r.closing_quote "
+_SHEET_ROWS_OF_PERIOD_SQL = (
+    "SELECT s.name, s.supersedes, r.from_currency, r.to_currency, r.quoted_per, r.average_quote, "
+    "r.closing_quote "
     "FROM `tabRate Sheet Row` r JOIN `tabRate Sheet` s ON s.name = r.parent "
-    "WHERE s.docstatus = 1 AND s.rate_basis = 'Statutory' AND s.fiscal_year = %s AND s.fiscal_period = %s "
-    "AND r.parenttype = 'Rate Sheet' AND r.parentfield = 'rates'")
+    "WHERE s.docstatus = %s AND s.rate_basis = 'Statutory' AND s.fiscal_year = %s AND s.fiscal_period = %s "
+    "AND r.parenttype = 'Rate Sheet' AND r.parentfield = 'rates' ORDER BY s.name, r.idx")
+
+
+def _statutory_rows(fiscal_year, fiscal_period, docstatus=1, share=""):
+    """(from, to, quoted_per, average_quote, closing_quote) of every row of the
+    period's Statutory sheets in ``docstatus``, the one read the close gate
+    (_approved_keys) and approved_quotes share. An approved sheet named in
+    another approved sheet's ``supersedes`` gives way to it (#312-3), as in the
+    publish (sheet_published_rows)."""
+    rows = frappe.db.sql(_SHEET_ROWS_OF_PERIOD_SQL + share, (docstatus, int(fiscal_year), int(fiscal_period)))
+    superseded = {sup for _n, sup, *_ in rows if sup} if docstatus == 1 else set()
+    return [tuple(r[2:]) for r in rows if r[0] not in superseded]
+
+
+def _wants(quote):
+    return bool(quote) and float(quote) > 0
+
+
+def approved_quotes(fiscal_year, fiscal_period, rate_type, lock=False):
+    """``{(from, to): true_rate}`` of the period's approved ACTUALS rates for
+    one rate type (konsol#592 T19): the one reader every consumer of a period's
+    rate goes through (deals, charts, the close grid).
+
+    From the approved Statutory Rate Sheet of the period: the row's Average or
+    Closing quote over its Quoted Per, so the rate is the same true rate the
+    publish writes. A row without the asked quote is left out, as the gate
+    counts it. During the transition the approved Group Exchange Rate rows of
+    the actuals set are the union: the sheet wins for a pair it covers.
+    # GER branch goes with T26 (retire_group_exchange_rate).
+
+    Plain read by default; ``lock=True`` reads LOCK IN SHARE MODE, as
+    _approved_keys does. A Rate Type other than Closing or Average raises."""
+    if rate_type not in RATE_TYPES:
+        raise ValueError(f"Rate type must be one of {', '.join(RATE_TYPES)}, not {rate_type!r}.")
+    share = " LOCK IN SHARE MODE" if lock else ""
+    out = {}
+    # T26: the Group Exchange Rate branch goes with the doctype.
+    for f, t, quote, per in frappe.db.sql(
+            "SELECT from_currency, to_currency, quote, quoted_per FROM `tabGroup Exchange Rate` "
+            "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s AND rate_type = %s "
+            "AND rate_set = %s ORDER BY modified" + share,
+            (1, int(fiscal_year), int(fiscal_period), rate_type, actuals_rate_set())):
+        out[(f, t)] = true_rate(quote, per)
+    for f, t, per, average, closing in _statutory_rows(fiscal_year, fiscal_period, 1, share):
+        quote = average if rate_type == "Average" else closing
+        if _wants(quote):
+            out[(f, t)] = true_rate(quote, per)
+    return out
+
+
+def draft_pairs(fiscal_year, fiscal_period, rate_type):
+    """The ``(from, to)`` pairs the period has a DRAFT actuals rate for
+    (konsol#592 T19), so the close grid can say "Awaiting approval": a draft
+    Statutory sheet row carrying the quote, and (until T26) a draft Group
+    Exchange Rate row."""
+    if rate_type not in RATE_TYPES:
+        raise ValueError(f"Rate type must be one of {', '.join(RATE_TYPES)}, not {rate_type!r}.")
+    out = {(f, t) for f, t in frappe.db.sql(
+        "SELECT from_currency, to_currency FROM `tabGroup Exchange Rate` "
+        "WHERE docstatus = 0 AND fiscal_year = %s AND fiscal_period = %s AND rate_type = %s AND rate_set = %s",
+        (int(fiscal_year), int(fiscal_period), rate_type, actuals_rate_set()))}  # T26
+    for f, t, _per, average, closing in _statutory_rows(fiscal_year, fiscal_period, 0):
+        if _wants(average if rate_type == "Average" else closing):
+            out.add((f, t))
+    return out
 
 
 def _approved_keys(fiscal_year, fiscal_period, lock=False, rate_set=None):
@@ -849,11 +914,10 @@ def _approved_keys(fiscal_year, fiscal_period, lock=False, rate_set=None):
     share = " LOCK IN SHARE MODE" if lock else ""
     keys = set()
     if rate_set == actuals:
-        for f, t, average, closing in frappe.db.sql(
-                _SHEET_KEYS_SQL + share, (int(fiscal_year), int(fiscal_period))):
-            if average and float(average) > 0:
+        for f, t, _per, average, closing in _statutory_rows(fiscal_year, fiscal_period, 1, share):
+            if _wants(average):
                 keys.add((f, t, "Average"))
-            if closing and float(closing) > 0:
+            if _wants(closing):
                 keys.add((f, t, "Closing"))
     # T26: the Group Exchange Rate branch goes with the doctype.
     rows = frappe.db.sql(

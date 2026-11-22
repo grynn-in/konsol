@@ -116,6 +116,7 @@ def _load():
     gr = types.ModuleType("konsol.group_rates")
     gr.true_rate = lambda quote, per: float(Decimal(str(quote or 0)) / int(per or 1))
     gr.actuals_rate_set = lambda: "ACTUAL"
+    gr.approved_quotes = lambda *a, **k: {}  # each _Site installs its own on M
     # konsol#529: before_cancel sets the workflow's docstatus-2 state through
     # this helper; it has its own tests (test_cancelled_workflow_state.py).
     wfs = types.ModuleType("konsol.workflows")
@@ -281,6 +282,7 @@ class _Site:
         M.frappe.db = types.SimpleNamespace(sql=self._sql, get_value=self._get_value, exists=self._exists,
                                             table_exists=self._table_exists)
         M.frappe.get_all = self._get_all
+        M.approved_quotes = self._approved_quotes
         M.frappe.get_doc = self._get_doc
         M.frappe.msgprint = lambda msg, *a, **k: site.msgprints.append((msg, k))
         M.execute = self._execute
@@ -289,6 +291,13 @@ class _Site:
         M.assert_open = lambda fy, fp, action="run": site.opened.append((fy, fp, action))
         M.assert_open_between = (lambda start, end=None, action="run", end_exclusive=False:
                                  site.spans.append((str(start), str(end), action, end_exclusive)))
+
+    def _approved_quotes(self, fiscal_year, fiscal_period, rate_type):
+        """group_rates.approved_quotes (konsol#592 T19): a deal is actuals, at
+        the Closing rate; every other read of a rate is a failure."""
+        assert rate_type == "Closing", rate_type
+        return {(f, t): float(Decimal(str(q or 0)) / int(per or 1))
+                for (f, t, y, p), (q, per) in self.rates.items() if (y, p) == (fiscal_year, fiscal_period)}
 
     def _execute(self, sql, params=None):
         self.ch_calls.append((" ".join(sql.split()), dict(params or {})))
@@ -389,14 +398,7 @@ class _Site:
             if k.get("pluck"):
                 return [n if k["pluck"] == "name" else self._chart(n) for n in names]
             return [_Row(name=n, chart_of_accounts=self._chart(n)) for n in names]
-        assert doctype == "Group Exchange Rate", doctype
-        assert filters.get("docstatus") == 1 and filters.get("rate_type") == "Closing", filters
-        assert filters.get("rate_set") == "ACTUAL", "konsol#348: a deal translates at the actuals rate"
-        key = (filters["from_currency"], filters["to_currency"], filters["fiscal_year"], filters["fiscal_period"])
-        if key not in self.rates:
-            return []
-        quote, per = self.rates[key]
-        return [_Row(quote=quote, quoted_per=per)]
+        raise AssertionError(f"unexpected get_all on {doctype}: a deal reads rates through group_rates.approved_quotes")
 
     def _get_doc(self, arg, name=None):
         site = self

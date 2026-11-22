@@ -63,7 +63,7 @@ from konsol.consolidation_policy_model import (
     account_problems,
     required_accounts,
 )
-from konsol.group_rates import actuals_rate_set, true_rate
+from konsol.group_rates import approved_quotes
 from konsol.period_status import PeriodNotDeclared, assert_open, assert_open_between
 from konsol.workflows import set_cancelled_state
 
@@ -457,19 +457,9 @@ class BusinessCombination(Document):
         def rate(currency):
             if not currency or currency == group_currency:
                 return 1.0
-            rows = frappe.get_all(
-                "Group Exchange Rate",
-                # konsol#348: a deal is actuals, translated at the actuals set's rate
-                filters={"docstatus": 1, "from_currency": currency, "to_currency": group_currency,
-                         "fiscal_year": period["fiscal_year"], "fiscal_period": period["fiscal_period"],
-                         "rate_type": "Closing", "rate_set": actuals_rate_set()},
-                fields=["quote", "quoted_per"],
-                limit_page_length=1,
-                order_by="modified desc",
-            )
-            if not rows:
-                return None
-            return true_rate(rows[0].quote, rows[0].quoted_per)
+            # konsol#592 T19: a deal is actuals, at the period's approved Closing rate
+            return approved_quotes(period["fiscal_year"], period["fiscal_period"], "Closing").get(
+                (currency, group_currency))
         return rate
 
     def _has_tb_at_or_before(self, period):

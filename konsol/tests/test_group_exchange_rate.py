@@ -1991,7 +1991,6 @@ def test_actuals_readers_select_the_flagged_set_and_refuse_when_none_is_flagged(
 # -- Copy rates from previous period (konsol#584, Deepak Pai 22 Nov 2026) ---------------
 
 COPY = "Copied from previous period"
-LIST_JS = os.path.join(GER_DIR, "group_exchange_rate_list.js")
 
 
 def test_a_copied_rate_names_the_rate_it_was_copied_from():

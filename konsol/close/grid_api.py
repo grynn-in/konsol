@@ -10,7 +10,7 @@ column (W2-4).
 It reads the period in a fixed number of queries, whatever the entity
 count: the calendar rows, Entity, Ownership Period, Trial Balance
 Submission, TB Exception, the root Consolidation Group's reporting
-currency, the period's Closing Group Exchange Rates, one plain (no lock)
+currency, the period's approved and draft Closing rates (``group_rates.approved_quotes`` and ``draft_pairs``), one plain (no lock)
 ``group_rates.rate_gate`` and ``allowed_entity_codes``; then, when any row
 is visible, one ``close_event.reminders`` read (topic tb) and, when a
 visible row was reminded, one User read for the senders' full names
@@ -154,16 +154,9 @@ def _rates(key):
         filters={"data_area_id": ["is", "not set"], "reporting_currency": ["is", "set"]},
         pluck="reporting_currency", limit_page_length=0,
     ))
-    approved, drafts = set(), set()
-    for r in frappe.get_all(
-        "Group Exchange Rate",
-        # konsol#348: the actuals set's rates; a budget set's are not the period's
-        filters={"fiscal_year": key[0], "fiscal_period": key[1], "rate_type": CLOSING,
-                 "docstatus": ["<", 2], "rate_set": group_rates.actuals_rate_set()},
-        fields=["from_currency", "to_currency", "docstatus"], limit_page_length=0,
-    ):
-        (approved if int(r["docstatus"]) == 1 else drafts).add(
-            (r["from_currency"], r["to_currency"]))
+    # konsol#592 T19: the actuals set's Closing rates through group_rates
+    approved = set(group_rates.approved_quotes(key[0], key[1], CLOSING))
+    drafts = group_rates.draft_pairs(key[0], key[1], CLOSING)
     missing, error, _blockers = group_rates.rate_gate(key[0], key[1])
     return {"group_currencies": group_currencies, "missing": missing, "error": error,
             "approved": approved, "drafts": drafts}
