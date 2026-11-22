@@ -340,3 +340,27 @@ def test_workflows_install_and_never_rewrite():
         result = wf.install_workflows()
     assert result == []
 
+
+
+def test_install_workflows_can_be_narrowed_to_named_doctypes():
+    """konsol#592 T25b: the Rate Sheet migration patch installs Rate Sheet's
+    workflow only, before the model sync, so a workflow for a doctype whose
+    fields have not synced yet is not created early. Still create-if-missing."""
+    created = []
+
+    def get_doc(d):
+        return types.SimpleNamespace(insert=lambda **k: created.append(d.get("doctype") and
+                                                                       (d["doctype"], d.get("document_type"))))
+
+    def exists(doctype, filters=None, *a, **k):
+        if doctype == "DocType":
+            return True
+        if doctype == "Workflow":
+            return False
+        return True  # states and actions exist
+
+    with _stub_frappe(get_app_path=lambda app: APP_DIR, db=types.SimpleNamespace(exists=exists),
+                      get_doc=get_doc):
+        wf = _load("workflows.py", "_wf_narrow_under_test")
+        wf.install_workflows(doctypes=("Rate Sheet",))
+    assert created == [("Workflow", "Rate Sheet")], created

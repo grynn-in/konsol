@@ -296,13 +296,14 @@ def test_a_plain_draft_in_an_approved_period_is_dropped_and_named():
 
 # -- Closing-type periods ---------------------------------------------------------
 
-def test_a_closing_type_period_is_migrated_for_audit():
+def test_a_closing_type_period_is_dropped_into_the_audit_not_a_sheet():
+    """Was "migrated for audit" as a sheet (T5); T25b drops it instead: the
+    controller and the publish refuse such a sheet."""
     rates = _base(fp=13)
     p = run(rates)
-    sh = sheet(p, "RS-S-2024-13")
-    assert sh["docstatus"] == 1 and sh["period_type"] == "Closing"
-    assert any("RS-S-2024-13" in w for w in p["warnings"])
-    assert p["refusals"] == []
+    assert p["sheets"] == [] and p["refusals"] == []
+    assert sorted(d["document"] for d in p["dropped"]) == sorted(r["name"] for r in rates)
+    assert not any("RS-S-2024-13" in w for w in p["warnings"])
 
 
 # -- Constant sheets from budget sets ---------------------------------------------
@@ -385,3 +386,31 @@ def test_the_model_imports_nothing_from_frappe_or_konsol():
     names = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     names |= {(n.module or "").split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     assert not names & {"frappe", "konsol"}, names
+
+
+# -- Closing-type periods (T25b, coordinator 22 Nov 2026) ----------------------------
+
+CLOSING_REASON = ("Closing-type period: the warehouse reads the year's last Regular period; kept in the "
+                  "migration audit CSV")
+
+
+def test_closing_type_period_rows_are_dropped_and_named_not_a_sheet():
+    """dbt never reads a Closing period's own rates (rate_period_map reads the
+    year's last Regular period) and the controller refuses such a sheet, so
+    every GER row of a Closing-type period is dropped with the reason."""
+    rates = live_rates()
+    extra = [ger("EUR", "Closing", 2019, 13, 1.1), ger("EUR", "Average", 2019, 13, 1.1),
+             ger("GBP", "Closing", 2018, 13, 1.3, docstatus=0)]
+    p = run(rates + extra)
+    assert p["refusals"] == []
+    assert not [s for s in p["sheets"] if s["fiscal_period"] == 13], [s["name"] for s in p["sheets"]]
+    assert p["dropped"] == sorted(({"document": r["name"], "reason": CLOSING_REASON} for r in extra),
+                                  key=lambda d: d["document"])
+    assert not [w for w in p["warnings"] if "Closing period" in w], p["warnings"]
+    assert len(p["sheets"]) == 22
+
+
+def test_a_closing_type_period_missing_a_rate_type_is_dropped_not_refused():
+    p = run(live_rates() + [ger("EUR", "Closing", 2019, 13, 1.1)])
+    assert p["refusals"] == []
+    assert [d["document"] for d in p["dropped"]] == ["GER-2019-13-EUR-USD-Closing-01"]
