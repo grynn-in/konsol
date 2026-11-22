@@ -57,6 +57,13 @@ under the controller's ``MIGRATE_FLAG``, as the Administrator (the rule of
 ``RateSheet._migrating``), a Rate Sheet records no data change and marks no
 signed run Re-sign Needed. Its Close Events (approved, approval_cancelled)
 are still written by their own hooks.
+
+PR #595 review 3: a Constant Rate Sheet translates budgets and forecasts
+(konsol#592 D2), not a period's actuals, so it records no data change and
+voids no sign-off. Its period would be ``(fy, 0)`` (``close_event.period_of``),
+and ``record_data_change`` raises PeriodNotDeclared in a year with no P0 row.
+Its Close Events stay at ``(fy, 0)``, the year-level key, which needs no P0
+row: the writer reads no calendar.
 """
 from konsol.close import data_change_model
 
@@ -69,8 +76,12 @@ def _migrating(frappe, doc):
             and frappe.session.user == "Administrator")
 
 
+def _drives_actuals(doc):
+    return not (doc.doctype == "Rate Sheet" and doc.get("rate_basis") == "Constant")
+
+
 def _record(doc, action):
-    if doc.doctype not in data_change_model.NUMBER_DRIVING:
+    if doc.doctype not in data_change_model.NUMBER_DRIVING or not _drives_actuals(doc):
         return
     # Lazy: an unrelated doctype's submit/cancel never loads these (mirrors
     # self_approval.check's own "imported here, not at the top" pattern).
