@@ -81,9 +81,36 @@ def test_window_statutory_closing_period_is_refused_by_name():
     assert w is None and "Closing" in why and "FY2025 P99" in why
 
 
-def test_window_statutory_adjustment_period_is_refused():
+def test_window_statutory_adjustment_period_takes_its_own_dates():
+    """PR #595 review 1: rate_period_map() maps an Adjustment period to itself,
+    so the warehouse translates it at its own rates: a Statutory sheet holds them."""
     w, why = M.window(_stat(fp=13), _cal(adjustments=(13,)))
-    assert w is None and "Adjustment" in why
+    assert why is None and w == (datetime.date(2025, 12, 31), datetime.date(2025, 12, 31))
+
+
+# -- PR #595 review 1: the period whose rates a period is translated at -----------
+
+def test_rate_period_reads_a_closing_period_at_the_last_regular_period():
+    assert M.rate_period(_cal(adjustments=(13,)), 2025, 99) == 12
+    assert M.rate_period(_cal(regular=9), 2025, 99) == 9
+
+
+def test_rate_period_keeps_every_other_period():
+    cal = _cal(adjustments=(13,))
+    for fp in (0, 1, 6, 12, 13):
+        assert M.rate_period(cal, 2025, fp) == fp
+
+
+def test_rate_period_keeps_a_closing_period_in_a_year_with_no_regular_period():
+    """rate_period_map(): last_regular is 0, so the Closing period maps to itself."""
+    cal = [r for r in _cal() if r["type"] == "Closing"]
+    assert M.rate_period(cal, 2025, 99) == 99
+
+
+def test_rate_period_keeps_an_undeclared_period_and_reads_only_its_own_year():
+    assert M.rate_period(_cal(), 2025, 50) == 50
+    assert M.rate_period(_cal(2024), 2025, 99) == 99
+    assert M.rate_period(_cal(2024, regular=3) + _cal(2025), 2025, 99) == 12
 
 
 def test_window_statutory_needs_a_period():

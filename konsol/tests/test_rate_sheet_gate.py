@@ -20,8 +20,9 @@ class Refused(Exception):
     pass
 
 
-def _frappe(sheets=(), actuals=("ACTUAL",)):
-    """``sheets``: (name, basis, fy, fp, docstatus, [(from, to, average, closing)])."""
+def _frappe(sheets=(), actuals=("ACTUAL",), calendar=()):
+    """``sheets``: (name, basis, fy, fp, docstatus, [(from, to, average, closing)]).
+    ``calendar``: (fy, fp, period type) of the declared periods."""
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -42,6 +43,9 @@ def _frappe(sheets=(), actuals=("ACTUAL",)):
             _ds, fy, fp = params
             return [(n, None, f, t, "1", avg, cls) for n, basis, y, p, ds, rows in sheets
                     if ds == 1 and basis == "Statutory" and (y, p) == (fy, fp) for f, t, avg, cls in rows]
+        if "`tabEPM Fiscal Year Period`" in query:
+            (fy,) = params
+            return [(p, t) for y, p, t in calendar if y == fy]
         raise AssertionError(f"unexpected read: {query}")
 
     frappe.throw, frappe.get_all = throw, get_all
@@ -138,3 +142,44 @@ def test_the_close_gate_refuses_by_name_and_passes_when_the_sheet_is_complete():
         assert "JPY → CHF Average" in str(e) and "JPY → CHF Closing" in str(e), str(e)
     else:
         raise AssertionError("a pair with no rate must refuse the close")
+
+
+# -- PR #595 review 1: Closing and Adjustment periods ------------------------------
+
+def _year(fy=2099, adjustment=None):
+    """(fy, fp, type): P0 Opening, P1-P12 Regular, an Adjustment period, P14 Closing."""
+    rows = [(fy, 0, "Opening")] + [(fy, p, "Regular") for p in range(1, 13)]
+    if adjustment:
+        rows.append((fy, adjustment, "Adjustment"))
+    return rows + [(fy, 14, "Closing")]
+
+
+def test_a_closing_period_is_gated_on_the_last_regular_periods_sheet():
+    """rate_period_map() (konsolidat governed_rates.sql) translates a Closing
+    period at the year's last Regular period, and a Statutory sheet for a
+    Closing period is refused: so closing P14 reads P12's sheet."""
+    rows = [("EUR", "CHF", 0.94, 0.95), ("JPY", "CHF", 0.0065, 0.0066)]
+    r = _rules(_frappe([_sheet(rows, fp=12, name="RS-S-2099-12")], calendar=_year(adjustment=13)))
+    assert r._approved_keys(2099, 14) == BOTH
+    assert r.missing_rates(2099, 14, pairs={EUR, JPY}) == []
+
+
+def test_a_closing_period_with_no_sheet_at_the_last_regular_period_is_missing():
+    r = _rules(_frappe([_sheet([("EUR", "CHF", 0.94, 0.95)], fp=11, name="RS-S-2099-11")],
+                       calendar=_year()))
+    assert r._approved_keys(2099, 14) == set()
+
+
+def test_an_adjustment_period_is_gated_on_its_own_sheet():
+    """An Adjustment period maps to itself: P12's sheet does not cover P13."""
+    rows = [("EUR", "CHF", 0.94, 0.95)]
+    r = _rules(_frappe([_sheet(rows, fp=12, name="RS-S-2099-12")], calendar=_year(adjustment=13)))
+    assert r._approved_keys(2099, 13) == set()
+    r = _rules(_frappe([_sheet(rows, fp=13, name="RS-S-2099-13")], calendar=_year(adjustment=13)))
+    assert r._approved_keys(2099, 13) == {("EUR", "CHF", "Average"), ("EUR", "CHF", "Closing")}
+
+
+def test_a_closing_period_in_a_year_with_no_regular_period_reads_itself():
+    rows = [("EUR", "CHF", 0.94, 0.95)]
+    r = _rules(_frappe([_sheet(rows, fp=14, name="RS-S-2099-14")], calendar=[(2099, 14, "Closing")]))
+    assert r._approved_keys(2099, 14) == {("EUR", "CHF", "Average"), ("EUR", "CHF", "Closing")}

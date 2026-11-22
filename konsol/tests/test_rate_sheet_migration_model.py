@@ -414,3 +414,77 @@ def test_a_closing_type_period_missing_a_rate_type_is_dropped_not_refused():
     p = run(live_rates() + [ger("EUR", "Closing", 2019, 13, 1.1)])
     assert p["refusals"] == []
     assert [d["document"] for d in p["dropped"]] == ["GER-2019-13-EUR-USD-Closing-01"]
+
+
+# -- PR #595 review 1: nothing the planner emits is refused by the controller ------
+
+_RSM_SPEC = importlib.util.spec_from_file_location("rsm_for_planner", os.path.join(APP_DIR, "rate_sheet_model.py"))
+RSM = importlib.util.module_from_spec(_RSM_SPEC)
+_RSM_SPEC.loader.exec_module(RSM)
+
+
+def _dated_year(fy, adjustment=13, closing=14):
+    """Every period type with dates, the shape rate_sheet_model.window reads."""
+    import datetime
+
+    end = datetime.date(fy, 12, 31)
+    rows = [{"fiscal_year": fy, "period": 0, "type": "Opening", "start_date": datetime.date(fy, 1, 1),
+             "end_date": datetime.date(fy, 1, 1)}]
+    for p in range(1, 13):
+        nxt = datetime.date(fy + (p == 12), p % 12 + 1, 1)
+        rows.append({"fiscal_year": fy, "period": p, "type": "Regular", "start_date": datetime.date(fy, p, 1),
+                     "end_date": nxt - datetime.timedelta(days=1)})
+    rows.append({"fiscal_year": fy, "period": adjustment, "type": "Adjustment", "start_date": end, "end_date": end})
+    rows.append({"fiscal_year": fy, "period": closing, "type": "Closing", "start_date": end, "end_date": end})
+    return rows
+
+
+def _controller_sheet(s):
+    """A planned sheet as the controller hands it to rate_sheet_model."""
+    return {"name": s["name"], "rate_basis": s["rate_basis"], "fiscal_year": s["fiscal_year"],
+            "fiscal_period": s["fiscal_period"], "docstatus": s["docstatus"],
+            "rows": [{**r, "quoted_per": r["quoted_per"],
+                      **{f: (None if r.get(f) is None else float(r[f]))
+                         for f in ("average_quote", "closing_quote", "rate") if f in r}}
+                     for r in s["rows"]]}
+
+
+def test_every_planned_sheet_passes_the_controllers_rules():
+    """Each sheet the planner emits is written through the controller, which
+    applies rate_sheet_model.window and row_problems: one that they refuse
+    stops the migrate half-way. Every period type is covered: Opening,
+    Regular, Adjustment (now a sheet of its own) and Closing (dropped), and a
+    uniform and a non-uniform Constant sheet. The non-uniform Constant draft
+    carries a blank rate on purpose and is the patch's one named exemption
+    from row_problems (``_prepare_blank_constant_draft``); its window must
+    still pass."""
+    fy = 2024
+    calendar = {fy: _dated_year(fy), 2026: _dated_year(2026), 2027: _dated_year(2027)}
+    rates = []
+    for fp in (0, 6, 12, 13, 14):
+        rates += _base(fy=fy, fp=fp)
+    rates += _base(fy=fy, fp=11) + [ger("EUR", "Closing", fy, 11, 1.4, docstatus=2, seq=2,
+                                        modified="2026-01-01 10:00:00")]
+    rates += _budget_rates("BUD26", 2026, {"EUR": [(1.1, 1)] * 12})
+    rates += _budget_rates("BUD27", 2027, {"EUR": [(1.1, 1)] * 6 + [(1.2, 1)] * 6})
+    cycles = [_cycle("BC-2026", 2026, "BUD26"), _cycle("BC-2027", 2027, "BUD27")]
+    p = M.plan(rates, ACT, cycles, calendar)
+    assert p["refusals"] == []
+    names = {s["name"] for s in p["sheets"]}
+    assert {"RS-S-2024-00", "RS-S-2024-06", "RS-S-2024-12", "RS-S-2024-13", "RS-C-2026", "RS-C-2027"} <= names
+    assert "RS-S-2024-14" not in names
+    exempt = []
+    for s in p["sheets"]:
+        sheet = _controller_sheet(s)
+        _dates, why = RSM.window(sheet, calendar[s["fiscal_year"]])
+        assert why is None, (s["name"], why)
+        problems = RSM.row_problems(sheet)
+        if s["rate_basis"] == CONSTANT_BASIS and s["docstatus"] == 0 and any(
+                r.get("rate") is None for r in s["rows"]):
+            exempt.append(s["name"])
+            continue
+        assert problems == [], (s["name"], problems)
+    assert exempt == ["RS-C-2027"]
+
+
+CONSTANT_BASIS = "Constant"

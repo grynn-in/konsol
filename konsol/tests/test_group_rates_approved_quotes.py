@@ -21,9 +21,9 @@ class Refused(Exception):
     pass
 
 
-def _frappe(sheets=(), actuals=("ACTUAL",)):
+def _frappe(sheets=(), actuals=("ACTUAL",), calendar=()):
     """``sheets``: (name, basis, fy, fp, docstatus, supersedes,
-    [(from, to, quoted_per, average, closing)])."""
+    [(from, to, quoted_per, average, closing)]). ``calendar``: (fy, fp, type)."""
     frappe = types.ModuleType("frappe")
     for name in ("ValidationError", "MandatoryError", "PermissionError"):
         setattr(frappe, name, type(name, (Exception,), {}))
@@ -43,6 +43,9 @@ def _frappe(sheets=(), actuals=("ACTUAL",)):
                     for n, basis, y, p, ds, sup, rows in sheets
                     if ds == want and basis == "Statutory" and (y, p) == (fy, fp)
                     for f, t, per, avg, cls in rows]
+        if "`tabEPM Fiscal Year Period`" in query:
+            (fy,) = params
+            return [(p, t) for y, p, t in calendar if y == fy]
         raise AssertionError(f"unexpected read: {query}")
 
     frappe.throw, frappe.get_all = throw, get_all
@@ -121,3 +124,24 @@ def test_draft_pairs_lists_the_draft_sheet_rows_with_the_quote():
     r = _rules(_frappe([draft, _sheet([("AUD", "CHF", "1", 0.6, 0.6)])]))
     assert r.draft_pairs(2099, 3, "Closing") == {("EUR", "CHF")}
     assert r.draft_pairs(2099, 3, "Average") == {("JPY", "CHF")}
+
+
+# -- PR #595 review 1: a Closing period reads the last Regular period's sheet ------
+
+CAL = [(2099, 0, "Opening")] + [(2099, p, "Regular") for p in range(1, 13)] + [
+    (2099, 13, "Adjustment"), (2099, 14, "Closing")]
+
+
+def test_a_closing_period_reads_the_last_regular_periods_rates():
+    """Business Combination, Business Disposal, the charts and the close grid
+    read a Closing period's rate at P12, as the warehouse translates it."""
+    p12 = _sheet([("EUR", "CHF", "1", 0.94, 0.95)], fp=12, name="RS-S-2099-12")
+    r = _rules(_frappe([p12], calendar=CAL))
+    assert r.approved_quotes(2099, 14, "Closing") == {("EUR", "CHF"): 0.95}
+    assert r.approved_quotes(2099, 13, "Closing") == {}
+
+
+def test_a_closing_period_reads_the_last_regular_periods_drafts():
+    p12 = _sheet([("EUR", "CHF", "1", 0.94, 0.95)], fp=12, name="RS-S-2099-12", docstatus=0)
+    r = _rules(_frappe([p12], calendar=CAL))
+    assert r.draft_pairs(2099, 14, "Closing") == {("EUR", "CHF")}
