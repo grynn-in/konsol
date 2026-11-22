@@ -127,6 +127,7 @@ def _rules_module(frappe, overrides=None):
     period_status = types.ModuleType("konsol.period_status")
     period_status.period_dates = _default_period_dates
     period_status.PeriodNotDeclared = type("PeriodNotDeclared", (frappe.ValidationError,), {})
+    period_status.assert_open = lambda *a, **k: None   # konsol#584's copy; a test overrides it
     saved = {n: sys.modules.get(n) for n in ("frappe", "konsol.period_status")}
     sys.modules["frappe"] = frappe
     sys.modules["konsol.period_status"] = period_status
