@@ -624,27 +624,26 @@ def test_an_undeclared_scenario_is_not_judged_for_its_round():
     assert B.as_of_problems("NOPE", None, "") == []
 
 
-# ---- S4 K5 (BUD-3): a Cycle declares its Rate Set; nothing defaults it ---------------
+# ---- konsol#592 D2 (Deepak Pai, 22 Nov 2026): a Cycle translates at its year's Constant
+# sheet; BUD-3's per-Cycle Rate Set is gone, so nothing about a set is judged here --------
 
-def test_a_cycle_without_a_rate_set_is_refused_naming_the_field_and_the_type():
-    (problem,) = B.cycle_rate_set_problems("budget", None)
-    assert "Rate Set" in problem and "budget" in problem and "default" in problem.lower()
-    (problem,) = B.cycle_rate_set_problems(B.FORECAST, "  ")
-    assert "Rate Set" in problem and "forecast" in problem
+def test_rate_set_rules_are_gone():
+    assert not hasattr(B, "cycle_rate_set_problems")
 
 
-def test_a_cycle_that_names_its_rate_set_passes_whatever_set_it_names():
-    # The actuals set is a legitimate choice (a budget at actual rates); the
-    # rule is that the Cycle says so, never that konsol picks for it.
-    assert B.cycle_rate_set_problems("budget", "BUDGET_2027") == []
-    assert B.cycle_rate_set_problems(B.FORECAST, "ACTUAL") == []
-    assert B.cycle_rate_set_problems("strategic", "STRAT") == []
+def test_a_cycle_without_an_approved_constant_sheet_cannot_be_approved():
+    (problem,) = B.cycle_constant_sheet_problems(2027, [])
+    assert "FY2027" in problem
+    assert "approve the Constant rate sheet RS-C-2027 first (konsol#592)" in problem
+    (problem,) = B.cycle_constant_sheet_problems("2027", None)
+    assert "RS-C-2027" in problem
 
 
-def test_an_actual_cycle_is_refused_here_too():
-    """An actual-type Cycle cannot exist (validate refuses it first); were it
-    to reach this rule, it is refused rather than given the flagged set."""
-    (problem,) = B.cycle_rate_set_problems(B.ACTUAL, "ACTUAL")
-    assert "actual" in problem and "Is Actuals" in problem
-    (problem,) = B.cycle_rate_set_problems(B.ACTUAL, None)
-    assert "actual" in problem
+def test_a_cycle_with_its_years_constant_sheet_can_be_approved():
+    assert B.cycle_constant_sheet_problems(2027, ["RS-C-2027"]) == []
+    assert B.cycle_constant_sheet_problems(2027, ["RS-C-2027-2"]) == []
+
+
+def test_two_approved_constant_sheets_for_the_year_are_refused_by_name_never_picked():
+    (problem,) = B.cycle_constant_sheet_problems(2027, ["RS-C-2027-2", "RS-C-2027"])
+    assert "RS-C-2027, RS-C-2027-2" in problem and "FY2027" in problem

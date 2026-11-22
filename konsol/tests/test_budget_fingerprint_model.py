@@ -6,12 +6,13 @@ loaded by path like ``konsol/close/fingerprint_model.py``, whose style it
 follows. It hashes what the Cycle approved, never the translated numbers (a
 Cycle on actual rates would otherwise void every month):
 
-- the Cycle's Rate Set;
+- the approved Constant Rate Sheet of the Cycle's year: its name and its
+  rows (konsol#592 D2, Deepak Pai, 22 Nov 2026, replacing BUD-3's Rate Set);
 - its Budget Annual Input rows (grain, layer, currency, amount, profile);
 - its Budget Entry Lines (grain, debit, credit, basis);
 - the Spread Profile weights the annual rows use (an unused profile is not
   an input);
-- the approved Group Exchange Rates and Historical Equity Rates of its set.
+- the approved Historical Equity Rates of the CONSTANT set.
 
 Order-independent (the per-row hashes are summed mod 2**256, never XORed);
 changing one amount, one rate or one weight changes it; amounts are
@@ -47,9 +48,13 @@ def _weight(fp, weight, profile="EVEN"):
     return {"profile_id": profile, "fiscal_period": fp, "weight": weight}
 
 
-def _rate(fp=1, quote="1.08", per=1, kind="Average", frm="EUR", to="USD"):
-    return {"from_currency": frm, "to_currency": to, "fiscal_year": 2027, "fiscal_period": fp,
-            "rate_type": kind, "quote": quote, "quoted_per": per}
+def _row(rate="1.08", per=1, frm="EUR", to="USD"):
+    return {"from_currency": frm, "to_currency": to, "rate": rate, "quoted_per": per}
+
+
+def _sheet(name="RS-C-2027", rows=None, supersedes=None):
+    return {"name": name, "supersedes": supersedes,
+            "rows": [_row(), _row(rate="1.30", frm="GBP")] if rows is None else rows}
 
 
 def _her(rate="1.05", date="2024-01-01", account="3000", entity="ZZNL", group="ZZGRP", to="USD"):
@@ -68,12 +73,11 @@ def _link(entity="ZZNL", owner_entity="", owner_group="ZZGRP", group="ZZGRP", pc
 
 def _inputs(**over):
     base = dict(
-        rate_set="BUDGET_2027",
+        rate_sheets=[_sheet()],
         annual_inputs=[_annual(), _annual(account="4100", amount=600, profile="SEASONAL")],
         entry_lines=[_line(), _line(fp=2, debit=0, credit=50), _line(account="5100", debit=20)],
         weights=[_weight(p, 1 / 12) for p in range(1, 13)] + [_weight(1, 0.5, "SEASONAL"), _weight(7, 0.5, "SEASONAL")]
         + [_weight(1, 1.0, "UNUSED")],
-        exchange_rates=[_rate(), _rate(kind="Closing", quote="1.10"), _rate(fp=2, quote="1.09")],
         historical_rates=[_her(), _her(date="2025-06-30", rate="1.07")],
         ownership_links=[_link(), _link(entity="ZZUS", pct=100)],
         dimensions=(),
@@ -108,13 +112,24 @@ def test_one_entry_line_amount_changes_it():
     assert _fp(entry_lines=lines) != _fp()
 
 
-def test_one_exchange_rate_changes_it_and_so_does_its_unit():
-    rates = _inputs()["exchange_rates"]
-    rates[0] = dict(rates[0], quote="1.080001")
-    assert _fp(exchange_rates=rates) != _fp()
-    rates = _inputs()["exchange_rates"]
-    rates[0] = dict(rates[0], quoted_per=100)
-    assert _fp(exchange_rates=rates) != _fp()
+def test_one_sheet_rate_changes_it_and_so_does_its_unit():
+    rows = _sheet()["rows"]
+    rows[0] = dict(rows[0], rate="1.080001")
+    assert _fp(rate_sheets=[_sheet(rows=rows)]) != _fp()
+    rows = _sheet()["rows"]
+    rows[0] = dict(rows[0], quoted_per=100)
+    assert _fp(rate_sheets=[_sheet(rows=rows)]) != _fp()
+
+
+def test_a_superseding_constant_sheet_changes_it_even_with_the_same_rates():
+    """konsol#592: a correction RS-C-2027-2 supersedes RS-C-2027. Its name and
+    the sheet it supersedes are hashed with its rows, so the stamp reads stale
+    once the approved sheet is replaced, whatever its rates."""
+    assert _fp(rate_sheets=[_sheet(name="RS-C-2027-2", supersedes="RS-C-2027")]) != _fp()
+
+
+def test_no_constant_sheet_differs_from_one():
+    assert _fp(rate_sheets=[]) != _fp()
 
 
 def test_one_historical_rate_changes_it():
@@ -135,14 +150,18 @@ def test_one_used_weight_changes_it_and_an_unused_profiles_weight_does_not():
     assert _fp(weights=weights[:-1]) == _fp()
 
 
-def test_the_rate_set_itself_is_an_input():
-    assert _fp(rate_set="ACTUAL") != _fp()
+def test_there_is_no_rate_set_argument_any_more():
+    import inspect
+
+    params = inspect.signature(M.input_fingerprint).parameters
+    assert "rate_set" not in params and "exchange_rates" not in params
+    assert "rate_sheets" in params
 
 
 def test_adding_or_removing_a_row_changes_it():
     assert _fp(annual_inputs=_inputs()["annual_inputs"][:1]) != _fp()
     assert _fp(entry_lines=_inputs()["entry_lines"] + [_line(account="5200", debit=1)]) != _fp()
-    assert _fp(exchange_rates=_inputs()["exchange_rates"][:2]) != _fp()
+    assert _fp(rate_sheets=[_sheet(rows=_sheet()["rows"][:1])]) != _fp()
 
 
 def test_a_grain_change_changes_it_even_with_the_same_amounts():
@@ -179,9 +198,9 @@ def test_numbers_are_compared_at_their_stored_scale():
     lines = _inputs()["entry_lines"]
     lines[0] = dict(lines[0], debit=Decimal("100.0000"))
     assert _fp(entry_lines=lines) == _fp()
-    rates = _inputs()["exchange_rates"]
-    rates[0] = dict(rates[0], quote=Decimal("1.080000000"))
-    assert _fp(exchange_rates=rates) == _fp()
+    rows = _sheet()["rows"]
+    rows[0] = dict(rows[0], rate=Decimal("1.080000000"))
+    assert _fp(rate_sheets=[_sheet(rows=rows)]) == _fp()
 
 
 def test_two_lines_of_one_grain_are_the_one_number_they_sum_to():
@@ -202,17 +221,19 @@ def test_a_null_amount_raises_naming_the_row():
     with pytest.raises(ValueError) as info:
         _fp(annual_inputs=annual)
     assert "NULL" in str(info.value) and "4000" in str(info.value)
-    rates = _inputs()["exchange_rates"]
-    rates[0] = dict(rates[0], quote=None)
+    rows = _sheet()["rows"]
+    rows[0] = dict(rows[0], rate=None)
     with pytest.raises(ValueError):
-        _fp(exchange_rates=rates)
+        _fp(rate_sheets=[_sheet(rows=rows)])
 
 
-def test_no_inputs_is_still_a_fingerprint_of_the_set():
-    empty = M.input_fingerprint("BUDGET_2027", [], [], [], [], [], [])
+def test_no_inputs_is_still_a_fingerprint_and_the_recipe_is_v3():
+    empty = M.input_fingerprint([], [], [], [], [], [])
     assert empty.startswith(M.VERSION + ":")
-    assert empty != M.input_fingerprint("ACTUAL", [], [], [], [], [], [])
+    assert empty != M.input_fingerprint([_sheet(rows=[])], [], [], [], [], [])
     assert empty != _fp()
+    # v3: the Constant sheet replaced the Rate Set (konsol#592); every v2 stamp reads stale
+    assert M.VERSION == "v3"
 
 
 def test_the_model_is_pure_and_sums_not_xors():
