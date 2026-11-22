@@ -40,7 +40,6 @@ DEFAULT_DEFINITION: List[Step] = [
     Step(id="silver", type="dbt_run", depends_on=["seed"]),
     Step(id="gold", type="dbt_run", depends_on=["silver"]),
     Step(id="assertions", type="close_assertions", depends_on=["gold"]),
-    Step(id="signoff", type="signoff", depends_on=["assertions"]),
 ]
 
 

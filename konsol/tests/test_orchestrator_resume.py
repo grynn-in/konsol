@@ -57,7 +57,6 @@ def test_plan_resume_resets_step_and_descendants():
     assert snap["silver"] == Status.PENDING
     assert snap["gold"] == Status.PENDING
     assert snap["assertions"] == Status.PENDING
-    assert snap["signoff"] == Status.PENDING
 
 
 def test_plan_resume_runnable_is_target_only():
@@ -98,13 +97,11 @@ def test_plan_retry_resets_failed_step_and_descendants():
         "silver": Status.SUCCESS,
         "gold": Status.FAILED,
         "assertions": Status.PENDING,
-        "signoff": Status.PENDING,
     }
     snap = resume.plan_retry(DEFAULT_DEFINITION, statuses, "gold")
     assert snap["silver"] == Status.SUCCESS
     assert snap["gold"] == Status.PENDING
     assert snap["assertions"] == Status.PENDING
-    assert snap["signoff"] == Status.PENDING
     assert _runnable_ids(DEFAULT_DEFINITION, snap) == ["gold"]
 
 
@@ -115,7 +112,6 @@ def test_plan_retry_unknown_step_raises():
         "silver": Status.SUCCESS,
         "gold": Status.FAILED,
         "assertions": Status.PENDING,
-        "signoff": Status.PENDING,
     }
     with pytest.raises(ValueError):
         resume.plan_retry(DEFAULT_DEFINITION, statuses, "nope")
@@ -135,7 +131,6 @@ def test_plan_retry_does_not_mutate_input():
         "silver": Status.SUCCESS,
         "gold": Status.FAILED,
         "assertions": Status.PENDING,
-        "signoff": Status.PENDING,
     }
     before = dict(statuses)
     resume.plan_retry(DEFAULT_DEFINITION, statuses, "gold")

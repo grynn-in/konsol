@@ -61,7 +61,6 @@ def test_returns_step_objects_in_order():
         "silver",
         "gold",
         "assertions",
-        "signoff",
     ]
 
 
@@ -73,7 +72,6 @@ def test_types_match_fixture():
         "dbt_run",
         "dbt_run",
         "close_assertions",
-        "signoff",
     ]
 
 
@@ -82,7 +80,6 @@ def test_depends_on_parsed_empty_to_list():
     assert steps["extract"].depends_on == []
     assert steps["seed"].depends_on == ["extract"]
     assert steps["silver"].depends_on == ["seed"]
-    assert steps["signoff"].depends_on == ["assertions"]
 
 
 def test_depends_on_comma_split_and_strip():
@@ -162,7 +159,7 @@ def test_missing_steps_key_yields_empty():
 def test_roundtrip_toposort():
     steps = definition.definition_to_steps(_group_close_record())
     order = [s.id for s in Dag(steps).toposort()]
-    assert order == ["extract", "seed", "silver", "gold", "assertions", "signoff"]
+    assert order == ["extract", "seed", "silver", "gold", "assertions"]
 
 
 def test_roundtrip_build_plan_matches_default_definition():
@@ -177,7 +174,7 @@ def test_roundtrip_build_plan_matches_default_definition():
 def test_roundtrip_build_plan_skip_sync():
     steps = definition.definition_to_steps(_group_close_record())
     loaded = build_plan(steps, {"skip_sync": True})
-    assert [s.id for s in loaded] == ["seed", "silver", "gold", "assertions", "signoff"]
+    assert [s.id for s in loaded] == ["seed", "silver", "gold", "assertions"]
     # seed's airbyte dependency rewired away
     assert {s.id: s.depends_on for s in loaded}["seed"] == []
 
@@ -214,7 +211,6 @@ def test_loaded_definition_drives_plan_run():
         "silver",
         "gold",
         "assertions",
-        "signoff",
     ]
 
 

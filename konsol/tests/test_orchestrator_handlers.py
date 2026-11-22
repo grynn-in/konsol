@@ -62,7 +62,6 @@ def test_builtin_types_registered():
         "dbt_build",
         "dbt_test",
         "close_assertions",
-        "signoff",
     }
     assert expected <= set(BUILTIN_TYPES)
     for t in expected:

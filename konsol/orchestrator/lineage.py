@@ -27,7 +27,6 @@ STEP_OUTPUTS: Dict[str, List[str]] = {
     "silver": ["silver_*"],
     "gold": ["gold_*"],
     "assertions": ["close_assertions"],
-    "signoff": [],
 }
 
 # states that count as "settled successfully" for the rollup

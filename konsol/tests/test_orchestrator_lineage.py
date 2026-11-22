@@ -33,20 +33,19 @@ def test_step_outputs_maps_known_steps_to_tables():
     assert lineage.STEP_OUTPUTS["assertions"] == ["close_assertions"]
 
 
-def test_step_outputs_signoff_produces_nothing():
-    assert lineage.STEP_OUTPUTS["signoff"] == []
+def test_step_outputs_has_no_signoff():
+    assert "signoff" not in lineage.STEP_OUTPUTS
 
 
 # ---- lineage_for -----------------------------------------------------------
 
-def test_lineage_for_has_the_five_dependency_edges():
+def test_lineage_for_has_the_four_dependency_edges():
     edges = lineage.lineage_for(DEFAULT_DEFINITION)
     for edge in [
         ("extract", "seed"),
         ("seed", "silver"),
         ("silver", "gold"),
         ("gold", "assertions"),
-        ("assertions", "signoff"),
     ]:
         assert edge in edges
 
@@ -58,12 +57,9 @@ def test_lineage_for_has_step_to_table_edges():
     assert ("assertions", "close_assertions") in edges
 
 
-def test_lineage_for_signoff_has_no_table_edge():
+def test_lineage_for_has_no_signoff_edge():
     edges = lineage.lineage_for(DEFAULT_DEFINITION)
-    assert not any(up == "signoff" and down != "signoff" and down not in
-                   {s.id for s in DEFAULT_DEFINITION} for up, down in edges)
-    # signoff produces no table, so no (signoff, <table>) edge exists
-    assert all(not (up == "signoff" and "_" in down) for up, down in edges)
+    assert not any("signoff" in e for e in edges)
 
 
 # ---- summarize -------------------------------------------------------------

@@ -237,7 +237,7 @@ def test_works_with_real_handler_registry_module():
     # the handlers module exposes .get and built-in stubs all return ok
     from konsol.orchestrator import handlers
 
-    dag = Dag([Step("s", "signoff"), Step("x", "dbt_run", depends_on=["s"])])
+    dag = Dag([Step("s", "close_assertions"), Step("x", "dbt_run", depends_on=["s"])])
     state = RunState(dag)
     Executor(handlers, None).run(state)
     assert state.is_success()

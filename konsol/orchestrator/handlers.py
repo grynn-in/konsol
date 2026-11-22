@@ -87,7 +87,6 @@ BUILTIN_TYPES = (
     "dbt_build",
     "dbt_test",
     "close_assertions",
-    "signoff",
 )
 
 # dbt step type -> dbt CLI verb. Mirrors plan.DBT_TYPES.
@@ -197,14 +196,20 @@ def _handle_close_assertions(ctx) -> StepResult:
 
 
 def _handle_signoff(ctx) -> StepResult:
-    """Mark the run signed off (frappe-bound at runtime via the runner)."""
-    runner = _runner(ctx)
-    if runner is None:
-        return StepResult(ok=True, log="signoff: no runtime — no-op")
-    result = runner(["signoff"])
-    if isinstance(result, StepResult):
-        return result
-    return StepResult(ok=True, log="signoff")
+    """Refuse a ``signoff`` step by name.
+
+    The step was a stub that reported "signed off" while the period was not
+    (removed 22 Nov 2026, Deepak Pai, option A). A pipeline that still holds one
+    must fail loudly, never succeed: sign-off is the Close sign-off flow.
+    """
+    return StepResult(
+        ok=False,
+        error=(
+            "step type 'signoff' was removed: it never signed anything off. "
+            "Remove the step from this pipeline; sign the period off in the "
+            "Close sign-off screen."
+        ),
+    )
 
 
 register("airbyte_sync")(_handle_airbyte_sync)
