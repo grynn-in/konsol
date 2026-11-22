@@ -43,8 +43,11 @@ Statutory sheets, from the rows of the actuals Rate Set:
   draft in a period that has approved rates, are dropped and named.
 * A cancelled rate that no rate replaced, and a correction chain that ends in
   a cancelled rate, are dropped and named: they left the warehouse already.
-* A Closing-type period cannot be entered on a new sheet, but one that has
-  rates is migrated for audit, with a warning.
+* A Closing-type period is not a sheet: every GER row in one, of any
+  docstatus, is dropped and named (T25b, coordinator 22 Nov 2026). dbt never
+  reads a Closing period's own rates (``rate_period_map`` reads the year's
+  last Regular period), and the controller and the publish refuse a Statutory
+  sheet for one. The patch's migration audit CSV keeps the rows.
 * A period the calendar does not declare is refused: a sheet's dates come
   from the calendar (P1-Q4 A).
 
@@ -71,6 +74,8 @@ CONSTANT = "Constant"
 MIGRATED = "Migrated"
 RATE_TYPES = ("Closing", "Average")
 CLOSING_PERIOD = "Closing"
+CLOSING_PERIOD_REASON = ("Closing-type period: the warehouse reads the year's last Regular period; kept in "
+                         "the migration audit CSV")
 
 #: The GER fields copied onto each sheet's audit rows (the audit CSV).
 AUDIT_FIELDS = ("name", "rate_set", "from_currency", "to_currency", "rate_type", "fiscal_year",
@@ -207,6 +212,10 @@ def _statutory(out, rows, types):
             out.refuse(f"FY{fy} P{fp} is not a declared period of the fiscal calendar, so its sheet has "
                        f"no dates; declare it first ({', '.join(sorted(r['name'] for r in period_rows))}).")
             continue
+        if types[(fy, fp)] == CLOSING_PERIOD:
+            for r in period_rows:
+                out.drop(r, CLOSING_PERIOD_REASON)
+            continue
         _period(out, fy, fp, types[(fy, fp)], period_rows)
 
 
@@ -340,9 +349,6 @@ def _statutory_sheet(out, fy, fp, ptype, rates, version, docstatus, supersedes, 
         })
     if not ok:
         return
-    if ptype == CLOSING_PERIOD and version == 1:
-        out.warnings.append(f"{name}: FY{fy} P{fp} is a Closing period. Its rates are migrated for audit; "
-                            "a new sheet for a Closing period is refused.")
     out.sheets.append({
         "name": name, "rate_basis": STATUTORY, "fiscal_year": fy, "fiscal_period": fp,
         "period_type": ptype, "docstatus": docstatus, "supersedes": supersedes,

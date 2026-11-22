@@ -11,9 +11,15 @@ reads the rows, calls it, and writes what it plans.
   until ``drop_budget_cycle_rate_set``, which runs after this), Approved
   Budgets, the declared calendar, and the Rate Set flagged Is Actuals.
 * **Stops visibly**: any refusal of the planner raises with every refusal
-  listed, and nothing is written. So does a plan the controller cannot hold
-  (below), a GER row the plan does not account for, and any controller
-  refusal, which names the sheet.
+  listed, and nothing is written. So does a GER row the plan does not
+  account for, and any controller refusal, which names the sheet.
+* **The workflow first** (T25b): Rate Sheet's workflow is installed before
+  any insert (``workflows.install_workflows(doctypes=("Rate Sheet",))``,
+  create-if-missing, never overwrite; after_migrate would install it only
+  after this patch). Each sheet then gets its status from the workflow on
+  insert and submit, and a cancelled one its docstatus-2 state through
+  ``set_cancelled_state``. Only Rate Sheet's: this runs before the model
+  sync, and another doctype's workflow could name a field not yet synced.
 * **Writes through the controller**, as the Administrator under
   ``MIGRATE_FLAG`` (the controller then skips the move check and the period
   gates, and accepts the Migrated source and Legacy Documents): ``insert``
@@ -23,16 +29,13 @@ reads the rows, calls it, and writes what it plans.
   approved, and that approval cancels the earlier one through the
   controller's own supersede cancel. So Versions and the trail are what a
   person's correction leaves; nothing is cancelled at the DB level.
-* **Two shapes the controller cannot hold**:
-  - A non-uniform Constant draft carries a blank rate on purpose (a person
-    enters it), and the controller's row rules refuse a blank rate on every
-    save. That draft alone is inserted with validate skipped
-    (``flags.ignore_validate``); its window, label and title are set here
-    from the same rules (``rate_sheet_model``). It publishes nothing.
-  - A Statutory sheet for a Closing-type period: the planner migrates it
-    with a warning, but the controller's window refuses it and the publish
-    fails on it (refused sheets fail the publish, T10). Writing it would
-    break every publish, so the migrate stops and names it.
+* **One shape the controller cannot hold**: a non-uniform Constant draft
+  carries a blank rate on purpose (a person enters it), and the controller's
+  row rules refuse a blank rate on every save. That draft alone is inserted
+  with validate skipped (``flags.ignore_validate``); its window, label and
+  title are set here from the same rules (``rate_sheet_model``). It publishes
+  nothing. (A Closing-type period is no longer a sheet: the planner drops
+  its rows into the audit, T25b.)
 * **Audit**: each sheet gets a private CSV of its GER rows (the planner's
   audit_rows). ``retire_group_exchange_rate`` (T26) drops the GER table, so
   ONE further CSV of every GER row, dropped ones included, with its
@@ -71,6 +74,9 @@ STATUS = {0: "draft", 1: "approved", 2: "cancelled"}
 def execute():
     for name in ("rate_sheet_row", "rate_sheet", "rate_set"):
         frappe.reload_doc("consolidation", "doctype", name)
+    from konsol.workflows import install_workflows
+
+    install_workflows(doctypes=(RATE_SHEET,))
     if not frappe.db.table_exists(GER_TABLE):
         print("konsol#592 rate sheets: no Group Exchange Rate table; nothing to migrate")
         return
@@ -84,7 +90,6 @@ def execute():
     plan = model.plan(rates, actuals, _read_cycles(), calendar, _read_budgets()) if rates else {
         "sheets": [], "dropped": [], "refusals": [], "warnings": []}
     model.assert_no_refusals(plan)
-    _refuse_unwritable(plan)
     audit = audit_rows(rates, plan)
 
     from konsol.consolidation.doctype.rate_set.rate_set import CONSTANT_NAME, ensure_constant_set
@@ -162,18 +167,6 @@ def _calendar():
 
 
 # -- checks before any write ------------------------------------------------------------
-
-def _refuse_unwritable(plan):
-    closing = [s["name"] for s in plan["sheets"]
-               if s["rate_basis"] == model.STATUTORY and s.get("period_type") == model.CLOSING_PERIOD]
-    if closing:
-        frappe.throw(
-            "Group Exchange Rate cannot be migrated to Rate Sheets: "
-            f"{', '.join(closing)} would be a Statutory sheet for a Closing period, which a Rate Sheet "
-            "cannot hold and the publish refuses. The warehouse reads a Closing period at the year's "
-            "last Regular period, so those rates are not read; cancel them in Group Exchange Rate (or "
-            "delete the drafts), then migrate again. Nothing was migrated.", frappe.ValidationError)
-
 
 def audit_rows(rates, plan):
     """One audit row per GER row: migrated (the sheets that hold it) or
