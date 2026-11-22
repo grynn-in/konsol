@@ -220,6 +220,25 @@ def harness(**kw):
         def check_if_latest(self):
             w.sql.append("BASE_CHECK_IF_LATEST")
 
+        def set_new_name(self, force=False, set_name=None, set_child_names=True):
+            """Frappe's Document.set_new_name with its amend naming
+            (frappe/model/naming.py _set_amended_name): an amendment of an
+            amendment takes the next -N of the prefix, ``<name>-1`` otherwise,
+            and autoname is not called. Recorded in w.named."""
+            if self.flags.get("name_set") and not force:
+                return
+            if set_name:
+                self.name = set_name
+            elif self.get("amended_from"):
+                amended = self.amended_from
+                if (w.sheets.get(amended) or {}).get("amended_from"):
+                    self.name = "-".join(amended.split("-")[:-1]) + "-" + str(int(amended.split("-")[-1]) + 1)
+                else:
+                    self.name = amended + "-1"
+            else:
+                self.autoname()
+            self.flags["name_set"] = True
+
     def assert_open(fy, fp, action="run"):
         w.gates.append(("assert_open", fy, fp, action))
         if not w.period_open:
@@ -331,6 +350,37 @@ def test_a_correction_is_named_dash_two_then_dash_three():
         d = _sheet(m, name=None, rate_basis="Constant", fiscal_period=None)
         d.autoname()
         assert d.name == "RS-C-2025-3"
+
+
+def test_an_amendment_is_named_as_a_correction_is():
+    """PR #595 review 6: Frappe names an amendment of RS-C-2026-1 (itself an
+    amendment) RS-C-2026-2, the name a correction of RS-C-2026 takes. The
+    controller's naming is the one source: an amendment takes the next free
+    -N, as a correction does."""
+    sheets = {"RS-C-2026": dict(rate_basis="Constant", fiscal_year=2026, fiscal_period=None, docstatus=2),
+              "RS-C-2026-1": dict(rate_basis="Constant", fiscal_year=2026, fiscal_period=None, docstatus=2,
+                                  amended_from="RS-C-2026"),
+              "RS-C-2026-2": dict(rate_basis="Constant", fiscal_year=2026, fiscal_period=None, docstatus=0)}
+    with harness(sheets=sheets, existing_names=set(sheets)) as (m, w):
+        d = _sheet(m, name=None, rate_basis="Constant", fiscal_year=2026, fiscal_period=None,
+                   amended_from="RS-C-2026-1")
+        d.set_new_name()
+        assert d.name == "RS-C-2026-3"
+    with harness(sheets=dict(list(sheets.items())[:1]), existing_names={"RS-C-2026"}) as (m, w):
+        d = _sheet(m, name=None, rate_basis="Constant", fiscal_year=2026, fiscal_period=None,
+                   amended_from="RS-C-2026")
+        d.set_new_name()
+        assert d.name == "RS-C-2026-2", "never RS-C-2026-1: one scheme, -2 first"
+
+
+def test_an_explicit_name_and_a_named_sheet_are_kept():
+    with harness(existing_names={"RS-C-2026"}) as (m, w):
+        d = _sheet(m, name=None, rate_basis="Constant", fiscal_year=2026, fiscal_period=None,
+                   amended_from="RS-C-2026")
+        d.set_new_name(set_name="RS-C-2026-9")
+        assert d.name == "RS-C-2026-9"
+        d.set_new_name()
+        assert d.name == "RS-C-2026-9", "already named"
 
 
 def test_a_statutory_sheet_without_a_period_cannot_be_named():
