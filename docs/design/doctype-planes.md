@@ -89,7 +89,7 @@ puts Ownership Period and IC Balance (operating) next to IC Elimination Rule
   L2  THE ENTITY MASTER — needs ISO Currency for functional currency.
           ▼
    ┌──────────────────────────┐        ┌───────────────────────────┐
-   │ Entity  (tree, but MUST  │        │ Entity Fiscal Calendar    │
+   │ Entity  (tree, but MUST  │        │ Entity Fiscal Calendar    │  (removed by konsol#577)
    │ be flat: is_group=0)     │        │ ERP data area → calendar  │
    │ functional_currency ─────┘        │ governed, no button       │
    │ → epm_staging.entities            └───────────────────────────┘
@@ -178,7 +178,7 @@ Each verified in source, not inferred.
 
 1. **Seven governed doctypes have a `publish()` that no button and no CLI can
    reach.** `GovernedReferenceDocument.publish/unpublish` is whitelisted on Cash
-   Flow Category, Dimension Mapping, Entity Fiscal Calendar, Intercompany
+   Flow Category, Dimension Mapping, Entity Fiscal Calendar (removed by konsol#577), Intercompany
    Account, ISO Currency and Budget Annual Input — none has a `.js`, and
    `config_service.export_config` / `apply_config` cover only Dimension,
    Measure, Dataset and Connector. Those rows can leave Draft only by a raw
@@ -200,7 +200,7 @@ Each verified in source, not inferred.
 
 3. **Seven top-level doctypes are unreachable from the workspace**, though
    `konsol/dashboard.py:88` states "Every top-level konsol doctype appears in
-   exactly one card": `ISO Currency`, `Entity Fiscal Calendar`,
+   exactly one card": `ISO Currency`, `Entity Fiscal Calendar` (removed by konsol#577),
    `Group Exchange Rate`, `Trial Balance Submission`, `Trial Balance Upload`,
    `Budget Annual Input` and now `EPM Fiscal Year` — the doctype a site must
    create *first*, and the one carrying the close buttons. Trial Balance Submission is the primary intake for a

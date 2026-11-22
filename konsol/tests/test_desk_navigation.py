@@ -143,7 +143,6 @@ SIDEBARS = {
         ("Workspace", "Structure", "Home"),
         ("Section", "Group"),
         ("DocType", "Entity"),
-        ("DocType", "Entity Fiscal Calendar"),
         ("DocType", "Consolidation Group"),
         ("DocType", "Ownership Period"),
         ("Section", "Accounts"),

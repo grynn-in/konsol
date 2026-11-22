@@ -75,27 +75,3 @@ def test_seeded_not_a_fixture():
     assert not os.path.exists(os.path.join(APP_DIR, "fixtures", "iso_currency.json"))
     with open(os.path.join(APP_DIR, "install.py")) as f:
         assert "seed_iso_currencies" in f.read()
-
-
-# --- Entity Fiscal Calendar (konsolidat#146) --------------------------------
-
-CAL_DIR = os.path.join(APP_DIR, "epm", "doctype", "entity_fiscal_calendar")
-
-
-def test_fiscal_calendar_mapping_is_keyed_on_the_erp_entity_code():
-    with open(os.path.join(CAL_DIR, "entity_fiscal_calendar.json")) as f:
-        meta = json.load(f)
-    assert meta["autoname"] == "field:erp_data_area"
-    field = next(f for f in meta["fields"] if f["fieldname"] == "erp_data_area")
-    assert field.get("reqd") == 1 and field.get("unique") == 1
-    # deliberately NOT a Link to Entity — see the controller's module note
-    assert field["fieldtype"] == "Data"
-    assert not any(f["fieldname"] == "data_area_id" for f in meta["fields"]), (
-        "a field named data_area_id must be a Link to Entity (test_entity_links); "
-        "this one maps raw ERP codes konsol has no Entity for")
-
-
-def test_fiscal_calendar_writes_through():
-    with open(os.path.join(CAL_DIR, "entity_fiscal_calendar.py")) as f:
-        src = f.read()
-    assert 'CH_TABLE = "epm_gold.entity_fiscal_calendars"' in src

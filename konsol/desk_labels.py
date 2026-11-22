@@ -70,7 +70,6 @@ LABELS = {
     "Cost Allocation Run": "Runs",
     # --- Structure: group ------------------------------------------------
     "Entity": "Entities",
-    "Entity Fiscal Calendar": "Entity Fiscal Calendars",
     "Consolidation Group": "Consolidation Groups",
     "Ownership Period": "Ownership Periods",
     # --- Structure: accounts ---------------------------------------------
