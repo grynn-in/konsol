@@ -406,9 +406,9 @@ def _frappe(site):
 
 
 class _FakeDoc:
-    """A recording Group Exchange Rate: insert()/save() are counted, and run
-    what the controller would set (source Manual, a label) without deciding
-    anything for the endpoint."""
+    """A recording Ownership Period: insert()/save() are counted, and run
+    what the controller would set without deciding anything for the
+    endpoint."""
 
     def __init__(self, data, new=False):
         self.__dict__["_data"] = dict(data)
@@ -448,7 +448,7 @@ class _FakeDoc:
         return self
 
     def submit(self, *a, **k):
-        raise AssertionError("save_rate must never submit")
+        raise AssertionError("an ownership save must never submit")
 
 
 def _group_rates(site):
@@ -3178,7 +3178,8 @@ def test_t20_the_sheet_reads_are_two_whatever_the_number_of_sheets():
     _call(one), _call(many)
     sheet_reads = [r for r in many.reads if r[0] == "sql" and "tabRate Sheet" in r[1]]
     assert len(sheet_reads) == 2, many.reads
-    assert len(one.reads) == len(many.reads) == 10, many.reads
+    # Nothing is pending, so no Version read: 8 (the pairs test counts 10 with one).
+    assert one.reads == many.reads and len(many.reads) == 8, many.reads
 
 
 # save_rate and delete_rate were the GER write paths: they refuse by name.
