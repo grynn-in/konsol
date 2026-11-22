@@ -140,3 +140,56 @@ def test_row_fields():
     for n in ("quote_label", "source", "erp_average_quote", "erp_closing_quote", "legacy_documents"):
         assert f[n]["read_only"] == 1, n
     assert f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Duplicated", "Migrated"]
+
+
+# -- the form and list scripts (konsol#592 T14) -------------------------------------------------
+
+def _js(name, suffix=""):
+    with open(os.path.join(BASE, name, f"{name}{suffix}.js")) as f:
+        return f.read()
+
+
+def _call_for(source, method):
+    """The frappe.call block that names ``method``."""
+    start = source.index(f'method: "{method}"')
+    return source[source.rindex("frappe.call", 0, start):start + 200]
+
+
+def test_buttons_call_post():
+    """A write must POST (a GET rolls back): both methods, from the form and the list."""
+    form, listing = _js("rate_sheet"), _js("rate_sheet", "_list")
+    for source in (form, listing):
+        assert 'method: "konsol.group_rates.duplicate_previous"' in source
+        assert 'type: "POST"' in _call_for(source, "konsol.group_rates.duplicate_previous")
+    assert 'type: "POST"' in _call_for(form, "konsol.group_rates.prefill_from_erp")
+    assert 'method: "konsol.group_rates.prefill_from_erp"' not in listing
+
+
+def test_prefill_is_offered_on_a_statutory_draft_only():
+    form = _js("rate_sheet")
+    assert "Pre-fill from ERP" in form and "Duplicate previous" in form
+    block = form[form.index("Pre-fill from ERP") - 400:form.index("Pre-fill from ERP")]
+    assert "Statutory" in block and "docstatus" in block, block
+
+
+def test_the_form_hides_the_quote_columns_the_basis_does_not_use():
+    form = _js("rate_sheet")
+    assert "update_docfield_property" in form
+    for field in ("average_quote", "closing_quote", "rate"):
+        assert f'"{field}"' in form
+    assert "Constant" in form and "Statutory" in form
+
+
+def test_the_list_shows_a_status_indicator_and_new_from_previous():
+    listing = _js("rate_sheet", "_list")
+    assert 'frappe.listview_settings["Rate Sheet"]' in listing and "get_indicator" in listing
+    for status in ("Draft", "Pending Approval", "Approved", "Cancelled"):
+        assert status in listing
+    assert "New from previous" in listing
+    for field in ("rate_basis", "fiscal_year", "fiscal_period"):
+        assert field in listing
+
+
+def test_the_ger_list_no_longer_prefills():
+    """Pre-fill creates Rate Sheets now, so it lives on the sheet."""
+    assert not os.path.exists(os.path.join(BASE, "group_exchange_rate", "group_exchange_rate_list.js"))
