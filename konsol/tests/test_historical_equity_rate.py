@@ -409,3 +409,35 @@ def test_the_set_is_written_through_last():
     field_map = module.HistoricalEquityRate.CH_FIELD_MAP
     assert list(field_map)[-2:] == ["to_currency", "rate_set"], list(field_map)
     assert field_map["rate_set"] == "rate_set"
+
+
+# -- T24 (konsol#592): a new row defaults to the actuals set, visibly ---------------
+
+def _before_insert(**fields):
+    module = _controller(groups=GROUPS, entities=ENTITIES, accounts=ACCOUNTS)
+    gr = types.ModuleType("konsol.group_rates")
+    gr.actuals_rate_set = lambda: "ACTUAL"
+    saved = sys.modules.get("konsol.group_rates")
+    sys.modules["konsol.group_rates"] = gr
+    try:
+        doc = module.HistoricalEquityRate(doctype="Historical Equity Rate", **fields)
+        doc.before_insert()
+    finally:
+        if saved is None:
+            sys.modules.pop("konsol.group_rates", None)
+        else:
+            sys.modules["konsol.group_rates"] = saved
+    return doc
+
+
+def test_a_new_row_with_no_set_gets_the_actuals_set():
+    assert _before_insert(rate_set=None).rate_set == "ACTUAL"
+
+
+def test_a_set_the_user_chose_is_kept():
+    assert _before_insert(rate_set="CONSTANT").rate_set == "CONSTANT"
+
+
+def test_validate_still_refuses_a_blank_set():
+    refused, msg = _validate(rate_set=None)
+    assert refused and "Rate Set" in msg

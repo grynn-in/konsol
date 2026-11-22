@@ -738,6 +738,10 @@ def test_new_year_with_named_rows_not_foreign():
 # tagged domain:scenarios: a Close/Lock/Reopen asks for a scenarios build,
 # never the full one (konsol#561 review M3).
 
+#: The after_commit_once keys the hooks queued, per _requests() block.
+QUEUED = []
+
+
 @contextlib.contextmanager
 def _requests():
     """konsol.tasks and konsol.clickhouse stubbed for the hooks: yields the
@@ -748,7 +752,8 @@ def _requests():
         (doc.doctype, doc.name, method) if scope is None
         else (doc.doctype, doc.name, method, scope))
     ch = types.ModuleType("konsol.clickhouse")
-    ch.after_commit_once = lambda key, fn: None
+    QUEUED.clear()
+    ch.after_commit_once = lambda key, fn: QUEUED.append(key)
     saved = {n: sys.modules.get(n) for n in ("konsol.tasks", "konsol.clickhouse")}
     sys.modules.update({"konsol.tasks": tasks, "konsol.clickhouse": ch})
     try:
@@ -953,3 +958,29 @@ def test_calendar_changed_at_is_a_read_only_datetime_backfilled_on_upgrade():
     assert "calendar_changed_at" in meta["field_order"]
     patches = open(os.path.join(APP_DIR, "patches.txt")).read().split()
     assert "konsol.patches.stamp_fiscal_year_calendar_changed_at" in patches
+
+
+# -- T24 (konsol#592): Constant sheet rows are expanded over the year's periods ------
+
+RATE_KEY = ("resync_staging", "Rate Sheet")
+
+
+def test_a_calendar_change_republishes_rates_after_the_commit_once():
+    with _load() as module:
+        doc = _edit(module, _saved(module))
+        doc.periods[3].period_label = "March (restated)"
+        with _requests():
+            doc.on_update()
+        assert QUEUED.count(RATE_KEY) == 1, QUEUED
+        with _requests():
+            _year(module, _monthly_2025()).on_update()        # a new year, declared
+        assert QUEUED.count(RATE_KEY) == 1, QUEUED
+
+
+def test_a_status_only_save_does_not_republish_rates():
+    with _load() as module:
+        doc = _edit(module, _saved(module))
+        doc.periods[3].status = "Locked"
+        with _requests():
+            doc.on_update()
+        assert RATE_KEY not in QUEUED, QUEUED

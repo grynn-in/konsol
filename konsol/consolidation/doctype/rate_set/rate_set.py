@@ -42,6 +42,13 @@ CODE_RE = re.compile(r"^[A-Z0-9_-]{1,40}$")
 #: a site may rename it or flag another; readers follow the flag.
 ACTUALS_NAME = "ACTUAL"
 ACTUALS_LABEL = "Actual"
+#: The set budgets, forecasts and comparisons read (konsol#592): one declared
+#: Constant rate sheet per year, never flagged Is Actuals. System-owned.
+CONSTANT_NAME = "CONSTANT"
+CONSTANT_LABEL = "Constant (budget, forecast, comparisons)"
+CONSTANT_DESCRIPTION = (
+    "The set Constant rate sheets publish into. Created by konsol; not edited by users "
+    "(konsol#592).")
 ACTUALS_DESCRIPTION = (
     "The actuals rates: the set the consolidation translates actuals at and the close "
     "gate checks. Created by konsol on install (konsol#348); rename it or flag another "
@@ -114,3 +121,17 @@ def ensure_actual_set():
     })
     doc.insert(ignore_permissions=True)
     return ACTUALS_NAME
+
+
+def ensure_constant_set():
+    """Create Rate Set CONSTANT (not Is Actuals) when it is missing; returns
+    its name, or None when it exists. Idempotent: runs from after_install and
+    after_migrate, and an existing row, however a site edited it, is left
+    alone (konsol#592 T24)."""
+    if frappe.db.exists(DOCTYPE, CONSTANT_NAME):
+        return None
+    frappe.get_doc({
+        "doctype": DOCTYPE, "rate_set": CONSTANT_NAME, "label": CONSTANT_LABEL,
+        "is_actuals": 0, "description": CONSTANT_DESCRIPTION,
+    }).insert(ignore_permissions=True)
+    return CONSTANT_NAME

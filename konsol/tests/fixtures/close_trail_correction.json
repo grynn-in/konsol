@@ -14,9 +14,11 @@
    },
    "entity": null,
    "kind": "approval_cancelled",
+   "legacy_name": "GER-1",
    "name": "CE-12",
    "reason": null,
    "reference_doctype": "Group Exchange Rate",
+   "reference_linked": false,
    "reference_name": "GER-1",
    "source": "live"
   },
@@ -38,9 +40,11 @@
    },
    "entity": null,
    "kind": "approved",
+   "legacy_name": "GER-3",
    "name": "CE-11",
    "reason": null,
    "reference_doctype": "Group Exchange Rate",
+   "reference_linked": false,
    "reference_name": "GER-3",
    "source": "live"
   }
