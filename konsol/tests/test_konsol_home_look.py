@@ -162,7 +162,7 @@ def test_waiting_shortcuts_carry_a_short_noun_label():
     7 Nov 2026 (Desk IA, #443): one label everywhere beats #439's short nouns."""
     ws = _ws()
     waiting = [s for s in ws["shortcuts"] if s.get("stats_filter")]
-    assert len(waiting) == 8
+    assert len(waiting) == 9
     for s in waiting:
         assert len(s["label"]) <= 23, s["label"]
         assert "waiting" not in s["label"].lower(), s["label"]
@@ -170,7 +170,7 @@ def test_waiting_shortcuts_carry_a_short_noun_label():
         assert s["color"] == "Orange", s["label"]
     assert [s["label"] for s in waiting] == [
         "Consolidation Journals", "Business Combinations", "Business Disposals",
-        "Group Exchange Rates", "Ownership Periods", "Historical Equity Rates",
+        "Group Exchange Rates", "Rate Sheets", "Ownership Periods", "Historical Equity Rates",
         "IC Balances", "Build Approvals"]
 
 

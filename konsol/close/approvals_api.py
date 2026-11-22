@@ -69,6 +69,7 @@ JOURNAL = "Consolidation Journal"
 BC = "Business Combination"
 BD = "Business Disposal"
 GER = "Group Exchange Rate"
+RS = "Rate Sheet"
 OP = "Ownership Period"
 HER = "Historical Equity Rate"
 IC_BALANCE = "IC Balance"
@@ -87,6 +88,7 @@ _FIELDS = {
               "consolidation_group"],
     GER: ["from_currency", "to_currency", "rate_type", "fiscal_year", "fiscal_period",
           "quote_label", "change_reason", "supersedes"],
+    RS: ["rate_basis", "fiscal_year", "fiscal_period", "change_reason", "supersedes"],
     HER: ["consolidation_group", "data_area_id", "main_account", "rate_date", "historical_rate"],
     OP: ["consolidation_group", "data_area_id", "effective_date", "end_date",
          "ownership_pct", "consolidation_method", "supersedes"],
@@ -240,6 +242,24 @@ def _attach_replaced(ger_rows):
             row["replaced"] = by_name.get(row["supersedes"])
 
 
+def _attach_replaced_sheets(sheet_rows):
+    """Each pending Rate Sheet that carries ``supersedes`` (a correction, #312-3)
+    gains ``replaced``: the replaced sheet's ``{name, rate_basis, fiscal_year,
+    fiscal_period, docstatus}``, or None when no such sheet exists. ONE
+    ``get_all`` over every replaced name."""
+    replaced_names = sorted({row["supersedes"] for row in sheet_rows if row.get("supersedes")})
+    if not replaced_names:
+        return
+    rows = frappe.get_all(
+        RS, filters={"name": ["in", replaced_names]},
+        fields=["name", "rate_basis", "fiscal_year", "fiscal_period", "docstatus"],
+        limit_page_length=0)
+    by_name = {row["name"]: dict(row) for row in rows}
+    for row in sheet_rows:
+        if row.get("supersedes"):
+            row["replaced"] = by_name.get(row["supersedes"])
+
+
 def queue_for(user, roles):
     """``{items, sent_back, counts, hidden, self_approval, can_approve,
     waiting}`` for ``user`` holding ``roles``. Writes nothing. Shared with
@@ -341,6 +361,8 @@ def queue_for(user, roles):
             doc_rows.append(doc)
         if doctype == GER:
             _attach_replaced(doc_rows)
+        if doctype == RS:
+            _attach_replaced_sheets(doc_rows)
         docs[doctype] = doc_rows
 
     result = approvals_model.queue_items(

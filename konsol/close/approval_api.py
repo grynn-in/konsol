@@ -173,6 +173,11 @@ def _reject_draft(doctype, name, reason):
             frappe.throw(
                 "%s %s is already approved: correct it with a Reason for Change instead."
                 % (doctype, name))
+        if doctype == "Rate Sheet":
+            # #312-3: a sheet supersedes the approved sheet for its key.
+            frappe.throw(
+                "%s %s is already approved: raise a correction sheet that supersedes it."
+                % (doctype, name))
         frappe.throw(
             "%s %s is already approved; a correction is a cancel and an amendment."
             % (doctype, name))

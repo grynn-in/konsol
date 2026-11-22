@@ -86,6 +86,7 @@ doctype_js = {
     "Business Combination": "public/js/approval_actions.js",
     "Business Disposal": "public/js/approval_actions.js",
     "Group Exchange Rate": "public/js/approval_actions.js",
+    "Rate Sheet": "public/js/approval_actions.js",
     "Ownership Period": "public/js/approval_actions.js",
     "Historical Equity Rate": "public/js/approval_actions.js",
     "IC Balance": "public/js/approval_actions.js",

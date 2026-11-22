@@ -20,11 +20,12 @@
 		"Business Combination",
 		"Business Disposal",
 		"Group Exchange Rate",
+		"Rate Sheet",
 		"Ownership Period",
 		"Historical Equity Rate",
 		"IC Balance",
 	];
-	const WORKFLOW_DOCTYPES = ["Consolidation Journal", "Business Combination", "Business Disposal"];
+	const WORKFLOW_DOCTYPES = ["Consolidation Journal", "Business Combination", "Business Disposal", "Rate Sheet"];
 	const METHODS = {
 		approve_mode: "konsol.close.approval_api.approve_mode",
 		approve: "konsol.close.approval_api.approve",
