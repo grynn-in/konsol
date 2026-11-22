@@ -542,6 +542,20 @@ def test_sent_back_items_rate_sheet_rejected_after_modified_carries_rejection():
     assert item["kind_label"] == "Rate Sheet"
 
 
+def test_sent_back_items_a_constant_sheet_has_no_period_and_p0_keeps_its_own():
+    """PR #595 review 7: a Constant sheet covers a year (its stored period
+    reads back 0): it names no period. A Statutory P0 sheet names P0."""
+    at = datetime.datetime(2026, 10, 2, 9, 0, 0)
+    docs = {"Rate Sheet": [
+        _sb_sheet("RS-C-2026", datetime.datetime(2026, 10, 2, 8, 0, 0), fiscal_period=0, rate_basis="Constant"),
+        _sb_sheet("RS-S-2026-00", datetime.datetime(2026, 10, 2, 8, 0, 0), fiscal_period=0)]}
+    rejections = {("Rate Sheet", n): {"reason": "x", "actor": "lead", "at": at}
+                  for n in ("RS-C-2026", "RS-S-2026-00")}
+    items = {i["name"]: i for i in M.sent_back_items(docs, rejections)}
+    assert (items["RS-C-2026"]["fiscal_year"], items["RS-C-2026"]["fiscal_period"]) == (2026, None)
+    assert (items["RS-S-2026-00"]["fiscal_year"], items["RS-S-2026-00"]["fiscal_period"]) == (2026, 0)
+
+
 def test_sent_back_items_modified_after_rejection_gives_no_item():
     """Failure path."""
     docs = {"Rate Sheet": [_sb_sheet("RS-21", datetime.datetime(2026, 10, 2, 10, 0, 0))]}

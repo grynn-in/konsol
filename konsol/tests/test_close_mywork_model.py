@@ -865,16 +865,32 @@ def test_sent_back_items_desk_actions_for_ic_bc_bd():
 
 def test_sent_back_items_rate_sheet_links_to_the_sheet():
     """konsol#592 T16: a sent-back sheet opens its own form; a Statutory
-    sheet carries its period, a Constant one (period 0) has none."""
+    sheet carries its period, a Constant one has none (approvals_model gives
+    it no period, PR #595 review 7)."""
     stat = _sb_row("Rate Sheet", "RS-1", "Rate sheet", "Statutory 2025 P07",
                   fiscal_year=2025, fiscal_period=7)
     const = _sb_row("Rate Sheet", "RS-2", "Rate sheet", "Constant 2025",
-                   fiscal_year=2025, fiscal_period=0)
+                   fiscal_year=2025, fiscal_period=None)
     items = M.sent_back_items([stat, const], M.GROUP_ACCOUNTANT, {(2025, 7): "P07"})
     assert items[0]["action"] == {"desk": "/desk/rate-sheet/RS-1"}
     assert items[1]["action"] == {"desk": "/desk/rate-sheet/RS-2"}
     assert items[0]["period"]["code"] == "P07"
     assert "period" not in items[1] and items[1]["since_reason"] == "sent back"
+
+
+def test_sent_back_items_p0_items_carry_period_zero():
+    """PR #595 review 7: P0 (opening balances) is a period. A sent-back P0
+    journal, IC Balance or Statutory P0 sheet is tagged with it."""
+    rows = [_sb_row("Consolidation Journal", "CJ-0", "Adjustment · CJ-0", "Opening", fiscal_year=2025,
+                    fiscal_period=0),
+            _sb_row("IC Balance", "ICB-0", "IC balance", "IC balance", fiscal_year=2025, fiscal_period=0),
+            _sb_row("Rate Sheet", "RS-S-2025-00", "Rate sheet", "Statutory FY2025 P0", fiscal_year=2025,
+                    fiscal_period=0)]
+    items = M.sent_back_items(rows, M.CLOSE_LEAD, {(2025, 0): "P00"})
+    for item in items:
+        assert item["period"] == {"fiscal_year": 2025, "fiscal_period": 0, "code": "P00",
+                                  "since": "2025-08-20"}, item
+        assert "since_reason" not in item
 
 
 def test_sent_back_items_viewer_raises():
