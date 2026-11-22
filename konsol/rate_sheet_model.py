@@ -120,7 +120,7 @@ def rate_period(calendar_rows, fiscal_year, fiscal_period):
     declared = _year_rows(calendar_rows, fiscal_year)
     closing = any(int(r["period"]) == fp and r["type"] == CLOSING for r in declared)
     regular = [int(r["period"]) for r in declared if r["type"] == REGULAR]
-    return max(regular) if closing and regular else fp
+    return max(regular) if closing and regular and max(regular) > 0 else fp
 
 
 # -- T2: the rows ----------------------------------------------------------------------

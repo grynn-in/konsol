@@ -534,6 +534,7 @@ CONSTANT_RATE_SET = "CONSTANT"
 #: pins them equal): a Migrated Rate Sheet Row, or the audit file on CONSTANT.
 MIGRATED_SOURCE = "Migrated"
 MIGRATION_AUDIT_FILE = "group-exchange-rate-migration-audit.csv"
+# Remove once every site has run retire_group_exchange_rate (konsol#592 pair 2).
 _GER_TABLE_SQL = ("SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE() "
                   "AND table_name = 'tabGroup Exchange Rate'")
 _GER_ROWS_SQL = "SELECT COUNT(*) AS n FROM `tabGroup Exchange Rate`"
@@ -567,6 +568,7 @@ def _read_approved():
     Returns (sheets, sheet_rows, calendar_rows)."""
     db = _fresh_db()
     try:
+        # Remove once every site has run retire_group_exchange_rate (konsol#592 pair 2).
         _refuse_unmigrated(db)
         sheets = db.sql(_SHEETS_SQL, as_dict=True)
         if not sheets:
@@ -578,6 +580,7 @@ def _read_approved():
         db.close()
 
 
+# Remove once every site has run retire_group_exchange_rate (konsol#592 pair 2).
 def _refuse_unmigrated(db):
     """PR #595 review 4: while ``tabGroup Exchange Rate`` still holds rows and
     the migration to Rate Sheets has left neither of its markers, the

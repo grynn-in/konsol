@@ -456,3 +456,10 @@ def test_move_problems_a_copied_changed_rate_is_judged_against_the_copy():
     assert M.move_problems(moved, prev, None, copied=True) == [M.RATE_MOVE_MESSAGE]
     [problem] = M.move_problems(moved, prev, 0.5, copied=True)
     assert "EUR → CHF Closing" in problem and "RS-S-2025-01" in problem
+
+
+def test_rate_period_keeps_a_closing_period_when_the_last_regular_period_is_zero():
+    """rate_period_map() maps a Closing period only when last_regular > 0."""
+    cal = [r for r in _cal() if r["type"] == "Closing"] + [
+        {**r, "period": 0} for r in _cal() if r["type"] == "Regular"][:1]
+    assert M.rate_period(cal, 2025, 99) == 99

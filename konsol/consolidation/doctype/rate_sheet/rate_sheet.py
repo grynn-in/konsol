@@ -128,7 +128,9 @@ class RateSheet(Document):
         autoname, so an amendment of ``RS-C-2026-1`` became ``RS-C-2026-2``, the
         name a correction of ``RS-C-2026`` takes (PR #595 review 6). Here an
         amendment is renamed through autoname: the controller's naming is the
-        one source. A name given (``set_name``) or already set is kept."""
+        one source. A name given (``set_name``) or already set is kept.
+        Rate Sheet ignores the site's Amended Document Naming setting:
+        amendments and corrections share one -N sequence (konsol#592)."""
         force = kwargs.get("force", args[0] if args else False)
         skipped = bool(self.flags.get("name_set")) and not force
         super().set_new_name(*args, **kwargs)
@@ -442,17 +444,27 @@ class RateSheet(Document):
                          "cancelled sheet and this reason are the audit trail.", frappe.MandatoryError)
         if self._migrating():
             return  # the rates a period was already translated at
-        previous = self._copied_sheet() if self._flag(DUPLICATE_FLAG) else None
-        copied = previous is not None
-        if previous is None:
-            previous = self._previous_approved()
         # PR #595 review 5 (GER's #586 review): a duplicate's rate equal to the
-        # rate it copies is a move of 0, and needs no reason even while the
-        # threshold is undeclared.
-        problems = model.move_problems(self._as_sheet(), previous, group_rates.move_threshold(),
-                                       copied=copied)
+        # rate it copies is a move of 0 and needs no reason, even while the
+        # threshold is undeclared. Decided from the stored, guarded
+        # copied_from, so a later save or Submit keeps it (no insert-time
+        # flag), and only for rows still Duplicated: an edited row is Manual
+        # (_track_sources) and is judged against the previous approved sheet.
+        sheet = self._as_sheet()
+        copy = self._copied_sheet()
+        rows = sheet["rows"]
+        if copy is not None:
+            kept = [r for r in rows if r.get("source") == DUPLICATED]
+            others = [r for r in rows if r.get("source") != DUPLICATED]
+            problems = model.move_problems(dict(sheet, rows=kept), copy, group_rates.move_threshold(),
+                                           copied=True)
+            if others:
+                problems += model.move_problems(dict(sheet, rows=others), self._previous_approved(),
+                                                group_rates.move_threshold())
+        else:
+            problems = model.move_problems(sheet, self._previous_approved(), group_rates.move_threshold())
         if problems:
-            frappe.throw("<br>".join(problems), frappe.MandatoryError)
+            frappe.throw("<br>".join(dict.fromkeys(problems)), frappe.MandatoryError)
 
     def _check_magnitude_warning(self):
         """konsol#179, per row and per quote (GER _check_magnitude_warning)."""
@@ -548,15 +560,24 @@ class RateSheet(Document):
         return self._load_sheet(rows[0][0]) if rows else None
 
     def _copied_sheet(self):
-        """Inside Duplicate Previous: the sheet the draft copies, which is
-        what its move is judged against (GER #586 review), if it is an
-        approved sheet of the same basis."""
+        """The sheet ``copied_from`` names, which a Duplicated row's move is
+        judged against (GER #586 review), if it is an approved sheet of the
+        same basis. A copied sheet a correction has since cancelled is
+        replaced by the sheet that superseded it (the approved one)."""
         name = self.get("copied_from")
-        meta = frappe.db.get_value(self.doctype, name, list(KEY_FIELDS) + ["docstatus"],
-                                   as_dict=True) if name else None
-        if meta is None or meta.rate_basis != self.rate_basis or int(meta.docstatus or 0) != 1:
-            return None
-        return self._load_sheet(name, meta)
+        for _ in range(20):  # a chain of corrections; bounded against a cycle
+            meta = frappe.db.get_value(self.doctype, name, list(KEY_FIELDS) + ["docstatus"],
+                                       as_dict=True) if name else None
+            if meta is None or meta.rate_basis != self.rate_basis:
+                return None
+            if int(meta.docstatus or 0) == 1:
+                return self._load_sheet(name, meta)
+            if int(meta.docstatus or 0) != 2:
+                return None
+            nxt = frappe.db.sql("SELECT name FROM `tabRate Sheet` WHERE supersedes = %s AND docstatus = 1 "
+                                "LIMIT 1", (name,))
+            name = nxt[0][0] if nxt else None
+        return None
 
     def _load_sheet(self, name, meta=None):
         meta = meta or frappe.db.get_value(self.doctype, name, list(KEY_FIELDS) + ["docstatus"], as_dict=True)

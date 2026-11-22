@@ -118,6 +118,9 @@ def _frappe(w):
             return [("FY", "Open")]
         if "FROM `tabConsolidation Group`" in query:
             return [(1,)] if params[0] in w.group_currencies else []
+        if "FROM `tabRate Sheet`" in query and "supersedes = %s" in query:
+            return [(n,) for n, meta in sorted(w.sheets.items())
+                    if meta.get("supersedes") == params[0] and int(meta["docstatus"]) == 1]
         if "FROM `tabRate Sheet`" in query and "ORDER BY fiscal_year DESC" in query:
             return [(w.previous,)] if w.previous else []
         if "FROM `tabRate Sheet`" in query and "FOR UPDATE" in query:
@@ -1086,11 +1089,68 @@ def test_a_duplicate_whose_rate_differs_from_the_copy_is_still_checked():
         assert why and "EUR → USD Average" in why and "RS-S-2025-01" in why
 
 
-def test_an_unchanged_rate_is_exempt_only_under_duplicate_previous():
-    """Without DUPLICATE_FLAG the previous approved sheet is no copy: an
-    undeclared threshold is named, as before."""
+def test_an_unchanged_rate_is_exempt_only_when_copied_from_names_an_approved_sheet():
+    """The exemption is decided from the stored copied_from, not from the
+    insert-time flag: a later save or Submit (no flag) keeps it. A sheet that
+    names no copy has the previous approved sheet to answer to: an undeclared
+    threshold is named, as before."""
     p1 = _prev([dict(from_currency="EUR", to_currency="USD", quoted_per="1", average_quote=1.08,
                      closing_quote=1.09)], fp=1, name="RS-S-2025-01")
     with harness(move_threshold=None, **p1) as (m, w):
         why = _refused(_sheet(m, name="RS-S-2025-02", fiscal_period=2).validate)
+        assert why and "Close Settings" in why
+
+
+def test_submitting_a_duplicate_with_no_threshold_declared_succeeds():
+    """No DUPLICATE_FLAG (a later save or Submit): the Duplicated rows are
+    judged against the sheet copied_from names, and equal is a move of 0."""
+    p1 = _prev([dict(from_currency="EUR", to_currency="USD", quoted_per="1", average_quote=1.08,
+                     closing_quote=1.09)], fp=1, name="RS-S-2025-01")
+    with harness(move_threshold=None, **p1) as (m, w):
+        d = _sheet(m, name="RS-S-2025-02", fiscal_period=2, rows=[_row(source="Duplicated")],
+                   copied_from="RS-S-2025-01", source_note="dup")
+        _before(d)
+        d.validate()
+        assert d.rates[0].source == "Duplicated"
+
+
+def test_an_edited_duplicate_row_with_no_threshold_still_needs_a_reason():
+    """A row the user changed is Manual (_track_sources) and is judged against
+    the previous approved sheet, not exempted by the copy."""
+    p1 = _prev([dict(from_currency="EUR", to_currency="USD", quoted_per="1", average_quote=1.08,
+                     closing_quote=1.09)], fp=1, name="RS-S-2025-01")
+    with harness(move_threshold=None, **p1) as (m, w):
+        d = _sheet(m, name="RS-S-2025-02", fiscal_period=2,
+                   rows=[_row(source="Manual", average_quote=1.2)],
+                   copied_from="RS-S-2025-01", source_note="dup")
+        _before(d)
+        why = _refused(d.validate)
+        assert why and "Close Settings" in why
+
+
+def test_a_duplicate_of_a_superseded_sheet_is_judged_against_the_superseding_sheet():
+    """copied_from names a sheet a correction has since cancelled: its rates
+    are no longer the approved ones, so the move is judged against the
+    sheet that superseded it."""
+    old = [dict(from_currency="EUR", to_currency="USD", quoted_per="1", average_quote=0.5,
+                closing_quote=0.5)]
+    new = [dict(from_currency="EUR", to_currency="USD", quoted_per="1", average_quote=1.08,
+                closing_quote=1.09)]
+    world = dict(previous=None,
+                 sheets={"RS-S-2025-01": dict(rate_basis="Statutory", fiscal_year=2025, fiscal_period=1,
+                                              docstatus=2),
+                         "RS-S-2025-01-1": dict(rate_basis="Statutory", fiscal_year=2025, fiscal_period=1,
+                                                docstatus=1, supersedes="RS-S-2025-01")},
+                 sheet_rows={"RS-S-2025-01": old, "RS-S-2025-01-1": new})
+    with harness(move_threshold=None, **world) as (m, w):
+        d = _sheet(m, name="RS-S-2025-02", fiscal_period=2, rows=[_row(source="Duplicated")],
+                   copied_from="RS-S-2025-01", source_note="dup")
+        _before(d)
+        d.validate()
+    with harness(move_threshold=None, **world) as (m, w):
+        d = _sheet(m, name="RS-S-2025-02", fiscal_period=2,
+                   rows=[_row(source="Duplicated", average_quote=0.5, closing_quote=0.5)],
+                   copied_from="RS-S-2025-01", source_note="dup")
+        _before(d)
+        why = _refused(d.validate)
         assert why and "Close Settings" in why
