@@ -22,9 +22,20 @@ If you change the method on a Published account, every period is translated agai
 
 An entity whose functional currency is the reporting currency translates at 1, whatever rates exist.
 
-## Group Exchange Rate
+## Rate Sheet
 
-Each period has one **Closing** and one **Average** rate per currency pair, into the group's reporting currency. The rate is units of the reporting currency for one unit of the from-currency (Quote / Quoted Per). If a needed pair does not have exactly one approved Closing and one approved Average rate for the period, the build stops. It never guesses a rate.
+Rates live on a **Rate Sheet**. There are two kinds, set by **Rate Basis**.
+
+- **Statutory:** one approved sheet per fiscal period. It holds an **Average** and a **Closing** quote per currency pair, into the group's reporting currency, and it translates the actuals. The rate is units of the reporting currency for one unit of the from-currency (Quote / Quoted Per). The sheet locks when its period closes.
+- **Constant:** one approved sheet per fiscal year for the site. It holds one rate per pair, and that rate translates budget and forecast. The sheet locks when the year closes.
+
+If a needed pair has no rate on the approved sheet, the build stops. It never guesses a rate.
+
+A sheet goes Draft, Pending Approval, then Approve. To correct an approved sheet, make a new sheet that supersedes it. Approving the new sheet cancels the old one. An approved Statutory sheet is never cancelled plainly.
+
+**Pre-fill from ERP** drafts a sheet from the ERP rates. **Duplicate previous** drafts a sheet from the previous one. Both make drafts only, and a draft still needs approval.
+
+Rates entered before Rate Sheets existed were migrated. An audit CSV is attached to Rate Set CONSTANT.
 
 A Balance Sheet balance on an account translated at closing (not Equity) is translated at the closing rate of each reporting date, not as the sum of each period's movement at that period's rate. Equity and historical accounts are never retranslated: each movement keeps the rate it was translated at.
 

@@ -8,7 +8,7 @@ You approve the group's records, review builds, and sign off and close each peri
 
 ## Approvals
 
-Open a waiting record and use **Approve** or **Reject** in its **Actions** menu. This works on Consolidation Journal, Business Combination, Business Disposal, Group Exchange Rate, Ownership Period, Historical Equity Rate and IC Balance. A rejection needs a reason. The **Waiting for approval** shortcuts on this page count what is waiting.
+Open a waiting record and use **Approve** or **Reject** in its **Actions** menu. This works on Consolidation Journal, Business Combination, Business Disposal, Rate Sheet, Ownership Period, Historical Equity Rate and IC Balance. A rejection needs a reason. The **Waiting for approval** shortcuts on this page count what is waiting.
 
 Approving your own record follows **Self-Approval** in Close Settings: Blocked, or Allowed with reason. Until you declare it, every self-approval is refused.
 
