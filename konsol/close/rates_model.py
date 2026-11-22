@@ -23,10 +23,81 @@ correction is approved, which cancels it); the correction rides on the cell
 as ``correction`` (``_correction``) with the rate before and after, and is
 not listed in ``extra_drafts``.
 
+konsol#592 T20: the grid reads Rate Sheets. ``sheet_docs`` turns Rate Sheet
+rows into the grid's docs (one per rate type quoted, named after the sheet),
+and ``sheet_wins`` unions them with the Group Exchange Rate docs: on a key an
+approved sheet covers, the sheet alone (group_rates.union_rows' rule). Every
+cell and correction carries its ``doctype``. The GER branch goes with T26.
+
 Imports nothing from frappe or konsol.
 """
 
 RATE_TYPES = ("Closing", "Average")
+SHEET = "Rate Sheet"
+#: The Rate Sheet Row columns of each rate type: (quote, ERP quote).
+_SHEET_QUOTES = {"Closing": ("closing_quote", "erp_closing_quote"),
+                 "Average": ("average_quote", "erp_average_quote")}
+#: The sheet's own fields each of its docs carries.
+_SHEET_FIELDS = ("docstatus", "owner", "modified", "change_reason", "supersedes")
+
+
+def _quoted_value(value):
+    """A quote as a float, or None when blank: a Float column stores unset
+    as 0, so 0 is no quote either."""
+    if value in (None, ""):
+        return None
+    value = float(value)
+    return value if value else None
+
+
+def sheet_docs(rows, true_rate):
+    """The grid's docs from Rate Sheet ``rows``: each row joined to its sheet
+    (``sheet`` the sheet's name, plus its ``docstatus``, ``owner``,
+    ``modified``, ``change_reason`` and ``supersedes``; ``fiscal_year`` and
+    ``fiscal_period`` ride along when present). One doc per rate type the row
+    quotes, named after the sheet. An approved sheet that another approved
+    sheet in ``rows`` supersedes gives way to it (#312-3; the publish's rule).
+    ``true_rate`` is injected (group_rates.true_rate)."""
+    superseded = {r.get("supersedes") for r in rows
+                  if int(r.get("docstatus") or 0) == 1 and r.get("supersedes")}
+    out = []
+    for row in rows:
+        if int(row.get("docstatus") or 0) == 1 and row["sheet"] in superseded:
+            continue
+        per = row.get("quoted_per")
+        for rate_type in RATE_TYPES:
+            quote_field, erp_field = _SHEET_QUOTES[rate_type]
+            quote = _quoted_value(row.get(quote_field))
+            if quote is None:
+                continue
+            erp_quote = _quoted_value(row.get(erp_field))
+            doc = {"doctype": SHEET, "name": row["sheet"],
+                   "from_currency": row["from_currency"], "to_currency": row["to_currency"],
+                   "rate_type": rate_type, "quote": quote, "quoted_per": per,
+                   "rate": true_rate(quote, per),
+                   "erp_rate": true_rate(erp_quote, per) if erp_quote is not None else None,
+                   "source": row.get("source")}
+            doc.update({f: row.get(f) for f in _SHEET_FIELDS})
+            doc["docstatus"] = int(doc["docstatus"] or 0)
+            for f in ("fiscal_year", "fiscal_period"):
+                if f in row:
+                    doc[f] = row[f]
+            out.append(doc)
+    return out
+
+
+def sheet_wins(sheet_docs, ger_docs, with_period=False):
+    """``sheet_docs`` and every Group Exchange Rate doc whose key no APPROVED
+    sheet doc covers. The key is (from, to, rate type), and also (fiscal
+    year, fiscal period) when ``with_period`` (the earlier rates). A draft
+    sheet never hides a GER rate: only an approved sheet replaces what is
+    published. T26 (retire_group_exchange_rate) removes the GER branch."""
+    def key(doc):
+        k = (doc["from_currency"], doc["to_currency"], doc["rate_type"])
+        return k + (int(doc["fiscal_year"]), int(doc["fiscal_period"])) if with_period else k
+
+    covered = {key(d) for d in sheet_docs if d.get("docstatus") == 1}
+    return list(sheet_docs) + [d for d in ger_docs if key(d) not in covered]
 
 
 def _previous_index(earlier):
@@ -72,6 +143,7 @@ def _previous_cell(prev_row):
 def _empty_cell():
     return {
         "status": "missing",
+        "doctype": None,
         "name": None,
         "owner": None,
         "quote": None,
@@ -109,6 +181,7 @@ def _correction(approved, drafts):
         "change_reason": doc.get("change_reason"),
         "before": _quoted(approved),
         "after": _quoted(doc),
+        "doctype": doc.get("doctype"),
     }
 
 
@@ -157,6 +230,7 @@ def _cell(from_currency, to_currency, rate_type, pair_type_docs, previous_index,
 
     return {
         "status": "approved" if shown.get("docstatus") == 1 else "awaiting_approval",
+        "doctype": shown.get("doctype"),
         "name": shown["name"],
         "owner": shown.get("owner"),
         "quote": shown.get("quote"),
