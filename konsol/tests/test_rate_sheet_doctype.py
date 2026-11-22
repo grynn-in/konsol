@@ -51,8 +51,8 @@ def test_tabs_and_sections():
     assert source["collapsible"] == 1
     order = d["field_order"]
     assert order.index("copied_from") > order.index("source_section")
-    assert order.index("rates") > order.index(next(n for n in order if kinds[n]["label"] == "Rates"))
-    assert order.index("change_reason") > order.index(next(n for n in order if kinds[n]["label"] == "Approval"))
+    assert order.index("rates") > order.index(next(n for n in order if kinds[n].get("label") == "Rates" and kinds[n]["fieldtype"] == "Tab Break"))
+    assert order.index("change_reason") > order.index(next(n for n in order if kinds[n].get("label") == "Approval" and kinds[n]["fieldtype"] == "Tab Break"))
 
 
 def test_sheet_tab_fields():
