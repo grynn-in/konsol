@@ -88,7 +88,7 @@ def test_window_statutory_adjustment_period_is_refused():
 
 def test_window_statutory_needs_a_period():
     for blank in (None, ""):
-        w, why = M.window(_stat(fp=blank), _cal())
+        w, why = M.window({**_stat(), "fiscal_period": blank}, _cal())
         assert w is None and "needs a Fiscal Period" in why
 
 
@@ -330,7 +330,7 @@ def test_move_undeclared_threshold_with_nothing_to_compare_is_clean():
 
 
 def test_move_also_checks_the_erp_quote_it_was_proposed_from():
-    new = _stat(rows=[_srow(avg=1.0, cls=1.0, erp_average_quote=2.0, erp_closing_quote=1.0)])
+    new = _stat(rows=[_srow(avg=1.0, cls=1.0, erp_average_quote=3.0, erp_closing_quote=1.0)])
     probs = M.move_problems(new, None, 0.5)
     assert len(probs) == 1 and "Average" in probs[0] and "the ERP quote" in probs[0]
 
