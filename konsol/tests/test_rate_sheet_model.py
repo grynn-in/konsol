@@ -439,3 +439,20 @@ def test_duplicate_into_the_source_itself_is_refused():
 
 def test_duplicate_a_malformed_target_key_is_refused():
     assert M.plan_duplicate(_stat(fp=5), ("Statutory", 2025), set())[0] is None
+
+
+# -- PR #595 review 5: a duplicate's unchanged rate needs no reason ----------------------
+
+def test_move_problems_a_copied_unchanged_rate_needs_no_threshold():
+    prev = _stat(fp=1, name="RS-S-2025-01")
+    same = _stat(fp=2, rows=[_srow(avg=9.5, cls=9.6, per=10)])
+    assert M.move_problems(same, prev, None, copied=True) == []
+    assert M.move_problems(same, prev, None) == [M.RATE_MOVE_MESSAGE]
+
+
+def test_move_problems_a_copied_changed_rate_is_judged_against_the_copy():
+    prev = _stat(fp=1, name="RS-S-2025-01")
+    moved = _stat(fp=2, rows=[_srow(avg=0.95, cls=2.0)])
+    assert M.move_problems(moved, prev, None, copied=True) == [M.RATE_MOVE_MESSAGE]
+    [problem] = M.move_problems(moved, prev, 0.5, copied=True)
+    assert "EUR → CHF Closing" in problem and "RS-S-2025-01" in problem

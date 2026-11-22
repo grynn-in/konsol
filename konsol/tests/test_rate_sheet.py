@@ -994,3 +994,53 @@ def test_build_scope_a_constant_sheet_requests_scenarios():
     with harness() as (m, w):
         assert _sheet(m, rate_basis="Constant", fiscal_period=None).build_scope() == "scenarios"
         assert _sheet(m).build_scope() is None
+
+
+# == PR #595 review 5: Duplicate Previous while the move threshold is undeclared ==============
+
+DUP = {"konsol_duplicating_rate_sheet": True}
+
+
+def test_duplicate_previous_on_a_site_with_no_threshold_succeeds():
+    """A fresh site declares no Rate Move threshold. Duplicating the approved
+    P1 sheet into P2 proposes the rates it copies, a move of 0, so it needs no
+    reason whether or not a threshold is declared (GER's #586-review rule)."""
+    p1 = _prev([dict(from_currency="EUR", to_currency="USD", quoted_per="1", average_quote=1.08,
+                     closing_quote=1.09)], fp=1, name="RS-S-2025-01")
+    with harness(move_threshold=None, flags=DUP, **p1) as (m, w):
+        d = _sheet(m, name="RS-S-2025-02", fiscal_period=2, rows=[_row(source="Duplicated")],
+                   copied_from="RS-S-2025-01", source_note="Duplicated from RS-S-2025-01")
+        d.validate()
+        assert d.rates[0].source == "Duplicated"
+
+
+def test_duplicate_previous_compares_true_rates_with_the_copied_sheet():
+    """The same rate quoted per another unit is still the copied rate."""
+    p1 = _prev([dict(from_currency="EUR", to_currency="USD", quoted_per="10", average_quote=10.8,
+                     closing_quote=10.9)], fp=1, name="RS-S-2025-01")
+    with harness(move_threshold=None, flags=DUP, **p1) as (m, w):
+        _sheet(m, name="RS-S-2025-02", fiscal_period=2, rows=[_row(source="Duplicated")],
+               copied_from="RS-S-2025-01", source_note="dup").validate()
+
+
+def test_a_duplicate_whose_rate_differs_from_the_copy_is_still_checked():
+    p1 = _prev([dict(from_currency="EUR", to_currency="USD", quoted_per="1", average_quote=0.5,
+                     closing_quote=1.09)], fp=1, name="RS-S-2025-01")
+    with harness(move_threshold=None, flags=DUP, **p1) as (m, w):
+        why = _refused(_sheet(m, name="RS-S-2025-02", fiscal_period=2, rows=[_row(source="Duplicated")],
+                              copied_from="RS-S-2025-01", source_note="dup").validate)
+        assert why and "Close Settings" in why
+    with harness(flags=DUP, **p1) as (m, w):
+        why = _refused(_sheet(m, name="RS-S-2025-02", fiscal_period=2, rows=[_row(source="Duplicated")],
+                              copied_from="RS-S-2025-01", source_note="dup").validate)
+        assert why and "EUR → USD Average" in why and "RS-S-2025-01" in why
+
+
+def test_an_unchanged_rate_is_exempt_only_under_duplicate_previous():
+    """Without DUPLICATE_FLAG the previous approved sheet is no copy: an
+    undeclared threshold is named, as before."""
+    p1 = _prev([dict(from_currency="EUR", to_currency="USD", quoted_per="1", average_quote=1.08,
+                     closing_quote=1.09)], fp=1, name="RS-S-2025-01")
+    with harness(move_threshold=None, **p1) as (m, w):
+        why = _refused(_sheet(m, name="RS-S-2025-02", fiscal_period=2).validate)
+        assert why and "Close Settings" in why
