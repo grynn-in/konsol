@@ -277,6 +277,7 @@ class _Site:
         self.groups = kw.get("groups", [{"consolidation_group": "G", "reporting_currency": "USD"}])
         self.single = kw.get("single", {})
         self.calls = []
+        self.quote_calls = []
 
 
 def _stub(site):
@@ -341,6 +342,14 @@ def _api(site):
     def get_ic(fy, fp):
         return site.ic
 
+    def approved_quotes(fy, fp, rate_type):
+        """group_rates.approved_quotes (konsol#592 T19): the site's approved
+        actuals rates of one period and type, as {(from, to): true rate}."""
+        site.quote_calls.append((fy, fp, rate_type))
+        return {(r["from_currency"], "USD"): float(r["quote"]) / int(r["quoted_per"])
+                for r in site.lists.get("Group Exchange Rate", [])
+                if (r["fiscal_year"], r["fiscal_period"], r["rate_type"]) == (fy, fp, rate_type)}
+
     close = _module(
         "konsol.close", charts_model=model, overview_model=overview_model,
         close_policy_model=policy,
@@ -359,7 +368,7 @@ def _api(site):
         "frappe": frappe,
         "konsol": _module("konsol", group_rates=_module(
             "gr", true_rate=lambda q, per: float(q) / int(per),
-            actuals_rate_set=lambda: "ACTUAL")),
+            actuals_rate_set=lambda: "ACTUAL", approved_quotes=approved_quotes)),
         "konsol.close": close,
         "konsol.entity_permissions": _module("e", allowed_entity_codes=lambda: site.allowed),
     }
@@ -431,10 +440,9 @@ def test_closing_vs_average_rate_reads_submitted_rates_into_the_group_currency()
     chart = api.closing_vs_average_rate()
     assert chart["labels"] == ["FY2025 P01 (no EUR average)"]
     assert _values(chart) == {"EUR closing": [1.1], "EUR average": [0]}
-    (filters,) = [f for dt, f in site.calls if dt == "Group Exchange Rate"]
-    assert filters["docstatus"] == 1 and filters["to_currency"] == "USD"
-    assert filters["fiscal_year"] == 2025
-    assert filters["rate_set"] == "ACTUAL", "konsol#348: the chart shows the actuals set"
+    assert not [dt for dt, _f in site.calls if dt == "Group Exchange Rate"], "read through approved_quotes"
+    assert site.quote_calls and {fy for fy, _fp, _rt in site.quote_calls} == {2025}
+    assert {rt for _fy, _fp, rt in site.quote_calls} == {"Closing", "Average"}
 
 
 def test_closing_vs_average_rate_with_no_foreign_currency_in_view_is_a_note():
@@ -445,7 +453,7 @@ def test_closing_vs_average_rate_with_no_foreign_currency_in_view_is_a_note():
     api, frappe = _api(site)
     with pytest.raises(frappe.ValidationError, match="other than USD"):
         api.closing_vs_average_rate()
-    assert not [dt for dt, _f in site.calls if dt == "Group Exchange Rate"]
+    assert not site.quote_calls
 
 
 def test_closing_vs_average_rate_with_several_groups_is_a_note():

@@ -241,6 +241,22 @@ def _load_api(site):
         return site.rate_result
 
     group_rates.rate_gate = rate_gate
+
+    def _rate_rows(rate_type, docstatuses):
+        return [r for r in site.data["Group Exchange Rate"]
+                if r["rate_type"] == rate_type and r["rate_set"] == "ACTUAL" and r["docstatus"] in docstatuses]
+
+    def approved_quotes(fy, fp, rate_type):
+        """konsol#592 T19: the period's approved actuals rates, {(from, to): rate}."""
+        assert (fy, fp) == (2025, 9)
+        return {(r["from_currency"], r["to_currency"]): 1.0 for r in _rate_rows(rate_type, (1,))}
+
+    def draft_pairs(fy, fp, rate_type):
+        """konsol#592 T19: the (from, to) of the period's draft rates."""
+        assert (fy, fp) == (2025, 9)
+        return {(r["from_currency"], r["to_currency"]) for r in _rate_rows(rate_type, (0,))}
+
+    group_rates.approved_quotes, group_rates.draft_pairs = approved_quotes, draft_pairs
     group_rates.actuals_rate_set = lambda: "ACTUAL"
     entity_permissions = types.ModuleType("konsol.entity_permissions")
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
@@ -494,8 +510,7 @@ def test_the_query_count_does_not_grow_with_the_entities():
     assert large_result["counts"]["rows"] == 41
     assert small.get_all_calls == large.get_all_calls
     assert set(small.get_all_calls) == {"Entity", "Ownership Period", "Trial Balance Submission",
-                                        "TB Exception", "Consolidation Group",
-                                        "Group Exchange Rate"}
+                                        "TB Exception", "Consolidation Group"}, "rates: approved_quotes"
     assert all(n == 1 for n in small.get_all_calls.values()), small.get_all_calls
     assert small.rate_calls == [(2025, 9)] and large.rate_calls == [(2025, 9)]
     assert small.period_rows_calls == 1 and large.period_rows_calls == 1

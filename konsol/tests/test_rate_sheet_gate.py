@@ -41,7 +41,7 @@ def _frappe(sheets=(), ger=(), actuals=("ACTUAL",)):
             assert "s.docstatus = 1" in query, "a draft or a cancelled sheet is not a rate"
             assert "s.rate_basis = 'Statutory'" in query, "a Constant sheet is not a period's rate"
             fy, fp = params
-            return [(f, t, avg, cls) for _n, basis, y, p, ds, rows in sheets
+            return [(n, None, f, t, "1", avg, cls) for n, basis, y, p, ds, rows in sheets
                     if ds == 1 and basis == "Statutory" and (y, p) == (fy, fp) for f, t, avg, cls in rows]
         if "`tabGroup Exchange Rate`" in query:
             assert "docstatus = %s" in query
