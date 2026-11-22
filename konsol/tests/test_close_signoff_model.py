@@ -1126,3 +1126,36 @@ def test_earlier_periods_name_the_year_of_each_p12():
         {"code": "FY2024 P12", "status": "Open", "signoff": "Not signed off"},
         {"code": "FY2025 P12", "status": "Closed", "signoff": "Signed Off"},
     ]
+
+
+# --- a history period reports no sign-off gaps ----------------------------------
+
+def _all_gaps(target):
+    """What the gate assembles for ``target``: config gaps plus the #289 gap."""
+    gaps = M.config_gaps(FIRST, target, {"ZZA": "Monthly", "ZZB": ""})
+    gaps.append(M.unowned_tb_gap(["ZZACQ"], target))
+    return gaps
+
+
+def test_a_history_period_reports_only_the_history_note():
+    # ACQ P01 TB is its pre-acquisition balance: legitimate, and the period is
+    # never signed off, so a "before signing off" gap is noise.
+    gaps = M.signoff_gaps(FIRST, (2025, 6), _all_gaps((2025, 6)))
+    assert _codes(gaps) == ["history_period"]
+
+
+def test_the_first_close_period_keeps_every_gap():
+    gaps = M.signoff_gaps(FIRST, FIRST, _all_gaps(FIRST))
+    assert _codes(gaps) == ["frequency_undeclared", "tb_without_ownership"]
+
+
+def test_a_later_period_keeps_every_gap():
+    gaps = M.signoff_gaps(FIRST, (2025, 9), _all_gaps((2025, 9)))
+    assert _codes(gaps) == ["frequency_undeclared", "tb_without_ownership"]
+
+
+def test_an_undeclared_first_close_keeps_every_gap():
+    for first in (None, (0, 0), (2025, 0)):
+        gaps = M.config_gaps(first, (2025, 6), {"ZZB": ""})
+        gaps.append(M.unowned_tb_gap(["ZZACQ"], (2025, 6)))
+        assert M.signoff_gaps(first, (2025, 6), gaps) == gaps, first
