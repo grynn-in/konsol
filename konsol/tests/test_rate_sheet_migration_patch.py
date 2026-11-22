@@ -30,6 +30,7 @@ CONTROLLER_PY = os.path.join(APP_DIR, "consolidation", "doctype", "rate_sheet", 
 MIGRATE_MODULE = "konsol.patches.migrate_group_exchange_rates_to_rate_sheets"
 DROP_MODULE = "konsol.patches.drop_budget_cycle_rate_set"
 RATE_SET_MODULE = "konsol.consolidation.doctype.rate_set.rate_set"
+WORKFLOWS_MODULE = "konsol.workflows"
 
 _spec = importlib.util.spec_from_file_location(
     "_rsmm_fixture_for_patch", os.path.join(APP_DIR, "tests", "test_rate_sheet_migration_model.py"))
@@ -211,6 +212,17 @@ class _Site:
         mod.ensure_constant_set = ensure_constant_set
         return mod
 
+    def workflows_module(self):
+        site = self
+        mod = types.ModuleType(WORKFLOWS_MODULE)
+
+        def install_workflows(doctypes=None):
+            site.calls.append(("install_workflows", tuple(doctypes) if doctypes is not None else None))
+            return []
+
+        mod.install_workflows = install_workflows
+        return mod
+
     # -- reading the result ----------------------------------------------------------
 
     def files_on(self, doctype, name):
@@ -223,9 +235,10 @@ class _Site:
 
 
 def _run(site, path=MIGRATE_PY):
-    saved = {k: sys.modules.get(k) for k in ("frappe", RATE_SET_MODULE)}
+    saved = {k: sys.modules.get(k) for k in ("frappe", RATE_SET_MODULE, WORKFLOWS_MODULE)}
     sys.modules["frappe"] = site.module()
     sys.modules[RATE_SET_MODULE] = site.rate_set_module()
+    sys.modules[WORKFLOWS_MODULE] = site.workflows_module()
     try:
         spec = importlib.util.spec_from_file_location("_t25_patch_under_test", path)
         patch = importlib.util.module_from_spec(spec)
@@ -399,18 +412,49 @@ def test_a_controller_refusal_names_the_sheet():
     assert "RS-S-2015-12" in str(err) and "ZZ controller refused" in str(err), err
 
 
-def test_a_closing_period_sheet_is_refused_before_any_insert():
-    """The planner migrates a Closing-period rate with a warning, but the
-    controller's window refuses a Statutory sheet for a Closing period and
-    the publish fails on such a sheet: the patch names it and inserts
-    nothing, rather than write a sheet that breaks the publish."""
+def test_a_closing_period_is_dropped_into_the_audit_and_the_migrate_goes_on():
+    """T25b: the planner drops a Closing-type period's rows (dbt reads the
+    year's last Regular period; the controller refuses such a sheet), so the
+    patch no longer refuses: no sheet, and the rows are in the audit CSV."""
     rates = FX.live_rates()
     for rtype in ("Closing", "Average"):
         rates.append(FX.ger("EUR", rtype, 2019, 13, 1.1))
     site = _Site(rates)
-    err = _raises(site)
-    assert "RS-S-2019-13" in str(err) and "Closing period" in str(err), err
-    assert site.sheets == {} and site.files == []
+    _run(site)
+    assert "RS-S-2019-13" not in site.sheets and len(site.sheets) == 22
+    audit = {r["name"]: r for r in site.migration_audit()}
+    for rtype in ("Closing", "Average"):
+        row = audit[f"GER-2019-13-EUR-USD-{rtype}-01"]
+        assert row["disposition"] == "dropped" and "Closing-type period" in row["reason"], row
+
+
+def test_the_patch_no_longer_refuses_a_closing_period_sheet():
+    with open(MIGRATE_PY) as f:
+        src = f.read()
+    assert "_refuse_unwritable" not in src
+
+
+# -- the workflow is installed before the first insert ----------------------------------------
+
+def test_the_rate_sheet_workflow_is_installed_before_the_first_insert():
+    site = _Site(FX.live_rates())
+    _run(site)
+    installs = [c for c in site.calls if c[0] == "install_workflows"]
+    assert installs == [("install_workflows", ("Rate Sheet",))], installs
+    reloads = [i for i, c in enumerate(site.calls) if c[:2] == ("reload_doc", "consolidation")]
+    at = site.calls.index(installs[0])
+    assert max(reloads) < at < site.calls.index(_sheet_inserts(site)[0])
+
+
+def test_the_workflow_install_runs_even_when_already_migrated():
+    """Idempotent and create-if-missing, so a rerun is harmless; it stays
+    ahead of the skip so a site migrated before T25b still gets the workflow
+    before after_migrate."""
+    site = _Site(FX.live_rates())
+    _run(site)
+    site.calls.clear()
+    _run(site)
+    assert ("install_workflows", ("Rate Sheet",)) in site.calls
 
 
 # -- Constant sheets from budget sets ----------------------------------------------------------
