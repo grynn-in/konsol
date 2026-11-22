@@ -101,3 +101,25 @@ def test_pipeline_run_python_has_trigger_method():
         content = f.read()
     assert "trigger_pipeline" in content
     assert "whitelist" in content or "whitelisted" in content
+
+
+def _field(name):
+    with open(os.path.join(DOCTYPE_DIR, "pipeline_run.json")) as f:
+        doc = json.load(f)
+    return next(f for f in doc["fields"] if f["fieldname"] == name)
+
+
+def test_narrowing_fields_are_read_only_and_say_what_empty_means():
+    """A governed build never narrows its run, so Fiscal Year and Fiscal Period
+    show 0 and Scope is blank. The fields stay (orchestrator runs pass them as
+    dbt vars) but are set by the system, and each says what empty means."""
+    expect = {
+        "fiscal_year": ("Int", "0 means every fiscal year"),
+        "fiscal_period": ("Int", "0 means every period"),
+        "scope": ("Data", "Blank means every entity"),
+    }
+    for name, (ftype, phrase) in expect.items():
+        f = _field(name)
+        assert f["fieldtype"] == ftype, name
+        assert f.get("read_only") == 1, f"{name} must be read_only"
+        assert phrase in f.get("description", ""), f"{name} description"
