@@ -18,7 +18,6 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RS_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "rate_sheet")
 CONTROLLER = os.path.join(RS_DIR, "rate_sheet.py")
 MODEL = os.path.join(APP_DIR, "rate_sheet_model.py")
-SERVICES = os.path.join(APP_DIR, "rate_sheets.py")
 
 
 class Refused(Exception):
@@ -81,6 +80,7 @@ class World:
         self.sql = []
         self.gates = []
         self.published = []
+        self.queued = []
         self.cancelled = []
         self.cancel_state = []
         self.thrown = []
@@ -171,14 +171,14 @@ def _group_rates(w):
     gr.magnitude_problem = lambda f, t, rate, refs=None: w.magnitude.get((f, t))
     gr.significant_digits = lambda q: 9
     gr.quote_label = lambda q, per, f, t: f"{float(q or 0):.9g} {t} per {int(per or 1)} {f}"
-    gr.publish_rates = lambda force=False: w.published.append("publish_rates")
+    gr.publish_rates = lambda force=False: w.published.append(("publish_rates", force))
     return gr
 
 
 @contextlib.contextmanager
 def harness(**kw):
     """(module, world), with the stubs in sys.modules for the whole block:
-    the controller imports group_rates and rate_sheets at call time."""
+    the controller imports group_rates and clickhouse at call time."""
     w = World(**kw)
     frappe = _frappe(w)
 
@@ -217,20 +217,24 @@ def harness(**kw):
 
     mods = {n: types.ModuleType(n) for n in (
         "frappe.model", "frappe.model.document", "konsol", "konsol.period_status", "konsol.workflows",
-        "konsol.rate_sheets")}
+        "konsol.clickhouse")}
     mods["frappe"] = frappe
     mods["frappe.model.document"].Document = Document
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_year_not_closed = assert_year_not_closed
     mods["konsol.workflows"].set_cancelled_state = lambda doc: w.cancel_state.append(
         (doc.name, list(w.gates)))
-    mods["konsol.rate_sheets"].queue_publish = lambda: w.published.append("queue_publish")
+    def after_commit_once(key, fn):
+        """Queued, not run: the test runs what was queued."""
+        if all(k != key for k, _ in w.queued):
+            w.queued.append((key, fn))
+    mods["konsol.clickhouse"].after_commit_once = after_commit_once
     mods["konsol.group_rates"] = _group_rates(w)
     spec = importlib.util.spec_from_file_location("konsol.rate_sheet_model", MODEL)
     model = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(model)
     mods["konsol.rate_sheet_model"] = model
-    for name in ("group_rates", "rate_sheets", "rate_sheet_model", "period_status", "workflows"):
+    for name in ("group_rates", "clickhouse", "rate_sheet_model", "period_status", "workflows"):
         setattr(mods["konsol"], name, mods[f"konsol.{name}"])
     saved = {n: sys.modules.get(n) for n in mods}
     sys.modules.update(mods)
@@ -722,25 +726,25 @@ def test_lifecycle_approving_a_correction_cancels_the_superseded_sheet_through_i
         assert name == "RS-S-2025-06"
         assert flags.get("superseded_by") == "RS-S-2025-06-2"   # cancel_event.record reads it
         assert ignored == ["Rate Sheet"]
-        assert w.published == ["queue_publish"]
+        assert _queued_publish(w)
 
 
 def test_lifecycle_a_plain_approval_cancels_nothing_and_publishes():
     with harness() as (m, w):
         _sheet(m, docstatus=1).on_submit()
-        assert not w.cancelled and w.published == ["queue_publish"]
+        assert not w.cancelled and _queued_publish(w)
 
 
 def test_lifecycle_a_draft_save_publishes_nothing():
     with harness() as (m, w):
         _sheet(m).validate()
-        assert not w.published
+        assert not w.queued and not w.published
 
 
 def test_lifecycle_cancel_publishes_after_the_commit():
     with harness() as (m, w):
         _sheet(m, docstatus=2).on_cancel()
-        assert w.published == ["queue_publish"]
+        assert _queued_publish(w)
 
 
 # == T9: before_cancel =========================================================================
@@ -784,36 +788,29 @@ def test_lifecycle_a_cancelled_sheet_is_kept_and_a_draft_can_be_deleted():
         _sheet(m, docstatus=0).on_trash()
 
 
-# == T9: queue_publish ==========================================================================
+# == T9: publish after the commit ================================================================
 
-def test_lifecycle_queue_publish_runs_publish_rates_once_after_the_commit():
-    queued = []
+def _queued_publish(w):
+    """One resync_staging queued after the commit, nothing published yet; run
+    the queue and publish_rates runs once."""
+    assert [k for k, _ in w.queued] == [("resync_staging", "Rate Sheet")], w.queued
+    assert not w.published, "queued, not run in the transaction"
+    w.queued[0][1]()
+    assert w.published == [("publish_rates", False)]
+    return True
 
-    def after_commit_once(key, fn):
-        if any(k == key for k, _ in queued):
-            return
-        queued.append((key, fn))
 
-    calls = []
-    mods = {n: types.ModuleType(n) for n in ("frappe", "konsol", "konsol.clickhouse", "konsol.group_rates")}
-    mods["konsol.clickhouse"].after_commit_once = after_commit_once
-    mods["konsol.group_rates"].publish_rates = lambda force=False: calls.append(force)
-    mods["konsol"].clickhouse = mods["konsol.clickhouse"]
-    mods["konsol"].group_rates = mods["konsol.group_rates"]
-    saved = {n: sys.modules.get(n) for n in mods}
-    sys.modules.update(mods)
-    try:
-        spec = importlib.util.spec_from_file_location("rate_sheets_under_test", SERVICES)
-        services = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(services)
-        services.queue_publish()
-        services.queue_publish()
-        assert len(queued) == 1 and not calls, "queued, not run in the transaction"
-        queued[0][1]()
-        assert calls == [False]
-    finally:
-        for n, old in saved.items():
-            if old is None:
-                sys.modules.pop(n, None)
-            else:
-                sys.modules[n] = old
+def test_lifecycle_resync_staging_is_the_one_publish_entry_point():
+    with harness() as (m, w):
+        assert m.RateSheet.CH_STAGING_TABLE == "epm_staging.group_exchange_rates"
+        assert m.RateSheet.CH_STAGING_COLUMNS == ["to_currency", "from_currency", "fiscal_year",
+                                                  "fiscal_period", "rate_type", "rate", "document", "rate_set"]
+        m.RateSheet.resync_staging(force=True)
+        assert w.published == [("publish_rates", True)]
+
+
+def test_lifecycle_two_approvals_in_one_transaction_publish_once():
+    with harness() as (m, w):
+        _sheet(m, docstatus=1).on_submit()
+        _sheet(m, name="RS-S-2025-07", fiscal_period=7, docstatus=1).on_submit()
+        assert len(w.queued) == 1
