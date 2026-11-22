@@ -48,16 +48,47 @@ or the cancel with it. A system submit/cancel (patch, install, migrate) is
 recorded too (W4-E13; R01g precedent); skipped, and logged, only while the
 Close Event table does not exist yet (a patch that runs before migrate's
 schema sync creates it) — ``record_data_change``'s mark writes one.
+
+PR #595 review 2: the one-time migration of the retired rates doctype to
+Rate Sheets (``konsol.patches``, konsol#592 T25) replays every period's
+approvals and corrections as Rate Sheet submits and cancels. They record the
+rates each period was already translated at, so no period's data changed:
+under the controller's ``MIGRATE_FLAG``, as the Administrator (the rule of
+``RateSheet._migrating``), a Rate Sheet records no data change and marks no
+signed run Re-sign Needed. Its Close Events (approved, approval_cancelled)
+are still written by their own hooks.
+
+PR #595 review 3: a Constant Rate Sheet translates budgets and forecasts
+(konsol#592 D2), not a period's actuals, so it records no data change and
+voids no sign-off. Its period would be ``(fy, 0)`` (``close_event.period_of``),
+and ``record_data_change`` raises PeriodNotDeclared in a year with no P0 row.
+Its Close Events stay at ``(fy, 0)``, the year-level key, which needs no P0
+row: the writer reads no calendar.
 """
 from konsol.close import data_change_model
 
+#: rate_sheet.py's MIGRATE_FLAG (not imported: the controller needs Document).
+MIGRATE_FLAG = "konsol_migrating_rates"
+
+
+def _migrating(frappe, doc):
+    return (doc.doctype == "Rate Sheet" and bool(frappe.flags.get(MIGRATE_FLAG))
+            and frappe.session.user == "Administrator")
+
+
+def _drives_actuals(doc):
+    return not (doc.doctype == "Rate Sheet" and doc.get("rate_basis") == "Constant")
+
 
 def _record(doc, action):
-    if doc.doctype not in data_change_model.NUMBER_DRIVING:
+    if doc.doctype not in data_change_model.NUMBER_DRIVING or not _drives_actuals(doc):
         return
     # Lazy: an unrelated doctype's submit/cancel never loads these (mirrors
     # self_approval.check's own "imported here, not at the top" pattern).
     import frappe
+
+    if _migrating(frappe, doc):
+        return
 
     from konsol import fiscal_calendar
     from konsol.close import close_event, signoff_gate

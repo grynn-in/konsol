@@ -6,13 +6,15 @@ rejected as a model nothing calls).
 ``compute`` reads what the Cycle approves and hands it to the pure model
 (budget_fingerprint_model.input_fingerprint):
 
-- the Cycle's Rate Set;
+- the approved Constant Rate Sheet of the Cycle's year, with its rows
+  (konsol#592 D2, Deepak Pai, 22 Nov 2026: replaces BUD-3's per-Cycle Rate
+  Set and its rates);
 - its Budget Annual Input rows and Budget Entry Lines, by the ``cycle`` each
   row names, with the site's declared budget dimensions;
 - the Spread Profile weights of the profiles those annual rows name;
-- the approved Group Exchange Rates of the Cycle's set for its fiscal year,
-  and the approved Historical Equity Rate tranches of its set. Every tranche
-  of the set is read, dated before or after the year alike: a tranche's
+- the approved Historical Equity Rate tranches of the CONSTANT set
+  (group_rates.CONSTANT_RATE_SET, the set budget_cycles.rate_set names).
+  Every tranche of the set is read, dated before or after the year alike: a tranche's
   effect runs from its date onward, and reading all of them is conservative
   (a new tranche reads as a change, never a changed one as a match);
 - every submitted Ownership Period link (the rows the warehouse syncs:
@@ -21,8 +23,11 @@ rejected as a model nothing calls).
   changed input, including the exit of a holding that has no budget rows. Recipe v2: a Cycle approved before it holds a v1
   stamp and reads as stale until re-approved; there is no re-stamp.
 
-Budget Cycle.before_submit stamps ``input_fingerprint`` with it; the Approve
-is the submit, so the value lands with the approval and nothing saves in
+Budget Cycle.before_submit reads the inputs with ``for_update`` (the sheet
+and its rows FOR UPDATE: under REPEATABLE READ a plain read could miss a
+cancel committed since the transaction's first read), refuses the approval
+without the year's sheet, and stamps ``input_fingerprint``; the Approve is
+the submit, so the value lands with the approval and nothing saves in
 on_submit. ``check_input_fingerprint`` is a GET read that recomputes over the
 current rows and reports a mismatch with both values: it decides nothing and
 writes nothing, so a GET's end-of-request rollback costs it nothing.
@@ -37,8 +42,8 @@ ANNUAL_FIELDS = ("name", "data_area_id", "main_account", "layer", "currency", "a
 LINE_FIELDS = ("name", "data_area_id", "fiscal_year", "fiscal_period", "main_account", "layer", "currency",
                "amount_basis", "debit", "credit")
 WEIGHT_FIELDS = ("profile_id", "fiscal_period", "weight")
-RATE_FIELDS = ("from_currency", "to_currency", "fiscal_year", "fiscal_period", "rate_type", "quote",
-               "quoted_per")
+SHEET_FIELDS = ("name", "supersedes")
+SHEET_ROW_FIELDS = ("from_currency", "to_currency", "quoted_per", "rate")
 HISTORICAL_FIELDS = ("consolidation_group", "data_area_id", "main_account", "rate_date", "to_currency",
                      "historical_rate")
 
@@ -69,24 +74,45 @@ def _ownership_links():
     return sorted(_rows("Ownership Period", {"docstatus": 1}, OWNERSHIP_FIELDS), key=lambda r: r["name"])
 
 
-def read_inputs(cycle):
-    """The model's arguments for ``cycle`` (a Budget Cycle document)."""
+def constant_sheets(fiscal_year, for_update=False):
+    """The approved Constant Rate Sheets of ``fiscal_year``, by name, each
+    with its rows in row order: ``[{"name", "supersedes", "rows"}]``. The
+    Rate Sheet controller allows one; a correction's approval cancels the
+    sheet it supersedes in the same transaction. ``for_update`` takes the
+    locking read the approval needs. frappe.get_all takes no for_update on
+    v16, hence db.get_values."""
+    from konsol.rate_sheet_model import CONSTANT
+
+    sheets = frappe.db.get_values(
+        "Rate Sheet", {"docstatus": 1, "rate_basis": CONSTANT, "fiscal_year": int(fiscal_year)},
+        list(SHEET_FIELDS), as_dict=True, order_by="name asc", for_update=for_update)
+    out = []
+    for s in sheets:
+        rows = frappe.db.get_values(
+            "Rate Sheet Row", {"parent": s["name"], "parenttype": "Rate Sheet", "parentfield": "rates"},
+            list(SHEET_ROW_FIELDS), as_dict=True, order_by="idx asc", for_update=for_update)
+        out.append({"name": s["name"], "supersedes": s.get("supersedes"), "rows": [dict(r) for r in rows]})
+    return out
+
+
+def read_inputs(cycle, for_update=False):
+    """The model's arguments for ``cycle`` (a Budget Cycle document).
+    ``for_update``: the approval's locking read of the Constant sheet."""
+    from konsol.group_rates import CONSTANT_RATE_SET
+
     dims = _dimensions()
     annual = _rows("Budget Annual Input", {"cycle": cycle.name}, ANNUAL_FIELDS + dims)
     lines = _rows("Budget Entry Line", {"cycle": cycle.name}, LINE_FIELDS + dims)
     profiles = sorted({r["spread_profile_id"] for r in annual if r.get("spread_profile_id")})
     # Never ``["in", []]``: with no profile in use there is nothing to ask.
     weights = _rows("Spread Profile", {"profile_id": ["in", profiles]}, WEIGHT_FIELDS) if profiles else []
-    rates = _rows("Group Exchange Rate",
-                  {"docstatus": 1, "rate_set": cycle.rate_set, "fiscal_year": int(cycle.fiscal_year)},
-                  RATE_FIELDS)
-    historical = _rows("Historical Equity Rate", {"docstatus": 1, "rate_set": cycle.rate_set}, HISTORICAL_FIELDS)
+    historical = _rows("Historical Equity Rate", {"docstatus": 1, "rate_set": CONSTANT_RATE_SET},
+                       HISTORICAL_FIELDS)
     return {
-        "rate_set": cycle.rate_set,
+        "rate_sheets": constant_sheets(cycle.fiscal_year, for_update=for_update),
         "annual_inputs": annual,
         "entry_lines": lines,
         "weights": weights,
-        "exchange_rates": rates,
         "historical_rates": historical,
         "ownership_links": _ownership_links(),
         "dimensions": dims,
@@ -119,7 +145,7 @@ def check_input_fingerprint(cycle):
     else:
         matches = False
         message = _("Budget Cycle {0}: an input has changed since Approve (an annual figure, an entry line, "
-                    "a spread weight, a rate of Rate Set {1}, or an ownership link). Stamped {2}, now {3}.").format(
-            cycle, doc.rate_set, stored, current)
+                    "a spread weight, the FY{1} Constant rate sheet or one of its rates, or an ownership link). "
+                    "Stamped {2}, now {3}.").format(cycle, doc.fiscal_year, stored, current)
     return {"cycle": cycle, "docstatus": int(doc.docstatus or 0), "stored": stored, "current": current,
             "matches": matches, "message": message}

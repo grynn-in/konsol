@@ -241,6 +241,22 @@ def _load_api(site):
         return site.rate_result
 
     group_rates.rate_gate = rate_gate
+
+    def _rate_rows(rate_type, docstatuses):
+        return [r for r in site.data["Group Exchange Rate"]
+                if r["rate_type"] == rate_type and r["rate_set"] == "ACTUAL" and r["docstatus"] in docstatuses]
+
+    def approved_quotes(fy, fp, rate_type):
+        """konsol#592 T19: the period's approved actuals rates, {(from, to): rate}."""
+        assert (fy, fp) == (2025, 9)
+        return {(r["from_currency"], r["to_currency"]): 1.0 for r in _rate_rows(rate_type, (1,))}
+
+    def draft_pairs(fy, fp, rate_type):
+        """konsol#592 T19: the (from, to) of the period's draft rates."""
+        assert (fy, fp) == (2025, 9)
+        return {(r["from_currency"], r["to_currency"]) for r in _rate_rows(rate_type, (0,))}
+
+    group_rates.approved_quotes, group_rates.draft_pairs = approved_quotes, draft_pairs
     group_rates.actuals_rate_set = lambda: "ACTUAL"
     entity_permissions = types.ModuleType("konsol.entity_permissions")
     entity_permissions.allowed_entity_codes = lambda user=None: site.allowed
@@ -494,8 +510,7 @@ def test_the_query_count_does_not_grow_with_the_entities():
     assert large_result["counts"]["rows"] == 41
     assert small.get_all_calls == large.get_all_calls
     assert set(small.get_all_calls) == {"Entity", "Ownership Period", "Trial Balance Submission",
-                                        "TB Exception", "Consolidation Group",
-                                        "Group Exchange Rate"}
+                                        "TB Exception", "Consolidation Group"}, "rates: approved_quotes"
     assert all(n == 1 for n in small.get_all_calls.values()), small.get_all_calls
     assert small.rate_calls == [(2025, 9)] and large.rate_calls == [(2025, 9)]
     assert small.period_rows_calls == 1 and large.period_rows_calls == 1
@@ -756,7 +771,7 @@ def test_no_reminders_reads_no_user():
 def test_reads_are_the_old_count_plus_two_whatever_the_entity_count():
     """Failure path (C-R6, the docstring's fixed count): one Close Event read
     plus one User read, with 1 entity and with 5."""
-    old = 6  # Entity, Ownership Period, TB Submission, TB Exception, Group, GER
+    old = 5  # Entity, Ownership Period, TB Submission, TB Exception, Group (rates: group_rates, T19)
     for n in (1, 5):
         site = _sized_site(n)
         result = _call(site)
@@ -846,7 +861,7 @@ def test_a_sender_with_no_full_name_is_labelled_and_the_other_rows_are_intact():
 def test_a_nameless_sender_keeps_the_read_count_constant():
     """R52c: with no User row for the sender, the grid still makes one Close
     Event read plus one User read on top of the old count, for 1 entity and 5."""
-    old = 6  # as test_reads_are_the_old_count_plus_two_whatever_the_entity_count
+    old = 5  # as test_reads_are_the_old_count_plus_two_whatever_the_entity_count
     for n in (1, 5):
         site = _sized_site(n)
         site.data["User"] = []

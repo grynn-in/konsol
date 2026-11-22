@@ -20,7 +20,7 @@ import os
 import frappe
 
 INSTALLED = ("Consolidation Journal", "Business Combination", "Business Disposal", "Build Approval",
-             "Budget Cycle", "Cost Allocation Run", "Cost Allocation Statistic")
+             "Budget Cycle", "Cost Allocation Run", "Cost Allocation Statistic", "Rate Sheet")
 
 
 def _definitions():
@@ -30,10 +30,15 @@ def _definitions():
             yield json.load(f)
 
 
-def install_workflows():
+def install_workflows(doctypes=None):
+    """Install each missing workflow of INSTALLED; ``doctypes`` narrows it to
+    those named (the Rate Sheet migration patch, konsol#592 T25b, which runs
+    before the model sync). Hooks call it with no argument."""
     installed = []
     for wf in _definitions():
         doctype = wf["document_type"]
+        if doctypes is not None and doctype not in doctypes:
+            continue
         if doctype not in INSTALLED or not frappe.db.exists("DocType", doctype):
             continue
         if frappe.db.exists("Workflow", {"document_type": doctype}):

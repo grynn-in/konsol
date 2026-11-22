@@ -38,7 +38,6 @@ from konsol.consolidation.doctype.close_event import close_event as close_event_
 
 #: Approval and close documents that carry their own period key.
 PERIOD_FIELD_DOCTYPES = (
-    "Group Exchange Rate",
     "IC Balance",
     "Consolidation Journal",
     "Trial Balance Submission",
@@ -60,7 +59,7 @@ ENTITY_FIELDS = {
     "Historical Equity Rate": "data_area_id",
     "Business Combination": "acquired_entity",
     "Business Disposal": "disposed_entity",
-    "Group Exchange Rate": None,
+    "Rate Sheet": None,
     "Consolidation Journal": None,
     "IC Balance": None,
 }
@@ -113,6 +112,13 @@ def _insert(event):
 def period_of(doc):
     """``(fiscal_year, fiscal_period)`` the event about ``doc`` belongs to."""
     doctype = doc.doctype
+    if doctype == "Rate Sheet":
+        # konsol#592 T16: a Constant sheet has no period; its approval events
+        # sit at P0 of its year (PERIOD_ZERO_KINDS, #590). A Statutory sheet
+        # names its own period, P0 included (opening balances, #587).
+        if doc.rate_basis == "Constant":
+            return int(doc.fiscal_year), 0
+        return int(doc.fiscal_year), int(doc.fiscal_period)
     if doctype in PERIOD_FIELD_DOCTYPES:
         return int(doc.fiscal_year), int(doc.fiscal_period)
     if doctype == "Business Combination":

@@ -117,7 +117,7 @@ def test_the_retired_cards_are_gone_and_a_patch_deletes_them():
 
 def test_the_retired_cards_reports_stay_reachable_through_shortcuts():
     targets = {(s["type"], s["link_to"]) for s in _ws()["shortcuts"]}
-    for need in [("DocType", "Trial Balance Submission"), ("DocType", "Group Exchange Rate"),
+    for need in [("DocType", "Trial Balance Submission"), ("DocType", "Rate Sheet"),
                  ("DocType", "Historical Equity Rate"), ("DocType", "Consolidation Journal")]:
         assert need in targets, need
 

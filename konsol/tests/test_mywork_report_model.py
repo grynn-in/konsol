@@ -145,7 +145,7 @@ def test_setup_gap_desk_paths_pass_through():
 
 def test_period_screens_map_to_the_nearest_desk_destination():
     rows = _by_id(R.rows(_close_lead_payload()))
-    assert rows["rates:2025-07"]["open"] == "/desk/group-exchange-rate?fiscal_year=2025&fiscal_period=7"
+    assert rows["rates:2025-07"]["open"] == "/desk/rate-sheet?fiscal_year=2025&fiscal_period=7"
     assert rows["tbs-waiting:2025-07"]["open"] == "/desk/trial-balance-submission?fiscal_year=2025&fiscal_period=7"
     assert rows["checks-waiting:2025-07"]["open"] == "/desk/assertion-run?fiscal_year=2025&fiscal_period=7"
     # #419: Close period is in the Period Close report's Actions menu.
@@ -157,6 +157,12 @@ def test_entity_items_filter_the_trial_balance_list_to_the_entity():
     rows = R.rows(_entity_accountant_payload())
     assert rows[0]["open"] == ("/desk/trial-balance-submission?fiscal_year=2025&fiscal_period=7"
                                "&data_area_id=ZZA")
+
+
+def test_rate_sheet_is_an_approval_doctype_with_a_sent_back_fix():
+    assert "Rate Sheet" in R.APPROVAL_DOCTYPES
+    assert "sent-back:Rate Sheet" in R.FIXES
+    assert R._sent_back_form("sent-back:Rate Sheet:RS-1") == "/desk/rate-sheet/RS-1"
 
 
 def test_sent_back_draft_opens_its_own_desk_form():

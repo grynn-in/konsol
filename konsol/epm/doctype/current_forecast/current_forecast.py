@@ -59,7 +59,7 @@ LIVE_INDEX_NAME = "current_forecast_live"
 #: The Cycle columns the declaration reads: its state, its identity and the
 #: read-only copies the form shows.
 _CYCLE_FIELDS = ["docstatus", "scenario_id", "scenario_type", "fiscal_year", "as_of_date",
-                 "horizon_periods", "rate_set", "input_fingerprint"]
+                 "horizon_periods", "input_fingerprint"]
 
 
 class CurrentForecast(Document):
@@ -86,7 +86,11 @@ class CurrentForecast(Document):
         # fetch_from carries them too; the Cycle's own are the truth.
         self.as_of_date = cycle.as_of_date
         self.horizon_periods = cycle.horizon_periods
-        self.rate_set = cycle.rate_set
+        # konsol#592 D2: the Cycle has no Rate Set; every forecast translates
+        # at its year's Constant sheet, published under CONSTANT.
+        from konsol.group_rates import CONSTANT_RATE_SET
+
+        self.rate_set = CONSTANT_RATE_SET
         self.title = f"{self.scenario_id} FY{self.fiscal_year}"
         self._refuse_second_live_declaration()
 

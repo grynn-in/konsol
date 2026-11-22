@@ -8,9 +8,11 @@ rate grid, as ``rates_model.grid`` assembles it:
   (``group_rates.translation_gaps``, a ClickHouse read). Any failure there is
   reported as ``pairs_error`` and every pair with a rate is listed with
   ``required: None``: it fails closed and visibly (E4-P9);
-- the period's drafts and approved Group Exchange Rates, and the previous
-  approved rate per key (one read of every earlier approved rate; the model
-  picks the latest per key);
+- the period's Statutory Rate Sheets (konsol#592 T20): the approved sheet,
+  and any draft or correction sheet, shown as pending; and the previous
+  approved rate per key from the earlier approved sheets (one read each; the
+  model picks the latest per key). A Constant sheet is a year's planning
+  rate, never a period's, so it is not read;
 - the move flag of each cell under the declared threshold
   (``group_rates.move_threshold``), never a guessed one;
 - on each awaiting cell, what the caller may do (``rates_model.approve_mode``)
@@ -18,50 +20,30 @@ rate grid, as ``rates_model.grid`` assembles it:
   #305-W2-14), with ``edited_by``: the preparers other than the owner. An
   approved or missing cell carries ``approve: None`` and ``edited_by: None``;
 - the policy gaps, and whether the caller may enter or approve;
-- ``quoted_per_options``, the Group Exchange Rate ``quoted_per`` field's own
+- ``quoted_per_options``, the Rate Sheet Row ``quoted_per`` field's own
   Select options (E409b): the one source of truth, so the screen never keeps
   a hand-copied list of its own.
 
-Viewers (EPM User) read it and write nothing (#305-W2-10): ``approve_mode``
-already says ``not_approver`` for them. The number of reads does not depend
-on the number of pairs: 8 MariaDB reads and 1 ClickHouse query.
+Every cell and pending correction carries its ``doctype`` (Rate Sheet), and
+its approve mode is judged on the sheet's preparers. Viewers (EPM User) read
+it and write nothing (#305-W2-10): ``approve_mode`` already says
+``not_approver`` for them. The number of reads does not depend on the number
+of pairs or sheets: 8 MariaDB reads and 1 ClickHouse query with a pending
+sheet (the Version and workflow reads of ``preparers_for``).
 
-``save_rate(...)`` (POST, E404) saves one cell: a new Closing or Average draft,
-or an edit of a named draft. It names only the grain, the quote, the unit and
-the reason, and has no ``**kwargs``: Frappe drops any request key a whitelisted
-function does not name (``frappe.get_newargs``), so a forged ``docstatus``,
-``source``, ``erp_quote``, ``source_note``, ``owner`` or ``amended_from`` never
-reaches it. It goes through ``insert()`` / ``save()`` with no ``ignore_*``
-flag, so the doctype's own validate decides (magnitude, digits, group currency,
-the move and its reason), and Frappe sets the owner. The Analyst has no submit
-on Group Exchange Rate, so the Analyst never approves (R2).
+F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): a pending
+correction (a draft naming the cell's approved document in ``supersedes``)
+rides on the cell as ``correction``, with its rate before and after
+(``rates_model._correction``), its approve mode and ``edited_by``; every cell
+carries ``orphans`` (FR2: draft corrections of a document no longer
+approved).
 
-F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): a change
-of an approved rate is a correction, drafted in the app. ``save_rate`` takes
-``supersedes``, the approved rate of the asked key, and saves a draft beside
-it; the Group Exchange Rate controller (F10) cancels the old rate in the
-transaction that approves the correction, so the key keeps one approved
-rate. Every refusal (no approved rate of that name on that key, a draft
-already pending on the key, an edit that would change what a draft corrects)
-is thrown before any write; the controller's validate refuses a correction
-with no Reason for Change. The roles are the save's own
-(``RATE_SAVE_ROLES``: R2, the Analyst drafts and the Close Lead approves;
-the Close Lead may draft too). ``get_rates`` adds to every cell ``correct``
-(the caller holds a save role, the period is Open, the cell is approved and
-nothing is pending on its key: exactly when the correction would be
-accepted) and ``correction``: the pending correction of an approved cell with
-its rate before and after (``rates_model._correction``), its approve mode and
-``edited_by``, or None. It costs no extra read: the grid's own read carries
-``supersedes``.
-
-FR2 (review-d2fu S1): the server, not the SPA, decides what may be done with
-a correction. The pending correction carries ``edit`` and ``delete``, and
-every cell carries ``orphans`` (``rates_model._orphans``: the key's draft
-corrections of a rate no longer approved, which can never be approved), each
-with ``delete``. All three equal ``may_draft`` (a save role and the period
-Open), which is exactly when ``save_rate``'s edit path and ``delete_rate``
-accept them: a correction or orphan is always a draft with ``supersedes`` in
-this period. Tests pin each flag against the two endpoints.
+konsol#592 T20: rates are entered on the Rate Sheet form, and the close app
+writes none. ``save_rate`` and ``delete_rate``, the old write paths of the
+retired doctype, refuse by name before any read. So ``can_enter``, every cell's
+``correct``, a correction's ``edit`` and ``delete``, and an orphan's
+``delete`` are False: the payload never offers what the server refuses. The
+close-ui SPA that called them is abandoned (Desk only, Deepak Pai 5 Nov 2026).
 
 ``get_pending()`` (GET, E405) lists every Historical Equity Rate and
 Ownership Period draft (docstatus 0; both have no submit for the Analyst, so
@@ -150,13 +132,26 @@ period_name = _load_period_name()
 
 #: Who reads the Rates screen (#305-W2-3, W2-10). The Entity Accountant does not.
 RATES_ROLES = ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")
-GER = "Group Exchange Rate"
-DOC_FIELDS = ["name", "from_currency", "to_currency", "rate_type", "quote", "quoted_per",
-              "erp_quote", "docstatus", "owner", "modified", "change_reason", "source",
-              "supersedes"]
-#: F11: the roles ``save_rate`` admits (its ``frappe.only_for`` literal; a
-#: test pins the two together). ``get_rates.correct`` is decided by them.
-RATE_SAVE_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
+SHEET = rates_model.SHEET
+#: konsol#592 T20: the sentence save_rate and delete_rate refuse with.
+SHEET_FORM_ONLY = ("The close app no longer writes group rates: edit rates on the Rate Sheet "
+                   "form (konsol#592).")
+
+#: The period's Statutory sheets, draft or approved, joined to their rows; and
+#: every earlier approved Statutory sheet, joined the same way.
+_SHEET_COLUMNS = (
+    "s.name AS sheet, s.docstatus, s.owner, s.modified, s.change_reason, s.supersedes, "
+    "s.fiscal_year, s.fiscal_period, r.from_currency, r.to_currency, r.quoted_per, "
+    "r.closing_quote, r.average_quote, r.erp_closing_quote, r.erp_average_quote, r.source "
+    "FROM `tabRate Sheet` s JOIN `tabRate Sheet Row` r ON r.parent = s.name "
+    "AND r.parenttype = 'Rate Sheet' AND r.parentfield = 'rates' "
+    "WHERE s.rate_basis = 'Statutory' ")
+_PERIOD_SHEETS_SQL = ("SELECT " + _SHEET_COLUMNS
+                      + "AND s.fiscal_year = %s AND s.fiscal_period = %s AND s.docstatus IN (0, 1) "
+                      "ORDER BY s.modified DESC, s.name, r.idx")
+_EARLIER_SHEETS_SQL = ("SELECT " + _SHEET_COLUMNS
+                       + "AND s.docstatus = 1 AND (s.fiscal_year < %s "
+                       "OR (s.fiscal_year = %s AND s.fiscal_period < %s)) ORDER BY s.name, r.idx")
 
 
 def _period(fiscal_year, fiscal_period):
@@ -176,15 +171,10 @@ def _period_row(key, rows=None):
     frappe.throw("%s is not declared: declare it in EPM Fiscal Year." % period_name(*key))
 
 
-def _number(value):
-    """A Float column as a JSON-safe float (MariaDB may hand back a Decimal)."""
-    return None if value is None else float(value)
-
-
 def _quoted_per_options():
-    """The Group Exchange Rate ``quoted_per`` Select field's own options
-    (E409b), so the screen never keeps a hand-copied list of its own."""
-    options = frappe.get_meta(GER).get_field("quoted_per").options
+    """The Rate Sheet Row ``quoted_per`` Select field's own options (E409b),
+    so the screen never keeps a hand-copied list of its own."""
+    options = frappe.get_meta("Rate Sheet Row").get_field("quoted_per").options
     return [line.strip() for line in (options or "").splitlines() if line.strip()]
 
 
@@ -202,44 +192,17 @@ def _required(fy, fp):
         + [f"Entity {e} has no functional currency" for e in entities])
 
 
-def _docs(fy, fp, rate_set):
-    """The period's drafts and approved rates in ``rate_set`` (konsol#348: the
-    screen is the actuals screen; a budget set's rate is not shown)."""
-    docs = frappe.get_all(
-        GER,
-        filters={"fiscal_year": fy, "fiscal_period": fp, "docstatus": ["in", [0, 1]], "rate_set": rate_set},
-        fields=DOC_FIELDS,
-        limit_page_length=0,
-        order_by="modified desc",
-    )
-    out = []
-    for doc in docs:
-        doc = dict(doc)
-        doc["quote"] = _number(doc.get("quote"))
-        doc["rate"] = group_rates.true_rate(doc["quote"], doc.get("quoted_per"))
-        erp_quote = doc.pop("erp_quote", None)
-        doc["erp_rate"] = (group_rates.true_rate(erp_quote, doc.get("quoted_per"))
-                           if erp_quote else None)
-        out.append(doc)
-    return out
+def _docs(fy, fp):
+    """The period's drafts and approved rates: its Statutory sheets (an
+    actuals rate; a Constant sheet is never a period's)."""
+    return rates_model.sheet_docs(
+        frappe.db.sql(_PERIOD_SHEETS_SQL, (fy, fp), as_dict=True), group_rates.true_rate)
 
 
-def _earlier(fy, fp, rate_set):
-    rows = frappe.db.sql(
-        "SELECT name, from_currency, to_currency, rate_type, quote, quoted_per, "
-        "fiscal_year, fiscal_period FROM `tabGroup Exchange Rate` "
-        "WHERE docstatus = 1 AND rate_set = %s "
-        "AND (fiscal_year < %s OR (fiscal_year = %s AND fiscal_period < %s))",
-        (rate_set, fy, fy, fp),
-        as_dict=True,
-    )
-    out = []
-    for row in rows:
-        row = dict(row)
-        row["quote"] = _number(row.get("quote"))
-        row["rate"] = group_rates.true_rate(row["quote"], row.get("quoted_per"))
-        out.append(row)
-    return out
+def _earlier(fy, fp):
+    """Every earlier approved rate: the approved Statutory sheets."""
+    return rates_model.sheet_docs(
+        frappe.db.sql(_EARLIER_SHEETS_SQL, (fy, fy, fp), as_dict=True), group_rates.true_rate)
 
 
 @frappe.whitelist(methods=["GET"])
@@ -249,10 +212,13 @@ def get_rates(fiscal_year, fiscal_period):
     period = _period_row(key)
     fy, fp = key
 
-    rate_set = group_rates.actuals_rate_set()   # konsol#348: refuses by name while none is flagged
+    group_rates.actuals_rate_set()   # konsol#348: refuses by name while none is flagged
     required, pairs_error, blockers = _required(fy, fp)
-    docs = _docs(fy, fp, rate_set)
-    earlier = _earlier(fy, fp, rate_set)
+    # PR #595 review 1: a Closing period has no sheet of its own; its rates are
+    # the last Regular period's (group_rates.rate_period, as the warehouse).
+    rate_fp = group_rates.rate_period(fy, fp)
+    docs = _docs(fy, rate_fp)
+    earlier = _earlier(fy, rate_fp)
     threshold = group_rates.move_threshold()
     threshold_pct = threshold * 100 if threshold is not None else None
     policy = frappe.db.get_single_value("Close Settings", "self_approval")
@@ -262,40 +228,36 @@ def get_rates(fiscal_year, fiscal_period):
     cells = [row[k] for row in result["rows"] + result["unrequired"] for k in ("closing", "average")]
     awaiting = [c for c in cells if c["status"] == "awaiting_approval"]
     corrections = [c["correction"] for c in cells if c["correction"] is not None]
-    preparers = self_approval.preparers_for(
-        GER, {c["name"]: c["owner"] for c in awaiting + corrections})
+    # One Version read for the pending sheets.
+    owners = {c["name"]: c["owner"] for c in awaiting + corrections}
+    preparers = {SHEET: self_approval.preparers_for(SHEET, owners)}
 
     user = frappe.session.user
     roles = frappe.get_roles(user)
-    # FR2: save_rate and delete_rate admit exactly RATE_SAVE_ROLES in an Open
-    # period, so this one flag decides correct, a correction's edit and delete,
-    # and an orphan's delete (a correction or orphan is always a draft with
-    # supersedes, in this period).
-    may_draft = bool(set(roles) & set(RATE_SAVE_ROLES)) and period.get("status") == "Open"
-    for correction in corrections:
-        correction_preparers = preparers[correction["name"]]
-        correction["approve"] = rates_model.approve_mode(
-            user, roles, correction_preparers, GER, correction["name"], policy,
+
+    def approve(item):
+        item_preparers = preparers[item["doctype"]][item["name"]]
+        item["approve"] = rates_model.approve_mode(
+            user, roles, item_preparers, item["doctype"], item["name"], policy,
             close_policy_model.APPROVER_ROLES, close_policy_model.self_approval_problem)
-        correction["edited_by"] = sorted(correction_preparers - {correction["owner"]})
-        correction["edit"] = may_draft
-        correction["delete"] = may_draft
+        item["edited_by"] = sorted(item_preparers - {item["owner"]})
+
+    # konsol#592 T20: save_rate and delete_rate refuse, so nothing here is
+    # offered: rates are edited on the Rate Sheet form.
+    for correction in corrections:
+        approve(correction)
+        correction["edit"] = False
+        correction["delete"] = False
     for cell in cells:
         for orphan in cell["orphans"]:
-            orphan["delete"] = may_draft
-        cell["correct"] = (may_draft and cell["status"] == "approved"
-                           and cell["correction"] is None and not cell["extra_drafts"])
+            orphan["delete"] = False
+        cell["correct"] = False
         if cell["status"] != "awaiting_approval":
             cell["approve"] = None
             cell["edited_by"] = None
             continue
-        cell_preparers = preparers[cell["name"]]
-        cell["approve"] = rates_model.approve_mode(
-            user, roles, cell_preparers, GER, cell["name"], policy,
-            close_policy_model.APPROVER_ROLES, close_policy_model.self_approval_problem)
-        cell["edited_by"] = sorted(cell_preparers - {cell["owner"]})
+        approve(cell)
 
-    role_set = set(roles)
     return {
         "period": {"fiscal_year": fy, "fiscal_period": fp,
                    "period_code": period.get("period_code"), "status": period.get("status")},
@@ -307,148 +269,29 @@ def get_rates(fiscal_year, fiscal_period):
         "threshold_pct": threshold_pct,
         "policy_gaps": close_policy_model.policy_gaps(policy, threshold_pct or 0),
         "self_approval": policy or None,
-        "can_enter": bool(role_set & set(group_rates.PREFILL_ROLES))
-        and period.get("status") == "Open",
-        "can_approve": bool(role_set & set(close_policy_model.APPROVER_ROLES)),
+        "can_enter": False,  # konsol#592 T20: entered on the Rate Sheet form
+        "can_approve": bool(set(roles) & set(close_policy_model.APPROVER_ROLES)),
         "quoted_per_options": _quoted_per_options(),
     }
 
 
-def _reason(change_reason):
-    """The Reason for Change, stripped; blank is no reason."""
-    return (str(change_reason).strip() or None) if change_reason is not None else None
-
-
-def _grain_text(from_currency, to_currency, rate_type, fy, fp):
-    return f"{rate_type} {from_currency} → {to_currency} {period_name(fy, fp)}"
-
-
-def _correction_refusal(supersedes, approved, drafts, grain_text):
-    """F11: the sentence refusing a correction of ``supersedes``, or None.
-    ``approved`` and ``drafts`` are the asked key's rows (name, supersedes)."""
-    if supersedes not in approved:
-        return (f"{supersedes} is not the approved {grain_text}: "
-                + (f"correct {approved[0]}." if approved else "there is no approved rate to correct."))
-    if drafts:
-        draft = drafts[0]
-        if draft.get("supersedes") == supersedes:
-            return f"{draft['name']} already corrects {supersedes} and awaits approval: edit it."
-        return f"{draft['name']} is already a draft for this rate: edit it."
-    return None
+@frappe.whitelist(methods=["POST"])
+def save_rate(**_request):
+    """Refused (konsol#592 T20): it saved one draft or correction of the
+    retired rate doctype, and rates are now entered on Rate Sheets. Kept, POST-only, so
+    an old caller gets the sentence, before any read or write. Gated like
+    every close endpoint (test_close_api_contract): whoever reads the Rates
+    screen is told where rates are edited."""
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    frappe.throw(SHEET_FORM_ONLY)
 
 
 @frappe.whitelist(methods=["POST"])
-def save_rate(fiscal_year, fiscal_period, from_currency, to_currency, rate_type, quote,
-              quoted_per, change_reason=None, name=None, supersedes=None):
-    frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
-    if rate_type not in group_rates.RATE_TYPES:
-        frappe.throw(f"Rate Type {rate_type} is not a group rate type: "
-                     f"use one of {', '.join(group_rates.RATE_TYPES)}.")
-    key = _period(fiscal_year, fiscal_period)
-    period = _period_row(key)
-    fy, fp = key
-    status = period.get("status")
-    if status != "Open":
-        frappe.throw(f"{period_name(fy, fp)} is {status}: group rates lock when their period "
-                     "closes (reopen it first).")
-    reason = _reason(change_reason)
-    supersedes = _reason(supersedes)  # stripped; blank is no correction
-    rate_set = group_rates.actuals_rate_set()   # konsol#348: the screen writes actuals
-
-    if not name:
-        # FR3 (review-d2fu N8): a locking read on the grain index (REPEATABLE
-        # READ), so a second correction of one rate waits on the first's row
-        # lock, then sees its draft and is refused. Newest first, as get_all's
-        # default order was. An empty key locks only a gap: two concurrent
-        # first drafts may then deadlock, and one fails visibly.
-        existing = frappe.db.sql(
-            "SELECT name, docstatus, supersedes FROM `tabGroup Exchange Rate` "
-            "WHERE to_currency = %s AND from_currency = %s AND fiscal_year = %s "
-            "AND fiscal_period = %s AND rate_type = %s AND rate_set = %s AND docstatus IN (0, 1) "
-            "ORDER BY modified DESC FOR UPDATE",
-            (to_currency, from_currency, fy, fp, rate_type, rate_set), as_dict=True)
-        approved = [r["name"] for r in existing if r["docstatus"] == 1]
-        drafts = [r for r in existing if r["docstatus"] == 0]
-        values = {"doctype": GER, "rate_set": rate_set, "to_currency": to_currency,
-                  "from_currency": from_currency, "rate_type": rate_type, "fiscal_year": fy,
-                  "fiscal_period": fp, "quote": quote, "quoted_per": quoted_per, "change_reason": reason}
-        if supersedes:
-            refusal = _correction_refusal(
-                supersedes, approved, drafts,
-                f"{rate_type} rate {from_currency} → {to_currency} for {period_name(fy, fp)}")
-            if refusal:
-                frappe.throw(refusal)
-            values["supersedes"] = supersedes
-        elif approved:
-            frappe.throw(
-                f"{approved[0]} is already the approved {rate_type} rate {from_currency} → "
-                f"{to_currency} for {period_name(fy, fp)}: correct it with a Reason for Change "
-                "instead.")
-        elif existing:
-            frappe.throw(f"{existing[0]['name']} is already a draft for this rate: edit it.")
-        doc = frappe.get_doc(values)
-        doc.insert()
-    else:
-        doc = frappe.get_doc(GER, name)
-        if doc.docstatus != 0:
-            frappe.throw(
-                f"{name} is approved, not a draft: correct it with a Reason for Change instead."
-                if doc.docstatus == 1 else
-                f"{name} is cancelled, not a draft: correct the approved rate with a Reason for "
-                "Change instead.")
-        if supersedes and supersedes != doc.get("supersedes"):
-            frappe.throw(f"{name} corrects {doc.get('supersedes') or 'no approved rate'}, not "
-                         f"{supersedes}: a draft keeps the rate it corrects.")
-        theirs = (doc.from_currency, doc.to_currency, doc.rate_type,
-                  int(doc.fiscal_year), int(doc.fiscal_period))
-        asked = (from_currency, to_currency, rate_type, fy, fp)
-        if theirs != asked:
-            frappe.throw(f"{name} is the {_grain_text(*theirs)} rate, not "
-                         f"{_grain_text(*asked)}: save it under its own key.")
-        if doc.get("rate_set") != rate_set:
-            frappe.throw(f"{name} belongs to Rate Set {doc.get('rate_set')}, not the actuals set "
-                         f"{rate_set}: this screen edits actuals rates only (konsol#348).")
-        doc.quote = quote
-        doc.quoted_per = quoted_per
-        doc.change_reason = reason
-        doc.save()
-
-    return {"name": doc.name, "docstatus": doc.docstatus, "quote_label": doc.get("quote_label"),
-            "source": doc.get("source")}
-
-
-@frappe.whitelist(methods=["POST"])
-def delete_rate(name):
-    """FR1 (review-d2fu S1; #312-3, #312-3b): delete one draft correction (a
-    draft Group Exchange Rate with ``supersedes``), so a pending correction or
-    an orphan that can never be approved is never a dead end. It names only
-    ``name``, so a forged ``docstatus``, ``ignore_permissions``, ``force`` or
-    ``supersedes`` never reaches it. The doc is read with a row lock, so a
-    parallel approval of the same draft waits and the docstatus read is
-    current. Every refusal is thrown before the delete; a plain first draft is
-    edited, not deleted here. ``frappe.delete_doc`` runs with the caller's own
-    delete permission; Frappe's Deleted Document keeps the record, and no Close
-    Event is written (a draft delete is not an approval event)."""
-    frappe.only_for(("EPM Analyst", "EPM Admin", "System Manager"))
-    name = _reason(name) or ""
-    if not name or not frappe.db.exists(GER, name):
-        frappe.throw(f"{name} is not a group exchange rate: reload the Rates screen.")
-    doc = frappe.get_doc(GER, name, for_update=True)
-    if doc.docstatus == 1:
-        frappe.throw(f"{name} is approved, not a draft: correct it with a Reason for Change "
-                     "instead.")
-    if doc.docstatus == 2:
-        frappe.throw(f"{name} is cancelled, not a draft: a cancelled rate is kept as the audit "
-                     "trail.")
-    if not doc.get("supersedes"):
-        frappe.throw(f"{name} corrects no approved rate: edit it instead.")
-    fy, fp = int(doc.fiscal_year), int(doc.fiscal_period)
-    status = _period_row((fy, fp)).get("status")
-    if status != "Open":
-        frappe.throw(f"{period_name(fy, fp)} is {status}: group rates lock when their period "
-                     "closes (reopen it first).")
-    frappe.delete_doc(GER, name)
-    return {"name": name, "deleted": True}
+def delete_rate(**_request):
+    """Refused (konsol#592 T20): it deleted one draft correction of the
+    retired rate doctype. A draft Rate Sheet is deleted on its own form."""
+    frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
+    frappe.throw(SHEET_FORM_ONLY)
 
 
 HER = "Historical Equity Rate"

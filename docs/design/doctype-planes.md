@@ -105,7 +105,7 @@ puts Ownership Period and IC Balance (operating) next to IC Elimination Rule
    │  • ic tolerance                                       that checks it
    │  → epm_gold.consolidation_groups                   │
    └────────────────────────────────────────────────────┘
-        ↑ gates Group Exchange Rate (operating, Pass 3)
+        ↑ gates Rate Sheet (operating, Pass 3)
 
   ══════════════════════════════════════════════════════════════════════
   L4  THE SEMANTIC MODEL — independent of L1–L3; reporting, not accounting.
@@ -201,7 +201,7 @@ Each verified in source, not inferred.
 3. **Seven top-level doctypes are unreachable from the workspace**, though
    `konsol/dashboard.py:88` states "Every top-level konsol doctype appears in
    exactly one card": `ISO Currency`, `Entity Fiscal Calendar` (removed by konsol#577),
-   `Group Exchange Rate`, `Trial Balance Submission`, `Trial Balance Upload`,
+   `Trial Balance Submission`, `Trial Balance Upload`,
    `Budget Annual Input` and now `EPM Fiscal Year` — the doctype a site must
    create *first*, and the one carrying the close buttons. Trial Balance Submission is the primary intake for a
    connector-less site; it is reachable only by URL or through konsol-exec.
@@ -413,10 +413,10 @@ operating doctypes plus the control gate that releases it.
                           │
                           ▼
  3 Ownership    ┌──────────────────────┐  ┌──────────────────────────────┐
-   & rates      │ Ownership Period     │  │ Group Exchange Rate          │
-                │ OP-{grp}-{ent}-{date}│  │ SUBMITTABLE — submit IS the  │
-                │ SUBMITTABLE          │  │ approval (konsol#103)        │
-                │ ownership_pct 0–100  │  │  ▸ Pre-fill from ERP (list)  │
+   & rates      │ Ownership Period     │  │ Rate Sheet                   │
+                │ OP-{grp}-{ent}-{date}│  │ SUBMITTABLE — workflow;      │
+                │ SUBMITTABLE          │  │ approve = submit (#592)      │
+                │ ownership_pct 0–100  │  │  ▸ Pre-fill, Duplicate prev. │
                 │ method, acquisition, │  │    → drafts only, nothing    │
                 │ disposal             │  │      applies itself          │
                 │ → epm_staging.       │  │ quote + quoted_per + source  │
@@ -497,8 +497,8 @@ doctypes should follow.
 |---|---|---|
 | **Check file → Load** | Trial Balance Upload | konsol-exec upload page (`tb_bulk.check_file` / `load`) |
 | Submit / Cancel / Amend | Trial Balance Submission | standard Frappe submit bar |
-| **Pre-fill from ERP** | Group Exchange Rate | **list view** inner button |
-| Submit = approve | Group Exchange Rate | submit bar |
+| **Pre-fill from ERP**, **Duplicate previous** | Rate Sheet | form buttons; drafts only |
+| Send for Approval / Approve (a correction supersedes) | Rate Sheet | Frappe workflow bar |
 | Submit / Cancel | Ownership Period, Historical Equity Rate, IC Balance | submit bar |
 | **Send for Approval / Reject / Approve / Reverse** | Consolidation Journal | Frappe workflow bar |
 | Draft ▸ submit | Business Combination, Business Disposal | Frappe workflow bar (installed #202) |
@@ -527,7 +527,7 @@ doctypes should follow.
    (`assert_open_between`) and feeds `epm_staging.historical_equity_rates`, but
    `home_api` never surfaces it, so nothing in the month view tells a Close Lead
    that an equity account is translating at a stale historical rate. Ownership &
-   rates (stage 3) covers Ownership Period and Group Exchange Rate only.
+   rates (stage 3) covers Ownership Period and Rate Sheet only.
 
 4. **Trial Balance Submission is the odd one out, deliberately and correctly.**
    It is the only operating doctype landing in `epm_raw`, the only one using a

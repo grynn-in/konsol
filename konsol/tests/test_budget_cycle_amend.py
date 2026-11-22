@@ -109,7 +109,6 @@ def env(monkeypatch):
     spec.loader.exec_module(mod)
 
     def cycle(name=None, **kw):
-        kw.setdefault("rate_set", "ZZRS")  # S4 K5: every Cycle names its Rate Set
         return mod.BudgetCycle(name=name, scenario_id="ZZB", fiscal_year=2026, doctype="Budget Cycle", **kw)
 
     return types.SimpleNamespace(cycle=cycle, names=names, pair=pair, locked=locked, frappe=frappe,

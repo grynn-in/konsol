@@ -96,12 +96,13 @@ def test_approval_doctypes_excludes_the_four():
         assert doctype not in M.APPROVAL_DOCTYPES
 
 
-def test_approval_doctypes_holds_the_seven():
+def test_approval_doctypes_holds_the_seven_and_rate_sheet():
+    # konsol#592: Rate Sheet replaced Group Exchange Rate (T16, T26).
     assert set(M.APPROVAL_DOCTYPES) == {
+        "Rate Sheet",
         "Consolidation Journal",
         "Business Combination",
         "Business Disposal",
-        "Group Exchange Rate",
         "Ownership Period",
         "Historical Equity Rate",
         "IC Balance",

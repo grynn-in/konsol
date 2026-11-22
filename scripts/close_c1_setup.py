@@ -20,8 +20,9 @@ What it does (tasks.md C1 step 1; Problems 14 — site-wide changes):
 - reporting_frequency "Monthly" on every other in-scope entity whose value
   is blank (the names recorded; set without touching ``modified``);
 - a submitted TB Exception for every other in-scope entity for 2099 P1 and P2;
-- Group Exchange Rates for every pair ``group_rates.required_pairs(2099, p)``
-  names (P1, P2);
+- an approved Statutory Rate Sheet per period (P1, P2), one row (Average and
+  Closing quote 1 per 1) for every pair ``group_rates.required_pairs(2099, p)``
+  names (Group Exchange Rate was retired by konsol#592 T26);
 - users zz-c1-ea (Entity Accountant, User Permission Entity = ZZOP),
   zz-c1-analyst (EPM Analyst), zz-c1-lead (EPM Admin), zz-c1-viewer (EPM User).
 
@@ -61,7 +62,7 @@ USERS = {
 
 #: Every doctype setup or the walk-through touches; counted before and after.
 COUNTED = ("EPM Fiscal Year", "Entity", "Consolidation Group", "Ownership Period", "TB Exception",
-           "Trial Balance Submission", "Group Exchange Rate", "Assertion Run", "Pipeline Run",
+           "Trial Balance Submission", "Rate Sheet", "Assertion Run", "Pipeline Run",
            "User", "User Permission", "Build Approval", "File", "Trial Balance Upload")
 
 
@@ -99,7 +100,7 @@ def refuse_if_present():
         problems.append(f"EPM Fiscal Year {FY} already exists")
     if frappe.db.exists("Entity", ENTITY):
         problems.append(f"Entity {ENTITY} already exists")
-    for dt in ("Trial Balance Submission", "TB Exception", "Group Exchange Rate", "Assertion Run"):
+    for dt in ("Trial Balance Submission", "TB Exception", "Rate Sheet", "Assertion Run"):
         n = frappe.db.count(dt, {"fiscal_year": FY})
         if n:
             problems.append(f"{n} {dt} row(s) already in FY{FY}")
@@ -226,14 +227,18 @@ def main():
     for p in PERIODS:
         pairs = sorted(group_rates.required_pairs(FY, p))
         state["required_pairs"][p] = pairs
-        for frm, to in pairs:
-            for rate_type in ("Average", "Closing"):
-                r = frappe.get_doc({"doctype": "Group Exchange Rate", "from_currency": frm, "to_currency": to,
-                                    "fiscal_year": FY, "fiscal_period": p, "rate_type": rate_type,
-                                    "quote": 1, "quoted_per": "1", "source": "Manual",
-                                    "source_note": REASON}).insert()
-                r.submit()
-                state["created"]["rates"].append(r.name)
+        if not pairs:
+            continue
+        # One Statutory sheet per period; the reason covers a magnitude
+        # warning on a quote of 1 (konsol#179), since the pairs are the site's.
+        sheet = frappe.get_doc({
+            "doctype": "Rate Sheet", "rate_basis": "Statutory", "fiscal_year": FY, "fiscal_period": p,
+            "change_reason": REASON,
+            "rates": [{"from_currency": frm, "to_currency": to, "quoted_per": "1", "average_quote": 1,
+                       "closing_quote": 1, "source": "Manual"} for frm, to in pairs],
+        }).insert()
+        sheet.submit()
+        state["created"]["rates"].append(sheet.name)
     frappe.db.commit()
     save_state(state)
 

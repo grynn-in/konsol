@@ -33,7 +33,7 @@ NUMBER_DRIVING = (
     "Consolidation Journal",
     "Business Combination",
     "Business Disposal",
-    "Group Exchange Rate",
+    "Rate Sheet",
     "Ownership Period",
     "Historical Equity Rate",
     "IC Balance",

@@ -32,6 +32,15 @@ from datetime import date, datetime
 import pytest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _constant_rate_set():
+    """konsol.group_rates.CONSTANT_RATE_SET, read from the source: group_rates
+    imports too much to load under the stub frappe."""
+    with open(os.path.join(APP_DIR, "group_rates.py")) as f:
+        tree = ast.parse(f.read())
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", None) == "CONSTANT_RATE_SET")
 DOCTYPE_DIR = os.path.join(APP_DIR, "epm", "doctype", "current_forecast")
 PATH = os.path.join(DOCTYPE_DIR, "current_forecast.json")
 CONTROLLER = os.path.join(DOCTYPE_DIR, "current_forecast.py")
@@ -101,11 +110,16 @@ def test_round_fields_per_the_field_table():
     c = fields["budget_cycle"]
     assert (c["fieldtype"], c["options"], c["reqd"]) == ("Link", "Budget Cycle", 1)
     assert "approved" in c["description"].lower(), c["description"]
-    for name, kind in (("as_of_date", "Date"), ("horizon_periods", "Int"), ("rate_set", "Data")):
+    for name, kind in (("as_of_date", "Date"), ("horizon_periods", "Int")):
         f = fields[name]
         assert f["fieldtype"] == kind and f["read_only"] == 1, name
         assert f["fetch_from"] == f"budget_cycle.{name}", name
         assert not f.get("reqd"), name
+    # konsol#592 D2: the Cycle has no Rate Set; every forecast translates at the
+    # year's Constant sheet, so the copy is the constant, set by the controller.
+    rate_set = fields["rate_set"]
+    assert rate_set["fieldtype"] == "Data" and rate_set["read_only"] == 1
+    assert not rate_set.get("fetch_from") and not rate_set.get("reqd")
 
 
 def test_approval_fields_per_the_field_table():
@@ -193,7 +207,7 @@ def _match(row, filters):
 def _cycle(docstatus, scenario_id, scenario_type, fiscal_year, as_of, horizon, fingerprint):
     return {"docstatus": docstatus, "scenario_id": scenario_id, "scenario_type": scenario_type,
             "fiscal_year": fiscal_year, "as_of_date": as_of, "horizon_periods": horizon,
-            "rate_set": "ZZRS", "input_fingerprint": fingerprint}
+            "input_fingerprint": fingerprint}
 
 
 def _tables():
@@ -292,13 +306,17 @@ def env(monkeypatch):
 
     scenario = types.ModuleType("konsol.epm.doctype.scenario.scenario")
     scenario.locked_scenario_type = locked_scenario_type
+    group_rates = types.ModuleType("konsol.group_rates")
+    group_rates.CONSTANT_RATE_SET = _constant_rate_set()
+    monkeypatch.setattr(sys.modules["konsol"], "group_rates", group_rates, raising=False)
     added_indexes = []
     frappe.db.add_index = lambda dt, fields, index_name=None: added_indexes.append((dt, list(fields), index_name))
     for name, mod in {"frappe": frappe, "frappe.utils": utils, "frappe.model": model,
                       "frappe.model.document": docmod, "konsol.clickhouse": ch,
                       "konsol.epm.budget_grain": grain, "konsol.period_status": period_status,
                       "konsol.workflows": workflows,
-                      "konsol.epm.doctype.scenario.scenario": scenario}.items():
+                      "konsol.epm.doctype.scenario.scenario": scenario,
+                      "konsol.group_rates": group_rates}.items():
         monkeypatch.setitem(sys.modules, name, mod)
 
     spec = importlib.util.spec_from_file_location("_current_forecast_under_test", CONTROLLER)
@@ -350,7 +368,7 @@ def _keys(queue):
 def test_a_valid_declaration_copies_the_round_and_titles_itself(env):
     d = env.doc()
     d.validate()
-    assert d.as_of_date == date(2027, 6, 30) and d.horizon_periods == 6 and d.rate_set == "ZZRS"
+    assert d.as_of_date == date(2027, 6, 30) and d.horizon_periods == 6 and d.rate_set == "CONSTANT"
     assert d.title == "ZZFC FY2027"
     assert env.type_reads == [FORECAST], "the scenario's type is read under its share lock"
 

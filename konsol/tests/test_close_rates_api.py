@@ -152,6 +152,24 @@ def _earlier(name, frm, to, rate_type, quote, fy, fp, quoted_per="1"):
             "docstatus": 1}
 
 
+def _as_sheet_row(doc):
+    """A one-rate fixture (``_ger`` / ``_earlier``) as the Statutory Rate Sheet
+    row the screen reads: a sheet named after it carrying its one quote.
+    These tests were written against Group Exchange Rate, which konsol#592 T26
+    retired; the grid now reads sheets only, so the stub serves them as sheets."""
+    quote, erp = (("closing_quote", "erp_closing_quote") if doc["rate_type"] == "Closing"
+                  else ("average_quote", "erp_average_quote"))
+    row = {"sheet": doc["name"], "rate_basis": "Statutory", "docstatus": doc["docstatus"],
+           "owner": doc.get("owner"), "modified": doc.get("modified"),
+           "change_reason": doc.get("change_reason"), "supersedes": doc.get("supersedes"),
+           "fiscal_year": doc["fiscal_year"], "fiscal_period": doc["fiscal_period"],
+           "from_currency": doc["from_currency"], "to_currency": doc["to_currency"],
+           "quoted_per": doc.get("quoted_per"), "closing_quote": None, "average_quote": None,
+           "erp_closing_quote": None, "erp_average_quote": None, "source": doc.get("source")}
+    row[quote], row[erp] = doc["quote"], doc.get("erp_quote")
+    return row
+
+
 class _Site:
     def __init__(self):
         self.user = LEAD
@@ -170,6 +188,8 @@ class _Site:
             _earlier("GER-0", "EUR", "GBP", "Closing", 0.80, 2025, 6),
             _earlier("GER-00", "EUR", "GBP", "Average", 0.81, 2025, 6),
         ]
+        #: konsol#592 T20: Rate Sheet rows, each joined to its sheet (_sheet_row)
+        self.sheet_rows = []
         self.versions = []  # {"ref_doctype", "docname", "owner", "data"}
         self.her = []  # Historical Equity Rate drafts (E405)
         self.ops = []  # Ownership Period rows: drafts (E405) and submitted (E406 scope query)
@@ -187,7 +207,6 @@ class _Site:
         self.get_doc_calls = []  # what get_doc received
         self.get_doc_kwargs = []  # FR1: the keyword arguments of each get_doc(doctype, name)
         self.deleted = []  # FR1: each frappe.delete_doc call, as (args, kwargs)
-        self.locking_values = []  # FR3: the values of each locking read of a key's rates
         self.new_docs = []  # every _FakeDoc built from a dict
         self.signed = []  # signoff_gate.latest_signed_runs() keys (O55)
         #: R52f: the declared first close (fy, fp), None = undeclared, read by
@@ -302,9 +321,7 @@ def _frappe(site):
     def get_all(doctype, filters=None, fields=None, order_by=None, limit=None,
                 limit_page_length=None, pluck=None, **k):
         site.reads.append(("get_all", doctype))
-        if doctype == "Group Exchange Rate":
-            rows = [r for r in site.docs if _match(r, filters)]
-        elif doctype == "Version":
+        if doctype == "Version":
             rows = [r for r in site.versions if _match(r, filters)]
         elif doctype == "Historical Equity Rate":
             rows = [r for r in site.her if _match(r, filters)]
@@ -325,26 +342,23 @@ def _frappe(site):
 
     def sql(query, values=None, as_dict=False, **k):
         site.reads.append(("sql", query))
-        assert "tabGroup Exchange Rate" in query, query
-        if "FOR UPDATE" in query:
-            # FR3: save_rate's locking read of the key's draft and approved
-            # rows, answered from site.docs on the five grain values.
-            assert as_dict, "the key's rates are read as_dict"
-            site.locking_values.append(tuple(values))
-            to, frm, fy, fp, rate_type, rate_set = values   # konsol#348: the set is in the key
-            grain = {"to_currency": to, "from_currency": frm, "fiscal_year": fy,
-                     "fiscal_period": fp, "rate_type": rate_type, "rate_set": rate_set}
-            return [{"name": r["name"], "docstatus": r["docstatus"],
-                     "supersedes": r.get("supersedes")}
-                    for r in site.docs if _match(r, grain) and r["docstatus"] in (0, 1)]
-        assert "docstatus = 1" in query, query
-        assert as_dict, "the earlier approved rates are read as_dict"
-        assert "rate_set = %s" in query, "konsol#348: earlier rates of the actuals set only"
-        rate_set, fy, fy2, fp = values
-        assert fy == fy2 and rate_set == "ACTUAL"
-        return [dict(r) for r in site.earlier
-                if r["docstatus"] == 1 and r.get("rate_set", "ACTUAL") == rate_set
-                and (r["fiscal_year"] < fy or (r["fiscal_year"] == fy and r["fiscal_period"] < fp))]
+        if "tabRate Sheet" in query:
+            # konsol#592 T20: the Statutory sheets, joined to their rows
+            assert as_dict, "the sheets are read as_dict"
+            assert "s.rate_basis = 'Statutory'" in query, query
+            statutory = [dict(r) for r in site.sheet_rows if r["rate_basis"] == "Statutory"] + [
+                _as_sheet_row(d) for d in site.docs + site.earlier]
+            if "s.fiscal_year < %s" in query:
+                assert "s.docstatus = 1" in query, query
+                fy, fy2, fp = values
+                assert fy == fy2
+                return [r for r in statutory if r["docstatus"] == 1 and (
+                    r["fiscal_year"] < fy or (r["fiscal_year"] == fy and r["fiscal_period"] < fp))]
+            assert "s.docstatus IN (0, 1)" in query, query
+            fy, fp = values
+            return [r for r in statutory if r["docstatus"] in (0, 1)
+                    and (r["fiscal_year"], r["fiscal_period"]) == (fy, fp)]
+        raise AssertionError("unexpected sql: %s" % query)
 
     def get_single_value(doctype, field, **k):
         site.reads.append(("single", doctype, field))
@@ -364,7 +378,7 @@ def _frappe(site):
             return doc
         site.reads.append(("get_doc", arg))
         site.get_doc_kwargs.append(dict(k))
-        assert arg in ("Group Exchange Rate", "Ownership Period"), arg
+        assert arg == "Ownership Period", arg
         if name not in site.named:
             raise frappe.ValidationError("%s %s not found" % (arg, name))
         return site.named[name]
@@ -375,15 +389,9 @@ def _frappe(site):
 
     def get_meta(doctype):
         site.reads.append(("get_meta", doctype))
-        assert doctype == "Group Exchange Rate", doctype
+        assert doctype == "Rate Sheet Row", doctype
         fields = {"quoted_per": types.SimpleNamespace(options=site.quoted_per_options)}
         return types.SimpleNamespace(get_field=lambda f: fields[f])
-
-    def exists(doctype, name=None, *a, **k):
-        site.reads.append(("exists", doctype))
-        assert doctype == "Group Exchange Rate", doctype
-        assert isinstance(name, str), name  # FR1: the name is a string before it is looked up
-        return name if name in site.named else None
 
     def delete_doc(*a, **k):
         site.deleted.append((a, k))
@@ -400,16 +408,16 @@ def _frappe(site):
     frappe.get_roles = lambda user=None: sorted(site.roles)
     frappe.flags = {}
     frappe.db = types.SimpleNamespace(sql=sql, get_single_value=get_single_value,
-                                      get_value=get_value, exists=exists)
+                                      get_value=get_value)
     frappe.session = types.SimpleNamespace(user=site.user)
     frappe.utils = types.SimpleNamespace(get_system_timezone=lambda: SITE_TZ)
     return frappe
 
 
 class _FakeDoc:
-    """A recording Group Exchange Rate: insert()/save() are counted, and run
-    what the controller would set (source Manual, a label) without deciding
-    anything for the endpoint."""
+    """A recording Ownership Period: insert()/save() are counted, and run
+    what the controller would set without deciding anything for the
+    endpoint."""
 
     def __init__(self, data, new=False):
         self.__dict__["_data"] = dict(data)
@@ -449,7 +457,7 @@ class _FakeDoc:
         return self
 
     def submit(self, *a, **k):
-        raise AssertionError("save_rate must never submit")
+        raise AssertionError("an ownership save must never submit")
 
 
 def _group_rates(site):
@@ -479,6 +487,8 @@ def _group_rates(site):
         return site.move_answer
 
     gr.translation_gaps = translation_gaps
+    #: PR #595 review 1: the period whose sheet holds a period's rates
+    gr.rate_period = lambda fy, fp: getattr(site, "rate_periods", {}).get((fy, fp), fp)
     gr.move_threshold = move_threshold
     gr.move_problem = move_problem
     return gr
@@ -632,7 +642,8 @@ def test_the_close_lead_sees_two_rows_and_approves_another_users_draft_directly(
     assert usd["closing"]["status"] == "missing" and usd["average"]["status"] == "missing"
     assert result["summary"] == {"missing": 2, "awaiting_approval": 1, "approved": 1,
                                  "corrections_pending": 0}
-    assert result["can_approve"] is True and result["can_enter"] is True
+    # konsol#592 T20: rates are entered on the Rate Sheet form, never here
+    assert result["can_approve"] is True and result["can_enter"] is False
     assert result["period"] == {"fiscal_year": 2025, "fiscal_period": 7, "period_code": "P07",
                                 "status": "Open"}
     assert result["pairs_error"] is None and result["blockers"] == []
@@ -678,7 +689,7 @@ def test_failure_path_approve_by_an_analyst_is_refused():
     cell = _row(result, "EUR")["average"]
     assert cell["approve"]["mode"] == "not_approver"
     assert result["can_approve"] is False
-    assert result["can_enter"] is True
+    assert result["can_enter"] is False
 
 
 def test_failure_path_undeclared_threshold_is_a_gap_never_a_default():
@@ -793,7 +804,7 @@ def test_a_viewer_reads_but_can_neither_enter_nor_approve():
 
 def test_failure_path_a_lead_who_edited_the_analysts_draft_is_refused_under_blocked():
     site = _Site()
-    site.versions = [{"ref_doctype": "Group Exchange Rate", "docname": "GER-2", "owner": LEAD,
+    site.versions = [{"ref_doctype": "Rate Sheet", "docname": "GER-2", "owner": LEAD,
                       "data": json.dumps({"changed": [["quote", 0.83, 0.84]]})}]
     result = _call(site)
     cell = _row(result, "EUR")["average"]
@@ -805,7 +816,7 @@ def test_failure_path_a_lead_who_edited_the_analysts_draft_is_refused_under_bloc
 def test_the_same_edit_under_allowed_with_reason_needs_a_reason():
     site = _Site()
     site.policy = "Allowed with reason"
-    site.versions = [{"ref_doctype": "Group Exchange Rate", "docname": "GER-2", "owner": LEAD,
+    site.versions = [{"ref_doctype": "Rate Sheet", "docname": "GER-2", "owner": LEAD,
                       "data": json.dumps({"changed": [["quote", 0.83, 0.84]]})}]
     result = _call(site)
     cell = _row(result, "EUR")["average"]
@@ -815,7 +826,7 @@ def test_the_same_edit_under_allowed_with_reason_needs_a_reason():
 
 def test_a_version_of_another_document_does_not_make_a_preparer():
     site = _Site()
-    site.versions = [{"ref_doctype": "Group Exchange Rate", "docname": "GER-OTHER", "owner": LEAD,
+    site.versions = [{"ref_doctype": "Rate Sheet", "docname": "GER-OTHER", "owner": LEAD,
                       "data": json.dumps({"changed": [["quote", 0.83, 0.84]]})}]
     result = _call(site)
     cell = _row(result, "EUR")["average"]
@@ -851,7 +862,10 @@ def test_the_query_count_is_constant_in_the_number_of_pairs():
     one, six = _pairs_site(1), _pairs_site(6)
     r1, r6 = _call(one), _call(six)
     assert len(r1["rows"]) == 1 and len(r6["rows"]) == 6
-    assert len(one.reads) == 8, one.reads  # 7 + 1 get_meta for quoted_per_options (E409b)
+    # the calendar, 2 Rate Sheet reads (konsol#592 T20), 2 Close Settings, the
+    # Version and Workflow reads of the pending sheet, and 1 get_meta for
+    # quoted_per_options (E409b). T26 took the two Group Exchange Rate reads.
+    assert len(one.reads) == 8, one.reads
     assert len(six.reads) == 8, six.reads
     assert one.needs_calls == [(2025, 7)] and six.needs_calls == [(2025, 7)]
     versions = [r for r in six.reads if r == ("get_all", "Version")]
@@ -860,7 +874,7 @@ def test_the_query_count_is_constant_in_the_number_of_pairs():
 
 # --- quoted_per_options (E409b): the one source of truth is the doctype meta ---------
 
-def test_get_rates_sends_quoted_per_options_from_the_group_exchange_rate_meta():
+def test_get_rates_sends_quoted_per_options_from_the_rate_sheet_row_meta():
     site = _Site()
     result = _call(site)
     assert result["quoted_per_options"] == ["1", "10", "100", "1000", "10000"]
@@ -871,230 +885,6 @@ def test_a_changed_meta_changes_the_quoted_per_options_payload():
     site.quoted_per_options = "5\n\n50\n"
     result = _call(site)
     assert result["quoted_per_options"] == ["5", "50"]
-
-
-# --- save_rate (E404): the Analyst saves a draft; nothing else can be set -----------
-
-SAVE_PARAMS = ["fiscal_year", "fiscal_period", "from_currency", "to_currency", "rate_type",
-               "quote", "quoted_per", "change_reason", "name", "supersedes"]
-# konsol#348: the draft names its set (the actuals set), so ten keys
-NEW_KEYS = {"doctype", "rate_set", "to_currency", "from_currency", "rate_type", "fiscal_year",
-            "fiscal_period", "quote", "quoted_per", "change_reason"}
-FORGED = ("docstatus", "source", "erp_quote", "source_note", "owner", "amended_from")
-
-
-def _analyst_site():
-    site = _Site()
-    site.user = ANALYST
-    site.roles = {"EPM Analyst"}
-    return site
-
-
-def _save(site, **kw):
-    args = {"fiscal_year": 2025, "fiscal_period": 7, "from_currency": "USD",
-            "to_currency": "GBP", "rate_type": "Closing", "quote": 0.79, "quoted_per": "1"}
-    args.update(kw)
-    return _invoke(site, lambda api: api.save_rate(**args))
-
-
-def _save_raises(site, **kw):
-    with pytest.raises(Exception) as info:
-        _save(site, **kw)
-    return info.value
-
-
-def _no_ignore_flags(site, doc):
-    assert not [k for k in vars(doc.flags) if k.startswith("ignore")], vars(doc.flags)
-    assert not [k for k in site.frappe.flags if str(k).startswith("ignore")], site.frappe.flags
-
-
-def test_save_rate_creates_a_new_draft_through_insert_with_only_the_nine_keys():
-    site = _analyst_site()
-    result = _save(site, change_reason="  RBI reference, 30 Sep  ")
-    assert site.only_for_calls == [("EPM Analyst", "EPM Admin", "System Manager")]
-    dicts = [c for c in site.get_doc_calls if isinstance(c, dict)]
-    assert len(dicts) == 1
-    assert set(dicts[0]) == NEW_KEYS, dicts[0]
-    assert dicts[0]["doctype"] == "Group Exchange Rate"
-    assert dicts[0]["change_reason"] == "RBI reference, 30 Sep"
-    assert (dicts[0]["fiscal_year"], dicts[0]["fiscal_period"]) == (2025, 7)
-    doc = site.new_docs[0]
-    assert [c[0] for c in doc.calls] == ["insert"]
-    _no_ignore_flags(site, doc)
-    assert result == {"name": "GER-NEW", "docstatus": 0, "quote_label": doc.quote_label,
-                      "source": "Manual"}
-
-
-#: FR3 (review-d2fu N8): the new-draft path reads the key's draft and
-#: approved rows with a locking read, so a second correction of one rate waits
-#: on the first and then sees it (MariaDB REPEATABLE READ).
-FR3_LOCKING_READ = (
-    "SELECT name, docstatus, supersedes FROM `tabGroup Exchange Rate` "
-    "WHERE to_currency = %s AND from_currency = %s AND fiscal_year = %s "
-    "AND fiscal_period = %s AND rate_type = %s AND rate_set = %s AND docstatus IN (0, 1) "
-    "ORDER BY modified DESC FOR UPDATE")
-
-
-def test_save_rate_reads_the_period_and_the_grain_once_each():
-    site = _analyst_site()
-    _save(site)
-    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], \
-        site.reads
-
-
-def test_forge_save_rate_takes_no_kwargs_and_names_only_the_ten_parameters():
-    import inspect
-
-    site = _analyst_site()
-    sig = _invoke(site, lambda api: {"sig": [(p.name, p.kind) for p in
-                                              inspect.signature(api.save_rate).parameters.values()]})
-    names = [n for n, _ in sig["sig"]]
-    assert names == SAVE_PARAMS, names
-    kinds = {k for _, k in sig["sig"]}
-    assert inspect.Parameter.VAR_KEYWORD not in kinds
-    assert inspect.Parameter.VAR_POSITIONAL not in kinds
-    for forged in FORGED:
-        assert forged not in names, forged
-
-
-def test_forge_a_forged_status_field_cannot_be_passed_at_all():
-    site = _analyst_site()
-    for forged in FORGED:
-        err = _save_raises(site, **{forged: "ZZ forged"})
-        assert isinstance(err, TypeError), (forged, err)
-    assert site.new_docs == []
-
-
-def test_failure_path_an_approved_key_with_no_name_is_refused_naming_the_correction():
-    # F11 (#312-3): a change of an approved rate is a correction in the app,
-    # no longer "a cancel and an amendment (Desk)".
-    site = _analyst_site()
-    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1)]
-    err = _save_raises(site, from_currency="EUR")
-    assert str(err) == ("GER-1 is already the approved Closing rate EUR → GBP for FY2025 P07: "
-                        "correct it with a Reason for Change instead."), err
-    assert site.new_docs == []
-
-
-def test_failure_path_a_draft_key_with_no_name_is_refused_naming_the_draft():
-    site = _analyst_site()
-    err = _save_raises(site, from_currency="EUR", rate_type="Average")
-    assert "GER-2 is already a draft for this rate" in str(err), err
-    assert site.new_docs == []
-
-
-def test_a_cancelled_rate_does_not_block_a_new_draft():
-    site = _analyst_site()
-    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 2)]
-    result = _save(site, from_currency="EUR")
-    assert result["name"] == "GER-NEW"
-
-
-def _named(site, name="GER-2", **kw):
-    data = {"doctype": "Group Exchange Rate", "name": name, "from_currency": "EUR",
-            "to_currency": "GBP", "rate_type": "Average", "fiscal_year": 2025,
-            "fiscal_period": 7, "quote": 0.84, "quoted_per": "1", "change_reason": "old",
-            "docstatus": 0, "owner": ANALYST, "source": "ERP pre-fill", "erp_quote": 0.83,
-            "source_note": None, "amended_from": None, "quote_label": "x", "rate_set": "ACTUAL"}
-    data.update(kw)
-    doc = _FakeDoc(data)
-    site.named[name] = doc
-    return doc
-
-
-def test_update_by_name_changes_only_quote_quoted_per_and_change_reason():
-    site = _analyst_site()
-    doc = _named(site)
-    before = dict(doc._data)
-    result = _save(site, name="GER-2", from_currency="EUR", rate_type="Average",
-                   quote=8.5, quoted_per="10", change_reason="  RBI  ")
-    assert [c[0] for c in doc.calls] == ["save"]
-    changed = {k for k in set(before) | set(doc._data) if before.get(k) != doc._data.get(k)}
-    assert changed == {"quote", "quoted_per", "change_reason", "quote_label"}, changed
-    assert (doc.quote, doc.quoted_per, doc.change_reason) == (8.5, "10", "RBI")
-    assert site.new_docs == []
-    _no_ignore_flags(site, doc)
-    assert result["name"] == "GER-2" and result["docstatus"] == 0
-    assert site.reads == [("sql", "fiscal_period_rows"), ("get_doc", "Group Exchange Rate")]
-
-
-def test_update_by_name_with_a_blank_reason_clears_it():
-    site = _analyst_site()
-    doc = _named(site)
-    _save(site, name="GER-2", from_currency="EUR", rate_type="Average", change_reason="   ")
-    assert not doc.change_reason
-
-
-def test_failure_path_a_named_approved_rate_is_refused():
-    site = _analyst_site()
-    doc = _named(site, docstatus=1)
-    err = _save_raises(site, name="GER-2", from_currency="EUR", rate_type="Average")
-    assert str(err) == ("GER-2 is approved, not a draft: correct it with a Reason for Change "
-                        "instead."), err
-    assert doc.calls == []
-
-
-def test_failure_path_a_named_cancelled_rate_is_refused():
-    site = _analyst_site()
-    doc = _named(site, docstatus=2)
-    err = _save_raises(site, name="GER-2", from_currency="EUR", rate_type="Average")
-    assert str(err) == ("GER-2 is cancelled, not a draft: correct the approved rate with a "
-                        "Reason for Change instead."), err
-    assert doc.calls == []
-
-
-def test_failure_path_a_named_doc_with_a_different_grain_is_refused():
-    site = _analyst_site()
-    doc = _named(site)
-    for kw in ({"from_currency": "USD", "rate_type": "Average"},
-               {"from_currency": "EUR", "rate_type": "Closing"},
-               {"from_currency": "EUR", "rate_type": "Average", "fiscal_period": 6}):
-        if kw.get("fiscal_period") == 6:
-            site.periods = [_period(2025, 6, "Open"), _period(2025, 7, "Open")]
-        err = _save_raises(site, name="GER-2", **kw)
-        assert "GER-2" in str(err), err
-        assert "EUR" in str(err) and "Average" in str(err), err
-    assert doc.calls == []
-
-
-def test_failure_path_a_closed_period_is_refused_before_any_get_doc():
-    site = _analyst_site()
-    err = _save_raises(site, fiscal_period=6)
-    assert "is Closed" in str(err) and "reopen" in str(err), err
-    assert "FY2025 P06" in str(err), err
-    assert site.get_doc_calls == []
-    assert site.reads == [("sql", "fiscal_period_rows")], site.reads
-
-
-def test_failure_path_an_undeclared_period_is_refused():
-    site = _analyst_site()
-    err = _save_raises(site, fiscal_year=2031, fiscal_period=9)
-    assert "not declared" in str(err), err
-    assert site.get_doc_calls == []
-
-
-def test_failure_path_rate_type_spot_is_refused_before_any_read():
-    site = _analyst_site()
-    err = _save_raises(site, rate_type="Spot")
-    assert "Spot" in str(err) and "Closing" in str(err), err
-    assert site.reads == [] and site.get_doc_calls == []
-
-
-def test_failure_path_the_entity_accountant_and_the_viewer_are_refused():
-    for role in ("Entity Accountant", "EPM User"):
-        site = _analyst_site()
-        site.roles = {role}
-        err = _save_raises(site)
-        assert type(err).__name__ == "PermissionError", (role, err)
-        assert site.reads == [] and site.get_doc_calls == []
-
-
-def test_the_close_lead_may_save_the_analysts_draft_and_the_owner_is_untouched():
-    site = _Site()
-    doc = _named(site)
-    _save(site, name="GER-2", from_currency="EUR", rate_type="Average", quote=0.845)
-    assert doc.owner == ANALYST
-    assert [c[0] for c in doc.calls] == ["save"]
 
 
 # --- get_pending (E405): HER and OP drafts awaiting approval -----------------------
@@ -2941,174 +2731,12 @@ def test_r53e_the_servers_decision_fed_back_to_the_save():
     assert _o63_call(_o63_site(roles=("EPM User",), user=VIEWER))["can_change"] is False
 
 
-# --- F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): the
-# close app drafts a correction of an approved rate. ``save_rate`` takes
-# ``supersedes`` (the approved rate of the same key) and saves a draft beside
-# it; the Group Exchange Rate controller (F10) cancels the old rate when the
-# correction is approved. ``get_rates`` says per cell whether the caller may
-# correct it (``correct``) and carries a pending correction with its
-# before -> after and approve mode. R2: the Analyst drafts, the Close Lead
-# approves; the save's own roles (Analyst, Close Lead, System Manager) draft
-# a correction too. -----------------------------------------------------------
+# --- F11 (konsol#312: #312-3, #312-3b, Deepak Pai 9 and 12 Oct 2026): a
+# pending correction rides on the approved cell with its before -> after and
+# approve mode. konsol#592 T20: the close app no longer drafts one
+# (``save_rate`` refuses), so ``correct`` is False on every cell. --------------
 
-F11_GOLDEN = os.path.join(FIXTURES, "close_rates_correction_payload.json")
 F11_REASON = "ECB fixing corrected 31 Jul"
-
-
-def _f11_correction_site():
-    """Approved Closing EUR → GBP GER-1 (0.85); nothing pending on it."""
-    site = _analyst_site()
-    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1, owner=LEAD)]
-    return site
-
-
-def test_f11_correct_an_approved_rate_saves_a_draft_that_supersedes_it():
-    site = _f11_correction_site()
-    result = _save(site, from_currency="EUR", quote=0.86, change_reason="  " + F11_REASON + " ",
-                   supersedes="GER-1")
-    dicts = [c for c in site.get_doc_calls if isinstance(c, dict)]
-    assert dicts == [{"doctype": "Group Exchange Rate", "rate_set": "ACTUAL", "to_currency": "GBP",
-                      "from_currency": "EUR", "rate_type": "Closing", "fiscal_year": 2025,
-                      "fiscal_period": 7, "quote": 0.86, "quoted_per": "1",
-                      "change_reason": F11_REASON, "supersedes": "GER-1"}], dicts
-    doc = site.new_docs[0]
-    assert [c[0] for c in doc.calls] == ["insert"]
-    _no_ignore_flags(site, doc)
-    assert result == {"name": "GER-NEW", "docstatus": 0, "quote_label": doc.quote_label,
-                      "source": "Manual"}
-    assert site.only_for_calls == [("EPM Analyst", "EPM Admin", "System Manager")]
-    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)]
-
-
-def test_f11_the_close_lead_may_draft_a_correction_too():
-    site = _f11_correction_site()
-    site.user, site.roles = LEAD, {"EPM Admin"}
-    result = _save(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
-                   supersedes="GER-1")
-    assert result["name"] == "GER-NEW"
-
-
-def test_f11_failure_path_a_viewer_and_an_entity_accountant_cannot_correct():
-    for role in ("EPM User", "Entity Accountant"):
-        site = _f11_correction_site()
-        site.user, site.roles = VIEWER, {role}
-        err = _save_raises(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
-                           supersedes="GER-1")
-        assert type(err).__name__ == "PermissionError", (role, err)
-        assert site.reads == [] and site.get_doc_calls == [] and site.new_docs == []
-
-
-def test_f11_failure_path_a_closed_period_is_refused_before_any_read_of_rates():
-    site = _f11_correction_site()
-    site.docs = [dict(site.docs[0], fiscal_period=6)]
-    err = _save_raises(site, from_currency="EUR", fiscal_period=6, quote=0.86,
-                       change_reason=F11_REASON, supersedes="GER-1")
-    assert str(err) == ("FY2025 P06 is Closed: group rates lock when their period closes "
-                        "(reopen it first)."), err
-    assert site.reads == [("sql", "fiscal_period_rows")], site.reads
-    assert site.new_docs == []
-
-
-def test_f11_failure_path_a_second_correction_while_one_is_pending_is_refused_naming_it():
-    site = _f11_correction_site()
-    site.docs.append(_ger("GER-3", "EUR", "GBP", "Closing", 0.86, 0, supersedes="GER-1",
-                          change_reason=F11_REASON))
-    err = _save_raises(site, from_currency="EUR", quote=0.87, change_reason="again",
-                       supersedes="GER-1")
-    assert str(err) == "GER-3 already corrects GER-1 and awaits approval: edit it.", err
-    assert site.new_docs == []
-
-
-def test_f11_failure_path_a_plain_draft_of_the_key_refuses_a_correction_naming_it():
-    site = _f11_correction_site()
-    site.docs.append(_ger("GER-3", "EUR", "GBP", "Closing", 0.86, 0))
-    err = _save_raises(site, from_currency="EUR", quote=0.87, change_reason="x",
-                       supersedes="GER-1")
-    assert str(err) == "GER-3 is already a draft for this rate: edit it.", err
-    assert site.new_docs == []
-
-
-def test_f11_forge_supersedes_must_be_the_approved_rate_of_the_asked_key():
-    # A draft, a cancelled rate, another key's rate and an unknown name are
-    # each refused before any write; the sentence names the rate to correct.
-    cases = [
-        ("GER-D", "GER-D is not the approved Closing rate EUR → GBP for FY2025 P07: "
-                  "correct GER-1."),
-        ("GER-C", "GER-C is not the approved Closing rate EUR → GBP for FY2025 P07: "
-                  "correct GER-1."),
-        ("GER-A", "GER-A is not the approved Closing rate EUR → GBP for FY2025 P07: "
-                  "correct GER-1."),
-        ("GER-NOPE", "GER-NOPE is not the approved Closing rate EUR → GBP for FY2025 P07: "
-                     "correct GER-1."),
-    ]
-    for supersedes, sentence in cases:
-        site = _f11_correction_site()
-        site.docs += [_ger("GER-C", "EUR", "GBP", "Closing", 0.84, 2),
-                      _ger("GER-A", "EUR", "GBP", "Average", 0.84, 1)]
-        if supersedes == "GER-D":
-            # A draft of the key would be refused as "already a draft" first;
-            # put it on another key so the supersedes check is what refuses.
-            site.docs.append(_ger("GER-D", "USD", "GBP", "Closing", 0.79, 0))
-        err = _save_raises(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
-                           supersedes=supersedes)
-        assert str(err) == sentence, (supersedes, err)
-        assert site.new_docs == [], supersedes
-
-
-def test_f11_failure_path_nothing_approved_to_correct():
-    site = _analyst_site()
-    site.docs = [_ger("GER-C", "EUR", "GBP", "Closing", 0.84, 2)]
-    err = _save_raises(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
-                       supersedes="GER-C")
-    assert str(err) == ("GER-C is not the approved Closing rate EUR → GBP for FY2025 P07: "
-                        "there is no approved rate to correct."), err
-    assert site.new_docs == []
-
-
-def test_f11_a_blank_supersedes_is_no_correction():
-    site = _analyst_site()
-    result = _save(site, supersedes="  ")
-    dicts = [c for c in site.get_doc_calls if isinstance(c, dict)]
-    assert set(dicts[0]) == NEW_KEYS, dicts[0]
-    assert result["name"] == "GER-NEW"
-
-
-def test_f11_editing_a_correction_keeps_what_it_corrects():
-    site = _analyst_site()
-    doc = _named(site, name="GER-3", rate_type="Closing", supersedes="GER-1",
-                 source="Manual", erp_quote=None)
-    for supersedes in (None, "GER-1"):
-        _save(site, name="GER-3", from_currency="EUR", quote=0.861, change_reason=F11_REASON,
-              supersedes=supersedes)
-        assert doc.supersedes == "GER-1"
-        assert doc.quote == 0.861
-    assert [c[0] for c in doc.calls] == ["save", "save"]
-
-
-def test_f11_failure_path_an_edit_cannot_change_what_a_draft_corrects():
-    site = _analyst_site()
-    doc = _named(site, name="GER-3", rate_type="Closing", supersedes="GER-1")
-    err = _save_raises(site, name="GER-3", from_currency="EUR", quote=0.86,
-                       change_reason=F11_REASON, supersedes="GER-9")
-    assert str(err) == "GER-3 corrects GER-1, not GER-9: a draft keeps the rate it corrects.", err
-    plain = _named(site, name="GER-2")
-    err = _save_raises(site, name="GER-2", from_currency="EUR", rate_type="Average",
-                       supersedes="GER-9")
-    assert str(err) == ("GER-2 corrects no approved rate, not GER-9: a draft keeps the rate it "
-                        "corrects."), err
-    assert doc.calls == [] and plain.calls == []
-
-
-def test_f11_save_roles_are_the_save_rate_literal():
-    import ast
-
-    tree = ast.parse(open(API_PY, encoding="utf-8").read())
-    [fn] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "save_rate"]
-    first = fn.body[0].value
-    assert first.func.attr == "only_for"
-    literal = ast.literal_eval(first.args[0])
-    api = _load_rates_api(_Site())
-    assert api.RATE_SAVE_ROLES == literal == ("EPM Analyst", "EPM Admin", "System Manager")
 
 
 # get_rates: ``correct`` on every cell, and the pending correction.
@@ -3134,12 +2762,6 @@ def _f11_grid_site():
     return site
 
 
-def test_f11_get_rates_matches_the_golden_payload():
-    site = _f11_grid_site()
-    result = _call(site)
-    assert result == _golden(F11_GOLDEN), json.dumps(result, indent=1, ensure_ascii=False)
-
-
 def test_f11_the_pending_correction_carries_before_after_and_its_approve_mode():
     result = _call(_f11_grid_site())
     cell = _row(result, "EUR")["closing"]
@@ -3150,7 +2772,7 @@ def test_f11_the_pending_correction_carries_before_after_and_its_approve_mode():
         "before": {"quote": 0.85, "quoted_per": "1", "rate": 0.85},
         "after": {"quote": 0.86, "quoted_per": "1", "rate": 0.86},
         "approve": {"mode": "direct", "message": None}, "edited_by": [],
-        "edit": True, "delete": True}
+        "edit": False, "delete": False, "doctype": "Rate Sheet"}
 
 
 def test_f11_failure_path_the_lead_cannot_approve_their_own_correction_under_blocked():
@@ -3160,10 +2782,10 @@ def test_f11_failure_path_the_lead_cannot_approve_their_own_correction_under_blo
     assert cell["correction"]["approve"]["mode"] == "refused"
 
 
-def test_f11_correct_is_true_only_on_an_approved_cell_with_nothing_pending():
+def test_t20_correct_is_false_on_every_cell_even_approved_with_nothing_pending():
     result = _call(_f11_grid_site())
     eur, usd = _row(result, "EUR"), _row(result, "USD")
-    assert eur["average"]["correct"] is True
+    assert eur["average"]["correct"] is False  # konsol#592: save_rate refuses
     assert eur["closing"]["correct"] is False
     assert usd["closing"]["correct"] is False  # a first draft: edit it
     assert usd["average"]["correct"] is False  # missing: enter it
@@ -3171,10 +2793,10 @@ def test_f11_correct_is_true_only_on_an_approved_cell_with_nothing_pending():
         assert cell["correction"] is None
 
 
-def test_f11_the_analyst_may_correct_too():
+def test_t20_failure_path_the_analyst_never_gets_correct():
     site = _f11_grid_site()
     site.user, site.roles = ANALYST, {"EPM Analyst"}
-    assert _row(_call(site), "EUR")["average"]["correct"] is True
+    assert _row(_call(site), "EUR")["average"]["correct"] is False
 
 
 def test_f11_failure_path_a_viewer_never_gets_correct():
@@ -3208,137 +2830,10 @@ def test_f11_the_correction_costs_no_extra_read():
     assert len(plain.reads) == len(corrected.reads) == 8, corrected.reads
 
 
-# --- FR1 (konsol#305 review-d2fu S1; #312-3, #312-3b, Deepak Pai): a draft
-# correction is never a dead end. ``delete_rate(name)`` deletes one draft Group
-# Exchange Rate that carries ``supersedes``: a pending correction, or an
-# orphan that can never be approved. Every refusal is thrown before any write.
-
-FR1_ROLES = ("EPM Analyst", "EPM Admin", "System Manager")
-
-
-def _fr1_site(user=ANALYST, roles=("EPM Analyst",)):
-    """``_f11_grid_site()`` as the Analyst, with each of its rates (and a
-    cancelled correction GER-C) readable by ``get_doc`` under its own name."""
-    site = _f11_grid_site()
-    site.user, site.roles = user, set(roles)
-    site.docs.append(_ger("GER-C", "EUR", "GBP", "Closing", 0.84, 2, supersedes="GER-1",
-                          change_reason=F11_REASON))
-    for row in site.docs:
-        site.named[row["name"]] = _FakeDoc(dict(row, doctype="Group Exchange Rate"))
-    return site
-
-
-def _delete(site, name):
-    return _invoke(site, lambda api: api.delete_rate(name))
-
-
-def _delete_raises(site, name):
-    with pytest.raises(Exception) as info:
-        _delete(site, name)
-    return info.value
-
-
-def test_fr1_the_analyst_deletes_a_pending_correction():
-    site = _fr1_site()
-    result = _delete(site, "GER-3")
-    assert result == {"name": "GER-3", "deleted": True}, result
-    assert site.deleted == [(("Group Exchange Rate", "GER-3"), {})], site.deleted
-    assert site.only_for_calls == [FR1_ROLES]
-    assert site.reads == [("exists", "Group Exchange Rate"), ("get_doc", "Group Exchange Rate"),
-                          ("sql", "fiscal_period_rows")], site.reads
-    assert site.get_doc_kwargs == [{"for_update": True}], site.get_doc_kwargs
-    assert site.new_docs == [] and site.named["GER-3"].calls == []
-
-
-def test_fr1_the_close_lead_deletes_a_correction_too_and_the_name_is_stripped():
-    site = _fr1_site(user=LEAD, roles=("EPM Admin",))
-    assert _delete(site, "  GER-3 ") == {"name": "GER-3", "deleted": True}
-    assert site.deleted == [(("Group Exchange Rate", "GER-3"), {})], site.deleted
-
-
-def test_fr1_failure_paths_each_refused_with_its_sentence_and_nothing_deleted():
-    cases = [
-        ("GER-1", "GER-1 is approved, not a draft: correct it with a Reason for Change instead."),
-        ("GER-C", "GER-C is cancelled, not a draft: a cancelled rate is kept as the audit trail."),
-        ("GER-5", "GER-5 corrects no approved rate: edit it instead."),
-        ("GER-NOPE", "GER-NOPE is not a group exchange rate: reload the Rates screen."),
-        (["GER-3"], "['GER-3'] is not a group exchange rate: reload the Rates screen."),
-        ({"name": "GER-3"}, "{'name': 'GER-3'} is not a group exchange rate: reload the Rates "
-                            "screen."),
-        ("", " is not a group exchange rate: reload the Rates screen."),
-    ]
-    for name, sentence in cases:
-        site = _fr1_site()
-        err = _delete_raises(site, name)
-        assert type(err).__name__ == "ValidationError", (name, err)
-        assert str(err) == sentence, (name, str(err))
-        assert site.deleted == [], name
-        assert site.new_docs == [], name
-
-
-def test_fr1_failure_path_a_correction_in_a_closed_period_is_refused():
-    site = _fr1_site()
-    site.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Closed")]
-    err = _delete_raises(site, "GER-3")
-    assert str(err) == ("FY2025 P07 is Closed: group rates lock when their period closes "
-                        "(reopen it first)."), err
-    assert site.deleted == []
-
-
-def test_fr1_failure_path_the_period_read_is_the_drafts_own():
-    # P07 is Open; the draft sits in P06, which is Closed: the doc's own period decides.
-    site = _fr1_site()
-    site.named["GER-3"].fiscal_period = 6
-    err = _delete_raises(site, "GER-3")
-    assert str(err) == ("FY2025 P06 is Closed: group rates lock when their period closes "
-                        "(reopen it first)."), err
-    assert site.deleted == []
-
-
-def test_fr1_failure_path_a_viewer_and_an_entity_accountant_read_nothing():
-    for role in ("EPM User", "Entity Accountant"):
-        site = _fr1_site(user=VIEWER, roles=(role,))
-        err = _delete_raises(site, "GER-3")
-        assert type(err).__name__ == "PermissionError", (role, err)
-        assert site.reads == [] and site.get_doc_calls == [], (role, site.reads)
-        assert site.deleted == [], role
-
-
-def test_fr1_forge_extra_keys_never_reach_it():
-    # Frappe's whitelisted-args path drops keys a function does not name; a
-    # direct call with them raises TypeError before any read.
-    import inspect
-
-    site = _fr1_site()
-    with pytest.raises(TypeError):
-        _invoke(site, lambda api: api.delete_rate(name="GER-1", docstatus=0,
-                                                  ignore_permissions=True))
-    assert site.reads == [] and site.deleted == [] and site.only_for_calls == []
-    params = _invoke(site, lambda api: [(p.name, p.kind) for p in
-                                        inspect.signature(api.delete_rate).parameters.values()])
-    assert params == [("name", inspect.Parameter.POSITIONAL_OR_KEYWORD)], params
-
-
-def test_fr1_delete_roles_are_the_save_roles_literal():
-    import ast
-
-    tree = ast.parse(open(API_PY, encoding="utf-8").read())
-    [fn] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "delete_rate"]
-    body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
-    first = body[0].value  # the first statement after the docstring
-    assert first.func.attr == "only_for"
-    assert isinstance(first.args[0], ast.Tuple)  # a literal tuple, not a name
-    literal = ast.literal_eval(first.args[0])
-    api = _load_rates_api(_Site())
-    assert literal == api.RATE_SAVE_ROLES == FR1_ROLES
-    [deco] = fn.decorator_list
-    assert ast.unparse(deco) == "frappe.whitelist(methods=['POST'])", ast.unparse(deco)
-
-
 # --- FR2 (konsol#305 review-d2fu S1; #312-3, #312-3b, Deepak Pai): the
-# server decides whether a correction can be edited or deleted, exactly when
-# ``save_rate`` / ``delete_rate`` would accept it, and lists each cell's orphan
-# corrections (drafts that correct a rate no longer approved) with ``delete``.
+# server lists each cell's orphan corrections (drafts that correct a rate no
+# longer approved). konsol#592 T20: ``save_rate`` and ``delete_rate`` refuse,
+# so ``edit`` and ``delete`` are False for every caller.
 
 FR2_ORPHAN = ("GER-7", "GER-0")  # EUR -> GBP Closing, corrects a rate no longer approved
 
@@ -3354,16 +2849,15 @@ def _fr2_site(user=LEAD, roles=("EPM Admin",), closed=False, orphan=True):
                               supersedes=FR2_ORPHAN[1], change_reason="stale"))
     if closed:
         site.periods = [_period(2025, 6, "Closed"), _period(2025, 7, "Closed")]
-    for row in site.docs:
-        site.named[row["name"]] = _FakeDoc(dict(row, doctype="Group Exchange Rate"))
     return site
 
 
 FR2_CALLERS = [
-    # (label, kwargs of _fr2_site, edit/delete expected)
-    ("analyst", {"user": ANALYST, "roles": ("EPM Analyst",)}, True),
-    ("close lead", {"user": LEAD, "roles": ("EPM Admin",)}, True),
-    ("system manager", {"user": LEAD, "roles": ("System Manager",)}, True),
+    # (label, kwargs of _fr2_site, edit/delete expected): konsol#592 T20,
+    # nobody edits or deletes a rate from here.
+    ("analyst", {"user": ANALYST, "roles": ("EPM Analyst",)}, False),
+    ("close lead", {"user": LEAD, "roles": ("EPM Admin",)}, False),
+    ("system manager", {"user": LEAD, "roles": ("System Manager",)}, False),
     ("viewer", {"user": VIEWER, "roles": ("EPM User",)}, False),
     ("closed period", {"user": ANALYST, "roles": ("EPM Analyst",), "closed": True}, False),
 ]
@@ -3407,141 +2901,10 @@ def test_fr2_failure_path_cells_without_a_correction_still_carry_none():
         assert cell["correction"] is None
 
 
-def test_fr2_delete_flags_are_pinned_to_delete_rate():
-    # For every correction and orphan the payload offers to delete,
-    # delete_rate on the same site accepts it; for every one it does not
-    # offer, delete_rate refuses it and deletes nothing.
-    checked = {True: 0, False: 0}
-    for label, kwargs, _ in FR2_CALLERS:
-        result = _call(_fr2_site(**kwargs))
-        items = []
-        for _, _, cell in _fr2_cells(result):
-            if cell["correction"] is not None:
-                items.append(cell["correction"])
-            items.extend(cell["orphans"])
-        assert sorted(i["name"] for i in items) == ["GER-3", "GER-7"], label
-        for item in items:
-            site = _fr2_site(**kwargs)
-            if item["delete"]:
-                assert _delete(site, item["name"]) == {"name": item["name"], "deleted": True}, \
-                    (label, item)
-                assert site.deleted == [(("Group Exchange Rate", item["name"]), {})], label
-            else:
-                err = _delete_raises(site, item["name"])
-                assert type(err).__name__ in ("PermissionError", "ValidationError"), (label, err)
-                assert site.deleted == [], (label, item)
-            checked[item["delete"]] += 1
-    assert checked[True] and checked[False], checked  # both directions ran
-
-
-def test_fr2_edit_flags_are_pinned_to_save_rate():
-    # For every correction the payload offers to edit, save_rate's edit path
-    # (name = the correction, supersedes = the approved cell) accepts it; for
-    # every one it does not offer, save_rate refuses it and saves nothing.
-    checked = {True: 0, False: 0}
-    for label, kwargs, _ in FR2_CALLERS:
-        result = _call(_fr2_site(**kwargs))
-        for row, rate_type, cell in _fr2_cells(result):
-            correction = cell["correction"]
-            if correction is None:
-                continue
-            site = _fr2_site(**kwargs)
-            args = {"from_currency": row["from_currency"], "to_currency": row["to_currency"],
-                    "rate_type": rate_type, "quote": 0.861,
-                    "quoted_per": correction["after"]["quoted_per"],
-                    "change_reason": correction["change_reason"],
-                    "name": correction["name"], "supersedes": cell["name"]}
-            doc = site.named[correction["name"]]
-            if correction["edit"]:
-                saved = _save(site, **args)
-                assert saved["name"] == correction["name"], (label, saved)
-                assert [c[0] for c in doc.calls] == ["save"], label
-                assert doc.supersedes == cell["name"] and doc.quote == 0.861, label
-            else:
-                err = _save_raises(site, **args)
-                assert type(err).__name__ in ("PermissionError", "ValidationError"), (label, err)
-                assert doc.calls == [] and site.new_docs == [], label
-            checked[correction["edit"]] += 1
-    assert checked[True] and checked[False], checked  # both directions ran
-
-
 def test_fr2_the_orphans_cost_no_extra_read():
     plain, orphaned = _fr2_site(orphan=False), _fr2_site()
     _call(plain), _call(orphaned)
     assert plain.reads == orphaned.reads and len(orphaned.reads) == 8, orphaned.reads
-
-
-def test_fr2_the_draft_flag_is_named_for_what_it_decides():
-    # One name for the save role in an Open period, now driving correct, edit
-    # and delete; the old name is gone.
-    source = open(API_PY, encoding="utf-8").read()
-    assert "may_correct" not in source
-    assert "may_draft = " in source
-
-
-# --- FR3 (review-d2fu N8): save_rate's new-draft path reads the key's draft
-# and approved rows with one locking read (SELECT ... FOR UPDATE on the grain
-# index), not get_all, so two users correcting one approved rate cannot both
-# draft a correction: the second waits on the first's row lock, then reads
-# its draft and is refused. Everything after the read is unchanged. ---------
-
-
-def test_fr3_a_new_draft_reads_the_key_once_with_a_locking_read_on_the_grain():
-    site = _analyst_site()
-    _save(site, from_currency="USD", to_currency="GBP", rate_type="Closing")
-    sqls = [q for kind, q in [r[:2] for r in site.reads] if kind == "sql"
-            and "Group Exchange Rate" in q]
-    assert sqls == [FR3_LOCKING_READ], site.reads
-    query = sqls[0]
-    assert query.endswith(" FOR UPDATE"), query
-    for field in ("to_currency", "from_currency", "fiscal_year", "fiscal_period", "rate_type"):
-        assert ("%s = %%s" % field) in query, (field, query)
-    assert "docstatus IN (0, 1)" in query, query
-    assert site.locking_values == [("GBP", "USD", 2025, 7, "Closing", "ACTUAL")], site.locking_values
-    assert ("get_all", "Group Exchange Rate") not in site.reads, site.reads
-
-
-def test_fr3_a_correction_reads_the_key_with_the_locking_read_too():
-    site = _f11_correction_site()
-    result = _save(site, from_currency="EUR", quote=0.86, change_reason=F11_REASON,
-                   supersedes="GER-1")
-    assert result["name"] == "GER-NEW"
-    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
-    assert site.locking_values == [("GBP", "EUR", 2025, 7, "Closing", "ACTUAL")], site.locking_values
-
-
-def test_fr3_failure_path_the_second_correction_is_refused_on_what_the_locking_read_returns():
-    # The first correction GER-3 is what the second user's locking read sees
-    # once the first commits; the refusal is the existing sentence, nothing is
-    # inserted, and no get_all of Group Exchange Rate is made.
-    site = _f11_correction_site()
-    site.docs.append(_ger("GER-3", "EUR", "GBP", "Closing", 0.86, 0, supersedes="GER-1",
-                          change_reason=F11_REASON))
-    err = _save_raises(site, from_currency="EUR", quote=0.87, change_reason="again",
-                       supersedes="GER-1")
-    assert str(err) == "GER-3 already corrects GER-1 and awaits approval: edit it.", err
-    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
-    assert site.new_docs == []
-
-
-def test_fr3_failure_path_an_approved_key_is_refused_on_the_locking_read():
-    site = _analyst_site()
-    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1)]
-    err = _save_raises(site, from_currency="EUR")
-    assert str(err) == ("GER-1 is already the approved Closing rate EUR → GBP for FY2025 P07: "
-                        "correct it with a Reason for Change instead."), err
-    assert site.reads == [("sql", "fiscal_period_rows"), ("sql", FR3_LOCKING_READ)], site.reads
-    assert site.new_docs == []
-
-
-def test_fr3_an_edit_by_name_makes_no_locking_read_of_the_key():
-    # The edit path reads the named draft (get_doc) and nothing else: the row
-    # does not widen to it.
-    site = _analyst_site()
-    _named(site)
-    _save(site, name="GER-2", from_currency="EUR", rate_type="Average", quote=0.9)
-    assert site.locking_values == [], site.locking_values
-    assert site.reads == [("sql", "fiscal_period_rows"), ("get_doc", "Group Exchange Rate")]
 
 
 # --- #117 pair 1 F: the Desk ownership change names the holding's owner --------
@@ -3677,25 +3040,176 @@ def test_117f_change_choices_list_one_item_per_holding():
     ]
 
 
-# ---- the Rates screen is the actuals screen (konsol#348) ------------------------
+# ---- konsol#592 T20: the grid reads Rate Sheets ------------------------------------
+# The period's grid comes from its Statutory Rate Sheets: the approved one, and
+# any draft or correction sheet, shown as pending. A Constant sheet is a year's
+# planning rate, never the period's (konsol#348: the screen is the actuals
+# screen). Group Exchange Rate is retired (T26); the older tests above use
+# one-rate fixtures that the stub serves as sheets (_as_sheet_row).
 
-def test_the_screen_shows_and_writes_the_actuals_set_only():
-    """A budget set's rate for the same key is not this screen's business: it is
-    neither shown as the period's rate nor counted as the existing draft, and a
-    rate saved here is an actuals rate."""
+SHEET_FORM = "edit rates on the Rate Sheet form (konsol#592)"
+
+
+def _sheet_row(sheet, frm, to, closing, average, docstatus=1, owner=LEAD, fy=2025, fp=7,
+               quoted_per="1", supersedes=None, change_reason=None, modified=None,
+               source="Manual", basis="Statutory", erp_closing=None, erp_average=None):
+    """One Rate Sheet Row joined to its sheet, as the API's join reads it."""
+    return {"sheet": sheet, "rate_basis": basis, "fiscal_year": fy, "fiscal_period": fp,
+            "docstatus": docstatus, "owner": owner,
+            "modified": modified or datetime(2025, 7, 31, 12, 0, 0),
+            "change_reason": change_reason, "supersedes": supersedes,
+            "from_currency": frm, "to_currency": to, "quoted_per": quoted_per,
+            "closing_quote": closing, "average_quote": average,
+            "erp_closing_quote": erp_closing, "erp_average_quote": erp_average, "source": source}
+
+
+def _sheet_site():
+    """FY2025 P07: the approved Statutory sheet RS-S-2025-07 has EUR -> GBP
+    (Closing 0.90, Average 0.89), and nothing else."""
     site = _Site()
-    budget = _ger("GER-B", "EUR", "GBP", "Closing", 0.80, 1)
-    budget["rate_set"] = "BUDGET_2027"
-    site.docs = [_ger("GER-1", "EUR", "GBP", "Closing", 0.85, 1), budget]
-    out = _call(site)
-    shown = {c["name"] for row in out["rows"] + out["unrequired"] for c in (row["closing"], row["average"])
-             if c.get("name")}
-    assert "GER-1" in shown and "GER-B" not in shown, shown
-    _save(site, from_currency="EUR", rate_type="Average", quote=0.84)
-    [values] = [c for c in site.get_doc_calls if isinstance(c, dict)]
-    assert values["rate_set"] == "ACTUAL", values
-    assert site.locking_values[-1][-1] == "ACTUAL", site.locking_values
-    # a budget set's draft is not edited from here
-    _named(site, "GER-B2", rate_set="BUDGET_2027", from_currency="USD", rate_type="Closing")
-    with pytest.raises(Exception, match="BUDGET_2027"):
-        _save(site, name="GER-B2")
+    site.docs, site.earlier = [], []
+    site.sheet_rows = [_sheet_row("RS-S-2025-07", "EUR", "GBP", 0.90, 0.89)]
+    return site
+
+
+def test_t20_an_approved_sheet_is_the_cell_of_both_its_rate_types():
+    result = _call(_sheet_site())
+    eur = _row(result, "EUR")
+    for key, rate in (("closing", 0.90), ("average", 0.89)):
+        cell = eur[key]
+        assert (cell["name"], cell["doctype"], cell["status"]) == (
+            "RS-S-2025-07", "Rate Sheet", "approved"), cell
+        assert cell["rate"] == pytest.approx(rate)
+        assert cell["extra_drafts"] == [], cell
+    assert result["summary"]["approved"] == 2
+
+
+def test_t20_a_draft_sheet_is_pending_and_judged_on_the_sheets_own_preparers():
+    site = _Site()
+    site.docs = []
+    site.sheet_rows = [_sheet_row("RS-S-2025-07", "EUR", "GBP", 0.90, 0.89, docstatus=0,
+                                  owner=ANALYST)]
+    site.versions = [{"ref_doctype": "Rate Sheet", "docname": "RS-S-2025-07", "owner": LEAD,
+                      "data": json.dumps({"changed": [["source_note", None, "ECB"]]})}]
+    eur = _row(_call(site), "EUR")
+    for key in ("closing", "average"):
+        cell = eur[key]
+        assert (cell["name"], cell["doctype"], cell["status"]) == (
+            "RS-S-2025-07", "Rate Sheet", "awaiting_approval"), cell
+        assert cell["edited_by"] == [LEAD]
+        assert cell["approve"]["mode"] == "refused"  # Blocked, and the Lead edited it
+
+
+def test_t20_a_correction_sheet_rides_on_the_approved_sheets_cell():
+    site = _sheet_site()
+    site.sheet_rows.append(_sheet_row("RS-S-2025-07-2", "EUR", "GBP", 0.91, 0.89, docstatus=0,
+                                      owner=ANALYST, supersedes="RS-S-2025-07",
+                                      change_reason="ECB fixing corrected",
+                                      modified=datetime(2025, 8, 2, 9, 0, 0)))
+    result = _call(site)
+    cell = _row(result, "EUR")["closing"]
+    assert cell["name"] == "RS-S-2025-07" and cell["status"] == "approved"
+    c = cell["correction"]
+    assert (c["name"], c["doctype"], c["supersedes"]) == (
+        "RS-S-2025-07-2", "Rate Sheet", "RS-S-2025-07"), c
+    assert c["after"]["rate"] == pytest.approx(0.91) and c["before"]["rate"] == pytest.approx(0.90)
+    assert c["approve"]["mode"] == "direct"
+    assert (c["edit"], c["delete"], cell["correct"]) == (False, False, False)
+    assert result["summary"]["corrections_pending"] == 2
+
+
+def test_t20_the_previous_rate_comes_from_an_earlier_approved_sheet():
+    site = _sheet_site()
+    site.sheet_rows.append(_sheet_row("RS-S-2025-06", "EUR", "GBP", 0.70, 0.71, fp=6))
+    eur = _row(_call(site), "EUR")
+    assert eur["closing"]["previous"]["name"] == "RS-S-2025-06"
+    assert eur["closing"]["previous"]["rate"] == pytest.approx(0.70)
+    assert eur["average"]["previous"]["name"] == "RS-S-2025-06"
+
+
+def test_t20_failure_path_a_constant_sheet_is_never_the_periods_rate():
+    site = _Site()
+    site.docs = []
+    site.sheet_rows = [_sheet_row("RS-C-2025", "EUR", "GBP", None, None, basis="Constant", fp=None)]
+    eur = _row(_call(site), "EUR")
+    assert eur["closing"]["status"] == eur["average"]["status"] == "missing"
+
+
+def test_t20_quoted_per_and_the_erp_quote_reach_the_sheet_cell():
+    site = _Site()
+    site.docs = []
+    site.sheet_rows = [_sheet_row("RS-S-2025-07", "JPY", "GBP", 0.52, 0.51, quoted_per="100",
+                                  erp_closing=0.5)]
+    site.needs = ({("JPY", "GBP")}, [], [])
+    cell = _row(_call(site), "JPY")["closing"]
+    assert (cell["quote"], cell["quoted_per"]) == (0.52, "100")
+    assert cell["rate"] == pytest.approx(0.0052)
+    [call] = [c for c in site.move_calls if c["rate"] == pytest.approx(0.0052)]
+    assert call["erp_rate"] == pytest.approx(0.005)
+
+
+def test_t20_the_sheet_reads_are_two_whatever_the_number_of_sheets():
+    one = _sheet_site()
+    many = _sheet_site()
+    many.sheet_rows += [_sheet_row("RS-S-2025-0%d" % fp, "EUR", "GBP", 0.8, 0.8, fp=fp)
+                        for fp in (1, 2, 3, 4, 5, 6)]
+    _call(one), _call(many)
+    sheet_reads = [r for r in many.reads if r[0] == "sql" and "tabRate Sheet" in r[1]]
+    assert len(sheet_reads) == 2, many.reads
+    # Nothing is pending, so no Version or Workflow read: 6 (the pairs test counts 8).
+    assert one.reads == many.reads and len(many.reads) == 6, many.reads
+
+
+# save_rate and delete_rate were the retired doctype's write paths: they refuse by name.
+
+def test_t20_failure_path_save_rate_refuses_by_name_before_any_read_or_write():
+    for roles in ({"EPM Analyst"}, {"EPM Admin"}, {"System Manager"}, {"EPM User"}):
+        site = _Site()
+        site.roles = roles
+        with pytest.raises(Exception) as info:
+            _invoke(site, lambda api: api.save_rate(
+                fiscal_year=2025, fiscal_period=7, from_currency="EUR", to_currency="GBP",
+                rate_type="Closing", quote=0.86, quoted_per="1", supersedes="GER-1"))
+        assert SHEET_FORM in str(info.value), info.value
+        assert site.reads == [] and site.get_doc_calls == [] and site.new_docs == [], roles
+
+
+def test_t20_failure_path_delete_rate_refuses_by_name_and_deletes_nothing():
+    site = _Site()
+    with pytest.raises(Exception) as info:
+        _invoke(site, lambda api: api.delete_rate(name="GER-3"))
+    assert SHEET_FORM in str(info.value), info.value
+    assert site.reads == [] and site.deleted == []
+
+
+def test_t20_the_refusing_endpoints_stay_post_only():
+    import ast
+
+    tree = ast.parse(open(API_PY, encoding="utf-8").read())
+    for name in ("save_rate", "delete_rate"):
+        [fn] = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
+        [dec] = fn.decorator_list
+        assert ast.unparse(dec) == "frappe.whitelist(methods=['POST'])", (name, ast.unparse(dec))
+
+
+
+def test_a_closing_period_shows_the_last_regular_periods_sheet():
+    """PR #595 review 1: a Closing period is translated at the year's last
+    Regular period (group_rates.rate_period, rate_period_map), and has no
+    sheet of its own: the Rates screen of P13 shows P12's sheet, judged
+    against the sheets before P12. The pairs are still the ones P13's ledgers
+    translate."""
+    site = _Site()
+    p13 = dict(_period(2025, 12, "Open"), fiscal_period=13, period_code="P13", period_type="Closing")
+    site.periods = [_period(2025, 11, "Closed"), _period(2025, 12, "Open"), p13]
+    site.rate_periods = {(2025, 13): 12}
+    site.docs = [dict(_ger("RS-S-2025-12", "EUR", "GBP", "Closing", 0.85, 1), fiscal_period=12),
+                 dict(_ger("RS-S-2025-12", "EUR", "GBP", "Average", 0.84, 1), fiscal_period=12)]
+    site.earlier = [_earlier("RS-S-2025-11", "EUR", "GBP", "Closing", 0.80, 2025, 11),
+                    _earlier("RS-S-2025-12x", "EUR", "GBP", "Closing", 0.10, 2025, 12)]
+    result = _call(site, fp=13)
+    eur = _row(result, "EUR")
+    assert eur["closing"]["status"] == "approved" and eur["average"]["status"] == "approved"
+    assert eur["closing"]["previous"]["name"] == "RS-S-2025-11"
+    assert result["period"]["fiscal_period"] == 13
+    assert site.needs_calls == [(2025, 13)]

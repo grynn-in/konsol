@@ -86,6 +86,55 @@ def ordered(events):
     return sorted(events, key=lambda e: (e["at"], e["name"]), reverse=True)
 
 
+#: The doctype retired by konsol#592 and the one that replaced it.
+LEGACY_DOCTYPE = "Group Exchange Rate"
+SHEET_DOCTYPE = "Rate Sheet"
+
+
+def legacy_names(text):
+    """The Group Exchange Rate names in a Rate Sheet Row's ``legacy_documents``
+    (a Small Text): a JSON list, or names separated by commas or newlines."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            return [str(n).strip() for n in json.loads(text) if str(n).strip()]
+        except ValueError:
+            pass
+    return [n.strip() for n in text.replace("\n", ",").split(",") if n.strip()]
+
+
+def legacy_references(events):
+    """The distinct Group Exchange Rate names the events reference."""
+    return sorted({e["reference_name"] for e in events
+                   if e.get("reference_doctype") == LEGACY_DOCTYPE and e.get("reference_name")})
+
+
+def resolve_legacy(events, rows):
+    """``events`` with a Group Exchange Rate reference pointed at the Rate Sheet
+    whose row lists that name (``rows``: ``{"parent", "legacy_documents"}``).
+    The original name stays in ``legacy_name``. A name no sheet lists, or two
+    sheets list, is left as it was and ``reference_linked`` is False: it is
+    shown, never dropped and never guessed. Every event gets both keys."""
+    owners = {}
+    for row in rows:
+        for name in legacy_names(row.get("legacy_documents")):
+            owners.setdefault(name, set()).add(row["parent"])
+    out = []
+    for e in events:
+        e = dict(e, legacy_name=None, reference_linked=bool(e.get("reference_name")))
+        if e.get("reference_doctype") == LEGACY_DOCTYPE and e.get("reference_name"):
+            e["legacy_name"] = e["reference_name"]
+            sheets = owners.get(e["reference_name"], ())
+            if len(sheets) == 1:
+                e["reference_doctype"], e["reference_name"] = SHEET_DOCTYPE, next(iter(sheets))
+            else:
+                e["reference_linked"] = False
+        out.append(e)
+    return out
+
+
 def in_period_trail(events, fiscal_period):
     """The events that belong in ``fiscal_period``'s trail, from a read of
     that period plus the year's period-0 rows: an event at ``fiscal_period``

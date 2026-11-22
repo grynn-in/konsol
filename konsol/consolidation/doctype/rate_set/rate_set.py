@@ -3,8 +3,9 @@ chosen under the standing rule on 15 Nov 2026; options (a) the Scenario as the
 key and (b) blank-means-actuals were rejected: (b) gives a blank key a meaning,
 (a) duplicates rates per scenario when a budget and its forecast share one set).
 
-Every Group Exchange Rate and Historical Equity Rate names its set, and the
-warehouse carries it as ``rate_set`` on both rate tables. Exactly one set is
+Every Historical Equity Rate names its set, and the warehouse carries it as
+``rate_set`` on both rate tables: a Statutory Rate Sheet publishes under the
+set flagged Is Actuals, a Constant sheet under CONSTANT (konsol#592). Exactly one set is
 flagged Is Actuals: the actuals translation, the close gate, Pre-fill from ERP
 and the rates screens read that set (``group_rates.actuals_rate_set``) and
 refuse by name while none is flagged; nothing defaults to a set. A budget or
@@ -31,17 +32,24 @@ from konsol.clickhouse import sync_doctype_after_commit
 
 DOCTYPE = "Rate Set"
 #: The code's rule, declared on the field's help text: upper-case letters,
-#: digits, _ and -, 1 to 40 characters. Not free text, because two readers
-#: embed the code: Group Exchange Rate's autoname puts it in a naming series
-#: (group_exchange_rate.py), where `.` is a separator and is lost, and
-#: orchestrator/fx passes the actuals set through _TOKEN_RE before it is
-#: interpolated into a query, so a code with `(` made every rates read raise.
-#: Every code that passes this rule passes both (test_rate_set.py).
+#: digits, _ and -, 1 to 40 characters. Not free text, because the code is a
+#: document name and a warehouse value (a `.` was lost in the retired rate
+#: doctype's naming series), and orchestrator/fx passes the actuals set
+#: through _TOKEN_RE before it is interpolated into a query, so a code with
+#: `(` made every rates read raise. Every code that passes this rule passes
+#: _TOKEN_RE (test_rate_set.py).
 CODE_RE = re.compile(r"^[A-Z0-9_-]{1,40}$")
 #: The set a fresh site starts with, flagged Is Actuals. A name, not a rule:
 #: a site may rename it or flag another; readers follow the flag.
 ACTUALS_NAME = "ACTUAL"
 ACTUALS_LABEL = "Actual"
+#: The set budgets, forecasts and comparisons read (konsol#592): one declared
+#: Constant rate sheet per year, never flagged Is Actuals. System-owned.
+CONSTANT_NAME = "CONSTANT"
+CONSTANT_LABEL = "Constant (budget, forecast, comparisons)"
+CONSTANT_DESCRIPTION = (
+    "The set Constant rate sheets publish into. Created by konsol; not edited by users "
+    "(konsol#592).")
 ACTUALS_DESCRIPTION = (
     "The actuals rates: the set the consolidation translates actuals at and the close "
     "gate checks. Created by konsol on install (konsol#348); rename it or flag another "
@@ -80,8 +88,8 @@ class RateSet(Document):
         if not CODE_RE.match(code):
             frappe.throw(
                 f"Rate Set code {code!r} does not match the rule {CODE_RE.pattern}: upper-case letters, "
-                "digits, _ and -, 1 to 40 characters. The code is embedded in every Group Exchange Rate's "
-                "name and passed to the warehouse, so it is restricted to characters both carry whole.",
+                "digits, _ and -, 1 to 40 characters. The code is a document name and is passed "
+                "to the warehouse, so it is restricted to characters both carry whole.",
                 frappe.ValidationError)
 
     def _refuse_second_actuals(self):
@@ -114,3 +122,17 @@ def ensure_actual_set():
     })
     doc.insert(ignore_permissions=True)
     return ACTUALS_NAME
+
+
+def ensure_constant_set():
+    """Create Rate Set CONSTANT (not Is Actuals) when it is missing; returns
+    its name, or None when it exists. Idempotent: runs from after_install and
+    after_migrate, and an existing row, however a site edited it, is left
+    alone (konsol#592 T24)."""
+    if frappe.db.exists(DOCTYPE, CONSTANT_NAME):
+        return None
+    frappe.get_doc({
+        "doctype": DOCTYPE, "rate_set": CONSTANT_NAME, "label": CONSTANT_LABEL,
+        "is_actuals": 0, "description": CONSTANT_DESCRIPTION,
+    }).insert(ignore_permissions=True)
+    return CONSTANT_NAME

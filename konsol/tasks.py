@@ -64,9 +64,12 @@ DOCTYPE_BUILD_MAP = {
     # kept by hand; full builds every model whatever the domains say. Submit,
     # cancel and Set Amount Basis (on_update_after_submit) all land here.
     "Trial Balance Submission": {"scope": "full", "risk": "high"},
-    # konsol#103: the governed translation rates. `staging` would not reach
-    # gold_consolidated_trial_balance, which is what reads them.
-    "Group Exchange Rate": {"scope": "consolidation", "risk": "high"},
+    # konsol#103, #592: the governed translation rates, on Rate Sheets.
+    # `staging` would not reach gold_consolidated_trial_balance, which is what
+    # reads them. This is a Statutory sheet's scope; a Constant sheet names
+    # "scenarios" through RateSheet.build_scope (T26b): it drives the budget
+    # and forecast translation (gold_consolidated_budget_tb, domain:scenarios).
+    "Rate Sheet": {"scope": "consolidation", "risk": "high"},
     # konsol#306, #305-D2-10: a deal's approval (or reversal) changes the
     # consolidated numbers just as an adjustment does.
     "Business Combination": {"scope": "consolidation", "risk": "high"},
@@ -655,6 +658,8 @@ def queue_consolidation_build(doc, method, scope=None):
 
     ``scope`` names a build scope other than the doctype's DOCTYPE_BUILD_MAP
     one (EPM Fiscal Year's status move: "scenarios", konsol#561 review M3).
+    Without one, a controller's ``build_scope()`` may name it per document
+    (a Constant Rate Sheet: "scenarios", konsol#592 T26b).
     The job_id carries it, so a scoped request is never deduplicated into
     the document's mapped one.
     """
@@ -667,6 +672,12 @@ def queue_consolidation_build(doc, method, scope=None):
     # these, on_submit and on_cancel carry the signal.
     if method == "on_update" and doc.meta.is_submittable:
         return
+    if scope is None:
+        # konsol#592 T26b: a doctype whose documents feed different domains
+        # names each one's scope: a Constant Rate Sheet the scenarios build, a
+        # Statutory one DOCTYPE_BUILD_MAP's (None).
+        own = getattr(doc, "build_scope", None)
+        scope = own() if callable(own) else None
     try:
         frappe.enqueue(
             "konsol.tasks.request_consolidation_build",

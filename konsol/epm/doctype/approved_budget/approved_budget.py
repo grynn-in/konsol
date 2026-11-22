@@ -58,7 +58,11 @@ class ApprovedBudget(Document):
         # Read-only copies of the Cycle's identity, set here so an API insert
         # that skips fetch_from carries them too; the Cycle's own are the truth.
         self.scenario_id = cycle.scenario_id
-        self.rate_set = cycle.rate_set
+        # konsol#592 D2: the Cycle has no Rate Set; every budget translates at
+        # its year's Constant sheet, published under CONSTANT.
+        from konsol.group_rates import CONSTANT_RATE_SET
+
+        self.rate_set = CONSTANT_RATE_SET
         self.title = f"{group.consolidation_group} FY{self.fiscal_year}"
         self._refuse_second_live_declaration()
 
@@ -92,7 +96,7 @@ class ApprovedBudget(Document):
         reads must lock; either alone leaves one ordering open."""
         row = frappe.db.get_value(
             "Budget Cycle", self.budget_cycle,
-            ["docstatus", "scenario_id", "scenario_type", "fiscal_year", "rate_set", "input_fingerprint"],
+            ["docstatus", "scenario_id", "scenario_type", "fiscal_year", "input_fingerprint"],
             as_dict=True, for_update=for_update)
         if row is None:
             frappe.throw(_("Budget Cycle {0} does not exist.").format(self.budget_cycle), frappe.ValidationError)

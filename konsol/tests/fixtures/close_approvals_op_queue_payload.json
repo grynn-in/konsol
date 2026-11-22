@@ -4,10 +4,10 @@
     "Business Combination": 0,
     "Business Disposal": 0,
     "Consolidation Journal": 0,
-    "Group Exchange Rate": 0,
     "Historical Equity Rate": 1,
     "IC Balance": 0,
-    "Ownership Period": 2
+    "Ownership Period": 2,
+    "Rate Sheet": 0
   },
   "hidden": 0,
   "items": [

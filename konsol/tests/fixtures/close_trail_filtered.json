@@ -12,9 +12,11 @@
    },
    "entity": null,
    "kind": "approved",
+   "legacy_name": null,
    "name": "CE-3",
    "reason": null,
    "reference_doctype": "Journal Entry",
+   "reference_linked": true,
    "reference_name": "JE-1",
    "source": "live"
   },
@@ -30,9 +32,11 @@
    },
    "entity": "ZZA",
    "kind": "tb_submitted",
+   "legacy_name": null,
    "name": "CE-1",
    "reason": null,
    "reference_doctype": "Trial Balance Submission",
+   "reference_linked": true,
    "reference_name": "TB-1",
    "source": "live"
   }

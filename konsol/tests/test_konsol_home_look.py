@@ -170,7 +170,7 @@ def test_waiting_shortcuts_carry_a_short_noun_label():
         assert s["color"] == "Orange", s["label"]
     assert [s["label"] for s in waiting] == [
         "Consolidation Journals", "Business Combinations", "Business Disposals",
-        "Group Exchange Rates", "Ownership Periods", "Historical Equity Rates",
+        "Rate Sheets", "Ownership Periods", "Historical Equity Rates",
         "IC Balances", "Build Approvals"]
 
 

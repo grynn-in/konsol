@@ -33,7 +33,6 @@ import pytest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RS_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "rate_set")
-GER_DIR = os.path.join(APP_DIR, "consolidation", "doctype", "group_exchange_rate")
 PATCH = os.path.join(APP_DIR, "patches", "stamp_rate_set_actual.py")
 CH_PATH = os.path.join(APP_DIR, "clickhouse.py")
 FX_PATH = os.path.join(APP_DIR, "orchestrator", "fx.py")
@@ -102,16 +101,18 @@ def test_the_shape():
             assert field["label"] == field["label"].title() or field["label"] == "Is Actuals", field["label"]
 
 
-def test_permissions_are_group_exchange_rates():
-    """Whoever maintains the rates maintains their sets, no wider."""
-    with open(os.path.join(GER_DIR, "group_exchange_rate.json")) as f:
-        ger = {p["role"]: p for p in json.load(f)["permissions"]}
+def test_only_the_system_manager_writes_creates_or_deletes():
+    """T24 (konsol#592): Rate Set is system-owned. Everyone who could read it
+    still can (the readers Group Exchange Rate had, pinned here since T26
+    retired it); write, create and delete are the System Manager's alone."""
+    readers = {"System Manager", "EPM Admin", "EPM Analyst", "EPM User", "Entity Accountant"}
     ours = {p["role"]: p for p in _json()["permissions"]}
-    assert set(ours) == set(ger)
+    assert set(ours) == readers
     for role, p in ours.items():
-        theirs = ger[role]
-        for right in ("read", "write", "create", "delete", "report", "export"):
-            assert p.get(right, 0) == theirs.get(right, 0), (role, right)
+        for right in ("read", "report", "export"):
+            assert p.get(right, 0) == 1, (role, right)
+        for right in ("write", "create", "delete"):
+            assert p.get(right, 0) == (1 if role == "System Manager" else 0), (role, right)
         assert not p.get("submit") and not p.get("cancel") and not p.get("amend"), role
 
 
@@ -151,7 +152,9 @@ def _controller(flagged=(), count=0):
     frappe.throw = throw
     frappe._ = lambda s: s
     frappe.get_doc = Doc
-    frappe.db = types.SimpleNamespace(sql=sql, count=lambda dt, filters=None: count)
+    frappe.db = types.SimpleNamespace(
+        sql=sql, count=lambda dt, filters=None: count,
+        exists=lambda dt, name=None: record.get("exists", False))
 
     class Document:
         def __init__(self, **fields):
@@ -256,6 +259,34 @@ def test_a_fresh_site_gets_actual_flagged_and_a_site_with_sets_is_left_alone():
     assert row["label"] and row["description"], "a seeded row says what it is"
     module, record = _controller(count=1)
     assert module.ensure_actual_set() is None and record["inserted"] == []
+
+
+def test_the_constant_set_is_created_once_unflagged():
+    module, record = _controller(count=1)
+    record["exists"] = False
+    assert module.ensure_constant_set() == "CONSTANT"
+    [row] = record["inserted"]
+    assert (row["doctype"], row["rate_set"], row["is_actuals"]) == ("Rate Set", "CONSTANT", 0)
+    assert row["label"] == "Constant (budget, forecast, comparisons)"
+    record["exists"] = True
+    record["inserted"].clear()
+    assert module.ensure_constant_set() is None and record["inserted"] == []
+
+
+def test_the_constant_set_is_ensured_on_install_and_on_every_migrate():
+    with open(os.path.join(APP_DIR, "hooks.py")) as f:
+        src = f.read()
+    fn = "konsol.consolidation.doctype.rate_set.rate_set.ensure_constant_set"
+    after_install = src.split("after_install = [", 1)[1].split("]", 1)[0]
+    after_migrate = src.split("after_migrate = [", 1)[1].split("]", 1)[0]
+    assert fn in after_install and fn in after_migrate
+    assert after_install.index("ensure_actual_set") < after_install.index("ensure_constant_set")
+
+
+def test_rate_set_is_not_in_the_sidebar():
+    with open(os.path.join(APP_DIR, "consolidation", "sidebar", "close", "close.json")) as f:
+        items = json.load(f)["items"]
+    assert not [i for i in items if i.get("link_to") == "Rate Set"]
 
 
 def test_a_fresh_install_creates_the_set():

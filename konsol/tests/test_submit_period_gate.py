@@ -28,7 +28,7 @@ UNDECLARED = (2001, 1)
 #: tests below check the list against what the controllers actually refuse.
 SUBMIT_NEEDS_OPEN_PERIOD = frozenset({
     "Trial Balance Submission", "Consolidation Journal",
-    "IC Balance", "Group Exchange Rate"})
+    "IC Balance", "Rate Sheet"})
 
 #: Of those, the ones whose every save is refused in a closed period (a trial
 #: balance checks the period in validate): there the draft can only be deleted.
@@ -37,8 +37,9 @@ SAVE_NEEDS_OPEN_PERIOD = frozenset({"Trial Balance Submission"})
 #: The submittable doctypes checked against a closed period: every doctype the
 #: old home offered a submit for (read from home_api before R02 deleted it).
 SUBMIT_CANDIDATES = frozenset({
-    "Consolidation Journal", "Group Exchange Rate",
-    "Historical Equity Rate", "IC Balance", "Ownership Period", "Trial Balance Submission"})
+    "Consolidation Journal",
+    "Historical Equity Rate", "IC Balance", "Ownership Period", "Trial Balance Submission",
+    "Rate Sheet"})
 
 
 
@@ -204,6 +205,8 @@ def _load(path, period_open):
     mods["konsol.clickhouse"].sync_table = lambda *a, **k: None
     mods["konsol.period_status"].assert_open = assert_open
     mods["konsol.period_status"].assert_open_between = assert_open_between
+    # konsol#592: a Constant Rate Sheet's year gate (P1-Q2 B)
+    mods["konsol.period_status"].assert_year_not_closed = lambda fy, action="run": assert_open(fy, None, action)
     mods["konsol.period_status"].assert_declared = assert_declared
     mods["konsol.period_status"].assert_postable = assert_declared
     mods["konsol.period_status"].first_period_affected = lambda d: d
@@ -228,7 +231,8 @@ def _load(path, period_open):
     # __path__, so load each from the repo and register it beside the stubs.
     app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for pure in ("tb_basis_model", "tb_dimension_model", "tb_currency_model", "tb_balance_model",
-                 "fiscal_structure_model", "ownership_graph_model", "consolidation_policy_model"):
+                 "fiscal_structure_model", "ownership_graph_model", "consolidation_policy_model",
+                 "rate_sheet_model"):
         pure_spec = importlib.util.spec_from_file_location(
             f"konsol.{pure}", os.path.join(app_dir, f"{pure}.py"))
         pure_mod = importlib.util.module_from_spec(pure_spec)

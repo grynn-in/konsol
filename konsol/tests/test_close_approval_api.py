@@ -362,7 +362,7 @@ def test_a_workflow_doctype_calls_apply_workflow_approve():
 
 
 def test_a_docstatus_only_doctype_calls_submit():
-    for doctype in ("Group Exchange Rate", "Ownership Period", "Historical Equity Rate",
+    for doctype in ("Rate Sheet", "Ownership Period", "Historical Equity Rate",
                     "IC Balance"):
         site = _Site(owner=ANALYST)
         out, _ = _call(site, "approve", doctype, "ZZ-D-1")
@@ -503,7 +503,7 @@ def test_reject_of_a_doctype_outside_the_approval_list_records_no_event():
 
 # --- A04 (#305-D2-8): reject with no active workflow keeps the draft ---------------
 
-NO_WORKFLOW_ENTITY = {"Group Exchange Rate": None, "Historical Equity Rate": "ZZ01",
+NO_WORKFLOW_ENTITY = {"Rate Sheet": None, "Historical Equity Rate": "ZZ01",
                       "Ownership Period": "ZZ01", "IC Balance": None}
 
 
@@ -523,20 +523,19 @@ def test_reject_without_a_workflow_keeps_the_draft_with_a_comment_and_an_event()
         assert "konsol_reject_reason" not in site.flags, site.flags
 
 
-def test_reject_without_a_workflow_of_a_submitted_document_is_refused():
-    # Failure path: a submitted document is not rejected. A Group Exchange Rate
-    # is corrected by a superseding draft with a Reason for Change (#312-3b,
-    # Deepak Pai 12 Oct 2026), never by cancel and amendment (konsol#305 F15).
+def test_reject_of_an_approved_rate_sheet_says_raise_a_superseding_correction():
+    # #312-3 (Deepak Pai): a Rate Sheet is corrected by a sheet that supersedes
+    # it; the message names that route, not a cancel and amendment.
     site = _Site(owner=ANALYST, fields={"docstatus": 1})
-    msg = _raises(lambda: _call(site, "reject", "Group Exchange Rate", "ZZ-GER-1",
-                                reason="ZZ why"), "ValidationError")
-    assert msg == ("Group Exchange Rate ZZ-GER-1 is already approved: correct it with a "
-                   "Reason for Change instead."), msg
+    msg = _raises(lambda: _call(site, "reject", "Rate Sheet", "ZZ-RS-1", reason="ZZ why"),
+                  "ValidationError")
+    assert msg == ("Rate Sheet ZZ-RS-1 is already approved: raise a correction sheet that "
+                   "supersedes it."), msg
     assert site.comments == [] and site.events == [] and site.saved == []
 
 
 def test_reject_of_another_submitted_doctype_keeps_the_cancel_and_amend_route():
-    # Only Group Exchange Rate has the correction route (#312-3b); the others
+    # Only Rate Sheet has the correction route (#312-3b); the others
     # are still corrected by a cancel and an amendment.
     for doctype in ("Historical Equity Rate", "Ownership Period", "IC Balance"):
         site = _Site(owner=ANALYST, fields={"docstatus": 1, "data_area_id": "ZZ01"})
@@ -551,7 +550,7 @@ def test_reject_of_a_cancelled_document_says_it_is_cancelled_not_approved():
     # Failure path (konsol#305 FR7, review N7): a cancelled document is not
     # "already approved". Any doctype gets the cancelled sentence, and nothing
     # is written: no Comment, no event, no save.
-    for doctype in ("Group Exchange Rate", "IC Balance"):
+    for doctype in ("Rate Sheet", "IC Balance"):
         site = _Site(owner=ANALYST, fields={"docstatus": 2, "data_area_id": "ZZ01"})
         msg = _raises(lambda: _call(site, "reject", doctype, "ZZ-C-1", reason="ZZ why"),
                       "ValidationError")
@@ -573,7 +572,7 @@ def test_reject_without_a_workflow_reads_the_period_before_the_comment():
     boom = ValueError("ZZ no declared period")
     site = _Site(owner=ANALYST, period_raises=boom)
     try:
-        _call(site, "reject", "Group Exchange Rate", "ZZ-GER-1", reason="ZZ why")
+        _call(site, "reject", "Rate Sheet", "ZZ-RS-1", reason="ZZ why")
     except ValueError as e:
         assert e is boom
     else:
@@ -670,9 +669,9 @@ def test_approve_refuses_a_rejected_unchanged_draft_with_no_workflow():
     rejected_at = datetime.datetime(2026, 10, 1, 9, 0, 0)
     modified = datetime.datetime(2026, 9, 30, 8, 0, 0)  # before the rejection
     site = _Site(owner=ANALYST, modified=modified,
-                 rejections=[{"reference_name": "ZZ-GER-1", "actor": LEAD,
+                 rejections=[{"reference_name": "ZZ-RS-1", "actor": LEAD,
                               "at": rejected_at, "reason": "ZZ wrong rate"}])
-    msg = _raises(lambda: _call(site, "approve", "Group Exchange Rate", "ZZ-GER-1"),
+    msg = _raises(lambda: _call(site, "approve", "Rate Sheet", "ZZ-RS-1"),
                   "ValidationError")
     assert "ZZ wrong rate" in msg, msg
     assert "save a change" in msg.lower(), msg
@@ -680,8 +679,8 @@ def test_approve_refuses_a_rejected_unchanged_draft_with_no_workflow():
     call = site.close_event_reads[0]
     assert call == {
         "kind": "rejected",
-        "reference_doctype": "Group Exchange Rate",
-        "reference_name": ["in", ["ZZ-GER-1"]],
+        "reference_doctype": "Rate Sheet",
+        "reference_name": ["in", ["ZZ-RS-1"]],
     }, call
 
 
@@ -689,17 +688,17 @@ def test_approve_works_once_the_preparer_has_edited_past_the_rejection():
     rejected_at = datetime.datetime(2026, 10, 1, 9, 0, 0)
     modified = datetime.datetime(2026, 10, 2, 8, 0, 0)  # after the rejection
     site = _Site(owner=ANALYST, modified=modified,
-                 rejections=[{"reference_name": "ZZ-GER-1", "actor": LEAD,
+                 rejections=[{"reference_name": "ZZ-RS-1", "actor": LEAD,
                               "at": rejected_at, "reason": "ZZ wrong rate"}])
-    out, _ = _call(site, "approve", "Group Exchange Rate", "ZZ-GER-1")
-    assert site.submitted == [("Group Exchange Rate", "ZZ-GER-1")]
+    out, _ = _call(site, "approve", "Rate Sheet", "ZZ-RS-1")
+    assert site.submitted == [("Rate Sheet", "ZZ-RS-1")]
     assert out["docstatus"] == 1
 
 
 def test_approve_with_no_rejection_is_unaffected():
     site = _Site(owner=ANALYST, modified=datetime.datetime(2026, 9, 1), rejections=[])
-    out, _ = _call(site, "approve", "Group Exchange Rate", "ZZ-GER-1")
-    assert site.submitted == [("Group Exchange Rate", "ZZ-GER-1")]
+    out, _ = _call(site, "approve", "Rate Sheet", "ZZ-RS-1")
+    assert site.submitted == [("Rate Sheet", "ZZ-RS-1")]
     assert out["docstatus"] == 1
 
 
@@ -735,7 +734,7 @@ def test_approve_mode_is_direct_for_someone_elses_draft():
 
 def test_approve_mode_asks_for_a_reason_on_an_allowed_self_approval():
     site = _Site()  # the lead prepared it; policy Allowed with reason
-    out, _ = _call(site, "approve_mode", "Group Exchange Rate", "ZZ-GER-1")
+    out, _ = _call(site, "approve_mode", "Rate Sheet", "ZZ-RS-1")
     assert out["mode"] == "reason" and out["message"], out
 
 
@@ -773,5 +772,5 @@ def test_approve_mode_for_an_entity_accountant_is_not_approver_not_a_refusal():
     Exchange Rate), so its form asks approve_mode; it must hear not_approver,
     not a PermissionError shown as "Not permitted" on every draft."""
     site = _Site(roles=("Entity Accountant",), user=ANALYST, owner=LEAD)
-    out, _ = _call(site, "approve_mode", "Group Exchange Rate", "ZZ-GER-1")
+    out, _ = _call(site, "approve_mode", "Rate Sheet", "ZZ-RS-1")
     assert out["mode"] == "not_approver", out

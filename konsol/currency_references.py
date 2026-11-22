@@ -72,8 +72,8 @@ _USES = (
     ("Consolidation Group", "reporting_currency", {"data_area_id": ["is", "not set"]},
      "Consolidation Group"),
     ("Historical Equity Rate", "to_currency", _SUBMITTED, "Historical Equity Rate"),
-    ("Group Exchange Rate", "from_currency", _SUBMITTED, "Group Exchange Rate"),
-    ("Group Exchange Rate", "to_currency", _SUBMITTED, "Group Exchange Rate"),
+    ("Rate Sheet Row", "from_currency", {"docstatus": 1, "parenttype": "Rate Sheet"}, "Rate Sheet"),
+    ("Rate Sheet Row", "to_currency", {"docstatus": 1, "parenttype": "Rate Sheet"}, "Rate Sheet"),
     ("Trial Balance Submission", "currency", _SUBMITTED, "Trial Balance Submission"),
     ("Consolidation Journal", "currency", _SUBMITTED, "Consolidation Journal"),
     ("Business Combination", "consideration_currency", _SUBMITTED, "Business Combination"),
@@ -90,7 +90,7 @@ _USES = (
 def used_currencies():
     """{code: [where, ...]} for every currency a number is computed in: an
     Entity's functional currency, a Consolidation Group root's reporting
-    currency, and the currencies of a submitted Group Exchange Rate,
+    currency, and the currencies of an approved Rate Sheet,
     Trial Balance Submission, Consolidation Journal,
     Business Combination or Business Disposal (PR #384 re-review)."""
     used = {}

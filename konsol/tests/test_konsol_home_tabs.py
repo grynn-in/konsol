@@ -740,8 +740,8 @@ def test_start_link_opens_my_work_through_the_existing_click_handler():
 # ---- row 7: Approvals panel, the waiting shortcuts ----
 
 WAITING = ["Consolidation Journals", "Business Combinations", "Business Disposals",
-           "Group Exchange Rates", "Ownership Periods", "Historical Equity Rates",
-           "IC Balances", "Build Approvals"]
+           "Rate Sheets", "Ownership Periods",
+           "Historical Equity Rates", "IC Balances", "Build Approvals"]
 
 
 def _defs7(labels):
@@ -766,10 +766,10 @@ def test_waiting_labels_match_the_workspace_file():
 
 
 def test_waiting_shortcuts_the_user_may_not_see_are_absent():
-    have = ["Build Approvals", "Business Disposals", "Group Exchange Rates"]
+    have = ["Build Approvals", "Business Disposals", "Rate Sheets"]
     out = _run4a({"defs": _defs7(have), "activate": [1]})
     shortcuts = [g for g in out["groups"] if g["type"] == "shortcut"]
-    assert shortcuts[0]["labels"] == ["Business Disposals", "Group Exchange Rates", "Build Approvals"]
+    assert shortcuts[0]["labels"] == ["Business Disposals", "Rate Sheets", "Build Approvals"]
 
 
 def test_approvals_does_not_repeat_the_close_panel_shortcuts():
@@ -984,8 +984,10 @@ def test_numbers_panel_makes_no_server_call_on_activation_or_click():
 
 EA = ["Entity Accountant"]
 # Measured live: an Entity Accountant-only user's get_desktop_page returns exactly these
-# four shortcuts (rows as konsol.json defines them: type, link_to, label).
-EA_SHORTCUTS = ["My Work", "Period Close", "Trial Balance Submissions", "Group Exchange Rates"]
+# four shortcuts (rows as konsol.json defines them: type, link_to, label). Rate
+# Sheets took the place of Group Exchange Rates (konsol#592 T26): the Entity
+# Accountant reads both.
+EA_SHORTCUTS = ["My Work", "Period Close", "Trial Balance Submissions", "Rate Sheets"]
 
 
 def test_entity_accountant_close_has_headline_and_shortcuts_and_no_checklist_call():
@@ -1006,7 +1008,7 @@ def test_entity_accountant_close_has_headline_and_shortcuts_and_no_checklist_cal
     out = _run4a({"roles": EA, "activate": [1], "defs": {"number_cards": {"items": []},
                                                         "shortcuts": {"items": [_sc(n) for n in EA_SHORTCUTS]}}})
     shortcuts = [g for g in out["groups"] if g["type"] == "shortcut"]
-    assert [g["labels"] for g in shortcuts] == [["Group Exchange Rates"]]
+    assert [g["labels"] for g in shortcuts] == [["Rate Sheets"]]
 
 
 def test_entity_accountant_sees_no_checklist_error_noise():

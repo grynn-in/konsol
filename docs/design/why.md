@@ -40,7 +40,7 @@ trade was taken deliberately.
 |---|---|---|---|
 | **plain** | `Entity`, `Main Account` | reference data; latest value wins | validation only |
 | **governed** | `Consolidation Group`, `Dimension`, `Reporting Hierarchy` | Draft → Published → Inactive, write-through to ClickHouse on publish | `GovernedReferenceDocument` |
-| **submittable** | `Ownership Period`, `Trial Balance Submission`, `Business Combination`, `Group Exchange Rate` | **submit is the approval**; the row reaches the warehouse only at `docstatus = 1` | `before_submit` / `on_submit`, and a Frappe Workflow where a second pair of eyes is needed |
+| **submittable** | `Ownership Period`, `Trial Balance Submission`, `Business Combination`, `Rate Sheet` | **submit is the approval**; the row reaches the warehouse only at `docstatus = 1` | `before_submit` / `on_submit`, and a Frappe Workflow where a second pair of eyes is needed |
 
 The test is one question: **does this change a number that someone has already
 reported?**

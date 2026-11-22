@@ -70,6 +70,7 @@ class _Site:
                                     "code": "P09", "status": "Open"}}
         self.events = []
         self.users = []
+        self.rate_rows = []
         self.only_for_calls = []
         self.get_all_calls = {}
         self.period_row_calls = 0
@@ -104,6 +105,12 @@ def _frappe(site):
             wanted = set(cond[1])
             rows = [u for u in site.users if u["name"] in wanted]
             return [{f: r.get(f) for f in fields} for r in rows]
+        if doctype == "Rate Sheet Row":
+            like = filters["legacy_documents"]
+            assert like[0] == "like", filters
+            needle = like[1].strip("%")
+            return [{f: r.get(f) for f in fields}
+                    for r in site.rate_rows if needle in (r.get("legacy_documents") or "")]
         raise AssertionError("unexpected get_all(%r)" % (doctype,))
 
     def forbidden(*a, **k):
@@ -671,3 +678,70 @@ def test_a_year_event_at_period_zero_is_still_in_every_periods_trail():
                    _p0_download()]
     out = _call(site, 2026, 9)
     assert [e["name"] for e in out["events"]] == ["CE-4"]
+
+
+# --- T23 (konsol#592): old Group Exchange Rate names resolve to their sheet ------
+
+GER = "GER-2012-12-CAD-USD-Average-01"
+
+
+def _ger_event(name="CE-GER", ref=GER, **kw):
+    return _event(name, "approved", _dt(5), reference_doctype="Group Exchange Rate",
+                  reference_name=ref, **kw)
+
+
+def _trail(site):
+    return {e["name"]: e for e in _call(site, 2026, 9)["events"]}
+
+
+def test_a_ger_name_resolves_to_the_sheet_that_lists_it_and_keeps_the_original():
+    site = _Site()
+    site.events = [_ger_event()]
+    site.rate_rows = [{"parent": "RS-S-2012-12", "legacy_documents": GER + "\nGER-2012-12-CAD-USD-Closing-01"}]
+    e = _trail(site)["CE-GER"]
+    assert (e["reference_doctype"], e["reference_name"]) == ("Rate Sheet", "RS-S-2012-12")
+    assert e["legacy_name"] == GER and e["reference_linked"] is True
+
+
+def test_every_stored_format_of_legacy_documents_is_read():
+    for text in (GER, "X-1, " + GER, '["X-1", "%s"]' % GER, "X-1\n%s\n" % GER):
+        site = _Site()
+        site.events = [_ger_event()]
+        site.rate_rows = [{"parent": "RS-S-2012-12", "legacy_documents": text}]
+        assert _trail(site)["CE-GER"]["reference_name"] == "RS-S-2012-12", text
+
+
+def test_a_longer_name_that_contains_it_does_not_match():
+    site = _Site()
+    site.events = [_ger_event(ref="GER-1")]
+    site.rate_rows = [{"parent": "RS-S-2012-12", "legacy_documents": "GER-10, GER-11"}]
+    e = _trail(site)["CE-GER"]
+    assert (e["reference_doctype"], e["reference_name"]) == ("Group Exchange Rate", "GER-1")
+    assert e["reference_linked"] is False
+
+
+def test_a_name_that_resolves_to_nothing_stays_shown_with_no_link():
+    site = _Site()
+    site.events = [_ger_event()]
+    e = _trail(site)["CE-GER"]
+    assert (e["reference_doctype"], e["reference_name"]) == ("Group Exchange Rate", GER)
+    assert e["legacy_name"] == GER and e["reference_linked"] is False
+
+
+def test_a_name_listed_by_two_sheets_is_left_unresolved_not_guessed():
+    site = _Site()
+    site.events = [_ger_event()]
+    site.rate_rows = [{"parent": "RS-S-A", "legacy_documents": GER},
+                      {"parent": "RS-S-B", "legacy_documents": GER}]
+    e = _trail(site)["CE-GER"]
+    assert e["reference_doctype"] == "Group Exchange Rate" and e["reference_linked"] is False
+
+
+def test_other_events_are_untouched_and_no_lookup_runs_without_a_ger_name():
+    site = _Site()
+    site.events = [_event("CE-1", "approved", _dt(5), reference_doctype="Trial Balance Submission",
+                          reference_name="TB-1")]
+    e = _trail(site)["CE-1"]
+    assert (e["reference_doctype"], e["reference_name"]) == ("Trial Balance Submission", "TB-1")
+    assert e["legacy_name"] is None and e["reference_linked"] is True
+    assert "Rate Sheet Row" not in site.get_all_calls

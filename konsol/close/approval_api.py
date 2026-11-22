@@ -126,8 +126,8 @@ def reject(doctype, name, reason=None):
     With no active workflow (A04, #305-D2-8), there is no state to move: the
     draft stays as it is (no save, no docstatus change), and the reason is a
     Comment and a ``rejected`` Close Event. A submitted document is refused:
-    a Group Exchange Rate is corrected by a superseding draft with a Reason for
-    Change (#312-3b; never plain-cancelled, #312-S3-2), any other by a cancel
+    a Rate Sheet is corrected by a superseding sheet with a Reason for Change
+    (#312-3, #312-3b; never plain-cancelled, #312-S3-2), any other by a cancel
     and an amendment.
 
     Both paths return ``{"name", "docstatus", "status"}``.
@@ -166,12 +166,12 @@ def _reject_draft(doctype, name, reason):
         # konsol#305 FR7 (review N7): a cancelled document is not approved.
         frappe.throw("%s %s is cancelled: there is nothing to reject." % (doctype, name))
     if int(doc.docstatus) != 0:
-        if doctype == "Group Exchange Rate":
-            # #312-3b (Deepak Pai, 12 Oct 2026): a rate is corrected by a
-            # superseding draft; #312-S3-2 (13 Oct 2026): no approved rate is
-            # plain-cancelled.
+        if doctype == "Rate Sheet":
+            # #312-3, #312-3b (Deepak Pai, 12 Oct 2026): a sheet supersedes the
+            # approved sheet for its key; #312-S3-2 (13 Oct 2026): no approved
+            # rate is plain-cancelled.
             frappe.throw(
-                "%s %s is already approved: correct it with a Reason for Change instead."
+                "%s %s is already approved: raise a correction sheet that supersedes it."
                 % (doctype, name))
         frappe.throw(
             "%s %s is already approved; a correction is a cancel and an amendment."

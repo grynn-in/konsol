@@ -190,6 +190,12 @@ def _signoff_failure(fiscal_year, fiscal_period, period_type):
     return None
 
 
+def _publish_rates():
+    from konsol import group_rates
+
+    return group_rates.publish_rates()
+
+
 class EPMFiscalYear(Document):
     #: konsol#189: every period row, with its effective status, is published
     #: here (fiscal_calendar.fiscal_period_rows). The rows are computed — a
@@ -224,11 +230,20 @@ class EPMFiscalYear(Document):
         if _published_calendar(self) != (_published_calendar(before) if before else []):
             self._stamp_calendar_change()
             self._request_rebuild("on_update")
+            self._republish_rates()
         elif before and _published_statuses(self) != _published_statuses(before):
             # Not stamped: freshness judges calendar_changed_at against a
             # build of EPM Fiscal Year's mapped scope, "full", which this
             # request never is (konsol#340).
             self._request_rebuild("on_update", scope=STATUS_BUILD_SCOPE)
+
+    def _republish_rates(self):
+        """konsol#592 T24: a Constant rate sheet is expanded over the year's
+        declared periods, so a changed calendar republishes the rates, after the
+        commit and once per transaction (the key Rate Sheet's own publish uses)."""
+        from konsol.clickhouse import after_commit_once
+
+        after_commit_once(("resync_staging", "Rate Sheet"), _publish_rates)
 
     def _stamp_calendar_change(self):
         """konsol#340: freshness reads calendar_changed_at, not `modified`
@@ -635,7 +650,7 @@ class EPMFiscalYear(Document):
         snapshot opened — that snapshot can predate this lock (on the SPA
         path, period_status.set_status reads the year with a plain get_doc
         before calling the action that takes this lock). The group-rate gate
-        takes its own locking read of Group Exchange Rate for that reason
+        takes its own locking read of the Rate Sheet rows for that reason
         (group_rates._approved_keys, PR #191 re-review finding 4)."""
         self._lock_year()
         self.reload()

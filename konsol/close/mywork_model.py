@@ -674,11 +674,10 @@ def ic_fix_items(fixes_by_key, per_period, allowed):
 
 #: The screen or Desk path that fixes a sent-back draft, by doctype (the
 #: engineering call, 3 Oct: Adjustments for a journal, Rates & ownership for
-#: GER/HER/OP, the Desk for IC Balance, Business Combination and Business
-#: Disposal — the same 3 doctypes A08/A21 treat as Desk-only).
+#: HER/OP, the Desk for IC Balance, Business Combination, Business Disposal
+#: and Rate Sheet).
 _SENT_BACK_SCREEN = {
     "Consolidation Journal": "adjustments",
-    "Group Exchange Rate": "rates",
     "Historical Equity Rate": "rates",
     "Ownership Period": "rates",
 }
@@ -686,10 +685,13 @@ _SENT_BACK_DESK = {
     "IC Balance": "/desk/ic-balance/%s",
     "Business Combination": "/desk/business-combination/%s",
     "Business Disposal": "/desk/business-disposal/%s",
+    "Rate Sheet": "/desk/rate-sheet/%s",
 }
-#: Doctypes whose row names a period (the journal, Group Exchange Rate and IC
-#: Balance; mirrors approvals_model.sent_back_items).
-_SENT_BACK_PERIOD_KEYED = ("Consolidation Journal", "Group Exchange Rate", "IC Balance")
+#: Doctypes whose row names a period (the journal, Rate Sheet and IC Balance;
+#: mirrors approvals_model.sent_back_items). P0 (opening balances) is a period
+#: and is keyed. A Constant sheet covers a year: approvals_model gives it no
+#: period (None), so it is not keyed (konsol#592 T16, PR #595 review 7).
+_SENT_BACK_PERIOD_KEYED = ("Consolidation Journal", "IC Balance", "Rate Sheet")
 
 
 def _sent_back_action(doctype, name):
@@ -697,7 +699,7 @@ def _sent_back_action(doctype, name):
         return {"screen": _SENT_BACK_SCREEN[doctype]}
     if doctype in _SENT_BACK_DESK:
         return {"desk": _SENT_BACK_DESK[doctype] % name}
-    raise ValueError("sent_back_items: %r is not one of the 7 approval doctypes." % (doctype,))
+    raise ValueError("sent_back_items: %r is not one of the approval doctypes." % (doctype,))
 
 
 def sent_back_items(rows, persona, period_codes):

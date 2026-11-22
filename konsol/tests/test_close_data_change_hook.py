@@ -74,11 +74,17 @@ def _row(fiscal_year, fiscal_period):
     return {"fiscal_year": fiscal_year, "fiscal_period": fiscal_period}
 
 
+class _Flags(dict):
+    """frappe.flags: a frappe._dict."""
+    __getattr__ = dict.get
+
+
 def _load(period_rows=(), period_of=None, entity_of=None, table_exists=True,
-          record_raises=None, user=USER):
+          record_raises=None, user=USER, flags=None):
     """``data_change_hook`` loaded by path; its calls land in
     ``frappe.calls`` (``[(fy, fp, text, user, entity), ...]``)."""
     frappe = types.ModuleType("frappe")
+    frappe.flags = _Flags(flags or {})
     frappe.calls = []
     frappe.session = types.SimpleNamespace(user=user)
     frappe.db = types.SimpleNamespace(table_exists=lambda dt: table_exists)
@@ -171,11 +177,11 @@ def test_a_trial_balance_submission_and_a_build_approval_record_nothing():
 
 # --- on_submit: NUMBER_DRIVING doctypes ------------------------------------
 
-def test_a_ger_on_submit_records_one_call():
+def test_a_rate_sheet_on_submit_records_one_call():
     module, frappe = _load(period_rows=[_row(2025, 7)], period_of=lambda d: (2025, 7))
-    module.on_submit(_doc("Group Exchange Rate", "GER-1"))
+    module.on_submit(_doc("Rate Sheet", "RS-S-2025-07"))
     assert frappe.calls == [
-        (2025, 7, "Group Exchange Rate GER-1 approved", USER, None)], frappe.calls
+        (2025, 7, "Rate Sheet RS-S-2025-07 approved", USER, None)], frappe.calls
 
 
 def test_an_ownership_period_on_submit_names_its_entity():
@@ -210,9 +216,9 @@ def test_a_later_declared_period_records_only_the_earliest_call():
         period_rows=[_row(2025, 7), _row(2025, 8), _row(2025, 9), _row(2025, 10),
                      _row(2025, 11)],
         period_of=lambda d: (2025, 7))
-    module.on_submit(_doc("Group Exchange Rate", "GER-1"))
+    module.on_submit(_doc("Rate Sheet", "RS-S-2025-07"))
     assert frappe.calls == [
-        (2025, 7, "Group Exchange Rate GER-1 approved", USER, None)], frappe.calls
+        (2025, 7, "Rate Sheet RS-S-2025-07 approved", USER, None)], frappe.calls
 
 
 def test_an_ic_balance_is_number_driving_and_records_a_call():
@@ -237,11 +243,11 @@ def test_on_cancel_of_a_journal_records_the_cancelled_text():
         (2025, 7, "Consolidation Journal CJ-1 cancelled", USER, None)], frappe.calls
 
 
-def test_on_cancel_of_a_ger_records_the_cancelled_text():
+def test_on_cancel_of_a_rate_sheet_records_the_cancelled_text():
     module, frappe = _load(period_rows=[_row(2025, 7)], period_of=lambda d: (2025, 7))
-    module.on_cancel(_doc("Group Exchange Rate", "GER-1"))
+    module.on_cancel(_doc("Rate Sheet", "RS-S-2025-07"))
     assert frappe.calls == [
-        (2025, 7, "Group Exchange Rate GER-1 cancelled", USER, None)], frappe.calls
+        (2025, 7, "Rate Sheet RS-S-2025-07 cancelled", USER, None)], frappe.calls
 
 
 # --- failure paths -----------------------------------------------------------
@@ -251,7 +257,7 @@ def test_a_record_data_change_failure_propagates():
         period_rows=[_row(2025, 7)], period_of=lambda d: (2025, 7),
         record_raises=RuntimeError("writer down"))
     with pytest.raises(RuntimeError, match="writer down"):
-        module.on_submit(_doc("Group Exchange Rate", "GER-1"))
+        module.on_submit(_doc("Rate Sheet", "RS-S-2025-07"))
 
 
 def test_close_event_table_missing_records_nothing():
@@ -259,8 +265,8 @@ def test_close_event_table_missing_records_nothing():
     Event table does not exist yet (a patch before migrate's schema sync),
     nothing is recorded — record_data_change's mark writes a Close Event."""
     module, frappe = _load(period_rows=[_row(2025, 7)], table_exists=False)
-    module.on_submit(_doc("Group Exchange Rate", "GER-1"))
-    module.on_cancel(_doc("Group Exchange Rate", "GER-1"))
+    module.on_submit(_doc("Rate Sheet", "RS-S-2025-07"))
+    module.on_cancel(_doc("Rate Sheet", "RS-S-2025-07"))
     assert frappe.calls == []
 
 
@@ -293,3 +299,63 @@ def test_hooks_wire_the_data_change_hook():
         "on_cancel": ["konsol.close.cancel_event.record",
                       "konsol.close.data_change_hook.on_cancel"],
     }], found
+
+
+# --- PR #595 review 2: the migration from Group Exchange Rate changes no data ---
+
+MIGRATE_FLAG = "konsol_migrating_rates"
+
+
+def test_a_migrated_rate_sheet_submit_and_cancel_record_no_data_change():
+    """The migration replays each GER period's approvals and corrections as
+    Rate Sheet submits and cancels. They record what the periods were
+    already translated at, so they stamp no period and mark no signed run
+    Re-sign Needed (MIGRATE_FLAG, as the Administrator: rate_sheet.py's
+    _migrating rule)."""
+    module, frappe = _load(period_rows=[_row(2024, 12), _row(2025, 1)], period_of=lambda d: (2024, 12),
+                           user="Administrator", flags={MIGRATE_FLAG: True})
+    module.on_submit(_doc("Rate Sheet", "RS-S-2024-12-2", rate_basis="Statutory"))
+    module.on_cancel(_doc("Rate Sheet", "RS-S-2024-12", rate_basis="Statutory"))
+    assert frappe.calls == []
+
+
+def test_the_migration_flag_without_the_administrator_records_the_change():
+    module, frappe = _load(period_rows=[_row(2024, 12)], period_of=lambda d: (2024, 12),
+                           flags={MIGRATE_FLAG: True})
+    module.on_submit(_doc("Rate Sheet", "RS-S-2024-12", rate_basis="Statutory"))
+    assert frappe.calls == [(2024, 12, "Rate Sheet RS-S-2024-12 approved", USER, None)]
+
+
+def test_the_migration_flag_exempts_rate_sheets_only():
+    module, frappe = _load(period_rows=[_row(2024, 12)], period_of=lambda d: (2024, 12),
+                           user="Administrator", flags={MIGRATE_FLAG: True})
+    module.on_submit(_doc("Consolidation Journal", "CJ-1"))
+    assert frappe.calls == [(2024, 12, "Consolidation Journal CJ-1 approved", "Administrator", None)]
+
+
+def test_the_migration_flag_name_is_the_controllers():
+    controller = open(os.path.join(APP_DIR, "consolidation", "doctype", "rate_sheet", "rate_sheet.py")).read()
+    assert f'MIGRATE_FLAG = "{MIGRATE_FLAG}"' in controller
+    assert f'"{MIGRATE_FLAG}"' in open(HOOK_PY).read()
+
+
+# --- PR #595 review 3: a Constant sheet drives no actuals sign-off --------------
+
+def test_a_constant_rate_sheet_records_no_data_change():
+    """A Constant sheet translates budgets and forecasts (D2): no actuals
+    period's numbers move, so no sign-off is voided. Its period would be
+    (fy, 0), and record_data_change raises PeriodNotDeclared in a year with
+    no P0 row: the hook never asks."""
+    def no_period(doc):
+        raise AssertionError("a Constant sheet has no period to record")
+
+    module, frappe = _load(period_rows=[_row(2026, 1)], period_of=no_period)
+    module.on_submit(_doc("Rate Sheet", "RS-C-2026", rate_basis="Constant"))
+    module.on_cancel(_doc("Rate Sheet", "RS-C-2026", rate_basis="Constant"))
+    assert frappe.calls == []
+
+
+def test_a_statutory_p0_sheet_still_records_its_change():
+    module, frappe = _load(period_rows=[_row(2026, 0), _row(2026, 1)], period_of=lambda d: (2026, 0))
+    module.on_submit(_doc("Rate Sheet", "RS-S-2026-00", rate_basis="Statutory"))
+    assert frappe.calls == [(2026, 0, "Rate Sheet RS-S-2026-00 approved", USER, None)]

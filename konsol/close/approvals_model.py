@@ -67,23 +67,25 @@ def _load_sibling(name, filename):
 rates_model = _load_sibling("konsol_close_approvals_model_rates_model", "close/rates_model.py")
 close_policy_model = _load_sibling(
     "konsol_close_approvals_model_close_policy_model", "close/close_policy_model.py")
+rate_sheet_model = _load_sibling("konsol_close_approvals_model_rate_sheet_model", "rate_sheet_model.py")
 period_name = _load_sibling(
     "konsol_close_approvals_model_period_name", "close/period_name.py").period_name
 
 JOURNAL = "Consolidation Journal"
 BC = "Business Combination"
 BD = "Business Disposal"
-GER = "Group Exchange Rate"
+RS = "Rate Sheet"
 OP = "Ownership Period"
 HER = "Historical Equity Rate"
 IC_BALANCE = "IC Balance"
 
 #: Business Combination and Business Disposal are approved in the Desk only
 #: (the engineering call, konsol#305 W3-1..4 comment): never inline.
-_DESK_ONLY = (BC, BD)
+_DESK_ONLY = (BC, BD, RS)
 _DESK_PATHS = {
     BC: "/desk/business-combination/%s",
     BD: "/desk/business-disposal/%s",
+    RS: "/desk/rate-sheet/%s",
 }
 
 #: Historical Equity Rate and Ownership Period items come from
@@ -120,15 +122,13 @@ def _kind_label_and_title(doctype, doc):
 
     IC Balance, Business Combination and Business Disposal have no field
     that gives a title of their own (unlike the journal's description or
-    the Group Exchange Rate's quote_label): their title is their
+    the Rate Sheet's basis and key): their title is their
     kind_label, which already names their identifying ref.
     """
     if doctype == JOURNAL:
         return "Adjustment · %s" % doc["name"], _journal_title(doc.get("description"))
-    if doctype == GER:
-        kind_label = "Group rate · %s→%s %s" % (
-            doc["from_currency"], doc["to_currency"], doc["rate_type"])
-        return kind_label, doc["quote_label"]
+    if doctype == RS:
+        return "Rate Sheet", "%s · %s" % (doc["rate_basis"], _sheet_key(doc))
     if doctype == IC_BALANCE:
         kind_label = "IC balance · %s → %s" % (doc["selling_entity"], doc["buying_entity"])
         return kind_label, kind_label
@@ -141,17 +141,19 @@ def _kind_label_and_title(doctype, doc):
     raise ValueError("%r is not one of the 7 approval doctypes." % (doctype,))
 
 
-def _replaces_text(supersedes, replaced, quote_label):
-    """FR5 (review S2): what approving a rate correction replaces.
-    ``replaced`` is the API's read of the ``supersedes`` rate
-    (``{name, quote_label, docstatus}``), or None when no such rate exists.
-    Only an approved (docstatus 1) rate is replaced by the approval; any
-    other state means the correction can never be approved
-    (group_exchange_rate.py ``_refuse_second_approved_rate``)."""
+def _sheet_key(doc):
+    return rate_sheet_model.key_label(
+        doc["rate_basis"], doc["fiscal_year"], doc.get("fiscal_period"))
+
+
+def _sheet_replaces_text(supersedes, replaced):
+    """What approving a Rate Sheet correction replaces (konsol#312-3). Only an
+    approved (docstatus 1) sheet is superseded by the approval; any other state
+    means the correction can never be approved."""
     if replaced is not None and int(replaced["docstatus"]) == 1:
-        return "replaces %s (%s → %s)" % (supersedes, replaced["quote_label"], quote_label)
+        return "replaces %s (%s %s)" % (supersedes, replaced["rate_basis"], _sheet_key(replaced))
     return ("replaces %s, which is no longer approved: this correction cannot be "
-            "approved; delete it on the Rates screen" % supersedes)
+            "approved; delete it in Desk" % supersedes)
 
 
 def _shape(doctype, doc):
@@ -182,11 +184,11 @@ def _shape(doctype, doc):
             "dimensions": doc["dimensions"],
         }
         return kind_label, title, detail, extra
-    if doctype == GER:
-        detail = _fy_p(doc["fiscal_year"], doc["fiscal_period"])
+    if doctype == RS:
+        detail = _sheet_key(doc)
         supersedes = doc.get("supersedes") or None
         if supersedes:
-            detail += " · %s" % _replaces_text(supersedes, doc["replaced"], doc["quote_label"])
+            detail += " · %s" % _sheet_replaces_text(supersedes, doc["replaced"])
         if doc.get("change_reason"):
             detail += " · %s" % doc["change_reason"]
         return kind_label, title, detail, {"supersedes": supersedes}
@@ -328,8 +330,9 @@ def sent_back_items(docs, rejections):
 
     Returns ``[{"doctype", "name", "kind_label", "title", "fiscal_year",
     "fiscal_period", "rejection"}]``, oldest rejection first. ``fiscal_year``
-    / ``fiscal_period`` come from the row for the journal, Group Exchange
-    Rate and IC Balance; they are None for Historical Equity Rate (not
+    / ``fiscal_period`` come from the row for the journal, Rate
+    Sheet and IC Balance (a Constant Rate Sheet's period is None: it covers
+    its year); they are None for Historical Equity Rate (not
     period-keyed, E4-P12), Ownership Period, Business Combination and
     Business Disposal (date-keyed).
 
@@ -355,7 +358,7 @@ def sent_back_items(docs, rejections):
         )
         titles = {(item["doctype"], item["name"]): item["title"] for item in rate_items}
 
-    period_keyed = (JOURNAL, GER, IC_BALANCE)
+    period_keyed = (JOURNAL, RS, IC_BALANCE)
 
     out = []
     for doctype, rows in docs.items():
@@ -375,6 +378,10 @@ def sent_back_items(docs, rejections):
                 kind_label, title = _kind_label_and_title(doctype, doc)
             if doctype in period_keyed:
                 fiscal_year, fiscal_period = doc["fiscal_year"], doc["fiscal_period"]
+                if doctype == RS and doc.get("rate_basis") == "Constant":
+                    # PR #595 review 7: a Constant sheet covers its year; its
+                    # stored period reads back 0, which is not its period.
+                    fiscal_period = None
             else:
                 fiscal_year = fiscal_period = None
             out.append({

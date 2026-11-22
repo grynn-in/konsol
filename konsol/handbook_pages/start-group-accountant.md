@@ -6,14 +6,16 @@ order: 20
 ---
 You prepare what the consolidation needs beyond the trial balances. You draft each record; the Close Lead approves it (Approve in the record's **Actions** menu). Approving it puts it into the warehouse and requests a consolidation build.
 
-## Exchange rates (Group Exchange Rate)
+## Exchange rates (Rate Sheet)
 
-- One record per currency pair, rate type and period. **Group Reporting Currency** is the currency the group presents in; **From Currency** is an entity's functional currency.
-- **Rate Type**: Closing (balance sheet) or Average (profit and loss).
+- A **Statutory** Rate Sheet holds the rates for one fiscal period: an Average (profit and loss) and a Closing (balance sheet) quote per currency pair. It translates the actuals and locks when the period closes.
+- A **Constant** Rate Sheet holds one rate per pair for a fiscal year. It translates budget and forecast and locks when the year closes. There is one per year for the site.
+- **Group Reporting Currency** is the currency the group presents in; **From Currency** is an entity's functional currency.
 - **Quote** and **Quoted Per**: the rate is Quote / Quoted Per. For example, 0.6607 USD per 100 JPY. Quote a weak currency per 100, 1,000 or 10,000.
-- For each functional currency that differs from the reporting currency, each period needs exactly one approved Closing and one approved Average rate. Without them the build stops.
-- To correct an approved rate, make a new rate with **Supersedes** set to the old one. Approving the new rate cancels the old one.
-- **Reason for Change** is required for a correction, for an amendment, and for a rate that moves more than Close Settings allows.
+- Each period needs one approved Statutory sheet that covers every functional currency that differs from the reporting currency. Without it the build stops.
+- Use **Pre-fill from ERP** or **Duplicate previous** to start a draft. Then send it for approval.
+- To correct an approved sheet, make a new sheet that supersedes it. Approving the new sheet cancels the old one.
+- **Reason for Change** is required for a correction, and for a rate that moves more than Close Settings allows.
 
 ## Historical equity rates (Historical Equity Rate)
 

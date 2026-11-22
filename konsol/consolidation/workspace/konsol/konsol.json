@@ -50,7 +50,7 @@
  "is_hidden": 0,
  "label": "Konsol",
  "links": [],
- "modified": "2026-11-09 18:00:00.000000",
+ "modified": "2026-11-22 20:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Konsol",
@@ -160,10 +160,10 @@
   {
    "color": "Orange",
    "doc_view": "List",
-   "label": "Group Exchange Rates",
-   "link_to": "Group Exchange Rate",
+   "label": "Rate Sheets",
+   "link_to": "Rate Sheet",
    "type": "DocType",
-   "stats_filter": "[[\"Group Exchange Rate\", \"docstatus\", \"=\", 0]]",
+   "stats_filter": "[[\"Rate Sheet\", \"status\", \"=\", \"Pending Approval\"]]",
    "format": "{} waiting"
   },
   {

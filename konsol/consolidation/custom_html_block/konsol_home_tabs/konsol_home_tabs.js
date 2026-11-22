@@ -85,7 +85,7 @@ const WAITING = [
 	["DocType", "Consolidation Journal"],
 	["DocType", "Business Combination"],
 	["DocType", "Business Disposal"],
-	["DocType", "Group Exchange Rate"],
+	["DocType", "Rate Sheet"],
 	["DocType", "Ownership Period"],
 	["DocType", "Historical Equity Rate"],
 	["DocType", "IC Balance"],

@@ -32,11 +32,11 @@ The readers:
    the caller, W3-2);
 4. approvals backlog: ``approvals_api.queue_for`` (the approvals queue's
    items, as My work);
-5. closing vs average rate: submitted Group Exchange Rates of the current
+5. closing vs average rate: the approved actuals rates of the current
    year into the default group's reporting currency, for the three
    functional currencies held by the most Active entities the caller can
-   see (get_list; none is the chart's note), each quote made a rate by
-   ``group_rates.true_rate``;
+   see (get_list; none is the chart's note), read per period through
+   ``group_rates.approved_quotes`` (konsol#592 T19);
 6. entities by status: Entity (not group nodes) by ``status`` (get_list);
 7. days to close: ``signoff_gate.latest_signed_runs`` (the periods whose
    latest run is signed) against each period's end date.
@@ -213,7 +213,7 @@ def closing_vs_average_rate(chart_name=None, filters=None, refresh=None, time_in
     """Chart 5: closing and average rate of the group's top currencies, current year."""
     frappe.only_for(("EPM Admin", "EPM Analyst", "EPM User", "System Manager"))
     title = "Closing vs Average Rate"
-    _start(filters, "Group Exchange Rate", "Entity")
+    _start(filters, "Rate Sheet", "Entity")
 
     def build():
         key, states = _year(title)
@@ -235,16 +235,14 @@ def closing_vs_average_rate(chart_name=None, filters=None, refresh=None, time_in
             _unavailable(title, "none of the Active entities you can see holds a currency "
                          "other than %s" % currency)
         rows = []
-        for row in frappe.get_list(
-                "Group Exchange Rate",
-                # konsol#348: the actuals set's rates
-                filters={"docstatus": 1, "fiscal_year": key[0], "to_currency": currency,
-                         "from_currency": ["in", top], "rate_set": group_rates.actuals_rate_set()},
-                fields=["from_currency", "rate_type", "fiscal_year", "fiscal_period",
-                        "quote", "quoted_per"],
-                limit_page_length=0, order_by="name asc"):
-            row["rate"] = group_rates.true_rate(row["quote"], row["quoted_per"])
-            rows.append(row)
+        # konsol#592 T19: every period's approved actuals rates through approved_quotes
+        for fy, fp in _keys(states):
+            for rate_type in model.RATE_TYPES:
+                for (from_currency, to_currency), rate in group_rates.approved_quotes(
+                        fy, fp, rate_type).items():
+                    if to_currency == currency and from_currency in top:
+                        rows.append({"from_currency": from_currency, "rate_type": rate_type,
+                                     "fiscal_year": fy, "fiscal_period": fp, "rate": rate})
         return model.rates(_keys(states), top, rows)
 
     return _shown(title, build)

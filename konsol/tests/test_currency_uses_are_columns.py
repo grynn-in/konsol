@@ -40,3 +40,32 @@ def test_every_currency_use_is_a_stored_currency_link():
         # Consolidation Journal links Frappe's Currency doctype; its codes are
         # the same ISO codes, so it is a use all the same.
         assert df.get("options") in ("ISO Currency", "Currency"), f"{doctype}.{fieldname} is not a currency link"
+
+
+def _use_filters():
+    """(doctype, field) -> the filter dict of each _USES row; _SUBMITTED is
+    {"docstatus": 1}."""
+    tree = ast.parse(open(os.path.join(APP_DIR, "currency_references.py")).read())
+    out = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == "_USES":
+            for elt in node.value.elts:
+                flt = elt.elts[2]
+                if isinstance(flt, ast.Name):
+                    assert flt.id == "_SUBMITTED", flt.id
+                    value = {"docstatus": 1}
+                else:
+                    value = ast.literal_eval(flt) if not isinstance(flt, ast.Constant) else flt.value
+                out[(ast.literal_eval(elt.elts[0]), ast.literal_eval(elt.elts[1]))] = value
+    return out
+
+
+def test_rate_sheet_rows_count_under_a_submitted_sheet():
+    """A Rate Sheet's currencies are counted through its child rows, once the
+    sheet is submitted: a draft sheet's rows use no currency (T15)."""
+    uses = _use_filters()
+    for field in ("from_currency", "to_currency"):
+        key = ("Rate Sheet Row", field)
+        assert key in uses, key
+        assert uses[key] == {"docstatus": 1, "parenttype": "Rate Sheet"}, uses[key]
+        assert _field("Rate Sheet Row", field)["options"] == "ISO Currency"

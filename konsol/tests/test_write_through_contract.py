@@ -1046,6 +1046,15 @@ def test_no_two_controllers_write_one_table():
     assert not shared, shared
 
 
+def test_the_rates_table_has_one_owner_and_one_publisher():
+    """konsol#592 T26: Group Exchange Rate is retired, so Rate Sheet alone
+    declares the rates table, and publishes it through group_rates.publish_rates."""
+    owners = _write_through_targets()
+    assert owners["epm_staging.group_exchange_rates"] == ["consolidation/doctype/rate_sheet/rate_sheet.py"]
+    with open(os.path.join(APP_DIR, "consolidation", "doctype", "rate_sheet", "rate_sheet.py")) as f:
+        assert "return group_rates.publish_rates(force=force)" in f.read()
+
+
 def _ddl_column_names(body):
     """Column names of a CREATE body '(c1 T, c2 Decimal(18,2) ...) ENGINE ...'."""
     inner = body[body.index("(") + 1:body.index(") ENGINE")]
@@ -1097,3 +1106,94 @@ def test_the_journal_writes_only_declared_columns():
     missing = [c for c in written if c not in declared]
     assert not missing, missing
     assert written == [c for c in declared if c != "created_at"]
+
+
+# --- a field-map value may be a callable (konsol#592 T21) -------------------
+#
+# After Rate Sheet pair 1, Budget Cycle and its siblings write `rate_set` as
+# the constant "CONSTANT": the doctype field is dropped, so the column cannot
+# name a doc field. A callable value computes the column from the row.
+
+class _Computed2:
+    CH_TABLE = "epm_staging.budget_cycles"
+    CH_FIELD_MAP = {"cycle": "cycle", "rate_set": lambda row: "CONSTANT"}
+    CH_STAGING_TABLE = "epm_staging.budget_cycles_staging"
+    CH_STAGING_FIELD_MAP = {"cycle": "cycle", "label": lambda row: row["cycle"] + "!"}
+
+
+def _capture_inserts(m):
+    sql = []
+    m.execute = lambda s, params=None: sql.append(s) or ""
+    return sql
+
+
+def _cycle_docs():
+    return {"Budget Cycle": [
+        {"cycle": "FY26", "modified": datetime.datetime(2026, 9, 11, 8, 0, 0)}]}
+
+
+def test_callable_value():
+    """sync_doctype_filtered calls a callable with the row and writes its
+    result; a string still names a doc field."""
+    m, frappe = _load_clickhouse(docs=_cycle_docs())
+    sql = _capture_inserts(m)
+    m.sync_doctype_filtered("Budget Cycle", "epm_staging.budget_cycles",
+                            _Computed2.CH_FIELD_MAP, force=True)
+    inserts = [s for s in sql if s.startswith("INSERT INTO epm_staging.budget_cycles")]
+    assert inserts, sql
+    assert "('FY26', 'CONSTANT')" in inserts[0], inserts[0]
+
+
+def test_callable_is_never_requested_as_a_database_field():
+    """The callable is not a column of the doctype: get_all must not be asked
+    for it, or the query fails on a field that does not exist."""
+    m, frappe = _load_clickhouse(docs=_cycle_docs())
+    asked = []
+    orig = frappe.get_all
+    frappe.get_all = lambda dt, **kw: asked.append(kw.get("fields")) or orig(dt, **kw)
+    _capture_inserts(m)
+    m.sync_doctype_filtered("Budget Cycle", "epm_staging.budget_cycles",
+                            _Computed2.CH_FIELD_MAP, force=True)
+    assert asked == [["cycle", "modified"]], asked
+
+
+def test_callable_value_through_sync_doctype():
+    """sync_doctype (the hook path, and what reconcile calls) passes the map on."""
+    m, _ = _load_clickhouse(docs=_cycle_docs(), controllers={"Budget Cycle": _Computed2})
+    sql = _capture_inserts(m)
+    m.sync_doctype("Budget Cycle", _Computed2.CH_TABLE, _Computed2.CH_FIELD_MAP, force=True)
+    assert any("('FY26', 'CONSTANT')" in s for s in sql), sql
+
+
+def test_callable_value_through_reconcile_for_both_maps():
+    """reconcile_all's loop syncs CH_FIELD_MAP and CH_STAGING_FIELD_MAP with
+    sync_doctype; a callable works in each."""
+    m, _ = _load_clickhouse(docs=_cycle_docs(), controllers={"Budget Cycle": _Computed2})
+    sql = _capture_inserts(m)
+    m._write_through_doctypes = lambda: ["Budget Cycle"]
+    m._reconcile_tables()
+    assert any("INTO epm_staging.budget_cycles_sync_tmp " in s and "('FY26', 'CONSTANT')" in s
+               for s in sql), sql
+    assert any("INTO epm_staging.budget_cycles_staging_sync_tmp " in s and "('FY26', 'FY26!')" in s
+               for s in sql), sql
+
+
+def test_callable_value_through_after_commit_hook_path():
+    """sync_doctype_after_commit queues a partial of sync_doctype with the same
+    map; running it writes the computed column."""
+    m, frappe = _load_clickhouse(docs=_cycle_docs(), controllers={"Budget Cycle": _Computed2})
+    queued = []
+    frappe.db.after_commit = types.SimpleNamespace(add=queued.append, _functions=queued)
+    sql = _capture_inserts(m)
+    m.sync_doctype_after_commit("Budget Cycle", _Computed2.CH_TABLE, _Computed2.CH_FIELD_MAP)
+    assert len(queued) == 1
+    queued[0]()
+    assert any("('FY26', 'CONSTANT')" in s for s in sql), sql
+
+
+def test_string_values_unchanged_beside_a_callable():
+    m, _ = _load_clickhouse(docs=_cycle_docs())
+    sql = _capture_inserts(m)
+    m.sync_doctype_filtered("Budget Cycle", "epm_staging.budget_cycles",
+                            {"cycle": "cycle"}, force=True)
+    assert any("('FY26')" in s for s in sql), sql

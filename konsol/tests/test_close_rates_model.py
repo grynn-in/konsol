@@ -800,6 +800,7 @@ def test_f11_a_correction_rides_on_the_approved_cell_with_before_and_after():
         "change_reason": "RBI corrected its fixing",
         "before": {"quote": 1.085, "quoted_per": 1, "rate": 1.085},
         "after": {"quote": 1.09, "quoted_per": 1, "rate": 1.09},
+        "doctype": None,  # konsol#592 T20: the doc's own doctype; _doc carries none
     }
 
 
@@ -981,3 +982,83 @@ def test_fr4_failure_path_a_correction_on_an_unrequired_row_is_not_counted():
     assert unrequired["closing"]["correction"]["name"] == "GER-R2"
     assert result["summary"] == {"missing": 2, "awaiting_approval": 0, "approved": 0,
                                  "corrections_pending": 0}
+
+
+# --- konsol#592 T20: the grid reads Rate Sheets -----------------------------------
+# ``sheet_docs`` turns Rate Sheet rows (each joined to its sheet) into the
+# grid's docs, one per rate type quoted. They are the grid's only docs since
+# konsol#592 T26 retired Group Exchange Rate.
+
+def _true_rate(quote, quoted_per):
+    return float(quote) / int(quoted_per or 1)
+
+
+def _sheet_row(sheet, frm="EUR", to="GBP", closing=0.90, average=0.89, docstatus=1,
+               owner="alice@example.com", supersedes=None, quoted_per="1", **extra):
+    row = {"sheet": sheet, "docstatus": docstatus, "owner": owner,
+           "modified": "2026-09-01 10:00:00", "change_reason": None, "supersedes": supersedes,
+           "from_currency": frm, "to_currency": to, "quoted_per": quoted_per,
+           "closing_quote": closing, "average_quote": average,
+           "erp_closing_quote": None, "erp_average_quote": None, "source": "Manual"}
+    row.update(extra)
+    return row
+
+
+def test_t20_sheet_docs_gives_one_doc_per_quoted_rate_type():
+    docs = M.sheet_docs([_sheet_row("RS-S-2025-07", quoted_per="100", closing=52, average=51,
+                                    erp_closing_quote=50)], _true_rate)
+    by_type = {d["rate_type"]: d for d in docs}
+    assert sorted(by_type) == ["Average", "Closing"]
+    closing = by_type["Closing"]
+    assert closing["doctype"] == "Rate Sheet" and closing["name"] == "RS-S-2025-07"
+    assert (closing["quote"], closing["quoted_per"], closing["rate"]) == (52.0, "100", 0.52)
+    assert closing["erp_rate"] == 0.5 and by_type["Average"]["erp_rate"] is None
+    assert (closing["docstatus"], closing["owner"], closing["source"]) == (
+        1, "alice@example.com", "Manual")
+
+
+def test_t20_failure_path_a_blank_or_zero_quote_gives_no_doc_for_that_type():
+    # A Float column stores unset as 0 (CLAUDE.md): neither is a rate.
+    docs = M.sheet_docs([_sheet_row("RS-1", closing=None, average=0.89),
+                         _sheet_row("RS-2", frm="USD", closing=0.79, average=0)], _true_rate)
+    assert sorted((d["name"], d["rate_type"]) for d in docs) == [
+        ("RS-1", "Average"), ("RS-2", "Closing")]
+
+
+def test_t20_an_approved_sheet_another_approved_sheet_supersedes_gives_way():
+    docs = M.sheet_docs([_sheet_row("RS-S-2025-07"),
+                         _sheet_row("RS-S-2025-07-2", closing=0.91, supersedes="RS-S-2025-07")],
+                        _true_rate)
+    assert {d["name"] for d in docs} == {"RS-S-2025-07-2"}
+
+
+def test_t20_failure_path_a_draft_correction_never_hides_the_approved_sheet():
+    docs = M.sheet_docs([_sheet_row("RS-S-2025-07"),
+                         _sheet_row("RS-S-2025-07-2", closing=0.91, docstatus=0,
+                                    supersedes="RS-S-2025-07")], _true_rate)
+    assert sorted({d["name"] for d in docs}) == ["RS-S-2025-07", "RS-S-2025-07-2"]
+
+
+def test_t20_period_fields_ride_along_when_the_row_has_them():
+    [doc, _] = M.sheet_docs([_sheet_row("RS-S-2025-06", fiscal_year=2025, fiscal_period=6)],
+                            _true_rate)
+    assert (doc["fiscal_year"], doc["fiscal_period"]) == (2025, 6)
+    [plain, _] = M.sheet_docs([_sheet_row("RS-S-2025-07")], _true_rate)
+    assert "fiscal_year" not in plain
+
+
+def test_t26_the_union_with_the_retired_doctype_is_gone():
+    assert not hasattr(M, "sheet_wins")
+
+
+def test_t20_the_cell_and_its_correction_carry_their_doctype():
+    docs = M.sheet_docs([_sheet_row("RS-S"), _sheet_row("RS-S-2", closing=0.91, docstatus=0,
+                                                        supersedes="RS-S")], _true_rate)
+    result = M.grid(required={("EUR", "GBP")}, docs=docs, earlier=[], threshold=0.5,
+                    move_problem=_no_op_move_problem)
+    cell = result["rows"][0]["closing"]
+    assert (cell["name"], cell["doctype"]) == ("RS-S", "Rate Sheet")
+    assert (cell["correction"]["name"], cell["correction"]["doctype"]) == ("RS-S-2", "Rate Sheet")
+    missing = M.grid(required={("USD", "GBP")}, docs=[], earlier=[], threshold=0.5,
+                     move_problem=_no_op_move_problem)["rows"][0]["closing"]
+    assert missing["doctype"] is None

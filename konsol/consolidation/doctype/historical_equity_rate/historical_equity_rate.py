@@ -114,6 +114,16 @@ class HistoricalEquityRate(Document):
              self.main_account, self.rate_date, self.to_currency, self.rate_set],
         )
 
+    def before_insert(self):
+        """konsol#592 T24: a new row with no set takes the actuals set, the one
+        the actuals translation reads. A row that names a set keeps it, and
+        validate still refuses a blank one (patches, imports). Refuses by name
+        while no set, or more than one, is flagged Is Actuals."""
+        if not self.rate_set:
+            from konsol import group_rates
+
+            self.rate_set = group_rates.actuals_rate_set()
+
     def validate(self):
         self._validate_rate_set()
         self._validate_positive_rate()

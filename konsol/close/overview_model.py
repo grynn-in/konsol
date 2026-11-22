@@ -93,7 +93,7 @@ _ROUTES = {
     "configuration": CLOSE_SETTINGS,
     "ownership": "/desk/ownership-period",
     "trial_balances": "/desk/trial-balance-submission?fiscal_year={fy}&fiscal_period={fp}",
-    "rates": "/desk/group-exchange-rate",
+    "rates": "/desk/rate-sheet?rate_basis=Statutory&fiscal_year={fy}&fiscal_period={fp}",
     "equity_rates": "/desk/historical-equity-rate?docstatus=0",
     "intercompany": PERIOD_CLOSE,
     "journals": "/desk/consolidation-journal?fiscal_year={fy}&fiscal_period={fp}",

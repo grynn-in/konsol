@@ -4,8 +4,10 @@ a Budget Cycle carries the fingerprint of the inputs it approved.
 ``before_submit`` (the workflow's Approve is ``doc.submit()``) stamps the
 read-only ``input_fingerprint`` from the pure model (K7) over the rows the
 Cycle approves: its Annual Input rows and Entry Lines, the Spread Profile
-weights they use, and the approved Group Exchange Rates and Historical
-Equity Rates of its Rate Set. Nothing is saved in ``on_submit``. Option (b),
+weights they use, the approved Constant Rate Sheet of its year (konsol#592
+D2, Deepak Pai, 22 Nov 2026: replaces BUD-3's per-Cycle Rate Set) and the
+approved Historical Equity Rates of the CONSTANT set. Approve is refused
+until that sheet exists, read FOR UPDATE. Nothing is saved in ``on_submit``. Option (b),
 the pure model alone until BUD-4's Approved Budget, was rejected as a model
 nothing calls.
 
@@ -35,7 +37,18 @@ CLICKHOUSE = os.path.join(APP_DIR, "clickhouse.py")
 BAI_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_annual_input", "budget_annual_input.py")
 BEL_PY = os.path.join(APP_DIR, "epm", "doctype", "budget_entry_line", "budget_entry_line.py")
 
+GROUP_RATES = os.path.join(APP_DIR, "group_rates.py")
+
 CYCLE = "BCYC-ZZB-2027"
+
+
+def _constant_rate_set():
+    """konsol.group_rates.CONSTANT_RATE_SET, read from the source: group_rates
+    imports too much to load under the stub frappe."""
+    with open(GROUP_RATES) as f:
+        tree = ast.parse(f.read())
+    return next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", None) == "CONSTANT_RATE_SET")
 
 
 class _Thrown(Exception):
@@ -72,16 +85,19 @@ def _clickhouse_stub(frappe):
 
 
 def _tables():
-    """A budget Cycle's inputs on a site with two Rate Sets and another year."""
-    rate = lambda fy, fp, kind, quote, rs="ZZRS", docstatus=1: {  # noqa: E731
-        "from_currency": "EUR", "to_currency": "USD", "fiscal_year": fy, "fiscal_period": fp,
-        "rate_type": kind, "quote": quote, "quoted_per": 1, "rate_set": rs, "docstatus": docstatus}
+    """A budget Cycle's inputs on a site with Rate Sheets of two bases and
+    two years, in every state."""
+    sheet = lambda name, basis="Constant", fy=2027, docstatus=1, supersedes=None: {  # noqa: E731
+        "name": name, "rate_basis": basis, "fiscal_year": fy, "docstatus": docstatus, "supersedes": supersedes}
+    row = lambda parent, rate, idx=1, frm="EUR": {  # noqa: E731
+        "parent": parent, "parenttype": "Rate Sheet", "parentfield": "rates", "idx": idx,
+        "from_currency": frm, "to_currency": "USD", "quoted_per": 1, "rate": rate}
     return {
         "Budget Cycle": [
             {"name": CYCLE, "scenario_id": "ZZB", "scenario_type": "budget", "fiscal_year": 2027,
-             "rate_set": "ZZRS", "docstatus": 1, "input_fingerprint": None},
+             "docstatus": 1, "input_fingerprint": None},
             {"name": "BCYC-ZZB-2026", "scenario_id": "ZZB", "scenario_type": "budget", "fiscal_year": 2026,
-             "rate_set": "ZZRS", "docstatus": 0, "input_fingerprint": None},
+             "docstatus": 0, "input_fingerprint": None},
         ],
         "Budget Annual Input": [
             {"name": "BAI-1", "cycle": CYCLE, "data_area_id": "ZZNL", "main_account": "4000", "layer": "base",
@@ -99,11 +115,17 @@ def _tables():
         ],
         "Spread Profile": [{"profile_id": "EVEN", "fiscal_period": p, "weight": 1 / 12} for p in range(1, 13)]
         + [{"profile_id": "SEASONAL", "fiscal_period": 1, "weight": 1.0}],
-        "Group Exchange Rate": [
-            rate(2027, 1, "Average", "1.08"), rate(2027, 1, "Closing", "1.10"),
-            rate(2027, 1, "Average", "1.20", rs="ACTUAL"),          # another set
-            rate(2026, 12, "Closing", "1.07"),                      # another year
-            rate(2027, 2, "Average", "1.09", docstatus=0),          # a draft
+        "Rate Sheet": [
+            sheet("RS-C-2027"),                                     # the Cycle's
+            sheet("RS-C-2026", fy=2026),                            # another year
+            sheet("RS-S-2027-01", basis="Statutory"),               # another basis
+            sheet("RS-C-2027-1", docstatus=2),                      # cancelled
+            sheet("RS-C-2027-3", docstatus=0, supersedes="RS-C-2027"),  # a draft correction
+        ],
+        "Rate Sheet Row": [
+            row("RS-C-2027", "1.08"), row("RS-C-2027", "1.30", idx=2, frm="GBP"),
+            row("RS-C-2026", "1.07"), row("RS-S-2027-01", "1.20"), row("RS-C-2027-1", "1.01"),
+            row("RS-C-2027-3", "1.09"),
         ],
         "Ownership Period": [
             {"name": "OP-1", "consolidation_group": "ZZGRP", "data_area_id": "ZZNL", "owner_group": "ZZGRP",
@@ -122,13 +144,13 @@ def _tables():
         "Historical Equity Rate": [
             {"consolidation_group": "ZZGRP", "data_area_id": "ZZNL", "main_account": "3000",
              "rate_date": date(2024, 1, 1), "to_currency": "USD", "historical_rate": "1.05",
-             "rate_set": "ZZRS", "docstatus": 1},
+             "rate_set": "CONSTANT", "docstatus": 1},
             {"consolidation_group": "ZZGRP", "data_area_id": "ZZNL", "main_account": "3000",
              "rate_date": date(2024, 1, 1), "to_currency": "USD", "historical_rate": "1.25",
              "rate_set": "ACTUAL", "docstatus": 1},
             {"consolidation_group": "ZZGRP", "data_area_id": "ZZNL", "main_account": "3000",
              "rate_date": date(2025, 1, 1), "to_currency": "USD", "historical_rate": "1.06",
-             "rate_set": "ZZRS", "docstatus": 2},
+             "rate_set": "CONSTANT", "docstatus": 2},
         ],
     }
 
@@ -156,6 +178,26 @@ def env(monkeypatch):
         def __init__(self, row, fields):
             super().__init__({f: row.get(f) for f in fields} if fields else row)
 
+        def __getattr__(self, key):
+            try:
+                return self[key]
+            except KeyError:
+                raise AttributeError(key)
+
+    locked = []
+
+    def get_values(doctype, filters=None, fieldname=None, as_dict=False, order_by=None, for_update=False,
+                   **k):
+        """frappe.db.get_values: the reader's locking read when ``for_update``."""
+        asked.append((doctype, dict(filters or {})))
+        if for_update:
+            locked.append(doctype)
+        fields = [fieldname] if isinstance(fieldname, str) else list(fieldname)
+        rows = [r for r in tables.get(doctype, []) if _match(r, filters)]
+        key = (order_by or "name asc").split()[0]
+        rows.sort(key=lambda r: r.get(key) if r.get(key) is not None else "")
+        return [_Row(r, fields) for r in rows]
+
     def throw(msg, exc=None, *a, **k):
         raise _Thrown(msg)
 
@@ -168,7 +210,8 @@ def env(monkeypatch):
     frappe.session = types.SimpleNamespace(user="Administrator")
     frappe.flags = types.SimpleNamespace(in_install=False, in_import=False, in_migrate=False, in_patch=False)
     frappe.db = types.SimpleNamespace(after_commit=types.SimpleNamespace(_functions=queue, add=queue.append),
-                                      count=lambda *a, **k: 0, exists=lambda dt, name: False)
+                                      count=lambda *a, **k: 0, exists=lambda dt, name: False,
+                                      get_values=get_values)
     frappe.get_all = get_all
     frappe.get_meta = lambda dt: types.SimpleNamespace(fields=[])
     frappe.has_permission = lambda doctype, ptype="read", doc=None, **k: allowed[0]
@@ -186,6 +229,9 @@ def env(monkeypatch):
     intake = types.ModuleType("konsol.budget_intake")
     intake.lock_cycles = lambda *a, **k: []
     monkeypatch.setattr(sys.modules["konsol"], "budget_intake", intake, raising=False)
+    group_rates = types.ModuleType("konsol.group_rates")
+    group_rates.CONSTANT_RATE_SET = _constant_rate_set()
+    monkeypatch.setattr(sys.modules["konsol"], "group_rates", group_rates, raising=False)
 
     for name, mod in {
         "frappe": frappe, "frappe.model": model, "frappe.model.document": docmod,
@@ -193,6 +239,7 @@ def env(monkeypatch):
         "konsol.epm.budget_grain": grain,
         "konsol.epm.doctype.scenario.scenario": scenario,
         "konsol.budget_intake": intake,
+        "konsol.group_rates": group_rates,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
     for modname, path in (("konsol.epm.doctype.budget_annual_input.budget_annual_input", BAI_PY),
@@ -220,6 +267,7 @@ def env(monkeypatch):
         return doc
 
     return types.SimpleNamespace(cycle=cycle, tables=tables, asked=asked, queue=queue, allowed=allowed,
+                                 locked=locked,
                                  reader=sys.modules["konsol.epm.budget_fingerprint"],
                                  model=sys.modules["konsol.epm.budget_fingerprint_model"])
 
@@ -244,21 +292,25 @@ def test_a_draft_save_stamps_nothing(env):
 
 # ---- what is read --------------------------------------------------------------------
 
-def test_the_reader_takes_the_cycles_rows_and_its_sets_approved_rates_for_its_year(env):
+def test_the_reader_takes_the_cycles_rows_and_its_years_approved_constant_sheet(env):
     doc = env.cycle()
     inputs = env.reader.read_inputs(doc)
-    assert inputs["rate_set"] == "ZZRS"
+    assert "rate_set" not in inputs and "exchange_rates" not in inputs
+    assert [s["name"] for s in inputs["rate_sheets"]] == ["RS-C-2027"], (
+        "the approved Constant sheet of the Cycle's year only")
+    assert [(r["from_currency"], str(r["rate"])) for r in inputs["rate_sheets"][0]["rows"]] == [
+        ("EUR", "1.08"), ("GBP", "1.30")]
     assert [r["name"] for r in inputs["annual_inputs"]] == ["BAI-1"]
     assert [r["name"] for r in inputs["entry_lines"]] == ["BEL-1"]
     assert {r["profile_id"] for r in inputs["weights"]} == {"EVEN"}, "only the profiles the annual rows use"
-    assert sorted(str(r["quote"]) for r in inputs["exchange_rates"]) == ["1.08", "1.10"], (
-        "approved rates of the Cycle's set and year only")
     assert [str(r["historical_rate"]) for r in inputs["historical_rates"]] == ["1.05"], (
-        "approved tranches of the Cycle's set only")
-    ger = next(f for dt, f in env.asked if dt == "Group Exchange Rate")
-    assert ger == {"docstatus": 1, "rate_set": "ZZRS", "fiscal_year": 2027}
+        "approved tranches of the CONSTANT set only")
+    sheets = next(f for dt, f in env.asked if dt == "Rate Sheet")
+    assert sheets == {"docstatus": 1, "rate_basis": "Constant", "fiscal_year": 2027}
     her = next(f for dt, f in env.asked if dt == "Historical Equity Rate")
-    assert her == {"docstatus": 1, "rate_set": "ZZRS"}
+    assert her == {"docstatus": 1, "rate_set": "CONSTANT"}
+    assert not [dt for dt, f in env.asked if dt == "Group Exchange Rate"]
+    assert env.locked == [], "a plain read outside the approval"
     for dt in ("Budget Annual Input", "Budget Entry Line"):
         assert next(f for d, f in env.asked if d == dt) == {"cycle": CYCLE}, dt
 
@@ -293,13 +345,56 @@ def test_an_annual_amount_changed_after_approve_is_reported_as_a_mismatch(env):
     assert "changed" in out["message"].lower() and CYCLE in out["message"]
 
 
-def test_a_rate_of_the_cycles_set_changed_after_approve_is_a_mismatch_another_sets_is_not(env):
+def test_another_years_or_bases_sheet_changed_after_approve_is_no_mismatch(env):
     doc = env.cycle()
     doc.before_submit()
-    env.tables["Group Exchange Rate"][2]["quote"] = "1.30"   # ACTUAL set: not this Cycle's
+    rows = env.tables["Rate Sheet Row"]
+    rows[2]["rate"] = "1.70"   # RS-C-2026
+    rows[3]["rate"] = "1.70"   # RS-S-2027-01
+    rows[5]["rate"] = "1.70"   # the draft correction
     assert env.reader.check_input_fingerprint(CYCLE)["matches"] is True
-    env.tables["Group Exchange Rate"][0]["quote"] = "1.0801"  # the Cycle's set, its year
-    assert env.reader.check_input_fingerprint(CYCLE)["matches"] is False
+
+
+def test_the_constant_sheet_superseded_after_approve_is_a_mismatch_even_at_the_same_rates(env):
+    """konsol#592: the correction's approval cancels the sheet it supersedes
+    in the same transaction. The stamp then reads stale, rates unchanged."""
+    doc = env.cycle()
+    doc.before_submit()
+    env.tables["Rate Sheet"][0]["docstatus"] = 2
+    env.tables["Rate Sheet"].append({"name": "RS-C-2027-2", "rate_basis": "Constant", "fiscal_year": 2027,
+                                     "docstatus": 1, "supersedes": "RS-C-2027"})
+    env.tables["Rate Sheet Row"] += [dict(r, parent="RS-C-2027-2") for r in env.tables["Rate Sheet Row"][:2]]
+    out = env.reader.check_input_fingerprint(CYCLE)
+    assert out["matches"] is False
+    assert "Constant" in out["message"]
+
+
+# ---- the approval needs the year's Constant sheet (konsol#592 D2) -------------------
+
+def test_approve_is_refused_without_an_approved_constant_sheet_for_the_year(env):
+    env.tables["Rate Sheet"][0]["docstatus"] = 2   # RS-C-2027 cancelled: FY2027 has none
+    doc = env.cycle()
+    with pytest.raises(_Thrown) as raised:
+        doc.before_submit()
+    assert "approve the Constant rate sheet RS-C-2027 first (konsol#592)" in str(raised.value)
+    assert not doc.get("input_fingerprint"), "refused before the stamp"
+
+
+def test_approve_reads_the_constant_sheet_with_a_locking_read(env):
+    doc = env.cycle()
+    doc.before_submit()
+    assert "Rate Sheet" in env.locked
+    assert doc.input_fingerprint == env.reader.compute(doc)
+
+
+def test_a_draft_cycle_without_a_sheet_is_saved_and_checked(env):
+    """Only the approval needs the sheet: a draft is worked on before the
+    year's rates are agreed."""
+    env.tables["Rate Sheet"][0]["docstatus"] = 0
+    doc = env.cycle()
+    doc.validate()
+    out = env.reader.check_input_fingerprint(CYCLE)
+    assert out["current"].startswith(env.model.VERSION + ":")
 
 
 def test_a_cycle_not_yet_approved_has_nothing_to_match(env):

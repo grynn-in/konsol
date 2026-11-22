@@ -1,0 +1,268 @@
+{
+ "name": "Rate Sheet",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "issingle": 0,
+ "istable": 0,
+ "is_submittable": 1,
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "autoname": "",
+ "title_field": "title",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "search_fields": "rate_basis,fiscal_year,fiscal_period,status",
+ "description": "The group's governed exchange rates (konsol#592): a Statutory sheet holds a rate pair per currency for one fiscal period, a Constant sheet one rate per pair for a fiscal year. Group finance enters or pre-fills them; submitting is the approval. Translation reads only approved sheets.",
+ "field_order": [
+  "tab_sheet",
+  "sheet_section",
+  "rate_basis",
+  "fiscal_year",
+  "fiscal_period",
+  "col_break_1",
+  "valid_from",
+  "valid_to",
+  "period_label",
+  "status",
+  "title",
+  "tab_rates",
+  "rates_section",
+  "rates",
+  "source_section",
+  "copied_from",
+  "col_break_2",
+  "source_note",
+  "tab_approval",
+  "approval_section",
+  "change_reason",
+  "supersedes",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "tab_sheet",
+   "fieldtype": "Tab Break",
+   "label": "Sheet"
+  },
+  {
+   "fieldname": "sheet_section",
+   "fieldtype": "Section Break",
+   "label": "Sheet"
+  },
+  {
+   "fieldname": "rate_basis",
+   "fieldtype": "Select",
+   "options": "Statutory\nConstant",
+   "label": "Rate Basis",
+   "reqd": 1,
+   "set_only_once": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Statutory: the rates for one fiscal period, used to translate actuals. Constant: a Constant sheet holds one rate per currency pair for a whole fiscal year, used for both average and closing (konsol#592 QA-1); budget, forecast and constant-currency comparisons translate at it. A Constant sheet locks when its fiscal year is closed (P1-Q2 B): until then a correction supersedes it and restates the earlier months' comparisons. Cannot be changed after the first save."
+  },
+  {
+   "fieldname": "fiscal_year",
+   "fieldtype": "Int",
+   "label": "Fiscal Year",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "fiscal_period",
+   "fieldtype": "Int",
+   "label": "Fiscal Period",
+   "depends_on": "eval:doc.rate_basis == 'Statutory'",
+   "mandatory_depends_on": "eval:doc.rate_basis == 'Statutory'",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "The period number, as on Period Status (0 = Opening, 1-12 Regular, or an Adjustment period). A Closing period takes no rates: it is translated at the year's last Regular period. Statutory sheets only."
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "valid_from",
+   "fieldtype": "Date",
+   "label": "Valid From",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Derived from the declared fiscal calendar on save."
+  },
+  {
+   "fieldname": "valid_to",
+   "fieldtype": "Date",
+   "label": "Valid To",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Derived from the declared fiscal calendar on save."
+  },
+  {
+   "fieldname": "period_label",
+   "fieldtype": "Data",
+   "label": "Period",
+   "read_only": 1,
+   "no_copy": 1,
+   "in_list_view": 1,
+   "description": "Set on save."
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "Draft\nPending Approval\nApproved\nCancelled",
+   "default": "Draft",
+   "read_only": 1,
+   "no_copy": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "description": "Set by the workflow: Approved is the submitted document, Cancelled the cancelled one."
+  },
+  {
+   "fieldname": "title",
+   "fieldtype": "Data",
+   "label": "Title",
+   "hidden": 1,
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "tab_rates",
+   "fieldtype": "Tab Break",
+   "label": "Rates"
+  },
+  {
+   "fieldname": "rates_section",
+   "fieldtype": "Section Break",
+   "label": "Rates"
+  },
+  {
+   "fieldname": "rates",
+   "fieldtype": "Table",
+   "options": "Rate Sheet Row",
+   "label": "Rates",
+   "reqd": 1
+  },
+  {
+   "fieldname": "source_section",
+   "fieldtype": "Section Break",
+   "label": "Source",
+   "collapsible": 1
+  },
+  {
+   "fieldname": "copied_from",
+   "fieldtype": "Link",
+   "options": "Rate Sheet",
+   "label": "Copied From",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The sheet that Duplicate Previous proposed this draft from. Reference only: approving this sheet does not change that one."
+  },
+  {
+   "fieldname": "col_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "source_note",
+   "fieldtype": "Small Text",
+   "label": "Source Note",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "tab_approval",
+   "fieldtype": "Tab Break",
+   "label": "Approval"
+  },
+  {
+   "fieldname": "approval_section",
+   "fieldtype": "Section Break",
+   "label": "Approval"
+  },
+  {
+   "fieldname": "change_reason",
+   "fieldtype": "Small Text",
+   "label": "Reason for Change",
+   "no_copy": 1,
+   "mandatory_depends_on": "eval:doc.amended_from || doc.supersedes",
+   "description": "Required when this sheet corrects an approved one (Supersedes) or amends a cancelled one, and when a rate moves more than the Rate Move Needing a Reason in Close Settings. The sheet it replaces and this reason are the audit trail."
+  },
+  {
+   "fieldname": "supersedes",
+   "fieldtype": "Link",
+   "options": "Rate Sheet",
+   "label": "Supersedes",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The approved sheet of the same key that this correction replaces (konsol#312-3). Approving this sheet cancels that one in the same step, so the key always has one approved sheet. An approved sheet is never cancelled on its own (konsol#312-S3-2): correct it with another sheet."
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "options": "Rate Sheet",
+   "label": "Amended From",
+   "read_only": 1,
+   "no_copy": 1,
+   "print_hide": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1,
+   "report": 1,
+   "export": 1
+  },
+  {
+   "role": "EPM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "submit": 1,
+   "cancel": 1,
+   "amend": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM Analyst",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "amend": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "EPM User",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  },
+  {
+   "role": "Entity Accountant",
+   "read": 1,
+   "report": 1,
+   "print": 1,
+   "export": 1,
+   "email": 1
+  }
+ ]
+}

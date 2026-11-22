@@ -152,32 +152,14 @@ def test_no_budget_role_is_named():
     assert not [r for r in _perms() if r.startswith("Budget ")]
 
 
-# ---- S4 K5 (BUD-3): the Cycle declares its Rate Set --------------------------------
+# ---- konsol#592 D2 (Deepak Pai, 22 Nov 2026): no Rate Set on the Cycle ---------------
+# Every budget and forecast translates at its year's Constant Rate Sheet, which
+# replaces BUD-3's per-Cycle Rate Set. T25's drop_budget_cycle_rate_set drops
+# the column once the migration has read it.
 
-def test_rate_set_is_a_required_link_declared_per_cycle_with_no_default():
-    f = _fields()["rate_set"]
-    assert (f["fieldtype"], f["options"]) == ("Link", "Rate Set")
-    # Required of every Cycle that can exist (budget, forecast, strategic,
-    # operational; an actual Cycle is refused by validate), so plain reqd.
-    assert f["reqd"] == 1
-    assert not f.get("default"), "BUD-3: declared per Cycle, never defaulted"
-    # Editable while a draft, frozen by the submit: not set-once (it is not
-    # part of the Cycle's identity or name) and never allow_on_submit (the
-    # fingerprint stamped at Approve covers it).
-    assert not f.get("set_only_once")
-    assert not f.get("allow_on_submit")
-    assert f.get("in_list_view") == 1 and f.get("in_standard_filter") == 1
-    assert "translated" in f["description"] and "default" in f["description"].lower(), f["description"]
-    assert f["label"] == "Rate Set"
-
-
-def test_rate_set_sits_in_the_cycle_section_after_the_year_before_the_round():
-    order = [f["fieldname"] for f in _doctype()["fields"]]
-    assert order.index("fiscal_year") < order.index("rate_set") < order.index("as_of_date")
-
-
-def test_rate_set_is_searchable():
-    assert "rate_set" in _doctype()["search_fields"].split(",")
+def test_the_cycle_declares_no_rate_set():
+    assert "rate_set" not in _fields()
+    assert "rate_set" not in _doctype()["search_fields"].split(",")
 
 
 # ---- S4 K8 (S4-Q5 a): the fingerprint of the inputs the Cycle approved -----------------

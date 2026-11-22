@@ -290,8 +290,6 @@ def test_the_migrate_records_a_disagreeing_row_in_the_error_log():
 _USED_SOURCES = {
     ("Entity", "functional_currency"),
     ("Consolidation Group", "reporting_currency"),
-    ("Group Exchange Rate", "from_currency"),
-    ("Group Exchange Rate", "to_currency"),
     ("Trial Balance Submission", "currency"),
     ("Consolidation Journal", "currency"),
     ("Business Combination", "consideration_currency"),
@@ -390,7 +388,7 @@ def test_used_reads_roots_and_submitted_documents_only():
     # A group's reporting currency is read from its node with no entity
     # (consolidation_journal._root), not from a node with no parent.
     assert seen["Consolidation Group"] == {"data_area_id": ["is", "not set"]}
-    for doctype in ("Group Exchange Rate", "Trial Balance Submission", "Consolidation Journal",
+    for doctype in ("Trial Balance Submission", "Consolidation Journal",
                     "Business Combination", "Business Disposal"):
         assert seen[doctype] == {"docstatus": 1}, (doctype, seen[doctype])
     # A child row counts only under a submitted parent of its own doctype.

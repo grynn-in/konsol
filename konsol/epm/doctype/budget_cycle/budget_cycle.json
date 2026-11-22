@@ -48,16 +48,6 @@
       "in_list_view": 1
     },
     {
-      "fieldname": "rate_set",
-      "fieldtype": "Link",
-      "label": "Rate Set",
-      "options": "Rate Set",
-      "reqd": 1,
-      "in_list_view": 1,
-      "in_standard_filter": 1,
-      "description": "The Rate Set this Cycle's budget is translated at: the approved Group Exchange Rates and Historical Equity Rates of that set, for this fiscal year (konsol#348 S4). Declared per Cycle, never defaulted (BUD-3): choose the set flagged Is Actuals to budget at actual rates, or a set of your own for planning rates. Editable while the Cycle is a draft; Approve freezes it, and the Input Fingerprint stamped then covers the set and its rates."
-    },
-    {
       "fieldname": "as_of_date",
       "set_only_once": 1,
       "fieldtype": "Date",
@@ -104,7 +94,7 @@
       "label": "Input Fingerprint",
       "read_only": 1,
       "no_copy": 1,
-      "description": "Stamped at Approve: a hash of the inputs this Cycle approved (its annual figures, entry lines, the spread weights they use, and the approved rates of its Rate Set for this year). Recomputed on request (konsol.epm.budget_fingerprint.check_input_fingerprint): a mismatch means an input changed after approval. It reports; what follows is the approver's call (BUD-11-3)."
+      "description": "Stamped at Approve: a hash of the inputs this Cycle approved (its annual figures, entry lines, the spread weights they use, the approved Constant rate sheet of this year and its rates, and the ownership links). Recomputed on request (konsol.epm.budget_fingerprint.check_input_fingerprint): a mismatch means an input changed after approval. It reports; what follows is the approver's call (BUD-11-3)."
     },
     {
       "fieldname": "amended_from",
@@ -188,5 +178,5 @@
       "export": 1
     }
   ],
-  "search_fields": "scenario_id,fiscal_year,as_of_date,rate_set"
+  "search_fields": "scenario_id,fiscal_year,as_of_date"
 }
