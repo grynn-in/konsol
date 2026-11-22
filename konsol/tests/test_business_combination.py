@@ -1854,3 +1854,51 @@ def test_a_proportional_declaration_superseded_by_a_full_one_before_the_window_s
 def test_a_proportional_declaration_superseded_inside_the_window_still_refuses():
     _Site(declarations=[DECLARATION, dict(DECLARATION, consolidation_method="full", effective_date="2025-12-10")])
     assert "is declared a joint operation of ZZG" in _refused(_deal().validate)
+
+
+# -- a step acquisition is refused by name until it is supported (konsolidat#348) --
+#
+# An entity the group already held (a stake under the equity method, or any
+# earlier holding) has an earlier submitted Ownership Period. IFRS 3.41-3.42
+# (equity method to the deal date, derecognise the old stake, remeasure it)
+# is not built, so approving the deal would post wrong books and fail no test.
+
+EARLIER_STAKE = {"name": "OP-ZZG-ZZE-2024-01-01", "consolidation_group": "ZZG", "data_area_id": "ZZE",
+                 "owner_node": "CG-ZZG-", "effective_date": "2024-01-01", "end_date": None,
+                 "ownership_pct": 30, "consolidation_method": "equity", "docstatus": 1}
+
+
+def test_a_deal_for_an_entity_with_an_earlier_ownership_period_is_refused_on_submit():
+    _Site(ownership=[EARLIER_STAKE])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    message = _refused(deal.before_submit)
+    assert ("Business Combination: ZZE was already held by ZZG (Ownership Period OP-ZZG-ZZE-2024-01-01, "
+            "equity, 30%, from 2024-01-01): step acquisitions are not supported yet "
+            "(konsolidat#348).") in message
+
+
+def test_a_first_acquisition_is_not_refused_as_a_step_acquisition():
+    _Site()
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.before_submit()
+
+
+def test_the_period_the_deal_itself_links_is_not_an_earlier_holding():
+    # A migrated deal is dated by its own acquisition_date; its linked period may
+    # carry an earlier effective_date and is still the deal's own.
+    linked = dict(EARLIER_STAKE, name="OP-ZZG-ZZE-2025-12-01", effective_date="2025-12-01", ownership_pct=80,
+                  consolidation_method="full")
+    _Site(ownership=[linked])
+    deal = _deal(share_acquired_pct=80, ownership_period="OP-ZZG-ZZE-2025-12-01")
+    deal.validate()
+    deal.before_submit()
+
+
+def test_a_cancelled_or_later_ownership_period_is_not_an_earlier_holding():
+    _Site(ownership=[dict(EARLIER_STAKE, docstatus=2),
+                     dict(EARLIER_STAKE, name="OP-ZZG-ZZE-2026-03-01", effective_date="2026-03-01")])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.before_submit()
