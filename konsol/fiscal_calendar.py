@@ -21,6 +21,7 @@ _PERIOD_DATA = {
     "Consolidation Journal": True,
     "IC Balance": True,
     "Group Exchange Rate": True,
+    "Rate Sheet": True,
     "Assertion Run": False,
     "TB Exception": True,
     "Budget Entry": False,
@@ -29,6 +30,13 @@ _PERIOD_DATA = {
 
 #: Doctypes whose documents carry a fiscal year + period that must be declared.
 DOCTYPES_USING_PERIODS = tuple(_PERIOD_DATA)
+
+#: Extra SQL condition that narrows a doctype's period use. A Constant Rate
+#: Sheet stores no period, and it covers every period of its year; only a
+#: Statutory sheet uses one period (konsol#592 T17).
+_PERIOD_CONDITIONS = {
+    "Rate Sheet": "rate_basis = 'Statutory'",
+}
 
 #: Doctypes with fiscal_year + fiscal_period fields that are not period data.
 NOT_PERIOD_DATA = {
@@ -56,6 +64,8 @@ def periods_in_use(fiscal_year, lock=False):
         where = "fiscal_year = %(fiscal_year)s"
         if submittable:
             where += " AND docstatus < 2"
+        if doctype in _PERIOD_CONDITIONS:
+            where += f" AND {_PERIOD_CONDITIONS[doctype]}"
         select = f"SELECT DISTINCT fiscal_period FROM `tab{doctype}` WHERE {where}"
         # MariaDB takes a locking clause inside a UNION only on a
         # parenthesised SELECT.

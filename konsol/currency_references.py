@@ -74,6 +74,8 @@ _USES = (
     ("Historical Equity Rate", "to_currency", _SUBMITTED, "Historical Equity Rate"),
     ("Group Exchange Rate", "from_currency", _SUBMITTED, "Group Exchange Rate"),
     ("Group Exchange Rate", "to_currency", _SUBMITTED, "Group Exchange Rate"),
+    ("Rate Sheet Row", "from_currency", {"docstatus": 1, "parenttype": "Rate Sheet"}, "Rate Sheet"),
+    ("Rate Sheet Row", "to_currency", {"docstatus": 1, "parenttype": "Rate Sheet"}, "Rate Sheet"),
     ("Trial Balance Submission", "currency", _SUBMITTED, "Trial Balance Submission"),
     ("Consolidation Journal", "currency", _SUBMITTED, "Consolidation Journal"),
     ("Business Combination", "consideration_currency", _SUBMITTED, "Business Combination"),
