@@ -721,3 +721,98 @@ def test_fr5_a_plain_rate_carries_supersedes_none_and_its_old_detail():
     item = _fr5_item(docs)
     assert item["detail"] == "FY2026 P7 · ERP quote moved"
     assert item["supersedes"] is None
+
+
+# --- Waiting builds (Build Approval in the queue; Deepak Pai, 22 Nov 2026) -----
+# Build Approval is not one of APPROVAL_DOCTYPES (its Approve is a workflow
+# state change at docstatus 0, not a submit), so it is not shaped by
+# queue_items. ``build_items`` lists the builds the caller may approve, by the
+# site's own Build Approval Workflow: a row is listed when its state has an
+# "Approve" transition whose role the caller holds.
+
+#: The shipped workflow's transitions that matter here, as dicts.
+BUILD_TRANSITIONS = [
+    {"state": "Draft", "action": "Request", "allowed": "EPM Analyst"},
+    {"state": "Pending Review", "action": "Approve", "allowed": "EPM Admin"},
+    {"state": "Pending Review", "action": "Reject", "allowed": "EPM Admin"},
+    {"state": "Approved", "action": "Start", "allowed": "Administrator"},
+]
+
+
+def _build(name, state="Pending Review", created="2026-10-02T09:00:00+01:00", **over):
+    row = {"name": name, "workflow_state": state, "build_scope": "consolidation",
+           "risk_level": "high", "requested_by": "zz-accountant@example.com",
+           "trigger_source": "auto", "trigger_doctype": "Trial Balance Submission",
+           "trigger_docname": "TBS-ZZ-1", "full_refresh": 0, "rebuild_requested": 0,
+           "created": created}
+    row.update(over)
+    return row
+
+
+def test_builds_review_states_are_the_states_with_an_approve_transition():
+    assert M.build_review_states(BUILD_TRANSITIONS) == ("Pending Review",)
+    assert M.build_review_states([]) == ()
+
+
+def test_builds_a_pending_review_build_is_listed_for_the_epm_admin():
+    [item] = M.build_items([_build("BA-ZZ-1")], BUILD_TRANSITIONS, ["EPM Admin"])
+    assert item == {
+        "doctype": "Build Approval", "name": "BA-ZZ-1", "state": "Pending Review",
+        "build_scope": "consolidation", "risk_level": "high",
+        "requested_by": "zz-accountant@example.com", "trigger_source": "auto",
+        "trigger_doctype": "Trial Balance Submission", "trigger_docname": "TBS-ZZ-1",
+        "full_refresh": False, "absorbs_later_changes": False,
+        "created": "2026-10-02T09:00:00+01:00", "desk": "/desk/build-approval/BA-ZZ-1",
+    }
+
+
+def test_builds_other_states_are_not_listed():
+    rows = [_build("BA-ZZ-%s" % s, state=s) for s in
+            ("Draft", "Approved", "Running", "Completed", "Failed", "Cancelled")]
+    assert M.build_items(rows, BUILD_TRANSITIONS, ["EPM Admin"]) == []
+
+
+def test_builds_failure_path_a_caller_the_workflow_does_not_let_approve_sees_none():
+    """The shipped workflow gives Approve to EPM Admin only: a System Manager
+    or EPM Analyst without it would be refused by apply_workflow, so the
+    queue does not offer them the build."""
+    rows = [_build("BA-ZZ-1")]
+    assert M.build_items(rows, BUILD_TRANSITIONS, ["System Manager"]) == []
+    assert M.build_items(rows, BUILD_TRANSITIONS, ["EPM Analyst", "EPM User"]) == []
+
+
+def test_builds_no_self_approval_rule_applies_to_a_build():
+    """A TB submit requests the build, so requested_by is the submitter; the
+    shipped workflow sets allow_self_approval on Approve. The Close Settings
+    self-approval policy covers APPROVAL_DOCTYPES only, so a build the
+    caller requested is still theirs to approve."""
+    mine = _build("BA-ZZ-1", requested_by="zz-lead@example.com")
+    assert [i["name"] for i in M.build_items([mine], BUILD_TRANSITIONS, ["EPM Admin"])] == [
+        "BA-ZZ-1"]
+
+
+def test_builds_a_site_that_gives_approve_to_another_role_lists_it_for_that_role():
+    custom = BUILD_TRANSITIONS + [
+        {"state": "Pending Review", "action": "Approve", "allowed": "System Manager"}]
+    assert [i["name"] for i in M.build_items([_build("BA-ZZ-1")], custom,
+                                             ["System Manager"])] == ["BA-ZZ-1"]
+
+
+def test_builds_carry_absorbed_changes_and_full_refresh_and_sort_oldest_first():
+    rows = [_build("BA-ZZ-2", created="2026-10-03T09:00:00+01:00", rebuild_requested=1),
+            _build("BA-ZZ-1", created="2026-10-01T09:00:00+01:00", full_refresh=1)]
+    items = M.build_items(rows, BUILD_TRANSITIONS, ["EPM Admin"])
+    assert [i["name"] for i in items] == ["BA-ZZ-1", "BA-ZZ-2"]
+    assert items[0]["full_refresh"] is True and items[0]["absorbs_later_changes"] is False
+    assert items[1]["absorbs_later_changes"] is True
+
+
+def test_builds_waiting_adds_the_builds_to_the_documents_count_and_oldest():
+    builds = M.build_items([_build("BA-ZZ-1", created="2026-09-30T09:00:00+01:00")],
+                           BUILD_TRANSITIONS, ["EPM Admin"])
+    assert M.waiting_with_builds({"count": 2, "oldest": "2026-10-01T09:00:00+01:00"}, builds) == {
+        "count": 3, "oldest": "2026-09-30T09:00:00+01:00"}
+    assert M.waiting_with_builds({"count": 0, "oldest": None}, builds) == {
+        "count": 1, "oldest": "2026-09-30T09:00:00+01:00"}
+    assert M.waiting_with_builds({"count": 2, "oldest": "2026-10-01T09:00:00+01:00"}, []) == {
+        "count": 2, "oldest": "2026-10-01T09:00:00+01:00"}

@@ -1,4 +1,6 @@
 {
+  "builds": [],
+  "builds_problem": "No active Build Approval Workflow, so konsol cannot tell who approves a waiting build. Waiting builds are not listed here: open Build Approval in Desk, or activate the workflow.",
   "can_approve": true,
   "counts": {
     "Business Combination": 0,
