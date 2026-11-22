@@ -4,6 +4,27 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (22 Nov 2026, night): Rate Sheets pair 1 merged; P1 round 2 deployed to two example sites; six small Desk fixes.**
+- **Rate Sheet replaces Group Exchange Rate, pair 1** (konsol#592; konsol#595, b009d49c; konsolidat#394, 70083779). Decisions are Deepak Pai's, 22 Nov 2026: a Statutory sheet per period (Average and Closing), a Constant sheet per year (one rate per pair), budget and forecast translated at the year's Constant sheet (replaces BUD-3's per-cycle Rate Set), QA-1, QB-1, QC-1, P1-Q2 B (a Constant sheet locks at year close), P1-Q3 A+C, P1-Q4 A.
+  - A correction supersedes the approved sheet; approving it cancels the old one in the same step. A plain cancel of an approved Statutory sheet is refused.
+  - The migration replays every Group Exchange Rate row into sheets, writes an audit CSV of every row, and retires the old DocType. The warehouse table keeps its shape.
+  - Live A/B on the local test site: 589 rows read, 21 Statutory sheets approved plus one correction chain, 0 rows dropped; rates, consolidated TB and fully consolidated TB diff 0 against the snapshot (a planted change counted 1 in each); sign-off state unchanged. The full workflow walk passed.
+  - One live bug was fixed test first: a Constant sheet stored its period as None while the Int column reads 0, so every approver counted as a preparer (red 4e4aaa8a, green 54d5e478).
+  - The onboarding loader writes Statutory Rate Sheets (konsolidat#394).
+  - Next: pair 2 (dbt reads the basis; Rate Set and the historical-rate `rate_set` retire; the QC-1 sheet-year key), pair 3 (#585 comparison columns).
+- **Deployed** (Deepak Pai, 22 Nov 2026): konsol b2da186d with konsolidat 6300961 (P1 round 2, including konsolidat#358 with konsol#532) on the Mini Group example site and the aquila-bike example site.
+  - Mini Group: build `PASS=445 WARN=0 ERROR=0`; close checks 2025 P1 and P2 Green, 220/220.
+  - aquila-bike: the fully consolidated TB against `examples/aquila-bike/model/expected.json` differs in 2 of 9,833 cells, both the new #316 journal-close rows (ABPT 2023 P13, ±201,924.45). Close checks 2024 P12 are Red 219/220 on `assert_ic_slice_to_date_eliminated`, which fails inside the full suite and passes alone on the same tables: konsolidat#395, undiagnosed.
+  - The Mini Group (simple) third example site is not upgraded yet.
+- **Desk fixes, each live-checked on the local test site:**
+  - Pipeline Run: Fiscal Year, Fiscal Period and Scope are read-only and say what empty means (konsol#596). The fields stay: an orchestrator run uses them to narrow a build (Deepak Pai: "keep it, fix the display").
+  - A history period reports no sign-off gaps, only its history note (konsol#597).
+  - Dimension Values opens its list: the DocType-level `read_only` ("User Cannot Search") hid it from the Desk router (konsol#598). A guard test covers every sidebar-linked DocType.
+  - Pipeline definitions are read-only; the stub `signoff` step that reported a sign-off that never happened is gone and refused by name; orchestrator writes are POST only (konsol#599, Deepak Pai: option A).
+  - Waiting builds count in My Work and the home waiting count (konsol#600). Only EPM Admin may approve a build (the shipped workflow); whether System Manager should is open.
+  - Assertion Run has no Add button: no role holds create, since Run checks is the only way to start a run (konsol#601).
+- **Open:** konsolidat#395; System Manager and build approval; deploy the Rate Sheet merge and the six Desk fixes to the example sites (each deploy needs Deepak Pai's go); upgrade the third example site.
+
 **Update (22 Nov 2026): konsolidat P1 round 2 merged: dimension layers, year-end journal close, ownership exit.** Merge go by Deepak Pai, 21 Nov 2026. Plan and log: `.claude/memory/active/tasks-p1-round2.md` and `tasks-p1-round2.log`. Nothing is deployed yet. konsolidat#358 and konsol#532 must deploy together: the exit journal reads `consolidation_groups.exit_gain_loss_account`, and a site's first build fails without it.
 - **Dimension layers** (konsolidat#245; konsolidat#260, 4589d9f6). #245 Q1–Q3 are Deepak Pai's (21 Nov 2026, all option A):
   - The IC difference is blank on both legs.
