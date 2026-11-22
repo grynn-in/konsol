@@ -56,6 +56,11 @@ def test_number_driving_is_every_approval_doctype_ic_balance_included():
     assert "IC Balance" in M.NUMBER_DRIVING
 
 
+def test_number_driving_holds_rate_sheet():
+    assert "Rate Sheet" in M.NUMBER_DRIVING
+    assert M.changed_periods("Rate Sheet", (2025, 7), _ROWS)[0] == (2025, 7)
+
+
 def test_number_driving_has_no_duplicates():
     assert len(M.NUMBER_DRIVING) == len(set(M.NUMBER_DRIVING))
 

@@ -96,8 +96,10 @@ def test_approval_doctypes_excludes_the_four():
         assert doctype not in M.APPROVAL_DOCTYPES
 
 
-def test_approval_doctypes_holds_the_seven():
+def test_approval_doctypes_holds_the_seven_and_rate_sheet():
+    # konsol#592 T16: Rate Sheet joins beside Group Exchange Rate until T26.
     assert set(M.APPROVAL_DOCTYPES) == {
+        "Rate Sheet",
         "Consolidation Journal",
         "Business Combination",
         "Business Disposal",

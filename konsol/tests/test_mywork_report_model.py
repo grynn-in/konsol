@@ -159,6 +159,12 @@ def test_entity_items_filter_the_trial_balance_list_to_the_entity():
                                "&data_area_id=ZZA")
 
 
+def test_rate_sheet_is_an_approval_doctype_with_a_sent_back_fix():
+    assert "Rate Sheet" in R.APPROVAL_DOCTYPES
+    assert "sent-back:Rate Sheet" in R.FIXES
+    assert R._sent_back_form("sent-back:Rate Sheet:RS-1") == "/desk/rate-sheet/RS-1"
+
+
 def test_sent_back_draft_opens_its_own_desk_form():
     rows = _by_id(R.rows(_close_lead_payload()))
     assert rows["sent-back:Consolidation Journal:CJ-1"]["open"] == "/desk/consolidation-journal/CJ-1"
