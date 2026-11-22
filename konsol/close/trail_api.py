@@ -132,6 +132,8 @@ def _event_out(event, users):
         "entity": event.get("entity"),
         "reference_doctype": event.get("reference_doctype"),
         "reference_name": event.get("reference_name"),
+        "reference_linked": event.get("reference_linked", bool(event.get("reference_name"))),
+        "legacy_name": event.get("legacy_name"),
         "actor": actor,
         "actor_name": user["full_name"] if user else actor,
         "actor_missing": user is None,
@@ -163,6 +165,19 @@ def _filters_out(filters):
     }
 
 
+def _resolve_legacy(events):
+    """Events that name a retired Group Exchange Rate resolve to the Rate Sheet
+    whose row lists it in ``legacy_documents`` (konsol#592 T23); the original
+    name stays in ``legacy_name``. One read per distinct name, none when no
+    event names one."""
+    rows = []
+    for name in trail_model.legacy_references(events):
+        rows += frappe.get_all(
+            "Rate Sheet Row", filters={"legacy_documents": ["like", "%" + name + "%"]},
+            fields=["parent", "legacy_documents"], limit_page_length=0)
+    return trail_model.resolve_legacy(events, rows)
+
+
 def _scoped_trail(fiscal_year, fiscal_period, kinds, actors, entities, date_from, date_to):
     """The one read behind both endpoints: the period row, the scoped
     events (``trail_model.visible``) newest first, the hidden count, the
@@ -184,7 +199,7 @@ def _scoped_trail(fiscal_year, fiscal_period, kinds, actors, entities, date_from
 
     allowed = allowed_entity_codes()
     events, hidden = trail_model.visible(events, allowed)
-    events = trail_model.ordered(events)
+    events = trail_model.ordered(_resolve_legacy(events))
     shown = trail_model.filtered(events, filters)
 
     actors_seen = sorted({e["actor"] for e in events if e.get("actor")})

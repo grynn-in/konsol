@@ -47,12 +47,15 @@ after_install = ["konsol.install.create_roles", "konsol.workflows.install_workfl
                  # konsol#348: the Rate Set a fresh site's actuals rates name; a patch
                  # does the same for an existing site (fresh installs skip patches)
                  "konsol.consolidation.doctype.rate_set.rate_set.ensure_actual_set",
+                 "konsol.consolidation.doctype.rate_set.rate_set.ensure_constant_set",
                  "konsol.defaults.install_defaults", "konsol.desk_blocks.install_custom_blocks",
                  "konsol.brand.set_default_if_blank", "konsol.install.regenerate_dbt_vars"]
 # Fills a fresh site's warehouse (#142): queues reconcile_all as a job after
 # the install commits. after_sync, because after_install runs before fixtures.
 after_sync = ["konsol.install.after_sync"]
-after_migrate = ["konsol.install.after_migrate"]
+after_migrate = ["konsol.install.after_migrate",
+                 # konsol#592: the system-owned set Constant rate sheets publish into
+                 "konsol.consolidation.doctype.rate_set.rate_set.ensure_constant_set"]
 
 # Includes in <head>
 # ------------------

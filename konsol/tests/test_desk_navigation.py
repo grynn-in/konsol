@@ -65,6 +65,8 @@ NOT_ON_A_SIDEBAR = {
     "Reporting Hierarchy Member",
     # Site-written Handbook pages: listed from the Konsol Handbook workspace (plan, Pages table).
     "Konsol Guide Page",
+    # System-owned (konsol#592 T24): System Manager only, created by konsol.
+    "Rate Set",
 }
 
 #: The rail, top to bottom: (title, link_type, link_to).
