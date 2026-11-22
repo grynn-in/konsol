@@ -149,10 +149,10 @@ def test_live_approval_cancelled_with_no_reason_gives_no_problems():
     assert M.event_problems(_event(kind="approval_cancelled")) == []
 
 
-def test_approval_cancelled_with_period_zero_is_named():
-    # Not a year kind: fiscal_period must not be 0.
+def test_period_closed_with_period_zero_is_named():
+    # Not a year kind, not a P0 kind (#587): fiscal_period must not be 0.
     _field_named(
-        M.event_problems(_event(kind="approval_cancelled", fiscal_period=0)),
+        M.event_problems(_event(kind="period_closed", fiscal_period=0)),
         "fiscal_period",
     )
 
@@ -416,7 +416,7 @@ def test_period_zero_stays_refused_for_every_other_non_year_kind():
             continue
         problems = M.event_problems(_event(kind=kind, fiscal_period=0, reason="r"))
         assert any("must not be 0" in p for p in problems), (kind, problems)
-    assert M.PERIOD_ZERO_KINDS == ("statement_exported",)
+    assert M.PERIOD_ZERO_KINDS == ("statement_exported",) + RATE_APPROVAL_KINDS
 
 
 RATE_APPROVAL_KINDS = ("approved", "self_approved", "rejected", "approval_cancelled")
