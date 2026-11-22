@@ -47,6 +47,7 @@ ALLOWED = {
         "legacy_documents and the Migrated source describe the rows a sheet row came from",
     os.path.join("consolidation", "doctype", "rate_sheet", "rate_sheet.py"):
         "the Migrated source is set only by the migration from Group Exchange Rate",
+    "group_rates.py": "the publish refuses while tabGroup Exchange Rate holds unmigrated rows (PR #595 review 4)",
 }
 #: Not runtime: the handbook and other docs (T28), and the built close-ui
 #: bundle (the abandoned SPA, Desk only since 5 Nov 2026).

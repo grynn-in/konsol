@@ -49,8 +49,8 @@ recorded too (W4-E13; R01g precedent); skipped, and logged, only while the
 Close Event table does not exist yet (a patch that runs before migrate's
 schema sync creates it) — ``record_data_change``'s mark writes one.
 
-PR #595 review 2: the one-time migration from Group Exchange Rate
-(``migrate_group_exchange_rates_to_rate_sheets``) replays every period's
+PR #595 review 2: the one-time migration of the retired rates doctype to
+Rate Sheets (``konsol.patches``, konsol#592 T25) replays every period's
 approvals and corrections as Rate Sheet submits and cancels. They record the
 rates each period was already translated at, so no period's data changed:
 under the controller's ``MIGRATE_FLAG``, as the Administrator (the rule of

@@ -1174,6 +1174,7 @@ def _hook_on_real_gate(site, period, entity=None):
     (``[((fiscal_year, fiscal_period, text, user), {"entity": entity}), ...]``).
     """
     gate_module, frappe, mods, _ps = _load(site)
+    frappe.flags = {}   # PR #595 review 2: the hook reads the migration flag
     frappe.db.table_exists = lambda dt: True
     frappe.logger = lambda: types.SimpleNamespace(
         warning=lambda *a, **k: None, info=lambda *a, **k: None)
