@@ -86,6 +86,31 @@ def test_every_period_doctype_is_classified():
         assert _has_period_fields(doctypes[name]), f"{name!r} lacks fiscal_year/fiscal_period"
 
 
+def test_rate_sheet_counts_statutory_periods_only():
+    """A Statutory sheet holds a period; a Constant sheet stores none, and
+    counts for no period (T17). Group Exchange Rate stays listed until its
+    retirement (T26)."""
+    M = _load()
+    db = _DB([])
+    frappe = types.ModuleType("frappe")
+    frappe.db = db
+    saved = sys.modules.get("frappe")
+    sys.modules["frappe"] = frappe
+    try:
+        M.periods_in_use(2026)
+    finally:
+        if saved is None:
+            sys.modules.pop("frappe", None)
+        else:
+            sys.modules["frappe"] = saved
+    (query, _values), = db.calls
+    selects = query.split("\nUNION\n")
+    rate_sheet = [s for s in selects if "`tabRate Sheet`" in s]
+    assert len(rate_sheet) == 1, selects
+    assert "rate_basis = 'Statutory'" in rate_sheet[0], rate_sheet[0]
+    assert any("`tabGroup Exchange Rate`" in s for s in selects)
+
+
 def test_assertion_runs_freeze_periods():
     """Assertion Run records sign-off evidence against a period, so a period
     with assertion runs must be frozen like one with postings — Pipeline Run

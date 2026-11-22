@@ -94,6 +94,7 @@ SIDEBARS = {
         ("DocType", "TB Exception"),
         ("Section", "Rates"),
         ("DocType", "Group Exchange Rate"),
+        ("DocType", "Rate Sheet"),
         ("DocType", "Historical Equity Rate"),
         ("DocType", "Rate Set"),
         ("Section", "Intercompany"),
