@@ -264,7 +264,7 @@ def make_runner(run_doc, params: Optional[Dict] = None):
     Dispatches on ``argv[0]``:
     - ``"dbt"`` → shell out to the dbt CLI in the dbt-project dir;
     - ``"airbyte_sync"`` → trigger an Airbyte sync and write back ``last_sync_at``;
-    - ``"close_assertions"`` / ``"signoff"`` → frappe-side close steps.
+    - ``"close_assertions"`` → the frappe-side close assertions.
 
     All frappe / subprocess imports stay inside this closure so the module loads
     on the host without frappe.
@@ -279,8 +279,6 @@ def make_runner(run_doc, params: Optional[Dict] = None):
             return _run_airbyte_sync(run_doc)
         if kind == "close_assertions":
             return _run_close_assertions(run_doc, params)
-        if kind == "signoff":
-            return _run_signoff(run_doc)
         return StepResult(ok=True, log=" ".join(argv))
 
     return runner
@@ -351,10 +349,6 @@ def _run_close_assertions(run_doc, params) -> StepResult:
     if dbt_vars:
         argv += ["--vars", json.dumps(dbt_vars, sort_keys=True)]
     return _run_dbt(argv)
-
-
-def _run_signoff(run_doc) -> StepResult:
-    return StepResult(ok=True, log="signed off")
 
 
 # ---- enqueue-able entrypoint --------------------------------------------
