@@ -331,7 +331,8 @@ def sent_back_items(docs, rejections):
     Returns ``[{"doctype", "name", "kind_label", "title", "fiscal_year",
     "fiscal_period", "rejection"}]``, oldest rejection first. ``fiscal_year``
     / ``fiscal_period`` come from the row for the journal, Rate
-    Sheet and IC Balance; they are None for Historical Equity Rate (not
+    Sheet and IC Balance (a Constant Rate Sheet's period is None: it covers
+    its year); they are None for Historical Equity Rate (not
     period-keyed, E4-P12), Ownership Period, Business Combination and
     Business Disposal (date-keyed).
 
@@ -377,6 +378,10 @@ def sent_back_items(docs, rejections):
                 kind_label, title = _kind_label_and_title(doctype, doc)
             if doctype in period_keyed:
                 fiscal_year, fiscal_period = doc["fiscal_year"], doc["fiscal_period"]
+                if doctype == RS and doc.get("rate_basis") == "Constant":
+                    # PR #595 review 7: a Constant sheet covers its year; its
+                    # stored period reads back 0, which is not its period.
+                    fiscal_period = None
             else:
                 fiscal_year = fiscal_period = None
             out.append({

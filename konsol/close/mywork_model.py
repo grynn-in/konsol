@@ -688,8 +688,9 @@ _SENT_BACK_DESK = {
     "Rate Sheet": "/desk/rate-sheet/%s",
 }
 #: Doctypes whose row names a period (the journal, Rate Sheet and IC Balance;
-#: mirrors approvals_model.sent_back_items). A Constant sheet is period 0 and
-#: has no period to name, so a falsy period is not keyed (konsol#592 T16).
+#: mirrors approvals_model.sent_back_items). P0 (opening balances) is a period
+#: and is keyed. A Constant sheet covers a year: approvals_model gives it no
+#: period (None), so it is not keyed (konsol#592 T16, PR #595 review 7).
 _SENT_BACK_PERIOD_KEYED = ("Consolidation Journal", "IC Balance", "Rate Sheet")
 
 
@@ -722,7 +723,7 @@ def sent_back_items(rows, persona, period_codes):
             "action": _sent_back_action(doctype, name),
         }
         fy, fp = row.get("fiscal_year"), row.get("fiscal_period")
-        if doctype in _SENT_BACK_PERIOD_KEYED and fy is not None and fp:
+        if doctype in _SENT_BACK_PERIOD_KEYED and fy is not None and fp is not None:
             key = (int(fy), int(fp))
             if key not in period_codes:
                 raise ValueError(
