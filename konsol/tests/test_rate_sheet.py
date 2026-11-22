@@ -421,12 +421,13 @@ def test_an_undeclared_year_is_refused():
 
 def test_constant_covers_the_year_and_stores_no_period():
     """A stored Int reads back 0, so 0 on a Constant sheet is unset; the
-    controller stores None, never a period."""
+    controller stores 0, what the column reads back, never a period (PR #595
+    live test: None made every submit look like an edit)."""
     with harness() as (m, w):
         for blank in (None, 0, ""):
             d = _sheet(m, rate_basis="Constant", fiscal_period=blank)
             d.validate()
-            assert d.fiscal_period is None
+            assert d.fiscal_period == 0
             assert (d.valid_from, d.valid_to) == (datetime.date(2025, 1, 1), datetime.date(2025, 12, 31))
             assert d.title == "Constant FY2025 Constant"
 

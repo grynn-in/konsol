@@ -178,8 +178,13 @@ class RateSheet(Document):
         self._check_magnitude_warning()
 
     def _normalise_key(self):
+        # A Constant sheet has no period. It is stored as 0, what the Int
+        # column reads back: storing None made every submit's diff hold
+        # ('fiscal_period', 0, None), so the approver counted as a preparer
+        # (self_approval._edits_in_this_submit, PR #595 live test). Readers
+        # take the period through _period() or _as_sheet(), None for Constant.
         if self.rate_basis == CONSTANT and self.fiscal_period in (None, "", 0, "0"):
-            self.fiscal_period = None
+            self.fiscal_period = 0
         try:
             year = int(self.fiscal_year)
         except (TypeError, ValueError):
@@ -201,7 +206,11 @@ class RateSheet(Document):
     def _as_sheet(self):
         """This sheet in the shape rate_sheet_model reads."""
         return {"rate_basis": self.rate_basis, "fiscal_year": self.fiscal_year,
-                "fiscal_period": self.fiscal_period, "name": self.name, "docstatus": self.docstatus,
+                # The stored 0 of a Constant sheet is the model's None; any
+                # other period is passed on, for the model to refuse.
+                "fiscal_period": (None if self.rate_basis == CONSTANT and self.fiscal_period in (0, "0")
+                                  else self.fiscal_period),
+                "name": self.name, "docstatus": self.docstatus,
                 "rows": [{f: _v(r, f) for f in ROW_FIELDS} for r in self._rows()]}
 
     def _calendar(self):
