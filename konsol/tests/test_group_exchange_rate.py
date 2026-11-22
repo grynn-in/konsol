@@ -276,7 +276,8 @@ def test_the_grain_and_the_approval_shape():
     assert f["amended_from"]["options"] == "Group Exchange Rate"
     assert f["change_reason"]["mandatory_depends_on"] == "eval:doc.amended_from || doc.supersedes"
     assert f["source"]["read_only"] == 1 and f["source"]["no_copy"] == 1
-    assert f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Adoption"]
+    assert f["source"]["options"].split("\n") == ["Manual", "ERP pre-fill", "Adoption",
+                                                  "Copied from previous period"]
     assert set(_json()["field_order"]) == set(f)
 
 
@@ -2108,3 +2109,242 @@ def test_actuals_readers_select_the_flagged_set_and_refuse_when_none_is_flagged(
         assert "ACTUAL" in str(e) and "ZZ_OTHER" in str(e), str(e)
     else:
         raise AssertionError("two flagged sets must be refused")
+
+
+# -- Copy rates from previous period (konsol#584, Deepak Pai 22 Nov 2026) ---------------
+
+COPY = "Copied from previous period"
+LIST_JS = os.path.join(GER_DIR, "group_exchange_rate_list.js")
+
+
+def test_a_copied_rate_names_the_rate_it_was_copied_from():
+    f, order = _fields(), _json()["field_order"]
+    c = f["copied_from"]
+    assert (c["fieldtype"], c["options"]) == ("Link", "Group Exchange Rate")
+    assert c["read_only"] == 1 and c["no_copy"] == 1 and c.get("label") == "Copied From"
+    assert c.get("description")
+    assert order.index("copied_from") == order.index("erp_quote") + 1, "in the Source section"
+
+
+def test_only_the_copy_sets_the_copied_source_and_copied_from():
+    """source and copied_from are read-only in the form only: REST writes them."""
+    refused, _, msg = _validate(source=COPY)
+    assert refused and "Copy rates from previous period" in msg, msg
+    refused, _, msg = _validate(copied_from="GER-2099-11-EUR-CHF-Closing-ACTUAL-01")
+    assert refused and "Copied From" in msg, msg
+    refused, _, _ = _validate(source=COPY, _before=dict(source="Manual", erp_quote=0, quoted_per="1"))
+    assert refused, "relabelling a saved rate"
+    # another writer's flag does not let it through
+    assert _validate(source=COPY, copied_from="GER-X", _ctx={"flags": {"konsol_prefilling_rates": True}})[0]
+    # the copy, under its own flag, sets the source, the link and the note
+    refused, d, msg = _validate(source=COPY, copied_from="GER-X", source_note="Copied from GER-X",
+                                _ctx={"flags": {"konsol_copying_rates": True}})
+    assert not refused and d.source == COPY, msg
+    # and nothing else: the ERP Quote is the pre-fill's alone
+    assert _validate(source=COPY, copied_from="GER-X", erp_quote=0.9478,
+                     _ctx={"flags": {"konsol_copying_rates": True}})[0]
+    # the copy flag does not let a forged ERP pre-fill or Adoption through
+    assert _validate(source="ERP pre-fill", erp_quote=0.9478, _ctx={"flags": {"konsol_copying_rates": True}})[0]
+    assert _validate(source="Adoption", _ctx={"flags": {"konsol_copying_rates": True}})[0]
+
+
+def test_a_copied_draft_a_person_saves_again_keeps_its_label_until_the_rate_changes():
+    saved = dict(source=COPY, copied_from="GER-X", erp_quote=0, quoted_per="1", quote=0.9478,
+                 source_note="Copied from GER-X")
+    refused, d, msg = _validate(source=COPY, copied_from="GER-X", source_note="Copied from GER-X", _before=saved)
+    assert not refused and d.source == COPY, msg
+    # the same rate per another unit is the same rate
+    refused, d, _ = _validate(source=COPY, copied_from="GER-X", source_note="Copied from GER-X",
+                              quote=9.478, quoted_per="10", _before=saved)
+    assert not refused and d.source == COPY
+    # a changed rate is a person's rate; the link stays as the reference
+    refused, d, _ = _validate(source=COPY, copied_from="GER-X", source_note="Copied from GER-X",
+                              quote=0.95, _before=saved)
+    assert not refused and d.source == "Manual" and d.copied_from == "GER-X"
+    # a person cannot repoint the link
+    assert _validate(source=COPY, copied_from="GER-Y", source_note="Copied from GER-X", _before=saved)[0]
+
+
+def test_the_copy_is_asked_no_magnitude_reason_like_the_pre_fill():
+    """konsol#179: the copy has no person to give a Reason for Change either;
+    it lists the warning (test_the_copy_in_action), and the person who saves
+    or approves the draft gives the reason."""
+    jpy = dict(from_currency="JPY", to_currency="USD", quote=0.6607, quoted_per="10", source=COPY,
+               copied_from="GER-X", source_note="n")
+    assert not _validate(_ctx={"magnitude_factor": 3, "flags": {"konsol_copying_rates": True}}, **jpy)[0]
+    assert _validate(_ctx={"magnitude_factor": 3},
+                     _before=dict(jpy, erp_quote=0), **jpy)[0], "a person's save is asked"
+
+
+def test_the_copy_proposes_drafts_and_never_submits():
+    src = open(RULES).read()
+    fn = next(n for n in ast.parse(src).body
+              if isinstance(n, ast.FunctionDef) and n.name == "copy_from_previous_period")
+    assert [ast.unparse(d) for d in fn.decorator_list] == ["frappe.whitelist(methods=['POST'])"]
+    assert [a.arg for a in fn.args.args] == ["fiscal_year", "fiscal_period", "rate_set"]
+    body = ast.unparse(fn)
+    assert "frappe.only_for(PREFILL_ROLES)" in body
+    assert ".submit(" not in body and "commit" not in body
+    assert "assert_open(" in body
+
+
+def _copy_env(*, sources=(), taken=(), calendar=None, rate_sets=("ACTUAL", "BUDGET-2025"), period_open=True,
+              refs=None, factor=None, refuse=()):
+    """(rules module, record) for copy_from_previous_period against a stub frappe.
+    ``sources``: Group Exchange Rate rows the stub returns for the source
+    period, filtered as the query asks. ``taken``: the target's rows."""
+    record = {"inserted": [], "gates": [], "reads": []}
+    frappe = _frappe(record, magnitude_factor=factor)
+    frappe.only_for = lambda roles: record.setdefault("roles", roles)
+    frappe.db.exists = lambda dt, name=None: dt == "Rate Set" and name in rate_sets
+
+    def matches(row, filters):
+        for k, v in filters.items():
+            if isinstance(v, list):
+                if v[0] == "<" and not row[k] < v[1]:
+                    return False
+            elif row[k] != v:
+                return False
+        return True
+
+    def get_all(doctype, filters=None, fields=None, **k):
+        if doctype == "ISO Currency":
+            return [types.SimpleNamespace(name=c, usd_log10=(refs or REFS).get(c),
+                                          get=lambda f, c=c: (refs or REFS).get(c))
+                    for c in filters["name"][1] if c in (refs or REFS)]
+        assert doctype == "Group Exchange Rate", doctype
+        record["reads"].append(dict(filters))
+        rows = sources if filters["fiscal_period"] != 1 or filters["fiscal_year"] != 2025 else taken
+        return [_Flags(r) for r in rows if matches(r, filters)]
+    frappe.get_all = get_all
+
+    class Doc(dict):
+        def __init__(self, d):
+            super().__init__(d)
+            self.name = f"GER-NEW-{d['from_currency']}-{d['rate_type']}"
+
+        def insert(self):
+            assert frappe.flags.konsol_copying_rates is True, "the copy's own flag"
+            if self["from_currency"] in refuse:
+                raise frappe.ValidationError("moves +80%")
+            record["inserted"].append(dict(self))
+    frappe.get_doc = Doc
+
+    def assert_open(fy, fp, action="run"):
+        record["gates"].append((fy, fp, action))
+        if not period_open:
+            raise Refused(f"Cannot {action}: fiscal period {fp} of FY{fy} is closed.")
+
+    year = [{"period": 0, "type": "Opening"}] + [{"period": p, "type": "Regular"} for p in range(1, 13)] \
+        + [{"period": 13, "type": "Closing"}]
+    cal = {2025: year, 2024: year} if calendar is None else calendar
+    r = _rules_module(frappe, {"assert_open": assert_open,
+                               "declared_calendar": lambda years: {y: cal[y] for y in years if y in cal}})
+    return r, record
+
+
+def _ger(name, f="EUR", rt="Closing", docstatus=1, rate_set="ACTUAL", quote=0.9478, per="1", fy=2024, fp=12):
+    return {"name": name, "from_currency": f, "to_currency": "CHF", "rate_type": rt, "docstatus": docstatus,
+            "rate_set": rate_set, "quote": quote, "quoted_per": per, "fiscal_year": fy, "fiscal_period": fp}
+
+
+def test_the_copy_in_action():
+    sources = [
+        _ger("GER-EUR-C"), _ger("GER-EUR-A", rt="Average", quote=0.945),
+        _ger("GER-JPY-C", f="JPY", quote=0.588235294, per="100"),
+        _ger("GER-GBP-C", f="GBP", quote=1.12),          # the target already has GBP Closing
+        _ger("GER-SEK-C", f="SEK", quote=0.085),          # the controller refuses it
+        _ger("GER-XAU-C", f="XAU", quote=2100.0),         # no magnitude reference
+        _ger("GER-EUR-C-DRAFT", docstatus=0, quote=0.5),  # a draft is never a source
+        _ger("GER-EUR-C-BUD", rate_set="BUDGET-2025", quote=0.8),  # nor another set's rate
+    ]
+    taken = [_ger("GER-GBP-TARGET", f="GBP", docstatus=0, fy=2025, fp=1)]
+    r, record = _copy_env(sources=sources, taken=taken, refuse=("SEK",),
+                          refs={k: v for k, v in REFS.items() if k != "XAU"})
+    out = r.copy_from_previous_period("2025", "1", "ACTUAL")
+    assert record["roles"] == ("EPM Analyst", "EPM Admin", "System Manager")
+    assert record["gates"] == [(2025, 1, "copy group exchange rates into it")]
+    assert out["from_period"] == "FY2024 P12"
+    drafts = {(d["from_currency"], d["rate_type"]): d for d in record["inserted"]}
+    assert set(drafts) == {("EUR", "Closing"), ("EUR", "Average"), ("JPY", "Closing")}, drafts
+    jpy = drafts[("JPY", "Closing")]
+    assert (jpy["quote"], jpy["quoted_per"]) == (0.588235294, "100"), "the same quote and unit"
+    assert jpy["copied_from"] == "GER-JPY-C" and jpy["source"] == COPY and jpy["rate_set"] == "ACTUAL"
+    assert (jpy["fiscal_year"], jpy["fiscal_period"], jpy["to_currency"]) == (2025, 1, "CHF")
+    assert "GER-JPY-C" in jpy["source_note"] and "FY2024 P12" in jpy["source_note"]
+    assert all("docstatus" not in d and not d.get("erp_quote") for d in drafts.values())
+    assert drafts[("EUR", "Closing")]["quote"] == 0.9478, "never the draft's or the budget set's quote"
+    assert sorted(out["created"]) == sorted(f"GER-NEW-{f}-{rt}" for f, rt in drafts)
+    assert [s.split(":")[0] for s in out["skipped"]] == ["GBP → CHF Closing"], out["skipped"]
+    refused = dict(x.split(": ", 1) for x in out["refused"])
+    assert refused["SEK → CHF Closing"] == "moves +80%"
+    assert "No magnitude reference for XAU" in refused["XAU → CHF Closing"]
+    assert record.get("cleared") == [1] and r.frappe.flags.konsol_copying_rates is False
+    # every read is of the asked set, and the sources are approved only
+    assert all(f["rate_set"] == "ACTUAL" for f in record["reads"]), record["reads"]
+    source_read = next(f for f in record["reads"] if f["fiscal_period"] == 12)
+    assert source_read["docstatus"] == 1 and source_read["fiscal_year"] == 2024
+
+
+def test_the_copy_lists_a_rate_past_the_warning_factor():
+    sources = [_ger("GER-ARS-C", f="ARS", quote=0.0035), _ger("GER-EUR-C")]
+    r, record = _copy_env(sources=sources, taken=[], factor=3)
+    out = r.copy_from_previous_period(2025, 1, "ACTUAL")
+    assert {d["from_currency"] for d in record["inserted"]} == {"ARS", "EUR"}, "both are drafted"
+    assert [w.split(":")[0] for w in out["warned"]] == ["ARS → CHF Closing"], out["warned"]
+
+
+def test_a_budget_set_copies_its_own_rates():
+    sources = [_ger("GER-EUR-C"), _ger("GER-EUR-C-BUD", rate_set="BUDGET-2025", quote=0.8)]
+    r, record = _copy_env(sources=sources)
+    r.copy_from_previous_period(2025, 1, "BUDGET-2025")
+    assert [(d["copied_from"], d["rate_set"], d["quote"]) for d in record["inserted"]] == [
+        ("GER-EUR-C-BUD", "BUDGET-2025", 0.8)]
+
+
+def test_the_copy_refuses_by_name():
+    # a missing or blank Rate Set
+    r, record = _copy_env(sources=[_ger("GER-EUR-C")])
+    for rate_set in ("ZZ_NO_SUCH_SET", "", None):
+        try:
+            r.copy_from_previous_period(2025, 1, rate_set)
+        except Refused as e:
+            assert "Rate Set" in str(e) and (rate_set or "required") in str(e), str(e)
+        else:
+            raise AssertionError(f"Rate Set {rate_set!r} must be refused")
+    assert record["inserted"] == []
+    # a closed target period
+    r, record = _copy_env(sources=[_ger("GER-EUR-C")], period_open=False)
+    assert _refused(r.copy_from_previous_period, 2025, 1, "ACTUAL") and record["inserted"] == []
+    # an undeclared previous year
+    year = [{"period": p, "type": "Regular"} for p in range(1, 13)]
+    r, record = _copy_env(sources=[_ger("GER-EUR-C")], calendar={2025: year})
+    try:
+        r.copy_from_previous_period(2025, 1, "ACTUAL")
+    except Refused as e:
+        assert "FY2024 is not declared" in str(e), str(e)
+    else:
+        raise AssertionError("an undeclared previous period must be refused")
+    assert record["inserted"] == [] and record["reads"] == []
+
+
+def test_the_copy_skips_opening_and_closing_periods():
+    """P1 of FY2025 copies from FY2024 P12, not FY2025 P0 (Opening) nor FY2024 P13 (Closing)."""
+    sources = [_ger("GER-P12"), _ger("GER-P13", fp=13, quote=0.9), _ger("GER-P0", fy=2025, fp=0, quote=0.91)]
+    r, record = _copy_env(sources=sources)
+    out = r.copy_from_previous_period(2025, 1, "ACTUAL")
+    assert out["from_period"] == "FY2024 P12"
+    assert [d["copied_from"] for d in record["inserted"]] == ["GER-P12"]
+
+
+def test_the_list_has_a_copy_button_beside_the_pre_fill():
+    js = open(LIST_JS).read()
+    assert '__("Copy rates from previous period")' in js
+    assert 'method: "konsol.group_rates.copy_from_previous_period"' in js
+    assert js.count('type: "POST"') == 2
+    assert 'fieldname: "rate_set", fieldtype: "Link", options: "Rate Set"' in js
+    assert "is_actuals: 1" in js, "the actuals set is pre-selected"
+    # the summary is a message, never a question
+    assert "frappe.confirm" not in js and "alert(" not in js
+    for key in ("created", "skipped", "refused", "warned"):
+        assert f"out.{key}" in js, key
