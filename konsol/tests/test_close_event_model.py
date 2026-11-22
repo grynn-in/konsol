@@ -417,3 +417,23 @@ def test_period_zero_stays_refused_for_every_other_non_year_kind():
         problems = M.event_problems(_event(kind=kind, fiscal_period=0, reason="r"))
         assert any("must not be 0" in p for p in problems), (kind, problems)
     assert M.PERIOD_ZERO_KINDS == ("statement_exported",)
+
+
+RATE_APPROVAL_KINDS = ("approved", "self_approved", "rejected", "approval_cancelled")
+
+
+def test_rate_approval_kinds_are_accepted_at_fiscal_period_zero():
+    """konsol#587: a Group Exchange Rate at P0 (opening balances translate at P0
+    rates) is approved, self-approved, rejected or cancelled, so its events
+    sit at fiscal_period 0."""
+    for kind in RATE_APPROVAL_KINDS:
+        event = _event(kind=kind, fiscal_period=0, reason="r",
+                       reference_doctype="Group Exchange Rate", reference_name="ZZ-GER-1")
+        assert M.event_problems(event) == [], kind
+
+
+def test_period_close_kinds_stay_refused_at_fiscal_period_zero_587():
+    for kind in ("period_closed", "period_locked", "period_reopened", "signed_off",
+                 "tb_submitted", "reminder_sent"):
+        problems = M.event_problems(_event(kind=kind, fiscal_period=0, reason="r"))
+        assert any("must not be 0" in p for p in problems), (kind, problems)
