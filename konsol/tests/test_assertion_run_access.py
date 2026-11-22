@@ -98,16 +98,21 @@ def test_only_the_close_roles_may_start_a_close_run():
         f"trigger_close_run does not open with frappe.only_for of the close roles: {roles}")
 
 
-def test_the_analyst_may_create_but_never_write_a_run():
+def test_the_analyst_may_run_checks_but_never_write_a_run():
     """R3 (konsol#297): the Analyst runs checks, but the sign-off is still the
-    Close Lead's. The JSON grants create with no write on the level-0 row, and
-    `sign_off_close`'s first statement enforces write on the caller, so a
-    create-only Analyst is refused there whatever else changes."""
+    Close Lead's. Running checks is gated by role in trigger_close_run
+    (frappe.only_for, which names EPM Analyst), not by create: no role holds
+    create, because a hand-made run is always refused (A02c, 22 Nov 2026).
+    The level-0 row grants no write, and `sign_off_close`'s first statement
+    enforces write on the caller, so the Analyst is refused there whatever
+    else changes."""
     meta = _meta(ASSERTION_RUN_JSON)
     rows = [p for p in meta["permissions"] if p.get("role") == "EPM Analyst" and not p.get("permlevel")]
     assert rows, "no level-0 EPM Analyst permission row on Assertion Run"
-    assert all(p.get("create") for p in rows), f"EPM Analyst has no create on Assertion Run: {rows}"
     assert not any(p.get("write") for p in rows), f"EPM Analyst gained write on Assertion Run: {rows}"
+    with open(ASSERTION_RUN) as f:
+        assert '"EPM Analyst"' in f.read().split("def trigger_close_run", 1)[1].split("frappe.only_for", 1)[1].split(")", 1)[0], (
+            "trigger_close_run no longer lets the EPM Analyst run checks")
 
     stmt = _first_statement(_function(ASSERTION_RUN, "sign_off_close"))
     assert isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call), (
