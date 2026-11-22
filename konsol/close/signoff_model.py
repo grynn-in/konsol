@@ -123,6 +123,17 @@ def config_gaps(first_close, target, frequencies):
     return gaps
 
 
+def signoff_gaps(first_close, target, gaps):
+    """``gaps`` as reported for ``target``. A history period (before a declared
+    first close period) is never signed off, so every gap that reads "before
+    signing off" is noise there: only the history note stays. An undeclared
+    first close period changes nothing (it is reported, never guessed)."""
+    first = first_close_key(first_close)
+    if first is not None and _key(target) < first:
+        return [g for g in gaps if g["code"] == HISTORY_PERIOD]
+    return list(gaps)
+
+
 def unowned_tb_gap(entities, target):
     """The #289 gap: ``entities`` submitted a trial balance for ``target`` with
     no covering ownership. ``entities`` is sorted in the result. None when

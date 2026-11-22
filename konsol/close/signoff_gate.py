@@ -417,6 +417,10 @@ def sign_off_problems(fiscal_year, fiscal_period, shared=None):
     completeness = signoff_model.completeness_problem(
         expected["expected"], tbs, _submitted("TB Exception", key),
     )
+    # A history period is never signed off: only its history note is reported.
+    gaps = signoff_model.signoff_gaps(first, key, gaps)
+    if first is not None and key < first:
+        completeness = None
     return {"config_gaps": gaps, "order": order, "completeness": completeness}
 
 
