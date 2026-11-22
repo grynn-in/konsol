@@ -58,7 +58,6 @@
    "role": "EPM Admin"
   }
  ],
- "read_only": 1,
  "search_fields": "dimension,value",
  "sort_field": "name",
  "sort_order": "ASC",
