@@ -1154,3 +1154,60 @@ def test_a_duplicate_of_a_superseded_sheet_is_judged_against_the_superseding_she
         _before(d)
         why = _refused(d.validate)
         assert why and "Close Settings" in why
+
+
+# == Self-approval: the submit carries no edit (PR #595 live test) ======================
+
+POLICY_MODEL = os.path.join(APP_DIR, "close", "close_policy_model.py")
+#: The sheet fields a submitting save could change, as Frappe's get_diff reads them.
+_DIFF_FIELDS = ("rate_basis", "fiscal_year", "fiscal_period", "valid_from", "valid_to", "period_label",
+                "title", "copied_from", "source_note", "change_reason", "supersedes")
+
+
+def _policy_model():
+    spec = importlib.util.spec_from_file_location("close_policy_model_under_test", POLICY_MODEL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _diff(before, doc):
+    """frappe.core.doctype.version.version.get_diff for scalar fields: a
+    field whose old and new values differ (``!=``) is changed."""
+    changed = [(f, before.get(f), doc.get(f)) for f in _DIFF_FIELDS if before.get(f) != doc.get(f)]
+    return {"changed": changed} if changed else None
+
+
+def _saved_then_submitted(m, **fields):
+    """A draft saved (validate), stored (an Int column reads back 0 for
+    None), loaded and submitted: the submitting save runs validate again
+    against the stored draft. Returns (stored draft, doc at before_submit)."""
+    draft = _sheet(m, **fields)
+    draft.validate()
+    stored = {f: draft.get(f) for f in _DIFF_FIELDS}
+    stored["fiscal_period"] = int(stored["fiscal_period"] or 0)
+    doc = _sheet(m, **dict(fields, **stored))
+    doc.validate()
+    return Row(**stored), doc
+
+
+def test_submitting_a_saved_constant_sheet_carries_no_edit():
+    """Live test on PR #595: EPM Admin B, who did not prepare RS-C-2025, was
+    refused as a self-approver. The controller set fiscal_period to None on
+    every save while the Int column stores 0, so the submit's diff held
+    ('fiscal_period', 0, None) and the approver counted as a preparer."""
+    policy = _policy_model()
+    with harness() as (m, w):
+        stored, doc = _saved_then_submitted(m, rate_basis="Constant", fiscal_period=None)
+        diff = _diff(stored, doc)
+        assert not policy.submit_carries_edit(diff), diff
+
+
+def test_submitting_a_saved_statutory_sheet_carries_no_edit():
+    """The Statutory control, and a planted edit to show the check can fail."""
+    policy = _policy_model()
+    with harness() as (m, w):
+        stored, doc = _saved_then_submitted(m, fiscal_period=6)
+        assert not policy.submit_carries_edit(_diff(stored, doc))
+        doc.change_reason = "edited in the submit"
+        assert policy.submit_carries_edit(_diff(stored, doc))
