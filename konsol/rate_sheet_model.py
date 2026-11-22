@@ -18,13 +18,16 @@ A sheet is a mapping: ``rate_basis`` ("Statutory" or "Constant"),
 ``name``, ``docstatus``. A calendar row is a mapping: ``fiscal_year``,
 ``period``, ``type``, ``start_date``, ``end_date``.
 
-Constant rows and Closing periods (the choice): the warehouse's
-``rate_period_map()`` (konsolidat, governed_rates.sql) reads a Closing-type
-period at the LAST Regular period of its year, so a Closing period has no
-rates of its own. A Constant sheet therefore publishes every declared period
-except a Closing one, and publishes a Closing period only in a year that
-declares no Regular period (the map leaves it pointing at itself). Opening and
-Adjustment periods map to themselves and are published.
+Closing periods (the choice): the warehouse's ``rate_period_map()``
+(konsolidat, governed_rates.sql) reads a Closing-type period at the LAST
+Regular period of its year, so a Closing period has no rates of its own.
+``rate_period`` is that map, for every konsol reader of a period's rates (the
+close gate, approved_quotes, the grid). A Constant sheet publishes every
+declared period except a Closing one, and publishes a Closing period only in a
+year that declares no Regular period (the map leaves it pointing at itself).
+Opening and Adjustment periods map to themselves: they are published, and a
+Statutory sheet may hold an Opening, Regular or Adjustment period's rates
+(PR #595 review 1). A Statutory sheet for a Closing period is refused.
 """
 import decimal
 
@@ -35,7 +38,8 @@ BASES = (STATUTORY, CONSTANT)
 OPENING = "Opening"
 REGULAR = "Regular"
 CLOSING = "Closing"
-STATUTORY_PERIOD_TYPES = (OPENING, REGULAR)
+ADJUSTMENT = "Adjustment"
+STATUTORY_PERIOD_TYPES = (OPENING, REGULAR, ADJUSTMENT)
 
 QUOTED_PER = (1, 10, 100, 1000, 10000)
 RATE_TYPES = ("Average", "Closing")
@@ -75,8 +79,8 @@ def window(sheet, calendar_rows):
     """((valid_from, valid_to), None), or (None, why).
 
     Statutory: the declared period's own start and end; the period must exist
-    and be of type Opening or Regular (Closing is read at the year's last
-    Regular period by the warehouse, Adjustment has no governed rate).
+    and be of type Opening, Regular or Adjustment (Closing is read at the
+    year's last Regular period by the warehouse: ``rate_period``).
     Constant: no period; the year's first start to its last end."""
     basis = sheet.get("rate_basis")
     if basis not in BASES:
@@ -102,8 +106,21 @@ def window(sheet, calendar_rows):
         bad = sorted(types - set(STATUTORY_PERIOD_TYPES))[0]
         extra = (" Its rates are those of the year's last Regular period." if bad == CLOSING else "")
         return None, (f"FY{int(year)} P{int(period)} is a {bad} period: a Statutory sheet needs an "
-                      f"Opening or Regular period.{extra}")
+                      f"Opening, Regular or Adjustment period.{extra}")
     return (min(r["start_date"] for r in match), max(r["end_date"] for r in match)), None
+
+
+def rate_period(calendar_rows, fiscal_year, fiscal_period):
+    """The period whose rates ``(fiscal_year, fiscal_period)`` is translated
+    at, as the warehouse's ``rate_period_map()`` reads it: a Closing-type
+    period reads the LAST Regular period of its year; every other period, a
+    Closing period in a year with no Regular period and an undeclared period
+    read themselves. Only rows of ``fiscal_year`` are read."""
+    fp = int(fiscal_period)
+    declared = _year_rows(calendar_rows, fiscal_year)
+    closing = any(int(r["period"]) == fp and r["type"] == CLOSING for r in declared)
+    regular = [int(r["period"]) for r in declared if r["type"] == REGULAR]
+    return max(regular) if closing and regular else fp
 
 
 # -- T2: the rows ----------------------------------------------------------------------

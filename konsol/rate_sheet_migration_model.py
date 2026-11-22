@@ -47,7 +47,11 @@ Statutory sheets, from the rows of the actuals Rate Set:
   docstatus, is dropped and named (T25b, coordinator 22 Nov 2026). dbt never
   reads a Closing period's own rates (``rate_period_map`` reads the year's
   last Regular period), and the controller and the publish refuse a Statutory
-  sheet for one. The patch's migration audit CSV keeps the rows.
+  sheet for one. The patch's migration audit CSV keeps the rows. An
+  Adjustment period maps to itself in dbt, so its rows become a sheet like a
+  Regular period's (PR #595 review 1: rate_sheet_model.window accepts it;
+  test_every_planned_sheet_passes_the_controllers_rules pins that nothing
+  planned is refused by the controller's rules).
 * A period the calendar does not declare is refused: a sheet's dates come
   from the calendar (P1-Q4 A).
 

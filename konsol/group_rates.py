@@ -694,13 +694,32 @@ _SHEET_ROWS_OF_PERIOD_SQL = (
     "AND r.parenttype = 'Rate Sheet' AND r.parentfield = 'rates' ORDER BY s.name, r.idx")
 
 
+_PERIOD_TYPES_OF_YEAR_SQL = (
+    "SELECT p.fiscal_period, p.period_type FROM `tabEPM Fiscal Year Period` p "
+    "JOIN `tabEPM Fiscal Year` y ON y.name = p.parent AND p.parenttype = 'EPM Fiscal Year' "
+    "AND p.parentfield = 'periods' WHERE y.fiscal_year = %s")
+
+
+def rate_period(fiscal_year, fiscal_period):
+    """The period whose sheet holds ``(fiscal_year, fiscal_period)``'s rates
+    (PR #595 review 1): a Closing-type period reads the year's last Regular
+    period, as the warehouse's rate_period_map() does
+    (rate_sheet_model.rate_period); every other period reads itself."""
+    calendar = [{"fiscal_year": int(fiscal_year), "period": fp, "type": t}
+                for fp, t in frappe.db.sql(_PERIOD_TYPES_OF_YEAR_SQL, (int(fiscal_year),))]
+    return rate_sheet_model.rate_period(calendar, fiscal_year, fiscal_period)
+
+
 def _statutory_rows(fiscal_year, fiscal_period, docstatus=1, share=""):
     """(from, to, quoted_per, average_quote, closing_quote) of every row of the
     period's Statutory sheets in ``docstatus``, the one read the close gate
-    (_approved_keys) and approved_quotes share. An approved sheet named in
-    another approved sheet's ``supersedes`` gives way to it (#312-3), as in the
-    publish (sheet_published_rows)."""
-    rows = frappe.db.sql(_SHEET_ROWS_OF_PERIOD_SQL + share, (docstatus, int(fiscal_year), int(fiscal_period)))
+    (_approved_keys), approved_quotes and draft_pairs share. The sheet read is
+    the one of ``rate_period`` (a Closing period reads the last Regular
+    period's, PR #595 review 1). An approved sheet named in another approved
+    sheet's ``supersedes`` gives way to it (#312-3), as in the publish
+    (sheet_published_rows)."""
+    period = rate_period(fiscal_year, fiscal_period)
+    rows = frappe.db.sql(_SHEET_ROWS_OF_PERIOD_SQL + share, (docstatus, int(fiscal_year), period))
     superseded = {sup for _n, sup, *_ in rows if sup} if docstatus == 1 else set()
     return [tuple(r[2:]) for r in rows if r[0] not in superseded]
 
@@ -845,8 +864,11 @@ def assert_rates_complete(fiscal_year, fiscal_period):
             "rates cannot be checked.", frappe.ValidationError)
     problems = list(blockers)
     if missing:
+        read_at = rate_period(fiscal_year, fiscal_period)
         problems.append("no approved group exchange rate for "
-                        + ", ".join(f"{f} → {t} {rt}" for f, t, rt in missing))
+                        + ", ".join(f"{f} → {t} {rt}" for f, t, rt in missing)
+                        + (f" (a Closing period is translated at the year's last Regular period: "
+                           f"approve the rates of P{read_at})" if read_at != int(fiscal_period) else ""))
     if problems:
         frappe.throw(
             f"Cannot close fiscal period {fiscal_period} of FY{fiscal_year}: " + "; ".join(problems)
