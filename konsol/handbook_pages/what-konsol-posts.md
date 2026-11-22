@@ -20,6 +20,7 @@ Each entry below lands in its own layer of the consolidation. The layer name is 
 | Acquisition journal, with goodwill, from a submitted Business Combination | `acquisition` | Acquisition and disposal |
 | Goodwill amortisation, only when the group declares the Amortise policy | `goodwill_amortisation` | Acquisition and disposal |
 | Disposal journal, for a full disposal, from a submitted Business Disposal | `disposal` | Acquisition and disposal |
+| Ownership exit: an Ownership Period that ends with no Business Disposal removes the entity's carried balances, with the net to the group's Exit Gain/Loss Account | `ownership_exit` | Acquisition and disposal |
 | NCI attribution: the minority's share of profit and CTA of a subsidiary | `nci_attribution` | NCI attribution |
 | Year-end journal close: each fiscal year's P&L of the journal layers moved into retained earnings, in the Closing period | `journal_close` | Journal close |
 
