@@ -80,10 +80,16 @@ def env(monkeypatch):
     # its own tests are test_budget_cycle_input_fingerprint.py.
     fingerprint = types.ModuleType("konsol.epm.budget_fingerprint")
     fingerprint.compute = lambda doc: "v1:stub"
+    # konsol#592 D2: Approve reads the inputs (the year's Constant sheet among
+    # them) FOR UPDATE and stamps the model's hash of them.
+    fingerprint.read_inputs = lambda doc, for_update=False: {"rate_sheets": [{"name": "RS-C-2027"}]}
+    fingerprint_model = types.ModuleType("konsol.epm.budget_fingerprint_model")
+    fingerprint_model.input_fingerprint = lambda **inputs: "v1:stub"
     for name, mod in {
         "frappe": frappe, "frappe.model": model, "frappe.model.document": docmod,
         "konsol.epm.budget_grain": grain, "konsol.epm.doctype.scenario.scenario": scenario,
         "konsol.budget_intake": intake, "konsol.epm.budget_fingerprint": fingerprint,
+        "konsol.epm.budget_fingerprint_model": fingerprint_model,
     }.items():
         monkeypatch.setitem(sys.modules, name, mod)
     monkeypatch.setattr(sys.modules["konsol"], "budget_intake", intake, raising=False)

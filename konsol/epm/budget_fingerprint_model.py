@@ -8,7 +8,11 @@ changed after Approve is reported, never silently carried. So this hashes
 the inputs, not the translated result (a Cycle on actual rates would void
 every month as the actual rates arrive):
 
-- the Cycle's Rate Set;
+- the approved Constant Rate Sheet of the Cycle's year (konsol#592 D2, Deepak
+  Pai, 22 Nov 2026, replacing BUD-3's per-Cycle Rate Set): its name, the
+  sheet it supersedes, and each row's pair, rate and unit. A correction is a
+  new sheet (RS-C-<FY>-N), so a superseded sheet reads as a changed input
+  even when the correction's rates are the same;
 - its Budget Annual Input rows: grain (entity, account, layer, currency,
   the declared budget dimensions), amount and spread profile;
 - its Budget Entry Lines: grain (entity, year, period, account, layer,
@@ -16,8 +20,8 @@ every month as the actual rates arrive):
   warehouse sums them, so a line split in two is the same budget;
 - the Spread Profile weights the annual rows name (an unused profile is not
   an input);
-- the approved Group Exchange Rates (quote and unit, as entered) and
-  Historical Equity Rates of that set;
+- the approved Historical Equity Rates of the CONSTANT set (the set a
+  Constant sheet publishes under; the budget's HER join goes in pair 2);
 - every approved Ownership Period link on the site (konsol#552, Deepak Pai,
   18 Nov 2026). An ownership exit recorded after Approve must read as a
   changed input; it must not silently change the consolidated budget. Every
@@ -33,7 +37,7 @@ Each row's text is hashed with its kind, and the hashes are summed mod
 2**256 (never XORed: two equal hashes would cancel), so the result is
 order-independent and any one changed value changes it. Amounts are
 normalised to their stored scale (Decimal(18,2) annual, Decimal(18,4)
-lines, 9 places for a rate quote, 6 for a historical rate), so 100, 100.0
+lines, 9 places for a sheet rate, 6 for a historical rate), so 100, 100.0
 and "100.00" are one number. A NULL amount raises ``ValueError``: an
 unknown number cannot be fingerprinted as any value.
 
@@ -45,7 +49,10 @@ from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 
 #: Stored as "<VERSION>:<64 hex>", so a later change of recipe reads as a
 #: different fingerprint, never as a match.
-VERSION = "v2"  # v2: ownership links (konsol#552); every v1 stamp now reads as stale
+#: v2: ownership links (konsol#552). v3: the Constant Rate Sheet replaces the
+#: Rate Set and its Group Exchange Rates (konsol#592 D2); every v2 stamp reads
+#: as stale until the Cycle is re-approved.
+VERSION = "v3"
 _MOD = 2 ** 256
 _SEP = "\x1f"
 
@@ -58,8 +65,8 @@ LINE_GRAIN = ("data_area_id", "fiscal_year", "fiscal_period", "main_account", "l
 LINE_VALUES = (("debit", 4), ("credit", 4))
 WEIGHT_GRAIN = ("profile_id", "fiscal_period")
 WEIGHT_VALUES = (("weight", 9),)
-RATE_GRAIN = ("from_currency", "to_currency", "fiscal_year", "fiscal_period", "rate_type")
-RATE_VALUES = (("quote", 9), ("quoted_per", 0))
+SHEET_ROW_GRAIN = ("from_currency", "to_currency")
+SHEET_ROW_VALUES = (("rate", 9), ("quoted_per", 0))
 HISTORICAL_GRAIN = ("consolidation_group", "data_area_id", "main_account", "rate_date", "to_currency")
 HISTORICAL_VALUES = (("historical_rate", 6),)
 OWNERSHIP_GRAIN = ("consolidation_group", "data_area_id", "owner_group", "owner_data_area_id",
@@ -110,9 +117,14 @@ def _each(kind, rows, grain, values):
         yield _hash(_key(kind, row, grain), [_number(row.get(f), p, kind, row, f) for f, p in values])
 
 
-def input_fingerprint(rate_set, annual_inputs, entry_lines, weights, exchange_rates, historical_rates,
+def input_fingerprint(rate_sheets, annual_inputs, entry_lines, weights, historical_rates,
                       ownership_links, dimensions=()):
-    """The fingerprint of a Cycle's approved inputs: "v2:<64 hex>" (VERSION).
+    """The fingerprint of a Cycle's approved inputs: "v3:<64 hex>" (VERSION).
+
+    ``rate_sheets`` are the approved Constant sheets of the Cycle's year, each
+    ``{"name", "supersedes", "rows": [{from_currency, to_currency, rate,
+    quoted_per}]}``: one when the Cycle can be approved, none on a draft
+    whose year has no sheet yet. Every one given is hashed, never one picked.
 
     ``dimensions`` are the site's declared budget dimension fields (dim_*),
     part of both budget grains; a dim_* key on a row that is not declared is
@@ -122,7 +134,12 @@ def input_fingerprint(rate_set, annual_inputs, entry_lines, weights, exchange_ra
     annual rows name are hashed.
     """
     dims = tuple(dimensions or ())
-    total = _hash(("rate_set",), [rate_set or ""])
+    total = 0
+    for sheet in rate_sheets or ():
+        name = str(sheet.get("name") or "")
+        total += _hash(("rate_sheet", name, str(sheet.get("supersedes") or "")), [])
+        for h in _each("sheet_row:" + name, sheet.get("rows") or (), SHEET_ROW_GRAIN, SHEET_ROW_VALUES):
+            total += h
     for key, amounts in _summed("annual", annual_inputs, ANNUAL_GRAIN + dims, ANNUAL_VALUES).items():
         total += _hash(key, amounts)
     for key, amounts in _summed("line", entry_lines, LINE_GRAIN + dims, LINE_VALUES).items():
@@ -130,8 +147,6 @@ def input_fingerprint(rate_set, annual_inputs, entry_lines, weights, exchange_ra
     used = {str(r.get("spread_profile_id")) for r in annual_inputs if r.get("spread_profile_id")}
     used_weights = [w for w in weights if str(w.get("profile_id")) in used]
     for h in _each("weight", used_weights, WEIGHT_GRAIN, WEIGHT_VALUES):
-        total += h
-    for h in _each("rate", exchange_rates, RATE_GRAIN, RATE_VALUES):
         total += h
     for h in _each("historical", historical_rates, HISTORICAL_GRAIN, HISTORICAL_VALUES):
         total += h
