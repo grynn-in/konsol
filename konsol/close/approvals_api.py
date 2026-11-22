@@ -51,6 +51,15 @@ the draft, never a guessed effect; the rest of the queue is built as normal
 ``ownership_change`` is imported inside the call, only when an OP draft is
 pending.
 
+Waiting builds (Deepak Pai, 22 Nov 2026): ``builds`` lists the Build
+Approvals the caller may Approve by the site's Build Approval Workflow
+(``_waiting_builds``, ``approvals_model.build_items``), and ``waiting``
+counts them with the documents, so My work and the home count them too.
+Build Approval is not one of the 7 approval doctypes: it is not submittable,
+and its Approve and Reject are the workflow's own transitions on the Desk
+form. ``builds_problem`` is a sentence when no Build Approval Workflow is
+active (no build is listed then), otherwise None.
+
 This file never names the event-log doctype (the one-writer check,
 test_close_event_writer.py): rejections are read only through
 ``close_event.latest_rejections``.
@@ -358,6 +367,7 @@ def queue_for(user, roles):
     for item in items:
         counts[item["doctype"]] += 1
 
+    builds, builds_problem = _waiting_builds(roles)
     return {
         "items": [item for item in items if not item["sent_back"]],
         "sent_back": [item for item in items if item["sent_back"]],
@@ -365,8 +375,52 @@ def queue_for(user, roles):
         "hidden": result["hidden"],
         "self_approval": policy or None,
         "can_approve": bool(set(roles) & set(close_policy_model.APPROVER_ROLES)),
-        "waiting": approvals_model.waiting_for_me(items),
+        "waiting": approvals_model.waiting_with_builds(approvals_model.waiting_for_me(items), builds),
+        "builds": builds,
+        "builds_problem": builds_problem,
     }
+
+
+#: Read per waiting build (approvals_model.build_items shapes them).
+_BUILD_FIELDS = ["name", "creation", "workflow_state", "build_scope", "risk_level",
+                 "requested_by", "trigger_source", "trigger_doctype", "trigger_docname",
+                 "full_refresh", "rebuild_requested"]
+
+NO_BUILD_WORKFLOW = (
+    "No active Build Approval Workflow, so konsol cannot tell who approves a waiting "
+    "build. Waiting builds are not listed here: open Build Approval in Desk, or "
+    "activate the workflow.")
+
+
+def _waiting_builds(roles):
+    """``(builds, problem)``: the Build Approvals waiting for an Approve the
+    caller's ``roles`` may take, by the site's Build Approval Workflow
+    (approvals_model.build_items; Deepak Pai, 22 Nov 2026). The approve is
+    the workflow's own transition, taken on the Desk form's Actions menu as
+    the user, so the workflow's roles and the controller's on_update (which
+    enqueues the build) apply; nothing here approves.
+
+    With no active workflow, ``([], NO_BUILD_WORKFLOW)`` and no row read:
+    who approves is then undeclared, and is never guessed. Otherwise one
+    Workflow lookup, its cached doc, and one ``get_all``."""
+    wf_row = frappe.db.get_value(
+        "Workflow", {"document_type": approvals_model.BUILD_APPROVAL, "is_active": 1},
+        ["name", "workflow_state_field"], as_dict=True)
+    if not wf_row or not wf_row.get("name"):
+        return [], NO_BUILD_WORKFLOW
+    wf = frappe.get_cached_doc("Workflow", wf_row["name"])
+    transitions = [{"state": t.state, "action": t.action, "allowed": t.allowed}
+                   for t in (wf.transitions or [])]
+    review_states = approvals_model.build_review_states(transitions)
+    if not review_states:
+        return [], None
+    rows = frappe.get_all(
+        approvals_model.BUILD_APPROVAL,
+        filters={wf_row["workflow_state_field"]: ["in", list(review_states)]},
+        fields=_BUILD_FIELDS, order_by="creation asc", limit_page_length=0)
+    for row in rows:
+        row["created"] = _iso(row.pop("creation", None))
+    return approvals_model.build_items(rows, transitions, roles), None
 
 
 def sent_back_for(user):

@@ -40,7 +40,10 @@ APPROVAL_DOCTYPES = (
 #   (signoff_api.declare_tb_exception, signoff_api.py:322, insert then submit
 #   at :341-342), so the owner is always the submitter.
 # - Build Approval: not submittable; its "Approve" is a state change at
-#   docstatus 0.
+#   docstatus 0. Its waiting builds are listed beside the queue
+#   (approvals_api._waiting_builds), approved by its own Workflow's roles.
+#   No self-approval policy applies to a build: a TB submit requests one,
+#   so requested_by is the submitter (22 Nov 2026).
 # - Budget Cycle: a budget doctype, outside the close.
 
 # The roles approval_api.approve admits (approval_api.py:23). A submit by

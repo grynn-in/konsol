@@ -410,3 +410,76 @@ def waiting_for_me(items):
     if not counted:
         return {"count": 0, "oldest": None}
     return {"count": len(counted), "oldest": min(item["created"] for item in counted)}
+
+
+# --- Waiting builds (Deepak Pai, 22 Nov 2026: "fix") ------------------------------
+#
+# A Build Approval waiting for review was visible only in its own list. It is
+# not one of close_policy_model.APPROVAL_DOCTYPES and is not shaped by
+# ``queue_items``: it is not submittable, its Approve is a Workflow state
+# change at docstatus 0, and it has no period or entity. So it gets its own
+# list, ``build_items``, beside the documents.
+#
+# Who may approve is the site's own Build Approval Workflow, never a role
+# list here: a build is listed when its state has an "Approve" transition
+# whose ``allowed`` role the caller holds (the shipped workflow: Pending
+# Review, EPM Admin). A caller the workflow does not let Approve is not
+# offered the build, since apply_workflow would refuse them.
+#
+# No self-approval rule applies to a build. A TB submit requests one, so
+# ``requested_by`` is often the submitter, and the shipped workflow sets
+# allow_self_approval on Approve; the Close Settings self-approval policy
+# covers APPROVAL_DOCTYPES only (close_policy_model.py).
+#
+# ``absorbs_later_changes`` is the row's ``rebuild_requested`` flag
+# (build_lock.flag_running_build): at least one later change asked for the
+# same scope and was folded into this build. The row keeps no count.
+
+BUILD_APPROVAL = "Build Approval"
+APPROVE_ACTION = "Approve"
+
+
+def build_review_states(transitions):
+    """The workflow states with an "Approve" transition, in first-seen
+    order. ``transitions`` are ``{"state", "action", "allowed"}`` dicts."""
+    states = []
+    for t in transitions:
+        if t["action"] == APPROVE_ACTION and t["state"] not in states:
+            states.append(t["state"])
+    return tuple(states)
+
+
+def build_items(rows, transitions, roles):
+    """The builds in ``rows`` the caller (holding ``roles``) may Approve,
+    oldest ``created`` first. Each row carries ``name``, ``workflow_state``,
+    ``created`` (an ISO string) and the Build Approval fields read below."""
+    roles = set(roles)
+    may_approve = {t["state"] for t in transitions
+                   if t["action"] == APPROVE_ACTION and t["allowed"] in roles}
+    items = [{
+        "doctype": BUILD_APPROVAL,
+        "name": row["name"],
+        "state": row["workflow_state"],
+        "build_scope": row.get("build_scope"),
+        "risk_level": row.get("risk_level"),
+        "requested_by": row.get("requested_by"),
+        "trigger_source": row.get("trigger_source"),
+        "trigger_doctype": row.get("trigger_doctype"),
+        "trigger_docname": row.get("trigger_docname"),
+        "full_refresh": bool(row.get("full_refresh")),
+        "absorbs_later_changes": bool(row.get("rebuild_requested")),
+        "created": row["created"],
+        "desk": "/desk/build-approval/%s" % row["name"],
+    } for row in rows if row["workflow_state"] in may_approve]
+    items.sort(key=lambda item: item["created"])
+    return items
+
+
+def waiting_with_builds(waiting, builds):
+    """``waiting_for_me``'s ``{"count", "oldest"}`` with the caller's
+    waiting builds added: every listed build is one the caller may act on."""
+    created = [b["created"] for b in builds]
+    if waiting.get("oldest"):
+        created.append(waiting["oldest"])
+    return {"count": int(waiting["count"]) + len(builds),
+            "oldest": min(created) if created else None}
