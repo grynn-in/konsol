@@ -20,7 +20,7 @@
       "fieldname": "step_type",
       "fieldtype": "Select",
       "label": "Step Type",
-      "options": "airbyte_sync\ndbt_seed\ndbt_run\ndbt_build\ndbt_test\nclose_assertions\nsignoff\ncube_refresh\nsql",
+      "options": "airbyte_sync\ndbt_seed\ndbt_run\ndbt_build\ndbt_test\nclose_assertions\ncube_refresh\nsql",
       "reqd": 1,
       "in_list_view": 1,
       "columns": 2,

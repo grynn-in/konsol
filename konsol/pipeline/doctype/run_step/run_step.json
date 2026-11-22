@@ -20,7 +20,7 @@
    "fieldtype": "Data",
    "label": "Step Type",
    "read_only": 1,
-   "description": "Handler type: airbyte_sync / dbt_seed / dbt_run / dbt_build / dbt_test / close_assertions / signoff",
+   "description": "Handler type: airbyte_sync / dbt_seed / dbt_run / dbt_build / dbt_test / close_assertions",
    "in_list_view": 1
   },
   {

@@ -181,7 +181,7 @@ def _persist_statuses(run_doc, snapshot: Dict[str, str]) -> None:
             row.status = snapshot[row.step_id]
 
 
-@whitelist()
+@whitelist(methods=["POST"])
 def start_run(definition: Optional[str] = None, params=None) -> str:
     """Create a Pipeline Run, stamp the PRD-7 params, and enqueue it.
 
@@ -249,7 +249,7 @@ def get_run(run_name: str) -> Dict:
     return {"name": run_doc.name, "status": run_doc.status, "steps": steps}
 
 
-@whitelist()
+@whitelist(methods=["POST"])
 def retry_step(run_name: str, step_id: str) -> str:
     """Re-arm a failed ``step_id`` (and its descendants) and re-enqueue the run.
 
@@ -278,7 +278,7 @@ def retry_step(run_name: str, step_id: str) -> str:
     return run_name
 
 
-@whitelist()
+@whitelist(methods=["POST"])
 def resume_run(run_name: str, step_id: str) -> str:
     """Restart a finished run from ``step_id`` downward and re-enqueue it.
 
@@ -384,7 +384,7 @@ def launch_options(fiscal_year: Optional[str] = None) -> Dict:
     }
 
 
-@whitelist()
+@whitelist(methods=["POST"])
 def cancel_run(run_name: str) -> str:
     """Request cancellation of a run.
 

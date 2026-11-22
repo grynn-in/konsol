@@ -11,10 +11,11 @@ def test_default_plan_is_a_valid_ordered_dag():
     plan = build_plan(DEFAULT_DEFINITION, {})
     order = [s.id for s in Dag(plan).toposort()]
     assert order[0] == "extract"
-    assert order[-1] == "signoff"
+    assert order[-1] == "assertions"
     pos = {sid: i for i, sid in enumerate(order)}
     assert pos["extract"] < pos["seed"] < pos["silver"] < pos["gold"]
-    assert pos["gold"] < pos["assertions"] < pos["signoff"]
+    assert pos["gold"] < pos["assertions"]
+    assert "signoff" not in pos
 
 
 def test_skip_sync_drops_airbyte_step_and_rewires_deps():
@@ -34,7 +35,7 @@ def test_full_refresh_sets_flag_on_dbt_run_build_only():
     assert plan["gold"].params.get("full_refresh") is True
     # seed and non-dbt steps are untouched
     assert plan["seed"].params.get("full_refresh") is not True
-    assert plan["signoff"].params.get("full_refresh") is not True
+    assert plan["assertions"].params.get("full_refresh") is not True
 
 
 def test_scope_maps_to_entity_scope_var():
