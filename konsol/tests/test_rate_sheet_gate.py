@@ -146,10 +146,11 @@ def test_the_close_gate_refuses_by_name_and_passes_when_the_sheet_is_complete():
     ok = _rules(_frappe([_sheet([("EUR", "CHF", 0.94, 0.95), ("JPY", "CHF", 0.0065, 0.0066)])]),
                 translation_gaps=gaps, ledgers_built=lambda: True)
     ok.assert_rates_complete(2099, 3)
-    short = _rules(_frappe([_sheet([("EUR", "CHF", 0.94, 0.95)])]), translation_gaps=gaps)
+    frappe = _frappe([_sheet([("EUR", "CHF", 0.94, 0.95)])])
+    short = _rules(frappe, translation_gaps=gaps, ledgers_built=lambda: True)
     try:
         short.assert_rates_complete(2099, 3)
-    except Refused as e:
+    except (Refused, frappe.ValidationError) as e:
         assert "JPY → CHF Average" in str(e) and "JPY → CHF Closing" in str(e), str(e)
     else:
         raise AssertionError("a pair with no rate must refuse the close")

@@ -812,15 +812,33 @@ def previous_approved(to_currency, from_currency, rate_type, fiscal_year, fiscal
 
 # -- the close gate -------------------------------------------------------------------
 
+_SHEET_KEYS_SQL = (
+    "SELECT r.from_currency, r.to_currency, r.average_quote, r.closing_quote "
+    "FROM `tabRate Sheet Row` r JOIN `tabRate Sheet` s ON s.name = r.parent "
+    "WHERE s.docstatus = 1 AND s.rate_basis = 'Statutory' AND s.fiscal_year = %s AND s.fiscal_period = %s "
+    "AND r.parenttype = 'Rate Sheet' AND r.parentfield = 'rates'")
+
+
 def _approved_keys(fiscal_year, fiscal_period, lock=False, rate_set=None):
     """The (from, to, rate_type) of every approved rate for the period in
     ``rate_set`` (the set flagged Is Actuals when not given, konsol#348; a
     budget set's rates do not satisfy the actuals' close gate).
 
+    Two sources (konsol#592 T11):
+
+    * the approved Statutory Rate Sheet of the period: one sheet, both quotes
+      on a row, so a row with an Average quote covers Average and a row with a
+      Closing quote covers Closing. A sheet is an actuals rate: it counts only
+      for the actuals set, and a Constant sheet never counts (it is a year's
+      planning rate, not the period's);
+    * the approved Group Exchange Rate rows, which still count while GER
+      exists, as in publish_rates. T26 (retire_group_exchange_rate) removes
+      this branch.
+
     Plain read by default: this is also called on every read of the close
     app's My work screen (close.mywork_api), where LOCK IN SHARE MODE
-    would take share locks on Group Exchange Rate rows and can block rate
-    saves for the request's duration.
+    would take share locks on rate rows and can block rate saves for the
+    request's duration.
 
     ``lock=True`` reads LOCK IN SHARE MODE instead: a plain read
     (frappe.get_all) can return this transaction's REPEATABLE READ snapshot,
@@ -828,14 +846,24 @@ def _approved_keys(fiscal_year, fiscal_period, lock=False, rate_set=None):
     lock would still show as approved (PR #191 re-review finding 4; mirrors
     period_status.period_row and fiscal_calendar.periods_in_use(lock=True)).
     Only the close gate (assert_rates_complete) passes it."""
+    actuals, _problem = find_actuals_rate_set()
     rate_set = actuals_rate_set() if rate_set is None else rate_set
+    share = " LOCK IN SHARE MODE" if lock else ""
+    keys = set()
+    if rate_set == actuals:
+        for f, t, average, closing in frappe.db.sql(
+                _SHEET_KEYS_SQL + share, (int(fiscal_year), int(fiscal_period))):
+            if average and float(average) > 0:
+                keys.add((f, t, "Average"))
+            if closing and float(closing) > 0:
+                keys.add((f, t, "Closing"))
+    # T26: the Group Exchange Rate branch goes with the doctype.
     rows = frappe.db.sql(
         "SELECT from_currency, to_currency, rate_type FROM `tabGroup Exchange Rate` "
-        "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s AND rate_set = %s"
-        + (" LOCK IN SHARE MODE" if lock else ""),
+        "WHERE docstatus = %s AND fiscal_year = %s AND fiscal_period = %s AND rate_set = %s" + share,
         (1, int(fiscal_year), int(fiscal_period), rate_set),
     )
-    return {(f, t, rt) for f, t, rt in rows}
+    return keys | {(f, t, rt) for f, t, rt in rows}
 
 
 def missing_rates(fiscal_year, fiscal_period, pairs=None, lock=False, rate_set=None):
