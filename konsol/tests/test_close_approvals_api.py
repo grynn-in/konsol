@@ -246,7 +246,7 @@ _ACCOUNTS = [
 
 _DOCTYPE_LIST_ATTR = {
     JOURNAL: "journals", RS: "sheets", HER: "hers", OP: "ops",
-    IC_BALANCE: "ic_balances", BC: "bcs", BD: "bds",
+    IC_BALANCE: "ic_balances", BC: "bcs", BD: "bds", "Build Approval": "builds",
 }
 
 
@@ -277,6 +277,10 @@ class _Site:
         self.ic_balances = []
         self.bcs = []
         self.bds = []
+        #: Build Approval rows (waiting builds, 22 Nov 2026).
+        self.builds = []
+        #: workflow name -> [{state, action, allowed}] (Build Approval's).
+        self.wf_transitions = {}
         #: O58: the ``signoff_gate.latest_signed_runs()`` keys, {(fy, fp): run}.
         self.signed = {}
         #: R52f: the declared first close (fy, fp), None = undeclared, read by
@@ -328,8 +332,9 @@ def _match(row, filters):
 
 
 class _WfDoc:
-    def __init__(self, state_names):
+    def __init__(self, state_names, transitions=()):
         self.states = [types.SimpleNamespace(state=s) for s in state_names]
+        self.transitions = [types.SimpleNamespace(**t) for t in transitions]
 
 
 def _frappe(site):
@@ -389,7 +394,7 @@ def _frappe(site):
     def get_cached_doc(doctype, name):
         site.reads.append(("get_cached_doc", doctype))
         assert doctype == "Workflow", doctype
-        return _WfDoc(site.wf_states[name])
+        return _WfDoc(site.wf_states[name], site.wf_transitions.get(name, ()))
 
     def set_value(*a, **k):
         raise AssertionError("get_queue never writes")
@@ -1336,3 +1341,94 @@ def test_t18_a_correction_of_a_sheet_no_longer_approved_cannot_be_approved():
     item = next(i for i in _all_items(_call(site)) if i["name"] == "RS-1-2")
     assert item["detail"] == ("FY2025 P7 · replaces RS-1, which is no longer approved: this "
                               "correction cannot be approved; delete it in Desk · x")
+
+
+# --- Waiting builds (Deepak Pai, 22 Nov 2026: "fix") ------------------------------
+# A Build Approval in Pending Review shows in the queue (``builds``) and in the
+# waiting count My work and the home read, for a caller the site's Build
+# Approval Workflow lets Approve. It is not one of APPROVAL_DOCTYPES: the
+# approve is the workflow's own transition on the Desk form, not a submit.
+
+BUILD = "Build Approval"
+BUILD_WF = "Build Approval Workflow"
+#: The shipped workflow's transitions (build_approval_workflow.json), trimmed.
+_BUILD_TRANSITIONS = [
+    {"state": "Draft", "action": "Request", "allowed": "EPM Analyst"},
+    {"state": "Pending Review", "action": "Approve", "allowed": "EPM Admin"},
+    {"state": "Pending Review", "action": "Reject", "allowed": "EPM Admin"},
+    {"state": "Approved", "action": "Start", "allowed": "Administrator"},
+]
+
+
+def _ba(name, state="Pending Review", creation=None, **over):
+    row = {"name": name, "owner": ANALYST, "workflow_state": state, "docstatus": 0,
+           "creation": creation or datetime(2026, 7, 3, 9, 0, 0),
+           "modified": datetime(2026, 7, 3, 9, 0, 0), "build_scope": "consolidation",
+           "risk_level": "high", "requested_by": ANALYST, "trigger_source": "auto",
+           "trigger_doctype": "Trial Balance Submission", "trigger_docname": "TBS-ZZ-1",
+           "full_refresh": 0, "rebuild_requested": 1}
+    row.update(over)
+    return row
+
+
+def _build_site(roles=("EPM Admin",)):
+    site = _Site()
+    site.roles = set(roles)
+    site.workflows[BUILD] = {"name": BUILD_WF, "workflow_state_field": "workflow_state"}
+    site.wf_states[BUILD_WF] = ["Draft", "Pending Review", "Approved", "Running",
+                                "Completed", "Failed", "Cancelled"]
+    site.wf_transitions[BUILD_WF] = list(_BUILD_TRANSITIONS)
+    site.builds = [_ba("BA-ZZ-PENDING")] + [
+        _ba("BA-ZZ-" + s.upper(), state=s)
+        for s in ("Draft", "Approved", "Running", "Completed", "Failed", "Cancelled")]
+    return site
+
+
+def test_builds_the_queue_lists_a_pending_review_build_and_no_other_state():
+    result = _call(_build_site())
+    assert [b["name"] for b in result["builds"]] == ["BA-ZZ-PENDING"]
+    [build] = result["builds"]
+    assert build["created"] == "2026-07-03T09:00:00+01:00"
+    assert build["requested_by"] == ANALYST
+    assert (build["trigger_doctype"], build["trigger_docname"]) == (
+        "Trial Balance Submission", "TBS-ZZ-1")
+    assert build["absorbs_later_changes"] is True
+    assert build["desk"] == "/desk/build-approval/BA-ZZ-PENDING"
+    assert result["builds_problem"] is None
+    # Never shaped as one of the 7 approval documents.
+    assert all(i["doctype"] != BUILD for i in _all_items(result))
+
+
+def test_builds_the_waiting_count_includes_the_waiting_build():
+    site = _build_site()
+    site.sheets = [_sheet("RS-ZZ-1", creation=datetime(2026, 7, 5, 9, 0, 0))]
+    result = _call(site)
+    assert result["waiting"] == {"count": 2, "oldest": "2026-07-03T09:00:00+01:00"}
+
+
+def test_builds_failure_path_a_caller_without_epm_admin_is_offered_no_build():
+    """The shipped workflow lets only EPM Admin Approve: a System Manager or
+    EPM Analyst is refused by apply_workflow, so neither sees it waiting."""
+    for roles in (("System Manager",), ("EPM Analyst",)):
+        result = _call(_build_site(roles))
+        assert result["builds"] == [], roles
+        assert result["waiting"]["count"] == 0, roles
+
+
+def test_builds_failure_path_no_active_build_workflow_lists_none_and_says_why():
+    site = _build_site()
+    site.workflows[BUILD] = None
+    result = _call(site)
+    assert result["builds"] == []
+    assert "Build Approval Workflow" in result["builds_problem"]
+    assert ("get_all", BUILD) not in site.reads
+
+
+def test_builds_cost_one_read_however_many_are_waiting():
+    def reads(n):
+        site = _build_site()
+        site.builds = [_ba("BA-ZZ-%d" % i) for i in range(n)]
+        _call(site)
+        return [r for r in site.reads if BUILD in r or r[0] == "get_cached_doc"]
+    assert reads(1) == reads(6)
+    assert reads(1).count(("get_all", BUILD)) == 1
