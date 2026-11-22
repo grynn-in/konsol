@@ -1,0 +1,119 @@
+{
+ "name": "Rate Sheet Row",
+ "doctype": "DocType",
+ "module": "Consolidation",
+ "istable": 1,
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "from_currency",
+  "to_currency",
+  "quoted_per",
+  "average_quote",
+  "closing_quote",
+  "rate",
+  "quote_label",
+  "source",
+  "erp_average_quote",
+  "erp_closing_quote",
+  "legacy_documents"
+ ],
+ "fields": [
+  {
+   "fieldname": "from_currency",
+   "fieldtype": "Link",
+   "options": "ISO Currency",
+   "label": "From Currency",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "to_currency",
+   "fieldtype": "Link",
+   "options": "ISO Currency",
+   "label": "Group Reporting Currency",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Must be a group reporting currency; cross rates are derived."
+  },
+  {
+   "fieldname": "quoted_per",
+   "fieldtype": "Select",
+   "options": "1\n10\n100\n1000\n10000",
+   "default": "1",
+   "label": "Quoted Per",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "How many units of the from-currency the quote is for: JPY per 100, KRW per 1,000, IDR and VND per 10,000. The direction never changes."
+  },
+  {
+   "fieldname": "average_quote",
+   "fieldtype": "Float",
+   "precision": "9",
+   "label": "Average Quote",
+   "in_list_view": 1,
+   "description": "Statutory sheets: translates the P&L, per Quoted Per units of the from-currency."
+  },
+  {
+   "fieldname": "closing_quote",
+   "fieldtype": "Float",
+   "precision": "9",
+   "label": "Closing Quote",
+   "in_list_view": 1,
+   "description": "Statutory sheets: translates the balance sheet, per Quoted Per units of the from-currency."
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Float",
+   "precision": "9",
+   "label": "Rate",
+   "in_list_view": 1,
+   "description": "Constant sheets: the one rate for both average and closing (QA-1), per Quoted Per units of the from-currency."
+  },
+  {
+   "fieldname": "quote_label",
+   "fieldtype": "Data",
+   "label": "Rate As Quoted",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The quote as entered, with its unit. Set on save."
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Select",
+   "options": "Manual\nERP pre-fill\nDuplicated\nMigrated",
+   "default": "Manual",
+   "label": "Source",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "Manual: entered by a person. ERP pre-fill: proposed from the ERP feed. Duplicated: proposed from a previous sheet. Migrated: carried over from a Group Exchange Rate. Editing a quote makes the row Manual."
+  },
+  {
+   "fieldname": "erp_average_quote",
+   "fieldtype": "Float",
+   "precision": "9",
+   "label": "ERP Average Quote",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "What the ERP feed quoted when pre-filled. Reference only."
+  },
+  {
+   "fieldname": "erp_closing_quote",
+   "fieldtype": "Float",
+   "precision": "9",
+   "label": "ERP Closing Quote",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "What the ERP feed quoted when pre-filled. Reference only."
+  },
+  {
+   "fieldname": "legacy_documents",
+   "fieldtype": "Small Text",
+   "label": "Legacy Documents",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The Group Exchange Rate documents this row was migrated from."
+  }
+ ],
+ "permissions": []
+}

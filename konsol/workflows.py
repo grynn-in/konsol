@@ -20,7 +20,7 @@ import os
 import frappe
 
 INSTALLED = ("Consolidation Journal", "Business Combination", "Business Disposal", "Build Approval",
-             "Budget Cycle", "Cost Allocation Run", "Cost Allocation Statistic")
+             "Budget Cycle", "Cost Allocation Run", "Cost Allocation Statistic", "Rate Sheet")
 
 
 def _definitions():
