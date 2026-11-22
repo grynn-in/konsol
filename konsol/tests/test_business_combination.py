@@ -1902,3 +1902,36 @@ def test_a_cancelled_or_later_ownership_period_is_not_an_earlier_holding():
     deal = _deal(share_acquired_pct=80)
     deal.validate()
     deal.before_submit()
+
+
+# -- only a stake held immediately before the deal makes it a step (konsolidat#348) --
+#
+# A holding that ended before the day before the deal was fully divested: buying
+# the entity again is a fresh acquisition with no previously held interest.
+
+def test_a_stake_that_ended_before_the_deal_is_not_a_step_acquisition():
+    _Site(ownership=[dict(EARLIER_STAKE, end_date="2025-06-30")])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.before_submit()
+
+
+def test_a_stake_that_ended_two_days_before_the_deal_is_not_a_step_acquisition():
+    _Site(ownership=[dict(EARLIER_STAKE, end_date="2025-12-29")])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    deal.before_submit()
+
+
+def test_a_stake_that_ended_the_day_before_the_deal_is_still_a_step_acquisition():
+    _Site(ownership=[dict(EARLIER_STAKE, end_date="2025-12-30")])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    assert "step acquisitions are not supported yet (konsolidat#348)" in _refused(deal.before_submit)
+
+
+def test_a_stake_that_ended_on_the_deal_date_is_still_a_step_acquisition():
+    _Site(ownership=[dict(EARLIER_STAKE, end_date="2025-12-31")])
+    deal = _deal(share_acquired_pct=80)
+    deal.validate()
+    assert "step acquisitions are not supported yet (konsolidat#348)" in _refused(deal.before_submit)
