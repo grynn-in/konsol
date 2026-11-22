@@ -866,6 +866,20 @@ def test_sent_back_items_desk_actions_for_ic_bc_bd():
     assert items[2]["action"] == {"desk": "/desk/business-disposal/BD-1"}
 
 
+def test_sent_back_items_rate_sheet_links_to_the_sheet():
+    """konsol#592 T16: a sent-back sheet opens its own form; a Statutory
+    sheet carries its period, a Constant one (period 0) has none."""
+    stat = _sb_row("Rate Sheet", "RS-1", "Rate sheet", "Statutory 2025 P07",
+                  fiscal_year=2025, fiscal_period=7)
+    const = _sb_row("Rate Sheet", "RS-2", "Rate sheet", "Constant 2025",
+                   fiscal_year=2025, fiscal_period=0)
+    items = M.sent_back_items([stat, const], M.GROUP_ACCOUNTANT, {(2025, 7): "P07"})
+    assert items[0]["action"] == {"desk": "/desk/rate-sheet/RS-1"}
+    assert items[1]["action"] == {"desk": "/desk/rate-sheet/RS-2"}
+    assert items[0]["period"]["code"] == "P07"
+    assert "period" not in items[1] and items[1]["since_reason"] == "sent back"
+
+
 def test_sent_back_items_viewer_raises():
     row = _sb_row("Historical Equity Rate", "HER-00001", "Historical equity rate", "x")
     with pytest.raises(ValueError, match="[Vv]iewer"):

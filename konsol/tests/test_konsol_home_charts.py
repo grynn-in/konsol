@@ -418,7 +418,7 @@ def test_top_ic_differences_with_no_intercompany_declared_is_an_empty_chart():
 def test_approvals_backlog_counts_the_queue_items():
     api, _ = _api(_Site(queue={"items": [{"doctype": "IC Balance"}], "sent_back": [{}]}))
     chart = api.approvals_backlog()
-    assert len(chart["labels"]) == 7 and sum(chart["datasets"][0]["values"]) == 1
+    assert len(chart["labels"]) == 8 and sum(chart["datasets"][0]["values"]) == 1
 
 
 def test_closing_vs_average_rate_reads_submitted_rates_into_the_group_currency():

@@ -740,8 +740,8 @@ def test_start_link_opens_my_work_through_the_existing_click_handler():
 # ---- row 7: Approvals panel, the waiting shortcuts ----
 
 WAITING = ["Consolidation Journals", "Business Combinations", "Business Disposals",
-           "Group Exchange Rates", "Ownership Periods", "Historical Equity Rates",
-           "IC Balances", "Build Approvals"]
+           "Group Exchange Rates", "Rate Sheets", "Ownership Periods",
+           "Historical Equity Rates", "IC Balances", "Build Approvals"]
 
 
 def _defs7(labels):

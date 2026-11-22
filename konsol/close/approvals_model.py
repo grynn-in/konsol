@@ -67,6 +67,7 @@ def _load_sibling(name, filename):
 rates_model = _load_sibling("konsol_close_approvals_model_rates_model", "close/rates_model.py")
 close_policy_model = _load_sibling(
     "konsol_close_approvals_model_close_policy_model", "close/close_policy_model.py")
+rate_sheet_model = _load_sibling("konsol_close_approvals_model_rate_sheet_model", "rate_sheet_model.py")
 period_name = _load_sibling(
     "konsol_close_approvals_model_period_name", "close/period_name.py").period_name
 
@@ -74,16 +75,18 @@ JOURNAL = "Consolidation Journal"
 BC = "Business Combination"
 BD = "Business Disposal"
 GER = "Group Exchange Rate"
+RS = "Rate Sheet"
 OP = "Ownership Period"
 HER = "Historical Equity Rate"
 IC_BALANCE = "IC Balance"
 
 #: Business Combination and Business Disposal are approved in the Desk only
 #: (the engineering call, konsol#305 W3-1..4 comment): never inline.
-_DESK_ONLY = (BC, BD)
+_DESK_ONLY = (BC, BD, RS)
 _DESK_PATHS = {
     BC: "/desk/business-combination/%s",
     BD: "/desk/business-disposal/%s",
+    RS: "/desk/rate-sheet/%s",
 }
 
 #: Historical Equity Rate and Ownership Period items come from
@@ -129,6 +132,8 @@ def _kind_label_and_title(doctype, doc):
         kind_label = "Group rate · %s→%s %s" % (
             doc["from_currency"], doc["to_currency"], doc["rate_type"])
         return kind_label, doc["quote_label"]
+    if doctype == RS:
+        return "Rate Sheet", "%s · %s" % (doc["rate_basis"], _sheet_key(doc))
     if doctype == IC_BALANCE:
         kind_label = "IC balance · %s → %s" % (doc["selling_entity"], doc["buying_entity"])
         return kind_label, kind_label
@@ -152,6 +157,21 @@ def _replaces_text(supersedes, replaced, quote_label):
         return "replaces %s (%s → %s)" % (supersedes, replaced["quote_label"], quote_label)
     return ("replaces %s, which is no longer approved: this correction cannot be "
             "approved; delete it on the Rates screen" % supersedes)
+
+
+def _sheet_key(doc):
+    return rate_sheet_model.key_label(
+        doc["rate_basis"], doc["fiscal_year"], doc.get("fiscal_period"))
+
+
+def _sheet_replaces_text(supersedes, replaced):
+    """What approving a Rate Sheet correction replaces (konsol#312-3). Only an
+    approved (docstatus 1) sheet is superseded by the approval; any other state
+    means the correction can never be approved."""
+    if replaced is not None and int(replaced["docstatus"]) == 1:
+        return "replaces %s (%s %s)" % (supersedes, replaced["rate_basis"], _sheet_key(replaced))
+    return ("replaces %s, which is no longer approved: this correction cannot be "
+            "approved; delete it in Desk" % supersedes)
 
 
 def _shape(doctype, doc):
@@ -187,6 +207,14 @@ def _shape(doctype, doc):
         supersedes = doc.get("supersedes") or None
         if supersedes:
             detail += " · %s" % _replaces_text(supersedes, doc["replaced"], doc["quote_label"])
+        if doc.get("change_reason"):
+            detail += " · %s" % doc["change_reason"]
+        return kind_label, title, detail, {"supersedes": supersedes}
+    if doctype == RS:
+        detail = _sheet_key(doc)
+        supersedes = doc.get("supersedes") or None
+        if supersedes:
+            detail += " · %s" % _sheet_replaces_text(supersedes, doc["replaced"])
         if doc.get("change_reason"):
             detail += " · %s" % doc["change_reason"]
         return kind_label, title, detail, {"supersedes": supersedes}
@@ -355,7 +383,7 @@ def sent_back_items(docs, rejections):
         )
         titles = {(item["doctype"], item["name"]): item["title"] for item in rate_items}
 
-    period_keyed = (JOURNAL, GER, IC_BALANCE)
+    period_keyed = (JOURNAL, GER, RS, IC_BALANCE)
 
     out = []
     for doctype, rows in docs.items():

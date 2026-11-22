@@ -142,6 +142,7 @@ JOURNAL = "Consolidation Journal"
 BC = "Business Combination"
 BD = "Business Disposal"
 GER = "Group Exchange Rate"
+RS = "Rate Sheet"
 OP = "Ownership Period"
 HER = "Historical Equity Rate"
 IC_BALANCE = "IC Balance"
@@ -180,6 +181,15 @@ def _ger(name, owner=ANALYST, creation=None, modified=None, docstatus=0,
             "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
             "quote_label": quote_label, "change_reason": change_reason,
             "supersedes": supersedes}
+
+
+def _sheet(name, owner=ANALYST, creation=None, modified=None, docstatus=0,
+           rate_basis="Statutory", fiscal_year=2026, fiscal_period=7,
+           change_reason=None, supersedes=None):
+    return {"name": name, "owner": owner, "creation": creation or datetime(2026, 7, 1, 9, 0, 0),
+            "modified": modified or datetime(2026, 7, 1, 9, 0, 0), "docstatus": docstatus,
+            "rate_basis": rate_basis, "fiscal_year": fiscal_year, "fiscal_period": fiscal_period,
+            "change_reason": change_reason, "supersedes": supersedes}
 
 
 def _her(name, owner=ANALYST, creation=None, modified=None, docstatus=0,
@@ -248,7 +258,7 @@ _ACCOUNTS = [
 ]
 
 _DOCTYPE_LIST_ATTR = {
-    JOURNAL: "journals", GER: "gers", HER: "hers", OP: "ops",
+    JOURNAL: "journals", GER: "gers", RS: "sheets", HER: "hers", OP: "ops",
     IC_BALANCE: "ic_balances", BC: "bcs", BD: "bds",
 }
 
@@ -275,6 +285,7 @@ class _Site:
         self.line_columns = None
         self.journals = []
         self.gers = []
+        self.sheets = []
         self.hers = []
         self.ops = []
         self.ic_balances = []
@@ -952,10 +963,10 @@ def test_sent_back_for_filters_every_get_all_by_owner_and_docstatus_zero():
         "reason": "wrong rate", "actor": LEAD, "at": datetime(2026, 7, 2, 9, 0, 0)}}
     items = _sent_back_for(site, ANALYST)
     assert [i["name"] for i in items] == ["GER-40"]
-    # one get_all per doctype (the 7 APPROVAL_DOCTYPES), each filtered by
+    # one get_all per doctype (the 8 APPROVAL_DOCTYPES), each filtered by
     # owner + docstatus 0 (the stub's _match enforces the filter values).
     get_all_calls = [r for r in site.reads if r[0] == "get_all"]
-    assert len(get_all_calls) == 7
+    assert len(get_all_calls) == 8
 
 
 def test_sent_back_for_excludes_another_users_rejected_draft():
@@ -1334,3 +1345,55 @@ def test_fr5_sent_back_for_reads_supersedes_and_keeps_its_label_only_items():
     assert [i["name"] for i in items] == ["GER-3"]
     assert "detail" not in items[0], sorted(items[0])
     assert items[0]["title"] == "0.86 GBP per EUR"
+
+
+# --- konsol#592 T18: a Rate Sheet in the queue, as a Group Exchange Rate ---------------
+
+def _sheet_reads(site):
+    return [r for r in site.reads if r[:2] == ("get_all", RS)]
+
+
+def test_t18_a_pending_rate_sheet_shows_basis_key_label_and_a_desk_link():
+    site = _Site()
+    site.sheets = [_sheet("RS-1", rate_basis="Statutory", fiscal_year=2026, fiscal_period=7,
+                          change_reason="ERP quote moved")]
+    item = next(i for i in _all_items(_call(site)) if i["name"] == "RS-1")
+    assert item["doctype"] == RS
+    assert item["kind_label"] == "Rate Sheet"
+    assert item["title"] == "Statutory · FY2026 P7"
+    assert item["detail"] == "FY2026 P7 · ERP quote moved"
+    assert item["supersedes"] is None
+    assert item["inline"] is False and item["desk"] == "/desk/rate-sheet/RS-1"
+    assert len(_sheet_reads(site)) == 1, site.reads
+
+
+def test_t18_a_constant_sheet_reads_as_a_year():
+    site = _Site()
+    site.sheets = [_sheet("RS-2", rate_basis="Constant", fiscal_year=2026, fiscal_period=0)]
+    item = next(i for i in _all_items(_call(site)) if i["name"] == "RS-2")
+    assert item["title"] == "Constant · FY2026 Constant"
+    assert item["detail"] == "FY2026 Constant"
+
+
+def test_t18_a_correction_sheet_says_which_sheet_it_replaces():
+    site = _Site()
+    site.sheets = [
+        _sheet("RS-1", docstatus=1, fiscal_year=2025, fiscal_period=7),
+        _sheet("RS-1-2", fiscal_year=2025, fiscal_period=7, change_reason="ECB fixing corrected",
+               supersedes="RS-1"),
+    ]
+    item = next(i for i in _all_items(_call(site)) if i["name"] == "RS-1-2")
+    assert item["supersedes"] == "RS-1"
+    assert item["detail"] == "FY2025 P7 · replaces RS-1 (Statutory FY2025 P7) · ECB fixing corrected"
+    assert len(_sheet_reads(site)) == 2, site.reads  # pending + ONE predecessor read
+
+
+def test_t18_a_correction_of_a_sheet_no_longer_approved_cannot_be_approved():
+    site = _Site()
+    site.sheets = [
+        _sheet("RS-1", docstatus=2, fiscal_year=2025, fiscal_period=7),
+        _sheet("RS-1-2", fiscal_year=2025, fiscal_period=7, change_reason="x", supersedes="RS-1"),
+    ]
+    item = next(i for i in _all_items(_call(site)) if i["name"] == "RS-1-2")
+    assert item["detail"] == ("FY2025 P7 · replaces RS-1, which is no longer approved: this "
+                              "correction cannot be approved; delete it in Desk · x")

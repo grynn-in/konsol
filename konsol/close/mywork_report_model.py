@@ -42,6 +42,7 @@ KIND_LABELS = {"blocking": "Blocking", "todo": "To do", "waiting": "Waiting"}
 #: since this module is pure; the test holds them equal).
 APPROVAL_DOCTYPES = (
     "Consolidation Journal", "Business Combination", "Business Disposal", "Group Exchange Rate",
+    "Rate Sheet",
     "Ownership Period", "Historical Equity Rate", "IC Balance",
 )
 
@@ -180,6 +181,7 @@ FIXES = {
     "sent-back:Business Combination": (_SENT_BACK_FIX, _GROUP),
     "sent-back:Business Disposal": (_SENT_BACK_FIX, _GROUP),
     "sent-back:Group Exchange Rate": (_SENT_BACK_FIX, _GROUP),
+    "sent-back:Rate Sheet": (_SENT_BACK_FIX, _GROUP),
     "sent-back:Ownership Period": (_SENT_BACK_FIX, _GROUP),
     "sent-back:Historical Equity Rate": (_SENT_BACK_FIX, _FX),
     "sent-back:IC Balance": (_SENT_BACK_FIX, _IC),

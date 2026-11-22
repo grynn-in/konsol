@@ -686,10 +686,14 @@ _SENT_BACK_DESK = {
     "IC Balance": "/desk/ic-balance/%s",
     "Business Combination": "/desk/business-combination/%s",
     "Business Disposal": "/desk/business-disposal/%s",
+    "Rate Sheet": "/desk/rate-sheet/%s",
 }
 #: Doctypes whose row names a period (the journal, Group Exchange Rate and IC
 #: Balance; mirrors approvals_model.sent_back_items).
-_SENT_BACK_PERIOD_KEYED = ("Consolidation Journal", "Group Exchange Rate", "IC Balance")
+#: Rate Sheet joins them (konsol#592 T16); a Constant sheet is period 0 and
+#: has no period to name, so a falsy period is not keyed.
+_SENT_BACK_PERIOD_KEYED = ("Consolidation Journal", "Group Exchange Rate", "IC Balance",
+                           "Rate Sheet")
 
 
 def _sent_back_action(doctype, name):
@@ -697,7 +701,7 @@ def _sent_back_action(doctype, name):
         return {"screen": _SENT_BACK_SCREEN[doctype]}
     if doctype in _SENT_BACK_DESK:
         return {"desk": _SENT_BACK_DESK[doctype] % name}
-    raise ValueError("sent_back_items: %r is not one of the 7 approval doctypes." % (doctype,))
+    raise ValueError("sent_back_items: %r is not one of the approval doctypes." % (doctype,))
 
 
 def sent_back_items(rows, persona, period_codes):
@@ -721,7 +725,7 @@ def sent_back_items(rows, persona, period_codes):
             "action": _sent_back_action(doctype, name),
         }
         fy, fp = row.get("fiscal_year"), row.get("fiscal_period")
-        if doctype in _SENT_BACK_PERIOD_KEYED and fy is not None and fp is not None:
+        if doctype in _SENT_BACK_PERIOD_KEYED and fy is not None and fp:
             key = (int(fy), int(fp))
             if key not in period_codes:
                 raise ValueError(

@@ -535,6 +535,17 @@ def test_reject_without_a_workflow_of_a_submitted_document_is_refused():
     assert site.comments == [] and site.events == [] and site.saved == []
 
 
+def test_reject_of_an_approved_rate_sheet_says_raise_a_superseding_correction():
+    # #312-3 (Deepak Pai): a Rate Sheet is corrected by a sheet that supersedes
+    # it; the message names that route, not a cancel and amendment.
+    site = _Site(owner=ANALYST, fields={"docstatus": 1})
+    msg = _raises(lambda: _call(site, "reject", "Rate Sheet", "ZZ-RS-1", reason="ZZ why"),
+                  "ValidationError")
+    assert msg == ("Rate Sheet ZZ-RS-1 is already approved: raise a correction sheet that "
+                   "supersedes it."), msg
+    assert site.comments == [] and site.events == [] and site.saved == []
+
+
 def test_reject_of_another_submitted_doctype_keeps_the_cancel_and_amend_route():
     # Only Group Exchange Rate has the correction route (#312-3b); the others
     # are still corrected by a cancel and an amendment.

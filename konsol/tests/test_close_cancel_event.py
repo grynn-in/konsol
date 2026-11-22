@@ -33,6 +33,7 @@ ANALYST = "analyst@example.com"
 
 CONTROLLERS = {
     "Group Exchange Rate": "group_exchange_rate",
+    "Rate Sheet": "rate_sheet",
     "Ownership Period": "ownership_period",
     "Historical Equity Rate": "historical_equity_rate",
     "IC Balance": "ic_balance",
