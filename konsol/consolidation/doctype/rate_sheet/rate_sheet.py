@@ -123,9 +123,22 @@ class RateSheet(Document):
 
     # -- naming ---------------------------------------------------------------
 
+    def set_new_name(self, *args, **kwargs):
+        """Frappe names an amendment itself (``_set_amended_name``) and skips
+        autoname, so an amendment of ``RS-C-2026-1`` became ``RS-C-2026-2``, the
+        name a correction of ``RS-C-2026`` takes (PR #595 review 6). Here an
+        amendment is renamed through autoname: the controller's naming is the
+        one source. A name given (``set_name``) or already set is kept."""
+        force = kwargs.get("force", args[0] if args else False)
+        skipped = bool(self.flags.get("name_set")) and not force
+        super().set_new_name(*args, **kwargs)
+        given = kwargs.get("set_name") or (args[1] if len(args) > 1 else None)
+        if self.get("amended_from") and not skipped and not given:
+            self.autoname()
+
     def autoname(self):
-        """RS-S-<FY>-<PP> or RS-C-<FY>; a correction takes -2, -3, ... An
-        amendment is named by Frappe (``<name>-1``) and never reaches here."""
+        """RS-S-<FY>-<PP> or RS-C-<FY>; a correction or an amendment takes the
+        next free -2, -3, ... (``set_new_name`` routes an amendment here)."""
         base = self._base_name()
         name, n = base, 1
         while frappe.db.exists(self.doctype, name):
