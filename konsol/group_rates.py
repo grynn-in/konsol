@@ -530,6 +530,18 @@ _CALENDAR_SQL = ("SELECT y.fiscal_year AS fiscal_year, p.fiscal_period AS period
 #: The Rate Set code a Constant sheet publishes under (pair 1: Rate Set stays,
 #: and the patch adds a CONSTANT row; the plan's warehouse mapping).
 CONSTANT_RATE_SET = "CONSTANT"
+#: The migration's markers, as retire_group_exchange_rate reads them (a test
+#: pins them equal): a Migrated Rate Sheet Row, or the audit file on CONSTANT.
+MIGRATED_SOURCE = "Migrated"
+MIGRATION_AUDIT_FILE = "group-exchange-rate-migration-audit.csv"
+_GER_TABLE_SQL = ("SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE() "
+                  "AND table_name = 'tabGroup Exchange Rate'")
+_GER_ROWS_SQL = "SELECT COUNT(*) AS n FROM `tabGroup Exchange Rate`"
+_MIGRATED_ROW_SQL = (f"SELECT 1 AS x FROM `tabRate Sheet Row` WHERE parenttype = 'Rate Sheet' "
+                     f"AND source = '{MIGRATED_SOURCE}' LIMIT 1")
+_AUDIT_FILE_SQL = (f"SELECT 1 AS x FROM `tabFile` WHERE attached_to_doctype = 'Rate Set' "
+                   f"AND attached_to_name = '{CONSTANT_RATE_SET}' AND file_name = '{MIGRATION_AUDIT_FILE}' "
+                   "LIMIT 1")
 
 
 def _fresh_db():
@@ -555,6 +567,7 @@ def _read_approved():
     Returns (sheets, sheet_rows, calendar_rows)."""
     db = _fresh_db()
     try:
+        _refuse_unmigrated(db)
         sheets = db.sql(_SHEETS_SQL, as_dict=True)
         if not sheets:
             return [], [], []
@@ -563,6 +576,25 @@ def _read_approved():
         return sheets, rows, calendar
     finally:
         db.close()
+
+
+def _refuse_unmigrated(db):
+    """PR #595 review 4: while ``tabGroup Exchange Rate`` still holds rows and
+    the migration to Rate Sheets has left neither of its markers, the
+    approved rates are those rows, not the sheets: a publish from the sheets
+    would empty the warehouse's rates. Raises ValueError, so the publish is
+    recorded as failed and the old set stays."""
+    if not int(_get(db.sql(_GER_TABLE_SQL, as_dict=True)[0], "n") or 0):
+        return
+    rows = int(_get(db.sql(_GER_ROWS_SQL, as_dict=True)[0], "n") or 0)
+    if not rows or db.sql(_MIGRATED_ROW_SQL, as_dict=True) or db.sql(_AUDIT_FILE_SQL, as_dict=True):
+        return
+    raise ValueError(
+        f"`tabGroup Exchange Rate` holds {rows} row(s) not yet migrated to Rate Sheets (no Migrated "
+        "Rate Sheet Row, no migration audit file on Rate Set CONSTANT): the rates are not published, so "
+        "the warehouse keeps the rates it has. Run bench migrate "
+        "(konsol.patches.migrate_group_exchange_rates_to_rate_sheets), fix what it refuses, then "
+        "migrate again.")
 
 
 def _get(obj, field):
@@ -637,6 +669,10 @@ def publish_rates(force=False):
     * The full set is built in a shadow table and swapped in with EXCHANGE
       TABLES (epm_staging is an Atomic database): a reader sees the old set or
       the new one, never part of either.
+
+    * Refused while ``tabGroup Exchange Rate`` holds rows the migration has
+      not moved to sheets (``_refuse_unmigrated``, PR #595 review 4): the old
+      set stays, and the failure is recorded.
 
     Skipped during install, import, migrate and patches unless ``force`` (the
     reconcile), like every write-through. Best-effort: a failure is logged and
