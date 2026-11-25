@@ -153,7 +153,7 @@ def _build_dimensions_vars():
         "Dimension",
         filters={"status": "Published"},
         fields=["dimension_name", "source_column", "label", "cube_type",
-                "in_budget", "allocation_role"],
+                "in_budget"],
         order_by="dimension_name asc",
         limit_page_length=0,
     )
@@ -166,8 +166,6 @@ def _build_dimensions_vars():
             "cube_type": d.cube_type or "string",
             "in_budget": bool(d.in_budget),
         }
-        if d.allocation_role:
-            dim["allocation_role"] = d.allocation_role
         dimensions.append(dim)
     return dimensions
 

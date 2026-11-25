@@ -82,7 +82,7 @@ _STORE = {}
 #: The Dimension fields a row carries (dimension.json).
 _FIELDS = (
     "dimension_name", "source_column", "label", "cube_type", "in_budget",
-    "in_trial_balance", "survives_close", "allocation_role",
+    "in_trial_balance", "survives_close",
     "permission_doctype", "status",
 )
 
@@ -276,8 +276,8 @@ NAME = "dim_region"
 #: The fields apply_schema_for_publish reads off a Published Dimension, and a
 #: legal new value for each. dimension_name is read too, but a save cannot
 #: change it: Frappe resets it to the name (test below). Where each is read:
-#:   dimension_name, source_column, label, cube_type, in_budget,
-#:     allocation_role -> dbt_config._build_dimensions_vars (var('dimensions'))
+#:   dimension_name, source_column, label, cube_type, in_budget
+#:     -> dbt_config._build_dimensions_vars (var('dimensions'))
 #:   dimension_name, cube_type -> schema_apply._apply_clickhouse_columns
 #:   dimension_name, in_trial_balance -> schema_apply._sync_tb_dimension_columns
 #:   dimension_name, label, in_budget -> schema_apply._sync_budget_custom_fields
@@ -287,7 +287,6 @@ SCHEMA_EDITS = {
     "cube_type": "number",
     "in_budget": 1,
     "in_trial_balance": 0,
-    "allocation_role": "cost_center",
 }
 
 

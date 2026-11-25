@@ -31,7 +31,7 @@ def test_dimension_json_exists():
 def test_dimension_has_required_fields():
     meta = _load_json("dimension")
     fields = _get_field_names(meta)
-    for f in ["dimension_name", "source_column", "label", "cube_type", "in_budget", "allocation_role"]:
+    for f in ["dimension_name", "source_column", "label", "cube_type", "in_budget"]:
         assert f in fields, f"Missing field: {f}"
 
 

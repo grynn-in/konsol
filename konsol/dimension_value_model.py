@@ -288,7 +288,7 @@ def plan_retirement(dimensions, user_permissions, existing):
     With no such Dimension, no dimension ever enforced the grant, so there is
     nothing to keep: the row is unmapped, never guessed onto a dimension. A
     blank value is unmapped too. Rejected: falling back to the Dimension whose
-    ``allocation_role`` names the cost-center role. It names one customer's
+    free-text role field named the cost-center role (since retired, #534). It named one customer's
     dimension in shipped code, which konsol#287 forbids
     (test_no_hardcoded_dimensions), and it would switch on grants that were
     never enforced.

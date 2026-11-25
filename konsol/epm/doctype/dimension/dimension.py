@@ -47,7 +47,7 @@ SURVIVES_CLOSE_LABEL = "Survives Year-End Close"
 #: save that changes one of them while Published applies the schema (#295).
 #: Where each is read:
 #:   dbt_config._build_dimensions_vars: source_column, label, cube_type,
-#:     in_budget, allocation_role (``var('dimensions')``)
+#:     in_budget (``var('dimensions')``)
 #:   schema_apply._apply_clickhouse_columns: cube_type
 #:   schema_apply._sync_tb_dimension_columns: in_trial_balance
 #:   schema_apply._sync_budget_custom_fields: label, in_budget
@@ -56,7 +56,7 @@ SURVIVES_CLOSE_LABEL = "Survives Year-End Close"
 #: cannot change it: autoname is field:dimension_name, and Frappe's
 #: ``_sync_autoname_field`` puts it back to the name before the write.
 #: Add a field here when one of those readers starts reading it.
-SCHEMA_FIELDS = ("source_column", "label", "cube_type", "allocation_role")
+SCHEMA_FIELDS = ("source_column", "label", "cube_type")
 #: The Check fields among them. Compared after ``before_validate`` has written
 #: them as 0 or 1, so they compare as stored.
 SCHEMA_FLAGS = ("in_budget", FLAG, IN_JOURNAL)
