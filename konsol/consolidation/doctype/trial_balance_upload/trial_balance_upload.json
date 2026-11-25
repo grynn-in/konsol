@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 0,
- "autoname": "format:TBU-{#####}",
+ "autoname": "TBU-.#####",
  "creation": "2026-09-12 22:00:00.000000",
  "description": "One bulk trial balance file (many entities and periods) and what became of it. Check the file, then load it: each ready entity-period becomes an ordinary Trial Balance Submission.",
  "doctype": "DocType",
