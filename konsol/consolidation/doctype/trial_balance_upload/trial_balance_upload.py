@@ -10,6 +10,13 @@ class TrialBalanceUpload(Document):
     is where the rules live.
     """
 
+    def after_delete(self):
+        """Keep the TBU- counter above this name: Frappe reverts it on
+        delete, and the next upload would reuse the name (PR #603 F1)."""
+        from konsol.name_series import keep_series_above
+
+        keep_series_above("TBU-", self.name)
+
     @property
     def loaded_count(self):
         """Virtual: the submissions this upload loaded that are submitted

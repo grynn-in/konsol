@@ -371,7 +371,10 @@ def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, er
 
 
 EMPTY_SELECTOR_REASON = "selector matched no models: is the warehouse checkout current?"
-_NO_MATCH_MARKERS = ("does not match any enabled nodes", "Nothing to do")
+#: Only "Nothing to do": dbt prints "does not match any enabled nodes" as a
+#: warning on a successful build too (an --exclude of an isolated scope that
+#: matches nothing), PR #603 F2.
+_NO_MATCH_MARKERS = ("Nothing to do",)
 
 
 def selector_built_no_models(cmd, project_path, started_ts, output):
