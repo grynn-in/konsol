@@ -61,8 +61,11 @@ def test_patch_is_registered():
 
 
 def _run_patch(names, series):
+    import sys
+
     src = open(PATCH).read()
     ns = {}
+    sys.modules.setdefault("frappe", types.SimpleNamespace())
     exec(compile(src, PATCH, "exec"), ns)
     calls = []
 
