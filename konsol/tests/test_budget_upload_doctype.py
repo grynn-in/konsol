@@ -30,7 +30,7 @@ def test_identity():
     m = _meta()
     assert m["name"] == "Budget Upload"
     assert m["module"] == "EPM"
-    assert m["autoname"] == "format:BUU-{#####}"
+    assert m["autoname"] == "BUU-.#####"  # its own series (konsol#535)
     assert m["track_changes"] == 1
     assert not m.get("is_submittable")
     assert not m.get("istable")
@@ -113,12 +113,13 @@ def test_permissions():
 def test_controller_only_derives_the_loaded_count_and_indicator():
     """U2 made loaded_count derived, as on Trial Balance Upload: the controller
     reads it (and the form's status_now) from konsol.budget_bulk.upload_state
-    and holds nothing else."""
+    and holds nothing else but after_delete, which keeps the BUU- counter
+    above a deleted name (PR #603 F1)."""
     with open(os.path.join(DIR, "budget_upload.py")) as f:
         src = f.read()
     assert "class BudgetUpload(Document)" in src
     assert sorted(line.strip() for line in src.splitlines() if line.strip().startswith("def ")) == [
-        "def loaded_count(self):", "def onload(self):"]
+        "def after_delete(self):", "def loaded_count(self):", "def onload(self):"]
 
 
 def test_the_upload_offers_only_the_budget_bases():

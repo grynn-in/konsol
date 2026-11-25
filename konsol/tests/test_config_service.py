@@ -110,7 +110,6 @@ def test_list_dimensions_returns_serialized_rows(config_service):
             "label": "Cost Center",
             "cube_type": "string",
             "in_budget": 1,
-            "allocation_role": "cost_center",
             "permission_doctype": None,
             "status": "Published",
         }
@@ -166,7 +165,6 @@ def test_get_dimension_returns_doc(config_service):
     doc.label = "Project"
     doc.cube_type = "string"
     doc.in_budget = 0
-    doc.allocation_role = None
     doc.permission_doctype = None
     doc.status = "Draft"
     fake_frappe.db.exists.return_value = True
@@ -189,7 +187,6 @@ def test_upsert_dimension_creates_draft(config_service):
     doc.label = "Project"
     doc.cube_type = "string"
     doc.in_budget = 0
-    doc.allocation_role = None
     doc.permission_doctype = None
     doc.status = "Draft"
     fake_frappe.db.exists.return_value = False
@@ -221,7 +218,6 @@ def test_upsert_dimension_publish_calls_controller(config_service):
     doc.label = "Project"
     doc.cube_type = "string"
     doc.in_budget = 0
-    doc.allocation_role = None
     doc.permission_doctype = None
     doc.status = "Published"
     fake_frappe.db.exists.return_value = False
@@ -249,7 +245,6 @@ def test_publish_dimension_delegates_to_doc(config_service):
     doc.label = "Project"
     doc.cube_type = "string"
     doc.in_budget = 0
-    doc.allocation_role = None
     doc.permission_doctype = None
     doc.status = "Published"
     fake_frappe.db.exists.return_value = True
@@ -595,7 +590,6 @@ def test_unpublish_dimension_delegates_to_doc(config_service):
     doc.label = "Project"
     doc.cube_type = "string"
     doc.in_budget = 0
-    doc.allocation_role = None
     doc.permission_doctype = None
     doc.status = "Inactive"
     fake_frappe.db.exists.return_value = True

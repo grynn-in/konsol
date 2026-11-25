@@ -9,6 +9,13 @@ from frappe.model.document import Document
 
 
 class BudgetUpload(Document):
+    def after_delete(self):
+        """Keep the BUU- counter above this name: Frappe reverts it on
+        delete, and the next upload would reuse the name (PR #603 F1)."""
+        from konsol.name_series import keep_series_above
+
+        keep_series_above("BUU-", self.name)
+
     @property
     def loaded_count(self):
         """Virtual: the Budget Entries this upload loaded that still name it

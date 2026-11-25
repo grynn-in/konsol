@@ -73,3 +73,5 @@ konsol.patches.retire_entity_fiscal_calendar
 konsol.patches.migrate_group_exchange_rates_to_rate_sheets
 konsol.patches.drop_budget_cycle_rate_set
 konsol.patches.retire_group_exchange_rate
+konsol.patches.drop_dimension_allocation_role
+konsol.patches.seed_own_name_series

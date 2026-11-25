@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 0,
- "autoname": "format:BUU-{#####}",
+ "autoname": "BUU-.#####",
  "creation": "2026-11-13 12:00:00.000000",
  "description": "One bulk budget file (many entities, layers and periods) and what became of it. Check the file, then load it: each ready entity and layer replaces that slice of the cycle's budget entries.",
  "doctype": "DocType",

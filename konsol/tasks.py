@@ -370,6 +370,38 @@ def _finalize_governed_pipeline_run(pipeline_run, *, status, dbt_result=None, er
     return True
 
 
+EMPTY_SELECTOR_REASON = "selector matched no models: is the warehouse checkout current?"
+#: Only "Nothing to do": dbt prints "does not match any enabled nodes" as a
+#: warning on a successful build too (an --exclude of an isolated scope that
+#: matches nothing), PR #603 F2.
+_NO_MATCH_MARKERS = ("Nothing to do",)
+
+
+def selector_built_no_models(cmd, project_path, started_ts, output):
+    """True when a build given a selector built no model (#536). A full build
+    (no --select) never counts: it may legitimately build nothing new.
+
+    Primary signal: model nodes in target/run_results.json, which this run
+    wrote (mtime not before its start, so a previous build's file is never
+    read as this one's). If the file is missing, stale or unreadable, fall
+    back to dbt's own "does not match any enabled nodes" / "Nothing to do"
+    line, which dbt prints when the selector is empty.
+    """
+    import json
+
+    if "--select" not in cmd and "-s" not in cmd:
+        return False
+    rr_path = os.path.join(project_path, "target", "run_results.json")
+    try:
+        if os.path.getmtime(rr_path) >= started_ts - 1:
+            with open(rr_path) as fh:
+                results = json.load(fh).get("results", [])
+            return not any(str(r.get("unique_id", "")).startswith("model.") for r in results)
+    except Exception:
+        pass
+    return any(m in output for m in _NO_MATCH_MARKERS)
+
+
 def run_governed_build(build_request):
     """Execute a governed dbt build for a Build Approval.
 
@@ -485,6 +517,7 @@ def run_governed_build(build_request):
             )
 
             # Execute
+            started_ts = time.time()
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -495,7 +528,17 @@ def run_governed_build(build_request):
             output = result.stdout + "\n" + result.stderr
             doc.build_output = output[-5000:]  # cap at 5K chars
 
-            if result.returncode == 0:
+            if result.returncode == 0 and selector_built_no_models(
+                    cmd, project_path, started_ts, output):
+                # dbt exits 0 on "does not match any enabled nodes" (#536).
+                doc.workflow_state = "Failed"
+                doc.error_message = EMPTY_SELECTOR_REASON
+                _finalize_governed_pipeline_run(
+                    pipeline_run,
+                    status="Failed",
+                    error_log=doc.error_message,
+                )
+            elif result.returncode == 0:
                 doc.workflow_state = "Completed"
                 _finalize_governed_pipeline_run(
                     pipeline_run,

@@ -10,7 +10,7 @@ as active would deactivate it.
 
 Definitions live beside their doctype as `<doctype>_workflow.json`. Only the
 doctypes in INSTALLED get theirs: a workflow changes how a doctype is used, so
-each is switched on deliberately. allocation_run_workflow.json is dormant.
+each is switched on deliberately.
 Build Approval's system transitions are taken by the build job as Administrator.
 """
 import glob
