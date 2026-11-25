@@ -30,7 +30,7 @@ def test_identity():
     m = _meta()
     assert m["name"] == "Budget Upload"
     assert m["module"] == "EPM"
-    assert m["autoname"] == "format:BUU-{#####}"
+    assert m["autoname"] == "BUU-.#####"  # its own series (konsol#535)
     assert m["track_changes"] == 1
     assert not m.get("is_submittable")
     assert not m.get("istable")
