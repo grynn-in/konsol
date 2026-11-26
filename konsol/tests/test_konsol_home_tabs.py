@@ -128,7 +128,7 @@ def test_tabs_are_close_approvals_trends_numbers_with_close_active():
 def test_content_is_lazy_and_panels_start_empty():
     out = _run()
     assert out["content_is_function"] == [True, True, True, True]
-    # Close holds its four sections (headline, cards, checklist, Monthly close); Numbers its four links; Approvals and Trends fill after the definitions call.
+    # Close holds its four sections (headline, close band, checklist, Monthly close); Numbers its four links; Approvals and Trends fill after the definitions call.
     assert out["panel_children"] == [4, 0, 0, 4]
 
 
@@ -136,6 +136,7 @@ def test_content_is_lazy_and_panels_start_empty():
 # R2), so construction makes exactly the initial tab's calls and no other tab's.
 CONSTRUCTION_CALLS = {
     None: sorted(["konsol.close.mywork_api.get_my_work", "konsol.close.overview_api.get_checklist",
+                  "konsol.close.overview_api.get_close_band",
                   "frappe.desk.desktop.get_desktop_page"]),  # Close, the default
     "1": ["frappe.desk.desktop.get_desktop_page"],  # Approvals
     "2": ["frappe.desk.desktop.get_desktop_page"],  # Trends
@@ -220,12 +221,10 @@ global.location = { href: "https://site.test/desk/konsol", origin: "https://site
 global.requestAnimationFrame = (fn) => { rafQueue.push(fn); return rafQueue.length; };
 global.root_element = node("root");
 root_element.addEventListener = (t, fn) => { (handlers[t] = handlers[t] || []).push(fn); };
-const card = (n) => ({ label: n, name: n });
 // A shortcut as get_desktop_page gives it: the workspace row's label, type, link_to.
 const sc = (n) => Object.assign({ label: n }, (cfg.rows || {})[n] || {});
 const defs = "defs" in cfg ? cfg.defs : {
-  number_cards: { items: ["Close Status", "Trial Balances In", "Waiting for My Approval",
-    "IC Pairs over Tolerance", "TB Exceptions Declared", "Warehouse Freshness"].map(card) },
+  number_cards: { items: [] },
   shortcuts: { items: ["Consolidation Journals", "Close Assertions", "My Work", "Build Approvals",
     "Period Close", "Consolidated Statement", "Trial Balance Uploads", "Trial Balance Submissions"].map(sc) },
 };
@@ -239,6 +238,7 @@ global.frappe = {
     if (a[0] === "konsol.close.mywork_api.get_my_work") {
       return Promise.resolve({ items: [], counts: { blocking: 0, todo: 0, waiting: 0 } });
     }
+    if (a[0] === "konsol.close.overview_api.get_close_band") return Promise.resolve([]);
     calls.push(a);
     if (cfg.rejectUndefined) return Promise.reject(undefined);
     return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(defs);
@@ -282,8 +282,6 @@ const tick = () => new Promise((r) => setImmediate(r));
 
 MONTHLY = ["My Work", "Period Close", "Consolidated Statement", "Trial Balance Uploads",
            "Trial Balance Submissions", "Close Assertions"]
-CARDS = ["Close Status", "Trial Balances In", "Waiting for My Approval",
-         "IC Pairs over Tolerance", "TB Exceptions Declared", "Warehouse Freshness"]
 
 
 def _shortcut_rows():
@@ -312,10 +310,12 @@ def _run4a(cfg=None):
     return json.loads(result.stdout)
 
 
-def test_close_panel_shows_six_cards_in_band_order():
+def test_close_panel_creates_no_number_card_widgets():
+    # konsol#610: the band is konsol's own markup (get_close_band), not cards.
     out = _run4a()
-    cards = [g for g in out["groups"] if g["type"] == "number_card"]
-    assert len(cards) == 1 and cards[0]["labels"] == CARDS
+    assert [g for g in out["groups"] if g["type"] == "number_card"] == []
+    with open(SCRIPT) as f:
+        assert "number_card" not in f.read().replace('"number_cards"', "")
 
 
 def test_close_panel_shows_the_monthly_close_shortcuts_in_order():
@@ -352,7 +352,7 @@ def test_widgets_are_not_created_before_the_animation_frame():
     out = _run4a()
     assert out["before_raf"]["groups"] == 0
     assert out["before_raf"]["raf"] >= 1
-    assert len(out["groups"]) == 2
+    assert len(out["groups"]) == 1
 
 
 def test_in_app_anchor_click_routes_through_frappe_and_is_prevented():
@@ -521,11 +521,11 @@ def _run5(cfg=None):
     return json.loads(result.stdout)
 
 
-def test_checklist_sits_between_the_cards_and_the_monthly_close_shortcuts():
+def test_checklist_sits_between_the_band_and_the_monthly_close_shortcuts():
     out = _run5()
     assert out["found"]
     cls = [c.split()[0] if c else "" for c in out["order"]]
-    assert cls.index("khp-cards") < cls.index("khp-checklist") < cls.index("khp-monthly")
+    assert cls == ["khp-headline", "khp-band", "khp-checklist", "khp-monthly"], cls
 
 
 def test_checklist_renders_title_lines_and_progress_from_the_payload():
@@ -996,7 +996,7 @@ def test_entity_accountant_close_has_headline_and_shortcuts_and_no_checklist_cal
     # omitted, and its method (EPM roles only) is never called.
     assert out["after_construct"]["methods"] == sorted(["konsol.close.mywork_api.get_my_work",
                                                         "frappe.desk.desktop.get_desktop_page"])
-    assert out["panel_children"][0] == 3
+    assert out["panel_children"][0] == 2  # headline, Monthly close: no band, no checklist
     head = _run6({"work": _work(2), "roles": EA})
     assert head["text"] == ["2 items need you"] and head["errors"] == []
     out = _run4a({"roles": EA, "defs": {"number_cards": {"items": []},
@@ -1109,3 +1109,153 @@ def test_approvals_with_no_waiting_shortcuts_shows_the_same_line():
 def test_a_tab_with_widgets_does_not_show_the_line():
     out = _run4a({"defs": _defs8(["Days to Close"]), "activate": [2]})
     assert NOTHING not in out["panel_text"][0]
+
+
+# ---- konsol#610: the close band in the Close panel ----
+# The cards' place is now the band: get_close_band's items drawn as linked
+# indicator pills (a copy of konsol_close_band.js, as the checklist is copied:
+# a block cannot be nested inside this shadow root). Text is set as text.
+
+BAND_METHOD = "konsol.close.overview_api.get_close_band"
+
+HARNESS_BAND = REAL_TABS + r"""
+const fs = require("fs");
+const [script, cfgJson] = process.argv.slice(1);
+const cfg = JSON.parse(cfgJson || "{}");
+const htmlSets = [];
+function node(tag) {
+  const n = { __node: true, tag, className: "", children: [], textContent: "", style: {}, attrs: {}, href: "",
+    setAttribute(k, v) { this.attrs[k] = v; },
+    replaceChildren(...c) { this.children = c; },
+    appendChild(c) { if (!c || !c.__node) throw new TypeError("appendChild: parameter 1 is not of type 'Node'"); this.children.push(c); return c; },
+    append(...c) { c.forEach((x) => this.children.push(x)); },
+    addEventListener() {},
+    querySelector(sel) { return sel === ".konsol-home-tabs" ? box : null; } };
+  for (const k of ["innerHTML", "outerHTML"]) {
+    Object.defineProperty(n, k, { set(v) { htmlSets.push(k); }, get() { return ""; } });
+  }
+  return n;
+}
+const box = node("section");
+const calls = [];
+const created = [];
+global.document = { createElement: (t) => node(t), addEventListener() {} };
+global.localStorage = { getItem() { return "stored" in cfg ? cfg.stored : null; }, setItem() {} };
+global.location = { href: "https://site.test/desk/konsol", origin: "https://site.test" };
+global.requestAnimationFrame = (fn) => 1;
+global.root_element = node("root");
+global.frappe = {
+  session: { user: "me@example.com" },
+  user_roles: cfg.roles || ["EPM User"],
+  xcall: (...a) => {
+    calls.push(a);
+    if (a[0] === "konsol.close.overview_api.get_close_band") {
+      if (cfg.rejectUndefined) return Promise.reject(undefined);
+      return cfg.reject ? Promise.reject(new Error(cfg.reject)) : Promise.resolve(cfg.payload);
+    }
+    if (a[0] === "konsol.close.overview_api.get_checklist") {
+      return Promise.resolve({ title: "x", done: 0, total: 0, lines: [] });
+    }
+    if (a[0] === "konsol.close.mywork_api.get_my_work") {
+      return Promise.resolve({ items: [], counts: { blocking: 0, todo: 0, waiting: 0 } });
+    }
+    return Promise.resolve({ number_cards: { items: [] }, shortcuts: { items: [] } });
+  },
+  set_route() {},
+  widget: { WidgetGroup: function () {} },
+};
+const instances = [];
+installRealTabs(created, instances);
+eval(fs.readFileSync(script, "utf8"));
+const inst = instances[0];
+const isBand = (c) => c[0] === "konsol.close.overview_api.get_close_band";
+const atConstruct = calls.filter(isBand).length;
+const tick = () => new Promise((r) => setImmediate(r));
+function walk(n, f) { f(n); (n.children || []).forEach((c) => walk(c, f)); }
+const has = (x, c) => (x.className || "").split(" ").includes(c);
+(async () => {
+  inst.set_active(0);
+  await tick(); await tick(); await tick();
+  const panel = inst.tabs[0].panel.children[0];
+  let band = null;
+  walk(panel, (x) => { if (has(x, "khp-band")) band = x; });
+  const items = [], errors = [];
+  if (band) walk(band, (x) => {
+    if (has(x, "kb-error")) errors.push(x.textContent);
+    if (has(x, "kb-item")) {
+      const out = { tag: x.tag, href: x.href || null, label: null, text: null, pill: null };
+      walk(x, (y) => {
+        if (has(y, "kb-label")) out.label = y.textContent;
+        if (has(y, "kb-value")) { out.text = y.textContent; out.pill = y.className; }
+      });
+      items.push(out);
+    }
+  });
+  console.log(JSON.stringify({ at_construct: atConstruct, band_calls: calls.filter(isBand),
+    found: !!band, items, errors, html_sets: htmlSets }));
+})();
+"""
+
+
+def _run_band(cfg=None):
+    node = shutil.which("node")
+    assert node
+    result = subprocess.run([node, "-e", HARNESS_BAND, SCRIPT, json.dumps(cfg or {}), REAL_TABS_JS],
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _band_item(label, text, state, colour, route):
+    return {"label": label, "text": text, "state": state, "colour": colour, "route": route}
+
+
+def test_close_panel_draws_the_band_from_get_close_band():
+    payload = [
+        _band_item("Close Status", "<b>FY2025 P07</b> · Amber", "warn", "orange",
+                   "/desk/query-report/Period%20Close"),
+        _band_item("Warehouse Freshness", "Fresh", "ok", "green", "javascript:alert(1)"),
+    ]
+    out = _run_band({"payload": payload})
+    assert out["at_construct"] == 1
+    assert out["band_calls"] == [[BAND_METHOD, {}, "GET"]]
+    assert out["errors"] == [] and out["html_sets"] == []
+    first, second = out["items"]
+    assert first == {"tag": "a", "href": "/desk/query-report/Period%20Close", "label": "Close Status",
+                     "text": "<b>FY2025 P07</b> · Amber",
+                     "pill": first["pill"]}
+    assert "indicator-pill" in first["pill"].split() and "orange" in first["pill"].split()
+    assert second["tag"] != "a" and second["href"] is None  # not a /desk/ route: not linked
+
+
+def test_band_with_an_unknown_state_or_a_failed_call_shows_one_error_line():
+    out = _run_band({"payload": [_band_item("X", "t", "purple", "gray", "/desk/x")]})
+    assert out["items"] == [] and len(out["errors"]) == 1
+    out = _run_band({"reject": "boom"})
+    assert out["errors"] == ["The close band could not be read: boom"]
+    out = _run_band({"rejectUndefined": True})
+    assert len(out["errors"]) == 1 and "undefined" not in out["errors"][0]
+
+
+def test_entity_accountant_gets_no_band_and_no_band_call():
+    out = _run_band({"roles": EA})
+    assert out["found"] is False and out["band_calls"] == []
+
+
+def test_block_band_roles_match_what_get_close_band_admits():
+    import ast
+    import re
+    with open(os.path.join(APP_DIR, "close", "overview_api.py")) as f:
+        source = f.read()
+    tree = ast.parse(source)
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "get_close_band")
+    call = next(n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                and getattr(n.func, "attr", "") == "only_for")
+    arg = call.args[0]
+    if isinstance(arg, ast.Name):  # a module constant
+        arg = next(n.value for n in tree.body if isinstance(n, ast.Assign)
+                   and getattr(n.targets[0], "id", "") == arg.id)
+    admitted = set(ast.literal_eval(arg))
+    with open(SCRIPT) as f:
+        m = re.search(r"const CHECKLIST_ROLES = (\[[^\]]*\]);", f.read())
+    assert set(json.loads(m.group(1))) == admitted | {"Administrator"}
