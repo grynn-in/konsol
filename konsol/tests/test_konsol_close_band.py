@@ -400,3 +400,56 @@ def test_the_patch_deletes_only_the_apps_own_standard_cards():
                   os.path.join("patches", "retire_home_number_cards.py"), {"frappe": frappe})
     patch.execute()
     assert deleted == [("Number Card", "Close Status", {"force": True, "ignore_permissions": True})]
+
+
+def _logging_api(raises):
+    """``_api`` with a message log, and a frappe.throw that queues its message
+    the way frappe.msgprint does before raising, plus a recording log_error."""
+    api, frappe = _api(raises=raises)
+    frappe.local = _module("local", message_log=[{"message": "from before"}])
+    frappe.logged = []
+    frappe.log_error = lambda title=None, **k: frappe.logged.append(title)
+    return api, frappe
+
+
+def test_a_caught_throw_leaves_no_message_for_the_desk_to_pop_up():
+    """Review of #612, finding 1: frappe.throw msgprints before it raises, so a
+    caught throw would still reach the Desk as a red dialog on every visit.
+    The item says "Cannot read"; messages queued before the band stay."""
+    api, frappe = _logging_api({})
+    frappe_throw = frappe.throw
+
+    def throw(msg, exc=None, **k):
+        frappe.local.message_log.append({"message": msg})
+        frappe_throw(msg, exc)
+    frappe.throw = throw
+
+    def raising(*a, **k):
+        frappe.throw("Close Settings has no current period")
+    api._current = raising
+    band = api.get_close_band()
+    assert band[0]["text"] == "Cannot read: Close Settings has no current period", band[0]
+    assert frappe.local.message_log == [{"message": "from before"}], frappe.local.message_log
+
+
+def test_an_unexpected_exception_is_logged_and_a_refusal_is_not():
+    """Review of #612, finding 2: a code bug in a reader leaves an Error Log
+    entry, not only band text; a ValueError or a Frappe refusal is expected
+    and logs nothing."""
+    api, frappe = _logging_api({"queue_for": KeyError("waiting")})
+    api.get_close_band()
+    assert frappe.logged == ["Close band: Waiting for My Approval"], frappe.logged
+    for exc in (ValueError("unknown state"), frappe.ValidationError("no"),
+                frappe.PermissionError("no")):
+        api, frappe = _logging_api({"current_freshness": exc})
+        api.get_close_band()
+        assert frappe.logged == [], (exc, frappe.logged)
+
+
+def test_no_handbook_page_names_a_retired_card():
+    """Review of #612, finding 3: the Handbook describes the band, not cards."""
+    pages = os.path.join(APP_DIR, "handbook_pages")
+    for name in sorted(os.listdir(pages)):
+        text = _read(os.path.join(pages, name))
+        for label in BAND:
+            assert "**%s** card" % label not in text, (name, label)
