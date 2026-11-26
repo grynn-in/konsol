@@ -83,10 +83,19 @@ def _shown(label, route, build):
     build scope, a permission refused). One unreadable item never hides the
     other five (review of #409); the reason is shown, never guessed away.
     ``route`` is the item's link when ``build`` gives none or fails."""
+    log = getattr(getattr(frappe, "local", None), "message_log", None)
+    queued = len(log) if log is not None else 0
     try:
         text, state, own_route = build()
         return model.band_item(label, text, state, own_route or route)
     except Exception as e:
+        # frappe.throw msgprints before it raises: drop what this item queued,
+        # or the Desk pops it up as a dialog on every visit (review of #612).
+        if log is not None:
+            del log[queued:]
+        # A refusal is expected; anything else is a bug and leaves a trace.
+        if not isinstance(e, (ValueError, frappe.ValidationError, frappe.PermissionError)):
+            frappe.log_error(title="Close band: %s" % label)
         return model.band_item(label, "Cannot read: %s" % (str(e) or type(e).__name__),
                                model.UNKNOWN, route)
 

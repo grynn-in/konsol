@@ -81,6 +81,7 @@ def _api(current=((2025, 7), None, {"is_signed": False, "checks": "Amber"}), rai
 
     frappe.has_permission = _has_permission
     frappe.get_list = reader("get_list", list(listed))
+    frappe.log_error = lambda *a, **k: None
     model = _load("overview_model_for_band_test", os.path.join("close", "overview_model.py"), {})
     close = _module(
         "konsol.close", overview_model=model,
@@ -439,9 +440,14 @@ def test_an_unexpected_exception_is_logged_and_a_refusal_is_not():
     api, frappe = _logging_api({"queue_for": KeyError("waiting")})
     api.get_close_band()
     assert frappe.logged == ["Close band: Waiting for My Approval"], frappe.logged
-    for exc in (ValueError("unknown state"), frappe.ValidationError("no"),
-                frappe.PermissionError("no")):
-        api, frappe = _logging_api({"current_freshness": exc})
+    for make in (lambda f: ValueError("unknown state"), lambda f: f.ValidationError("no"),
+                 lambda f: f.PermissionError("no")):
+        api, frappe = _logging_api({})
+        exc = make(frappe)
+
+        def raising(*a, **k):
+            raise exc
+        api._current = raising
         api.get_close_band()
         assert frappe.logged == [], (exc, frappe.logged)
 
