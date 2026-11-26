@@ -384,3 +384,19 @@ def test_overview_api_never_bypasses_permissions():
     assert "ignore_permissions" not in source
     assert "frappe.get_all(" not in source
     assert re.search(r"frappe\.has_permission\(", source)
+
+
+def test_the_patch_deletes_only_the_apps_own_standard_cards():
+    stored = {
+        "Close Status": _module("r", module="Consolidation", is_standard=1),
+        "Trial Balances In": _module("r", module="Consolidation", is_standard=0),  # a site's own
+        "Warehouse Freshness": _module("r", module="Custom", is_standard=1),
+    }
+    deleted = []
+    frappe = _frappe()
+    frappe.db = _module("db", get_value=lambda dt, name, fields, as_dict=False: stored.get(name))
+    frappe.delete_doc = lambda dt, name, **k: deleted.append((dt, name, k))
+    patch = _load("retire_home_number_cards_under_test",
+                  os.path.join("patches", "retire_home_number_cards.py"), {"frappe": frappe})
+    patch.execute()
+    assert deleted == [("Number Card", "Close Status", {"force": True, "ignore_permissions": True})]

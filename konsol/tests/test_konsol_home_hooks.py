@@ -112,8 +112,9 @@ def _all_current(mod):
 
 def test_the_app_ships_the_checklist_and_the_handbook():
     mod = _blocks(_BlockSite())
-    assert [b[0] for b in mod.BLOCKS] == ["Konsol Close Checklist", "Konsol Handbook",
-                                          "Konsol My Work Board", "Konsol Home Tabs"]
+    assert [b[0] for b in mod.BLOCKS] == ["Konsol Close Checklist", "Konsol Close Band",
+                                          "Konsol Handbook", "Konsol My Work Board",
+                                          "Konsol Home Tabs"]
 
 
 def test_home_tabs_block_has_the_checklist_roles_and_entity_accountant():
