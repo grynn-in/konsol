@@ -635,3 +635,56 @@ def test_tree_heading_sums_apply_to_every_column():
     by = _by_range(spec)
     assert by["B4:D4"]["formulas"] == [["=SUM(B5,B8)", "=SUM(C5,C8)", "=SUM(D5,D8)"]]
     assert by["B6:D6"]["formulas"][0][2] == "=B6-C6"
+
+
+# -- text that Excel would read as a formula (PR #626 review finding 6) ------
+
+TB_TEMPLATE = TEMPLATES["trial_balance_long"]
+
+
+def _text_cells(spec):
+    return [v for c in spec["cells"] if "values" in c for row in c["values"] for v in row]
+
+
+def test_a_caption_that_starts_like_a_formula_is_written_as_text():
+    """range.values parses a leading = + - @ as a formula; the compiler writes
+    such TEXT with Excel's text marker, a leading apostrophe."""
+    hyperlink = '=HYPERLINK("http://zz.example","click")'
+    spec = _compile(JAN_DEC, accounts=[("ZZ4000", hyperlink), ("ZZ5000", "+plus"),
+                                       ("ZZ6000", "@at"), ("ZZ7000", "-minus")])
+    texts = _text_cells(spec)
+    for raw in (hyperlink, "+plus", "@at", "-minus"):
+        assert "'" + raw in texts, (raw, texts)
+        assert raw not in texts, raw
+    # Formula cells are untouched, and so are numbers (the year in F1).
+    formulas = [f for c in spec["cells"] for row in c.get("formulas", []) for f in row]
+    assert formulas and all(f.startswith("=") for f in formulas), formulas[:3]
+    assert 2024 in texts
+
+
+def test_a_header_param_that_starts_like_a_formula_is_written_as_text():
+    spec = _compile(JAN_DEC, entity="=ZZ")
+    assert "'=ZZ" in _text_cells(spec)
+    formulas = [f for c in spec["cells"] for row in c.get("formulas", []) for f in row]
+    assert any('"=ZZ"' in f for f in formulas), "the K.EPM argument keeps the code itself"
+
+
+def test_a_snapshot_text_value_that_starts_like_a_formula_is_written_as_text():
+    rows = [{"entity": "ZZ1", "year": 2024, "period": 1, "account": "+4000", "account_name": "-x",
+             "account_type": "=1+1", "bs_pnl": "@PL", "debit": -5, "credit": "0", "net": -5}]
+    spec = model.compile_snapshot(TB_TEMPLATE, {"entity": "ZZ1", "year": 2024, "period_from": 1,
+                                                "period_to": 12}, rows)
+    data = spec["cells"][-1]["values"][0]
+    for raw in ("+4000", "-x", "=1+1", "@PL"):
+        assert "'" + raw in data, (raw, data)
+    assert -5.0 in data and 2024 in data and 1 in data, data
+
+
+def test_plain_text_and_non_text_values_are_unchanged():
+    assert model.text_cell("Revenue") == "Revenue"
+    assert model.text_cell("") == ""
+    assert model.text_cell(-5) == -5 and model.text_cell(2024) == 2024
+    assert model.text_cell(None) is None
+    assert model.text_cell("'already") == "'already"
+    assert model.text_cell("a=b") == "a=b"
+    assert model.text_cell("=x") == "'=x"

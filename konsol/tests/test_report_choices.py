@@ -115,8 +115,9 @@ def _matches(row, filters):
     return True
 
 
-def _fake_frappe(user, roles, perms, accounts=None):
+def _fake_frappe(user, roles, perms, accounts=None, entities=None, dim_read=True):
     fake = types.ModuleType("frappe")
+    entity_rows = ENTITIES if entities is None else entities
     fake.PermissionError = type("PermissionError", (Exception,), {})
     fake.session = types.SimpleNamespace(user=user)
     fake.get_roles = lambda u=None: list(roles)
@@ -139,7 +140,7 @@ def _fake_frappe(user, roles, perms, accounts=None):
         if not (fields and "lft" in fields):
             assert order_by, f"get_all({doctype}) without order_by"
         if doctype == "Entity":
-            rows = ENTITIES
+            rows = entity_rows
             if filters and "name" in filters:
                 _, names = filters["name"]
                 rows = [r for r in rows if r["entity_code"] in names]
@@ -158,6 +159,9 @@ def _fake_frappe(user, roles, perms, accounts=None):
                     for r in (accounts if accounts is not None else ACCOUNTS)
                     if _matches(r, filters)]
         elif doctype == "Dimension Value":
+            # Frappe's get_all ignores permissions: the list must come
+            # through get_list, which applies them (review finding 8c).
+            assert k.get("_via") == "get_list", "Dimension Value listed through get_all"
             fake.DIM_CALLS.append(filters)
             rows = [_Row({"name": f"Region:{v}", "dimension": "Region", "value": v})
                     for v in ("DACH", "NA", "APAC")
@@ -175,6 +179,17 @@ def _fake_frappe(user, roles, perms, accounts=None):
         return rows
 
     fake.get_all = get_all
+    fake.get_list = lambda doctype, **kw: get_all(doctype, _via="get_list", **kw)
+    fake.PERM_CHECKS = []
+
+    def has_permission(doctype, ptype="read", throw=False, **k):
+        fake.PERM_CHECKS.append((doctype, ptype))
+        ok = dim_read if doctype == "Dimension Value" else True
+        if not ok and throw:
+            raise fake.PermissionError(f"No {ptype} permission on {doctype}")
+        return ok
+
+    fake.has_permission = has_permission
     return fake
 
 
@@ -200,8 +215,10 @@ def _stubbed(fake):
                 sys.modules[n] = v
 
 
-def _call(name, *args, user="Administrator", roles=(), perms=(), accounts=None, tree=None, hq=None):
-    fake = _fake_frappe(user, roles, perms, accounts)
+def _call(name, *args, user="Administrator", roles=(), perms=(), accounts=None, tree=None, hq=None,
+          entities=None, dim_read=True):
+    fake = _fake_frappe(user, roles, perms, accounts, entities, dim_read)
+    _call.fake = fake
     with _stubbed(fake):
         api = types.ModuleType("konsol.api")
         api.TREE_CALLS = []
@@ -256,9 +273,36 @@ def test_group_name_comes_from_the_root_row():
     assert rows["GRP-B"]["name"] == "US Co"
 
 
-def test_restricted_user_sees_only_groups_whose_root_entity_is_allowed():
+def test_a_group_is_listed_only_when_its_group_code_is_readable():
+    """epm_batch reads a group with entity_read_scope(<group code>, allowed)
+    (api.epm_batch): the picker applies that rule to the same argument, never
+    the root row's entity (review finding 1). A reader allowed GRP-A's root
+    entity DE01, but not the code GRP-A, is not offered GRP-A."""
     rows = _call("groups", **RESTRICTED)
-    assert [r["code"] for r in rows] == ["GRP-A"]
+    assert [r["code"] for r in rows] == [], rows
+
+
+#: GRP-B as an Entity of its own (a group entity), so a User Permission can name it.
+GROUP_ENTITY = ENTITIES + [{"entity_code": "GRP-B", "entity_name": "Group B", "is_group": 1,
+                            "functional_currency": "USD", "status": "Active", "lft": 7, "rgt": 8}]
+
+
+def test_a_reader_allowed_the_group_code_but_not_its_root_entity_is_offered_the_group():
+    rows = _call("groups", user="viewer", perms=["GRP-B"], entities=GROUP_ENTITY)
+    # GRP-B's root row sits in US01, which this reader may not read; the
+    # group code is what K.EPM checks, so the group is offered.
+    assert [r["code"] for r in rows] == ["GRP-B"], rows
+    assert _call("is_allowed", "group", "GRP-B", user="viewer", perms=["GRP-B"],
+                 entities=GROUP_ENTITY) is True
+    assert _call("is_allowed", "group", "GRP-A", user="viewer", perms=["GRP-B"],
+                 entities=GROUP_ENTITY) is False
+
+
+def test_groups_and_epm_batch_call_the_same_rule_with_the_group_code():
+    src = open(os.path.join(APP_DIR, "report_choices.py"), encoding="utf-8").read()
+    body = src[src.index("def groups("):src.index("def _iso(")]
+    assert "_readable(g[\"code\"], allowed)" in body, body
+    assert "data_area_id" not in body.split("return [", 1)[1], "the filter must not read the root entity"
 
 
 def test_is_allowed_accepts_listed_code_and_refuses_unknown():
@@ -271,7 +315,8 @@ def test_is_allowed_accepts_listed_code_and_refuses_unknown():
 def test_is_allowed_applies_the_reader_permission():
     assert _call("is_allowed", "entity", "US01", **RESTRICTED) is False
     assert _call("is_allowed", "group", "GRP-B", **RESTRICTED) is False
-    assert _call("is_allowed", "group", "GRP-A", **RESTRICTED) is True
+    # GRP-A's root entity is DE01, but the group code is not allowed (finding 1).
+    assert _call("is_allowed", "group", "GRP-A", **RESTRICTED) is False
 
 
 def test_is_allowed_refuses_an_unknown_kind():
@@ -344,6 +389,21 @@ def test_dimension_values_go_through_the_dimension_value_list():
     rows = _call("dimension_values", "Region")
     assert [r["code"] for r in rows] == ["APAC", "DACH", "NA"]
     assert _call("dimension_values", "Nope") == []
+
+
+def test_dimension_values_apply_the_dimension_value_read_permission():
+    """The docstring says the Dimension Value list runs its own read check:
+    the code checks read on Dimension Value and lists through get_list, which
+    applies permissions (frappe.get_all ignores them) (review finding 8c)."""
+    _call("dimension_values", "Region")
+    assert ("Dimension Value", "read") in _call.fake.PERM_CHECKS, _call.fake.PERM_CHECKS
+    try:
+        _call("dimension_values", "Region", user="viewer", dim_read=False)
+    except Exception as exc:
+        assert type(exc).__name__ == "PermissionError", exc
+        assert _call.fake.DIM_CALLS == [], "nothing is listed before the read check"
+    else:
+        raise AssertionError("a reader without read on Dimension Value was answered")
 
 
 def test_accounts_are_published_leaves_in_code_order():
@@ -459,12 +519,22 @@ def test_no_declared_forecast_gives_empty_options_and_why():
 
 
 def test_scenarios_refuses_an_unknown_type_and_a_guest():
+    # A ValidationError naming the allowed values, not a ValueError (a 500)
+    # (review finding 8b).
     try:
         _call("scenarios", 2025, "actual", hq=_hq())
-    except ValueError:
-        pass
+    except Exception as exc:
+        assert type(exc).__name__ == "ValidationError", exc
+        assert "'actual'" in str(exc) and "budget" in str(exc) and "forecast" in str(exc), exc
     else:
         raise AssertionError("an unknown scenario_type must be refused")
+    try:
+        _call("scenarios", "next year", "budget", hq=_hq())
+    except Exception as exc:
+        assert type(exc).__name__ == "ValidationError", exc
+        assert "'next year'" in str(exc), exc
+    else:
+        raise AssertionError("a year that is not a number must be refused")
     try:
         _call("scenarios", 2025, "budget", hq=_hq(), user="Guest")
     except Exception as exc:

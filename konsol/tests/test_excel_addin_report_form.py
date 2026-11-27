@@ -55,7 +55,7 @@ VARIANCE = {
         _p("budget", "scenario", "Budget", default="rule", depends_on=["year"], scenario_type="budget"),
         _p("hierarchy", "hierarchy", "Hierarchy"),
         _p("scope", "scope", "Scope", required=True, depends_on=["hierarchy", "year"],
-           kinds=["entity", "group", "hierarchy_node"]),
+           kinds=["entity", "group", "node"]),
         _p("accounts", "account_list", "Accounts"),
         _p("basis", "choice", "Basis", default="month", choices=["ytd", "month"]),
         _p("rows", "int", "Rows", default=5),
@@ -175,7 +175,7 @@ def test_each_param_type_gets_its_widget():
     assert f["hierarchy"]["tag"] == "select" and f["hierarchy"]["options"] == ["", "MGMT"]
     # The scope's default kind is entity: 30 of them, so a searchable input.
     assert f["scope"]["tag"] == "input" and f["scope"]["list"], f["scope"]
-    assert f["scope"]["kinds"]["options"] == ["entity", "group", "hierarchy_node"], f["scope"]
+    assert f["scope"]["kinds"]["options"] == ["entity", "group", "node"], f["scope"]
     assert f["accounts"]["tag"] == "select" and f["accounts"]["multiple"], f["accounts"]
     assert f["accounts"]["options"] == ["4000", "5000"]
     assert f["basis"]["tag"] == "select" and f["basis"]["options"] == ["", "ytd", "month"]
@@ -222,7 +222,7 @@ def test_a_dependent_waits_for_its_parent_and_refetches_when_it_changes():
 
 
 def test_a_hierarchy_node_scope_needs_hierarchy_and_year():
-    out = _run([["load"], ["select", "variance"], ["setKind", "scope", "hierarchy_node"], ["snap"],
+    out = _run([["load"], ["select", "variance"], ["setKind", "scope", "node"], ["snap"],
                 ["set", "year", "2024"], ["set", "hierarchy", "MGMT"], ["snap"]])
     before, after = out["snaps"]
     assert before["fields"]["scope"]["why"].startswith("Choose "), before["fields"]["scope"]
@@ -388,3 +388,118 @@ def test_the_snapshot_reads_the_generated_form():
     snap = _between(src, "function snapshotReport(")
     assert "values()" in snap and "snapshotAndRemember(" in snap, snap
     assert 'getElementById("period-from")' not in snap
+
+
+# -- review findings (PR #626) ------------------------------------------------------
+
+def test_every_scope_kind_of_the_model_has_a_form_mapping():
+    """Finding 2: the server's kinds are report_template_model.SCOPE_KINDS
+    (entity, group, node); the form keyed node as hierarchy_node, so a node
+    scope fetched nothing."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_rtm_kinds", os.path.join(os.path.dirname(TESTS), "report_template_model.py"))
+    model = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(model)
+    out = _run([["api", "KIND_OF_SCOPE"], ["api", "SCOPE_LABEL"]])
+    kind_of_scope, labels = out["results"]
+    assert set(kind_of_scope) == set(model.SCOPE_KINDS), kind_of_scope
+    assert set(labels) == set(model.SCOPE_KINDS), labels
+    assert kind_of_scope["node"] == "hierarchy_nodes"
+
+
+def test_a_node_scope_reads_the_nodes_and_sends_kind_node():
+    out = _run([["load"], ["select", "variance"], ["setKind", "scope", "node"],
+                ["set", "year", "2024"], ["set", "hierarchy", "MGMT"], ["set", "period", "1"],
+                ["set", "scope", "EU"], ["snap"]])
+    snap = out["snaps"][0]
+    assert {"kind": "hierarchy_nodes", "args": {"hierarchy": "MGMT", "year": "2024"}} in out["requests"]
+    assert snap["fields"]["scope"]["options"] == ["", "ALL", "EU"], snap["fields"]["scope"]
+    assert snap["values"]["scope"] == {"kind": "node", "code": "EU"}, snap["values"]
+    assert snap["blocked"] == "", snap["blocked"]
+
+
+def _per_kind(template, available, why):
+    t = copy.deepcopy(template)
+    t["available_kinds"] = available
+    t["unavailable_kinds"] = why
+    return t
+
+
+def test_the_form_offers_only_the_available_kinds_and_says_why_for_the_others():
+    """Finding 4: the catalog names the kinds a template can be read for on
+    this site; the toggle offers those only and shows each other kind's why."""
+    why = "No Published Dataset has scenario key 'consolidated_budget' (read by series 'bud'), " \
+          "so Actual vs budget cannot be read for a group on this site."
+    cat = copy.deepcopy(CATALOG)
+    cat["templates"][1] = _per_kind(VARIANCE, ["entity", "node"], {"group": why})
+    snap = _run([["load"], ["select", "variance"], ["snap"]], catalog=cat)["snaps"][0]
+    scope = snap["fields"]["scope"]
+    assert scope["kinds"]["options"] == ["entity", "node"], scope
+    assert why in snap["kindsWhy"]["scope"], snap["kindsWhy"]
+    # One kind left: no toggle, the kind is sent, the why still shows.
+    cat["templates"][1] = _per_kind(VARIANCE, ["entity"], {"group": why, "node": "no node word"})
+    out = _run([["load"], ["select", "variance"], ["set", "scope", "ZZ03"], ["snap"]], catalog=cat)
+    snap = out["snaps"][0]
+    assert "kinds" not in snap["fields"]["scope"], snap["fields"]["scope"]
+    assert snap["values"]["scope"] == {"kind": "entity", "code": "ZZ03"}
+    assert why in snap["kindsWhy"]["scope"] and "no node word" in snap["kindsWhy"]["scope"]
+    assert not any(r["kind"] in ("groups", "hierarchy_nodes") for r in out["requests"]), out["requests"]
+
+
+def test_a_catalog_without_per_kind_availability_offers_the_declared_kinds():
+    snap = _run([["load"], ["select", "variance"], ["snap"]])["snaps"][0]
+    assert snap["fields"]["scope"]["kinds"]["options"] == ["entity", "group", "node"]
+    assert snap["kindsWhy"]["scope"] == ""
+
+
+BUDGET_ONLY = {
+    "id": "budget_only", "version": 1, "title": "Budget", "description": "A budget by year",
+    "mode": "formulas", "sheet_name": "B", "available": True, "why": None,
+    "params": [
+        _p("year", "fiscal_year", "Year", required=True),
+        _p("budget", "scenario", "Budget", default="rule", depends_on=["year"], scenario_type="budget"),
+    ],
+}
+BUD23 = {"options": [{"id": "B23", "label": "Budget 2023"}], "default": "B23", "why": None}
+
+
+def _held_run(ops):
+    choices = _choices() + [["scenarios", {"year": "2023", "scenario_type": "budget"}, BUD23]]
+    return _run([["load"], ["select", "budget_only"]] + ops,
+                catalog={"templates": [BUDGET_ONLY]}, choices=choices, hold=["scenarios"])
+
+
+def test_apply_waits_while_a_dependent_picker_is_loading():
+    """Finding 5: the year changed, its budgets not yet in: Apply would send
+    the new year with the old year's budget. It is blocked until the reply."""
+    out = _held_run([["set", "year", "2023"], ["release", 0], ["snap"],
+                     ["set", "year", "2024"], ["snap"], ["missing"], ["release", 1], ["snap"]])
+    ready23, loading, ready24 = out["snaps"]
+    assert ready23["values"] == {"year": 2023, "budget": "B23"}, ready23["values"]
+    assert not ready23["apply"]["disabled"], ready23
+    assert loading["apply"]["disabled"] and loading["blocked"] == "Loading choices…", loading
+    assert out["results"] == ["Loading choices…"]
+    assert not ready24["apply"]["disabled"] and ready24["blocked"] == "", ready24
+    assert ready24["values"] == {"year": 2024, "budget": "B24"}, ready24["values"]
+
+
+def test_a_stale_reply_that_arrives_late_is_dropped():
+    out = _held_run([["set", "year", "2023"], ["set", "year", "2024"], ["snap"],
+                     ["release", 1], ["snap"], ["release", 0], ["snap"]])
+    both, new_in, old_late = out["snaps"]
+    assert both["apply"]["disabled"] and both["blocked"] == "Loading choices…", both
+    assert new_in["values"] == {"year": 2024, "budget": "B24"}, new_in["values"]
+    assert not new_in["apply"]["disabled"], new_in
+    assert old_late["values"] == {"year": 2024, "budget": "B24"}, old_late["values"]
+    assert old_late["fields"]["budget"]["options"] == ["", "B24"], old_late["fields"]["budget"]
+    assert not old_late["apply"]["disabled"] and old_late["blocked"] == "", old_late
+
+
+def test_a_stale_reply_first_keeps_apply_blocked_until_the_new_one():
+    out = _held_run([["set", "year", "2023"], ["set", "year", "2024"],
+                     ["release", 0], ["snap"], ["release", 1], ["snap"]])
+    old_first, new_in = out["snaps"]
+    assert old_first["apply"]["disabled"] and old_first["blocked"] == "Loading choices…", old_first
+    assert old_first["values"].get("budget") != "B23", old_first["values"]
+    assert new_in["values"] == {"year": 2024, "budget": "B24"} and not new_in["apply"]["disabled"]

@@ -355,3 +355,54 @@ def test_unsaved_settings_are_reported():
     out = _run(action="apply", cellMap=ONE, sheets=[{"name": "Sheet1"}], active="Sheet1", saveFails=True)
     r = out["result"]
     assert r["action"] == "new" and "could not save" in r["message"], r
+
+
+# -- rows or columns inserted above / left of the report (PR #626 finding 7) --
+
+def test_an_update_after_rows_are_inserted_above_writes_where_the_report_now_is():
+    """The user inserted one row above the report: Excel moved the name to
+    A2:M5, while the entry and the compiled map say A1:M4. The update writes
+    the report at A2, references included, and never row 1."""
+    cells = {"A1": "my note above", "A2": "Monthly P&L", "B4": {"f": "=K.EPM(1)"}}
+    out = _run(action="apply", cellMap=TWO, sheets=[_own_sheet(area="A2:M5", cells=cells)],
+               active="P&L", settings={"konsolReports": {"r-abc": _entry(area="A1:M4")}})
+    assert out["error"] is None, out["error"]
+    r = out["result"]
+    assert r["action"] == "update" and r["area"] == "A2:M6", r
+    sheet = _sheet(out, "P&L")
+    assert sheet["cells"]["A1"] == "my note above", "row 1 is outside the report now"
+    assert not {a for s, a in out["writes"] if s == "P&L" and a.endswith("1") and len(a) == 2}
+    assert sheet["cells"]["A2"] == "Monthly P&L"
+    assert sheet["cells"]["B4"] == '=K.EPM("ZZ1", 2024, 1, "4000")', sheet["cells"].get("B4")
+    assert sheet["cells"]["B5"] == '=K.EPM("ZZ1", 2024, 1, "5000")'
+    assert sheet["cells"]["B6"] == "=SUM(B4:B5)", sheet["cells"].get("B6")
+    assert sheet["cells"]["M6"] == "=SUM(M4:M5)"
+    (name,) = sheet["names"]
+    assert name["area"] == "A2:M6" and name["comment"] == "konsol-report:r-abc", name
+    # The entry keeps the compiled area, so the next update finds the offset again.
+    assert out["settings"]["konsolReports"]["r-abc"]["area"] == "A1:M5"
+
+
+def test_an_update_after_a_column_is_inserted_left_shifts_columns_and_formats():
+    m = _with_report(TWO, "A1:M5", formats=[{"range": "B3:M5", "number_format": "0"},
+                                           {"range": "A5:M5", "bold": True}])
+    out = _run(action="apply", cellMap=m, sheets=[_own_sheet(area="B1:N5", cells={"A3": "left"})],
+               active="P&L", settings={"konsolReports": {"r-abc": _entry(area="A1:M5")}})
+    assert out["error"] is None, out["error"]
+    assert out["result"]["area"] == "B1:N5", out["result"]
+    sheet = _sheet(out, "P&L")
+    assert sheet["cells"]["A3"] == "left"
+    assert sheet["cells"]["B1"] == "Monthly P&L"
+    assert sheet["cells"]["C3"] == '=K.EPM("ZZ1", 2024, 1, "4000")'
+    assert sheet["cells"]["C5"] == "=SUM(C3:C4)", sheet["cells"].get("C5")
+    assert sheet["formats"]["C3"]["nf"] == "0" and sheet["formats"]["N5"]["nf"] == "0"
+    assert sheet["formats"]["B5"]["b"] is True and "A5" not in sheet["formats"]
+
+
+def test_a_shifted_formula_keeps_text_and_function_names():
+    m = copy.deepcopy(ONE)
+    m["cells"].append({"range": "B4", "formulas": [['=K.EPM("A1", 2024, 1, "B3")+B3-LOG10(C3)']]})
+    out = _run(action="apply", cellMap=m, sheets=[_own_sheet(area="A3:M6")], active="P&L",
+               settings={"konsolReports": {"r-abc": _entry(area="A1:M4")}})
+    assert out["error"] is None, out["error"]
+    assert _sheet(out, "P&L")["cells"]["B6"] == '=K.EPM("A1", 2024, 1, "B3")+B5-LOG10(C5)'

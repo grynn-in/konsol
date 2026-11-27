@@ -768,7 +768,8 @@ def test_the_actual_budget_report_builds_for_a_group_with_the_rule_budget():
     assert out["budget"] == "ZZB1"
     formulas = [f for c in out["cells"] for line in c.get("formulas", []) for f in line]
     assert '=K.EPM("ZZG", 2026, 1, "4000", , "consolidated_budget", , "ZZB1")' in formulas
-    assert site["access"] == []  # a group is checked against the group list, not entity access
+    # A group is checked with K.EPM's own rule on the group code (finding 1).
+    assert site["access"] == ["ZZG"]
 
 
 def test_no_budget_rule_default_is_refused_with_the_rules_reason():
@@ -838,15 +839,165 @@ def test_scope_name_is_the_entitys_name_the_groups_name_or_the_nodes_label():
     assert "scope_name" not in ctx
 
 
-def test_the_actual_budget_template_is_unavailable_without_a_published_consolidated_budget():
+def test_actual_vs_budget_without_a_consolidated_budget_is_offered_for_an_entity_only():
+    """Availability is per scope kind (review finding 4, a product rule): a
+    kind is offered when every read series has a Published Dataset for that
+    kind's word. A site without consolidated_budget keeps the report for an
+    entity; the group kind is withheld with its why."""
     published = [{"fact_name": f"zz_{w}", "scenario_key": w, "status": "Published"}
                  for w in ("actuals", "budget", "consolidated")]
     svc = _service(_site(datasets=published))
     t = next(x for x in svc.catalog()["templates"] if x["id"] == ACTBUD)
-    assert t["available"] is False
-    assert "'consolidated_budget'" in t["why"] and "'bud'" in t["why"], t["why"]
-    assert "'consolidated'" not in t["why"], t["why"]
+    assert t["available"] is True and t["why"] is None, t
+    assert t["available_kinds"] == ["entity"], t
+    assert set(t["unavailable_kinds"]) == {"group"}, t
+    why = t["unavailable_kinds"]["group"]
+    assert "'consolidated_budget'" in why and "'bud'" in why and "group" in why, why
+    assert "'consolidated'" not in why, why
     svc = _service(_site(datasets=published + [{"fact_name": "zz_cb", "status": "Published",
                                                 "scenario_key": "consolidated_budget"}]))
     t = next(x for x in svc.catalog()["templates"] if x["id"] == ACTBUD)
     assert t["available"] is True and t["why"] is None
+    assert t["available_kinds"] == ["entity", "group"] and t["unavailable_kinds"] == {}, t
+
+
+def test_a_template_with_no_available_kind_is_unavailable_with_every_kinds_why():
+    published = [{"fact_name": "zz_a", "scenario_key": "actuals", "status": "Published"}]
+    svc = _service(_site(datasets=published))
+    t = next(x for x in svc.catalog()["templates"] if x["id"] == ACTBUD)
+    assert t["available"] is False and t["available_kinds"] == [], t
+    assert set(t["unavailable_kinds"]) == {"entity", "group"}, t
+    for kind, why in t["unavailable_kinds"].items():
+        assert why in t["why"], (kind, t["why"])
+    assert "'budget'" in t["unavailable_kinds"]["entity"], t
+    pnl = next(x for x in svc.catalog()["templates"] if x["id"] == "pnl_monthly")
+    assert pnl["available"] is True and pnl["available_kinds"] == ["entity"], pnl
+    tb = next(x for x in svc.catalog()["templates"] if x["id"] == "trial_balance_long")
+    assert tb["available"] is True and tb["available_kinds"] == ["entity"], tb
+
+
+# -- review findings (PR #626) -----------------------------------------------
+
+def test_a_group_the_reader_may_not_read_is_refused_by_name_before_any_read():
+    """Finding 1: a group is checked with K.EPM's rule (entity_read_scope on
+    the group code), before any read, as an entity is."""
+    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026,
+                 denied={"ZZG"})
+    svc = _service(site)
+    msg = _refusal(lambda: svc.build(ACTBUD, _actbud_params()), Forbidden)
+    assert "ZZG" in msg, msg
+    assert site["access"] == ["ZZG"]
+    assert not [c for c in site["calls"] if c["doctype"] == "Main Account"]
+    assert not [c for c in site["choice_calls"] if c[0] == "groups"], site["choice_calls"]
+    # A group param, not only a scope of kind group.
+    site = _site(denied={"ZZG"})
+    svc = _service(site)
+    _refusal(lambda: svc.validate_params(SYNTH, {"entity": "ZZ1", "grp": "ZZG", "year": 2024}),
+             Forbidden)
+    assert "ZZG" in site["access"]
+
+
+def test_a_readable_group_code_builds_even_when_another_code_is_denied():
+    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026,
+                 denied={"ZZ1"})
+    svc = _service(site)
+    out = svc.build(ACTBUD, _actbud_params())
+    assert out["report"]["params"]["scope"] == {"kind": "group", "code": "ZZG"}
+    assert site["access"] == ["ZZG"]
+
+
+def test_list_templates_renders_a_param_signs_default_sentence():
+    """Finding 3: a template whose sign is a param has ``sentences``; the
+    catalog text is the default choice's sentence, never ``()``."""
+    svc = _service(_site())
+    by_id = {t["id"]: t for t in svc.list_templates()}
+    d = by_id[ACTBUD]["description"]
+    assert "()" not in d, d
+    assert d.endswith("(debit positive; a negative total is a profit)"), d
+    cat = {t["id"]: t for t in svc.catalog()["templates"]}
+    assert cat[ACTBUD]["description"] == d
+    assert by_id["pnl_monthly"]["description"].endswith(
+        "(debit positive; a negative total is a profit)")
+
+
+def _type_refusal(svc, fn):
+    try:
+        fn()
+    except Refused as e:
+        return str(e)
+    except Exception as e:  # noqa: BLE001 - the test names what escaped
+        raise AssertionError(f"{type(e).__name__} escaped instead of a refusal: {e}")
+    raise AssertionError("expected a refusal")
+
+
+def test_a_param_value_of_the_wrong_type_is_refused_by_name():
+    """Finding 8a: a dict or list for a code reached assert_entity_access and
+    raised TypeError (a 500). Each is refused by name, before any check."""
+    site = _site(scenarios=BUDGETS)
+    svc = _service(site)
+
+    def real_access(entity):  # entity_read_scope does `entity in allowed` (a set)
+        site["access"].append(entity)
+        if entity in {"ZZ1", "ZZE", "ZZG"}:
+            return
+
+    svc._assert_entity_access = real_access
+    cases = [("entity", {"code": "ZZ1"}), ("entity", ["ZZ1"]), ("grp", {"x": 1}),
+             ("h", ["ZZH"]), ("acct", {"a": 1}), ("month", {"p": 3}), ("bud", ["ZZB1"])]
+    for name, value in cases:
+        params = {"entity": "ZZ1", "year": 2024, name: value}
+        msg = _type_refusal(svc, lambda: svc.validate_params(SYNTH, params))
+        assert name in msg and repr(value) in msg, (name, msg)
+    assert all(isinstance(a, str) for a in site["access"]), site["access"]
+    msg = _type_refusal(svc, lambda: svc.validate_params(
+        SYNTH, {"entity": "ZZ1", "year": 2024, "list": ["4000", {"x": 1}]}))
+    assert "list" in msg, msg
+    msg = _type_refusal(svc, lambda: svc.validate_params(SYNTH, {"entity": "ZZ1", "year": [2024]}))
+    assert "year" in msg, msg
+    t = svc.template(ACTBUD)
+    msg = _type_refusal(svc, lambda: svc.validate_params(t, {
+        "scope": {"kind": "entity", "code": {"c": 1}}, "year": 2026, "through": "P01"}))
+    assert "scope" in msg, msg
+    msg = _type_refusal(svc, lambda: svc.validate_params(t, {
+        "scope": {"kind": ["entity"], "code": "ZZ1"}, "year": 2026, "through": "P01"}))
+    assert "scope" in msg, msg
+
+
+def test_a_bad_scenario_type_for_choices_is_refused_naming_the_allowed_values():
+    """Finding 8b: report_choices(kind=scenarios, scenario_type=x) was a 500."""
+    svc = _service(_site())
+    msg = _refusal(lambda: svc.choices("scenarios", year="2024", scenario_type="x"))
+    assert "'x'" in msg and "budget" in msg and "forecast" in msg, msg
+
+
+def _node_build_template(svc):
+    t = json.loads(json.dumps(svc.template(ACTBUD)))
+    t["id"] = "zz_node_build"
+    t["params"][0]["kinds"] = ["entity", "group", "node"]
+    t["params"][0]["depends_on"] = ["h", "year"]
+    t["params"][1:1] = [{"name": "h", "type": "hierarchy", "required": True},
+                        {"name": "acct", "type": "account", "required": True}]
+    for name, word in (("act", "actuals"), ("bud", "budget")):
+        t["series"][name]["read"]["node"] = word
+    t["rows"]["blocks"] = [
+        {"id": "nodes", "type": "hierarchy_nodes", "hierarchy": "h", "account": "acct",
+         "caption": "{node.label}"},
+    ]
+    t["header"] = [c for c in t["header"] if c.get("param") != "scope"] + [
+        {"at": "J1", "text": "{scope.name}"}]
+    return t
+
+
+def test_the_hierarchy_tree_is_read_once_per_build():
+    """Finding 8d: the scope check, the hierarchy_nodes block and the scope
+    name each read the tree; one build reads it once."""
+    site = _site(scenarios=BUDGETS_2026)
+    svc = _service(site)
+    t = _node_build_template(svc)
+    svc.templates()[t["id"]] = t
+    out = svc.build(t["id"], {"scope": {"kind": "node", "code": "ZZEU"}, "h": "ZZH",
+                              "acct": "4000", "year": 2026, "through": "P03"})
+    reads = [c for c in site["choice_calls"] if c[0] == "hierarchy_nodes"]
+    assert reads == [("hierarchy_nodes", ("ZZH", 2026))], reads
+    values = {c["range"]: c["values"][0][0] for c in out["cells"] if "values" in c}
+    assert values["J1"] == "ZZ Europe", values

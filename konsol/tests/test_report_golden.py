@@ -131,3 +131,24 @@ def test_tb_constants_come_from_the_template_file():
     assert _compiler.TB_LONG_HEADERS == [f["h"] for f in t["fields"]]
     assert _compiler.TB_LONG_MAX_ROWS == t["max_rows"]
     assert _compiler.TB_LONG_LAST_COL == "J"
+
+
+def test_list_templates_first_two_entries_are_unchanged():
+    """PR #626 finding 3 re-captured the actual-vs-budget entry only."""
+    first_two = [
+        {"id": "pnl_monthly", "title": "Monthly P&L",
+         "description": "12-month income statement: every Published Profit and Loss account of "
+                        "the group chart (debit positive; a negative total is a profit)",
+         "mode": "formulas"},
+        {"id": "trial_balance_long",
+         "title": "Entity TB — local currency, account level (pre-consolidation)",
+         "description": "One row per account × period, local currency, before FX translation, "
+                        "ownership and eliminations — snapshot values for Excel models",
+         "mode": "snapshot"},
+    ]
+    with open(os.path.join(GOLDEN, "list_templates.json"), encoding="utf-8") as f:
+        golden = json.load(f)
+    assert golden[:2] == first_two
+    assert _compiler.list_templates()[:2] == first_two
+    third = _compiler.list_templates()[2]
+    assert third["id"] == "pnl_actual_budget_monthly" and "()" not in third["description"], third

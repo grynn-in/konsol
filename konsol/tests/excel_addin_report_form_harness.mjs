@@ -12,9 +12,13 @@
 //    "catalogError": "text",             // the failure's message
 //    "choices": [[kind, args, payload]], // report_choices replies, matched on kind + args
 //    "inspect": [{...}, ...],            // konsolReport.inspect() answers, in turn (last repeats)
+//    "hold": [kind, ...],                // these kinds' replies wait for a "release"
 //    "ops": [["load"], ["select", id], ["set", param, value], ["setMany", param, [values]],
 //            ["setKind", param, kind], ["activate"], ["snap"], ["values"], ["missing"],
-//            ["normalise", arg]]}
+//            ["normalise", arg], ["release", n], ["api", name]]}
+//   "release" n answers the n-th held request (0-based, in request order), so a
+//   test can deliver an old reply after a newer one. "api" records
+//   konsolReportForm[name].
 // Output (stdout, JSON):
 //   {"snaps": [...], "results": [...], "requests": [{kind, args}], "inspects": n,
 //    "logs": [[level, message]], "watched": bool, "error": text|null}
@@ -110,10 +114,15 @@ function sameArgs(a, b) {
   return JSON.stringify(ka) === JSON.stringify(kb) && ka.every((k) => String(a[k]) === String(b[k]));
 }
 
+const held = [];
+
 function fetchChoices(kind, args) {
   out.requests.push({ kind, args });
   const hit = (input.choices || []).find(([k, a]) => k === kind && sameArgs(a, args));
   if (!hit) return Promise.reject(new Error("no stub for " + kind + " " + JSON.stringify(args)));
+  if ((input.hold || []).includes(kind)) {
+    return new Promise((resolve) => { held.push(() => resolve({ kind, choices: hit[2] })); });
+  }
   return Promise.resolve({ kind, choices: hit[2] });
 }
 
@@ -183,7 +192,13 @@ function snap(ctl) {
   walk(els.fields, (e) => { const n = e.getAttribute("data-param"); if (n) names.push(n); });
   const fields = {};
   names.forEach((n) => { fields[n] = fieldView(n); });
+  const kindsWhy = {};
+  walk(els.fields, (e) => {
+    const n = e.getAttribute("data-kinds-why");
+    if (n) kindsWhy[n] = e.hidden ? "" : e.textContent;
+  });
   return {
+    kindsWhy,
     template: els.select.value,
     templates: els.select.options.map((o) => ({ id: o.value, text: o.textContent, disabled: !!o.disabled })),
     templateWhy: els.templateWhy.hidden ? "" : els.templateWhy.textContent,
@@ -228,6 +243,10 @@ try {
     else if (op === "values") out.results.push(ctl.values());
     else if (op === "missing") out.results.push(ctl.missing());
     else if (op === "normalise") out.results.push(api.normaliseRequest(args[0]));
+    else if (op === "release") {
+      if (!held[args[0]]) throw new Error("no held request " + args[0]);
+      held[args[0]]();
+    } else if (op === "api") out.results.push(JSON.parse(JSON.stringify(api[args[0]])));
     else throw new Error("unknown op " + op);
     await settle();
   }
