@@ -501,6 +501,105 @@ def named_budget_scenario_error(scenario_id, active):
     return f"{scenario_id} is not an active budget scenario, so there is no variance for it."
 
 
+#: Whom a budget read is for, as the coverage rule asks (konsol#568): one
+#: entity, a consolidation group, or a wildcard over the reader's entities.
+COVER_ENTITY, COVER_GROUP, COVER_ANY = "entity", "group", "any"
+
+
+def budget_coverage_error(scenario_id, fiscal_year, entity, kind, approved, budgeted):
+    """Why a budget read has no budget to read, or None (konsol#568).
+
+    Decided by Deepak Pai, 27 Nov 2026: a budget read is refused only when the
+    scenario has no approved Budget Cycle for the entity and year; where an
+    approved Cycle exists and holds no row, the read is 0 (no budget means
+    budget zero, 22 Sep 2026). Refusing every uncovered grain was rejected.
+
+    A Cycle is per (scenario, fiscal year), not per entity, and a Budget Entry
+    or Annual Input under it names its entity. So "an approved Cycle for the
+    entity and year" is an approved Cycle of (scenario, year) holding an entry
+    or an input for that entity. A group read (the consolidated budget) and a
+    wildcard read ask the (scenario, year) only: the group holds no entries
+    of its own.
+
+    ``kind`` is COVER_ENTITY, COVER_GROUP or COVER_ANY. ``approved`` is
+    {(scenario_id, fiscal_year): [approved cycle, ...]} and ``budgeted``
+    {(scenario_id, fiscal_year): {entity, ...}}, from _approved_budget_coverage.
+    """
+    who = {COVER_ENTITY: f"entity '{entity}'",
+           COVER_GROUP: f"group '{entity}'"}.get(kind, "any entity")
+    cycles = approved.get((scenario_id, fiscal_year))
+    if not cycles:
+        return (f"Scenario '{scenario_id}' has no approved Budget Cycle for "
+                f"FY{fiscal_year}, so there is no budget to read for {who}. "
+                f"Approve a Budget Cycle for '{scenario_id}' FY{fiscal_year}.")
+    if kind == COVER_ENTITY and entity not in budgeted.get((scenario_id, fiscal_year), ()):
+        named = (f"approved Cycle {cycles[0]} holds" if len(cycles) == 1
+                 else f"approved Cycles {', '.join(cycles)} hold")
+        return (f"Scenario '{scenario_id}' has no approved Budget Cycle for entity "
+                f"'{entity}' in FY{fiscal_year}: {named} no Budget Entry or Annual "
+                f"Input for it, so there is no budget to read. Add its budget to a "
+                f"Budget Cycle of '{scenario_id}' FY{fiscal_year} and approve the Cycle.")
+    return None
+
+
+def _approved_budget_coverage(needs):
+    """(approved, budgeted) for budget_coverage_error over ``needs``, an
+    iterable of (scenario_id, fiscal_year, entity or None). At most three
+    lookups however many cells: the approved Cycles of the pairs, then the
+    Budget Entries and Annual Inputs under them naming the entities."""
+    import frappe
+
+    needs = [(sid, int(year), entity) for sid, year, entity in needs]
+    pairs = {(sid, year) for sid, year, _ in needs}
+    if not pairs:
+        return {}, {}
+    approved = defaultdict(list)
+    cycle_pair = {}
+    for row in frappe.get_all(
+        "Budget Cycle",
+        filters={"docstatus": 1,
+                 "scenario_id": ["in", sorted({sid for sid, _ in pairs})],
+                 "fiscal_year": ["in", sorted({year for _, year in pairs})]},
+        fields=["name", "scenario_id", "fiscal_year"],
+        order_by="name asc", limit_page_length=0,
+    ):
+        pair = (row["scenario_id"], int(row["fiscal_year"]))
+        if pair in pairs:
+            approved[pair].append(row["name"])
+            cycle_pair[row["name"]] = pair
+    entities = sorted({entity for sid, year, entity in needs
+                       if entity and (sid, year) in approved})
+    budgeted = defaultdict(set)
+    if entities:
+        for doctype in ("Budget Entry", "Budget Annual Input"):
+            for row in frappe.get_all(
+                doctype,
+                filters={"cycle": ["in", sorted(cycle_pair)],
+                         "data_area_id": ["in", entities]},
+                fields=["cycle", "data_area_id"], distinct=True, limit_page_length=0,
+            ):
+                budgeted[cycle_pair[row["cycle"]]].add(row["data_area_id"])
+    return dict(approved), dict(budgeted)
+
+
+def budget_coverage_errors(needs):
+    """{index: why} for the budget reads in ``needs`` that have no budget to
+    read, each (index, scenario_id, fiscal_year, entity, kind) (konsol#568).
+    Both read paths call this once per batch, after resolving each row's
+    scenario."""
+    if not needs:
+        return {}
+    approved, budgeted = _approved_budget_coverage(
+        [(sid, year, entity if kind == COVER_ENTITY else None)
+         for _, sid, year, entity, kind in needs])
+    out = {}
+    for idx, sid, year, entity, kind in needs:
+        err = budget_coverage_error(sid, int(year), entity, kind, approved, budgeted)
+        if err:
+            out[idx] = err
+    return out
+
+
 def batch_query_hierarchy(requests_list, *, allowed_entities):
     """Execute hierarchy-mode batch queries. Returns {values, errors}.
 
@@ -523,6 +622,7 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     budgets_by_year = None  # looked up once per call, when first needed
     active_budgets = None  # likewise, for named variance scenarios
     declared_by_year = None  # the Current Forecasts, likewise (S6 review m2)
+    coverage_needs = []  # budget reads for budget_coverage_errors (konsol#568)
     known_cache = []  # every Scenario id, looked up once when first needed
 
     def known_scenarios():
@@ -608,6 +708,12 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
                 continue
         dims = frozenset(req.get("dimensions", {}).keys())
         wildcard = entity_is_wildcard(req.get("entity", ""))
+        if ((cfg.get("excludes_forecast") or cfg.get("needs_budget_scenario"))
+                and scenario_id and _SAFE_SCENARIO_ID.match(scenario_id)):
+            # The budget and variance reads: an approved Cycle for the
+            # entity and year, or a refusal (konsol#568).
+            coverage_needs.append((idx, scenario_id, req["year"], req.get("entity", ""),
+                                   COVER_ANY if wildcard else COVER_ENTITY))
         key = (
             sc,
             measure,
@@ -621,6 +727,8 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             "" if wildcard else req.get("entity", ""),
         )
         keyed.append((key, idx, req))
+    for idx, err in budget_coverage_errors(coverage_needs).items():
+        errors[idx] = err
 
     # An actuals cell with no trial balance in any of its periods is refused,
     # not read as 0 (konsol#401). A wildcard cell is refused only when no

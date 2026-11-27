@@ -80,9 +80,10 @@ The add-in reads a forecast by its scenario word (the sixth argument of `=K.EPM`
 For example, `=K.EPM("G1",2026,3,"4000","","consolidated_budget",,"BUD26")` reads the consolidated budget of group G1 for scenario BUD26.
 
 - A forecast read of a year with no Current Forecast is refused, and the message names the missing declaration. With no scenario named, the `forecast`, `latest_estimate` and accuracy reads take the one forecast scenario declared for the year, and refuse when there are none or several.
-- The `budget` read refuses a forecast scenario, because it would add the rounds together. With no scenario named, it reads every scenario except the forecasts.
+- The `budget` read refuses a forecast scenario, because it would add the rounds together. With no scenario named, it reads the one budget scenario of the year, never a forecast, and refuses when there are none or several.
 - In Excel, the accuracy reads show the declared round only. The Forecast Accuracy report shows every round.
-- A budget, forecast or accuracy cell with no row in the warehouse reads 0.
+- A `budget`, `variance` or `consolidated_budget` read is refused when its scenario has no approved Budget Cycle for the year. For one entity, it is also refused when the approved Cycle holds no Budget Entry or Annual Input for that entity. The message names the scenario, the entity or group, and the year: approve a Budget Cycle to read it. A draft Cycle does not count.
+- Where an approved Cycle budgets the entity and has no row for the cell, the cell reads 0: no budget is a budget of zero. A forecast or accuracy cell with no row reads 0.
 - There is no error % to read in Excel. Compute it in the sheet as `forecast_error / ABS(actual_amount)`, from two `=K.EPM` cells of the same range, and guard an actual of 0. The Forecast Accuracy report shows the error % per row, and n/a where the actual is 0.
 
 ## Cancelling a round

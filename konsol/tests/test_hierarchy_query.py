@@ -218,6 +218,17 @@ def _run_hierarchy(rows, active_budgets=(), cycles=None, scenarios=None, api=Non
 
     def get_all(doctype, filters=None, pluck=None, order_by=None, fields=None, **kw):
         filters = dict(filters or {})
+        if doctype == "Budget Cycle" and "fiscal_year" in filters:
+            # The approved-Cycle coverage lookup (konsol#568), pinned in
+            # test_epm_read_refusals: not counted among the lookups here.
+            wanted, years = set(filters["scenario_id"][1]), set(filters["fiscal_year"][1])
+            return [{"name": f"{s}-{y}", "scenario_id": s, "fiscal_year": y}
+                    for s, y in cycles if s in wanted and y in years]
+        if doctype in ("Budget Entry", "Budget Annual Input"):
+            # Every approved Cycle budgets every entity asked about (#568).
+            return [] if doctype == "Budget Annual Input" else [
+                {"cycle": c, "data_area_id": e}
+                for c in filters["cycle"][1] for e in filters["data_area_id"][1]]
         if doctype == "Budget Cycle":
             lookups.append({"Budget Cycle": filters})
             wanted = set(filters["scenario_id"][1])
@@ -301,7 +312,7 @@ def test_variance_filters_the_named_budget_scenario():
     assert "AND budget_scenario_id = {sid:String}" in sql
     assert params["param_sid"] == "ZZ_PLAN"
     # a named scenario is read as named, once the doctype says it is an
-    # active budget; its year's Budget Cycles are not asked
+    # active budget; its year's active budgets are not asked
     assert lookups == [{"scenario_type": "budget", "is_active": 1}]
 
 

@@ -117,7 +117,9 @@ class _Throw(Exception):
 def _frappe(scenarios, declared, lookups, cycles=CYCLES):
     def get_all(doctype, filters=None, pluck=None, fields=None, **kw):
         filters = dict(filters or {})
-        lookups.append((doctype, filters, tuple(fields or ())))
+        if not (doctype in ("Budget Entry", "Budget Annual Input")
+                or (doctype == "Budget Cycle" and "fiscal_year" in filters)):
+            lookups.append((doctype, filters, tuple(fields or ())))
         if doctype == "Scenario":
             return sorted(sid for sid, kind in scenarios
                           if all({"scenario_id": sid, "scenario_type": kind,
@@ -127,6 +129,17 @@ def _frappe(scenarios, declared, lookups, cycles=CYCLES):
             assert filters == {"docstatus": 1}, filters
             return [{"scenario_id": s, "fiscal_year": y, "budget_cycle": c}
                     for s, y, c in declared]
+        if doctype == "Budget Cycle" and "fiscal_year" in filters:
+            # The approved-Cycle coverage lookup (konsol#568), pinned in
+            # test_epm_read_refusals: not counted among the lookups here.
+            wanted, years = set(filters["scenario_id"][1]), set(filters["fiscal_year"][1])
+            return [{"name": f"{s}-{y}", "scenario_id": s, "fiscal_year": y}
+                    for s, y in cycles if s in wanted and y in years]
+        if doctype in ("Budget Entry", "Budget Annual Input"):
+            # Every approved Cycle budgets every entity asked about (#568).
+            return [] if doctype == "Budget Annual Input" else [
+                {"cycle": c, "data_area_id": e}
+                for c in filters["cycle"][1] for e in filters["data_area_id"][1]]
         if doctype == "Budget Cycle":
             assert filters["docstatus"] == 1, filters  # approved only (#563 review m1)
             wanted = set(filters["scenario_id"][1])

@@ -813,6 +813,9 @@ def _batch_query_clickhouse(requests_list):
         round_in_clause,
         _scenario_ids,
         NO_BUDGET_TO_READ,
+        COVER_ENTITY,
+        COVER_GROUP,
+        budget_coverage_errors,
         choose_declared_forecast,
         forecast_on_budget_read_error,
         scenario_id_error,
@@ -843,6 +846,7 @@ def _batch_query_clickhouse(requests_list):
     declared_by_year = None  # the Current Forecasts, likewise (S6 review m2)
     declared_cycles = None  # their Cycles, for the per-round tables (S6 KC1)
     as_of_periods = None  # their as-of periods, for the actual side (#559)
+    coverage_needs = []  # budget reads for budget_coverage_errors (konsol#568)
     actual_side = []  # (idx, req) latest-estimate cells wholly on the actual side
 
     def resolve_fact(fact_key):
@@ -877,6 +881,7 @@ def _batch_query_clickhouse(requests_list):
         dims = req.get("dimensions", {})
         fact_key = req.get("fact") or req.get("scenario")
         scenario_id = req.get("scenario_id", "")
+        named = bool(scenario_id)
         group_fact = resolve_fact(fact_key)
         err = group_slot_error(group_fact, req) if group_fact else None
         if err:
@@ -983,6 +988,15 @@ def _batch_query_clickhouse(requests_list):
             if err:
                 errors[idx] = err
                 continue
+        if fact and scenario_id and _SAFE_SCENARIO_ID.match(scenario_id):
+            # A budget read needs an approved Cycle for its entity and year;
+            # a group read, for its year (konsol#568). A scenario resolved
+            # above is a budget; a named forecast reads its declared round.
+            table = _read_table(fact, req["measure"])
+            if table in _BUDGET_EXCLUDES_FORECAST or _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+                coverage_needs.append((idx, scenario_id, req["year"], req["entity"], COVER_ENTITY))
+            elif table in _FORECAST_BY_NAME_ONLY and not (named and scenario_id in forecast_ids()):
+                coverage_needs.append((idx, scenario_id, req["year"], req["entity"], COVER_GROUP))
         key = (
             fact_key,
             req["measure"],
@@ -991,6 +1005,8 @@ def _batch_query_clickhouse(requests_list):
             req.get("layer", ""),
         )
         keyed.append((key, idx, req))
+    for idx, err in budget_coverage_errors(coverage_needs).items():
+        errors[idx] = err
 
     # An actuals cell none of whose periods has a trial balance for its
     # entity is refused, not read as 0 (konsol#401). "Loaded" is asked of the
