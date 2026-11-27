@@ -278,7 +278,7 @@ import importlib.util
 import inspect
 import sys
 import types
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from fractions import Fraction
 
@@ -327,6 +327,7 @@ class _Run:
         self.status = "Draft"
         self.weights = [_Row(step=99)]   # a stale row that must be replaced
         self.accounts = [_Row(main_account="OLD")]
+        self.driver_accounts = [_Row(driver="OLD")]
         self.saved = 0
 
     def set(self, field, rows):
@@ -374,6 +375,10 @@ def _run_module(rule_set=None, stats=None, carry=None, tree=None, user="zz@examp
         stats if stats is not None else _stats())
     module._driver_carry_forward = lambda drivers: dict(carry or {})
     module._descendants = lambda account: list((tree or _TREE)[account])
+    # 2b-1 F7: every driver is an Uploaded Statistic unless a test says otherwise
+    module._driver_sources = lambda names: {n: _Row(_driver(n)) for n in names}
+    module._period_dates = lambda fy, fp: MARCH
+    module._query_derived = lambda sql, params: ""
     module._first_draft_state = lambda: "Draft"
     module._now = lambda: datetime(2026, 11, 13, 9, 0, 0)
     module._user = lambda: user
@@ -616,6 +621,14 @@ class _World:
             {"statistic": "CAS-00001", "docstatus": 1, "fiscal_period": 3, "member": "HR", "value": 10},
             {"statistic": "CAS-00001", "docstatus": 1, "fiscal_period": 3, "member": "P1", "value": 20},
         ]
+        # 2b-1 F8: the drivers as the site holds them now, with their fixed
+        # weights; the derived query's answer (text, or an exception to raise)
+        self.drivers = {"ZZ Head": {"name": "ZZ Head", "source": "Uploaded Statistic",
+                                    "dimension": "dim_zz", "value_sign": None}}
+        self.fixed_rows = []
+        self.derived = ""
+        self.derived_calls = []
+        self.period_dates_calls = []
         self.sql = []
         self.open_calls = []
         self.closed = set()
@@ -665,6 +678,12 @@ def _k8(world):
             # the statistic re-read: only the cited statistics, as the IN clause says
             assert "IN %(statistics)s" in query
             return [_Row(r) for r in world.stat_rows if r["statistic"] in values["statistics"]]
+        if "`tabCost Allocation Driver Fixed Weight`" in query:
+            assert "IN %(drivers)s" in query
+            return [_Row(r) for r in world.fixed_rows if r["parent"] in values["drivers"]]
+        if "`tabCost Allocation Driver`" in query:
+            assert "IN %(drivers)s" in query
+            return [_Row(r) for n, r in world.drivers.items() if n in values["drivers"]]
         # the shared-sender read: each predicate filters only if the SQL has it
         out = []
         for r in world.other_rows:
@@ -722,9 +741,23 @@ def _k8(world):
         if (year, period) in world.undeclared:
             raise _Refusal(f"period {period} of FY{year} is not declared")
 
+    def period_dates(year, period):
+        world.period_dates_calls.append((year, period))
+        return MARCH
+
     ps.assert_open = assert_open
     ps.assert_declared = assert_declared
+    ps.period_dates = period_dates
     module.period_status = ps
+
+    def query_derived(sql, params):
+        world.derived_calls.append((sql, params))
+        if isinstance(world.derived, Exception):
+            raise world.derived
+        return world.derived
+
+    module._query_derived = query_derived
+    module._descendants = lambda account: list(_TREE.get(account, [account]))
     ch = types.SimpleNamespace()
     ch.sync_doctype_after_commit = lambda *a, **k: world.syncs.append(a)
     def after_commit_once(key, fn):
@@ -2145,3 +2178,497 @@ def test_rf12_the_race_comment_names_the_callback_and_the_hourly_repair():
     assert "two writers that both read the run as submitted: the after-commit callback and the hourly repair" in flat
     assert "db.commit" not in src
     assert "(a submit's callback and a fast\n#   cancel's in another request, or a callback and the hourly repair)" not in src
+
+
+# --- 2b-1 F7/F8: driver sources at Compute, re-checked at submit ------------------
+#
+# konsol#269, Phase 2b plan section 1; A on Q1–Q7 (Deepak Pai, 27 Nov 2026).
+# Every source fills the same weight rows. Fixed and derived values are
+# snapshotted at Compute and re-read at approval with a locking read (fixed)
+# or the same warehouse query (derived); any difference refuses the submit.
+
+MARCH = (date(2026, 3, 1), date(2026, 3, 31))
+UPLOADED, FIXED_W, ACCOUNT_SET = "Uploaded Statistic", "Fixed Weights", "Account Set"
+DRIVER_PY = os.path.join(EPM_DOCTYPES, "cost_allocation_driver", "cost_allocation_driver.py")
+
+
+def _driver(name, source=UPLOADED, dimension="dim_zz", value_sign=None, fixed_weights=(), accounts=()):
+    """A driver as _driver_sources returns it."""
+    return {"name": name, "source": source, "dimension": dimension, "value_sign": value_sign,
+            "fixed_weights": [_Row(r) for r in fixed_weights],
+            "accounts": [_Row(main_account=a) for a in accounts]}
+
+
+def _fixed(member, value, effective_from, effective_to=None):
+    return {"member": member, "value": value, "effective_from": effective_from,
+            "effective_to": effective_to}
+
+
+def _sources_module(drivers, derived="", **kw):
+    """_run_module plus the F7 reads: driver sources, period dates, the derived query."""
+    m = _run_module(**kw)
+    by_name = {d["name"]: d for d in drivers}
+    m._driver_sources = lambda names: {n: _Row(by_name[n]) for n in names if n in by_name}
+    m.period_calls, m.derived_calls = [], []
+
+    def period_dates(fy, fp):
+        m.period_calls.append((fy, fp))
+        return MARCH
+
+    def query(sql, params):
+        m.derived_calls.append((sql, params))
+        if isinstance(derived, Exception):
+            raise derived
+        return derived
+
+    m._period_dates = period_dates
+    m._query_derived = query
+    return m
+
+
+def _k7_refused(fn):
+    try:
+        fn()
+    except _Refused as exc:
+        return str(exc)
+    raise AssertionError("expected a refusal")
+
+
+def _mixed_rule_set(second_driver):
+    """Step 1 on the uploaded statistic, step 2 on ``second_driver``."""
+    return _rule_set(rules=[_Row(step=1, sender_member="IT", driver="ZZ Head"),
+                            _Row(step=2, sender_member="HR", driver=second_driver)])
+
+
+def _fixed_driver():
+    return _driver("ZZ Fixed", FIXED_W, fixed_weights=[
+        _fixed("P1", 2, date(2025, 1, 1), date(2025, 12, 31)),    # expired
+        _fixed("P1", 20, date(2026, 1, 1)),                        # covers March, open-ended
+        _fixed("P2", 30, date(2025, 6, 1), date(2026, 12, 31)),    # covers March
+        _fixed("HR", 99, date(2026, 1, 1))])                       # not a step-2 receiver: ignored
+
+
+def _rev(sign="Reversed", accounts=("6000", "7000")):
+    return _driver("ZZ Rev", ACCOUNT_SET, value_sign=sign, accounts=accounts)
+
+
+def test_f7_source_constants_live_in_the_model_and_the_driver_imports_them():
+    from konsol import cost_allocation_model as model
+    assert model.SOURCES == (UPLOADED, FIXED_W, ACCOUNT_SET)
+    assert (model.UPLOADED, model.FIXED, model.ACCOUNT_SET) == model.SOURCES
+    with open(DRIVER_PY) as f:
+        tree = ast.parse(f.read())
+    imported = {a.name for n in tree.body if isinstance(n, ast.ImportFrom)
+                and n.module == "konsol.cost_allocation_model" for a in n.names}
+    assert {"UPLOADED", "FIXED", "ACCOUNT_SET", "SOURCES"} <= imported, imported
+    assigned = [t.id for n in tree.body if isinstance(n, ast.Assign)
+                for t in n.targets if isinstance(t, ast.Name)]
+    assert not {"UPLOADED", "FIXED", "ACCOUNT_SET", "SOURCES"} & set(assigned), assigned
+
+
+# -- F7: Uploaded Statistic unchanged ---------------------------------------------
+
+def test_f7_statistic_runs_are_unchanged_and_say_where_the_values_came_from():
+    m = _run_module()
+    run = _Run()
+    m.compute_weights_on(run)
+    assert len(run.weights) == 4
+    assert all(w["source"] == UPLOADED and w["effective_from"] is None for w in run.weights)
+    assert all(w["statistic"] for w in run.weights)
+    assert run.driver_accounts == []      # the stale row is gone; no Account Set driver
+    assert run.saved == 1
+
+
+def test_f7_statistic_runs_still_carry_forward():
+    stats = [s for s in _stats() if not (s["member"] == "P1" and s["fiscal_period"] == 3)]
+    m = _run_module(stats=stats, carry={"ZZ Head": True})
+    run = _Run()
+    assert m.compute_weights_on(run) == {"carried_forward_count": 2, "weights": 4}
+    assert all(w["source"] == UPLOADED for w in run.weights)
+
+
+# -- F7: Fixed Weights -------------------------------------------------------------
+
+def test_f7_fixed_weights_fill_the_rows_from_the_window_covering_the_run_period():
+    m = _sources_module([_driver("ZZ Head"), _fixed_driver()], rule_set=_mixed_rule_set("ZZ Fixed"))
+    run = _Run()
+    m.compute_weights_on(run)
+    assert m.period_calls == [(2026, 3)]
+    assert [(w["step"], w["receiver_member"]) for w in run.weights] == [
+        (1, "HR"), (1, "P1"), (2, "P1"), (2, "P2")]            # step order kept
+    got = {(w["step"], w["receiver_member"]): w for w in run.weights}
+    p1, p2 = got[(2, "P1")], got[(2, "P2")]
+    assert (p1["source"], p1["effective_from"], p1["driver_value"], p1["weight"]) == (
+        FIXED_W, date(2026, 1, 1), 20, 0.4)
+    assert (p2["source"], p2["effective_from"], p2["driver_value"], p2["weight"]) == (
+        FIXED_W, date(2025, 6, 1), 30, 0.6)
+    for w in (p1, p2):
+        assert (w["statistic"], w["value_period"], w["carried_forward"]) == (None, 3, 0)
+        assert (w["sender_member"], w["driver"]) == ("HR", "ZZ Fixed")
+    hr = got[(1, "HR")]
+    assert (hr["source"], hr["statistic"], hr["effective_from"]) == (UPLOADED, "CAS-00001", None)
+    assert run.driver_accounts == []
+    assert run.values_carried_forward == 0
+    assert run.saved == 1
+
+
+def test_f7_fixed_weights_take_the_period_dates_as_declared_not_by_month_arithmetic():
+    m = _sources_module([_driver("ZZ Head"), _fixed_driver()], rule_set=_mixed_rule_set("ZZ Fixed"))
+    m._period_dates = lambda fy, fp: (date(2026, 3, 1), date(2027, 2, 28))   # a long period
+    msg = _k7_refused(lambda: m.compute_weights_on(_Run()))
+    # P2's window ends 2026-12-31, inside that period
+    assert "P2" in msg and "inside the period" in msg and "2026-12-31" in msg, msg
+
+
+def test_f7_fixed_weight_refusals_join_the_statistic_ones_in_one_prefixed_throw():
+    fixed = _driver("ZZ Fixed", FIXED_W, fixed_weights=[_fixed("P1", 20, date(2026, 3, 15))])
+    stats = [_stat("CAS-00001", 3, "HR", 10)]     # step 1 P1 missing
+    m = _sources_module([_driver("ZZ Head"), fixed], rule_set=_mixed_rule_set("ZZ Fixed"), stats=stats)
+    run = _Run()
+    msg = _k7_refused(lambda: m.compute_weights_on(run))
+    assert msg.startswith("Cost Allocation Run: "), msg
+    assert "step 1, P1" in msg, msg
+    assert "P1" in msg and "inside the period" in msg and "2026-03-15" in msg, msg
+    assert "P2: no fixed weight covers" in msg, msg
+    assert run.saved == 0
+    assert [w["step"] for w in run.weights] == [99]
+    assert [r["driver"] for r in run.driver_accounts] == ["OLD"]
+
+
+def test_f7_fixed_weights_accept_iso_strings_for_the_window_dates():
+    fixed = _driver("ZZ Fixed", FIXED_W, fixed_weights=[
+        _fixed("P1", 20, "2026-01-01"), _fixed("P2", 30, "2025-06-01", "2026-12-31 00:00:00")])
+    m = _sources_module([_driver("ZZ Head"), fixed], rule_set=_mixed_rule_set("ZZ Fixed"))
+    run = _Run()
+    m.compute_weights_on(run)
+    got = {(w["step"], w["receiver_member"]): w for w in run.weights}
+    assert got[(2, "P1")]["effective_from"] == date(2026, 1, 1)
+    assert got[(2, "P2")]["weight"] == 0.6
+
+
+# -- F7: Account Set ---------------------------------------------------------------
+
+def test_f7_account_set_derives_from_the_warehouse_and_snapshots_the_declared_accounts():
+    m = _sources_module([_driver("ZZ Head"), _rev()], rule_set=_mixed_rule_set("ZZ Rev"),
+                        derived="P1\t-20.5\t3\nP2\t-30\t2")
+    run = _Run()
+    m.compute_weights_on(run)
+    assert m.period_calls == []            # no fixed driver: the period dates are not read
+    [(sql, params)] = m.derived_calls
+    assert sql.startswith("SELECT `dim_zz` AS member, sum(amount) AS total, count() AS row_count "
+                          "FROM epm_gold.gold_scenario_trial_balance ")
+    assert params == {
+        "param_scenario": "ZZ Budget", "param_entity": "ZZE",
+        "param_fiscal_year": "2026", "param_fiscal_period": "3",
+        "param_members": "['P1','P2']",
+        "param_accounts": "['6000','6010','6020','7000']"}      # descendants, once each
+    got = {(w["step"], w["receiver_member"]): w for w in run.weights}
+    p1, p2 = got[(2, "P1")], got[(2, "P2")]
+    assert (p1["source"], p1["driver_value"], p1["statistic"], p1["effective_from"],
+            p1["value_period"], p1["carried_forward"]) == (ACCOUNT_SET, 20.5, None, None, 3, 0)
+    assert p2["driver_value"] == 30
+    assert abs(p1["weight"] - 20.5 / 50.5) < 1e-12 and abs(p2["weight"] - 30 / 50.5) < 1e-12
+    assert [(r["driver"], r["main_account"], r["value_sign"]) for r in run.driver_accounts] == [
+        ("ZZ Rev", "6000", "Reversed"), ("ZZ Rev", "7000", "Reversed")]   # declared, not expanded
+    assert run.saved == 1
+
+
+def test_f7_account_set_uses_the_drivers_own_dimension_column():
+    rev = _rev()
+    rev["dimension"] = "dim_other"
+    m = _sources_module([_driver("ZZ Head"), rev], rule_set=_mixed_rule_set("ZZ Rev"),
+                        derived="P1\t-20\t3\nP2\t-30\t2")
+    m.compute_weights_on(_Run())
+    assert m.derived_calls[0][0].startswith("SELECT `dim_other` AS member")
+
+
+def test_f7_account_set_runs_one_query_per_driver_over_every_step_that_uses_it():
+    rs = _rule_set(rules=[_Row(step=1, sender_member="IT", driver="ZZ Rev"),
+                          _Row(step=2, sender_member="HR", driver="ZZ Rev")])
+    m = _sources_module([_rev("As Booked")], rule_set=rs, derived="HR\t10\t1\nP1\t20\t1\nP2\t30\t1")
+    run = _Run()
+    m.compute_weights_on(run)
+    [(sql, params)] = m.derived_calls
+    assert params["param_members"] == "['HR','P1','P2']"
+    got = {(w["step"], w["receiver_member"]): w["weight"] for w in run.weights}
+    assert got == {(1, "HR"): 10 / 30, (1, "P1"): 20 / 30, (2, "P1"): 0.4, (2, "P2"): 0.6}
+    assert [(r["main_account"], r["value_sign"]) for r in run.driver_accounts] == [
+        ("6000", "As Booked"), ("7000", "As Booked")]
+
+
+def test_f7_account_set_zero_with_rows_is_a_real_zero():
+    m = _sources_module([_driver("ZZ Head"), _rev()], rule_set=_mixed_rule_set("ZZ Rev"),
+                        derived="P1\t0\t3\nP2\t-30\t2")
+    run = _Run()
+    m.compute_weights_on(run)
+    got = {(w["step"], w["receiver_member"]): w["weight"] for w in run.weights}
+    assert (got[(2, "P1")], got[(2, "P2")]) == (0.0, 1.0)
+
+
+def test_f7_account_set_clickhouse_failure_refuses_compute_naming_the_driver():
+    m = _sources_module([_driver("ZZ Head"), _rev()], rule_set=_mixed_rule_set("ZZ Rev"),
+                        derived=ConnectionError("clickhouse down"))
+    run = _Run()
+    msg = _k7_refused(lambda: m.compute_weights_on(run))
+    assert msg.startswith("Cost Allocation Run: "), msg
+    assert "ZZ Rev" in msg and "clickhouse down" in msg and "trial balance" in msg, msg
+    assert run.saved == 0 and [w["step"] for w in run.weights] == [99]
+
+
+def test_f7_account_set_missing_and_negative_values_refuse_in_one_list():
+    # P2 has no rows; P1 is a debit, so Reversed makes it negative
+    m = _sources_module([_driver("ZZ Head"), _rev()], rule_set=_mixed_rule_set("ZZ Rev"),
+                        derived="P1\t20\t3")
+    run = _Run()
+    msg = _k7_refused(lambda: m.compute_weights_on(run))
+    assert msg.startswith("Cost Allocation Run: "), msg
+    assert "P2" in msg and "missing" in msg.lower() and "P1 is negative" in msg, msg
+    assert run.saved == 0
+
+
+def test_f7_a_driver_with_an_unknown_source_or_none_at_all_refuses():
+    m = _sources_module([_driver("ZZ Head", source="Weird")])
+    msg = _k7_refused(lambda: m.compute_weights_on(_Run()))
+    assert "ZZ Head" in msg and "Weird" in msg, msg
+    m = _sources_module([])
+    msg = _k7_refused(lambda: m.compute_weights_on(_Run()))
+    assert "ZZ Head" in msg and "exist" in msg, msg
+
+
+def test_f7_parse_sums_reads_member_total_and_row_count():
+    m = _run_module()
+    assert m.parse_sums("P1\t-20.5\t3\nP2\t0\t0\n\n") == {
+        "P1": (Decimal("-20.5"), 3), "P2": (Decimal("0"), 0)}
+    assert m.parse_sums("") == {}
+
+
+def test_f7_the_reads_go_through_clickhouse_execute_and_period_status_period_dates():
+    m = _run_module()
+    calls = []
+    m.clickhouse = types.SimpleNamespace(
+        execute=lambda sql, params=None, timeout=None: calls.append((sql, params)) or "P1\t1\t1")
+    assert m._query_derived("SELECT 1", {"a": "b"}) == "P1\t1\t1"
+    assert calls == [("SELECT 1", {"a": "b"})]
+    m.period_status = types.SimpleNamespace(period_dates=lambda fy, fp: (fy, fp))
+    assert m._period_dates(2026, 3) == (2026, 3)
+
+
+def test_f7_driver_sources_reads_the_header_and_both_child_tables():
+    m = _run_module()
+    data = {
+        "Cost Allocation Driver": [
+            {"name": "ZZ Fixed", "source": FIXED_W, "dimension": "dim_zz", "value_sign": None},
+            {"name": "ZZ Rev", "source": ACCOUNT_SET, "dimension": "dim_zz", "value_sign": "Reversed"},
+            {"name": "ZZ Other", "source": UPLOADED, "dimension": "dim_zz", "value_sign": None}],
+        "Cost Allocation Driver Fixed Weight": [
+            {"parent": "ZZ Fixed", "member": "P1", "value": 20, "effective_from": date(2026, 1, 1),
+             "effective_to": None},
+            {"parent": "ZZ Other", "member": "P1", "value": 1, "effective_from": date(2026, 1, 1),
+             "effective_to": None}],
+        "Cost Allocation Driver Account": [{"parent": "ZZ Rev", "main_account": "6000"}],
+    }
+    calls = []
+
+    def get_all(doctype, filters=None, fields=None, **k):
+        calls.append((doctype, filters, k))
+        return [_Row(r) for r in data.get(doctype, []) if _matches(r, filters)]
+
+    m.frappe.get_all = get_all
+    out = m._driver_sources(["ZZ Fixed", "ZZ Rev"])
+    assert set(out) == {"ZZ Fixed", "ZZ Rev"}
+    assert (out["ZZ Fixed"]["source"], out["ZZ Fixed"]["dimension"]) == (FIXED_W, "dim_zz")
+    assert [(r["member"], r["value"], r["effective_from"]) for r in out["ZZ Fixed"]["fixed_weights"]] == [
+        ("P1", 20, date(2026, 1, 1))]
+    assert out["ZZ Fixed"]["accounts"] == []
+    assert [r["main_account"] for r in out["ZZ Rev"]["accounts"]] == ["6000"]
+    assert out["ZZ Rev"]["fixed_weights"] == [] and out["ZZ Rev"]["value_sign"] == "Reversed"
+    children = [c for c in calls if c[0] != "Cost Allocation Driver"]
+    assert len(children) == 2
+    assert all(c[2].get("parent_doctype") == "Cost Allocation Driver" for c in children)
+    assert all(c[1]["parent"] == ["in", ["ZZ Fixed", "ZZ Rev"]] for c in children)
+    assert m._driver_sources([]) == {}
+
+
+# -- F8: the stale check at submit -----------------------------------------------
+
+def _fixed_world():
+    w = _World()
+    w.drivers["ZZ Fixed"] = {"name": "ZZ Fixed", "source": FIXED_W, "dimension": "dim_zz",
+                             "value_sign": None}
+    w.fixed_rows = [
+        {"parent": "ZZ Fixed", "member": "P1", "value": 20, "effective_from": date(2026, 1, 1),
+         "effective_to": None},
+        {"parent": "ZZ Fixed", "member": "P2", "value": 30, "effective_from": date(2025, 6, 1),
+         "effective_to": date(2026, 12, 31)},
+        {"parent": "ZZ Fixed", "member": "P1", "value": 2, "effective_from": date(2025, 1, 1),
+         "effective_to": date(2025, 12, 31)},
+    ]
+    return w
+
+
+def _fixed_run(m, **over):
+    """Step 1 on the statistic (as _k8_run), step 2 on ZZ Fixed as Compute wrote it."""
+    rows = [_Row(step=2, sender_member="HR", receiver_member="P1", driver="ZZ Fixed", statistic=None,
+                 source=FIXED_W, effective_from=date(2026, 1, 1), value_period=3, driver_value=20),
+            _Row(step=2, sender_member="HR", receiver_member="P2", driver="ZZ Fixed", statistic=None,
+                 source=FIXED_W, effective_from=date(2025, 6, 1), value_period=3, driver_value=30)]
+    return _k8_run(m, weights=_k8_run(m).weights[:2] + rows, **over)
+
+
+def test_f8_a_fixed_weight_edited_after_compute_refuses_submit():
+    w = _fixed_world()
+    w.fixed_rows[0]["value"] = 25
+    msg = _refused(_fixed_run(_k8(w)).before_submit)
+    assert "ZZ Fixed" in msg and "P1" in msg, msg
+    assert "20" in msg and "25" in msg, msg
+    assert "recompute" in msg.lower(), msg
+    assert "P2" not in msg, msg
+
+
+def test_f8_unchanged_fixed_weights_pass_and_are_read_for_update():
+    w = _fixed_world()
+    _fixed_run(_k8(w)).before_submit()
+    header = next(q for q, _v in w.sql if "`tabCost Allocation Driver`" in q)
+    child = next(q for q, _v in w.sql if "`tabCost Allocation Driver Fixed Weight`" in q)
+    assert header.rstrip().upper().endswith("FOR UPDATE"), header
+    assert child.rstrip().upper().endswith("FOR UPDATE"), child
+    assert "parenttype = 'Cost Allocation Driver'" in child
+    assert w.period_dates_calls == [(2026, 3)]
+    assert w.derived_calls == []
+
+
+def test_f8_a_fixed_window_that_moved_refuses_even_with_the_same_value():
+    w = _fixed_world()
+    w.fixed_rows[0]["effective_from"] = date(2026, 2, 1)
+    msg = _refused(_fixed_run(_k8(w)).before_submit)
+    assert "P1" in msg and "2026-01-01" in msg and "2026-02-01" in msg, msg
+
+
+def test_f8_a_fixed_window_that_no_longer_resolves_refuses_with_the_models_reason():
+    w = _fixed_world()
+    del w.fixed_rows[0]              # P1 keeps only its expired window
+    msg = _refused(_fixed_run(_k8(w)).before_submit)
+    assert "ZZ Fixed" in msg and "P1: no fixed weight covers" in msg, msg
+    w = _fixed_world()
+    w.fixed_rows[0]["effective_to"] = date(2026, 3, 15)   # now changes inside March
+    msg = _refused(_fixed_run(_k8(w)).before_submit)
+    assert "P1" in msg and "inside the period" in msg, msg
+
+
+def test_f8_a_fixed_weight_value_still_matching_at_nine_places_passes():
+    w = _fixed_world()
+    w.fixed_rows[0]["value"] = 20.0000000001
+    _fixed_run(_k8(w)).before_submit()
+
+
+def test_f8_a_driver_whose_source_changed_since_compute_refuses():
+    w = _fixed_world()
+    w.drivers["ZZ Fixed"]["source"] = ACCOUNT_SET
+    msg = _refused(_fixed_run(_k8(w)).before_submit)
+    assert "ZZ Fixed" in msg and "source" in msg.lower(), msg
+    assert FIXED_W in msg and ACCOUNT_SET in msg, msg
+    # a statistic driver (rows written before 2b-1 carry no source) now Fixed Weights
+    w = _World()
+    w.drivers["ZZ Head"]["source"] = FIXED_W
+    msg = _refused(_k8_run(_k8(w)).before_submit)
+    assert "ZZ Head" in msg and "source" in msg.lower() and UPLOADED in msg, msg
+
+
+def test_f8_a_driver_that_no_longer_exists_refuses():
+    w = _World()
+    w.drivers = {}
+    msg = _refused(_k8_run(_k8(w)).before_submit)
+    assert "ZZ Head" in msg and "recompute" in msg.lower(), msg
+
+
+def test_f8_statistic_only_runs_check_the_source_but_read_no_fixed_weights_or_warehouse():
+    w = _World()
+    _k8_run(_k8(w)).before_submit()
+    assert any("`tabCost Allocation Driver`" in q for q, _v in w.sql)
+    assert not any("Fixed Weight" in q for q, _v in w.sql)
+    assert w.derived_calls == [] and w.period_dates_calls == []
+
+
+def _derived_world(text="P1\t-20.5\t3\nP2\t-30\t2"):
+    w = _World()
+    w.drivers["ZZ Rev"] = {"name": "ZZ Rev", "source": ACCOUNT_SET, "dimension": "dim_zz",
+                           "value_sign": "Reversed"}
+    w.get_all_data["Cost Allocation Driver Account"] = [
+        {"parent": "ZZ Rev", "main_account": "6000"}, {"parent": "ZZ Rev", "main_account": "7000"}]
+    w.derived = text
+    return w
+
+
+def _derived_run(m, **over):
+    rows = [_Row(step=2, sender_member="HR", receiver_member="P1", driver="ZZ Rev", statistic=None,
+                 source=ACCOUNT_SET, effective_from=None, value_period=3, driver_value=20.5),
+            _Row(step=2, sender_member="HR", receiver_member="P2", driver="ZZ Rev", statistic=None,
+                 source=ACCOUNT_SET, effective_from=None, value_period=3, driver_value=30)]
+    snapshot = [_Row(driver="ZZ Rev", main_account="6000", value_sign="Reversed"),
+                _Row(driver="ZZ Rev", main_account="7000", value_sign="Reversed")]
+    over.setdefault("driver_accounts", snapshot)
+    return _k8_run(m, weights=_k8_run(m).weights[:2] + rows, **over)
+
+
+def test_f8_unchanged_derived_values_pass_and_the_query_is_the_one_compute_ran():
+    w = _derived_world()
+    _derived_run(_k8(w)).before_submit()
+    [(sql, params)] = w.derived_calls
+    assert sql.startswith("SELECT `dim_zz` AS member, sum(amount) AS total, count() AS row_count ")
+    assert params["param_accounts"] == "['6000','6010','6020','7000']"
+    assert params["param_members"] == "['P1','P2']"
+    assert (params["param_scenario"], params["param_entity"], params["param_fiscal_year"],
+            params["param_fiscal_period"]) == ("ZZ Actual", "ZZE", "2026", "3")
+    assert w.period_dates_calls == []
+
+
+def test_f8_a_derived_value_that_moved_refuses():
+    w = _derived_world("P1\t-22\t3\nP2\t-30\t2")
+    msg = _refused(_derived_run(_k8(w)).before_submit)
+    assert "ZZ Rev" in msg and "P1" in msg and "20.5" in msg and "22" in msg, msg
+    assert "recompute" in msg.lower() and "P2" not in msg, msg
+
+
+def test_f8_a_derived_member_now_missing_or_negative_refuses():
+    msg = _refused(_derived_run(_k8(_derived_world("P1\t-20.5\t3"))).before_submit)
+    assert "ZZ Rev" in msg and "P2" in msg and "missing" in msg.lower(), msg
+    msg = _refused(_derived_run(_k8(_derived_world("P1\t5\t3\nP2\t-30\t2"))).before_submit)
+    assert "P1 is negative" in msg, msg
+
+
+def test_f8_a_drivers_accounts_or_sign_changed_since_compute_refuses_before_querying():
+    w = _derived_world()
+    w.get_all_data["Cost Allocation Driver Account"].pop()
+    msg = _refused(_derived_run(_k8(w)).before_submit)
+    assert "ZZ Rev" in msg and "accounts" in msg.lower() and "recompute" in msg.lower(), msg
+    assert w.derived_calls == []
+    w = _derived_world()
+    w.drivers["ZZ Rev"]["value_sign"] = "As Booked"
+    msg = _refused(_derived_run(_k8(w)).before_submit)
+    assert "ZZ Rev" in msg and "sign" in msg.lower(), msg
+    assert w.derived_calls == []
+
+
+def test_f8_clickhouse_down_at_submit_refuses_rather_than_passing():
+    w = _derived_world(ConnectionError("clickhouse down"))
+    msg = _refused(_derived_run(_k8(w)).before_submit)
+    assert "ZZ Rev" in msg and "clickhouse down" in msg and "trial balance" in msg, msg
+
+
+def test_f8_every_stale_driver_row_is_listed_in_one_refusal():
+    w = _fixed_world()
+    w.fixed_rows[0]["value"] = 25
+    w.fixed_rows[1]["value"] = 35
+    msg = _refused(_fixed_run(_k8(w)).before_submit)
+    assert msg.startswith("Cost Allocation Run: "), msg
+    assert "P1" in msg and "25" in msg and "P2" in msg and "35" in msg, msg
+    assert "statistic" not in msg.lower(), msg    # the driver check, not the statistic one
+
+
+def test_f8_stale_driver_values_runs_beside_stale_statistics_before_the_coefficients():
+    with open(RUN_PY) as f:
+        src = f.read()
+    body = src[src.index("def before_submit"):src.index("def _refuse_stale_snapshot")]
+    assert (body.index("self._refuse_stale_statistics(")
+            < body.index("self._refuse_stale_driver_values(")
+            < body.index("self._refuse_unbuildable_coefficients("))
