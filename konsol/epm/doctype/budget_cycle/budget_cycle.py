@@ -290,8 +290,13 @@ class BudgetCycle(Document):
             order_by="name asc", for_update=True)
         if not live:
             return
+        # The Link value is the document name (CG-<code>-); the message names the code (konsol#555).
         named = ", ".join(
-            _("Approved Budget {0} ({1} FY{2})").format(r.name, r.consolidation_group, r.fiscal_year)
+            _("Approved Budget {0} ({1} FY{2})").format(
+                r.name,
+                frappe.db.get_value("Consolidation Group", r.consolidation_group, "consolidation_group")
+                or r.consolidation_group,
+                r.fiscal_year)
             for r in live)
         frappe.throw(
             _("Cannot cancel Budget Cycle {0}: {1} names it as the group's approved budget, and the "
