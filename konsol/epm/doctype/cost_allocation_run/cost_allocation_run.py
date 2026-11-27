@@ -21,7 +21,9 @@ Uploaded Statistic rows are unchanged; Fixed Weights rows take the window
 covering the run's declared period; Account Set rows sum the scenario trial
 balance of the driver's accounts (and descendants) per receiver, through the
 same ClickHouse call as the sender-pool preview, and the run snapshots the
-declared accounts in driver_accounts. Every source's values are snapshotted
+accounts it read in driver_accounts: one row per expanded account with the
+declared account it came from (2b-1 DA), so the warehouse drift test, which
+has no account tree, sums by main_account. Every source's values are snapshotted
 at Compute and re-checked at submit (_refuse_stale_driver_values, beside
 _refuse_stale_statistics); drift after approval is a warehouse warning.
 """
@@ -293,7 +295,10 @@ def _resolve_sources(run, rs, steps):
     whole declared period (fixed_windows). An Account Set driver is read from
     the warehouse once, over the receivers of every step that uses it, and
     each step takes its receivers' values (derived_values); the run snapshots
-    the driver's DECLARED accounts, not the expanded list. Every refusal from
+    one driver_accounts row per EXPANDED account with the declared account it
+    came from (2b-1 DA; a leaf declared directly names itself). Where two
+    declarations overlap, the first in driver order keeps the account, and
+    the derived query receives each account once. Every refusal from
     the pure functions is collected and thrown once with the run's prefix,
     and nothing is saved. A warehouse that cannot be read refuses at once,
     naming the driver: never a silent zero."""
@@ -334,12 +339,14 @@ def _resolve_sources(run, rs, steps):
         info = sources[name]
         declared = [r["main_account"] for r in _rows(info["accounts"])]
         members = sorted({m for st in steps if st.driver == name for m in st.receivers})
-        driver_accounts += [{"driver": name, "main_account": a, "value_sign": info["value_sign"]}
-                            for a in declared]
+        expanded = account_rows(declared, _descendants)
+        driver_accounts += [{"driver": name, "main_account": r["main_account"],
+                             "declared_account": r["declared_account"],
+                             "value_sign": info["value_sign"]} for r in expanded]
         try:
             sql, params = model.derived_query(
                 rs.entity, run.scenario, run.fiscal_year, run.fiscal_period,
-                info["dimension"], members, _expand_accounts(declared))
+                info["dimension"], members, [r["main_account"] for r in expanded])
         except model.CostAllocationError as exc:
             errors.extend(f"Driver {name}: {e}" for e in exc.errors)
             continue
@@ -619,8 +626,9 @@ class CostAllocationRun(Document):
         its rows were computed from (rows written before 2b-1 carry no source
         and are Uploaded Statistic rows). A Fixed Weights driver's rows are
         re-read FOR UPDATE and resolved again for the period; an Account Set
-        driver's accounts and sign must match the run's driver_accounts
-        snapshot, then the derived query runs again. Any difference refuses,
+        declared accounts and sign must match the run's driver_accounts
+        snapshot (its declared_account column, 2b-1 DA), then the derived
+        query runs again. Any difference refuses,
         naming the member, the stored value and the current one; a warehouse
         that cannot be read refuses too, never passes."""
         by_driver = {}
@@ -687,13 +695,16 @@ class CostAllocationRun(Document):
     def _stale_derived_rows(self, name, now, rows):
         """The driver's declared accounts and sign against the run's snapshot,
         then the derived query again; the differences from the stored rows.
+        The snapshot holds one row per expanded account, so the comparison
+        reads its declared_account (2b-1 DA); a snapshot written before that
+        column existed has no declared accounts and refuses: recompute it.
         The accounts are read FOR UPDATE like the fixed rows: under REPEATABLE
         READ a plain read may see a snapshot older than the header's (rv1 F1)."""
         accounts = frappe.db.sql(
             "SELECT main_account FROM `tabCost Allocation Driver Account` "
             "WHERE parent = %(driver)s AND parenttype = 'Cost Allocation Driver' "
             "ORDER BY idx FOR UPDATE", {"driver": name}, pluck=True)
-        snapshot = {(r["main_account"], r["value_sign"])
+        snapshot = {(r.get("declared_account"), r["value_sign"])
                     for r in _rows(self.get("driver_accounts")) if r["driver"] == name}
         if {(a, now["value_sign"]) for a in accounts} != snapshot:
             return [f"driver {name}: its accounts or value sign changed since Compute"]

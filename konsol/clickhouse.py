@@ -1051,6 +1051,10 @@ _REFERENCE_TABLE_DDL = {
     # Account Set driver's accounts are their own table. effective_from is a
     # plain Date: a statistic or account-set row leaves it unset, which the
     # sync writes as DEFAULT and the column reads as 1970-01-01.
+    # Phase 2b-1 (DA): a driver_accounts row is one EXPANDED account
+    # (main_account) with the declared account it came from (declared_account,
+    # after main_account; an existing table gets it by _POSITIONED_COLUMNS), so
+    # the warehouse drift test sums by main_account without an account tree.
     "epm_staging.cost_allocation_runs": (
         "(name String, rule_set String, method String, allocation_dimension String, "
         "receiver_account_mode String, allocation_account String, "
@@ -1069,7 +1073,8 @@ _REFERENCE_TABLE_DDL = {
         "ENGINE = MergeTree ORDER BY (parent, idx)"
     ),
     "epm_staging.cost_allocation_run_driver_accounts": (
-        "(parent String, idx UInt32, driver String, main_account String, value_sign String) "
+        "(parent String, idx UInt32, driver String, main_account String, "
+        "declared_account String, value_sign String) "
         "ENGINE = MergeTree ORDER BY (parent, idx)"
     ),
     "epm_staging.cost_allocation_coefficients": (
@@ -1289,6 +1294,11 @@ _POSITIONED_COLUMNS = {
     "epm_staging.cost_allocation_run_weights": [
         ("source", "String", "driver_value"),
         ("effective_from", "Date", "source"),
+    ],
+    # konsol#269 phase 2b-1 (DA): the declared account an expanded
+    # driver_accounts row came from, after main_account (as in the CREATE)
+    "epm_staging.cost_allocation_run_driver_accounts": [
+        ("declared_account", "String", "main_account"),
     ],
 }
 
