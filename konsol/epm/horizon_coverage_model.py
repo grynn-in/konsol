@@ -151,7 +151,8 @@ def _round(scenario_id, as_of, members, regular):
     if not row["uncovered"] and not row["undeclared_periods"]:
         row["state"] = OK
         years = ", ".join(f"FY{y}" for y in approved_years)
-        row["sentence"] = f"{span}: approved for {years} ({', '.join(names)})."
+        approved_names = [c["name"] for c in members if int(c.get("docstatus") or 0) == 1]
+        row["sentence"] = f"{span}: approved for {years} ({', '.join(approved_names)})."
         return _with_notes(row, notes)
 
     row["state"] = UNCOVERED
