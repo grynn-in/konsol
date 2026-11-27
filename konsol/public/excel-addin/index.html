@@ -366,6 +366,7 @@
       var serverInput = document.getElementById("server-url");
       var serverError = document.getElementById("server-error");
       var started = false;
+      var officeReady = false;
       var PROBE_CELL = "ZZ999";
       var logCount = 0;
 
@@ -969,6 +970,16 @@
           Office.addin.setStartupBehavior(Office.StartupBehavior.load);
         }
         setDiag("pending", "…");
+        if (!officeReady && typeof Office !== "undefined" && Office.onReady) {
+          // Started by the 5 s fallback before Office was ready: the workbook's
+          // server is not readable yet. Draw again when it is.
+          Office.onReady(function () {
+            showServer();
+            whoami().then(function (user) {
+              if (user) showLoggedIn(user);
+            });
+          });
+        }
         showServer();
         if (konsolServer.notice()) appendLog("err", konsolServer.notice());
         whoami().then(function (user) {
@@ -999,7 +1010,7 @@
       }
 
       if (typeof Office !== "undefined" && Office.onReady) {
-        Office.onReady(start);
+        Office.onReady(function () { officeReady = true; start(); });
       } else {
         start();
       }

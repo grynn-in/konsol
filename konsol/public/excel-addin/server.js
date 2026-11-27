@@ -139,28 +139,11 @@ var konsolServer = (function () {
     return isCrossOrigin() ? current() + path : path;
   }
 
-  // Blank, or the pane's own origin, goes back to the default. Resolves to
-  // {origin}, {error} (nothing changed), or {origin, unsaved}: the workbook
-  // uses the new server now, but Excel could not save it with the file.
-  // Saved settings reach disk when the user saves the workbook.
-  function choose(text) {
-    var value = String(text === null || text === undefined ? "" : text).trim();
-    var target = "";
-    if (value) {
-      var parsed = parseOrigin(value);
-      if (!parsed.origin) return Promise.resolve(parsed);
-      target = parsed.origin === paneOrigin() ? "" : parsed.origin;
-    }
-    var settings = workbookSettings();
-    if (!settings) {
-      return Promise.resolve({ error: "Excel's workbook settings are not available, so the server cannot be " +
-        "kept with this workbook. Reload the add-in." });
-    }
-    var origin = target || paneOrigin();
+  // Saves the settings; resolves {origin}, or {origin, unsaved} when Excel
+  // could not keep the value with the file.
+  function save(settings, origin) {
     return new Promise(function (resolve) {
       try {
-        if (target) settings.set(SETTING, target);
-        else settings.remove(SETTING);
         settings.saveAsync(function (result) {
           if (result && result.status === Office.AsyncResultStatus.Succeeded) {
             resolve({ origin: origin });
@@ -171,10 +154,56 @@ var konsolServer = (function () {
           }
         });
       } catch (err) {
-        resolve({ origin: current(), unsaved: "Excel could not save the server with this workbook (" +
+        resolve({ origin: origin, unsaved: "Excel could not save the server with this workbook (" +
           (err && err.message || String(err)) + ")." });
       }
     });
+  }
+
+  // The workbook always stores its server, the pane's own origin included
+  // (blank means the pane's origin): a workbook with none would follow
+  // whichever pane opens it, and its K.* cells would switch sites. Resolves
+  // to {origin}, {error} (nothing changed), or {origin, unsaved}: the
+  // workbook uses the new server now, but Excel could not save it with the
+  // file. Saved settings reach disk when the user saves the workbook.
+  function choose(text) {
+    var value = String(text === null || text === undefined ? "" : text).trim();
+    var target = paneOrigin();
+    if (value) {
+      var parsed = parseOrigin(value);
+      if (!parsed.origin) return Promise.resolve(parsed);
+      target = parsed.origin;
+    }
+    var settings = workbookSettings();
+    if (!settings) {
+      return Promise.resolve({ error: "Excel's workbook settings are not available, so the server cannot be " +
+        "kept with this workbook. Reload the add-in." });
+    }
+    try {
+      settings.set(SETTING, target);
+    } catch (err) {
+      return Promise.resolve({ origin: current(), unsaved: "Excel could not save the server with this workbook (" +
+        (err && err.message || String(err)) + ")." });
+    }
+    return save(settings, target);
+  }
+
+  // A workbook with no stored server takes the pane's origin on its first
+  // snapshot, stamp or K.* call; after that the stored one wins on any pane.
+  // Never overwrites. Resolves like choose().
+  function pin() {
+    var settings = workbookSettings();
+    var value = stored();
+    if (!settings || !(value === null || value === undefined || value === "")) {
+      return Promise.resolve({ origin: current() });
+    }
+    try {
+      settings.set(SETTING, paneOrigin());
+    } catch (err) {
+      return Promise.resolve({ origin: paneOrigin(), unsaved: "Excel could not save the server with this workbook (" +
+        (err && err.message || String(err)) + ")." });
+    }
+    return save(settings, paneOrigin());
   }
 
   // "host[:port]" of the server, for the row-1 stamp and the log.
@@ -213,6 +242,7 @@ var konsolServer = (function () {
     isCrossOrigin: isCrossOrigin,
     url: url,
     choose: choose,
+    pin: pin,
     tokenKey: tokenKey,
     getToken: getToken,
     setToken: setToken,

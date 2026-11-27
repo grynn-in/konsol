@@ -29,7 +29,6 @@ ADDIN_ENDPOINTS = (
     "build_cell_map",
     "build_snapshot",
 )
-ADDIN_PATHS = frozenset("/api/method/konsol.api." + name for name in ADDIN_ENDPOINTS)
 #: Frappe v16 routes one RPC under three prefixes (frappe/api/__init__.py:
 #: Submount "/api", "/api/v1" and "/api/v2", each with "/method/<method>").
 #: An add-in method is matched by its name under any of them, so Frappe's own

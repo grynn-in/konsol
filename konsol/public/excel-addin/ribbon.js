@@ -78,6 +78,15 @@ var konsolRibbon = (function () {
     return serverOrigin().replace(/^https?:\/\//, "");
   }
 
+  // The workbook keeps its server from its first snapshot or stamp on
+  // (server.js pin). A failed save does not stop the command.
+  function pinServer() {
+    if (typeof konsolServer === "undefined" || typeof konsolServer.pin !== "function") return Promise.resolve();
+    return Promise.resolve(konsolServer.pin()).then(function (r) {
+      if (r && r.unsaved) log("err", r.unsaved);
+    }, function () { /* the command goes on */ });
+  }
+
   function stampText() {
     var host = serverHost();
     return STAMP_PREFIX + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" +
@@ -145,10 +154,12 @@ var konsolRibbon = (function () {
       if (params && params[k] !== undefined && params[k] !== null) entry[k] = params[k];
     });
     if (!entry.sheet_name) return Promise.reject(new Error("a snapshot has no sheet name"));
-    entry.server = serverOrigin();
-    var all = savedSnapshots();
-    all[entry.sheet_name] = entry;
-    return storeSnapshots(all);
+    return pinServer().then(function () {
+      entry.server = serverOrigin();
+      var all = savedSnapshots();
+      all[entry.sheet_name] = entry;
+      return storeSnapshots(all);
+    });
   }
 
   function resnapshot(name, params) {
@@ -266,6 +277,9 @@ var konsolRibbon = (function () {
         });
       }).then(function (go) {
         if (!go) return;
+        return pinServer().then(function () { return true; });
+      }).then(function (go) {
+        if (!go) return;
         return Excel.run(function (ctx) {
           // ExcelApi 1.6; every host with SharedRuntime 1.1 has it.
           var sheet = ctx.workbook.worksheets.getItem(name);
@@ -300,6 +314,7 @@ var konsolRibbon = (function () {
       var sheetNames = [];
       var snapshotted = {};
       var failed = [];
+      var refusedSnaps = [];
       var saved = savedSnapshots();
       var total = 0;
       var stamped = [];
@@ -328,7 +343,7 @@ var konsolRibbon = (function () {
           return chain.then(function () {
             var refused = otherServer(n, saved[n]);
             if (refused) {
-              failed.push(n);
+              refusedSnaps.push(n);
               log("err", what + ": " + refused + "; it is not stamped.");
               return;
             }
@@ -347,6 +362,8 @@ var konsolRibbon = (function () {
           return ctx.sync();
         });
       }).then(function () {
+        return pinServer();
+      }).then(function () {
         text = stampText();
         // One sheet per Excel.run: a large or protected sheet fails alone.
         return sheetNames.reduce(function (chain, n) {
@@ -356,7 +373,7 @@ var konsolRibbon = (function () {
               return ctx.sync().then(function () {
                 var count = formulaCount(loaded);
                 total += count;
-                if (failed.indexOf(n) >= 0 || !(count || snapshotted[n])) return;
+                if (failed.indexOf(n) >= 0 || refusedSnaps.indexOf(n) >= 0 || !(count || snapshotted[n])) return;
                 var s = stamp(loaded, text);
                 if (!s.at) { unstamped.push(n + " (" + s.skipped + ")"); return; }
                 return ctx.sync().then(function () { stamped.push(n); });
@@ -372,7 +389,8 @@ var konsolRibbon = (function () {
           (stamped.length ? "; stamped " + stamped.join(", ") + ". " + text + "." : "; no sheet stamped.");
         if (unstamped.length) msg += " Not stamped: " + unstamped.join(", ") + ".";
         if (failed.length) msg += " Snapshot failed: " + failed.join(", ") + ".";
-        var bad = failed.length || unstamped.length;
+        if (refusedSnaps.length) msg += " Snapshot refused (other server): " + refusedSnaps.join(", ") + ".";
+        var bad = failed.length || refusedSnaps.length || unstamped.length;
         log(bad ? "err" : "ok", msg);
         if (bad) showPane();
       }).then(function () { return restoreActive(activeName); },

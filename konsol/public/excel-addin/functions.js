@@ -71,6 +71,11 @@ function postJson(path, body) {
   // in when it has initialised: wait for that, or a cell computed as the
   // workbook opens could read the pane's own site instead of the workbook's.
   return officeReady().then(function () {
+    // The first call of a workbook with no stored server keeps this pane's
+    // origin with it (server.js pin). A failed save is not a failed call.
+    var s = server();
+    return typeof s.pin === "function" ? s.pin() : null;
+  }).then(function () {
     return fetch(server().url(path), {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
