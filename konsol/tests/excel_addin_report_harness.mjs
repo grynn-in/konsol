@@ -297,7 +297,9 @@ function makeContext() {
 
 const server = input.server || "https://pane.example";
 const context = {
-  Promise, JSON, Number, String, Object, Array, Date, Math, console, Error, RegExp,
+  Promise, JSON, Number, String, Object, Array, Date, Math, Error, RegExp,
+  // stdout carries the JSON result; report.js's console fallback goes to stderr.
+  console: { log: (...a) => { out.consoleLines = (out.consoleLines || 0) + 1; process.stderr.write(a.join(" ") + "\n"); } },
   isFinite, setTimeout, clearTimeout,
   Excel: {
     run(cb) { return Promise.resolve().then(() => cb(makeContext())); },

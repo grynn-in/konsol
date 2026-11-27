@@ -348,6 +348,7 @@ def test_outcome_is_logged_through_the_pane_hook():
 def test_without_a_log_hook_apply_still_works():
     out = _run(action="apply", cellMap=ONE, sheets=[{"name": "Sheet1"}], active="Sheet1", noLogHook=True)
     assert out["error"] is None and out["result"]["action"] == "new"
+    assert out["logs"] == [] and out["consoleLines"] >= 1, "the message goes to the console instead"
 
 
 def test_unsaved_settings_are_reported():
