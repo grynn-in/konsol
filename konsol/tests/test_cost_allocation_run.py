@@ -59,6 +59,10 @@ WEIGHT_FIELDS = [
     # phase 2b-1 (task C): where the value came from, and the fixed-weight window used
     ("source", "Data"),
     ("effective_from", "Date"),
+    # phase 2b-2 (R5): the step's basis, the declared rate and its window, as Compute snapshotted them
+    ("basis", "Data"),
+    ("rate", "Float"),
+    ("rate_from", "Date"),
     ("weight", "Float"),
 ]
 
@@ -216,6 +220,16 @@ def test_doctype_weight_child_links_and_precision():
         "Where the driver value came from: Uploaded Statistic, Fixed Weights or Account Set.")
     assert fields["effective_from"]["label"] == "Effective From"
     assert fields["effective_from"]["description"] == "For Fixed Weights: the start of the window used."
+    # phase 2b-2 (R5): the basis and rate snapshot; the rate keeps the 4 places the Rule Rate stores
+    assert fields["basis"]["label"] == "Basis"
+    assert fields["basis"]["description"] == (
+        "Share of Pool or Declared Rate, as the rule declared at Compute.")
+    assert fields["rate"]["label"] == "Rate"
+    assert fields["rate"]["precision"] == "4"
+    assert fields["rate"]["description"] == (
+        "Amount per driver unit, from the rule set's rates at Compute.")
+    assert fields["rate_from"]["label"] == "Rate From"
+    assert fields["rate_from"]["description"] == "Start of the rate window used."
 
 
 def test_doctype_driver_account_child_links():
@@ -639,6 +653,10 @@ class _World:
         self.drivers = {"ZZ Head": {"name": "ZZ Head", "source": "Uploaded Statistic",
                                     "dimension": "dim_zz", "value_sign": None}}
         self.fixed_rows = []
+        # 2b-2 R5: the rule set's rules (step, basis) and Rates rows as the site
+        # holds them now; a rule without a basis was written before 2b-2
+        self.rules = [{"step": 1, "basis": None}, {"step": 2, "basis": None}]
+        self.rate_rows = []
         self.derived = ""
         self.derived_calls = []
         self.period_dates_calls = []
@@ -703,6 +721,13 @@ def _k8(world):
         if "`tabCost Allocation Driver`" in query:
             assert "IN %(drivers)s" in query
             return [_Row(r) for n, r in world.drivers.items() if n in values["drivers"]]
+        if "`tabCost Allocation Rule Rate`" in query:
+            # 2b-2 R5: the rule set's Rates rows, re-read at submit
+            assert "parent = %(rule_set)s" in query
+            return [_Row(r) for r in world.rate_rows] if values["rule_set"] == "ZZ Rules" else []
+        if "`tabCost Allocation Rule`" in query:
+            assert "parent = %(rule_set)s" in query
+            return [_Row(r) for r in world.rules] if values["rule_set"] == "ZZ Rules" else []
         # the shared-sender read: each predicate filters only if the SQL has it
         out = []
         for r in world.other_rows:
@@ -971,9 +996,11 @@ def test_lifecycle_maps_and_filters():
     assert list(wt.CH_FIELD_MAP) == [
         "parent", "idx", "step", "sender_member", "receiver_member", "driver",
         "statistic", "value_period", "carried_forward", "driver_value",
-        "source", "effective_from"]
+        "source", "effective_from", "basis", "rate", "rate_from"]
     assert wt.CH_FIELD_MAP["source"] == "source"
     assert wt.CH_FIELD_MAP["effective_from"] == "effective_from"
+    # 2b-2 R6: the basis, rate and rate window travel under their own names
+    assert all(wt.CH_FIELD_MAP[c] == c for c in ("basis", "rate", "rate_from"))
     da = cls.CHILD_CONTROLLERS["Cost Allocation Run Driver Account"]
     assert da.CH_TABLE == "epm_staging.cost_allocation_run_driver_accounts"
     assert da.CH_FIELD_MAP == {"parent": "parent", "idx": "idx", "driver": "driver",
@@ -2903,3 +2930,305 @@ def test_rv1_approval_refuses_a_driver_whose_dimension_changed_since_compute():
     w.drivers["ZZ Head"]["dimension"] = "dim_other"
     msg = _refused(_k8_run(_k8(w)).before_submit)
     assert "ZZ Head" in msg and "dim_other" in msg and "dim_zz" in msg, msg
+
+
+# --- 2b-2 R5: a Declared Rate step snapshots its basis, rate and rate window -------
+#
+# konsol#269 Phase 2b plan section 3; Q1 A and Q4 A (Deepak Pai, 27 Nov 2026).
+# Compute picks, per Declared Rate step, the one Rates row of the rule set whose
+# window covers the whole run period (rate_for_period, the fixed_windows rule)
+# and stores basis, rate and the window start on every weight row of the step.
+# The coefficients are rebuilt from those stored rows at Compute, at submit and
+# in the K8 sync alike, so a stored run rebuilds identically; a row without a
+# basis (computed before 2b-2) is a Share of Pool row.
+
+SHARE, DECLARED = "Share of Pool", "Declared Rate"
+
+
+def _rate_row(step, rate, frm, to=None):
+    return _Row(step=step, rate=rate, effective_from=frm, effective_to=to)
+
+
+def _rate_rule_set(**over):
+    """Step 1 (IT) charges a declared rate per head; step 2 (HR) shares its pool."""
+    rs = dict(
+        rules=[_Row(step=1, sender_member="IT", driver="ZZ Head", basis=DECLARED),
+               _Row(step=2, sender_member="HR", driver="ZZ Head", basis=SHARE)],
+        rates=[_rate_row(1, 40, date(2025, 1, 1), date(2025, 12, 31)),    # expired
+               _rate_row(1, 50, date(2026, 1, 1))])                        # covers March, open-ended
+    rs.update(over)
+    return _rule_set(**rs)
+
+
+def _plain(weights):
+    return [{"step": w["step"], "receiver_member": w["receiver_member"], "driver_value": w["driver_value"]}
+            for w in weights]
+
+
+def test_r5_compute_snapshots_basis_rate_and_window_on_every_row_of_the_step():
+    m = _run_module(rule_set=_rate_rule_set())
+    run = _Run()
+    m.compute_weights_on(run)
+    got = {(w["step"], w["receiver_member"]): w for w in run.weights}
+    assert len(got) == 4 and run.saved == 1
+    for key in ((1, "HR"), (1, "P1")):
+        assert (got[key]["basis"], got[key]["rate"], got[key]["rate_from"]) == (DECLARED, 50.0, date(2026, 1, 1)), key
+        assert isinstance(got[key]["rate"], float)
+    for key in ((2, "P1"), (2, "P2")):
+        assert (got[key]["basis"], got[key]["rate"], got[key]["rate_from"]) == (SHARE, 0, None), key
+    # the stored weights stay the step's shares; the units live in driver_value
+    assert got[(1, "HR")]["weight"] == float(Fraction(1, 3)) and got[(1, "HR")]["driver_value"] == 10
+    assert (got[(1, "HR")]["source"], got[(1, "HR")]["statistic"]) == (UPLOADED, "CAS-00001")
+
+
+def test_r5_compute_reads_the_period_dates_once_for_rates_and_fixed_weights_alike():
+    rs = _rate_rule_set(rules=[_Row(step=1, sender_member="IT", driver="ZZ Head", basis=DECLARED),
+                               _Row(step=2, sender_member="HR", driver="ZZ Fixed", basis=SHARE)])
+    m = _sources_module([_driver("ZZ Head"), _fixed_driver()], rule_set=rs)
+    run = _Run()
+    m.compute_weights_on(run)
+    assert m.period_calls == [(2026, 3)]
+    got = {(w["step"], w["receiver_member"]): w for w in run.weights}
+    assert (got[(1, "P1")]["rate"], got[(1, "P1")]["rate_from"]) == (50.0, date(2026, 1, 1))
+    assert (got[(2, "P1")]["source"], got[(2, "P1")]["effective_from"]) == (FIXED_W, date(2026, 1, 1))
+
+
+def test_r5_compute_accepts_iso_strings_for_the_rate_window_dates():
+    rs = _rate_rule_set(rates=[_rate_row(1, 50, "2026-01-01", "2026-12-31 00:00:00")])
+    run = _Run()
+    _run_module(rule_set=rs).compute_weights_on(run)
+    assert {w["rate_from"] for w in run.weights if w["step"] == 1} == {date(2026, 1, 1)}
+
+
+def test_r5_a_rule_set_without_bases_or_rates_computes_as_before():
+    """A rule set saved before 2b-2 has no basis on its rules and no Rates table."""
+    m = _run_module()      # _rule_set(): no basis, no rates attribute
+    run = _Run()
+    m.compute_weights_on(run)
+    assert len(run.weights) == 4
+    assert all((w["basis"], w["rate"], w["rate_from"]) == (SHARE, 0, None) for w in run.weights)
+
+
+def test_r5_compute_checks_rate_coefficients_in_driver_units():
+    """The rows Compute builds and discards (RF4) are the rate step's units:
+    IT's own pool is the step's total units (30) and each receiver's
+    coefficient its own units, as model.coefficient_rows with units gives."""
+    from konsol import cost_allocation_model as model
+    m = _run_module(rule_set=_rate_rule_set())
+    run = _Run()
+    m.compute_weights_on(run)
+    rows = m._coefficient_rows(run.name, run.method, [dict(w) for w in run.weights])
+    own = [r for r in rows if r["origin_member"] == "IT" and r["hop_kind"] == "own"]
+    assert {r["pool_coefficient"] for r in own} == {Decimal(30)}
+    assert {(r["receiver_member"], r["coefficient"]) for r in own} == {("HR", Decimal(10)), ("P1", Decimal(20))}
+    steps = model.build_steps(
+        [{"step": 1, "sender_member": "IT", "driver": "ZZ Head", "basis": DECLARED, "rate": 50},
+         {"step": 2, "sender_member": "HR", "driver": "ZZ Head"}],
+        [{"step": 1, "receiver_member": "HR"}, {"step": 1, "receiver_member": "P1"},
+         {"step": 2, "receiver_member": "P1"}, {"step": 2, "receiver_member": "P2"}])
+    plain = _plain(run.weights)
+    assert rows == model.coefficient_rows(run.name, steps, model.weights(plain), "Step-Down",
+                                          units=model.units(plain))
+
+
+def test_r5_compute_refuses_a_rate_step_with_no_covering_window_in_the_one_message():
+    rs = _rate_rule_set(rates=[_rate_row(1, 50, date(2026, 4, 1))])      # starts after March
+    stats = [s for s in _stats() if s["member"] != "HR"]                   # and step 1, HR is missing
+    m = _run_module(rule_set=rs, stats=stats)
+    run = _Run()
+    msg = _k7_refused(lambda: m.compute_weights_on(run))
+    assert msg.startswith("Cost Allocation Run: "), msg
+    assert "step 1, HR" in msg, msg
+    assert "Step 1: no declared rate covers the period 2026-03-01 to 2026-03-31" in msg, msg
+    assert run.saved == 0 and [w["step"] for w in run.weights] == [99]
+
+
+def test_r5_compute_refuses_a_rate_that_changes_inside_the_period():
+    rs = _rate_rule_set(rates=[_rate_row(1, 50, date(2026, 1, 1), date(2026, 3, 15)),
+                               _rate_row(1, 60, date(2026, 3, 16))])
+    msg = _k7_refused(lambda: _run_module(rule_set=rs).compute_weights_on(_Run()))
+    assert "Step 1" in msg and "changes inside the period" in msg, msg
+    assert "2026-03-15" in msg and "2026-03-16" in msg, msg
+
+
+def test_r5_compute_refuses_a_rate_step_whose_period_is_longer_than_its_window():
+    m = _run_module(rule_set=_rate_rule_set(rates=[_rate_row(1, 50, date(2026, 1, 1), date(2026, 12, 31))]))
+    m._period_dates = lambda fy, fp: (date(2026, 3, 1), date(2027, 2, 28))
+    msg = _k7_refused(lambda: m.compute_weights_on(_Run()))
+    assert "Step 1" in msg and "2026-12-31" in msg and "inside the period" in msg, msg
+
+
+def test_r5_compute_refuses_a_rate_step_whose_rate_rows_refuse_the_coefficients():
+    """A rate the coefficient functions refuse (here 0, written past the rule
+    set's own validation) is refused at Compute with the model's message."""
+    rs = _rate_rule_set(rates=[_rate_row(1, 0, date(2026, 1, 1))])
+    msg = _k7_refused(lambda: _run_module(rule_set=rs).compute_weights_on(_Run()))
+    assert "step 1" in msg.lower() and "positive" in msg, msg
+
+
+# -- the stored rows rebuild the same coefficients everywhere ------------------------
+
+def _rate_stored():
+    rows = [(1, "IT", "HR", 10), (1, "IT", "P1", 20), (2, "HR", "P1", 20), (2, "HR", "P2", 30)]
+    return [{"parent": "CAR-00001", "idx": i + 1, "step": s, "sender_member": snd,
+             "receiver_member": rcv, "driver": "ZZ Head", "driver_value": v,
+             "basis": DECLARED if s == 1 else SHARE, "rate": 50.0 if s == 1 else 0,
+             "rate_from": date(2026, 1, 1) if s == 1 else None}
+            for i, (s, snd, rcv, v) in enumerate(rows)]
+
+
+def test_r5_coefficients_rebuilt_from_stored_rows_equal_computes_rows():
+    m = _run_module(rule_set=_rate_rule_set())
+    run = _Run()
+    m.compute_weights_on(run)
+    at_compute = m._coefficient_rows(run.name, run.method, [dict(w) for w in run.weights])
+    # as _submitted_coefficients reads them back: the stored columns only
+    stored = [{"parent": run.name, "idx": i + 1,
+               **{k: w[k] for k in ("step", "sender_member", "receiver_member", "driver",
+                                     "driver_value", "basis", "rate")}}
+              for i, w in enumerate(run.weights)]
+    assert stored[0]["basis"] == DECLARED and stored[0]["rate"] == 50.0
+    assert m._coefficient_rows(run.name, run.method, stored) == at_compute
+    assert m._coefficient_rows(run.name, run.method, _rate_stored()) == at_compute
+
+
+def test_r5_stored_rows_without_a_basis_rebuild_as_share_of_pool():
+    """Runs computed before 2b-2 carry no basis: their coefficients are unchanged."""
+    w = _World()
+    w.get_all_data["Cost Allocation Run"] = [
+        {"name": "CAR-00001", "method": "Step-Down", "docstatus": 1,
+         "modified": datetime(2026, 11, 13, 9, 0, 0)}]
+    w.get_all_data["Cost Allocation Run Weight"] = _stored_weights()     # no basis, no rate
+    m = _k8(w)
+    m.CostAllocationRun.resync_staging(force=True)
+    (_table, columns, rows, _kw), = w.sync_table_calls
+    assert rows == [[r[c] for c in columns] for r in _expected_rows()]
+
+
+def test_r5_the_k8_sync_reads_basis_and_rate_back_and_rebuilds_the_rate_rows():
+    w = _World()
+    w.get_all_data["Cost Allocation Run"] = [
+        {"name": "CAR-00001", "method": "Step-Down", "docstatus": 1,
+         "modified": datetime(2026, 11, 13, 9, 0, 0)}]
+    w.get_all_data["Cost Allocation Run Weight"] = _rate_stored()
+    m = _k8(w)
+    seen = []
+    orig = m.frappe.get_all
+
+    def spy(doctype, filters=None, fields=None, **k):
+        seen.append((doctype, fields))
+        return orig(doctype, filters=filters, fields=fields, **k)
+
+    m.frappe.get_all = spy
+    m.CostAllocationRun.resync_staging(force=True)
+    fields = next(f for d, f in seen if d == "Cost Allocation Run Weight")
+    assert "basis" in fields and "rate" in fields, fields
+    (_table, columns, rows, _kw), = w.sync_table_calls
+    c = {name: i for i, name in enumerate(columns)}
+    own = [r for r in rows if r[c["origin_member"]] == "IT" and r[c["hop_kind"]] == "own"]
+    assert {r[c["pool_coefficient"]] for r in own} == {Decimal(30)}
+    assert {(r[c["receiver_member"]], r[c["coefficient"]]) for r in own} == {
+        ("HR", Decimal(10)), ("P1", Decimal(20))}
+    # the same rows through the per-run write (submit's after-commit callback)
+    w.sync_table_calls.clear()
+    assert m._sync_run_coefficients("CAR-00001") == len(rows)
+    assert sorted(json.dumps(r, sort_keys=True) for r in w.ch.rows) == sorted(
+        json.dumps(dict(zip(columns, [m._json_value(v) for v in r])), sort_keys=True) for r in rows)
+
+
+# -- the stale check at submit covers the bases and rates ----------------------------
+
+def _rate_world():
+    w = _World()
+    w.rules = [{"step": 1, "basis": DECLARED}, {"step": 2, "basis": SHARE}]
+    w.rate_rows = [
+        {"step": 1, "rate": 50, "effective_from": date(2026, 1, 1), "effective_to": None},
+        {"step": 1, "rate": 40, "effective_from": date(2025, 1, 1), "effective_to": date(2025, 12, 31)},
+    ]
+    return w
+
+
+def _rate_run(m, **over):
+    """Step 1 (IT) on a declared rate of 50 from 2026-01-01, step 2 (HR) a share, as Compute wrote them."""
+    rows = [_Row(step=1, sender_member="IT", receiver_member="HR", driver="ZZ Head", statistic="CAS-00001",
+                 value_period=3, driver_value=10, basis=DECLARED, rate=50.0, rate_from=date(2026, 1, 1)),
+            _Row(step=1, sender_member="IT", receiver_member="P1", driver="ZZ Head", statistic="CAS-00001",
+                 value_period=3, driver_value=20, basis=DECLARED, rate=50.0, rate_from=date(2026, 1, 1)),
+            _Row(step=2, sender_member="HR", receiver_member="P1", driver="ZZ Head", statistic="CAS-00001",
+                 value_period=3, driver_value=20, basis=SHARE, rate=0, rate_from=None)]
+    return _k8_run(m, weights=rows, **over)
+
+
+def test_r5_unchanged_bases_and_rates_pass_and_are_read_for_update():
+    w = _rate_world()
+    _rate_run(_k8(w)).before_submit()
+    rules = next(q for q, _v in w.sql if "`tabCost Allocation Rule`" in q)
+    rates = next(q for q, _v in w.sql if "`tabCost Allocation Rule Rate`" in q)
+    for q in (rules, rates):
+        assert q.rstrip().upper().endswith("FOR UPDATE"), q
+        assert "parenttype = 'Cost Allocation Rule Set'" in q, q
+
+
+def test_r5_a_rate_edited_since_compute_refuses_even_when_the_rule_set_modified_matches():
+    w = _rate_world()
+    w.rate_rows[0]["rate"] = 55
+    msg = _refused(_rate_run(_k8(w)).before_submit)
+    assert "step 1" in msg.lower() and "50" in msg and "55" in msg, msg
+    assert "recompute" in msg.lower(), msg
+
+
+def test_r5_a_rate_window_that_moved_refuses_even_with_the_same_rate():
+    w = _rate_world()
+    w.rate_rows[0]["effective_from"] = date(2026, 2, 1)
+    msg = _refused(_rate_run(_k8(w)).before_submit)
+    assert "2026-01-01" in msg and "2026-02-01" in msg, msg
+
+
+def test_r5_a_rate_window_that_no_longer_covers_refuses_with_the_models_reason():
+    w = _rate_world()
+    w.rate_rows[0]["effective_to"] = date(2026, 3, 15)        # now changes inside March
+    msg = _refused(_rate_run(_k8(w)).before_submit)
+    assert "Step 1" in msg and "inside the period" in msg, msg
+    w = _rate_world()
+    w.rate_rows = [w.rate_rows[1]]                            # only the expired window is left
+    msg = _refused(_rate_run(_k8(w)).before_submit)
+    assert "Step 1: no declared rate covers" in msg, msg
+
+
+def test_r5_a_basis_changed_since_compute_refuses():
+    w = _rate_world()
+    w.rules[0]["basis"] = SHARE
+    msg = _refused(_rate_run(_k8(w)).before_submit)
+    assert "step 1" in msg.lower() and "basis" in msg.lower(), msg
+    assert DECLARED in msg and SHARE in msg, msg
+    # and the other way: a share step turned into a rate step
+    w = _rate_world()
+    w.rules[1]["basis"] = DECLARED
+    msg = _refused(_rate_run(_k8(w)).before_submit)
+    assert "step 2" in msg.lower() and "basis" in msg.lower(), msg
+
+
+def test_r5_a_rate_still_matching_at_four_places_passes():
+    w = _rate_world()
+    w.rate_rows[0]["rate"] = 50.00001
+    _rate_run(_k8(w)).before_submit()
+
+
+def test_r5_share_only_runs_check_the_bases_but_read_no_rates():
+    """Rows written before 2b-2 (no basis) against rules without a basis pass."""
+    w = _World()
+    _k8_run(_k8(w)).before_submit()
+    assert any("`tabCost Allocation Rule`" in q for q, _v in w.sql)
+    assert not any("`tabCost Allocation Rule Rate`" in q for q, _v in w.sql)
+    assert w.period_dates_calls == []
+
+
+def test_r5_the_stale_rates_check_runs_before_the_coefficients_are_built():
+    w = _rate_world()
+    w.rate_rows[0]["rate"] = 55
+    m = _k8(w)
+    calls = []
+    orig = m._coefficient_rows
+    m._coefficient_rows = lambda *a, **k: calls.append(a) or orig(*a, **k)
+    _refused(_rate_run(m).before_submit)
+    assert calls == []

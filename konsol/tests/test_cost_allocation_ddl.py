@@ -20,6 +20,11 @@ account (main_account) with the declared account it came from
 (declared_account, after main_account), so the warehouse drift test reads
 main_account without an account tree. An existing table gets the column by
 _POSITIONED_COLUMNS.
+
+Phase 2b-2 (R6): the weights carry the step's basis, the declared rate (4
+places, as the Rule Rate stores it) and the rate window's start after
+effective_from; rate_from is a plain Date like effective_from, unset on a Share
+of Pool row. An existing table gets the three by _POSITIONED_COLUMNS.
 """
 import ast
 import os
@@ -45,7 +50,8 @@ BODIES = {
     "epm_staging.cost_allocation_run_weights": (
         "(parent String, idx UInt32, step UInt16, sender_member String, "
         "receiver_member String, driver String, statistic String, value_period UInt8, "
-        "carried_forward UInt8, driver_value Decimal(38,9), source String, effective_from Date) "
+        "carried_forward UInt8, driver_value Decimal(38,9), source String, effective_from Date, "
+        "basis String, rate Decimal(38,4), rate_from Date) "
         "ENGINE = MergeTree ORDER BY (parent, idx)"
     ),
     "epm_staging.cost_allocation_run_driver_accounts": (
@@ -114,7 +120,11 @@ def test_an_existing_weights_table_gains_source_and_effective_from_after_driver_
     positioned = _literal("_POSITIONED_COLUMNS")
     table = "epm_staging.cost_allocation_run_weights"
     assert positioned[table] == [("source", "String", "driver_value"),
-                                 ("effective_from", "Date", "source")]
+                                 ("effective_from", "Date", "source"),
+                                 # phase 2b-2 (R6): the step's basis, rate and rate window
+                                 ("basis", "String", "effective_from"),
+                                 ("rate", "Decimal(38,4)", "basis"),
+                                 ("rate_from", "Date", "rate")]
     names = _columns(BODIES[table])
     for column, typ, after in positioned[table]:
         assert names.index(column) == names.index(after) + 1, (column, after)
