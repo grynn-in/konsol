@@ -1202,9 +1202,12 @@ def health():
         app: 'konsol'
         clickhouse: detailed ClickHouse health info
     """
-    from konsol.clickhouse import check_health as ch_health
+    from konsol.clickhouse import check_health as ch_health, public_health
 
     ch_status = ch_health()
+    if frappe.session.user == "Guest":
+        # No error text for guests: table and error type only (#617).
+        ch_status = public_health(ch_status)
     overall_status = "ok" if ch_status["status"] == "healthy" else ch_status["status"]
 
     return {

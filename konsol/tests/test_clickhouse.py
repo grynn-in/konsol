@@ -418,4 +418,4 @@ def test_the_health_endpoint_gives_a_guest_the_public_view():
     fn = next(n for n in ast.walk(ast.parse(src))
               if isinstance(n, ast.FunctionDef) and n.name == "health")
     body = ast.unparse(fn)
-    assert "public_health" in body and '"Guest"' in body, body
+    assert "public_health" in body and "'Guest'" in body, body

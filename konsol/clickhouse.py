@@ -591,6 +591,21 @@ def _readable_sync_failures():
             str(e) or type(e).__name__)
 
 
+def public_health(result):
+    """``check_health``'s result as a guest may see it: the status, whether
+    ClickHouse answered and, per failure, the table and error type. Error
+    text (ClickHouse exceptions, hosts) is for signed-in users only; the
+    shared record made worker errors visible here (live test of #617)."""
+    return {
+        "status": result["status"],
+        "clickhouse_reachable": result["clickhouse_reachable"],
+        "message": result["status"],
+        "recent_sync_failures": [
+            {"table": f.get("table"), "error_type": f.get("error_type")}
+            for f in result.get("recent_sync_failures") or []],
+    }
+
+
 def check_health():
     """Check ClickHouse connectivity and return health status.
 
