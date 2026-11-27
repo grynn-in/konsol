@@ -5,6 +5,8 @@ import os
 import sys
 import types
 
+from konsol.tests.read_path_stub import MemoryCache
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CH_PATH = os.path.join(APP_DIR, "clickhouse.py")
 
@@ -65,8 +67,17 @@ def test_clickhouse_uses_epm_settings():
 
 # --- a forced sync fails loudly (konsol#194) ---
 
-def _load_clickhouse():
+#: ``frappe.cache()`` as every process of a site sees it: one Redis, so one
+#: store. Hand the same instance to two module loads and they share it, as a
+#: web worker and an RQ worker share the site's Redis (konsol#177).
+_SharedCache = MemoryCache
+
+
+def _load_clickhouse(cache=None):
     """clickhouse.py against a stub frappe (pattern from test_clickhouse_execute.py).
+
+    ``cache``: the ``frappe.cache()`` this instance sees; pass one
+    ``_SharedCache`` to two loads to model two processes of one site.
 
     ``requests`` is imported here, not at module scope: clickhouse.py needs it,
     but the source-reading tests above do not, and a host without it should
@@ -74,6 +85,8 @@ def _load_clickhouse():
     import requests  # noqa: F401 — clickhouse.py imports it at module level
 
     frappe = types.ModuleType("frappe")
+    cache = _SharedCache() if cache is None else cache
+    frappe.cache = lambda: cache
     frappe.flags = types.SimpleNamespace(
         in_install=False, in_import=False, in_migrate=False, in_patch=False)
     frappe._logger = types.SimpleNamespace(
@@ -138,12 +151,11 @@ def test_a_forced_sync_raises_instead_of_going_quiet():
     The failure is still recorded for check_health()."""
     module = _load_clickhouse()
     for error_type, error in _errors(module).items():
-        module._sync_failures.clear()
         raised, returned = _sync(module, error, force=True)
         assert raised is error, (
             f"a forced sync must re-raise the {error_type} failure, not return "
             f"{returned!r}")
-        recorded = module._sync_failures.get(_TABLE)
+        recorded = module.sync_failures().get(_TABLE)
         assert recorded and recorded["error_type"] == error_type, (
             f"the {error_type} failure must still be recorded: {recorded!r}")
 
@@ -153,12 +165,103 @@ def test_an_unforced_sync_stays_best_effort():
     path keeps logging, recording and returning None."""
     module = _load_clickhouse()
     for error_type, error in _errors(module).items():
-        module._sync_failures.clear()
         raised, returned = _sync(module, error, force=False)
         assert raised is None, f"an unforced sync must not raise: {raised!r}"
         assert returned is None, error_type
-        recorded = module._sync_failures.get(_TABLE)
+        recorded = module.sync_failures().get(_TABLE)
         assert recorded and recorded["error_type"] == error_type, repr(recorded)
+
+
+# --- sync failure health is shared by every process (konsol#177 item 1) ---
+
+def _ok(sql, params=None):
+    """A ClickHouse that answers every statement: '1' to the health probe,
+    nothing to the rest (the sorting-key check reads '' as 'no table')."""
+    return "1" if sql == "SELECT 1" else ""
+
+
+def test_a_failure_recorded_in_one_process_shows_in_another_processs_health():
+    """konsol#177 item 1: _sync_failures was a dict in the memory of the
+    process that hit the failure. A sync that failed in the RQ worker was
+    invisible to check_health served by the web process, which reported
+    healthy over a table the warehouse was missing. The record lives in the
+    site's Redis cache now, so two module instances sharing one cache see it."""
+    cache = _SharedCache()
+    worker = _load_clickhouse(cache)
+    web = _load_clickhouse(cache)
+
+    raised, returned = _sync(worker, _errors(worker)["connection_refused"], force=False)
+    assert raised is None and returned is None
+
+    web.execute = _ok
+    health = web.check_health()
+    assert health["status"] == "degraded", health
+    assert health["message"] == "1 table(s) have sync failures", health
+    [failure] = health["recent_sync_failures"]
+    assert failure["table"] == _TABLE, failure
+    assert failure["error_type"] == "connection_refused", failure
+    assert failure["message"] == "connection refused", failure
+    assert failure["timestamp"], failure
+
+
+def test_a_later_successful_sync_clears_the_shared_failure():
+    """The repair is visible everywhere too: once the worker syncs the table
+    again, the web process's check_health is healthy and names no table."""
+    cache = _SharedCache()
+    worker = _load_clickhouse(cache)
+    web = _load_clickhouse(cache)
+    _sync(worker, _errors(worker)["timeout"], force=False)
+    web.execute = _ok
+    assert web.check_health()["status"] == "degraded"
+
+    worker.execute = _ok
+    assert worker.sync_table(_TABLE, ["a"], [("ZZ01",)]) == 1
+
+    health = web.check_health()
+    assert health["status"] == "healthy", health
+    assert health["recent_sync_failures"] == [], health
+    assert health["message"] == "All systems operational", health
+
+
+def test_a_failure_in_another_table_stays_when_one_table_recovers():
+    """Clearing is per table: a recovered table must not hide a sibling that
+    is still broken."""
+    cache = _SharedCache()
+    worker = _load_clickhouse(cache)
+    other = "epm_staging.zz_other"
+
+    def boom(sql, params=None):
+        raise worker.requests.exceptions.Timeout("read timed out")
+    worker.execute = boom
+    worker.sync_table(_TABLE, ["a"], [("ZZ01",)])
+    worker.sync_table(other, ["a"], [("ZZ01",)])
+    worker.execute = _ok
+    worker.sync_table(_TABLE, ["a"], [("ZZ01",)])
+
+    web = _load_clickhouse(cache)
+    web.execute = _ok
+    health = web.check_health()
+    assert [f["table"] for f in health["recent_sync_failures"]] == [other], health
+
+
+def test_health_reports_an_unreachable_cache_instead_of_raising():
+    """Review of #617, finding 1: Frappe's hgetall does not swallow a Redis
+    ConnectionError (hset/hdel/hget do). With the cache down, check_health
+    must still answer, degraded and saying why, never raise: the guest
+    health endpoint, the build preconditions and the Setup page call it."""
+    class ConnectionError(Exception):  # redis.exceptions.ConnectionError
+        pass
+
+    class DownCache(_SharedCache):
+        def hgetall(self, name, *a, **k):
+            raise ConnectionError("Connection refused")
+
+    web = _load_clickhouse(DownCache())
+    web.execute = _ok
+    health = web.check_health()
+    assert health["status"] == "degraded", health
+    assert health["recent_sync_failures"] == [], health
+    assert "Redis cache unreachable" in health["message"], health
 
 
 # --- a failed sync leaves the old rows (konsol#194) ---
@@ -277,3 +380,42 @@ def test_temp_table_is_rebuilt_from_the_live_table_each_sync():
     assert recorded[0] == f"DROP TABLE IF EXISTS {_TMP}", recorded
     assert recorded[1] == f"CREATE TABLE {_TMP} AS {_TABLE}", recorded
     assert not any("IF NOT EXISTS" in s.upper() for s in recorded), recorded
+
+
+def test_a_guest_sees_tables_and_error_types_never_error_text():
+    """Live test of #617: konsol.api.health admits guests, and the shared
+    record now carries the worker's ClickHouse error text (table names,
+    DB::Exception). A guest gets the status, reachability and, per failure,
+    the table and error type only; the messages stay for signed-in users."""
+    web = _load_clickhouse()
+    full = {
+        "status": "degraded", "clickhouse_reachable": True,
+        "message": "1 table(s) have sync failures",
+        "recent_sync_failures": [{
+            "table": "epm_staging.zz_t", "error_type": "http_error",
+            "message": "500 from ClickHouse: Code: 390. DB::Exception: secret",
+            "timestamp": "2026-11-27T10:00:00"}],
+    }
+    shown = web.public_health(full)
+    assert shown == {
+        "status": "degraded", "clickhouse_reachable": True,
+        "message": "degraded",
+        "recent_sync_failures": [{"table": "epm_staging.zz_t", "error_type": "http_error"}],
+    }, shown
+    assert "DB::Exception" not in repr(shown)
+    down = web.public_health({"status": "down", "clickhouse_reachable": False,
+                              "message": "ClickHouse error: host 10.0.0.5 refused",
+                              "recent_sync_failures": []})
+    assert down["message"] == "down" and "10.0.0.5" not in repr(down), down
+    assert full["recent_sync_failures"][0]["message"].startswith("500"), "input untouched"
+
+
+def test_the_health_endpoint_gives_a_guest_the_public_view():
+    """konsol.api.health passes check_health through public_health for Guest."""
+    import ast
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "api.py")).read()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "health")
+    body = ast.unparse(fn)
+    assert "public_health" in body and "'Guest'" in body, body

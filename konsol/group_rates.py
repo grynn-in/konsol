@@ -546,13 +546,17 @@ _AUDIT_FILE_SQL = (f"SELECT 1 AS x FROM `tabFile` WHERE attached_to_doctype = 'R
 
 
 def _fresh_db():
-    """A second connection to the site's database, built exactly as
-    frappe.connect builds frappe.db (Frappe reads the site config)."""
+    """A second connection to the site's database, opened with the settings of
+    the connection Frappe made (``frappe.db``), never re-read from the site
+    config (konsol#177). Frappe 15 connected as ``conf.db_name``; Frappe 16
+    connects as ``conf.db_user`` when it is set, and a copy of either rule
+    here would drift. Keywords only: ``get_db`` orders its parameters
+    differently in the two versions."""
     from frappe.database import get_db
 
-    conf = frappe.local.conf
-    db = get_db(socket=conf.db_socket, host=conf.db_host, port=conf.db_port, user=conf.db_name,
-                password=conf.db_password, cur_db_name=conf.db_name)
+    live = frappe.db
+    db = get_db(socket=live.socket, host=live.host, port=live.port, user=live.user,
+                password=live.password, cur_db_name=live.cur_db_name)
     db.connect()
     return db
 
@@ -686,7 +690,7 @@ def publish_rates(force=False):
         return None
     if not force and (flags.in_migrate or flags.in_patch):
         return None
-    from konsol.clickhouse import _record_sync_failure, _stamp_watermark, execute
+    from konsol.clickhouse import _clear_sync_failure, _record_sync_failure, _stamp_watermark, execute
 
     lock = f"konsol_group_rates_publish:{frappe.conf.db_name}"
     got = frappe.db.sql("SELECT GET_LOCK(%s, %s)", (lock, PUBLISH_LOCK_WAIT))
@@ -711,6 +715,8 @@ def publish_rates(force=False):
                     + ", ".join("(" + ", ".join(_ch_literal(v) for v in row) + ")" for row in rows[i:i + 1000]))
         execute(f"EXCHANGE TABLES {PUBLISH_TABLE} AND {shadow}")
         execute(f"DROP TABLE IF EXISTS {shadow}")
+        # The whole set is republished, so an earlier publish failure is healed.
+        _clear_sync_failure(PUBLISH_TABLE)
         modified = [m for m in (_get(x, "modified") for x in sheets) if m]
         _stamp_watermark(PUBLISH_TABLE, len(rows),
                          max(modified).strftime("%Y-%m-%d %H:%M:%S") if modified else None)

@@ -19,6 +19,8 @@ import os
 import sys
 import types
 
+from konsol.tests.read_path_stub import MemoryCache
+
 import konsol.method_declaration_model as MD
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -236,6 +238,8 @@ class Refused(Exception):
 
 def _stub_frappe(logger=None):
     frappe = types.ModuleType("frappe")
+    cache = MemoryCache()  # the sync-failure record (konsol#177)
+    frappe.cache = lambda: cache
     frappe.flags = types.SimpleNamespace(
         in_install=False, in_import=False, in_migrate=False, in_patch=False)
 
