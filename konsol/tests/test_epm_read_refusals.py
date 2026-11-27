@@ -400,15 +400,52 @@ def test_variance_read_of_a_scenario_with_no_approved_cycle_for_the_year_is_refu
 
 
 def test_budget_read_of_an_entity_the_approved_cycle_does_not_budget_is_refused():
-    for fact, measure in (("budget_input", "period_amount"),
-                          ("variance_analysis", "variance_abs")):
-        for scenario_id in ("", "ZZ_BUD"):
-            result, queries = read([{"fact": fact, "measure": measure, "entity": "ZZ02",
-                                     "scenario_id": scenario_id}])
-            assert queries == [], (fact, scenario_id)
-            assert result["values"] == [None], (fact, scenario_id)
-            assert result["errors"] == [no_entity("ZZ_BUD", 2026, "ZZ02", "ZZ-BUD-2026")], \
-                (fact, scenario_id)
+    for scenario_id in ("", "ZZ_BUD"):
+        result, queries = read([{"entity": "ZZ02", "scenario_id": scenario_id}])
+        assert queries == [], scenario_id
+        assert result["values"] == [None], scenario_id
+        assert result["errors"] == [no_entity("ZZ_BUD", 2026, "ZZ02", "ZZ-BUD-2026")], \
+            scenario_id
+
+
+def test_variance_read_of_an_entity_with_no_entries_is_not_refused():
+    """Decided by Deepak Pai, 27 Nov 2026 (konsol#568): variance keeps the
+    22 Sep rule "unbudgeted is unfavourable". An approved Cycle for the
+    scenario and year is all a variance cell needs; an entity with actuals and
+    no Budget Entry or Annual Input reads variance = actual."""
+    for scenario_id in ("", "ZZ_BUD"):
+        result, queries = read(
+            [{"fact": "variance_analysis", "measure": "variance_abs", "entity": "ZZ02",
+              "scenario_id": scenario_id}],
+            table_rows=[{"scenario_id": "ZZ_BUD", "value": -40.0}])
+        assert not result.get("errors"), (scenario_id, result)
+        assert result["values"] == [-40.0], scenario_id
+        assert len(queries) == 1, scenario_id
+
+
+def _hq():
+    spec = importlib.util.spec_from_file_location(
+        "_host_hq_refusals", os.path.join(APP_DIR, "hierarchy_query.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_hierarchy_variance_coverage_asks_the_cycle_only():
+    """The shared helper (flat and hierarchy reads): a variance need with a
+    named entity the Cycle does not budget is not refused; a budget need is;
+    a variance need with no approved Cycle is refused either way."""
+    hq = _hq()
+    approved = {("ZZ_BUD", 2026): ["ZZ-BUD-2026"]}
+    budgeted = {("ZZ_BUD", 2026): {"ZZ01"}}
+
+    def look(kind, sid="ZZ_BUD"):
+        hq._approved_budget_coverage = lambda needs: (approved, budgeted)
+        return hq.budget_coverage_errors([(0, sid, 2026, "ZZ02", kind)])
+
+    assert look(hq.COVER_VARIANCE) == {}
+    assert 0 in look(hq.COVER_ENTITY)
+    assert 0 in look(hq.COVER_VARIANCE, "ZZ_BUD2")
 
 
 def test_budgeted_entity_with_no_row_reads_zero():
