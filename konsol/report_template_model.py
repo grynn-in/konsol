@@ -854,11 +854,47 @@ class _Checker:
 #                    (``account_name or main_account``), as api.py does today.
 #   ctx["charts"]    optional {block key: [chart names]}: the charts the
 #                    block's accounts came from. More than one on a
-#                    ``one_chart`` block is refused with errors.several_charts.
+#                    ``one_chart`` block (accounts or account_tree) is refused
+#                    with errors.several_charts.
+#   ctx["trees"]     {block key: [{code, caption, depth, is_group, parent}]},
+#                    one list per ``account_tree`` block, in DFS order (every
+#                    parent before its children; ``parent`` None/"" for a
+#                    root). A leaf (is_group false) is a K.EPM read. A heading
+#                    (is_group true) is ``=SUM`` of its direct children's cells
+#                    per column (a run of adjacent rows as a range, the rest
+#                    comma-joined): headings never carry postings, so a heading
+#                    without a child row in the list is refused. The caller
+#                    must not cut the tree (``depth``) below a heading. Captions
+#                    are written as given: the schema has no indent option.
+#   ctx["account_lists"]  {block key: [(code, caption), ...]}, one list per
+#                    ``account_list`` block, in the user's chosen order; read
+#                    like ``accounts``.
+#   ctx["nodes"]     {block key: [{code, label, depth, is_group}]}, one list per
+#                    ``hierarchy_nodes`` block, in tree order. EVERY row, group
+#                    or leaf, is a K.EPM hierarchy read of that node for the
+#                    block's ``account`` param, entity ``ALL`` (hierarchy_query
+#                    _ENTITY_WILDCARD), with the series' ``read["node"]`` word:
+#                    a group node is read (the server rolls it up), never
+#                    summed (plan decision D6).
+#   ctx["scope_name"] optional: the display name of the scope, for the
+#                    ``{scope.name}`` token. Absent, a text that uses the token
+#                    is refused by name (no fallback to the code).
 #
-# Supported so far: header cells, ``accounts`` and ``total`` row blocks, one
-# ``regular_periods`` column group with one read series, an entity param as
-# the scope. Anything else is refused by name (T10/T11 add them).
+# Scope: exactly one entity, group or scope param. An entity param is kind
+# ``entity``, a group param kind ``group``; a scope param's value is
+# {kind: entity|group|node, code, hierarchy?} (a dict, or its JSON text), its
+# kind one of the param's ``kinds``. The series reads ``read[kind]``; a kind
+# without a word is refused by name. The K.EPM entity argument is the code for
+# entity and group kinds (a group read with its group dataset word, e.g.
+# consolidated); for kind node it is ``ALL``, with the scope's hierarchy and
+# the code as the node. Tokens: {scope.code}, {scope.kind}, {scope.name}.
+#
+# A ``total`` sums the leaf rows of the blocks it names: never a heading, a
+# total, or (hierarchy_nodes) a node whose child rows follow it in the list.
+# ``heading`` writes its caption only; ``blank`` leaves the row empty.
+#
+# Still refused by name (T11): more than one column group or series, quarters,
+# fy, ytd, formula series, two header rows.
 
 MONTH_ABBREVS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -866,6 +902,9 @@ MONTH_ABBREVS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
 #: K.EPM's positional arguments, in functions.js makeReq order.
 EPM_ARGS = ("entity", "year", "period", "account", "measure", "scenario",
             "dimensions", "scenario_id", "hierarchy", "node", "layer")
+#: The entity argument of a cross-entity hierarchy read (functions.json:
+#: "ALL for cross-entity hierarchy rollups"; hierarchy_query._ENTITY_WILDCARD).
+EPM_ENTITY_ALL = "ALL"
 #: K.EPM's own defaults, omitted from a formula: the dataset word and the
 #: scenario id ``actuals``.
 EPM_DEFAULTS = {"scenario": "actuals", "scenario_id": "actuals"}
@@ -1066,10 +1105,11 @@ def compile_formulas(template, params, ctx):
     params = resolve_params(template, params)
     values = _token_values(template, params)
 
-    scope = [p for p in template["params"] if p["type"] in ("entity", "group", "scope")]
-    if len(scope) != 1 or scope[0]["type"] != "entity":
-        raise _unsupported(template, "a scope other than one entity param")
-    entity = params[scope[0]["name"]]
+    scope = _scope(template, params)
+    values["scope.code"] = "" if scope["code"] is None else scope["code"]
+    values["scope.kind"] = scope["kind"]
+    if ctx.get("scope_name") is not None:
+        values["scope.name"] = ctx["scope_name"]
     years = [p["name"] for p in template["params"] if p["type"] == "fiscal_year"]
     if len(years) != 1:
         raise _unsupported(template, "a template without exactly one fiscal_year param")
@@ -1084,14 +1124,29 @@ def compile_formulas(template, params, ctx):
     group = groups[0]
     if len(group["series"]) != 1:
         raise _unsupported(template, "more than one series in a column group")
-    series = template["series"][group["series"][0]]
+    series_name = group["series"][0]
+    series = template["series"][series_name]
     if "read" not in series:
         raise _unsupported(template, "a formula series")
-    read = {
-        "scenario": series["read"]["entity"],
-        "measure": series.get("measure"),
-        "scenario_id": params[series["scenario_id"][1:-1]] if "scenario_id" in series else None,
-    }
+
+    def read_for(kind):
+        word = series["read"].get(kind)
+        if not word:
+            raise ValueError(
+                f"Report template {template.get('id')!r}: series {series_name!r} has no "
+                f"read word for scope kind {kind!r}, so it cannot be read for it."
+            )
+        return {
+            "scenario": word,
+            "measure": series.get("measure"),
+            "scenario_id": params[series["scenario_id"][1:-1]] if "scenario_id" in series else None,
+        }
+
+    if scope["kind"] == "node":
+        target = {"entity": EPM_ENTITY_ALL, "hierarchy": scope["hierarchy"], "node": scope["code"]}
+    else:
+        target = {"entity": scope["code"], "hierarchy": None, "node": None}
+    read = read_for(scope["kind"])
 
     periods = regular_periods(ctx.get("periods"), year)
     labels = period_labels(periods, group["label"])
@@ -1101,37 +1156,129 @@ def compile_formulas(template, params, ctx):
 
     cells = []
     for cell in template.get("header", []):
-        value = params[cell["param"]] if "param" in cell else render(cell["text"], values)
+        if "param" not in cell:
+            value = render(cell["text"], values)
+        elif cell["param"] == scope["param"]:
+            value = scope["code"]  # a scope value is a dict; the cell shows its code
+        else:
+            value = params[cell["param"]]
         cells.append({"range": cell["at"], "values": [[value]]})
     header_row = columns["header_rows"][0]
     cells.append({"range": _cell_range(first_col, header_row, last_col, header_row),
                   "values": [labels]})
 
     row = template["rows"]["start_row"]
-    block_rows = {}  # block key -> [row numbers]
+    block_rows = {}  # block key -> [leaf row numbers]: what a total sums
     accounts = ctx.get("accounts") or {}
     charts = ctx.get("charts") or {}
+    trees = ctx.get("trees") or {}
+    account_lists = ctx.get("account_lists") or {}
+    nodes = ctx.get("nodes") or {}
+
+    def caption(r, text):
+        cells.append({"range": f"A{r}", "values": [[text]]})
+
+    def read_row(r, account, rd, where):
+        cells.append({
+            "range": _cell_range(first_col, r, last_col, r),
+            "formulas": [[epm_formula(where["entity"], year, p["number"], account,
+                                      hierarchy=where["hierarchy"], node=where["node"], **rd)
+                          for p in periods]],
+        })
+
+    def sum_row(r, refs):
+        cells.append({
+            "range": _cell_range(first_col, r, last_col, r),
+            "formulas": [["=SUM(" + _sum_refs(c, refs) + ")" for c in letters]],
+        })
+
+    def one_chart(block, key):
+        found = sorted(set(charts.get(key) or ()))
+        if block.get("one_chart") and len(found) > 1:
+            raise _error(template, "several_charts", dict(values, charts=", ".join(found)))
+
+    def account_lines(block, key, lines):
+        nonlocal row
+        if not lines:
+            raise _error(template, "no_rows", values)
+        block_rows[key] = []
+        for code, text in lines:
+            line = dict(values, **{"account.code": code, "account.name": text})
+            caption(row, render(block["caption"], line))
+            read_row(row, code, read, target)
+            block_rows[key].append(row)
+            row += 1
+
     for i, block in enumerate(template["rows"]["blocks"]):
         key = block_key(block, i)
         btype = block["type"]
         if btype == "accounts":
-            found = sorted(set(charts.get(key) or ()))
-            if block.get("one_chart") and len(found) > 1:
-                raise _error(template, "several_charts", dict(values, charts=", ".join(found)))
-            lines = accounts.get(key) or []
+            one_chart(block, key)
+            account_lines(block, key, accounts.get(key) or [])
+        elif btype == "account_list":
+            account_lines(block, key, account_lists.get(key) or [])
+        elif btype == "account_tree":
+            one_chart(block, key)
+            lines = trees.get(key) or []
+            if not lines:
+                raise _error(template, "no_rows", values)
+            row_of, children = {}, {}
+            for offset, n in enumerate(lines):
+                code, parent = n["code"], n.get("parent")
+                if code in row_of:
+                    raise ValueError(f"Report template {template.get('id')!r}: block {key!r} "
+                                     f"lists account {code!r} twice.")
+                if parent:
+                    if parent not in row_of:
+                        raise ValueError(
+                            f"Report template {template.get('id')!r}: block {key!r} lists account "
+                            f"{code!r} before its parent {parent!r}, or without it; the tree must "
+                            f"be in DFS order, every parent before its children."
+                        )
+                    children[parent].append(row + offset)
+                row_of[code] = row + offset
+                children[code] = []
+            block_rows[key] = []
+            for n in lines:
+                r = row_of[n["code"]]
+                caption(r, render(block["caption"], dict(values, **{
+                    "account.code": n["code"], "account.name": n["caption"]})))
+                if n.get("is_group"):
+                    if not children[n["code"]]:
+                        raise ValueError(
+                            f"Report template {template.get('id')!r}: heading {n['code']!r} of "
+                            f"block {key!r} has no child rows. A heading never carries postings, "
+                            f"so its row is the sum of its children: list them."
+                        )
+                    sum_row(r, children[n["code"]])
+                else:
+                    read_row(r, n["code"], read, target)
+                    block_rows[key].append(r)
+            row += len(lines)
+        elif btype == "hierarchy_nodes":
+            account = params.get(block["account"])
+            if not account:
+                raise ValueError(f"Report template {template.get('id')!r}: block {key!r} reads "
+                                 f"the account in param {block['account']!r}, and none is given.")
+            rd = read_for("node")
+            hierarchy = params.get(block["hierarchy"]) or None
+            lines = nodes.get(key) or []
             if not lines:
                 raise _error(template, "no_rows", values)
             block_rows[key] = []
-            for code, caption in lines:
-                line = dict(values, **{"account.code": code, "account.name": caption})
-                cells.append({"range": f"A{row}", "values": [[render(block["caption"], line)]]})
-                cells.append({
-                    "range": _cell_range(first_col, row, last_col, row),
-                    "formulas": [[epm_formula(entity, year, p["number"], code, **read)
-                                  for p in periods]],
-                })
-                block_rows[key].append(row)
+            for idx, n in enumerate(lines):
+                caption(row, render(block["caption"], dict(values, **{"node.label": n["label"]})))
+                read_row(row, account, rd,
+                         {"entity": EPM_ENTITY_ALL, "hierarchy": hierarchy, "node": n["code"]})
+                after = lines[idx + 1] if idx + 1 < len(lines) else None
+                if after is None or int(after["depth"]) <= int(n["depth"]):
+                    block_rows[key].append(row)  # no child rows follow: a leaf of the list
                 row += 1
+        elif btype == "heading":
+            caption(row, render(block["caption"], values))
+            row += 1
+        elif btype == "blank":
+            row += 1
         elif btype == "total":
             rows = sorted(r for ref in block["of"] for r in block_rows.get(ref, ()))
             runs = []
@@ -1140,7 +1287,7 @@ def compile_formulas(template, params, ctx):
                     runs[-1][1] = r
                 else:
                     runs.append([r, r])
-            cells.append({"range": f"A{row}", "values": [[render(block["caption"], values)]]})
+            caption(row, render(block["caption"], values))
             cells.append({
                 "range": _cell_range(first_col, row, last_col, row),
                 "formulas": [[
@@ -1163,6 +1310,42 @@ def compile_formulas(template, params, ctx):
         "area": _area(cells),
     }
     return out
+
+
+def _scope(template, params):
+    """{param, kind, code, hierarchy} of the template's one scope param (see the contract)."""
+    found = [p for p in template["params"] if p["type"] in ("entity", "group", "scope")]
+    if len(found) != 1:
+        raise _unsupported(template, "a template without exactly one entity, group or scope param")
+    p = found[0]
+    value = params[p["name"]]
+    if p["type"] in ("entity", "group"):
+        return {"param": p["name"], "kind": p["type"], "code": value, "hierarchy": None}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            value = None
+    if not isinstance(value, dict) or not value.get("code"):
+        raise ValueError(f"Report template {template.get('id')!r}: {p['name']} must be "
+                         f"{{kind, code, hierarchy?}}, not {params[p['name']]!r}.")
+    kind = value.get("kind")
+    if kind not in p["kinds"]:
+        raise ValueError(f"Report template {template.get('id')!r}: {p['name']} is scope kind "
+                         f"{kind!r}, and the template's scope allows {', '.join(p['kinds'])}.")
+    return {"param": p["name"], "kind": kind, "code": value["code"],
+            "hierarchy": value.get("hierarchy") or None}
+
+
+def _sum_refs(col, rows):
+    """``B4,B7`` / ``B5:B6``: the cells of ``rows`` in column ``col``, adjacent ones as a range."""
+    runs = []
+    for r in sorted(rows):
+        if runs and r == runs[-1][1] + 1:
+            runs[-1][1] = r
+        else:
+            runs.append([r, r])
+    return ",".join(f"{col}{a}" if a == b else f"{col}{a}:{col}{b}" for a, b in runs)
 
 
 def _area(cells):
