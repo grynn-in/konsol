@@ -1,4 +1,4 @@
-/* global Office, Excel */
+/* global Office, Excel, konsolServer, location */
 
 // ============================================================
 // Konsolidat — ribbon commands: Refresh sheet, Refresh workbook
@@ -17,9 +17,14 @@
 //   konsolidatSnapshotReport(params)  -> re-runs a snapshot and saves its params
 //
 // Snapshot parameters live in the workbook's document settings under
-// SETTINGS_KEY, keyed by sheet name, so they travel with the file.
+// SETTINGS_KEY, keyed by sheet name, so they travel with the file. Each
+// names the server it was taken from (konsol#618 review); a refresh while
+// the workbook reads another server refuses that snapshot rather than
+// repaint one site's figures with another's.
 //
-// The stamp "Values as of <YYYY-MM-DD HH:MM> UTC" goes in row 1: in the cell
+// The stamp "Values as of <YYYY-MM-DD HH:MM> UTC from <host>" names the
+// server the values came from (server.js, the workbook's choice), and goes
+// in row 1: in the cell
 // that already holds a stamp, else in the first empty cell right of row 1's
 // last used cell (G1 on the Monthly P&L, J1 on the TB snapshot). It never
 // overwrites a cell that holds something else.
@@ -32,8 +37,9 @@ var konsolRibbon = (function () {
   // A K.* custom function call. Excel may also report one in its file form
   // (_xldudf_K_EPM); count both.
   var K_FORMULA = /(^|[^A-Za-z0-9_.])(K\.|_xldudf_K_)[A-Za-z_]+\s*\(/i;
-  // Only a cell that is exactly a stamp is reused; any other text stays.
-  var STAMP = /^Values as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/;
+  // Only a cell that is exactly a stamp is reused; any other text stays. A
+  // stamp from before the server was named ends at "UTC".
+  var STAMP = /^Values as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC( from [A-Za-z0-9.:-]+)?$/;
   var LAST_COLUMN = 16383;  // XFD, zero-based
   var SNAPSHOT_TIMEOUT_MS = 120000;
   var COMMAND_TIMEOUT_MS = 600000;
@@ -61,8 +67,39 @@ var konsolRibbon = (function () {
     } catch (e) { /* SharedRuntime 1.1 missing: the log still has it */ }
   }
 
+  // The workbook's server (server.js). Without server.js (an old cached
+  // page) the pane talks to its own origin, so that is the server.
+  function serverOrigin() {
+    if (typeof konsolServer !== "undefined") return konsolServer.current();
+    return typeof location !== "undefined" ? location.origin : "";
+  }
+
+  function serverHost() {
+    return serverOrigin().replace(/^https?:\/\//, "");
+  }
+
+  // The workbook keeps its server from its first snapshot or stamp on
+  // (server.js pin). A failed save does not stop the command.
+  function pinServer() {
+    if (typeof konsolServer === "undefined" || typeof konsolServer.pin !== "function") return Promise.resolve();
+    return Promise.resolve(konsolServer.pin()).then(function (r) {
+      if (r && r.unsaved) log("err", r.unsaved);
+    }, function () { /* the command goes on */ });
+  }
+
   function stampText() {
-    return STAMP_PREFIX + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC";
+    var host = serverHost();
+    return STAMP_PREFIX + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC" +
+      (host ? " from " + host : "");
+  }
+
+  // Why a saved snapshot may not be taken again now, or "" when it may. A
+  // snapshot saved before servers were recorded has none and is taken again.
+  function otherServer(name, params) {
+    var now = serverOrigin();
+    if (!params || !params.server || params.server === now) return "";
+    return "the snapshot on " + name + " was taken from " + params.server + ", but this workbook now reads " +
+      now + ". Switch the pane's Server back, or take the snapshot again from the pane";
   }
 
   function columnLetter(index) {
@@ -117,9 +154,12 @@ var konsolRibbon = (function () {
       if (params && params[k] !== undefined && params[k] !== null) entry[k] = params[k];
     });
     if (!entry.sheet_name) return Promise.reject(new Error("a snapshot has no sheet name"));
-    var all = savedSnapshots();
-    all[entry.sheet_name] = entry;
-    return storeSnapshots(all);
+    return pinServer().then(function () {
+      entry.server = serverOrigin();
+      var all = savedSnapshots();
+      all[entry.sheet_name] = entry;
+      return storeSnapshots(all);
+    });
   }
 
   function resnapshot(name, params) {
@@ -218,6 +258,12 @@ var konsolRibbon = (function () {
       }).then(function () {
         var params = savedSnapshots()[name];
         if (!params) return true;
+        var refused = otherServer(name, params);
+        if (refused) {
+          log("err", what + ": " + refused + ". Nothing was recalculated or stamped.");
+          showPane();
+          return false;
+        }
         log("info", what + ": snapshotting " + name + " again (" + params.entity + " " + params.year +
           " P" + params.period_from + "–" + params.period_to + ")…");
         return withTimeout(resnapshot(name, params), "the snapshot of " + name, SNAPSHOT_TIMEOUT_MS).then(function () {
@@ -229,6 +275,9 @@ var konsolRibbon = (function () {
           showPane();
           return false;
         });
+      }).then(function (go) {
+        if (!go) return;
+        return pinServer().then(function () { return true; });
       }).then(function (go) {
         if (!go) return;
         return Excel.run(function (ctx) {
@@ -265,6 +314,7 @@ var konsolRibbon = (function () {
       var sheetNames = [];
       var snapshotted = {};
       var failed = [];
+      var refusedSnaps = [];
       var saved = savedSnapshots();
       var total = 0;
       var stamped = [];
@@ -291,6 +341,12 @@ var konsolRibbon = (function () {
         // One snapshot at a time: each is its own Excel.run and server call.
         return Object.keys(saved).reduce(function (chain, n) {
           return chain.then(function () {
+            var refused = otherServer(n, saved[n]);
+            if (refused) {
+              refusedSnaps.push(n);
+              log("err", what + ": " + refused + "; it is not stamped.");
+              return;
+            }
             return withTimeout(resnapshot(n, saved[n]), "the snapshot of " + n, SNAPSHOT_TIMEOUT_MS).then(function () {
               snapshotted[n] = true;
             }, function (err) {
@@ -306,6 +362,8 @@ var konsolRibbon = (function () {
           return ctx.sync();
         });
       }).then(function () {
+        return pinServer();
+      }).then(function () {
         text = stampText();
         // One sheet per Excel.run: a large or protected sheet fails alone.
         return sheetNames.reduce(function (chain, n) {
@@ -315,7 +373,7 @@ var konsolRibbon = (function () {
               return ctx.sync().then(function () {
                 var count = formulaCount(loaded);
                 total += count;
-                if (failed.indexOf(n) >= 0 || !(count || snapshotted[n])) return;
+                if (failed.indexOf(n) >= 0 || refusedSnaps.indexOf(n) >= 0 || !(count || snapshotted[n])) return;
                 var s = stamp(loaded, text);
                 if (!s.at) { unstamped.push(n + " (" + s.skipped + ")"); return; }
                 return ctx.sync().then(function () { stamped.push(n); });
@@ -331,7 +389,8 @@ var konsolRibbon = (function () {
           (stamped.length ? "; stamped " + stamped.join(", ") + ". " + text + "." : "; no sheet stamped.");
         if (unstamped.length) msg += " Not stamped: " + unstamped.join(", ") + ".";
         if (failed.length) msg += " Snapshot failed: " + failed.join(", ") + ".";
-        var bad = failed.length || unstamped.length;
+        if (refusedSnaps.length) msg += " Snapshot refused (other server): " + refusedSnaps.join(", ") + ".";
+        var bad = failed.length || refusedSnaps.length || unstamped.length;
         log(bad ? "err" : "ok", msg);
         if (bad) showPane();
       }).then(function () { return restoreActive(activeName); },

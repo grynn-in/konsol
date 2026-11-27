@@ -238,17 +238,29 @@
     }
   </style>
   <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <script src="server.js"></script>
   <script src="functions.js"></script>
   <script src="ribbon.js"></script>
 </head>
 <body>
   <header>
     <h1>Konsolidat</h1>
-    <p class="version" id="addin-version">v2.0.5.0</p>
+    <p class="version" id="addin-version">v2.0.6.0</p>
     <p id="boot-status">Connecting to Excel…</p>
   </header>
 
   <div class="sections">
+    <details class="panel" id="server-panel">
+      <summary id="server-summary">Server: …</summary>
+      <div class="panel-body">
+        <p class="hint" id="server-hint">The Konsolidat site this add-in reads and writes.</p>
+        <label for="server-url">Server</label>
+        <input id="server-url" type="url" inputmode="url" autocomplete="url" spellcheck="false" />
+        <button id="server-btn" type="button" class="secondary">Use this server</button>
+        <p id="server-error" class="error-inline" hidden></p>
+      </div>
+    </details>
+
     <details class="panel" id="login-panel" open>
       <summary id="login-summary">Sign in</summary>
       <div class="panel-body">
@@ -296,6 +308,15 @@
       </div>
     </details>
 
+    <details class="panel" id="refresh-panel" open>
+      <summary>Refresh</summary>
+      <div class="panel-body">
+        <p class="hint">The same as the ribbon's buttons: recalculate the =K.* formulas, take saved snapshots again, and stamp row 1 with the time.</p>
+        <button id="refresh-sheet-btn" type="button" class="secondary">Refresh sheet</button>
+        <button id="refresh-workbook-btn" type="button" class="secondary">Refresh workbook</button>
+      </div>
+    </details>
+
     <details class="panel" id="instructions-panel">
     <summary>Instructions &amp; testing</summary>
     <div class="panel-body">
@@ -332,7 +353,6 @@
 
   <script>
     (function () {
-      var API = window.location.origin;
       var bootStatus = document.getElementById("boot-status");
       var diag = document.getElementById("diag");
       var errorLog = document.getElementById("error-log");
@@ -343,7 +363,10 @@
       var loginBtn = document.getElementById("login-btn");
       var logoutBtn = document.getElementById("logout-btn");
       var loginError = document.getElementById("login-error");
+      var serverInput = document.getElementById("server-url");
+      var serverError = document.getElementById("server-error");
       var started = false;
+      var officeReady = false;
       var PROBE_CELL = "ZZ999";
       var logCount = 0;
 
@@ -353,10 +376,11 @@
 
       function tokenLabel() {
         try {
-          return localStorage.getItem("konsol_token") ? "stored" : "none";
+          localStorage.getItem("konsol_token:" + konsolServer.paneOrigin());
         } catch (e) {
           return "blocked";
         }
+        return konsolServer.getToken() ? "stored" : "none";
       }
 
       var currentSession = "…";
@@ -466,21 +490,14 @@
         });
       }
 
-      var TOKEN_KEY = "konsol_token";
-
+      // Tokens are kept per server (server.js, konsol#605): these read and
+      // write the token of the server the pane is connected to.
       function getToken() {
-        try {
-          return localStorage.getItem(TOKEN_KEY) || "";
-        } catch (e) {
-          return "";
-        }
+        return konsolServer.getToken();
       }
 
       function setToken(token) {
-        try {
-          if (token) localStorage.setItem(TOKEN_KEY, token);
-          else localStorage.removeItem(TOKEN_KEY);
-        } catch (e) { /* localStorage blocked */ }
+        konsolServer.setToken(token);
       }
 
       function authHeaders(extra) {
@@ -494,18 +511,22 @@
         var opts = options || {};
         // With the add-in's token, send no cookie: a Desk session opened in the
         // same browser carries a CSRF token, and Frappe refuses a POST without it.
+        // Another site never gets a cookie: it sends no Allow-Credentials.
         var token = getToken();
-        opts.credentials = opts.credentials || (token ? "omit" : "include");
+        var server = konsolServer.current();
+        opts.credentials = opts.credentials || (token || konsolServer.isCrossOrigin() ? "omit" : "include");
         opts.cache = "no-store";
         opts.headers = authHeaders(opts.headers || {});
-        return fetch(API + path, opts).then(function (res) {
+        return fetch(konsolServer.url(path), opts).then(null, function () {
+          throw new Error(konsolServer.unreachableMessage());
+        }).then(function (res) {
           // A refused call may mean the token expired (8 h), or only that this
           // user may not see the data. Ask the server which; sign out only if
           // the token no longer names a user.
           if (token && (res.status === 401 || res.status === 403) &&
               path.indexOf("excel_addin_whoami") < 0) {
             whoami().then(function (user) {
-              if (!user && getToken() === token) {
+              if (!user && konsolServer.current() === server && getToken() === token) {
                 setToken("");
                 showLogin();
                 appendLog("err", "Your add-in sign-in expired. Sign in again.");
@@ -572,8 +593,10 @@
               return user;
             });
           })
-          .catch(function () {
+          .catch(function (err) {
             setDiag(undefined, "error");
+            // Another site that refuses this pane's origin: say how to fix it.
+            if (konsolServer.isCrossOrigin()) appendLog("err", err && err.message || String(err));
             return null;
           });
       }
@@ -590,21 +613,29 @@
         }
         loginError.hidden = true;
         loginBtn.disabled = true;
-        fetch(API + "/api/method/konsol.api.excel_addin_auth", {
+        var server = konsolServer.current();
+        fetch(konsolServer.url("/api/method/konsol.api.excel_addin_auth"), {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
           credentials: "omit",
           cache: "no-store",
           body: JSON.stringify({ usr: email, pwd: password })
+        }).then(null, function () {
+          throw new Error(konsolServer.unreachableMessage());
         }).then(function (res) {
           return res.json().then(function (data) {
             if (!res.ok) throw new Error(parseApiError(res, data));
             var msg = data.message || {};
             if (!msg.token || !msg.user) throw new Error("Login response missing token");
+            // The token is the server's that answered, even if the user
+            // switched server while the sign-in was in flight.
+            if (konsolServer.current() !== server) {
+              throw new Error("The server changed during sign-in; sign in to " + konsolServer.current() + " again.");
+            }
             setToken(msg.token);
             showLoggedIn(msg.user);
             setDiag(undefined, msg.user);
-            appendLog("ok", "Signed in as " + msg.user + ".");
+            appendLog("ok", "Signed in to " + server + " as " + msg.user + ".");
             logDiagSummary("login");
           });
         }).catch(function (err) {
@@ -851,7 +882,7 @@
         var token = getToken();
         setToken("");
         var req = token
-          ? fetch(API + "/api/method/konsol.api.excel_addin_logout", {
+          ? fetch(konsolServer.url("/api/method/konsol.api.excel_addin_logout"), {
               method: "POST",
               headers: { "Content-Type": "application/json", "X-Konsolidat-Token": token },
               credentials: "omit",
@@ -866,6 +897,70 @@
         });
       }
 
+      // -- server (konsol#605 B) --------------------------------------------
+
+      function showServer() {
+        var server = konsolServer.current();
+        var own = !konsolServer.isCrossOrigin();
+        document.getElementById("server-summary").textContent =
+          "Server: " + server.replace(/^https?:\/\//, "") + (own ? "" : " (another site)");
+        document.getElementById("server-hint").textContent = (own
+          ? "This workbook reads " + server + ", the site this add-in was loaded from. To use another site, enter its address."
+          : "This workbook reads " + server + ". This add-in was loaded from " + konsolServer.paneOrigin() +
+            "; " + server + " must list that origin in Close Settings → Excel Add-in Origins. Clear the field to go back.") +
+          " The choice is kept in this workbook (saved with the file); other open workbooks keep their own.";
+        serverInput.value = own ? "" : server;
+        serverInput.placeholder = konsolServer.paneOrigin();
+      }
+
+      function chooseServer() {
+        var before = konsolServer.current();
+        var btn = document.getElementById("server-btn");
+        btn.disabled = true;
+        konsolServer.choose(serverInput.value).then(function (chosen) {
+          btn.disabled = false;
+          if (chosen.error) {
+            serverError.textContent = chosen.error;
+            serverError.hidden = false;
+            appendLog("err", "Server: " + chosen.error);
+            return;
+          }
+          serverError.hidden = true;
+          if (chosen.unsaved) appendLog("err", "Server: " + chosen.unsaved);
+          showServer();
+          if (konsolServer.current() === before) return;
+          appendLog("info", "Server: this workbook now reads " + konsolServer.current() + ".");
+          // Each server has its own token: show what this one says.
+          showLogin();
+          setDiag(undefined, "…");
+          whoami().then(function (user) {
+            if (user) showLoggedIn(user);
+          });
+        });
+      }
+
+      // -- Refresh buttons (konsol#605 C): the ribbon's own commands --------
+
+      function setRefreshButtons(disabled) {
+        document.getElementById("refresh-sheet-btn").disabled = disabled;
+        document.getElementById("refresh-workbook-btn").disabled = disabled;
+      }
+
+      function runRibbonCommand(name) {
+        if (!window.konsolRibbon) {
+          appendLog("err", "ribbon.js is not loaded, so Refresh cannot run. Reload the add-in.");
+          return;
+        }
+        setRefreshButtons(true);
+        try {
+          // The ribbon greys its button until event.completed(); so do these.
+          window.konsolRibbon[name]({ completed: function () { setRefreshButtons(false); } });
+        } catch (err) {
+          setRefreshButtons(false);
+          appendLog("err", name + " failed: " + (err && err.message || String(err)));
+        }
+      }
+
       function start() {
         if (started) return;
         started = true;
@@ -875,12 +970,34 @@
           Office.addin.setStartupBehavior(Office.StartupBehavior.load);
         }
         setDiag("pending", "…");
+        if (!officeReady && typeof Office !== "undefined" && Office.onReady) {
+          // Started by the 5 s fallback before Office was ready: the workbook's
+          // server is not readable yet. Draw again when it is.
+          Office.onReady(function () {
+            showServer();
+            whoami().then(function (user) {
+              if (user) showLoggedIn(user);
+            });
+          });
+        }
+        showServer();
+        if (konsolServer.notice()) appendLog("err", konsolServer.notice());
         whoami().then(function (user) {
           if (user) showLoggedIn(user);
         });
         setTimeout(probeFormulaNames, 1000);
         loginBtn.addEventListener("click", login);
         logoutBtn.addEventListener("click", logout);
+        document.getElementById("server-btn").addEventListener("click", chooseServer);
+        serverInput.addEventListener("keydown", function (e) {
+          if (e.key === "Enter") chooseServer();
+        });
+        document.getElementById("refresh-sheet-btn").addEventListener("click", function () {
+          runRibbonCommand("refreshSheet");
+        });
+        document.getElementById("refresh-workbook-btn").addEventListener("click", function () {
+          runRibbonCommand("refreshWorkbook");
+        });
         document.getElementById("apply-report-btn").addEventListener("click", applyReport);
         document.getElementById("snapshot-btn").addEventListener("click", snapshotReport);
         document.getElementById("template-id").addEventListener("change", syncReportTemplateUi);
@@ -893,7 +1010,7 @@
       }
 
       if (typeof Office !== "undefined" && Office.onReady) {
-        Office.onReady(start);
+        Office.onReady(function () { officeReady = true; start(); });
       } else {
         start();
       }

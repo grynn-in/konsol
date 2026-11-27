@@ -33,8 +33,9 @@ def _body(src, head):
 
 def test_pane_api_omits_cookies_when_it_has_a_token():
     body = _body(_read("index.html"), "function api(")
-    assert re.search(r'credentials\s*=\s*opts\.credentials\s*\|\|\s*\(token\s*\?\s*"omit"\s*:\s*"include"\)', body), \
-        "api() must omit the browser's cookies when the add-in has a token"
+    # konsol#605: and always to another site, which sends no Allow-Credentials.
+    assert re.search(r'credentials\s*=\s*opts\.credentials\s*\|\|\s*\(token\s*\|\|\s*konsolServer\.isCrossOrigin\(\)\s*\?\s*"omit"\s*:\s*"include"\)', body), \
+        "api() must omit the browser's cookies when the add-in has a token or calls another site"
 
 
 def test_custom_functions_omit_cookies_when_they_have_a_token():
@@ -42,7 +43,7 @@ def test_custom_functions_omit_cookies_when_they_have_a_token():
     start = src.index("function postJson(")
     body = src[start:src.index("\nfunction ", start + 1)]
     assert 'credentials: "include"' not in body, "postJson sends the Desk cookie, so a Desk session's CSRF check refuses it"
-    assert re.search(r'credentials:\s*hasToken\(\)\s*\?\s*"omit"\s*:\s*"include"', body), body
+    assert re.search(r'credentials:\s*hasToken\(\)\s*\|\|\s*server\(\)\.isCrossOrigin\(\)\s*\?\s*"omit"\s*:\s*"include"', body), body
 
 
 def test_errors_name_frappes_message_not_a_bare_status():

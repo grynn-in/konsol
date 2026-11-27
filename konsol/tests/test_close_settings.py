@@ -163,7 +163,9 @@ _GRANTS = ("read", "write", "create", "delete", "submit", "cancel", "amend")
 
 
 def _perm_rows():
-    return _doc()["permissions"]
+    """The permlevel-0 rows. Level 1 guards Excel Add-in Origins only
+    (konsol#618 review); test_excel_addin_cors.py pins those rows."""
+    return [r for r in _doc()["permissions"] if not r.get("permlevel")]
 
 
 def test_permission_rows_are_exactly_the_decided_roles():
@@ -836,6 +838,11 @@ _TAB_LAYOUT = [
     ("deadlines_tab", "Deadlines", [
         "deadline_rules_section", "deadline_rules", "holidays_section", "holidays_note"]),
     ("appearance_tab", "Appearance", ["brand_section", "brand_colour"]),
+    # konsol#605 (decided by Deepak Pai, 27 Nov 2026): the add-in download
+    # and the origins allowed to call the add-in endpoints from another site.
+    ("excel_addin_tab", "Excel Add-in", [
+        "excel_addin_install_section", "excel_addin_download",
+        "excel_addin_access_section", "excel_addin_origins"]),
 ]
 
 
@@ -930,3 +937,43 @@ def test_several_problems_are_joined_with_br():
     expected = _dm.rule_problems(rules)
     assert len(expected) == 2, expected
     assert _refusal(deadline_rules=rules) == "<br>".join(expected)
+
+
+# ---------------------------------------------------------------------------
+# konsol#605: Excel Add-in Origins
+# ---------------------------------------------------------------------------
+
+def _validate_origins(value):
+    saved_throw = _m.frappe.throw
+
+    def throw(msg, *a, **k):
+        raise _Refused(msg)
+
+    _m.frappe.throw = throw
+    try:
+        doc = _m.CloseSettings()
+        doc.excel_addin_origins = value
+        doc.validate_excel_addin_origins()
+        return doc.excel_addin_origins
+    finally:
+        _m.frappe.throw = saved_throw
+
+
+def test_excel_addin_origins_are_stored_normalised():
+    assert _validate_origins(" https://PANE.example/ \n\nhttps://b.example:8443") == (
+        "https://pane.example\nhttps://b.example:8443")
+
+
+def test_excel_addin_origins_blank_stays_blank():
+    assert _validate_origins("") == ""
+    assert _validate_origins(None) is None
+
+
+def test_excel_addin_origins_refuse_a_wildcard_or_a_path_by_line():
+    for value, needle in (("*", "Line 1"), ("https://a.example\nhttps://b.example/x", "Line 2")):
+        try:
+            _validate_origins(value)
+        except _Refused as e:
+            assert needle in str(e), str(e)
+        else:
+            assert False, "expected a refusal for %r" % value
