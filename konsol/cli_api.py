@@ -14,6 +14,13 @@ Connector test_extract_connection, test_writeback_connection,
 provision_airbyte), which frappectl and the Desk call directly. The 23
 wrappers that duplicated them were removed; konsol-cli, their only caller, is
 frozen. Writes are POST-only: a GET request is rolled back at the end.
+
+The configuration bundle is gated to EPM Admin (konsol#472). Export and diff
+build their rows with `frappe.get_doc`, which checks no permission, and
+Dimension, Measure and Dataset grant read to System Manager and EPM Admin
+only; so both reads, like the writes, open with `check_epm_admin()`. The
+konsol CLI and MCP server call them with an API key of an admin user
+(`test_config_export_access.py` pins the gate).
 """
 import json
 
@@ -26,6 +33,7 @@ from konsol.config_service import (
     export_config,
     get_schema_status,
 )
+from konsol.schema_lifecycle import check_epm_admin
 
 
 def _parse_spec(spec):
@@ -48,13 +56,24 @@ def get_schema_status_api():
 
 @frappe.whitelist()
 def export_config_api(status=None):
-    """Export dimensions, measures, datasets and connectors as a portable bundle."""
+    """Export dimensions, measures, datasets and connectors as a portable bundle.
+
+    EPM Admin (or System Manager) only: the bundle holds every definition on
+    the site, which those roles alone may read in the Desk (konsol#472).
+    """
+    check_epm_admin()
     return export_config(status=status)
 
 
 @frappe.whitelist()
 def diff_config_api(spec, status=None):
-    """Diff a config bundle against the live site."""
+    """Diff a config bundle against the live site.
+
+    EPM Admin (or System Manager) only: the diff reports the live definitions
+    row by row, so it reads what export_config_api reads (konsol#472). The
+    gate comes before the spec is parsed.
+    """
+    check_epm_admin()
     return diff_config(_parse_spec(spec), status=status)
 
 
