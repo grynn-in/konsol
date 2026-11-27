@@ -259,7 +259,10 @@ def test_pane_buttons_call_the_ribbon_commands():
     body = body[:body.index("\n      function ", 1)]
     assert "window.konsolRibbon[name]" in body
     assert "completed:" in body, "the buttons stay greyed until the command calls event.completed()"
-    assert ".disabled = true" in body and ".disabled = false" in body
+    assert "setRefreshButtons(true)" in body and "setRefreshButtons(false)" in body
+    grey = src[src.index("function setRefreshButtons("):]
+    grey = grey[:grey.index("\n      function ", 1)]
+    assert grey.count(".disabled = disabled") == 2, grey
 
 
 def test_pane_buttons_have_the_ribbon_labels():

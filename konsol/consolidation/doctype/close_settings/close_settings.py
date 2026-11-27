@@ -85,6 +85,7 @@ class CloseSettings(Document):
         self.validate_commentary_threshold()
         self.validate_deadlines()
         self.validate_brand_colour()
+        self.validate_excel_addin_origins()
 
     def on_update(self):
         # konsol#415 review: the Desk's palette rides in the per-user boot
@@ -105,6 +106,20 @@ class CloseSettings(Document):
             self.brand_colour = brand_model.validate(self.brand_colour)
         except ValueError as e:
             frappe.throw(str(e), title="Brand Colour")
+
+    def validate_excel_addin_origins(self):
+        """konsol#605 (decided by Deepak Pai, 27 Nov 2026): the origins whose
+        Excel add-in may call this site, one exact https origin per line.
+        Stored normalised; a wildcard, a path or a repeat is refused by line."""
+        value = getattr(self, "excel_addin_origins", None)
+        if not value:
+            return
+        from konsol import excel_addin_model
+
+        try:
+            self.excel_addin_origins = "\n".join(excel_addin_model.parse_origin_list(value))
+        except ValueError as e:
+            frappe.throw(str(e), title="Excel Add-in Origins")
 
     def validate_first_close_period(self):
         """konsol#303: the first period konsol closes. No default — a blank

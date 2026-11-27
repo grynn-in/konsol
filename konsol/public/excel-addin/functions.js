@@ -1,37 +1,44 @@
-/* global CustomFunctions, fetch, Office, Excel */
+/* global CustomFunctions, fetch, Office, Excel, konsolServer */
 
 // ============================================================
 // Open EPM — Excel Custom Functions  (namespace "K")
 // ============================================================
 //
-// Served same-origin by Frappe at /assets/konsol/excel-addin/.
+// Served by Frappe at /assets/konsol/excel-addin/.
 // Loaded synchronously from index.html (shared runtime) — same pattern
 // as Microsoft's excel-shared-runtime-scenario sample.
+//
+// Every URL and token comes from server.js (konsolServer, konsol#605):
+// relative paths to the pane's own origin by default, or the chosen site's
+// address with that site's own token.
 // ============================================================
 
 var MAX_BATCH = 2000;
 
 function authHeaders(extra) {
   var headers = extra || {};
-  try {
-    var token = localStorage.getItem("konsol_token");
-    if (token) headers["X-Konsolidat-Token"] = token;
-  } catch (e) { /* localStorage blocked */ }
+  var token = konsolServer.getToken();
+  if (token) headers["X-Konsolidat-Token"] = token;
   return headers;
 }
 
 function hasToken() {
-  try { return !!localStorage.getItem("konsol_token"); } catch (e) { return false; }
+  return !!konsolServer.getToken();
 }
 
 function postJson(path, body) {
   // With the add-in's own token, send no cookie: a Desk session in the same
   // browser carries a CSRF token, and Frappe refuses a POST without it (400).
-  return fetch(path, {
+  // Another site never gets a cookie either: it sends no Allow-Credentials.
+  return fetch(konsolServer.url(path), {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    credentials: hasToken() ? "omit" : "include",
+    credentials: hasToken() || konsolServer.isCrossOrigin() ? "omit" : "include",
     body: JSON.stringify(body)
+  }).then(null, function () {
+    // The request got no answer: the site is down, or refused this add-in's
+    // origin at the CORS check. Name the fix.
+    throw new CustomFunctions.Error(CustomFunctions.ErrorCode.notAvailable, konsolServer.unreachableMessage());
   }).then(function (res) {
     if (res.status === 401 || res.status === 403) {
       // A 403 is also an access denial (a budget write the user may not
