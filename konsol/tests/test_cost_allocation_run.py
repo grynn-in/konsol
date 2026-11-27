@@ -2780,24 +2780,37 @@ def test_f8_a_drivers_accounts_or_sign_changed_since_compute_refuses_before_quer
     assert w.derived_calls == []
 
 
-def test_da_approval_compares_the_declared_accounts_not_the_expanded_ones():
-    # 2b-1 DA: the snapshot holds one row per expanded account; the driver
-    # holds declared accounts. The check compares declared_account, so an
-    # unchanged driver passes (above) and a driver that now also declares a
-    # leaf the snapshot only reached by expansion (6010) refuses: the declared
-    # set changed, though the expanded set did not.
+def test_da_approval_compares_the_accounts_as_compute_expands_them():
+    # Review of #403 F1: approval expands the driver's accounts exactly as
+    # Compute does and compares (main_account, declared_account, sign). A
+    # driver declaring a group and one of its leaves, group first, passes: the
+    # leaf is covered by the group at Compute and again at approval.
     w = _derived_world()
-    w.get_all_data["Cost Allocation Driver Account"].append({"parent": "ZZ Rev", "main_account": "6010"})
-    msg = _refused(_derived_run(_k8(w)).before_submit)
-    assert "ZZ Rev" in msg and "accounts" in msg.lower(), msg
-    assert w.derived_calls == []
-    # and a snapshot written before 2b-1 DA (no declared_account) does not pass
+    w.get_all_data["Cost Allocation Driver Account"] = [
+        {"parent": "ZZ Rev", "main_account": "6000"}, {"parent": "ZZ Rev", "main_account": "6010"},
+        {"parent": "ZZ Rev", "main_account": "7000"}]
+    _derived_run(_k8(w)).before_submit()
+    assert len(w.derived_calls) == 1
+    # a snapshot written before 2b-1 DA (no declared_account) does not pass
     # as if its expanded rows were declarations: it must be recomputed
     w = _derived_world()
     old = [_Row(driver="ZZ Rev", main_account="6000", value_sign="Reversed"),
            _Row(driver="ZZ Rev", main_account="7000", value_sign="Reversed")]
     msg = _refused(_derived_run(_k8(w), driver_accounts=old).before_submit)
     assert "ZZ Rev" in msg and "recompute" in msg.lower(), msg
+
+
+def test_da_a_new_leaf_under_a_declared_group_since_compute_refuses():
+    # Review of #403 F2: the account tree changed after Compute (6030 added
+    # under 6000). The snapshot no longer matches the expansion the query now
+    # reads, so approval refuses before querying.
+    w = _derived_world()
+    m = _k8(w)
+    tree = {**_TREE, "6000": ["6000", "6010", "6020", "6030"]}
+    m._descendants = lambda account: list(tree.get(account, [account]))
+    msg = _refused(_derived_run(m).before_submit)
+    assert "ZZ Rev" in msg and "accounts" in msg.lower() and "recompute" in msg.lower(), msg
+    assert w.derived_calls == []
 
 
 def test_f8_clickhouse_down_at_submit_refuses_rather_than_passing():
