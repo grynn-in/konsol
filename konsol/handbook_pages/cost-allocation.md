@@ -11,11 +11,25 @@ Everything lives in **Planning → Allocation**.
 ## What you declare
 
 - **Allocation Dimension** on the rule set: the dimension that holds your departments, for example Cost Center. It must be Published and In Budget.
-- **Driver**: the basis of the split, for example Headcount or IT Tickets. A driver names its dimension and, optionally, a unit.
-- **Statistic**: the driver's values for one entity, scenario and fiscal year, one value per period and department. Upload them from a CSV file (`fiscal_period,member,value`) with **Load from File**. A budget run needs a budget-scenario statistic, even when the values equal actuals. Approve the statistic before you use it.
+- **Driver**: the basis of the split, for example Headcount or IT Tickets. A driver names its dimension, optionally a unit, and its **Source**: where its values come from (see the next section).
+- **Statistic**: the driver's values for one entity, scenario and fiscal year, one value per period and department. Upload them from a CSV file (`fiscal_period,member,value`) with **Load from File**. A budget run needs a budget-scenario statistic, even when the values equal actuals. Approve the statistic before you use it. Only a driver whose Source is Uploaded Statistic takes statistics.
 - **Rule Set**: the method, the cost pool accounts, the steps (who sends, by which driver) and each step's receivers. Two choices on the rule set decide the treatment:
   - **Receiver Account**: *Sender's Own Accounts* keeps the cost on the account it was booked on (rent stays rent). *Declared Allocation Account* moves received cost onto one account you name, for example "Allocated Shared Cost".
   - **Amounts After Approval**: *Follow Latest Data* recomputes the amounts whenever the trial balance or budget changes. *Freeze at Approval* keeps the amounts of the first build after approval. If the data changes later, a warning reports the difference; cancel and re-approve the run to refresh it.
+
+## Where a driver's values come from
+
+Every driver has a **Source**. It decides where **Compute Weights** finds the values it turns into shares.
+
+- **Uploaded Statistic**: a statistic per entity, scenario and fiscal year, loaded from a CSV file, as described above. Use it for values that live outside the ledger and change with the scenario, for example tickets or square metres.
+- **Fixed Weights**: shares you declare on the driver, one row per department with **Effective From** and **Effective To** dates. They apply to every scenario: a budget run and an actual run read the same rows. A window must cover the whole period. If a department's share changes inside a period, Compute refuses and names the department, so start a new window on the first day of a period. Leave Effective To blank for a share that still applies.
+- **Account Set**: values read from the trial balance when you compute: the run's entity, scenario, fiscal year and period, on the driver's accounts and their descendants. **Value Sign** says how to read them: *As Booked*, or *Reversed* to turn a credit balance positive, which you need for revenue. The driver's dimension must be In Budget, because the scenario trial balance carries only budget dimensions. A department with no trial balance rows is missing and refuses the run. A zero is a real zero: the department receives nothing. A negative value after the sign refuses the run; pick the other sign or a different account set.
+
+Whatever the source, the weights are fixed when the run is computed and stored on the run, with the window or the accounts they came from. Approval checks them again: if the fixed weights or the trial balance changed in between, approval refuses and asks you to compute again. After approval the run keeps its weights. If the trial balance moves later, the warehouse reports a warning that names the run; it does not change the approved run. **Amounts After Approval** still governs the pool amounts, not the weights.
+
+Switching a driver's Source asks before it removes the rows entered for the old source. A driver whose Source is not Uploaded Statistic refuses a statistic.
+
+In the worked example below, Headcount could be a Fixed Weights driver: HR 2, Sales 5, Ops 3, each Effective From the first day of the fiscal year. Compute gives the same shares in every period and scenario until you add a new window. If IT's cost should instead follow each division's revenue, make a driver with Source Account Set, the revenue accounts, and Value Sign Reversed: a department that booked 500 of revenue counts 500, not −500.
 
 ## Methods
 
@@ -108,7 +122,7 @@ Sales receives 435 from IT and 450 from HR, so 885. Ops receives 290 from IT and
 A run covers one rule set, scenario and period. **Compute Weights** works only in Draft. Approving the run checks that:
 
 - the weights were computed for this scenario and period;
-- the rule set and the statistics have not changed since;
+- the rule set and the driver values (statistics, fixed weights, or the trial balance an Account Set driver reads) have not changed since;
 - no other approved run already relieves the same sender.
 
 A closed period blocks approving or cancelling a run, and cancelling a statistic, only for actual scenarios: budget and forecast allocation stay open. A statistic that an approved run uses cannot be cancelled. Cancel the run first.
