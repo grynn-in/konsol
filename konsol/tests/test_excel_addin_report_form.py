@@ -173,7 +173,8 @@ def test_each_param_type_gets_its_widget():
     assert f["period"]["tag"] == "select"
     assert f["budget"]["tag"] == "select"
     assert f["hierarchy"]["tag"] == "select" and f["hierarchy"]["options"] == ["", "MGMT"]
-    assert f["scope"]["tag"] == "select"
+    # The scope's default kind is entity: 30 of them, so a searchable input.
+    assert f["scope"]["tag"] == "input" and f["scope"]["list"], f["scope"]
     assert f["scope"]["kinds"]["options"] == ["entity", "group", "hierarchy_node"], f["scope"]
     assert f["accounts"]["tag"] == "select" and f["accounts"]["multiple"], f["accounts"]
     assert f["accounts"]["options"] == ["4000", "5000"]
