@@ -307,6 +307,11 @@ def _resolve_sources(run, rs, steps):
         elif info["source"] not in model.SOURCES:
             errors.append(f"Driver {name} has source {info['source']!r}, "
                           f"not one of {', '.join(model.SOURCES)}.")
+        elif info["dimension"] != rs.allocation_dimension:
+            # The rule set refuses this at its own save (model.validate_rule_set);
+            # a driver edited since must not slip through Compute (rv1 F3).
+            errors.append(f"Driver {name} is on dimension {info['dimension']}, not "
+                          f"{rs.allocation_dimension} (the rule set's allocation dimension).")
         else:
             source_of[name] = info["source"]
 
@@ -370,9 +375,22 @@ def _resolve_sources(run, rs, steps):
                          for m in st.receivers]
         except model.CostAllocationError as exc:
             errors.extend(f"Step {st.step} (driver {st.driver}): {e}" for e in exc.errors)
+    errors.extend(_too_large(r) for r in rows if abs(float(r["driver_value"] or 0)) >= DRIVER_VALUE_BOUND)
     if errors:
         frappe.throw(_PREFIX + "<br>".join(errors))
     return rows, driver_accounts
+
+
+# Run Weight.driver_value is a Float: decimal(21,9), 12 integer digits. Every
+# source's value lands in that column, so the bound applies to all of them at
+# Compute, before anything is saved (rv1 F2).
+DRIVER_VALUE_BOUND = 10 ** 12
+
+
+def _too_large(row):
+    return (f"Driver {row['driver']}, {row['receiver_member']}: value {_text(row['driver_value'])} "
+            "is too large for a driver value (12 integer digits at most); use a smaller unit, "
+            "e.g. thousands, by scaling the accounts' meaning, or a Fixed Weights driver.")
 
 
 def _fixed_rows(table):
@@ -622,6 +640,11 @@ class CostAllocationRun(Document):
                 stale.append(f"driver {name} no longer exists")
             elif was != [now["source"]]:
                 stale.append(f"driver {name}: source changed from {', '.join(was)} to {now['source']}")
+            elif now["dimension"] != self.allocation_dimension:
+                # rv1 F3: the re-query would read another breakdown than the run
+                # allocates on; the rule set's rule covers every source.
+                stale.append(f"driver {name}: dimension is now {now['dimension']}, "
+                             f"the run allocates on {self.allocation_dimension}")
             elif now["source"] == model.FIXED:
                 fixed.append(name)
             elif now["source"] == model.ACCOUNT_SET:
@@ -655,7 +678,7 @@ class CostAllocationRun(Document):
                 continue
             for w in by_driver[name]:
                 row, stored_from = windows[w["receiver_member"]], _date(w.get("effective_from"))
-                if _nine(row["value"]) != _nine(w["driver_value"]) or row["effective_from"] != stored_from:
+                if _stored(row["value"]) != _nine(w["driver_value"]) or row["effective_from"] != stored_from:
                     stale.append(
                         f"driver {name}, {w['receiver_member']}: stored {_text(w['driver_value'])} "
                         f"from {stored_from}, now {_text(row['value'])} from {row['effective_from']}")
@@ -663,10 +686,13 @@ class CostAllocationRun(Document):
 
     def _stale_derived_rows(self, name, now, rows):
         """The driver's declared accounts and sign against the run's snapshot,
-        then the derived query again; the differences from the stored rows."""
-        accounts = frappe.get_all("Cost Allocation Driver Account", filters={"parent": name},
-                                  pluck="main_account", parent_doctype="Cost Allocation Driver",
-                                  order_by="idx", limit_page_length=0)
+        then the derived query again; the differences from the stored rows.
+        The accounts are read FOR UPDATE like the fixed rows: under REPEATABLE
+        READ a plain read may see a snapshot older than the header's (rv1 F1)."""
+        accounts = frappe.db.sql(
+            "SELECT main_account FROM `tabCost Allocation Driver Account` "
+            "WHERE parent = %(driver)s AND parenttype = 'Cost Allocation Driver' "
+            "ORDER BY idx FOR UPDATE", {"driver": name}, pluck=True)
         snapshot = {(r["main_account"], r["value_sign"])
                     for r in _rows(self.get("driver_accounts")) if r["driver"] == name}
         if {(a, now["value_sign"]) for a in accounts} != snapshot:
@@ -689,7 +715,7 @@ class CostAllocationRun(Document):
             return [f"driver {name}: " + " ".join(exc.errors)]
         return [f"driver {name}, {w['receiver_member']}: stored {_text(w['driver_value'])}, "
                 f"now {_text(vals[w['receiver_member']])}"
-                for w in rows if _nine(vals[w["receiver_member"]]) != _nine(w["driver_value"])]
+                for w in rows if _stored(vals[w["receiver_member"]]) != _nine(w["driver_value"])]
 
     def _refuse_unbuildable_coefficients(self, weights):
         """Build the coefficient rows now, so an invalid run is refused at submit
@@ -1125,6 +1151,14 @@ def _nine(value):
     if isinstance(value, Fraction):
         value = Decimal(value.numerator) / Decimal(value.denominator)
     return Decimal(str(value or 0)).quantize(Decimal("0.000000001"))
+
+
+def _stored(value):
+    """A current value as the Float column would store it: through a double,
+    then 9 places. The approval check compares what WAS stored with what WOULD
+    be stored now; near 1e12 a double cannot hold 4 places, so comparing the
+    exact Fraction with the stored float refused every unchanged run (rv1 F2)."""
+    return _nine(float(value or 0))
 
 
 def _text(value):
