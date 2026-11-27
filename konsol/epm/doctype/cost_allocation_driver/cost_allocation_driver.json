@@ -80,7 +80,8 @@
     {
       "fieldname": "values_tab",
       "fieldtype": "Tab Break",
-      "label": "Values"
+      "label": "Values",
+      "depends_on": "eval:doc.source=='Fixed Weights' || doc.source=='Account Set'"
     },
     {
       "fieldname": "fixed_weights_section",

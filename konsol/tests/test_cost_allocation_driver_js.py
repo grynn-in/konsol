@@ -48,9 +48,13 @@ def test_js_has_a_source_change_handler():
 
 
 def test_source_handler_names_every_field_the_server_refuses_for_another_source():
-    body = _source_handler()
+    content = _js()
     for fieldname in HIDDEN_FIELDS:
-        assert fieldname in body, fieldname
+        assert re.search(r'[."]%s\b' % fieldname, content), fieldname
+    # the handler decides from the loss list and clears through one helper
+    body = _source_handler()
+    assert "konsol_ca_driver_losses(frm, next)" in body
+    assert "konsol_ca_driver_clear_hidden(frm, next)" in body
 
 
 def test_source_handler_asks_before_it_clears():
@@ -86,8 +90,11 @@ def test_source_handler_does_not_ask_when_nothing_is_lost():
     """Switching with empty tables and no value sign asks nothing: a confirm
     with nothing to lose is noise. The handler must test for data first."""
     body = _source_handler()
-    assert re.search(r"\.length", body)
-    assert "value_sign" in body
+    assert re.search(r"if \(!losses\.length\)", body)
+    content = _js()
+    assert re.search(r"\(frm\.doc\.fixed_weights \|\| \[\]\)\.length", content)
+    assert re.search(r"\(frm\.doc\.accounts \|\| \[\]\)\.length", content)
+    assert "frm.doc.value_sign" in content
 
 
 def test_js_uses_no_browser_dialogs():
