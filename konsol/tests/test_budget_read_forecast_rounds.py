@@ -39,6 +39,9 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCENARIOS = [("ZZ_ACT", "actual"), ("ZZ_BUD", "budget"), ("ZZ_FC", "forecast")]
 #: Submitted Current Forecasts as (scenario_id, fiscal_year).
 DECLARED = [("ZZ_FC", 2026)]
+#: Budget Cycles as (name, scenario_id, fiscal_year, docstatus): ZZ_BUD's
+#: approved Cycle, the one budget scenario of FY2026 (konsol#563).
+CYCLES = [("ZZ-BUD-2026", "ZZ_BUD", 2026, 1)]
 
 #: Signed amounts (credit negative) per scenario and cycle, one account.
 _SPREAD = [
@@ -60,10 +63,10 @@ TABLES = {
 }
 
 
-def _fact(fact_name, scenario_key, table, has_layer=1):
+def _fact(fact_name, scenario_key, table, has_layer=1, has_scenario_id=1):
     return types.SimpleNamespace(
         fact_name=fact_name, scenario_key=scenario_key, clickhouse_table=table,
-        has_scenario_id=1, has_layer=has_layer,
+        has_scenario_id=has_scenario_id, has_layer=has_layer,
         reroute_table=None, reroute_column=None, reroute_measure=None,
     )
 
@@ -79,6 +82,9 @@ FACTS = [
     _fact("zz_budget", "zz_budget", "epm_gold.gold_spread_budget"),
     _fact("zz_forecast", "zz_forecast", "epm_gold.gold_forecast_current"),
     _fact("zz_le", "zz_le", "epm_gold.gold_latest_estimate_current", has_layer=0),
+    # A site Dataset over the budget fact that declares no scenario column.
+    _fact("zz_budget_noscn", "zz_budget_noscn", "epm_gold.gold_spread_budget",
+          has_scenario_id=0),
 ]
 
 
@@ -100,7 +106,15 @@ class _Throw(Exception):
     pass
 
 
-def _frappe(scenarios, declared, lookups):
+def _matches(value, condition):
+    """A frappe filter value: a plain value, ["in", [...]] or ["<", n]."""
+    if isinstance(condition, list):
+        op, arg = condition
+        return value in arg if op == "in" else value < arg
+    return value == condition
+
+
+def _frappe(scenarios, declared, lookups, cycles=CYCLES):
     def get_all(doctype, filters=None, pluck=None, fields=None, **kw):
         filters = dict(filters or {})
         lookups.append((doctype, filters))
@@ -115,8 +129,13 @@ def _frappe(scenarios, declared, lookups):
             return [{"scenario_id": s, "fiscal_year": y, "as_of_date": "2025-12-31"}
                     for s, y in declared]
         if doctype == "Budget Cycle":
-            # ZZ_BUD's Cycle: the one budget scenario of FY2026 (konsol#563)
-            return [{"scenario_id": "ZZ_BUD", "fiscal_year": 2026}]
+            found = []
+            for name, sid, year, docstatus in cycles:
+                record = {"name": name, "scenario_id": sid, "fiscal_year": year,
+                          "docstatus": docstatus}
+                if all(_matches(record[k], v) for k, v in filters.items()):
+                    found.append({k: record[k] for k in ("name", "scenario_id", "fiscal_year")})
+            return found
         raise AssertionError(doctype)
 
     fake = types.ModuleType("frappe")
@@ -161,12 +180,12 @@ def _restore(saved):
             sys.modules[k] = mod
 
 
-def flat(rows, scenarios=SCENARIOS, declared=DECLARED):
+def flat(rows, scenarios=SCENARIOS, declared=DECLARED, cycles=CYCLES):
     """api._batch_query_clickhouse over ``rows`` (dicts overriding a default
     request of the budget_input Dataset, FY2026 P1, entity ZZ01, account
     ZZ4000). Returns (result, [sql, ...], lookups)."""
     queries, lookups = [], []
-    fake, utils = _frappe(scenarios, declared, lookups)
+    fake, utils = _frappe(scenarios, declared, lookups, cycles)
     stubs = {
         "frappe": fake, "frappe.utils": utils,
         "konsol.clickhouse": types.SimpleNamespace(
@@ -206,12 +225,12 @@ def flat(rows, scenarios=SCENARIOS, declared=DECLARED):
     return result, queries, lookups
 
 
-def hierarchy(rows, scenarios=SCENARIOS, declared=DECLARED):
+def hierarchy(rows, scenarios=SCENARIOS, declared=DECLARED, cycles=CYCLES):
     """hierarchy_query.batch_query_hierarchy over ``rows`` (dicts overriding a
     default `budget` request at node ZZ_N). Returns (result, [sql, ...],
     lookups)."""
     queries, lookups = [], []
-    fake, _ = _frappe(scenarios, declared, lookups)
+    fake, _ = _frappe(scenarios, declared, lookups, cycles)
     stubs = {
         "frappe": fake,
         "konsol.clickhouse": types.SimpleNamespace(get_connection=lambda: {}),
@@ -292,22 +311,62 @@ def test_hierarchy_budget_read_without_scenario_excludes_forecasts():
     assert not result.get("errors")
     assert result["values"] == [-50.0]
     (sql,) = queries
-    assert "AND scenario_id IN (" in sql
+    # the year's one budget scenario, bound by name, as the flat read does
+    # (konsol#563, review M1)
+    assert "AND scenario_id = {sid:String}" in sql
 
 
 def test_budget_read_without_scenario_and_only_forecasts_is_refused():
+    """One rule on both paths: the year's one active budget scenario, none
+    refused the same way (konsol#563, review M1)."""
     only = [("ZZ_FC", "forecast")]
-    message = ("Every Scenario is a forecast, so there is no budget to read. "
-               "Read a forecast with the 'forecast' scenario or 'latest_estimate'.")
-    result, queries, _ = hierarchy([{}], scenarios=only)
+    for run in (flat, hierarchy):
+        result, queries, _ = run([{}], scenarios=only)
+        assert queries == [], run
+        assert result["errors"] == [
+            "No active budget scenario belongs to FY2026, so there is no budget "
+            "to read. Name scenario_id to read a forecast."], run
+
+
+_TWO_BUDGETS = SCENARIOS + [("ZZ_BUD2", "budget")]
+
+
+def test_budget_read_without_scenario_and_two_budgets_is_refused_on_both_paths():
+    """Before, the hierarchy read added ZZ_BUD and ZZ_BUD2 together (review M1)."""
+    cycles = CYCLES + [("ZZ-BUD2-2026", "ZZ_BUD2", 2026, 1)]
+    for run in (flat, hierarchy):
+        result, queries, _ = run([{}], scenarios=_TWO_BUDGETS, cycles=cycles)
+        assert queries == [], run
+        assert result["values"] == [None], run
+        assert result["errors"] == [
+            "Several active budget scenarios belong to FY2026 (ZZ_BUD, ZZ_BUD2); "
+            "choose one."], run
+
+
+def test_a_draft_cycle_does_not_make_a_budget_scenario_active():
+    """ZZ_BUD2's Cycle is a draft: it has not reached the warehouse, so the
+    read takes ZZ_BUD alone, never "several scenarios" (review m1)."""
+    cycles = CYCLES + [("ZZ-BUD2-2026", "ZZ_BUD2", 2026, 0)]
+    for run in (flat, hierarchy):
+        result, queries, lookups = run([{}], scenarios=_TWO_BUDGETS, cycles=cycles)
+        assert not result.get("errors"), (run, result)
+        assert result["values"] == [-50.0], run
+        cycle_filters = [f for d, f in lookups if d == "Budget Cycle"]
+        assert cycle_filters and all(f["docstatus"] == 1 for f in cycle_filters), cycle_filters
+
+
+def test_budget_dataset_without_a_scenario_column_is_refused():
+    """A site Dataset over gold_spread_budget with has_scenario_id off cannot
+    keep to one budget: before, it read every non-forecast scenario added
+    together (review l1)."""
+    result, queries, _ = flat([{"fact": "zz_budget_noscn"}])
     assert queries == []
-    assert result["errors"] == [message]
-    # the flat read resolves one budget scenario per year (konsol#563)
-    result, queries, _ = flat([{}], scenarios=only)
-    assert queries == []
+    assert result["values"] == [None]
     assert result["errors"] == [
-        "No active budget scenario belongs to FY2026, so there is no budget "
-        "to read. Name scenario_id to read a forecast."]
+        "Dataset 'zz_budget_noscn' reads epm_gold.gold_spread_budget, which "
+        "holds every budget and forecast scenario, but has_scenario_id is off, "
+        "so a read cannot keep to one budget scenario. Turn on has_scenario_id "
+        "on the Dataset."]
 
 
 # ── m2: a forecast read needs a submitted Current Forecast ─────────────────
@@ -366,12 +425,12 @@ def test_forecast_read_without_scenario_takes_the_one_declared_scenario():
         assert result["values"] == [-110.0], base
         (sql,) = queries
         assert "AND scenario_id = {sid:String}" in sql, base
-        # the same Current Forecast lookups however many rows: a latest
-        # estimate adds one for its as-of period (konsol#559)
-        _, _, one = run([dict(base)])
-        _, _, two = run([dict(base), dict(base, account="ZZ4001")])
-        assert [d for d, _ in two].count("Current Forecast") == \
-            [d for d, _ in one].count("Current Forecast"), base
+        # one Current Forecast lookup however many rows; a latest estimate
+        # adds one for its as-of period (konsol#559, review l2)
+        expected = 2 if base.get("fact") == "latest_estimate" else 1
+        for rows in ([dict(base)], [dict(base), dict(base, account="ZZ4001")]):
+            _, _, seen = run(rows)
+            assert [d for d, _ in seen].count("Current Forecast") == expected, (base, rows)
 
 
 def test_forecast_read_without_scenario_and_no_declaration_is_refused():

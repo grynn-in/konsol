@@ -434,11 +434,13 @@ def test_variance_with_several_budgets_for_the_year_is_refused_by_name():
         "Several active budget scenarios belong to FY2026 (ZZ_B26, ZZ_B26X); choose one."]
 
 
-def test_a_cancelled_budget_cycle_does_not_count():
+def test_only_an_approved_budget_cycle_counts():
+    """A cancelled Cycle has left the warehouse, and a draft has not reached
+    it (budget_cycle.py): only docstatus 1 makes a scenario active (#563 review m1)."""
     _, _, lookups = _run_hierarchy([{}], active_budgets=["ZZ_B1"])
     cycle_filters, = [lk["Budget Cycle"] for lk in lookups if "Budget Cycle" in lk]
     assert cycle_filters["scenario_id"] == ["in", ["ZZ_B1"]]
-    assert cycle_filters["docstatus"] == ["<", 2]
+    assert cycle_filters["docstatus"] == 1
 
 
 def _load_hq():

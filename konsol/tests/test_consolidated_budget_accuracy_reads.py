@@ -128,7 +128,7 @@ def _frappe(scenarios, declared, lookups, cycles=CYCLES):
             return [{"scenario_id": s, "fiscal_year": y, "budget_cycle": c}
                     for s, y, c in declared]
         if doctype == "Budget Cycle":
-            assert filters["docstatus"] == ["<", 2], filters
+            assert filters["docstatus"] == 1, filters  # approved only (#563 review m1)
             wanted = set(filters["scenario_id"][1])
             return [{"scenario_id": s, "fiscal_year": y} for s, y in cycles if s in wanted]
         if doctype == "Consolidation Group":

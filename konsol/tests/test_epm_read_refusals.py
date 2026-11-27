@@ -81,9 +81,10 @@ def _month_end(p):
             10: 31, 11: 30, 12: 31}[p]
 
 
-def _frappe(scenarios, cycles, declared, groups):
+def _frappe(scenarios, cycles, declared, groups, lookups):
     def get_all(doctype, filters=None, pluck=None, fields=None, **kw):
         filters = dict(filters or {})
+        lookups.append(doctype)
         if doctype == "Scenario":
             return sorted(sid for sid, kind in scenarios
                           if all({"scenario_id": sid, "scenario_type": kind,
@@ -110,6 +111,8 @@ def _frappe(scenarios, cycles, declared, groups):
         if doctype == "EPM Fiscal Year Period" and "start_date" in filters:
             day = filters["start_date"][1]
             assert filters["end_date"][1] == day
+            if day.startswith("2099"):
+                return []  # a date no declared Regular period holds
             year, month = int(day[:4]), int(day[5:7])
             return [{"parent": str(year), "fiscal_period": month}]
         return installed(doctype, *args, **kwargs)
@@ -127,13 +130,18 @@ def _frappe(scenarios, cycles, declared, groups):
 
 
 def read(rows, scenarios=SCENARIOS, cycles=CYCLES, declared=DECLARED,
-         groups=GROUPS, loaded=(("ZZ01", 2026, 1),), table_rows=ROWS):
+         groups=GROUPS, loaded=(("ZZ01", 2026, 1),), table_rows=ROWS,
+         lookups=None, calls=None):
     """api._batch_query_clickhouse over ``rows`` (overrides of a default
     budget_input request: entity ZZ01, FY2026 P7, account ZZ4000).
     ``loaded`` is the trial-balance coverage the fake warehouse reports.
+    ``lookups``, when given, collects the doctype of every frappe.get_all;
+    ``calls``, every ClickHouse query, the coverage scan included.
     Returns (result, [data sql, ...])."""
     queries = []
-    fake, utils = _frappe(scenarios, cycles, declared, groups)
+    lookups = [] if lookups is None else lookups
+    calls = [] if calls is None else calls
+    fake, utils = _frappe(scenarios, cycles, declared, groups, lookups)
     stubs = {
         "frappe": fake, "frappe.utils": utils,
         "konsol.clickhouse": types.SimpleNamespace(
@@ -154,6 +162,7 @@ def read(rows, scenarios=SCENARIOS, cycles=CYCLES, declared=DECLARED,
         api._get_ch_connection = lambda: {}
 
         def fake_query(sql, params, ch_settings):
+            calls.append(sql)
             if read_path_stub.is_tb_coverage(sql):
                 return "".join(f"{e}\t{y}\t{p}\n" for e, y, p in loaded)
             queries.append(sql)
@@ -258,6 +267,16 @@ def test_group_keyed_dataset_reads_a_group_code():
     assert not result.get("errors"), result
 
 
+def test_group_codes_are_looked_up_once_per_batch():
+    """Two group-keyed cells, one Consolidation Group lookup (review l3)."""
+    lookups = []
+    result, _ = read([{"fact": "consolidated", "entity": "ZZG"},
+                      {"fact": "consolidated", "entity": "ZZG", "account": "ZZ4001"}],
+                     lookups=lookups)
+    assert not result.get("errors"), result
+    assert lookups.count("Consolidation Group") == 1
+
+
 # ── #559: latest estimate where the actual side has no trial balance ───────
 
 def _le(**over):
@@ -293,3 +312,18 @@ def test_latest_estimate_range_across_the_as_of_is_not_refused():
     assert not result.get("errors"), result
     assert len(queries) == 1
 
+
+
+def test_latest_estimate_as_of_in_no_regular_period_is_refused():
+    """The round's as-of date is in no declared Regular period: the actual
+    side cannot be told, so the read refuses and asks nothing of ClickHouse
+    (review m2)."""
+    calls = []
+    result, queries = read([_le()], declared=[("ZZ_FC", 2026, "ZZ-R2", "2099-06-30")],
+                           calls=calls)
+    assert calls == []
+    assert result["values"] == [None]
+    assert result["errors"] == [
+        "The as-of date of the Current Forecast of 'ZZ_FC' for FY2026 is in no "
+        "declared Regular period, so its actual side cannot be told. Declare "
+        "the period in EPM Fiscal Year."]
