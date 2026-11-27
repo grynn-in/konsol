@@ -331,6 +331,7 @@ def test_rule_set_child_doctypes():
                                              "account_name": ("Data", None, 0)},
         "cost_allocation_rule": {"step": ("Int", None, 1), "sender_member": ("Data", None, 1),
                                  "driver": ("Link", "Cost Allocation Driver", 1),
+                                 "basis": ("Select", "Share of Pool\nDeclared Rate", 1),
                                  "description": ("Data", None, 0)},
         "cost_allocation_rule_receiver": {"step": ("Int", None, 1),
                                           "receiver_member": ("Data", None, 1)},
