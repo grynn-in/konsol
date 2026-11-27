@@ -15,7 +15,9 @@
 //    "hold": [kind, ...],                // these kinds' replies wait for a "release"
 //    "ops": [["load"], ["select", id], ["set", param, value], ["setMany", param, [values]],
 //            ["setKind", param, kind], ["activate"], ["snap"], ["values"], ["missing"],
-//            ["normalise", arg], ["release", n], ["api", name]]}
+//            ["normalise", arg], ["release", n], ["api", name], ["advance", ms]]}
+//   "fakeTimers": true makes the page's setTimeout a fake clock that only the
+//   "advance" op moves; "aborted" counts the requests whose signal fired.
 //   "release" n answers the n-th held request (0-based, in request order), so a
 //   test can deliver an old reply after a newer one. "api" records
 //   konsolReportForm[name].
@@ -115,9 +117,26 @@ function sameArgs(a, b) {
 }
 
 const held = [];
+out.aborted = 0;
 
-function fetchChoices(kind, args) {
+// The page's clock: fake when the scenario says so, so a 30 s timeout is a test op.
+const fake = { now: 0, timers: [], next: 1 };
+function fakeSetTimeout(fn, ms) {
+  const id = fake.next++;
+  fake.timers.push({ id, at: fake.now + (ms || 0), fn });
+  return id;
+}
+function fakeClearTimeout(id) { fake.timers = fake.timers.filter((t) => t.id !== id); }
+function advance(ms) {
+  fake.now += ms;
+  const due = fake.timers.filter((t) => t.at <= fake.now);
+  fake.timers = fake.timers.filter((t) => t.at > fake.now);
+  due.forEach((t) => t.fn());
+}
+
+function fetchChoices(kind, args, opts) {
   out.requests.push({ kind, args });
+  if (opts && opts.signal) opts.signal.addEventListener("abort", () => { out.aborted += 1; });
   const hit = (input.choices || []).find(([k, a]) => k === kind && sameArgs(a, args));
   if (!hit) return Promise.reject(new Error("no stub for " + kind + " " + JSON.stringify(args)));
   if ((input.hold || []).includes(kind)) {
@@ -140,7 +159,9 @@ function inspect() {
 
 const context = {
   Promise, JSON, Number, String, Object, Array, Math, Error, RegExp, isFinite, parseInt,
-  setTimeout, clearTimeout,
+  AbortController,
+  setTimeout: input.fakeTimers ? fakeSetTimeout : setTimeout,
+  clearTimeout: input.fakeTimers ? fakeClearTimeout : clearTimeout,
   console: { log: (...a) => process.stderr.write(a.join(" ") + "\n") },
   document,
   Excel: {
@@ -243,6 +264,7 @@ try {
     else if (op === "values") out.results.push(ctl.values());
     else if (op === "missing") out.results.push(ctl.missing());
     else if (op === "normalise") out.results.push(api.normaliseRequest(args[0]));
+    else if (op === "advance") advance(args[0]);
     else if (op === "release") {
       if (!held[args[0]]) throw new Error("no held request " + args[0]);
       held[args[0]]();

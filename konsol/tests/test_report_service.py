@@ -1001,3 +1001,15 @@ def test_the_hierarchy_tree_is_read_once_per_build():
     assert reads == [("hierarchy_nodes", ("ZZH", 2026))], reads
     values = {c["range"]: c["values"][0][0] for c in out["cells"] if "values" in c}
     assert values["J1"] == "ZZ Europe", values
+
+
+def test_build_refuses_a_kind_the_site_cannot_read_and_still_builds_the_other():
+    """Per-kind availability binds the API, not only the form (PR #626 re-review)."""
+    published = [{"fact_name": f"zz_{w}", "scenario_key": w, "status": "Published"}
+                 for w in ("actuals", "budget", "consolidated")]
+    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026, datasets=published)
+    svc = _service(site)
+    msg = _refusal(lambda: svc.build(ACTBUD, _actbud_params()))
+    assert "'consolidated_budget'" in msg and "group" in msg, msg
+    out = svc.build(ACTBUD, _actbud_params(scope={"kind": "entity", "code": "ZZ1"}))
+    assert out["cells"]

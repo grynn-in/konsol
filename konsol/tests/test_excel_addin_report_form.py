@@ -464,10 +464,10 @@ BUDGET_ONLY = {
 BUD23 = {"options": [{"id": "B23", "label": "Budget 2023"}], "default": "B23", "why": None}
 
 
-def _held_run(ops):
+def _held_run(ops, **extra):
     choices = _choices() + [["scenarios", {"year": "2023", "scenario_type": "budget"}, BUD23]]
     return _run([["load"], ["select", "budget_only"]] + ops,
-                catalog={"templates": [BUDGET_ONLY]}, choices=choices, hold=["scenarios"])
+                catalog={"templates": [BUDGET_ONLY]}, choices=choices, hold=["scenarios"], **extra)
 
 
 def test_apply_waits_while_a_dependent_picker_is_loading():
@@ -503,3 +503,40 @@ def test_a_stale_reply_first_keeps_apply_blocked_until_the_new_one():
     assert old_first["apply"]["disabled"] and old_first["blocked"] == "Loading choices…", old_first
     assert old_first["values"].get("budget") != "B23", old_first["values"]
     assert new_in["values"] == {"year": 2024, "budget": "B24"} and not new_in["apply"]["disabled"]
+
+
+def test_a_choices_request_that_never_answers_times_out_and_clears_loading():
+    """A hung request must not leave the picker loading forever: after 30 s the
+    request is aborted, the field says how to recover, and Apply unblocks."""
+    out = _held_run([["set", "year", "2023"], ["snap"], ["advance", 29000], ["snap"],
+                     ["advance", 2000], ["snap"]], fakeTimers=True)
+    waiting, still, timed_out = out["snaps"]
+    assert waiting["blocked"] == "Loading choices\u2026" and still["blocked"] == "Loading choices\u2026"
+    assert out["aborted"] == 1, out["aborted"]
+    why = timed_out["fields"]["budget"]["why"]
+    assert "re-select the template to retry" in why, why
+    assert timed_out["blocked"] != "Loading choices\u2026", timed_out["blocked"]
+    assert any("re-select the template" in m for _, m in out["logs"]), out["logs"]
+
+
+def test_a_reply_inside_the_timeout_cancels_it():
+    out = _held_run([["set", "year", "2023"], ["release", 0], ["advance", 60000], ["snap"]],
+                    fakeTimers=True)
+    assert out["aborted"] == 0 and out["snaps"][0]["fields"]["budget"]["why"] == ""
+
+
+def test_a_stored_report_of_an_unavailable_kind_shows_why_not_a_blank_pick():
+    """The sheet was built for a group; this site no longer offers the group
+    kind for the template. The field says why instead of 'not a choice now'."""
+    why = "No Published Dataset has scenario key 'consolidated_budget' (read by series 'bud'), " \
+          "so Actual vs budget cannot be read for a group on this site."
+    cat = copy.deepcopy(CATALOG)
+    cat["templates"][1] = _per_kind(VARIANCE, ["entity"], {"group": why})
+    own = copy.deepcopy(OWN_PNL)
+    own["entry"]["template_id"] = "variance"
+    own["entry"]["params"] = {"scope": {"kind": "group", "code": "ZZ03"}, "year": 2024}
+    out = _run([["load"], ["select", "variance"], ["activate"], ["snap"]], catalog=cat,
+               inspect=[NOT_OWN, own])
+    f = out["snaps"][0]["fields"]["scope"]
+    assert why in f["why"], f
+    assert "not a choice now" not in f["why"], f
