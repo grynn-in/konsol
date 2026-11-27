@@ -377,6 +377,33 @@ def _declared_forecasts_by_year():
     return {year: sorted(ids) for year, ids in by_year.items()}
 
 
+def _declared_as_of_periods():
+    """{(scenario_id, fiscal_year): (fiscal_year, fiscal_period) or None} of
+    the submitted Current Forecasts: the Regular period holding the round's
+    as-of date. Periods at or before it are the round's actual side. None
+    where the date is in no declared Regular period (konsol#559)."""
+    import frappe
+
+    found = {}
+    out = {}
+    for row in frappe.get_all(
+        "Current Forecast", filters={"docstatus": 1},
+        fields=["scenario_id", "fiscal_year", "as_of_date"], limit_page_length=0,
+    ):
+        day = str(row["as_of_date"] or "")[:10]
+        if day not in found:
+            period = frappe.get_all(
+                "EPM Fiscal Year Period",
+                filters={"period_type": "Regular", "start_date": ["<=", day],
+                         "end_date": [">=", day]},
+                fields=["parent", "fiscal_period"],
+                order_by="parent asc, fiscal_period asc", limit_page_length=1,
+            ) if day else []
+            found[day] = (int(period[0]["parent"]), int(period[0]["fiscal_period"])) if period else None
+        out[(row["scenario_id"], int(row["fiscal_year"]))] = found[day]
+    return out
+
+
 def _declared_cycles():
     """{(scenario_id, fiscal_year): budget_cycle} of the submitted Current
     Forecasts: the round a read of a table kept per round takes (konsol#348

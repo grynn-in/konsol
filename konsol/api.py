@@ -259,6 +259,10 @@ _NEEDS_CURRENT_FORECAST = {
     "epm_gold.gold_forecast_accuracy_group",
 }
 
+#: The latest-estimate view: the declared round's actual side (periods at or
+#: before its as-of period) and its forecast side (konsol#559).
+_LATEST_ESTIMATE = {"epm_gold.gold_latest_estimate_current"}
+
 #: Tables that keep every approved round side by side, keyed by ``cycle``
 #: (FC-4-2, the accuracy models). ``K.EPM`` binds scenario_id, never a
 #: cycle, so a read narrows ``(fiscal_year, cycle)`` to the declared Cycle of
@@ -801,6 +805,7 @@ def _batch_query_clickhouse(requests_list):
         _active_budget_scenarios_by_year,
         choose_budget_scenario,
         named_budget_scenario_error,
+        _declared_as_of_periods,
         _declared_cycles,
         _declared_forecasts_by_year,
         _forecast_scenario_ids,
@@ -837,6 +842,8 @@ def _batch_query_clickhouse(requests_list):
     active_budgets = None  # likewise, for named budget scenarios
     declared_by_year = None  # the Current Forecasts, likewise (S6 review m2)
     declared_cycles = None  # their Cycles, for the per-round tables (S6 KC1)
+    as_of_periods = None  # their as-of periods, for the actual side (#559)
+    actual_side = []  # (idx, req) latest-estimate cells wholly on the actual side
 
     def resolve_fact(fact_key):
         if fact_key not in facts:
@@ -939,6 +946,22 @@ def _batch_query_clickhouse(requests_list):
             if err:
                 errors[idx] = err
                 continue
+            if _read_table(fact, req["measure"]) in _LATEST_ESTIMATE:
+                # A latest-estimate cell wholly at or before the as-of period
+                # reads the actuals: with no trial balance it is no_data, as
+                # the actuals read says, never 0.0 (konsol#559).
+                if as_of_periods is None:
+                    as_of_periods = _declared_as_of_periods()
+                as_of = as_of_periods.get((scenario_id, year))
+                if as_of is None:
+                    errors[idx] = (
+                        f"The as-of date of the Current Forecast of '{scenario_id}' "
+                        f"for FY{year} is in no declared Regular period, so its "
+                        "actual side cannot be told. Declare the period in EPM "
+                        "Fiscal Year.")
+                    continue
+                if req["periods"] and all((year, int(p)) <= as_of for p in req["periods"]):
+                    actual_side.append((idx, req))
         if (fact and _read_table(fact, req["measure"]) in _FORECAST_BY_NAME_ONLY
                 and scenario_id and _SAFE_SCENARIO_ID.match(scenario_id)
                 and scenario_id in forecast_ids()):
@@ -972,6 +995,14 @@ def _batch_query_clickhouse(requests_list):
         fact = resolve_fact(key[0])
         if _is_actuals_fact(fact):
             by_table[fact.clickhouse_table or ""].append((idx, req))
+    if actual_side:
+        # Judged against the table the actuals Dataset reads, like an actuals cell.
+        actuals_fact = resolve_fact(tb_coverage.ACTUALS)
+        if not actuals_fact:
+            for idx, _ in actual_side:
+                errors[idx] = f"No Dataset for '{tb_coverage.ACTUALS}'"
+        else:
+            by_table[actuals_fact.clickhouse_table or ""].extend(actual_side)
     for table, actual_rows in by_table.items():
         if not _SAFE_TABLE_NAME.match(table):
             loaded, failure = set(), "Invalid table identifier"

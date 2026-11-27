@@ -111,7 +111,9 @@ def _frappe(scenarios, declared, lookups):
             return sorted(found)
         if doctype == "Current Forecast":
             assert filters == {"docstatus": 1}, filters
-            return [{"scenario_id": s, "fiscal_year": y} for s, y in declared]
+            # as of 2025-12-31: the FY2026 periods read here are forecast side
+            return [{"scenario_id": s, "fiscal_year": y, "as_of_date": "2025-12-31"}
+                    for s, y in declared]
         if doctype == "Budget Cycle":
             # ZZ_BUD's Cycle: the one budget scenario of FY2026 (konsol#563)
             return [{"scenario_id": "ZZ_BUD", "fiscal_year": 2026}]
@@ -120,6 +122,17 @@ def _frappe(scenarios, declared, lookups):
     fake = types.ModuleType("frappe")
     fake.get_all = get_all
     read_path_stub.install(fake)
+    installed = fake.get_all
+
+    def with_dates(doctype=None, *args, **kwargs):
+        # the as-of lookup (konsol#559): the Regular period holding a date
+        filters = kwargs.get("filters") or {}
+        if doctype == "EPM Fiscal Year Period" and "start_date" in filters:
+            day = filters["start_date"][1]
+            return [{"parent": day[:4], "fiscal_period": int(day[5:7])}]
+        return installed(doctype, *args, **kwargs)
+
+    fake.get_all = with_dates
     fake.whitelist = lambda *a, **k: (lambda fn: fn)
     fake.log_error = lambda *a, **k: None
     fake.get_traceback = lambda: ""
@@ -353,9 +366,12 @@ def test_forecast_read_without_scenario_takes_the_one_declared_scenario():
         assert result["values"] == [-110.0], base
         (sql,) = queries
         assert "AND scenario_id = {sid:String}" in sql, base
-        # one Current Forecast lookup, however many rows
-        result, _, lookups = run([dict(base), dict(base, account="ZZ4001")])
-        assert [d for d, _ in lookups].count("Current Forecast") == 1, base
+        # the same Current Forecast lookups however many rows: a latest
+        # estimate adds one for its as-of period (konsol#559)
+        _, _, one = run([dict(base)])
+        _, _, two = run([dict(base), dict(base, account="ZZ4001")])
+        assert [d for d, _ in two].count("Current Forecast") == \
+            [d for d, _ in one].count("Current Forecast"), base
 
 
 def test_forecast_read_without_scenario_and_no_declaration_is_refused():
