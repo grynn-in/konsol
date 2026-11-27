@@ -244,6 +244,26 @@ def test_a_failure_in_another_table_stays_when_one_table_recovers():
     assert [f["table"] for f in health["recent_sync_failures"]] == [other], health
 
 
+def test_health_reports_an_unreachable_cache_instead_of_raising():
+    """Review of #617, finding 1: Frappe's hgetall does not swallow a Redis
+    ConnectionError (hset/hdel/hget do). With the cache down, check_health
+    must still answer, degraded and saying why, never raise: the guest
+    health endpoint, the build preconditions and the Setup page call it."""
+    class ConnectionError(Exception):  # redis.exceptions.ConnectionError
+        pass
+
+    class DownCache(_SharedCache):
+        def hgetall(self, name, *a, **k):
+            raise ConnectionError("Connection refused")
+
+    web = _load_clickhouse(DownCache())
+    web.execute = _ok
+    health = web.check_health()
+    assert health["status"] == "degraded", health
+    assert health["recent_sync_failures"] == [], health
+    assert "Redis cache unreachable" in health["message"], health
+
+
 # --- a failed sync leaves the old rows (konsol#194) ---
 
 _TMP = _TABLE + "_sync_tmp"
