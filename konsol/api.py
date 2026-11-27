@@ -878,7 +878,12 @@ def _batch_query_clickhouse(requests_list):
             fact = resolve_fact(fact_key)
             by_name_only = bool(
                 fact and _read_table(fact, req["measure"]) in _FORECAST_BY_NAME_ONLY)
-            if fact and (_BUDGET_SCENARIO_COLUMN.get(fact.fact_name) or by_name_only):
+            # The flat budget table reads one budget scenario too: it kept
+            # every non-forecast scenario of the table and added two budgets
+            # of one year together (konsol#563).
+            one_budget = by_name_only or bool(
+                fact and _read_table(fact, req["measure"]) in _BUDGET_EXCLUDES_FORECAST)
+            if fact and (_BUDGET_SCENARIO_COLUMN.get(fact.fact_name) or one_budget):
                 if budgets_by_year is None:
                     budgets_by_year = _active_budget_scenarios_by_year()
                 year = int(req["year"])
@@ -886,7 +891,7 @@ def _batch_query_clickhouse(requests_list):
                     budgets_by_year.get(year, []), fiscal_year=year,
                     none_reason=("so there is no budget to read. Name "
                                  "scenario_id to read a forecast.")
-                    if by_name_only else None)
+                    if one_budget else None)
                 if err:
                     errors[idx] = err
                     continue

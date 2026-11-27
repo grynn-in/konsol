@@ -106,14 +106,15 @@ def _frappe(scenarios, declared, lookups):
         lookups.append((doctype, filters))
         if doctype == "Scenario":
             found = [sid for sid, kind in scenarios
-                     if all(({"scenario_id": sid, "scenario_type": kind}[k] == v)
+                     if all(({"scenario_id": sid, "scenario_type": kind, "is_active": 1}[k] == v)
                             for k, v in filters.items())]
             return sorted(found)
         if doctype == "Current Forecast":
             assert filters == {"docstatus": 1}, filters
             return [{"scenario_id": s, "fiscal_year": y} for s, y in declared]
         if doctype == "Budget Cycle":
-            return []
+            # ZZ_BUD's Cycle: the one budget scenario of FY2026 (konsol#563)
+            return [{"scenario_id": "ZZ_BUD", "fiscal_year": 2026}]
         raise AssertionError(doctype)
 
     fake = types.ModuleType("frappe")
@@ -266,7 +267,8 @@ def test_flat_budget_read_without_scenario_excludes_forecasts():
     assert not result.get("errors")
     assert result["values"] == [-50.0]
     (sql,) = queries
-    assert "AND scenario_id IN (" in sql
+    # the year's one budget scenario, bound by name (konsol#563)
+    assert "AND scenario_id = {sid:String}" in sql
     # one Scenario lookup per kind, however many rows
     result, queries, lookups = flat([{}, {"account": "ZZ4001"}])
     assert len([d for d, _ in lookups if d == "Scenario"]) <= 2
@@ -284,10 +286,15 @@ def test_budget_read_without_scenario_and_only_forecasts_is_refused():
     only = [("ZZ_FC", "forecast")]
     message = ("Every Scenario is a forecast, so there is no budget to read. "
                "Read a forecast with the 'forecast' scenario or 'latest_estimate'.")
-    for run in (flat, hierarchy):
-        result, queries, _ = run([{}], scenarios=only)
-        assert queries == [], run
-        assert result["errors"] == [message], run
+    result, queries, _ = hierarchy([{}], scenarios=only)
+    assert queries == []
+    assert result["errors"] == [message]
+    # the flat read resolves one budget scenario per year (konsol#563)
+    result, queries, _ = flat([{}], scenarios=only)
+    assert queries == []
+    assert result["errors"] == [
+        "No active budget scenario belongs to FY2026, so there is no budget "
+        "to read. Name scenario_id to read a forecast."]
 
 
 # ── m2: a forecast read needs a submitted Current Forecast ─────────────────
@@ -387,7 +394,7 @@ def test_renamed_budget_dataset_without_scenario_excludes_forecasts():
     assert not result.get("errors")
     assert result["values"] == [-50.0]
     (sql,) = queries
-    assert "AND scenario_id IN (" in sql
+    assert "AND scenario_id = {sid:String}" in sql
 
 
 def test_renamed_forecast_dataset_with_no_declaration_is_refused():
