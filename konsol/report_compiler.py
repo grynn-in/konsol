@@ -1,5 +1,11 @@
 """Product-owned report templates → Excel cell maps for add-in Apply / Snapshot."""
 
+import os
+
+from konsol.report_template_model import load_templates
+
+_TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_templates")
+
 _MONTH_LABELS = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -44,26 +50,18 @@ def _month_row_range(row):
 
 
 def list_templates():
+    """The template files, in `order`: {id, title, description, mode}."""
+    templates = load_templates(_TEMPLATE_DIR)
     return [
         {
-            "id": "pnl_monthly",
-            "title": "Monthly P&L",
-            "description": (
-                "12-month income statement: every Published Profit and Loss "
-                f"account of the group chart ({_PNL_SIGN})"
+            "id": t["id"],
+            "title": t["title"],
+            "description": t.get("description", "").replace(
+                "{sign.sentence}", t.get("sign", {}).get("sentence", "")
             ),
-            "mode": "formulas",
-        },
-        {
-            "id": "trial_balance_long",
-            "title": TB_LONG_TITLE,
-            "description": (
-                "One row per account × period, local currency, before FX "
-                "translation, ownership and eliminations — snapshot values "
-                "for Excel models"
-            ),
-            "mode": "snapshot",
-        },
+            "mode": t["mode"],
+        }
+        for t in templates.values()
     ]
 
 

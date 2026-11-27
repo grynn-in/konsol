@@ -123,7 +123,7 @@ Captions, labels, header text, sign sentences, error messages and field
 defaults may carry ``{token}``. Allowed: ``{account.name}``,
 ``{account.code}``, ``{node.label}``, ``{scope.code}``, ``{scope.name}``,
 ``{scope.kind}``, ``{sign.sentence}``, ``{title}``, ``{month_abbrev}``,
-``{label}``, ``{code}``, ``{number}``, ``{param.<name>}`` and ``{<name>}`` for
+``{label}``, ``{code}``, ``{number}``, ``{charts}`` (the several-charts error), ``{param.<name>}`` and ``{<name>}`` for
 a declared param, and ``{<name>.code}`` for a period param. Any other token is
 refused.
 """
@@ -183,7 +183,7 @@ ACCOUNTS_FILTER_KEYS = ("statement_section", "account_type", "sub_section")
 
 FIXED_TOKENS = (
     "account.name", "account.code", "node.label", "scope.code", "scope.name",
-    "scope.kind", "sign.sentence", "title", "month_abbrev", "label", "code", "number",
+    "scope.kind", "sign.sentence", "title", "month_abbrev", "label", "code", "number", "charts",
 )
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
