@@ -158,7 +158,10 @@ def _user():
 
 
 def _rows(table):
-    return [r.as_dict() if hasattr(r, "as_dict") else dict(r) for r in table or []]
+    """Plain dicts from child Documents or query rows. frappe._dict answers any
+    attribute with None, so hasattr(row, "as_dict") is True for get_all rows:
+    test that it is callable (CA-2B1 BUG-2)."""
+    return [r.as_dict() if callable(getattr(r, "as_dict", None)) else dict(r) for r in table or []]
 
 
 def _date(value):

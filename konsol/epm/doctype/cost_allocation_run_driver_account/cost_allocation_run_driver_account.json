@@ -24,7 +24,7 @@
    "read_only": 1,
    "in_list_view": 1,
    "columns": 3,
-   "description": "An account the Account Set driver reads, expanded: a group account on the driver is stored as one row per descendant."
+   "description": "An account the Account Set driver reads, expanded: a group account on the driver is stored as one row for itself and one per descendant."
   },
   {
    "fieldname": "declared_account",

@@ -117,7 +117,7 @@
       "fieldname": "value_sign",
       "fieldtype": "Select",
       "label": "Value Sign",
-      "options": "As Booked\nReversed",
+      "options": "\nAs Booked\nReversed",
       "depends_on": "eval:doc.source=='Account Set'",
       "mandatory_depends_on": "eval:doc.source=='Account Set'",
       "description": "Reversed turns credit balances (e.g. revenue) positive."

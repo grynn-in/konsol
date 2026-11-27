@@ -98,7 +98,7 @@ def test_driver_account_set_fields_are_mandatory_and_shown_for_account_set_only(
     f = fields["value_sign"]
     assert f["fieldtype"] == "Select"
     assert f["label"] == "Value Sign"
-    assert f["options"] == "As Booked\nReversed"
+    assert f["options"] == "\nAs Booked\nReversed"     # blank first: no default (CA-2B1 BUG-1)
     assert f["depends_on"] == ACCOUNT_EVAL
     assert f["mandatory_depends_on"] == ACCOUNT_EVAL
     assert not f.get("reqd")
@@ -249,7 +249,7 @@ def _refusal(doc):
 def test_source_constants_match_the_select_options():
     mod = _load()
     assert list(mod.SOURCES) == _by_name(DRIVER)["source"]["options"].split("\n")
-    assert list(mod.VALUE_SIGNS) == _by_name(DRIVER)["value_sign"]["options"].split("\n")
+    assert [""] + list(mod.VALUE_SIGNS) == _by_name(DRIVER)["value_sign"]["options"].split("\n")
 
 
 def test_uploaded_statistic_with_empty_tables_is_accepted():
