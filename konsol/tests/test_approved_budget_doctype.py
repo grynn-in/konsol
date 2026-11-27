@@ -366,6 +366,17 @@ def test_a_second_live_declaration_for_the_group_and_year_is_refused_by_name(env
         env.doc(name="APB-CG-ZZGRP--2027-1").validate()
 
 
+def test_the_second_declaration_refusal_names_the_group_code_not_its_document_name(env):
+    """konsol#555: the Link value is the document name (CG-<code>-); the message shows the code."""
+    env.tables["Approved Budget"].append(
+        {"name": "APB-CG-ZZGRP--2027", "consolidation_group": ROOT, "fiscal_year": 2027, "docstatus": 1})
+    with pytest.raises(_Thrown) as info:
+        env.doc(name="APB-CG-ZZGRP--2027-1").validate()
+    message = str(info.value)
+    assert "for ZZGRP FY2027" in message, message
+    assert "CG-ZZGRP-" not in message.replace("APB-CG-ZZGRP--2027", ""), message
+
+
 def test_a_cancelled_declaration_and_the_document_itself_do_not_count(env):
     env.tables["Approved Budget"].append(
         {"name": "APB-CG-ZZGRP--2027", "consolidation_group": ROOT, "fiscal_year": 2027, "docstatus": 2})
