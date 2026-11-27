@@ -93,7 +93,7 @@ def execute():
     # rows are stamped here and the Rate Sheet migration reads them next
     # (27 Nov 2026: 1054 Unknown column on a 9 Nov site).
     if frappe.db.table_exists(GER) and not frappe.db.has_column(GER, "rate_set"):
-        frappe.db.sql("ALTER TABLE `tabGroup Exchange Rate` ADD COLUMN `rate_set` varchar(140)")
+        frappe.db.sql_ddl("ALTER TABLE `tabGroup Exchange Rate` ADD COLUMN `rate_set` varchar(140)")
         print("konsol#348 rate sets: added the rate_set column to the retired Group Exchange Rate table")
     blank_ger = frappe.db.count(GER, {"rate_set": _BLANK}) if frappe.db.table_exists(GER) else 0
     her_rows = frappe.get_all(HER, filters={"rate_set": _BLANK}, fields=_HER_FIELDS, limit_page_length=0)
