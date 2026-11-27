@@ -509,8 +509,17 @@ _HIER_READS = [{"scenario": "budget", "measure": "period_amount"},
                {"scenario": "variance", "measure": "variance_abs"}]
 
 
+def test_hierarchy_variance_of_an_entity_with_no_entries_is_not_refused():
+    """Deepak Pai, 27 Nov 2026 (konsol#568): variance keeps the 22 Sep rule,
+    unbudgeted is unfavourable; only the budget read refuses."""
+    result, queries, _ = hierarchy([{"scenario": "variance", "measure": "variance_abs",
+                                     "entity": "ZZ02"}])
+    assert not result.get("errors"), result
+    assert len(queries) == 1
+
+
 def test_hierarchy_read_of_an_entity_the_approved_cycle_does_not_budget_is_refused():
-    for base in _HIER_READS:
+    for base in [b for b in _HIER_READS if b["scenario"] != "variance"]:
         result, queries, _ = hierarchy([dict(base, entity="ZZ02")])
         assert queries == [], base
         assert result["values"] == [None], base
