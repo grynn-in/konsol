@@ -4,8 +4,11 @@ import konsol.excel_addin_cookies  # noqa: F401 — Excel Online iframe cookies
 before_request = ["konsol.excel_addin_auth.apply_excel_token_auth"]
 # konsol#605: CORS for the add-in endpoints, from Close Settings → Excel Add-in Origins.
 after_request = [
-    "konsol.excel_addin_cookies.add_partitioned_cookie_headers",
+    # First (konsol#618 review): Frappe runs these in one try block, so a hook
+    # that raised before it would skip it and leave Frappe's credentialed
+    # CORS on for the add-in paths. test_excel_addin_cors.py pins the order.
     "konsol.excel_addin.add_cors_headers",
+    "konsol.excel_addin_cookies.add_partitioned_cookie_headers",
 ]
 app_title = "Konsol"
 app_publisher = "Open EPM"

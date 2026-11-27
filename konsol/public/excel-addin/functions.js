@@ -1,4 +1,4 @@
-/* global CustomFunctions, fetch, Office, Excel, konsolServer */
+/* global CustomFunctions, fetch, Office, Excel, konsolServer, localStorage, console */
 
 // ============================================================
 // Open EPM — Excel Custom Functions  (namespace "K")
@@ -9,36 +9,78 @@
 // as Microsoft's excel-shared-runtime-scenario sample.
 //
 // Every URL and token comes from server.js (konsolServer, konsol#605):
-// relative paths to the pane's own origin by default, or the chosen site's
-// address with that site's own token.
+// relative paths to the pane's own origin by default, or the workbook's
+// chosen site's address with that site's own token.
 // ============================================================
 
 var MAX_BATCH = 2000;
 
+// An index.html cached from before konsol#605 loads this file but not
+// server.js. Its pane talks to its own origin and keeps one token under the
+// pre-#605 key, so the cells do the same, and the console says why rather
+// than every cell failing with a ReferenceError (konsol#618 review).
+function sameOriginServer() {
+  if (typeof console !== "undefined" && console.warn) {
+    console.warn("[konsol] server.js is not loaded (the task pane page is an older cached copy): " +
+      "K.* functions read this pane's own site. Reload the add-in to choose a server.");
+  }
+  function token() {
+    try { return localStorage.getItem("konsol_token") || ""; } catch (e) { return ""; }
+  }
+  return {
+    url: function (path) { return path; },
+    getToken: token,
+    isCrossOrigin: function () { return false; },
+    unreachableMessage: function () {
+      return "Could not reach the Konsolidat server. Check the connection, then reload the add-in.";
+    }
+  };
+}
+
+var fallbackServer = null;
+
+function server() {
+  if (typeof konsolServer !== "undefined") return konsolServer;
+  if (!fallbackServer) fallbackServer = sameOriginServer();
+  return fallbackServer;
+}
+
 function authHeaders(extra) {
   var headers = extra || {};
-  var token = konsolServer.getToken();
+  var token = server().getToken();
   if (token) headers["X-Konsolidat-Token"] = token;
   return headers;
 }
 
 function hasToken() {
-  return !!konsolServer.getToken();
+  return !!server().getToken();
+}
+
+function officeReady() {
+  if (typeof Office !== "undefined" && typeof Office.onReady === "function") {
+    try { return Promise.resolve(Office.onReady()); } catch (e) { /* fall through */ }
+  }
+  return Promise.resolve();
 }
 
 function postJson(path, body) {
   // With the add-in's own token, send no cookie: a Desk session in the same
   // browser carries a CSRF token, and Frappe refuses a POST without it (400).
   // Another site never gets a cookie either: it sends no Allow-Credentials.
-  return fetch(konsolServer.url(path), {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    credentials: hasToken() || konsolServer.isCrossOrigin() ? "omit" : "include",
-    body: JSON.stringify(body)
+  // The workbook's server is in its document settings, which Office fills
+  // in when it has initialised: wait for that, or a cell computed as the
+  // workbook opens could read the pane's own site instead of the workbook's.
+  return officeReady().then(function () {
+    return fetch(server().url(path), {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      credentials: hasToken() || server().isCrossOrigin() ? "omit" : "include",
+      body: JSON.stringify(body)
+    });
   }).then(null, function () {
     // The request got no answer: the site is down, or refused this add-in's
     // origin at the CORS check. Name the fix.
-    throw new CustomFunctions.Error(CustomFunctions.ErrorCode.notAvailable, konsolServer.unreachableMessage());
+    throw new CustomFunctions.Error(CustomFunctions.ErrorCode.notAvailable, server().unreachableMessage());
   }).then(function (res) {
     if (res.status === 401 || res.status === 403) {
       // A 403 is also an access denial (a budget write the user may not

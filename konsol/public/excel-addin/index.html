@@ -245,7 +245,7 @@
 <body>
   <header>
     <h1>Konsolidat</h1>
-    <p class="version" id="addin-version">v2.0.5.0</p>
+    <p class="version" id="addin-version">v2.0.6.0</p>
     <p id="boot-status">Connecting to Excel…</p>
   </header>
 
@@ -375,7 +375,7 @@
 
       function tokenLabel() {
         try {
-          localStorage.getItem("konsol_server");
+          localStorage.getItem("konsol_token:" + konsolServer.paneOrigin());
         } catch (e) {
           return "blocked";
         }
@@ -903,32 +903,38 @@
         var own = !konsolServer.isCrossOrigin();
         document.getElementById("server-summary").textContent =
           "Server: " + server.replace(/^https?:\/\//, "") + (own ? "" : " (another site)");
-        document.getElementById("server-hint").textContent = own
-          ? "Connected to " + server + ", the site this add-in was loaded from. To use another site, enter its address."
-          : "Connected to " + server + ". This add-in was loaded from " + konsolServer.paneOrigin() +
-            "; " + server + " must list that origin in Close Settings → Excel Add-in Origins. Clear the field to go back.";
+        document.getElementById("server-hint").textContent = (own
+          ? "This workbook reads " + server + ", the site this add-in was loaded from. To use another site, enter its address."
+          : "This workbook reads " + server + ". This add-in was loaded from " + konsolServer.paneOrigin() +
+            "; " + server + " must list that origin in Close Settings → Excel Add-in Origins. Clear the field to go back.") +
+          " The choice is kept in this workbook (saved with the file); other open workbooks keep their own.";
         serverInput.value = own ? "" : server;
         serverInput.placeholder = konsolServer.paneOrigin();
       }
 
       function chooseServer() {
         var before = konsolServer.current();
-        var chosen = konsolServer.choose(serverInput.value);
-        if (chosen.error) {
-          serverError.textContent = chosen.error;
-          serverError.hidden = false;
-          appendLog("err", "Server: " + chosen.error);
-          return;
-        }
-        serverError.hidden = true;
-        showServer();
-        if (konsolServer.current() === before) return;
-        appendLog("info", "Server: now " + konsolServer.current() + ".");
-        // Each server has its own token: show what this one says.
-        showLogin();
-        setDiag(undefined, "…");
-        whoami().then(function (user) {
-          if (user) showLoggedIn(user);
+        var btn = document.getElementById("server-btn");
+        btn.disabled = true;
+        konsolServer.choose(serverInput.value).then(function (chosen) {
+          btn.disabled = false;
+          if (chosen.error) {
+            serverError.textContent = chosen.error;
+            serverError.hidden = false;
+            appendLog("err", "Server: " + chosen.error);
+            return;
+          }
+          serverError.hidden = true;
+          if (chosen.unsaved) appendLog("err", "Server: " + chosen.unsaved);
+          showServer();
+          if (konsolServer.current() === before) return;
+          appendLog("info", "Server: this workbook now reads " + konsolServer.current() + ".");
+          // Each server has its own token: show what this one says.
+          showLogin();
+          setDiag(undefined, "…");
+          whoami().then(function (user) {
+            if (user) showLoggedIn(user);
+          });
         });
       }
 

@@ -346,3 +346,12 @@ def test_the_pane_keeps_the_choice_per_workbook_and_reports_a_failed_save():
     hint = src[src.index("function showServer("):]
     hint = hint[:hint.index("\n      function ", 1)]
     assert "workbook" in hint, "the pane must say the choice belongs to this workbook"
+
+
+def test_a_cell_waits_for_office_before_reading_the_workbooks_server():
+    """Document settings are filled in when Office has initialised; a cell
+    computed as the workbook opens must not read the pane's site first."""
+    src = _read("functions.js")
+    body = src[src.index("function postJson("):]
+    body = body[:body.index("\nfunction ", 1)]
+    assert body.index("officeReady()") < body.index("server().url(path)"), body

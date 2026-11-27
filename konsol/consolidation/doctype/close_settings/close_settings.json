@@ -200,7 +200,8 @@
    "fieldname": "excel_addin_origins",
    "fieldtype": "Small Text",
    "label": "Excel Add-in Origins",
-   "description": "The sites whose Excel add-in may call this site, one origin on each line, exactly as https://site.example or https://site.example:8443: no path, no wildcard. A listed origin gets CORS headers on the add-in's endpoints only, and no cookies: the add-in signs in to this site with its own token. Leave blank when the add-in is installed from this site only. No default."
+   "description": "The sites whose Excel add-in may call this site, one origin on each line, exactly as https://site.example or https://site.example:8443: no path, no wildcard. Listing an origin trusts every script served from that origin with this site's add-in tokens: a page there can sign in to this site and read and write what the signed-in user may. List only origins you control. A listed origin gets CORS headers on the add-in's endpoints only, and no cookies. Only a System Manager can change this list; an EPM Admin can read it. Leave blank when the add-in is installed from this site only. No default.",
+   "permlevel": 1
   }
  ],
  "field_order": [
@@ -256,6 +257,17 @@
   },
   {
    "role": "EPM User",
+   "read": 1
+  },
+  {
+   "role": "System Manager",
+   "permlevel": 1,
+   "read": 1,
+   "write": 1
+  },
+  {
+   "role": "EPM Admin",
+   "permlevel": 1,
    "read": 1
   }
  ]

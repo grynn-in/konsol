@@ -53,6 +53,7 @@ let saves = 0;
 const warnings = [];
 const Office = {
   AsyncResultStatus: { Succeeded: "succeeded", Failed: "failed" },
+  onReady: () => Promise.resolve({ host: "Excel" }),
   context: {
     document: {
       settings: {

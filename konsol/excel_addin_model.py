@@ -30,6 +30,12 @@ ADDIN_ENDPOINTS = (
     "build_snapshot",
 )
 ADDIN_PATHS = frozenset("/api/method/konsol.api." + name for name in ADDIN_ENDPOINTS)
+#: Frappe v16 routes one RPC under three prefixes (frappe/api/__init__.py:
+#: Submount "/api", "/api/v1" and "/api/v2", each with "/method/<method>").
+#: An add-in method is matched by its name under any of them, so Frappe's own
+#: credentialed CORS is off on every route to it (konsol#618 review).
+METHOD_PREFIXES = ("/api/method/", "/api/v1/method/", "/api/v2/method/")
+_ADDIN_METHODS = frozenset("konsol.api." + name for name in ADDIN_ENDPOINTS)
 
 ALLOW_METHODS = "GET, POST, OPTIONS"
 #: The headers the add-in sends: its JSON body, Accept, and its token.
@@ -99,6 +105,15 @@ def parse_origin_list(text):
     return tuple(origins)
 
 
+def is_addin_path(path):
+    """True when ``path`` calls one of the add-in methods under any of the
+    three API prefixes, exactly: no suffix, no doctype segment."""
+    for prefix in METHOD_PREFIXES:
+        if (path or "").startswith(prefix):
+            return path[len(prefix):] in _ADDIN_METHODS
+    return False
+
+
 def cors_headers(path, method, origin, allowed):
     """The CORS headers for one request, as a dict.
 
@@ -108,7 +123,7 @@ def cors_headers(path, method, origin, allowed):
     also gets the methods, the headers and a max age. Never ``*`` and never
     ``Access-Control-Allow-Credentials``.
     """
-    if path not in ADDIN_PATHS or not origin:
+    if not is_addin_path(path) or not origin:
         return {}
     headers = {"Vary": "Origin"}
     if origin not in tuple(allowed or ()):

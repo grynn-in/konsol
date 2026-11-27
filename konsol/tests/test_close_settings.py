@@ -163,7 +163,9 @@ _GRANTS = ("read", "write", "create", "delete", "submit", "cancel", "amend")
 
 
 def _perm_rows():
-    return _doc()["permissions"]
+    """The permlevel-0 rows. Level 1 guards Excel Add-in Origins only
+    (konsol#618 review); test_excel_addin_cors.py pins those rows."""
+    return [r for r in _doc()["permissions"] if not r.get("permlevel")]
 
 
 def test_permission_rows_are_exactly_the_decided_roles():

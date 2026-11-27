@@ -53,9 +53,15 @@ def add_cors_headers(response=None, request=None):
     by setting ``frappe.local.allow_cors = None``: its set_cors_headers runs
     after this hook and always adds ``Access-Control-Allow-Credentials:
     true``, which the add-in must never get (it sends a token, no cookies).
+    That is set before anything else here, and the hook is first in
+    hooks.after_request: Frappe runs the hooks in one try block, so an
+    earlier hook that raised would skip this one and leave Frappe's CORS on.
+
+    ``Vary: Origin`` is added to the Vary header, never assigned over it, so
+    a Vary an earlier layer set (e.g. Accept-Encoding) stays.
     """
     request = request or getattr(frappe.local, "request", None)
-    if request is None or response is None or request.path not in model.ADDIN_PATHS:
+    if request is None or response is None or not model.is_addin_path(request.path):
         return
     frappe.local.allow_cors = None
     origin = request.headers.get("Origin")
@@ -63,7 +69,10 @@ def add_cors_headers(response=None, request=None):
         return
     headers = model.cors_headers(request.path, request.method, origin, _allowed_origins())
     for key, value in headers.items():
-        response.headers[key] = value
+        if key == "Vary":
+            response.vary.add(value)
+        else:
+            response.headers[key] = value
 
 
 def _allowed_origins():

@@ -19,9 +19,9 @@ Office loads add-ins over HTTPS only, a local stack included: the site's address
 
 ## Another site
 
-The pane's **Server** panel shows the site the add-in talks to. By default that is the site it was installed from. To read another site with the same install, enter that site's address, such as `https://site.example` (https, the address only, no path), and choose **Use this server**; clear the field to go back. The add-in keeps a separate sign-in for each site and never sends one site's sign-in to another.
+The pane's **Server** panel shows the site the add-in talks to. By default that is the site it was installed from. To read another site with the same install, enter that site's address, such as `https://site.example` (https, the address only, no path), and choose **Use this server**; clear the field to go back. The choice belongs to the workbook: it is saved with the file, so two open workbooks can read two sites, and changing it in one leaves the other alone. A workbook with no choice reads the site the add-in was installed from. The add-in keeps a separate sign-in for each site and never sends one site's sign-in to another.
 
-The other site must allow it: an admin of that site lists this add-in's site, for example `https://site.example`, in Close Settings → Excel Add-in Origins, one address per line. Until then the pane says "Could not reach … ask an admin of … to add … to Close Settings → Excel Add-in Origins". Only the add-in's own calls are opened to a listed site, and they carry the add-in's sign-in token, never the browser's cookies.
+The other site must allow it: a System Manager of that site lists this add-in's site, for example `https://site.example`, in Close Settings → Excel Add-in Origins, one address per line. Listing a site trusts every page served from it with this site's add-in sign-ins, so list only sites you control. Until then the pane says "Could not reach … ask an admin of … to add … to Close Settings → Excel Add-in Origins". Only the add-in's own calls are opened to a listed site, and they carry the add-in's sign-in token, never the browser's cookies.
 
 ## Sign in
 
@@ -79,13 +79,13 @@ The pane's **Reports** panel paints two templates:
 
 The add-in's group on the Home ribbon has **Refresh sheet** and **Refresh workbook**, and the pane's **Refresh** panel has the same two buttons:
 
-- **Refresh sheet** takes the active sheet's snapshot again (if it is a snapshot sheet), recalculates every `=K.*` formula on it, and writes `Values as of <date time> UTC` in row 1.
+- **Refresh sheet** takes the active sheet's snapshot again (if it is a snapshot sheet), recalculates every `=K.*` formula on it, and writes `Values as of <date time> UTC from <site>` in row 1, naming the site the values came from. A snapshot taken from another site than the workbook now reads is refused, not repainted.
 - **Refresh workbook** does the same for every snapshot and every sheet with a `=K.*` formula.
 
 If you are not signed in, nothing is refreshed and the pane opens and says why.
 
 ## When the add-in changes
 
-Excel keeps the add-in's manifest, which lists its buttons and functions. When a konsol release raises the manifest version (the ribbon buttons came with 2.0.2.0, `K.EPMSAVE`'s currency and amountBasis arguments with 2.0.3.0, its asOfDate argument with 2.0.4.0, and the scenario words in `K.EPM`'s tooltip with 2.0.5.0), download the manifest again and install it the same way. With centralized deployment by link, Microsoft 365 reads the new file itself. Until then Excel keeps the old buttons and functions. A workbook on an old add-in sends requests the server refuses; reload the add-in.
+Excel keeps the add-in's manifest, which lists its buttons and functions. When a konsol release raises the manifest version (the ribbon buttons came with 2.0.2.0, `K.EPMSAVE`'s currency and amountBasis arguments with 2.0.3.0, its asOfDate argument with 2.0.4.0, the scenario words in `K.EPM`'s tooltip with 2.0.5.0, and the server kept per workbook with 2.0.6.0), download the manifest again and install it the same way. With centralized deployment by link, Microsoft 365 reads the new file itself. Until then Excel keeps the old buttons and functions. A workbook on an old add-in sends requests the server refuses; reload the add-in.
 
 The manifest built per site (konsol#605) has a new Id. An add-in installed from the old shared file is a different add-in to Excel: remove it, then install this site's.
