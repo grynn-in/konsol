@@ -10,8 +10,10 @@ module:
    nothing falls back to another value. An entity is checked for access first,
    as the endpoints always did (``_assert_entity_access``);
 3. resolves the site context the pure interpreter needs: the year's Regular
-   periods (report_choices.periods) and, per ``accounts`` block, the chart's
-   Published accounts and the charts they came from;
+   periods (report_choices.periods); per ``accounts`` block the chart's
+   Published leaves, per ``account_tree`` block the Published tree (both with
+   the charts they came from), per ``account_list`` block the chosen accounts,
+   per ``hierarchy_nodes`` block the hierarchy's nodes; and the scope's name;
 4. calls the interpreter (compile_formulas / compile_snapshot).
 
 Request bodies, both accepted by build_cell_map and build_snapshot:
@@ -282,6 +284,7 @@ def _check_scope(tid, p, value, by_name, values):
         year = _year_for(tid, p, by_name, values)
         if not any(n["code"] == code for n in report_choices.hierarchy_nodes(hierarchy, year)):
             _not_a_choice(tid, name, code, f"a node of hierarchy {hierarchy!r}")
+        return {"kind": kind, "code": code, "hierarchy": hierarchy}
     return {"kind": kind, "code": code}
 
 
@@ -313,17 +316,202 @@ def block_accounts(block):
     return [(r.main_account, r.account_name or r.main_account) for r in rows], charts
 
 
+def _published_chart():
+    """Every Published Main Account (headings and leaves), in code order."""
+    return frappe.get_all(
+        "Main Account",
+        filters={"status": "Published"},
+        fields=["main_account", "account_name", "chart_of_accounts", "parent_account",
+                "is_group", "statement_section"],
+        order_by="main_account asc",
+        limit_page_length=0,
+    )
+
+
+def block_tree(tmpl, block, params):
+    """An ``account_tree`` block's rows as ``([{code, caption, depth, is_group,
+    parent}], [chart names])`` in DFS order, children in code order.
+
+    The tree is the Published Main Accounts nested by ``parent_account``:
+
+    - ``root`` naming an account_heading param: that heading (depth 0) and
+      every account under it;
+    - ``root`` naming a statement section: its accounts, with the headings
+      that carry no section of their own and hold one of them (the chart
+      allows a heading without a section); a row whose parent is not in the
+      set is a root;
+    - no ``root``: the whole chart.
+
+    ``depth`` keeps depths ``0 .. depth-1``. A heading left with no child row
+    (its children cut, or none Published) is dropped with its subtree, so a
+    heading is never written without the rows it sums. The caption falls
+    back to the code.
+    """
+    tid = tmpl["id"]
+    rows = _published_chart()
+    by_code = {r.main_account: r for r in rows}
+    root = block.get("root")
+    heading_params = {p["name"] for p in tmpl["params"] if p["type"] == "account_heading"}
+    if root in heading_params:
+        code = params.get(root)
+        if code is None or code == "":
+            _refuse(f"Report template {tid!r}: an account tree starts at the heading in param "
+                    f"{root!r}, and none is given.")
+        if code not in by_code or not by_code[code].is_group:
+            _refuse(f"Report template {tid!r}: {root} {code!r} is not a Published heading account.")
+        members = {code}
+        frontier = [code]
+        while frontier:
+            parent = frontier.pop()
+            for r in rows:
+                if r.parent_account == parent and r.main_account not in members:
+                    members.add(r.main_account)
+                    frontier.append(r.main_account)
+        starts = [code]
+    else:
+        if root:
+            members = {r.main_account for r in rows if r.statement_section == root}
+            for code in list(members):
+                seen = set()
+                parent = by_code[code].parent_account
+                while parent in by_code and parent not in seen:
+                    seen.add(parent)
+                    up = by_code[parent]
+                    if up.statement_section and up.statement_section != root:
+                        break
+                    members.add(parent)
+                    parent = up.parent_account
+        else:
+            members = set(by_code)
+        starts = [r.main_account for r in rows
+                  if r.main_account in members and r.parent_account not in members]
+    children = {}
+    for r in rows:
+        if r.main_account in members and r.parent_account in members and r.main_account not in starts:
+            children.setdefault(r.parent_account, []).append(r.main_account)
+
+    limit = block.get("depth")
+    visited = set()
+
+    def walk(code, depth, parent):
+        """The kept rows of ``code``'s subtree, or [] when it is dropped."""
+        if code in visited or (limit is not None and depth >= int(limit)):
+            return []
+        visited.add(code)
+        r = by_code[code]
+        below = []
+        for child in children.get(code, ()):
+            below.extend(walk(child, depth + 1, code))
+        if r.is_group and not below:
+            return []
+        return [{"code": code, "caption": r.account_name or code, "depth": depth,
+                 "is_group": bool(r.is_group), "parent": parent}] + below
+
+    lines = []
+    for code in starts:
+        lines.extend(walk(code, 0, None))
+    charts = sorted({by_code[n["code"]].chart_of_accounts for n in lines
+                     if by_code[n["code"]].chart_of_accounts})
+    return lines, charts
+
+
+def block_account_list(tmpl, block, params):
+    """An ``account_list`` block's ``[(code, caption)]`` in the param's order,
+    captions from report_choices.accounts (the Published leaves)."""
+    codes = params.get(block["param"]) or []
+    names = {a["code"]: a.get("name") for a in report_choices.accounts()}
+    return [(code, names.get(code) or code) for code in codes]
+
+
+def _year_value(tmpl, params):
+    years = [p["name"] for p in tmpl["params"] if p["type"] == "fiscal_year"]
+    if len(years) == 1:
+        return params.get(years[0])
+    return None
+
+
+def _hierarchy_value(tmpl, params):
+    names = [p["name"] for p in tmpl["params"] if p["type"] == "hierarchy"]
+    return params.get(names[0]) if len(names) == 1 else None
+
+
+def block_nodes(tmpl, block, params, year):
+    """A ``hierarchy_nodes`` block's nodes in tree order (report_choices.
+    hierarchy_nodes for the year); under its ``node`` param, that node and
+    its descendants only."""
+    tid = tmpl["id"]
+    hierarchy = params.get(block["hierarchy"])
+    if hierarchy is None or hierarchy == "" or year is None:
+        _refuse(f"Report template {tid!r}: a hierarchy_nodes block needs the hierarchy in "
+                f"param {block['hierarchy']!r} and the fiscal year.")
+    nodes = report_choices.hierarchy_nodes(hierarchy, year)
+    start = params.get(block["node"]) if block.get("node") else None
+    if not start:
+        return nodes
+    out, inside = [], None
+    for n in nodes:
+        if inside is None:
+            if n["code"] == start:
+                inside = int(n["depth"])
+                out.append(n)
+        elif int(n["depth"]) > inside:
+            out.append(n)
+        else:
+            break
+    return out
+
+
+def scope_name(tmpl, params):
+    """The display name of the template's scope: the entity's name, the
+    group's root name, or the node's label; None when the site declares none."""
+    found = [p for p in tmpl["params"] if p["type"] in ("entity", "group", "scope")]
+    if len(found) != 1:
+        return None
+    p = found[0]
+    value = params.get(p["name"])
+    if value is None:
+        return None
+    if p["type"] in ("entity", "group"):
+        kind, code, hierarchy = p["type"], value, None
+    elif isinstance(value, dict):
+        kind, code = value.get("kind"), value.get("code")
+        hierarchy = value.get("hierarchy") or _hierarchy_value(tmpl, params)
+    else:
+        return None
+    if kind == "entity":
+        items, key = report_choices.entities(), "name"
+    elif kind == "group":
+        items, key = report_choices.groups(), "name"
+    else:
+        year = _year_value(tmpl, params)
+        if not hierarchy or year is None:
+            return None
+        items, key = report_choices.hierarchy_nodes(hierarchy, year), "label"
+    return next((i.get(key) for i in items if i["code"] == code), None)
+
+
 def resolve_context(tmpl, params):
     """ctx for compile_formulas (its contract is in report_template_model):
-    the year's Regular periods and each accounts block's lines and charts."""
-    years = [p["name"] for p in tmpl["params"] if p["type"] == "fiscal_year"]
-    ctx = {"accounts": {}, "charts": {}}
-    if len(years) == 1 and params.get(years[0]) is not None:
-        ctx["periods"] = report_choices.periods(params[years[0]])
+    the year's Regular periods; per block, its accounts (and charts), tree,
+    account list or hierarchy nodes; and the scope's display name."""
+    year = _year_value(tmpl, params)
+    ctx = {"accounts": {}, "charts": {}, "trees": {}, "account_lists": {}, "nodes": {}}
+    if year is not None:
+        ctx["periods"] = report_choices.periods(year)
     for i, block in enumerate(tmpl["rows"]["blocks"]):
-        if block["type"] == "accounts":
-            key = block_key(block, i)
+        key = block_key(block, i)
+        btype = block["type"]
+        if btype == "accounts":
             ctx["accounts"][key], ctx["charts"][key] = block_accounts(block)
+        elif btype == "account_tree":
+            ctx["trees"][key], ctx["charts"][key] = block_tree(tmpl, block, params)
+        elif btype == "account_list":
+            ctx["account_lists"][key] = block_account_list(tmpl, block, params)
+        elif btype == "hierarchy_nodes":
+            ctx["nodes"][key] = block_nodes(tmpl, block, params, year)
+    name = scope_name(tmpl, params)
+    if name is not None:
+        ctx["scope_name"] = name
     return ctx
 
 
