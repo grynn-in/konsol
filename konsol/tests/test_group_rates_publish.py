@@ -111,7 +111,7 @@ def _publisher(sheets=(), sheet_rows=(), calendar=None, actuals=("ACTUAL",), ger
     publish only if the query lets it. ``ger``: what is left of Group Exchange
     Rate, {"rows": n, "migrated_row": bool, "audit_file": bool}; None when its
     table is gone (retired, or a fresh site)."""
-    record = {"db": [], "ch": [], "stamped": [], "failed": [], "reads": []}
+    record = {"db": [], "ch": [], "stamped": [], "failed": [], "cleared": [], "reads": []}
     frappe = _frappe(actuals)
     calendar = _cal() if calendar is None else calendar
 
@@ -164,6 +164,7 @@ def _publisher(sheets=(), sheet_rows=(), calendar=None, actuals=("ACTUAL",), ger
     ch.execute = execute
     ch._stamp_watermark = lambda table, n, modified=None: record["stamped"].append((table, n, modified))
     ch._record_sync_failure = lambda table, kind, message: record["failed"].append((table, kind, message))
+    ch._clear_sync_failure = lambda table: record["cleared"].append(table)
     rules = _load(frappe)
     rules._fresh_db = FreshDB
     return rules, ch, record
@@ -379,3 +380,91 @@ def test_the_markers_are_the_retire_patchs():
     assert f'MIGRATED_SOURCE = "{rules.MIGRATED_SOURCE}"' in patch
     assert f'AUDIT_FILE = "{rules.MIGRATION_AUDIT_FILE}"' in patch
     assert f'CONSTANT_RATE_SET = "{rules.CONSTANT_RATE_SET}"' in patch
+
+
+# -- konsol#177: the publish's health record and its second connection --
+
+def test_a_successful_publish_clears_the_earlier_publish_failure():
+    """konsol#177 item 1: the failure record now lives in the site's Redis, so
+    it outlives the process. A publish that times out on the lock, or fails,
+    is recorded against the rates table; the next publish that succeeds
+    republishes the whole set, so it must clear that record, or check_health
+    stays degraded for good over a table that is right."""
+    rules, ch, record = _publisher(sheets=[STAT], sheet_rows=STAT_ROWS)
+    assert _publish(rules, ch) == 2
+    assert record["failed"] == [] and record["cleared"] == [MAIN]
+
+
+def test_a_failed_publish_clears_nothing():
+    rules, ch, record = _publisher(sheets=[STAT], sheet_rows=STAT_ROWS, actuals=())
+    assert _publish(rules, ch) is None
+    assert [f[:2] for f in record["failed"]] == [(MAIN, "publish_failed")]
+    assert record["cleared"] == []
+
+
+def test_a_lock_timeout_clears_nothing():
+    rules, ch, record = _publisher(sheets=[STAT], sheet_rows=STAT_ROWS)
+    rules.frappe.db.sql = lambda query, params=(), **k: [(0,)]
+    assert _publish(rules, ch) is None
+    assert [f[:2] for f in record["failed"]] == [(MAIN, "publish_lock_timeout")]
+    assert record["cleared"] == []
+
+
+class _Modules:
+    """``sys.modules`` with these stubs in place for the block, restored after."""
+
+    def __init__(self, **modules):
+        self.modules, self.saved = modules, {}
+
+    def __enter__(self):
+        for name, module in self.modules.items():
+            self.saved[name] = sys.modules.get(name)
+            sys.modules[name] = module
+
+    def __exit__(self, *exc):
+        for name, old in self.saved.items():
+            if old is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = old
+
+
+def test_fresh_db_opens_on_the_live_connections_settings_not_the_site_config():
+    """konsol#177 item 2: _fresh_db rebuilt the connection from the site config
+    with ``user=conf.db_name``. That copies Frappe 15's rule; Frappe 16
+    connects as ``conf.db_user`` when it is set (``frappe.connect``), so the
+    copy fails to authenticate on such a site. The second connection takes
+    socket, host, port, user, password and database from the connection
+    Frappe made, ``frappe.db``, and passes them by keyword: ``get_db``'s
+    positional order differs between the two versions."""
+    frappe = _frappe()
+    frappe.conf = types.SimpleNamespace(db_name="zz_site_db", db_user="zz_site_db", db_password="conf-secret",
+                                        db_host="conf-host", db_port=3306, db_socket=None)
+    frappe.local = types.SimpleNamespace(conf=frappe.conf)
+    frappe.db = types.SimpleNamespace(socket="/run/mysqld/mysqld.sock", host="live-host", port=3307,
+                                      user="zz_live_user", password="live-secret", cur_db_name="zz_site_db",
+                                      sql=lambda *a, **k: [])
+    calls = []
+
+    class FreshDB:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+            self.connected = False
+
+        def connect(self):
+            self.connected = True
+
+    database = types.ModuleType("frappe.database")
+
+    def get_db(*args, **kwargs):
+        assert args == (), "get_db takes keywords only: Frappe 15 and 16 order its parameters differently"
+        return FreshDB(**kwargs)
+    database.get_db = get_db
+
+    rules = _load(frappe)
+    with _Modules(frappe=frappe, **{"frappe.database": database}):
+        db = rules._fresh_db()
+
+    assert db.connected
+    assert calls == [{"socket": "/run/mysqld/mysqld.sock", "host": "live-host", "port": 3307,
+                      "user": "zz_live_user", "password": "live-secret", "cur_db_name": "zz_site_db"}], calls

@@ -65,8 +65,36 @@ def test_clickhouse_uses_epm_settings():
 
 # --- a forced sync fails loudly (konsol#194) ---
 
-def _load_clickhouse():
+class _SharedCache:
+    """``frappe.cache()`` as every process of a site sees it: one Redis, so one
+    store. Hand the same instance to two module loads and they share it, as a
+    web worker and an RQ worker share the site's Redis (konsol#177). Hash
+    fields only, which is all the sync-failure record uses."""
+
+    def __init__(self):
+        self.hashes = {}
+
+    def hset(self, name, key, value, shared=False):
+        self.hashes.setdefault(name, {})[key] = value
+
+    def hget(self, name, key, generator=None, shared=False):
+        return self.hashes.get(name, {}).get(key)
+
+    def hdel(self, name, keys, shared=False):
+        for key in (keys if isinstance(keys, (list, tuple)) else (keys,)):
+            self.hashes.get(name, {}).pop(key, None)
+
+    def hgetall(self, name):
+        # Redis hands field names back as bytes (frappe decodes them with
+        # safe_decode); so does this stub, so a caller that forgets is caught.
+        return {k.encode(): v for k, v in self.hashes.get(name, {}).items()}
+
+
+def _load_clickhouse(cache=None):
     """clickhouse.py against a stub frappe (pattern from test_clickhouse_execute.py).
+
+    ``cache``: the ``frappe.cache()`` this instance sees; pass one
+    ``_SharedCache`` to two loads to model two processes of one site.
 
     ``requests`` is imported here, not at module scope: clickhouse.py needs it,
     but the source-reading tests above do not, and a host without it should
@@ -74,6 +102,8 @@ def _load_clickhouse():
     import requests  # noqa: F401 — clickhouse.py imports it at module level
 
     frappe = types.ModuleType("frappe")
+    cache = _SharedCache() if cache is None else cache
+    frappe.cache = lambda: cache
     frappe.flags = types.SimpleNamespace(
         in_install=False, in_import=False, in_migrate=False, in_patch=False)
     frappe._logger = types.SimpleNamespace(
@@ -159,6 +189,78 @@ def test_an_unforced_sync_stays_best_effort():
         assert returned is None, error_type
         recorded = module._sync_failures.get(_TABLE)
         assert recorded and recorded["error_type"] == error_type, repr(recorded)
+
+
+# --- sync failure health is shared by every process (konsol#177 item 1) ---
+
+def _ok(sql, params=None):
+    """A ClickHouse that answers every statement: '1' to the health probe,
+    nothing to the rest (the sorting-key check reads '' as 'no table')."""
+    return "1" if sql == "SELECT 1" else ""
+
+
+def test_a_failure_recorded_in_one_process_shows_in_another_processs_health():
+    """konsol#177 item 1: _sync_failures was a dict in the memory of the
+    process that hit the failure. A sync that failed in the RQ worker was
+    invisible to check_health served by the web process, which reported
+    healthy over a table the warehouse was missing. The record lives in the
+    site's Redis cache now, so two module instances sharing one cache see it."""
+    cache = _SharedCache()
+    worker = _load_clickhouse(cache)
+    web = _load_clickhouse(cache)
+
+    raised, returned = _sync(worker, _errors(worker)["connection_refused"], force=False)
+    assert raised is None and returned is None
+
+    web.execute = _ok
+    health = web.check_health()
+    assert health["status"] == "degraded", health
+    assert health["message"] == "1 table(s) have sync failures", health
+    [failure] = health["recent_sync_failures"]
+    assert failure["table"] == _TABLE, failure
+    assert failure["error_type"] == "connection_refused", failure
+    assert failure["message"] == "connection refused", failure
+    assert failure["timestamp"], failure
+
+
+def test_a_later_successful_sync_clears_the_shared_failure():
+    """The repair is visible everywhere too: once the worker syncs the table
+    again, the web process's check_health is healthy and names no table."""
+    cache = _SharedCache()
+    worker = _load_clickhouse(cache)
+    web = _load_clickhouse(cache)
+    _sync(worker, _errors(worker)["timeout"], force=False)
+    web.execute = _ok
+    assert web.check_health()["status"] == "degraded"
+
+    worker.execute = _ok
+    assert worker.sync_table(_TABLE, ["a"], [("ZZ01",)]) == 1
+
+    health = web.check_health()
+    assert health["status"] == "healthy", health
+    assert health["recent_sync_failures"] == [], health
+    assert health["message"] == "All systems operational", health
+
+
+def test_a_failure_in_another_table_stays_when_one_table_recovers():
+    """Clearing is per table: a recovered table must not hide a sibling that
+    is still broken."""
+    cache = _SharedCache()
+    worker = _load_clickhouse(cache)
+    other = "epm_staging.zz_other"
+
+    def boom(sql, params=None):
+        raise worker.requests.exceptions.Timeout("read timed out")
+    worker.execute = boom
+    worker.sync_table(_TABLE, ["a"], [("ZZ01",)])
+    worker.sync_table(other, ["a"], [("ZZ01",)])
+    worker.execute = _ok
+    worker.sync_table(_TABLE, ["a"], [("ZZ01",)])
+
+    web = _load_clickhouse(cache)
+    web.execute = _ok
+    health = web.check_health()
+    assert [f["table"] for f in health["recent_sync_failures"]] == [other], health
 
 
 # --- a failed sync leaves the old rows (konsol#194) ---
