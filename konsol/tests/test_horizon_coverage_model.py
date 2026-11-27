@@ -208,3 +208,14 @@ def test_a_one_period_horizon_reads_one_period_not_one_periods():
     assert r["sentence"] == "Round ZZFC as of 2027-06-30 covers FY2027 P7 (1 period): approved for FY2027 (FC-27)."
     [r] = M.rounds([_cycle("FC-27", 2027, date(2027, 6, 30), 6)], _calendar([2027]))
     assert "(6 periods)" in r["sentence"]
+
+
+def test_the_approved_for_list_names_approved_cycles_only():
+    """Live test of #625: the sentence listed the draft Cycle inside
+    "approved for …"; the draft belongs in the pending note only."""
+    cycles = [_cycle("A26", 2026, date(2026, 9, 30), 3, docstatus=1),
+              _cycle("A27", 2027, date(2026, 9, 30), 12, docstatus=0)]
+    [r] = M.rounds(cycles, _calendar([2026, 2027]))
+    approved_part = r["sentence"].split("Note:")[0]
+    assert "(A26)" in approved_part and "A27" not in approved_part, r["sentence"]
+    assert "draft Cycle A27 would extend the horizon to 12 once approved" in r["sentence"]
