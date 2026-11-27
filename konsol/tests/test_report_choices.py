@@ -56,17 +56,28 @@ def _fake_frappe(user, roles, perms):
 
     def get_all(doctype, filters=None, fields=None, order_by=None,
                 pluck=None, limit_page_length=None, **k):
-        # Every list must say its order: get_all sorts by creation otherwise.
-        assert order_by, f"get_all({doctype}) without order_by"
+        # The picker lists must say their order: get_all sorts by creation
+        # otherwise. The subtree lookup (lft/rgt) is order-free and is skipped.
+        if not (fields and "lft" in fields):
+            assert order_by, f"get_all({doctype}) without order_by"
         if doctype == "Entity":
             rows = ENTITIES
             if filters and "name" in filters:
                 _, names = filters["name"]
                 rows = [r for r in rows if r["entity_code"] in names]
-            return [_Row({**r, "name": r["entity_code"]}) for r in rows]
-        if doctype == "Consolidation Group":
-            return [_Row(r) for r in GROUPS]
-        return []
+            rows = [_Row({**r, "name": r["entity_code"]}) for r in rows]
+        elif doctype == "Consolidation Group":
+            rows = [_Row({**r, "name": f"CG-{r['consolidation_group']}-{r['data_area_id']}"})
+                    for r in GROUPS]
+        else:
+            return []
+        # Frappe sorts by order_by; the stub must too, or a picker's order is untested.
+        if order_by:
+            for clause in reversed(order_by.split(",")):
+                key, _, direction = clause.strip().partition(" ")
+                rows.sort(key=lambda r: r.get(key) or "",
+                          reverse=direction.lower() == "desc")
+        return rows
 
     fake.get_all = get_all
     return fake
