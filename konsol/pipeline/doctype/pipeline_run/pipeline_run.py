@@ -6,9 +6,15 @@ class PipelineRun(Document):
     pass
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def trigger_pipeline():
-    """Create a new Pipeline Run and enqueue the background job."""
+    """Create a new Pipeline Run and enqueue the background job.
+
+    POST-only (konsol#473): it inserts the run, commits and enqueues the
+    worker, and a GET request is rolled back at the end, so a GET would
+    start the job and lose the record. The Desk buttons in pipeline_run.js
+    call it with frappe.call, which POSTs.
+    """
     # #64a single-flight: this legacy path also shells dbt against the one shared
     # project dir, so it must honor the same guard as orchestrator.start_run —
     # otherwise two concurrent dbt builds can corrupt target/ and race incrementals.
