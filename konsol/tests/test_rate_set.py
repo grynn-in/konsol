@@ -408,10 +408,16 @@ def _site(monkeypatch, flagged=("ACTUAL",), sets=1, blank_ger=3, her_rows=(), ge
     columns = {"Group Exchange Rate": {"rate_set"} if ger_has_rate_set else set()}
 
     def sql(query, params=(), *a, **k):
+        if query.lstrip().upper().startswith("ALTER"):
+            # Frappe refuses DDL through db.sql: "This statement can cause implicit commit"
+            raise RuntimeError("This statement can cause implicit commit")
         record["sql"].append((query, params))
+        return []
+
+    def sql_ddl(query, *a, **k):
+        record["sql"].append((query, ()))
         if "ADD COLUMN" in query.upper() and "tabGroup Exchange Rate" in query and "rate_set" in query:
             columns["Group Exchange Rate"].add("rate_set")
-        return []
 
     def count(doctype, filters=None):
         if doctype == "Rate Set":
@@ -427,7 +433,7 @@ def _site(monkeypatch, flagged=("ACTUAL",), sets=1, blank_ger=3, her_rows=(), ge
     frappe.reload_doc = lambda *a: record["reloaded"].append(a)
     frappe.rename_doc = lambda dt, old, new, **k: record["renamed"].append((old, new))
     frappe.db = types.SimpleNamespace(
-        sql=sql, count=count, table_exists=lambda t: True,
+        sql=sql, sql_ddl=sql_ddl, count=count, table_exists=lambda t: True,
         has_column=lambda dt, col: col in columns.get(dt, {col}),
         set_value=lambda dt, name, field, value, **k: record["set_value"].append((dt, name, field, value)),
         exists=lambda dt, name: False)
@@ -490,7 +496,8 @@ def test_a_site_from_before_rate_sets_gets_the_column_on_its_retired_table_first
     (konsol#592 T26), so the patch's reload adds nothing, and counting blank
     rows raised 1054 Unknown column (a 9 Nov example site, 27 Nov 2026). The
     patch adds the column itself, then stamps; the Rate Sheet migration reads
-    it next."""
+    it next. The DDL goes through db.sql_ddl: db.sql refuses a statement that
+    commits implicitly (the live run of the first fix, 27 Nov 2026)."""
     m, record, _ = _site(monkeypatch, blank_ger=2, ger_has_rate_set=False)
     m.execute()
     ddl = [q for q, _ in record["sql"] if "ADD COLUMN" in q.upper()]
