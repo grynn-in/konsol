@@ -233,7 +233,7 @@ def test_doctype_driver_account_child_links():
         "The account as listed on the driver; Main Account is it or one of its descendants.")
     assert fields["main_account"]["description"] == (
         "An account the Account Set driver reads, expanded: a group account on the driver "
-        "is stored as one row per descendant.")
+        "is stored as one row for itself and one per descendant.")
 
 
 def test_doctype_account_child_links():
