@@ -34,8 +34,13 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SCENARIOS = [("ZZ_ACT", "actual"), ("ZZ_BUD", "budget"), ("ZZ_BUD2", "budget"),
              ("ZZ_FC", "forecast")]
-#: Budget Cycles as (scenario_id, fiscal_year).
-CYCLES = [("ZZ_BUD", 2026)]
+#: Budget Cycles as (name, scenario_id, fiscal_year, docstatus).
+CYCLES = [("ZZ-BUD-2026", "ZZ_BUD", 2026, 1)]
+_BUD2_2026 = ("ZZ-BUD2-2026", "ZZ_BUD2", 2026, 1)
+#: The entities each Cycle budgets, as (cycle, entity): its Budget Entries
+#: and its Annual Inputs (konsol#568).
+ENTRIES = [("ZZ-BUD-2026", "ZZ01"), ("ZZ-BUD2-2026", "ZZ01")]
+ANNUAL = [("ZZ-BUD-2026", "ZZ03")]
 #: Submitted Current Forecasts as (scenario_id, fiscal_year, budget_cycle, as_of_date).
 DECLARED = [("ZZ_FC", 2026, "ZZ-R2", "2026-06-30")]
 GROUPS = ["ZZG"]
@@ -69,6 +74,7 @@ FACTS = [
     _fact("consolidated", "consolidated", CONS),
     _fact("consolidated_budget", "consolidated_budget", CB, 1),
     _fact("forecast_accuracy_group", "forecast_accuracy_group", ACC_GROUP),
+    _fact("variance_analysis", "variance", "epm_gold.gold_variance_analysis"),
 ]
 
 
@@ -81,7 +87,16 @@ def _month_end(p):
             10: 31, 11: 30, 12: 31}[p]
 
 
-def _frappe(scenarios, cycles, declared, groups, lookups):
+def _matches(value, condition):
+    """A frappe filter value: a plain value, ["in", [...]] or ["<", n]."""
+    if isinstance(condition, list):
+        op, arg = condition
+        return value in arg if op == "in" else value < arg
+    return value == condition
+
+
+def _frappe(scenarios, cycles, declared, groups, lookups, entries=ENTRIES,
+            annual=ANNUAL):
     def get_all(doctype, filters=None, pluck=None, fields=None, **kw):
         filters = dict(filters or {})
         lookups.append(doctype)
@@ -93,8 +108,17 @@ def _frappe(scenarios, cycles, declared, groups, lookups):
             return [{"scenario_id": s, "fiscal_year": y, "budget_cycle": c,
                      "as_of_date": d} for s, y, c, d in declared]
         if doctype == "Budget Cycle":
-            wanted = set(filters["scenario_id"][1])
-            return [{"scenario_id": s, "fiscal_year": y} for s, y in cycles if s in wanted]
+            found = []
+            for name, sid, year, docstatus in cycles:
+                record = {"name": name, "scenario_id": sid, "fiscal_year": year,
+                          "docstatus": docstatus}
+                if all(_matches(record[k], v) for k, v in filters.items()):
+                    found.append({k: record[k] for k in ("name", "scenario_id", "fiscal_year")})
+            return found
+        if doctype in ("Budget Entry", "Budget Annual Input"):
+            rows = entries if doctype == "Budget Entry" else annual
+            return [{"cycle": c, "data_area_id": e} for c, e in rows
+                    if _matches(c, filters["cycle"]) and _matches(e, filters["data_area_id"])]
         if doctype == "Consolidation Group":
             return list(groups) if pluck else [{"consolidation_group": g} for g in groups]
         raise AssertionError(doctype)
@@ -131,7 +155,7 @@ def _frappe(scenarios, cycles, declared, groups, lookups):
 
 def read(rows, scenarios=SCENARIOS, cycles=CYCLES, declared=DECLARED,
          groups=GROUPS, loaded=(("ZZ01", 2026, 1),), table_rows=ROWS,
-         lookups=None, calls=None):
+         lookups=None, calls=None, entries=ENTRIES, annual=ANNUAL):
     """api._batch_query_clickhouse over ``rows`` (overrides of a default
     budget_input request: entity ZZ01, FY2026 P7, account ZZ4000).
     ``loaded`` is the trial-balance coverage the fake warehouse reports.
@@ -141,7 +165,7 @@ def read(rows, scenarios=SCENARIOS, cycles=CYCLES, declared=DECLARED,
     queries = []
     lookups = [] if lookups is None else lookups
     calls = [] if calls is None else calls
-    fake, utils = _frappe(scenarios, cycles, declared, groups, lookups)
+    fake, utils = _frappe(scenarios, cycles, declared, groups, lookups, entries, annual)
     stubs = {
         "frappe": fake, "frappe.utils": utils,
         "konsol.clickhouse": types.SimpleNamespace(
@@ -204,7 +228,7 @@ def read(rows, scenarios=SCENARIOS, cycles=CYCLES, declared=DECLARED,
 
 def test_budget_read_with_two_active_budgets_is_refused_by_name():
     """Before: -120 (ZZ_BUD's -50 plus ZZ_BUD2's -70). After: refused."""
-    cycles = CYCLES + [("ZZ_BUD2", 2026)]
+    cycles = CYCLES + [_BUD2_2026]
     result, queries = read([{}], cycles=cycles)
     assert queries == []
     assert result["values"] == [None]
@@ -223,7 +247,7 @@ def test_budget_read_with_one_active_budget_reads_it_by_name():
 
 def test_budget_read_takes_the_years_own_budget():
     """A second budget scenario whose Cycle is another year is not read."""
-    result, _ = read([{}], cycles=CYCLES + [("ZZ_BUD2", 2027)])
+    result, _ = read([{}], cycles=CYCLES + [("ZZ-BUD2-2027", "ZZ_BUD2", 2027, 1)])
     assert not result.get("errors"), result
     assert result["values"] == [-50.0]
 
@@ -237,7 +261,7 @@ def test_budget_read_with_no_active_budget_is_refused():
 
 
 def test_named_budget_read_is_unchanged_with_two_budgets():
-    cycles = CYCLES + [("ZZ_BUD2", 2026)]
+    cycles = CYCLES + [_BUD2_2026]
     result, _ = read([{"scenario_id": "ZZ_BUD2"}], cycles=cycles)
     assert result["values"] == [-70.0]
 
@@ -327,3 +351,107 @@ def test_latest_estimate_as_of_in_no_regular_period_is_refused():
         "The as-of date of the Current Forecast of 'ZZ_FC' for FY2026 is in no "
         "declared Regular period, so its actual side cannot be told. Declare "
         "the period in EPM Fiscal Year."]
+
+
+# ── #568: a budget read is refused only where no approved Cycle budgets it ──
+#
+# Decided by Deepak Pai, 27 Nov 2026: a read is refused when the scenario has
+# no approved Budget Cycle for the entity and year; where an approved Cycle
+# exists and holds no row, the read is 0 (no budget means budget zero, 22 Sep
+# 2026). A Cycle is per (scenario, year); it budgets an entity when it holds a
+# Budget Entry or an Annual Input for it. A group-keyed read asks the
+# (scenario, year) only.
+
+def no_cycle(sid, year, who):
+    return (f"Scenario '{sid}' has no approved Budget Cycle for FY{year}, so "
+            f"there is no budget to read for {who}. Approve a Budget Cycle for "
+            f"'{sid}' FY{year}.")
+
+
+def no_entity(sid, year, entity, cycle):
+    return (f"Scenario '{sid}' has no approved Budget Cycle for entity "
+            f"'{entity}' in FY{year}: approved Cycle {cycle} holds no Budget "
+            f"Entry or Annual Input for it, so there is no budget to read. Add "
+            f"its budget to a Budget Cycle of '{sid}' FY{year} and approve the "
+            "Cycle.")
+
+
+_DRAFT_BUD2 = CYCLES + [("ZZ-BUD2-2026", "ZZ_BUD2", 2026, 0)]
+
+
+def test_budget_read_of_a_scenario_with_no_approved_cycle_is_refused():
+    """ZZ_BUD2's FY2026 Cycle is a draft: its rows are not in the warehouse,
+    and before the read was 0.0."""
+    for fact, measure in (("budget_input", "period_amount"),
+                          ("variance_analysis", "variance_abs")):
+        result, queries = read([{"fact": fact, "measure": measure,
+                                 "scenario_id": "ZZ_BUD2"}], cycles=_DRAFT_BUD2)
+        assert queries == [], fact
+        assert result["values"] == [None], fact
+        assert result["errors"] == [no_cycle("ZZ_BUD2", 2026, "entity 'ZZ01'")], fact
+
+
+def test_variance_read_of_a_scenario_with_no_approved_cycle_for_the_year_is_refused():
+    """ZZ_BUD is active (its FY2026 Cycle is approved) but has none for FY2027."""
+    result, queries = read([{"fact": "variance_analysis", "measure": "variance_abs",
+                             "scenario_id": "ZZ_BUD", "year": 2027}])
+    assert queries == []
+    assert result["errors"] == [no_cycle("ZZ_BUD", 2027, "entity 'ZZ01'")]
+
+
+def test_budget_read_of_an_entity_the_approved_cycle_does_not_budget_is_refused():
+    for fact, measure in (("budget_input", "period_amount"),
+                          ("variance_analysis", "variance_abs")):
+        for scenario_id in ("", "ZZ_BUD"):
+            result, queries = read([{"fact": fact, "measure": measure, "entity": "ZZ02",
+                                     "scenario_id": scenario_id}])
+            assert queries == [], (fact, scenario_id)
+            assert result["values"] == [None], (fact, scenario_id)
+            assert result["errors"] == [no_entity("ZZ_BUD", 2026, "ZZ02", "ZZ-BUD-2026")], \
+                (fact, scenario_id)
+
+
+def test_budgeted_entity_with_no_row_reads_zero():
+    """An approved Cycle budgets ZZ01, and the account has no row: budget
+    zero, never a refusal (22 Sep 2026)."""
+    result, queries = read([{}], table_rows=[])
+    assert not result.get("errors"), result
+    assert result["values"] == [0.0]
+    assert len(queries) == 1
+
+
+def test_an_annual_input_budgets_its_entity():
+    result, _ = read([{"entity": "ZZ03"}])
+    assert not result.get("errors"), result
+
+
+def test_consolidated_budget_with_no_approved_cycle_is_refused_naming_the_group():
+    result, queries = read([{"fact": "consolidated_budget", "entity": "ZZG",
+                             "scenario_id": "ZZ_BUD2"}], cycles=_DRAFT_BUD2)
+    assert queries == []
+    assert result["errors"] == [no_cycle("ZZ_BUD2", 2026, "group 'ZZG'")]
+
+
+def test_consolidated_budget_asks_the_scenario_and_year_only():
+    """The group holds no Budget Entry of its own: an approved Cycle of the
+    year is enough."""
+    for scenario_id in ("", "ZZ_BUD"):
+        result, _ = read([{"fact": "consolidated_budget", "entity": "ZZG",
+                           "scenario_id": scenario_id}])
+        assert not result.get("errors"), (scenario_id, result)
+
+
+def test_budget_coverage_is_looked_up_once_per_batch():
+    """Three cells, two entities, two years: one lookup of each doctype for
+    the coverage, however many cells."""
+    lookups = []
+    cycles = CYCLES + [("ZZ-BUD-2027", "ZZ_BUD", 2027, 1)]
+    entries = ENTRIES + [("ZZ-BUD-2027", "ZZ01")]
+    result, _ = read([{}, {"entity": "ZZ03"}, {"year": 2027},
+                      {"fact": "variance_analysis", "measure": "variance_abs"}],
+                     cycles=cycles, entries=entries, lookups=lookups)
+    assert not result.get("errors"), result
+    assert lookups.count("Budget Entry") == 1
+    assert lookups.count("Budget Annual Input") == 1
+    # one for the active budget scenarios, one for the approved Cycles read
+    assert lookups.count("Budget Cycle") <= 2

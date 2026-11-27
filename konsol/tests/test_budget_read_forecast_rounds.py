@@ -42,6 +42,8 @@ DECLARED = [("ZZ_FC", 2026)]
 #: Budget Cycles as (name, scenario_id, fiscal_year, docstatus): ZZ_BUD's
 #: approved Cycle, the one budget scenario of FY2026 (konsol#563).
 CYCLES = [("ZZ-BUD-2026", "ZZ_BUD", 2026, 1)]
+#: The entities each Cycle budgets (Budget Entry), as (cycle, entity) (#568).
+ENTRIES = [("ZZ-BUD-2026", "ZZ01")]
 
 #: Signed amounts (credit negative) per scenario and cycle, one account.
 _SPREAD = [
@@ -60,6 +62,8 @@ TABLES = {
         r for r in _SPREAD if r["cycle"] == "ZZ-R2"],
     "epm_gold.gold_latest_estimate_current": [
         r for r in _SPREAD if r["cycle"] == "ZZ-R2"],
+    "epm_gold.gold_variance_at_hierarchy_node": [
+        r for r in _SPREAD if r["scenario_id"] == "ZZ_BUD"],
 }
 
 
@@ -136,6 +140,11 @@ def _frappe(scenarios, declared, lookups, cycles=CYCLES):
                 if all(_matches(record[k], v) for k, v in filters.items()):
                     found.append({k: record[k] for k in ("name", "scenario_id", "fiscal_year")})
             return found
+        if doctype == "Budget Entry":
+            return [{"cycle": c, "data_area_id": e} for c, e in ENTRIES
+                    if _matches(c, filters["cycle"]) and _matches(e, filters["data_area_id"])]
+        if doctype == "Budget Annual Input":
+            return []
         raise AssertionError(doctype)
 
     fake = types.ModuleType("frappe")
@@ -487,3 +496,49 @@ def test_renamed_forecast_dataset_reads_the_declared_round():
         result, queries, _ = flat([{"fact": fact}])
         assert not result.get("errors"), (fact, result)
         assert result["values"] == [-110.0], fact
+
+
+# ── #568: the hierarchy budget and variance reads need an approved Cycle ───
+#
+# Deepak Pai, 27 Nov 2026: refused only when the scenario has no approved
+# Budget Cycle for the entity and year (a Cycle budgets an entity when it
+# holds a Budget Entry or Annual Input for it); a wildcard read asks the
+# (scenario, year) only.
+
+_HIER_READS = [{"scenario": "budget", "measure": "period_amount"},
+               {"scenario": "variance", "measure": "variance_abs"}]
+
+
+def test_hierarchy_read_of_an_entity_the_approved_cycle_does_not_budget_is_refused():
+    for base in _HIER_READS:
+        result, queries, _ = hierarchy([dict(base, entity="ZZ02")])
+        assert queries == [], base
+        assert result["values"] == [None], base
+        assert result["errors"] == [
+            "Scenario 'ZZ_BUD' has no approved Budget Cycle for entity 'ZZ02' in "
+            "FY2026: approved Cycle ZZ-BUD-2026 holds no Budget Entry or Annual "
+            "Input for it, so there is no budget to read. Add its budget to a "
+            "Budget Cycle of 'ZZ_BUD' FY2026 and approve the Cycle."], base
+
+
+def test_hierarchy_read_of_a_budgeted_entity_and_a_wildcard_reads():
+    for base in _HIER_READS:
+        for entity in ("ZZ01", "ALL"):
+            result, queries, _ = hierarchy([dict(base, entity=entity)])
+            assert not result.get("errors"), (base, entity, result)
+            assert len(queries) == 1, (base, entity)
+
+
+def test_hierarchy_read_of_a_scenario_with_no_approved_cycle_is_refused():
+    scenarios = SCENARIOS + [("ZZ_BUD2", "budget")]
+    cycles = CYCLES + [("ZZ-BUD2-2026", "ZZ_BUD2", 2026, 0)]
+    for base in _HIER_READS:
+        for entity, who in (("ZZ01", "entity 'ZZ01'"), ("ALL", "any entity")):
+            result, queries, _ = hierarchy(
+                [dict(base, entity=entity, scenario_id="ZZ_BUD2")],
+                scenarios=scenarios, cycles=cycles)
+            assert queries == [], (base, entity)
+            assert result["errors"] == [
+                f"Scenario 'ZZ_BUD2' has no approved Budget Cycle for FY2026, so "
+                f"there is no budget to read for {who}. Approve a Budget Cycle "
+                "for 'ZZ_BUD2' FY2026."], (base, entity)
