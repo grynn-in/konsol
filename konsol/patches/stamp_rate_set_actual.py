@@ -88,6 +88,13 @@ def execute():
     # Group Exchange Rate is retired (konsol#592 T26): its code left the app, so
     # the reload above finds no file, and a site that never had the table has
     # no rows to stamp.
+    # A site from before S4 has the table without ``rate_set``, and the reload
+    # above can no longer add it: the patch adds the column itself, so the
+    # rows are stamped here and the Rate Sheet migration reads them next
+    # (27 Nov 2026: 1054 Unknown column on a 9 Nov site).
+    if frappe.db.table_exists(GER) and not frappe.db.has_column(GER, "rate_set"):
+        frappe.db.sql("ALTER TABLE `tabGroup Exchange Rate` ADD COLUMN `rate_set` varchar(140)")
+        print("konsol#348 rate sets: added the rate_set column to the retired Group Exchange Rate table")
     blank_ger = frappe.db.count(GER, {"rate_set": _BLANK}) if frappe.db.table_exists(GER) else 0
     her_rows = frappe.get_all(HER, filters={"rate_set": _BLANK}, fields=_HER_FIELDS, limit_page_length=0)
     if not blank_ger and not her_rows:
