@@ -549,13 +549,15 @@ def test_hierarchy_read_of_an_entity_the_approved_cycle_does_not_budget_is_refus
             "Budget Cycle of 'ZZ_BUD' FY2026 and approve the Cycle."], base
 
 
-def test_hierarchy_read_of_a_budgeted_entity_in_another_case_passes_coverage():
-    """MariaDB's IN found ZZ01 for 'zz01'; the Python set test was exact and
-    refused it as unbudgeted. Coverage matches the way MariaDB found it; the
-    ClickHouse read then behaves as for any entity code case (konsol#623)."""
+def test_hierarchy_read_of_a_budgeted_entity_in_another_case_is_refused_naming_the_code():
+    """MariaDB's IN finds ZZ01 for 'zz01', but ClickHouse compares codes exactly,
+    so passing coverage would read a silent 0. The read is refused and names
+    the code it matched (no silent fallback; konsol#623 review)."""
     result, queries, _ = hierarchy([{"scenario": "budget", "measure": "period_amount",
                                      "entity": "zz01"}])
-    assert not any("holds no Budget Entry" in e for e in result.get("errors") or []), result
+    assert queries == [], queries
+    [error] = result["errors"]
+    assert "'zz01'" in error and "'ZZ01'" in error and "holds no Budget Entry" not in error, error
 
 
 def test_hierarchy_read_of_a_budgeted_entity_and_a_wildcard_reads():
