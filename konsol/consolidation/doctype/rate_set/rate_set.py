@@ -110,11 +110,14 @@ class RateSet(Document):
 
 def ensure_actual_set():
     """Create Rate Set ACTUAL, flagged Is Actuals, when the site has no Rate Set
-    at all; returns its name, or None when sets exist. Runs from after_install
-    and the stamping patch. A site that holds sets, flagged or not, is left
-    alone: readers refuse by name while none is flagged, and seeding a flagged
-    set beside theirs would decide their policy for them."""
-    if frappe.db.count(DOCTYPE):
+    of its own; returns its name, or None when it has one. CONSTANT does not
+    count: the app creates it (konsol#592), so a site upgraded from before Rate
+    Sets that holds only CONSTANT still gets ACTUAL (27 Nov 2026). Runs from
+    after_install, after_migrate (before ensure_constant_set) and the stamping
+    patch. A site that holds sets, flagged or not, is left alone: readers
+    refuse by name while none is flagged, and seeding a flagged set beside
+    theirs would decide their policy for them."""
+    if frappe.db.count(DOCTYPE, {"name": ["!=", CONSTANT_NAME]}):
         return None
     doc = frappe.get_doc({
         "doctype": DOCTYPE, "rate_set": ACTUALS_NAME, "label": ACTUALS_LABEL,
