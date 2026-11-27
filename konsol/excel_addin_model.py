@@ -28,9 +28,9 @@ ADDIN_ENDPOINTS = (
     "excel_addin_logout",
     "build_cell_map",
     "build_snapshot",
-    # konsol#548 v1: the report catalog and pickers. The pane calls them from
-    # T14; test_excel_addin_cors.py lists them as reserved until then.
-    "list_report_templates",
+    # konsol#548 v1 T14: the report catalog and the pickers of its form.
+    # (list_report_templates stays a whitelisted method; the pane does not
+    # call it, so it gets no CORS.)
     "report_catalog",
     "report_choices",
 )
