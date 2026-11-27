@@ -23,7 +23,9 @@ silently shorter than the Cycle says.
   horizon cannot be counted.
 
 Declared sub-rules (not HMDs; say so in the PR): the round's horizon is the
-longest its Cycles declare, and a disagreement between them is named in the
+longest its APPROVED Cycles declare (the warehouse cuts the round there,
+konsolidat#376); a longer draft is named as ``pending_horizon_periods``, never
+dropped; a disagreement between them is named in the
 sentence; a cancelled Cycle is not part of any round and covers nothing; a
 Cycle of a non-forecast scenario has no round (QB8 a) and is skipped.
 
@@ -93,8 +95,14 @@ def _as_date(value):
 def _round(scenario_id, as_of, members, regular):
     members = sorted(members, key=lambda c: (int(c.get("fiscal_year") or 0), c["name"]))
     names = [c["name"] for c in members]
-    horizons = {c["name"]: int(c.get("horizon_periods") or 0) for c in members}
+    # The warehouse holds approved Cycles only and cuts a round at the longest
+    # horizon among them (konsolidat#376, PR #402): so does the report. A draft
+    # that declares longer is named as pending, never dropped.
+    horizons = {c["name"]: int(c.get("horizon_periods") or 0) for c in members if int(c.get("docstatus") or 0) == 1}
     horizon = max(horizons.values()) if horizons else 0
+    longer_drafts = {c["name"]: int(c.get("horizon_periods") or 0) for c in members
+                     if int(c.get("docstatus") or 0) == 0 and int(c.get("horizon_periods") or 0) > horizon}
+    pending = max(longer_drafts.values()) if longer_drafts else None
     approved_years = sorted({int(c["fiscal_year"]) for c in members if int(c.get("docstatus") or 0) == 1})
     draft_cycles = [c["name"] for c in members if int(c.get("docstatus") or 0) == 0]
     as_of_date = date.fromisoformat(as_of)
@@ -103,6 +111,7 @@ def _round(scenario_id, as_of, members, regular):
         "as_of_date": as_of,
         "as_of_period": None,
         "horizon_periods": horizon,
+        "pending_horizon_periods": pending,
         "cycles": names,
         "approved_years": approved_years,
         "draft_cycles": draft_cycles,
@@ -114,9 +123,16 @@ def _round(scenario_id, as_of, members, regular):
     }
     head = f"Round {scenario_id} as of {as_of}"
     notes = []
+    for name, h in sorted(longer_drafts.items()):
+        notes.append(f"draft Cycle {name} would extend the horizon to {h} once approved")
     if len(set(horizons.values())) > 1:
         notes.append("its Cycles declare different horizons ("
                      + ", ".join(f"{n}: {h}" for n, h in horizons.items()) + "); the longest is counted")
+
+    if not horizons:
+        row["state"] = UNCOVERED
+        row["sentence"] = f"{head}: no approved Cycle, so the warehouse holds nothing for this round. Approve a Cycle."
+        return _with_notes(row, notes)
 
     index = next((i for i, (_, _, s, e) in enumerate(regular) if s <= as_of_date <= e), None)
     if index is None:
@@ -135,7 +151,8 @@ def _round(scenario_id, as_of, members, regular):
     if not row["uncovered"] and not row["undeclared_periods"]:
         row["state"] = OK
         years = ", ".join(f"FY{y}" for y in approved_years)
-        row["sentence"] = f"{span}: approved for {years} ({', '.join(names)})."
+        approved_names = [c["name"] for c in members if int(c.get("docstatus") or 0) == 1]
+        row["sentence"] = f"{span}: approved for {years} ({', '.join(approved_names)})."
         return _with_notes(row, notes)
 
     row["state"] = UNCOVERED

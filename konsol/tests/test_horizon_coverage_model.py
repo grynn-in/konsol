@@ -175,9 +175,47 @@ def test_the_model_imports_nothing_from_frappe():
     assert not [n for n in names if n and n.split(".")[0] in ("frappe", "requests")], names
 
 
+def test_the_horizon_is_the_longest_among_approved_cycles_and_a_longer_draft_is_named():
+    """The warehouse cuts a round at the longest horizon among its APPROVED
+    Cycles (konsolidat#376, PR #402), so a draft's longer horizon is not the
+    round's. It is reported as pending, never dropped."""
+    cycles = [_cycle("A26", 2026, date(2026, 9, 30), 12, docstatus=0),
+              _cycle("A27", 2027, date(2026, 9, 30), 3, docstatus=1)]
+    [r] = M.rounds(cycles, _calendar([2026, 2027]))
+    assert r["horizon_periods"] == 3
+    assert r["pending_horizon_periods"] == 12
+    assert "draft Cycle A26 would extend the horizon to 12 once approved" in r["sentence"]
+
+
+def test_no_longer_draft_means_no_pending_horizon():
+    cycles = [_cycle("A27", 2027, date(2026, 9, 30), 3), _cycle("A26", 2026, date(2026, 9, 30), 3, docstatus=0)]
+    [r] = M.rounds(cycles, _calendar([2026, 2027]))
+    assert r["pending_horizon_periods"] is None
+    assert "would extend" not in r["sentence"]
+
+
+def test_a_round_with_only_drafts_has_no_horizon_and_is_not_covered():
+    [r] = M.rounds([_cycle("A26", 2026, date(2026, 9, 30), 6, docstatus=0)], _calendar([2026, 2027]))
+    assert r["horizon_periods"] == 0
+    assert r["pending_horizon_periods"] == 6
+    assert r["state"] == M.UNCOVERED
+    assert "no approved Cycle" in r["sentence"]
+
+
 def test_a_one_period_horizon_reads_one_period_not_one_periods():
     """konsol#559: the sentence said "(1 periods)"."""
     [r] = M.rounds([_cycle("FC-27", 2027, date(2027, 6, 30), 1)], _calendar([2027]))
     assert r["sentence"] == "Round ZZFC as of 2027-06-30 covers FY2027 P7 (1 period): approved for FY2027 (FC-27)."
     [r] = M.rounds([_cycle("FC-27", 2027, date(2027, 6, 30), 6)], _calendar([2027]))
     assert "(6 periods)" in r["sentence"]
+
+
+def test_the_approved_for_list_names_approved_cycles_only():
+    """Live test of #625: the sentence listed the draft Cycle inside
+    "approved for …"; the draft belongs in the pending note only."""
+    cycles = [_cycle("A26", 2026, date(2026, 9, 30), 3, docstatus=1),
+              _cycle("A27", 2027, date(2026, 9, 30), 12, docstatus=0)]
+    [r] = M.rounds(cycles, _calendar([2026, 2027]))
+    approved_part = r["sentence"].split("Note:")[0]
+    assert "(A26)" in approved_part and "A27" not in approved_part, r["sentence"]
+    assert "draft Cycle A27 would extend the horizon to 12 once approved" in r["sentence"]
