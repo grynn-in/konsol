@@ -16,6 +16,7 @@ from konsol.clickhouse import connection_url as _ch_url
 from konsol.clickhouse import get_connection as _get_ch_connection
 from konsol import dimension_value_model
 from konsol import tb_coverage
+from konsol.identifier_rule import SAFE_IDENTIFIER as _SAFE_IDENTIFIER
 from konsol.measure_registry import aggregation_for
 from konsol.period_read_model import combine_periods, resolve_period, sql_aggregate
 
@@ -32,7 +33,6 @@ MAX_BATCH_SIZE = 2000
 # constant could not express a 13-period year, and its 1-12 clamp made the
 # year-end close unreadable.
 
-_SAFE_IDENTIFIER = re.compile(r'^[a-z][a-z0-9_]*$')
 _SAFE_SCENARIO_ID = re.compile(r'^[A-Za-z0-9_]+$')
 # Fully-qualified ClickHouse table: schema.table, lowercase identifiers only.
 _SAFE_TABLE_NAME = re.compile(r'^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$')

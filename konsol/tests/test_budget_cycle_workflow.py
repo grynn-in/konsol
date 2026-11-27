@@ -121,7 +121,10 @@ def _cycle_env(approved_budgets, closed_years=(), current_forecasts=()):
     frappe._ = lambda s: s
     frappe.throw = throw
     frappe.ValidationError = _Thrown
-    frappe.db = types.SimpleNamespace(get_values=get_values)
+    codes = {"CG-ZZGRP-": "ZZGRP"}
+    frappe.db = types.SimpleNamespace(
+        get_values=get_values,
+        get_value=lambda doctype, name, fieldname=None, **k: codes[name] if doctype == "Consolidation Group" else None)
     docmod = types.ModuleType("frappe.model.document")
     docmod.Document = Document
 
@@ -176,6 +179,16 @@ def test_cancel_is_refused_by_name_while_a_submitted_approved_budget_names_the_c
     assert doctype == "Approved Budget"
     assert filters == {"budget_cycle": CYCLE_NAME, "docstatus": 1}, "submitted declarations only"
     assert order_by, "a deterministic order (v16 sorts by creation otherwise)"
+
+
+def test_the_cancel_refusal_names_the_group_code_not_its_document_name():
+    """konsol#555: the Approved Budget's group Link is the document name (CG-<code>-)."""
+    with _cycle_env([_declaration()]) as (doc, seen):
+        with pytest.raises(_Thrown) as info:
+            doc.before_cancel()
+    message = str(info.value)
+    assert "(ZZGRP FY2027)" in message, message
+    assert "CG-ZZGRP-" not in message.replace("APB-CG-ZZGRP--2027", ""), message
 
 
 def test_the_approved_budget_read_is_a_locking_read():

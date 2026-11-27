@@ -7,9 +7,9 @@ from collections import defaultdict
 import requests
 
 from konsol import tb_coverage
+from konsol.identifier_rule import SAFE_IDENTIFIER as _SAFE_IDENTIFIER
 from konsol.period_read_model import sql_aggregate
 
-_SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 _SAFE_SCENARIO_ID = re.compile(r"^[A-Za-z0-9_]+$")
 _ENTITY_WILDCARD = {"", "*", "ALL"}
 
