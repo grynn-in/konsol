@@ -116,17 +116,10 @@ def test_the_desk_css_names_no_colour_of_its_own():
     assert "var(--primary)" not in css
 
 
-def test_the_desk_css_turns_the_band_pills_into_stat_values():
-    rules = dict(_rules(_read(CSS)))
-    pill = next(body for sel, body in rules.items()
-                if ".number-widget-box" in sel and ".indicator-pill" in sel and "::before" not in sel)
-    assert "font-size: var(--text-xl)" in pill
-    assert "font-weight: 600" in pill
-    assert "color: var(--heading-color)" in pill
-    assert "padding: 0" in pill and "background: none" in pill
-    assert "white-space: normal" in pill
-    card = next(body for sel, body in rules.items() if sel.endswith(".number-widget-box"))
-    assert "min-height:" in card
+def test_the_desk_css_has_no_number_card_rules():
+    """konsol#610: the home band left Number Cards for the Konsol Close Band
+    block, so the stat-tile rules for .number-widget-box went with them."""
+    assert ".number-widget-box" not in _read(CSS)
 
 
 def test_the_section_header_margin_skips_the_first_block():

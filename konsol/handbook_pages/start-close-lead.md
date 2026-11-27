@@ -14,7 +14,7 @@ Approving your own record follows **Self-Approval** in Close Settings: Blocked, 
 
 ## Builds
 
-A trial balance submission, or a high-risk build that someone requested, waits in **Build Approval** as Pending Review. Approve it to run the build, or reject it. A build that an approval requested is approved at once, unless a build of the same scope is already waiting: the change then joins that build, which still needs your approval. The **Warehouse Freshness** card shows whether the consolidated numbers are current.
+A trial balance submission, or a high-risk build that someone requested, waits in **Build Approval** as Pending Review. Approve it to run the build, or reject it. A build that an approval requested is approved at once, unless a build of the same scope is already waiting: the change then joins that build, which still needs your approval. On the home page, the close band's **Warehouse Freshness** item shows whether the consolidated numbers are current.
 
 ## Period close checklist
 

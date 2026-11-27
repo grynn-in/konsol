@@ -6,9 +6,7 @@
 - ``overview_api._count``: None when the caller may not read the doctype
   (the count is never read, and never shown as 0); otherwise the
   ``frappe.get_list`` length.
-- ``overview_api._shown``: a ValueError from a reader becomes a gray
-  "Cannot read" card; a permission or validation error still propagates.
-- ``overview_api.tb_exceptions``: cut to ``allowed_entity_codes``.
+- ``overview_api.get_close_band`` (konsol#610): test_konsol_close_band.py.
 """
 import importlib.util
 import os
@@ -114,8 +112,9 @@ def _all_current(mod):
 
 def test_the_app_ships_the_checklist_and_the_handbook():
     mod = _blocks(_BlockSite())
-    assert [b[0] for b in mod.BLOCKS] == ["Konsol Close Checklist", "Konsol Handbook",
-                                          "Konsol My Work Board", "Konsol Home Tabs"]
+    assert [b[0] for b in mod.BLOCKS] == ["Konsol Close Checklist", "Konsol Close Band",
+                                          "Konsol Handbook", "Konsol My Work Board",
+                                          "Konsol Home Tabs"]
 
 
 def test_home_tabs_block_has_the_checklist_roles_and_entity_accountant():
@@ -203,33 +202,3 @@ def test_count_is_none_when_the_doctype_cannot_be_read():
     assert api._count("Consolidation Journal", {}) is None
     api, _ = _api(listed=["J1", "J2"])
     assert api._count("Consolidation Journal", {}) == 2
-
-
-def test_shown_turns_a_value_error_into_a_gray_card_and_lets_permission_errors_through():
-    api, frappe = _api()
-
-    def broken():
-        raise ValueError("unknown close run status 'Purple'")
-
-    html = api._shown(broken)
-    assert 'indicator-pill gray' in html and "Cannot read: unknown close run status" in html
-    assert "&#x27;Purple&#x27;" in html  # escaped
-
-    def refused():
-        raise frappe.PermissionError("no")
-
-    with pytest.raises(frappe.PermissionError):
-        api._shown(refused)
-
-
-def test_tb_exceptions_counts_only_the_callers_entities():
-    api, _ = _api(listed=["A", "B", "C"], allowed={"A"})
-    assert '<span class="indicator-pill orange">1</span>' in api.tb_exceptions("[]")
-    api, _ = _api(listed=["A", "B", "C"], allowed=None)
-    assert '<span class="indicator-pill orange">3</span>' in api.tb_exceptions("[]")
-
-
-def test_band_methods_refuse_filters():
-    api, frappe = _api()
-    with pytest.raises(frappe.ValidationError):
-        api.tb_exceptions('[["TB Exception", "docstatus", "=", 1]]')

@@ -14,9 +14,9 @@ You read the numbers and the state of the close. You change nothing.
 
 If the warehouse is not built, or setup is missing, a report says so. It does not show an empty table.
 
-## The cards on this page
+## The close band
 
-**Close Status**, **Trial Balances In**, **IC Pairs over Tolerance** and **Warehouse Freshness** describe the current period. Warehouse Freshness tells you whether the consolidated numbers include the latest approved changes.
+The close band is at the top of the **Close** tab. **Close Status**, **Trial Balances In**, **IC Pairs over Tolerance** and **Warehouse Freshness** describe the current period. Each item links to the page where you see the detail. "Cannot read" means that the item could not be read, and it gives the reason. Warehouse Freshness tells you whether the consolidated numbers include the latest approved changes.
 
 ## Excel
 

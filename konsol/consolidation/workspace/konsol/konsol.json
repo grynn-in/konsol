@@ -37,6 +37,10 @@
    "label": "Konsol Close Checklist"
   },
   {
+   "custom_block_name": "Konsol Close Band",
+   "label": "Konsol Close Band"
+  },
+  {
    "custom_block_name": "Konsol Home Tabs",
    "label": "Konsol Home Tabs"
   }
@@ -50,36 +54,11 @@
  "is_hidden": 0,
  "label": "Konsol",
  "links": [],
- "modified": "2026-11-22 20:00:00.000000",
+ "modified": "2026-11-26 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Consolidation",
  "name": "Konsol",
- "number_cards": [
-  {
-   "label": "Close Status",
-   "number_card_name": "Close Status"
-  },
-  {
-   "label": "Trial Balances In",
-   "number_card_name": "Trial Balances In"
-  },
-  {
-   "label": "Waiting for My Approval",
-   "number_card_name": "Waiting for My Approval"
-  },
-  {
-   "label": "IC Pairs over Tolerance",
-   "number_card_name": "IC Pairs over Tolerance"
-  },
-  {
-   "label": "TB Exceptions Declared",
-   "number_card_name": "TB Exceptions Declared"
-  },
-  {
-   "label": "Warehouse Freshness",
-   "number_card_name": "Warehouse Freshness"
-  }
- ],
+ "number_cards": [],
  "owner": "Administrator",
  "parent_page": "",
  "public": 1,

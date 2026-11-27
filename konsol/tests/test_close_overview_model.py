@@ -1,6 +1,6 @@
 """Konsol home overview model, pure: konsol/close/overview_model.py (konsol#407 phase 1).
 
-The home workspace's close band (number cards) and period close checklist
+The home workspace's close band (konsol#610: data for the Konsol Close Band block) and period close checklist
 (a Custom HTML Block) are laid out here from what the close app's own
 readers return: the D5 landing (``period_api.get_context``), the sign-off
 gate's readiness (``readiness_model.readiness``), the intercompany line
@@ -50,32 +50,36 @@ def test_no_current_period_carries_the_reason():
     assert M.current_period(landing) == (None, "Declare it.")
 
 
-# --- the card HTML ----------------------------------------------------------
+# --- a band item (konsol#610: data, never markup) ---------------------------
 
-def test_card_escapes_text_and_colours_by_state():
-    html = M.card('<img src=x onerror="alert(1)">', "blocked")
-    assert "<img" not in html
-    assert "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in html
-    assert 'class="indicator-pill red"' in html
+def test_band_item_is_data_and_keeps_the_text_verbatim():
+    item = M.band_item("Close Status", '<img src=x onerror="alert(1)">', "blocked",
+                       "/desk/query-report/Period%20Close")
+    assert item == {"label": "Close Status", "text": '<img src=x onerror="alert(1)">',
+                    "state": "blocked", "colour": "red",
+                    "route": "/desk/query-report/Period%20Close"}
 
 
 @pytest.mark.parametrize("state,colour", [("ok", "green"), ("warn", "orange"),
                                           ("blocked", "red"), ("unknown", "gray")])
-def test_card_colours(state, colour):
-    assert 'indicator-pill %s"' % colour in M.card("x", state)
+def test_band_item_colours(state, colour):
+    assert M.band_item("x", "y", state, "/desk/x")["colour"] == colour
 
 
-def test_card_refuses_an_unknown_state():
+def test_band_item_refuses_an_unknown_state():
     with pytest.raises(ValueError):
-        M.card("x", "amber")
+        M.band_item("x", "y", "amber", "/desk/x")
 
 
-def test_card_links_only_to_a_desk_route():
-    html = M.card("x", "ok", "/desk/query-report/Period%20Close")
-    assert html.startswith('<a href="/desk/query-report/Period%20Close"')
-    for bad in ("javascript:alert(1)", "https://evil.example", "//evil.example", "/desk/x\"y"):
+def test_band_item_links_only_to_a_desk_route():
+    for bad in ("javascript:alert(1)", "https://evil.example", "//evil.example", "/desk/x\"y",
+                None):
         with pytest.raises(ValueError):
-            M.card("x", "ok", bad)
+            M.band_item("x", "y", "ok", bad)
+
+
+def test_the_html_card_builder_is_gone():
+    assert not hasattr(M, "card")
 
 
 # --- the band ---------------------------------------------------------------

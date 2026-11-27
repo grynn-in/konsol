@@ -1,8 +1,9 @@
 // Konsol Home Tabs (konsol#497). Four tabs on the Konsol home: Close, Approvals, Trends, Numbers. Close is the default. frappe.ui.Tabs
 // builds each panel once, on first activation; the initial tab's panel is built
 // inside the Tabs constructor (tabs.js set_active(initial, {silent: true})), so
-// construction makes that tab's calls: Close get_my_work, get_checklist (skipped
-// for users without the checklist roles) and get_desktop_page; Approvals or Trends get_desktop_page; Numbers none.
+// construction makes that tab's calls: Close get_my_work, get_close_band and
+// get_checklist (both skipped for users without the checklist roles) and
+// get_desktop_page; Approvals or Trends get_desktop_page; Numbers none.
 // Frappe runs this inside the block's shadow root (root_element).
 const box = root_element.querySelector(".konsol-home-tabs");
 
@@ -251,6 +252,56 @@ function fillChecklist(target) {
 		.catch((e) => checklistFailed(target, typeof e === "string" ? e : e && e.message));
 }
 
+// The close band (konsol#610, copied from konsol_close_band.js: a block cannot
+// be nested inside this shadow root). It took the six Number Cards' place:
+// Frappe 16.60 drew a Custom card's value as text and printed their HTML.
+// get_close_band admits the checklist's roles, so mayReadChecklist() gates it
+// too. Every server string is set as textContent; the colour must match the
+// state; an item links only to a /desk/ route, through the click handler below.
+const BAND_METHOD = "konsol.close.overview_api.get_close_band";
+
+function renderBand(target, items) {
+	if (!Array.isArray(items)) throw new Error("the close band came back empty");
+	const list = el("div", "kb-list");
+	for (const item of items) {
+		if (!Object.prototype.hasOwnProperty.call(TONE, item.state)) {
+			throw new Error(`unknown close band state: ${item.state}`);
+		}
+		if (item.colour !== TONE[item.state]) {
+			throw new Error(`close band colour ${item.colour} does not match state ${item.state}`);
+		}
+		const route = deskRoute(item.route);
+		const tile = el(route ? "a" : "div", "kb-item");
+		if (route) tile.href = route;
+		tile.append(
+			el("span", "kb-label", item.label),
+			el("span", `indicator-pill ${TONE[item.state]} kb-value`, item.text)
+		);
+		list.append(tile);
+	}
+	target.replaceChildren(list);
+}
+
+function bandFailed(target, message) {
+	target.replaceChildren(el("p", "kb-error", "The close band could not be read: " + (message || "no reason given")));
+}
+
+// One GET when Close first renders, which is during construction when Close is
+// the initial tab.
+function fillBand(target) {
+	target.appendChild(el("p", "kb-loading", "Loading the close band\u2026"));
+	frappe
+		.xcall(BAND_METHOD, {}, "GET")
+		.then((items) => {
+			try {
+				renderBand(target, items);
+			} catch (e) {
+				bandFailed(target, e.message);
+			}
+		})
+		.catch((e) => bandFailed(target, typeof e === "string" ? e : e && e.message));
+}
+
 // The #484 headline: "N items need you", from get_my_work counts. A missing
 // count is an error line, never "0" or "Nothing needs you". Start opens My Work
 // through the delegated click handler below. One GET when Close first renders.
@@ -294,22 +345,23 @@ function fillHeadline(target) {
 		});
 }
 
-// Close panel order, as the old workspace had it: headline, cards, checklist,
-// Monthly close. The checklist is left out for a user who may not read it.
+// Close panel order, as the old workspace had it: headline, close band,
+// checklist, Monthly close. The band and the checklist are left out for a user
+// who may not read them (the same roles).
 function fillClose(div) {
 	const headline = el("div", "khp-headline");
-	const cards = el("div", "khp-cards");
 	const monthly = el("div", "khp-monthly");
 	if (mayReadChecklist()) {
+		const band = el("section", "khp-band konsol-close-band");
 		const checklist = el("section", "khp-checklist konsol-checklist");
-		div.append(headline, cards, checklist, monthly);
+		div.append(headline, band, checklist, monthly);
+		fillBand(band);
 		fillChecklist(checklist);
 	} else {
-		div.append(headline, cards, monthly);
+		div.append(headline, monthly);
 	}
 	fillHeadline(headline);
 	widgets(div, (defs) => {
-		group(cards, "number_card", items(defs.number_cards));
 		group(monthly, "shortcut", pickShortcuts(items(defs.shortcuts), MONTHLY_CLOSE));
 	});
 }
@@ -394,7 +446,7 @@ root_element.addEventListener("click", (e) => {
 	} catch (err) {
 		options = null;
 	}
-	// The href's own query string (cards, checklist: fiscal_year, fiscal_period...)
+	// The href's own query string (band, checklist: fiscal_year, fiscal_period...)
 	// becomes route options too; data-route-options is explicit and wins.
 	const fromQuery = {};
 	let hasQuery = false;
