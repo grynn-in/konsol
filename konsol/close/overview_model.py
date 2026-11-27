@@ -1,8 +1,9 @@
 """Konsol home overview, pure (konsol#407 phase 1).
 
-Lays out the home workspace's close band (number cards) and its period
-close checklist (the "Konsol Close Checklist" Custom HTML Block) from what
-the close app's own readers return. No rule is decided here:
+Lays out the home workspace's close band (the "Konsol Close Band" Custom
+HTML Block, konsol#610) and its period close checklist (the "Konsol Close
+Checklist" block) from what the close app's own readers return. No rule is
+decided here:
 
 - the current period is the D5 working landing (``period_model.landing``,
   through ``period_api.get_context``): the oldest ended Regular period still
@@ -20,13 +21,13 @@ the close app's own readers return. No rule is decided here:
 
 Colours are presentation only: ``ok`` green, ``warn`` orange (Amber: the
 gate lets it through with an acknowledgement, or it is not a sign-off gate),
-``blocked`` red, ``unknown`` gray. Every text that reaches HTML goes through
-``escape``; a card links only to a ``/desk/`` route.
+``blocked`` red, ``unknown`` gray. Nothing here builds markup: a band item
+and a checklist line are data, which the blocks draw as text, and each links
+only to a ``/desk/`` route.
 
 Imports nothing from frappe; siblings are loaded by path (as
 readiness_model does), so the host tests need no site.
 """
-import html as _html
 import importlib.util
 import os
 
@@ -116,11 +117,6 @@ def _state(state):
     return state
 
 
-def escape(text):
-    """``text`` safe inside HTML text and a double-quoted attribute."""
-    return _html.escape("" if text is None else str(text), quote=True)
-
-
 def _route(route):
     """A same-site Desk path, or ValueError: nothing else is ever linked."""
     if not isinstance(route, str) or not route.startswith("/desk/") or any(
@@ -129,16 +125,15 @@ def _route(route):
     return route
 
 
-def card(text, state, route=None):
-    """A number card's value: an indicator pill, linked when ``route`` is given.
+def band_item(label, text, state, route):
+    """One close band item: ``{label, text, state, colour, route}``.
 
-    A Custom number card that returns a string has it written into the card
-    as HTML (frappe number_card_widget.js ``render_number``), so the text is
-    escaped here and the colour comes from a fixed map."""
-    pill = '<span class="indicator-pill %s">%s</span>' % (_COLOUR[_state(state)], escape(text))
-    if route is None:
-        return pill
-    return '<a href="%s">%s</a>' % (escape(_route(route)), pill)
+    Data, never markup (konsol#610: Frappe 16.60 draws a Custom number
+    card's value as text, so the old HTML cards printed their tags). The
+    block sets ``text`` as text; ``colour`` is Frappe's indicator-pill class
+    for ``state``, from a fixed map; ``route`` is a same-site Desk path."""
+    return {"label": str(label), "text": "" if text is None else str(text),
+            "state": _state(state), "colour": _COLOUR[state], "route": _route(route)}
 
 
 def current_period(landing):

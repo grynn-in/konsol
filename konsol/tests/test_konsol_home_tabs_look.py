@@ -65,19 +65,21 @@ def test_accent_uses_brand_not_primary():
 	assert "--primary" not in code
 
 
-def test_stat_tile_selectors_present():
-	for frag in (
-		".widget.number-widget-box",
-		".number .indicator-pill",
-		".number .indicator-pill::before",
-	):
-		assert _has(frag), frag
+def test_the_number_card_stat_tile_rules_are_gone():
+	# konsol#610: the band is no longer Number Cards, so no rule styles them.
+	assert not _has(".number-widget-box")
 
 
-def test_stat_tile_pill_shown_as_value():
-	body = _body_of(".number .indicator-pill")
-	assert "var(--text-xl)" in body
-	assert "var(--heading-color)" in body
+def test_band_selectors_present():
+	# konsol#610: the close band's tiles (copied from konsol_close_band.css).
+	for cls in (".kb-list", ".kb-item", ".kb-label", ".kb-value", ".kb-error"):
+		assert _has(cls), cls
+
+
+def test_band_value_reads_as_a_stat():
+	body = _body_of(".kb-value")
+	assert "var(--text-lg)" in body or "var(--text-xl)" in body
+	assert "var(--heading-color)" in _body_of(".kb-item")
 
 
 def test_checklist_selectors_present():
@@ -94,7 +96,7 @@ def test_checklist_progress_fill_uses_brand():
 
 
 def test_close_sections_present():
-	for cls in (".khp-cards", ".khp-checklist", ".khp-monthly"):
+	for cls in (".khp-band", ".khp-checklist", ".khp-monthly"):
 		assert _has(cls), cls
 
 

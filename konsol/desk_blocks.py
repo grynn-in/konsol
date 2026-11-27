@@ -19,11 +19,14 @@ import frappe
 _DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "consolidation", "custom_html_block")
 
 #: (block name, folder, roles that see it). The roles are the ones the
-#: block's method admits (overview_api.get_checklist; for the Handbook,
+#: block's method admits (overview_api.get_checklist and get_close_band; for the Handbook,
 #: handbook.get_handbook, handbook_model.READER_ROLES), so Frappe hides the
 #: block from anyone else (desktop.py is_custom_block_permitted).
 BLOCKS = (
     ("Konsol Close Checklist", "konsol_close_checklist",
+     ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")),
+    # konsol#610: the home close band; the roles get_close_band admits.
+    ("Konsol Close Band", "konsol_close_band",
      ("EPM Admin", "EPM Analyst", "EPM User", "System Manager")),
     ("Konsol Handbook", "konsol_handbook",
      ("EPM Admin", "EPM Analyst", "EPM User", "Entity Accountant", "System Manager")),
@@ -32,8 +35,9 @@ BLOCKS = (
      ("EPM Admin", "EPM Analyst", "Entity Accountant", "EPM User", "System Manager")),
     # konsol#497: the home tabs admit the checklist's roles and Entity
     # Accountant, who sees the Konsol workspace (review R1). The block reads
-    # frappe.user_roles and skips the checklist for a user get_checklist
-    # refuses; cards, shortcuts and charts come permission-filtered from
+    # frappe.user_roles and skips the close band and the checklist for a user
+    # get_close_band and get_checklist refuse (konsol#610); shortcuts and
+    # charts come permission-filtered from
     # get_desktop_page, and get_my_work admits all five roles.
     ("Konsol Home Tabs", "konsol_home_tabs",
      ("EPM Admin", "EPM Analyst", "EPM User", "Entity Accountant", "System Manager")),

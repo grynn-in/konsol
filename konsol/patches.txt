@@ -76,3 +76,4 @@ konsol.patches.retire_group_exchange_rate
 konsol.patches.drop_dimension_allocation_role
 konsol.patches.seed_own_name_series
 konsol.patches.set_cost_allocation_driver_source
+konsol.patches.retire_home_number_cards

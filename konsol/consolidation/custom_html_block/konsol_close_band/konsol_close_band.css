@@ -1,0 +1,46 @@
+/* Konsol Close Band (konsol#610): six stat tiles, each a label over an
+ * indicator pill; the pill's tone class keeps its colours. Columns split on
+ * the block's own width. Frappe variables only. */
+.konsol-close-band {
+	container-type: inline-size;
+}
+.kb-list {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+	gap: var(--margin-sm);
+}
+.kb-item {
+	display: flex;
+	flex-direction: column;
+	gap: var(--margin-xs);
+	min-height: 4.5rem;
+	padding: var(--padding-sm) var(--padding-md);
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius-md);
+	background: var(--card-bg);
+	color: var(--heading-color);
+	text-decoration: none;
+}
+a.kb-item:hover {
+	border-color: var(--gray-400);
+	text-decoration: none;
+}
+.kb-label {
+	font-size: var(--text-sm);
+	color: var(--text-muted);
+}
+.kb-value.indicator-pill {
+	align-self: flex-start;
+	height: auto;
+	font-size: var(--text-lg);
+	font-weight: 600;
+	line-height: 1.35;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+.kb-loading {
+	color: var(--text-muted);
+}
+.kb-error {
+	color: var(--red-600);
+}

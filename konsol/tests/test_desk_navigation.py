@@ -692,7 +692,10 @@ def test_planning_and_data_pages_show_their_counts():
     data = _ws("Data")
     assert {"Pipeline Run", "Build Approval", "Connector", "Connector Health"} <= {
         s["link_to"] for s in data["shortcuts"]}
-    assert "Warehouse Freshness" in {c["number_card_name"] for c in data["number_cards"]}
+    # konsol#610: the Warehouse Freshness card was retired with the home band
+    # (Frappe 16.60 printed its HTML as text); Build Approval stays a shortcut.
+    assert data["number_cards"] == [], data["number_cards"]
+    assert data["modified"] > "2026-11-07 23:55:00.000000", data["modified"]
 
 
 # --- the desktop tile -----------------------------------------------------------------------

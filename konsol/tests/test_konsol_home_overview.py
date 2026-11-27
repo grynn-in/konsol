@@ -1,13 +1,13 @@
 """The Konsol home workspace's close band and period close checklist (konsol#407 phase 1).
 
-Source checks, no site: the band's Custom number cards call whitelisted
-methods of konsol/close/overview_api.py; the checklist is a Custom HTML
-Block the app installs on every migrate; the four Document Type cards the
-band replaces are retired (their reports stay reachable through the
-workspace's shortcuts). The live behaviour is verified on the test stack.
+Source checks, no site: the checklist is a Custom HTML Block the app
+installs on every migrate; the four Document Type cards the first band
+replaced are retired (their reports stay reachable through the workspace's
+shortcuts). The band itself left Number Cards for the Konsol Close Band block
+in konsol#610 (test_konsol_close_band.py). The live behaviour is verified on
+the test stack.
 """
 import ast
-import glob
 import json
 import os
 import re
@@ -20,8 +20,6 @@ BLOCK_DIR = os.path.join(APP_DIR, "consolidation", "custom_html_block", "konsol_
 BLOCK = "Konsol Close Checklist"
 RETIRED = ("Trial Balances Submitted", "Rates Awaiting Approval",
            "Equity Rates Awaiting Approval", "Journals Awaiting Approval")
-BAND = ("Close Status", "Trial Balances In", "Waiting for My Approval",
-        "IC Pairs over Tolerance", "TB Exceptions Declared", "Warehouse Freshness")
 #: The roles every overview method admits (grid_api.get_readiness's and
 #: approvals_api.get_queue's set: no Entity Accountant, E2-7).
 ROLES = {"EPM Admin", "EPM Analyst", "EPM User", "System Manager"}
@@ -38,10 +36,6 @@ def _ws():
 
 def _slug(name):
     return name.lower().replace(" ", "_")
-
-
-def _card(name):
-    return json.loads(_read(os.path.join(CARDS_DIR, _slug(name), _slug(name) + ".json")))
 
 
 def _whitelisted():
@@ -66,43 +60,6 @@ def _roles_of(fn):
     return None
 
 
-def test_the_band_is_six_custom_cards_on_the_workspace():
-    ws = _ws()
-    names = [c["number_card_name"] for c in ws["number_cards"]]
-    assert names == list(BAND), names
-    # the cards are the child table the tabs block reads; content holds no card block
-    assert not [b for b in json.loads(ws["content"]) if b["type"] == "number_card"]
-
-
-def test_each_band_card_calls_a_gated_overview_method():
-    """The number card widget calls a Custom card's method with frappe.xcall,
-    which POSTs; each method is read-only and opens with only_for."""
-    methods = _whitelisted()
-    for name in BAND:
-        card = _card(name)
-        assert card["type"] == "Custom" and card["is_standard"] == 1, name
-        assert card["module"] == "Consolidation", name
-        assert json.loads(card["filters_json"]) == [], name
-        module, _, fn = card["method"].rpartition(".")
-        assert module == "konsol.close.overview_api", card["method"]
-        assert fn in methods, card["method"]
-        assert methods[fn][0] == ["POST"], (fn, methods[fn][0])
-        assert _roles_of(methods[fn][1]) == ROLES, fn
-
-
-def test_each_band_card_is_hidden_from_a_role_the_method_refuses():
-    """Frappe shows a Custom card only to a user who can read its
-    document_type (number_card.has_permission), so each names a doctype the
-    Entity Accountant cannot read: the card is not shown, rather than shown
-    and failing."""
-    for name in BAND:
-        dt = _card(name)["document_type"]
-        (path,) = glob.glob(os.path.join(APP_DIR, "*", "doctype", _slug(dt), _slug(dt) + ".json"))
-        readers = {p["role"] for p in json.loads(_read(path))["permissions"] if p.get("read")}
-        assert "Entity Accountant" not in readers, (name, dt)
-        assert ROLES <= readers | {"System Manager"}, (name, dt, readers)
-
-
 def test_the_retired_cards_are_gone_and_a_patch_deletes_them():
     ws = _ws()
     assert not set(RETIRED) & {c["number_card_name"] for c in ws["number_cards"]}
@@ -124,10 +81,8 @@ def test_the_retired_cards_reports_stay_reachable_through_shortcuts():
 
 def test_the_workspace_was_bumped():
     """A shipped Workspace re-imports on migrate only when its ``modified``
-    changes; the tabs edit (#497 row 11) is dated after 7 Nov 2026 23:55."""
-    assert _ws()["modified"] > "2026-11-07 23:55:00.000000", _ws()["modified"]
-    for name in BAND:
-        assert _card(name)["modified"] >= "2026-11-07", name
+    changes; the band block edit (konsol#610) is dated after 22 Nov 2026 20:00."""
+    assert _ws()["modified"] > "2026-11-22 20:00:00.000000", _ws()["modified"]
 
 
 def test_the_checklist_block_is_a_row_on_the_workspace_and_installed():
