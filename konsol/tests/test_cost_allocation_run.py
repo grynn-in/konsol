@@ -681,6 +681,12 @@ def _k8(world):
         if "`tabCost Allocation Driver Fixed Weight`" in query:
             assert "IN %(drivers)s" in query
             return [_Row(r) for r in world.fixed_rows if r["parent"] in values["drivers"]]
+        if "`tabCost Allocation Driver Account`" in query:
+            # the accounts re-read (rv1 F1): one driver's rows, as the site holds them
+            assert "parent = %(driver)s" in query
+            rows = [_Row(r) for r in world.get_all_data.get("Cost Allocation Driver Account", [])
+                    if r["parent"] == values["driver"]]
+            return [r["main_account"] for r in rows] if k.get("pluck") else rows
         if "`tabCost Allocation Driver`" in query:
             assert "IN %(drivers)s" in query
             return [_Row(r) for n, r in world.drivers.items() if n in values["drivers"]]
@@ -787,7 +793,7 @@ def _k8_run(module, scenario="ZZ Actual", **over):
     base = dict(name="CAR-00001", doctype="Cost Allocation Run", docstatus=0,
                 rule_set="ZZ Rules", entity="ZZE", scenario=scenario, fiscal_year=2026,
                 fiscal_period=3, rule_set_modified=datetime(2026, 11, 12, 8, 0, 0),
-                method="Step-Down", weights=weights,
+                method="Step-Down", allocation_dimension="dim_zz", weights=weights,
                 computed_for_rule_set="ZZ Rules", computed_for_scenario=scenario,
                 computed_for_fiscal_year=2026, computed_for_fiscal_period=3)
     base.update(over)
@@ -2389,12 +2395,71 @@ def test_f7_account_set_derives_from_the_warehouse_and_snapshots_the_declared_ac
 
 
 def test_f7_account_set_uses_the_drivers_own_dimension_column():
+    # rv1 F3: every driver must be on the rule set's dimension, so the column
+    # the query reads is that dimension, named by the driver.
+    head, rev = _driver("ZZ Head", dimension="dim_other"), _rev()
+    rev["dimension"] = "dim_other"
+    rs = _mixed_rule_set("ZZ Rev")
+    rs.allocation_dimension = "dim_other"
+    m = _sources_module([head, rev], rule_set=rs, derived="P1\t-20\t3\nP2\t-30\t2")
+    m.compute_weights_on(_Run())
+    assert m.derived_calls[0][0].startswith("SELECT `dim_other` AS member")
+
+
+def test_rv1_compute_refuses_a_driver_on_another_dimension_than_the_rule_set():
+    # The rule set refuses this at its own save (model.validate_rule_set); a
+    # driver edited afterwards must not slip through Compute.
     rev = _rev()
     rev["dimension"] = "dim_other"
     m = _sources_module([_driver("ZZ Head"), rev], rule_set=_mixed_rule_set("ZZ Rev"),
                         derived="P1\t-20\t3\nP2\t-30\t2")
-    m.compute_weights_on(_Run())
-    assert m.derived_calls[0][0].startswith("SELECT `dim_other` AS member")
+    run = _Run()
+    msg = _k7_refused(lambda: m.compute_weights_on(run))
+    assert msg.startswith("Cost Allocation Run: "), msg
+    assert "ZZ Rev" in msg and "dim_other" in msg and "dim_zz" in msg, msg
+    assert run.saved == 0 and m.derived_calls == []
+    # a Fixed Weights driver too
+    fixed = _fixed_driver()
+    fixed["dimension"] = "dim_other"
+    m = _sources_module([_driver("ZZ Head"), fixed], rule_set=_mixed_rule_set("ZZ Fixed"))
+    msg = _k7_refused(lambda: m.compute_weights_on(_Run()))
+    assert "ZZ Fixed" in msg and "dim_other" in msg and "dim_zz" in msg, msg
+
+
+_TOO_BIG = 1_000_000_000_000          # decimal(21,9): 12 integer digits at most
+_JUST_FITS = 999_999_999_999.9999
+
+
+def test_rv1_compute_refuses_a_driver_value_of_twelve_or_more_integer_digits():
+    # Account Set
+    m = _sources_module([_driver("ZZ Head"), _rev()], rule_set=_mixed_rule_set("ZZ Rev"),
+                        derived=f"P1\t-{_TOO_BIG}\t3\nP2\t-30\t2")
+    run = _Run()
+    msg = _k7_refused(lambda: m.compute_weights_on(run))
+    assert msg.startswith("Cost Allocation Run: "), msg
+    assert "ZZ Rev" in msg and "P1" in msg and "1000000000000" in msg, msg
+    assert "too large for a driver value" in msg and "smaller unit" in msg, msg
+    assert "P2" not in msg and run.saved == 0, msg
+    # Fixed Weights
+    fixed = _driver("ZZ Fixed", FIXED_W, fixed_weights=[
+        _fixed("P1", _TOO_BIG, date(2026, 1, 1)), _fixed("P2", 30, date(2026, 1, 1))])
+    m = _sources_module([_driver("ZZ Head"), fixed], rule_set=_mixed_rule_set("ZZ Fixed"))
+    msg = _k7_refused(lambda: m.compute_weights_on(_Run()))
+    assert "ZZ Fixed" in msg and "P1" in msg and "too large for a driver value" in msg, msg
+    # Uploaded Statistic
+    stats = [_stat("CAS-00001", 3, "HR", _TOO_BIG), _stat("CAS-00001", 3, "P1", 20),
+             _stat("CAS-00001", 3, "P2", 30)]
+    m = _run_module(stats=stats)
+    msg = _k7_refused(lambda: m.compute_weights_on(_Run()))
+    assert "ZZ Head" in msg and "HR" in msg and "too large for a driver value" in msg, msg
+
+
+def test_rv1_compute_accepts_a_driver_value_just_under_the_bound():
+    m = _sources_module([_driver("ZZ Head"), _rev()], rule_set=_mixed_rule_set("ZZ Rev"),
+                        derived=f"P1\t-{_JUST_FITS}\t3\nP2\t-30\t2")
+    run = _Run()
+    m.compute_weights_on(run)
+    assert run.saved == 1
 
 
 def test_f7_account_set_runs_one_query_per_driver_over_every_step_that_uses_it():
@@ -2687,3 +2752,71 @@ def test_f8_stale_driver_values_runs_beside_stale_statistics_before_the_coeffici
     assert (body.index("self._refuse_stale_statistics(")
             < body.index("self._refuse_stale_driver_values(")
             < body.index("self._refuse_unbuildable_coefficients("))
+
+
+# -- rv1: review findings on 2b-1 (konsol PR #619) -----------------------------------
+
+def test_rv1_the_derived_accounts_are_read_for_update_like_the_fixed_rows():
+    # F1: under REPEATABLE READ a plain read of the accounts may see a snapshot
+    # older than the header read FOR UPDATE.
+    w = _derived_world()
+    _derived_run(_k8(w)).before_submit()
+    accounts = next(q for q, _v in w.sql if "`tabCost Allocation Driver Account`" in q)
+    assert accounts.rstrip().upper().endswith("FOR UPDATE"), accounts
+    assert "parenttype = 'Cost Allocation Driver'" in accounts and "ORDER BY idx" in accounts
+    assert len(w.derived_calls) == 1
+    # the locking read is what the accounts check reads: a changed row refuses
+    w = _derived_world()
+    w.get_all_data["Cost Allocation Driver Account"].pop()
+    msg = _refused(_derived_run(_k8(w)).before_submit)
+    assert "ZZ Rev" in msg and "accounts" in msg.lower(), msg
+
+
+def test_rv1_a_large_derived_value_recomputed_unchanged_passes_approval():
+    # F2: the weight stores float(Fraction); near 1e12 a double cannot hold 4 dp
+    # (912345678901.0003 is stored as 912345678901.0002; 912345678901.2345
+    # happens to survive), so the exact value must be compared as stored.
+    big = 912345678901.0003
+    w = _derived_world("P1\t-912345678901.0003\t3\nP2\t-30\t2")
+    rows = [_Row(step=2, sender_member="HR", receiver_member="P1", driver="ZZ Rev", statistic=None,
+                 source=ACCOUNT_SET, effective_from=None, value_period=3, driver_value=big),
+            _Row(step=2, sender_member="HR", receiver_member="P2", driver="ZZ Rev", statistic=None,
+                 source=ACCOUNT_SET, effective_from=None, value_period=3, driver_value=30)]
+    snapshot = [_Row(driver="ZZ Rev", main_account="6000", value_sign="Reversed"),
+                _Row(driver="ZZ Rev", main_account="7000", value_sign="Reversed")]
+    m = _k8(w)
+    _k8_run(m, weights=_k8_run(m).weights[:2] + rows, driver_accounts=snapshot).before_submit()
+    # and a value that did move still refuses
+    w = _derived_world("P1\t-912345678901.0013\t3\nP2\t-30\t2")
+    m = _k8(w)
+    msg = _refused(_k8_run(m, weights=_k8_run(m).weights[:2] + rows,
+                           driver_accounts=snapshot).before_submit)
+    assert "ZZ Rev" in msg and "P1" in msg and "912345678901.001" in msg, msg
+
+
+def test_rv1_a_large_fixed_value_recomputed_unchanged_passes_approval():
+    big = 912345678901.0003
+    w = _fixed_world()
+    w.fixed_rows[0]["value"] = big
+    m = _k8(w)
+    run = _fixed_run(m)
+    run.weights[2]["driver_value"] = big
+    run.before_submit()
+
+
+def test_rv1_approval_refuses_a_driver_whose_dimension_changed_since_compute():
+    # F3: the re-query would read another breakdown than the run allocates on.
+    w = _derived_world()
+    w.drivers["ZZ Rev"]["dimension"] = "dim_other"
+    msg = _refused(_derived_run(_k8(w)).before_submit)
+    assert "ZZ Rev" in msg and "dim_other" in msg and "dim_zz" in msg, msg
+    assert w.derived_calls == []          # refused before the warehouse is asked
+    w = _fixed_world()
+    w.drivers["ZZ Fixed"]["dimension"] = "dim_other"
+    msg = _refused(_fixed_run(_k8(w)).before_submit)
+    assert "ZZ Fixed" in msg and "dim_other" in msg and "dim_zz" in msg, msg
+    # the rule set's own rule covers every source: a statistic driver too
+    w = _World()
+    w.drivers["ZZ Head"]["dimension"] = "dim_other"
+    msg = _refused(_k8_run(_k8(w)).before_submit)
+    assert "ZZ Head" in msg and "dim_other" in msg and "dim_zz" in msg, msg
