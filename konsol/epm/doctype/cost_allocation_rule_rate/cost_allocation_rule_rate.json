@@ -18,6 +18,7 @@
       "fieldname": "rate",
       "fieldtype": "Float",
       "label": "Rate",
+      "precision": "4",
       "reqd": 1,
       "in_list_view": 1,
       "description": "Amount per driver unit, in the entity's trial balance currency."

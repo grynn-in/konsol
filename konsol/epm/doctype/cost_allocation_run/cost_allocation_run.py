@@ -427,6 +427,14 @@ def _resolve_sources(run, rs, steps):
         r["basis"] = basis_of[r["step"]]
         r["rate"] = float(picked["rate"] or 0) if picked else 0
         r["rate_from"] = picked["effective_from"] if picked else None
+    # rv L3: the charge of a rate step, rate x its units, must fit the warehouse
+    units_of = {}
+    for r in rows:
+        if r["step"] in rate_of:
+            units_of[r["step"]] = units_of.get(r["step"], Decimal(0)) + Decimal(str(r["driver_value"] or 0))
+    errors.extend(_charge_too_large(st, rate_of[st.step]["rate"], units_of[st.step])
+                  for st in steps if st.step in units_of
+                  and abs(Decimal(str(rate_of[st.step]["rate"] or 0)) * units_of[st.step]) >= CHARGE_BOUND)
     if errors:
         frappe.throw(_PREFIX + "<br>".join(errors))
     return rows, driver_accounts
@@ -448,6 +456,19 @@ def _too_large(row):
     return (f"Driver {row['driver']}, {row['receiver_member']}: value {_text(row['driver_value'])} "
             "is too large for a driver value (12 integer digits at most); use a smaller unit, "
             "e.g. thousands, by scaling the accounts' meaning, or a Fixed Weights driver.")
+
+
+# The warehouse charge of a Declared Rate step is rate x units: Decimal(38,4) x
+# Decimal(38,12) -> Decimal(38,16), 22 integer digits. A step whose rate x the
+# sum of its driver values reaches this overflows there and stops
+# gold_cost_allocation for every run, so Compute refuses it (2b-2 rv L3).
+CHARGE_BOUND = 10 ** 21
+
+
+def _charge_too_large(step, rate, units):
+    return (f"Step {step.step} (sender {step.sender_member}): rate {_rate_text(rate)} x "
+            f"{_text(units)} units: the charge is too large for the warehouse; "
+            "use a smaller unit or rate.")
 
 
 def _fixed_rows(table):
