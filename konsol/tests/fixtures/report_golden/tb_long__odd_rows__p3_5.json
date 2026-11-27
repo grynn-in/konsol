@@ -1,0 +1,146 @@
+{
+ "template_id": "trial_balance_long",
+ "mode": "snapshot",
+ "entity": "ZZ1",
+ "year": 2024,
+ "period_from": 3,
+ "period_to": 5,
+ "sheet_name": "TB",
+ "row_count": 4,
+ "cells": [
+  {
+   "range": "A1",
+   "values": [
+    [
+     "Entity TB — local currency, account level (pre-consolidation)"
+    ]
+   ]
+  },
+  {
+   "range": "A2",
+   "values": [
+    [
+     "Note: the entity's own trial balance in its local currency, one row per account and period, dimensions summed. Before FX translation, ownership and eliminations: it reconciles to group figures at account level in local currency only."
+    ]
+   ]
+  },
+  {
+   "range": "B1",
+   "values": [
+    [
+     "Entity:"
+    ]
+   ]
+  },
+  {
+   "range": "C1",
+   "values": [
+    [
+     "ZZ1"
+    ]
+   ]
+  },
+  {
+   "range": "E1",
+   "values": [
+    [
+     "Year:"
+    ]
+   ]
+  },
+  {
+   "range": "F1",
+   "values": [
+    [
+     2024
+    ]
+   ]
+  },
+  {
+   "range": "H1",
+   "values": [
+    [
+     "Periods:"
+    ]
+   ]
+  },
+  {
+   "range": "I1",
+   "values": [
+    [
+     "3–5"
+    ]
+   ]
+  },
+  {
+   "range": "A3:J3",
+   "values": [
+    [
+     "Entity",
+     "Year",
+     "Period",
+     "Account",
+     "Account Name",
+     "Acct Type",
+     "BS/P&L",
+     "Debit",
+     "Credit",
+     "Net"
+    ]
+   ]
+  },
+  {
+   "range": "A4:J7",
+   "values": [
+    [
+     "ZZ1",
+     2024,
+     4,
+     "1000",
+     "",
+     "",
+     "",
+     0,
+     0,
+     0
+    ],
+    [
+     "ZZ1",
+     2024,
+     5,
+     "2000",
+     "Payables",
+     "",
+     "",
+     0,
+     0,
+     0
+    ],
+    [
+     "ZZ1",
+     2024,
+     null,
+     "",
+     "",
+     "",
+     "",
+     0,
+     0,
+     0
+    ],
+    [
+     "Other",
+     2023,
+     null,
+     "3000",
+     "",
+     "",
+     "",
+     100.0,
+     7.0,
+     0
+    ]
+   ]
+  }
+ ]
+}

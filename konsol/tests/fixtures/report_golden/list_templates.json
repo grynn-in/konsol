@@ -1,0 +1,14 @@
+[
+ {
+  "id": "pnl_monthly",
+  "title": "Monthly P&L",
+  "description": "12-month income statement: every Published Profit and Loss account of the group chart (debit positive; a negative total is a profit)",
+  "mode": "formulas"
+ },
+ {
+  "id": "trial_balance_long",
+  "title": "Entity TB — local currency, account level (pre-consolidation)",
+  "description": "One row per account × period, local currency, before FX translation, ownership and eliminations — snapshot values for Excel models",
+  "mode": "snapshot"
+ }
+]

@@ -1,0 +1,158 @@
+{
+ "template_id": "pnl_monthly",
+ "mode": "formulas",
+ "entity": "ZZ1",
+ "year": 2026,
+ "scenario_id": "actuals",
+ "sheet_name": "P&L",
+ "cells": [
+  {
+   "range": "A1",
+   "values": [
+    [
+     "Monthly P&L"
+    ]
+   ]
+  },
+  {
+   "range": "B1",
+   "values": [
+    [
+     "Entity:"
+    ]
+   ]
+  },
+  {
+   "range": "C1",
+   "values": [
+    [
+     "ZZ1"
+    ]
+   ]
+  },
+  {
+   "range": "E1",
+   "values": [
+    [
+     "Year:"
+    ]
+   ]
+  },
+  {
+   "range": "F1",
+   "values": [
+    [
+     2026
+    ]
+   ]
+  },
+  {
+   "range": "A2",
+   "values": [
+    [
+     "Account"
+    ]
+   ]
+  },
+  {
+   "range": "B2:M2",
+   "values": [
+    [
+     "Jan",
+     "Feb",
+     "Mar",
+     "Apr",
+     "May",
+     "Jun",
+     "Jul",
+     "Aug",
+     "Sep",
+     "Oct",
+     "Nov",
+     "Dec"
+    ]
+   ]
+  },
+  {
+   "range": "A3",
+   "values": [
+    [
+     "Revenue"
+    ]
+   ]
+  },
+  {
+   "range": "B3:M3",
+   "formulas": [
+    [
+     "=K.EPM(\"ZZ1\", 2026, 1, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 2, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 3, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 4, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 5, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 6, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 7, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 8, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 9, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 10, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 11, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 12, \"4000\")"
+    ]
+   ]
+  },
+  {
+   "range": "A4",
+   "values": [
+    [
+     "Cost of sales"
+    ]
+   ]
+  },
+  {
+   "range": "B4:M4",
+   "formulas": [
+    [
+     "=K.EPM(\"ZZ1\", 2026, 1, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 2, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 3, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 4, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 5, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 6, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 7, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 8, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 9, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 10, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 11, \"5000\")",
+     "=K.EPM(\"ZZ1\", 2026, 12, \"5000\")"
+    ]
+   ]
+  },
+  {
+   "range": "A5",
+   "values": [
+    [
+     "Net Profit and Loss (debit positive; a negative total is a profit)"
+    ]
+   ]
+  },
+  {
+   "range": "B5:M5",
+   "formulas": [
+    [
+     "=SUM(B3:B4)",
+     "=SUM(C3:C4)",
+     "=SUM(D3:D4)",
+     "=SUM(E3:E4)",
+     "=SUM(F3:F4)",
+     "=SUM(G3:G4)",
+     "=SUM(H3:H4)",
+     "=SUM(I3:I4)",
+     "=SUM(J3:J4)",
+     "=SUM(K3:K4)",
+     "=SUM(L3:L4)",
+     "=SUM(M3:M4)"
+    ]
+   ]
+  }
+ ]
+}

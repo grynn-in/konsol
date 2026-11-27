@@ -1,0 +1,131 @@
+{
+ "template_id": "pnl_monthly",
+ "mode": "formulas",
+ "entity": "ZZ1",
+ "year": 2026,
+ "scenario_id": "BUD",
+ "sheet_name": "P&L",
+ "cells": [
+  {
+   "range": "A1",
+   "values": [
+    [
+     "Monthly P&L"
+    ]
+   ]
+  },
+  {
+   "range": "B1",
+   "values": [
+    [
+     "Entity:"
+    ]
+   ]
+  },
+  {
+   "range": "C1",
+   "values": [
+    [
+     "ZZ1"
+    ]
+   ]
+  },
+  {
+   "range": "E1",
+   "values": [
+    [
+     "Year:"
+    ]
+   ]
+  },
+  {
+   "range": "F1",
+   "values": [
+    [
+     2026
+    ]
+   ]
+  },
+  {
+   "range": "A2",
+   "values": [
+    [
+     "Account"
+    ]
+   ]
+  },
+  {
+   "range": "B2:M2",
+   "values": [
+    [
+     "Jan",
+     "Feb",
+     "Mar",
+     "Apr",
+     "May",
+     "Jun",
+     "Jul",
+     "Aug",
+     "Sep",
+     "Oct",
+     "Nov",
+     "Dec"
+    ]
+   ]
+  },
+  {
+   "range": "A3",
+   "values": [
+    [
+     "Revenue"
+    ]
+   ]
+  },
+  {
+   "range": "B3:M3",
+   "formulas": [
+    [
+     "=K.EPM(\"ZZ1\", 2026, 1, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 2, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 3, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 4, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 5, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 6, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 7, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 8, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 9, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 10, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 11, \"4000\")",
+     "=K.EPM(\"ZZ1\", 2026, 12, \"4000\")"
+    ]
+   ]
+  },
+  {
+   "range": "A4",
+   "values": [
+    [
+     "Net Profit and Loss (debit positive; a negative total is a profit)"
+    ]
+   ]
+  },
+  {
+   "range": "B4:M4",
+   "formulas": [
+    [
+     "=SUM(B3:B3)",
+     "=SUM(C3:C3)",
+     "=SUM(D3:D3)",
+     "=SUM(E3:E3)",
+     "=SUM(F3:F3)",
+     "=SUM(G3:G3)",
+     "=SUM(H3:H3)",
+     "=SUM(I3:I3)",
+     "=SUM(J3:J3)",
+     "=SUM(K3:K3)",
+     "=SUM(L3:L3)",
+     "=SUM(M3:M3)"
+    ]
+   ]
+  }
+ ]
+}
