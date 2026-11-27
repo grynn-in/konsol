@@ -540,7 +540,9 @@ def budget_coverage_error(scenario_id, fiscal_year, entity, kind, approved, budg
         return (f"Scenario '{scenario_id}' has no approved Budget Cycle for "
                 f"FY{fiscal_year}, so there is no budget to read for {who}. "
                 f"Approve a Budget Cycle for '{scenario_id}' FY{fiscal_year}.")
-    if kind == COVER_ENTITY and entity not in budgeted.get((scenario_id, fiscal_year), ()):
+    # MariaDB's IN matched the code in any case, so compare the same way.
+    held = {e.casefold() for e in budgeted.get((scenario_id, fiscal_year), ())}
+    if kind == COVER_ENTITY and (entity or "").casefold() not in held:
         named = (f"approved Cycle {cycles[0]} holds" if len(cycles) == 1
                  else f"approved Cycles {', '.join(cycles)} hold")
         return (f"Scenario '{scenario_id}' has no approved Budget Cycle for entity "

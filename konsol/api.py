@@ -927,9 +927,10 @@ def _batch_query_clickhouse(requests_list):
             # of one year together (konsol#563).
             spread = bool(
                 fact and _read_table(fact, req["measure"]) in _BUDGET_EXCLUDES_FORECAST)
-            if spread and not fact.has_scenario_id:
+            if (spread or by_name_only) and not fact.has_scenario_id:
                 # The table holds every scenario; with no column to bind the
-                # one resolved below, the read would add them up (review l1).
+                # one resolved below, the read would add them up (review l1;
+                # the consolidated fact too, konsol#623).
                 errors[idx] = (
                     f"Dataset '{fact.fact_name}' reads {_read_table(fact, req['measure'])}, "
                     "which holds every budget and forecast scenario, but "

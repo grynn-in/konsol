@@ -150,6 +150,8 @@ def _frappe(scenarios, declared, lookups, cycles=CYCLES):
                     if _matches(c, filters["cycle"]) and e.casefold() in wanted]
         if doctype == "Budget Annual Input":
             return []
+        if doctype == "Consolidation Group":
+            return ["ZZ_G"]
         raise AssertionError(doctype)
 
     fake = types.ModuleType("frappe")
@@ -387,7 +389,7 @@ def test_consolidated_budget_dataset_without_a_scenario_column_is_refused():
     """A Dataset over gold_consolidated_budget_fact with has_scenario_id off
     resolves one budget scenario but bound no filter, so it summed every
     scenario, forecast rounds included (konsol#623)."""
-    result, queries, _ = flat([{"fact": "zz_cbudget_noscn"}])
+    result, queries, _ = flat([{"fact": "zz_cbudget_noscn", "entity": "ZZ_G"}])
     assert queries == []
     assert result["values"] == [None]
     assert len(result["errors"]) == 1
