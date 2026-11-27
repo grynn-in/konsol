@@ -1,0 +1,20 @@
+{
+  "name": "Cost Allocation Driver Account",
+  "doctype": "DocType",
+  "module": "EPM",
+  "engine": "InnoDB",
+  "istable": 1,
+  "editable_grid": 1,
+  "issingle": 0,
+  "fields": [
+    {
+      "fieldname": "main_account",
+      "fieldtype": "Link",
+      "label": "Main Account",
+      "options": "Main Account",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "A group account includes its descendants."
+    }
+  ]
+}
