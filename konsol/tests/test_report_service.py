@@ -446,7 +446,7 @@ BUDGETS = {(2024, "budget"): {"options": [{"id": "ZZB1"}, {"id": "ZZB2"}],
 
 
 def _validate(params, **site):
-    svc = _service(_site(scenarios=BUDGETS, **site))
+    svc = _service(_site(**{"scenarios": BUDGETS, **site}))
     return svc.validate_params(SYNTH, params)
 
 

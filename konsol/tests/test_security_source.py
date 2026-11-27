@@ -111,7 +111,9 @@ def test_report_endpoints_check_entity_access_in_the_service_before_reading():
         gate, read = _first_call_index(fn, "validate_params"), _first_call_index(fn, reads)
         assert gate is not None and read is not None and gate < read, (
             f"report_service.{name} must validate params (entity access) before {reads}")
-    assert "_check_entity" in _calls([_def(svc, "validate_params")])
+    assert "_check_param" in _calls([_def(svc, "validate_params")])
+    assert "_check_entity" in _calls([_def(svc, "_check_param")])
+    assert "_check_entity" in _calls([_def(svc, "_check_scope")])
     assert "_assert_entity_access" in _calls([_def(svc, "_check_entity")])
     assert "assert_entity_access" in _calls([_def(svc, "_assert_entity_access")])
     assert "_fetch_trial_balance_rows" not in _calls([_def(svc, "build")])
