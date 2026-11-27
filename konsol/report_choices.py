@@ -12,7 +12,14 @@ that entity is allowed. No caching: each call reads the current permissions.
 import frappe
 
 
+def _signed_in():
+    """Every list is for a signed-in user; a Guest is refused."""
+    if frappe.session.user == "Guest":
+        frappe.throw("Sign in to read report choices", frappe.PermissionError)
+
+
 def _allowed():
+    _signed_in()
     from konsol.entity_permissions import allowed_entity_codes
 
     return allowed_entity_codes()
@@ -80,14 +87,179 @@ def groups():
     ]
 
 
+def _iso(value):
+    return str(value)[:10] if value else None
+
+
+def _regular_periods(year):
+    return frappe.get_all(
+        "EPM Fiscal Year Period",
+        filters={"parent": str(int(year)), "parenttype": "EPM Fiscal Year",
+                 "period_type": "Regular"},
+        fields=["fiscal_period", "period_code", "period_label", "quarter",
+                "start_date", "end_date"],
+        order_by="fiscal_period asc",
+        parent_doctype="EPM Fiscal Year",
+        limit_page_length=0,
+    )
+
+
+def fiscal_years():
+    """Fiscal years with at least one Regular period, ascending.
+
+    Opening, Closing and Adjustment periods are never report columns
+    (decided 27 Nov 2026, Deepak Pai, #210 part 3), so a year with only those
+    is not offered.
+    """
+    _signed_in()
+    rows = frappe.get_all(
+        "EPM Fiscal Year Period",
+        filters={"parenttype": "EPM Fiscal Year", "period_type": "Regular"},
+        fields=["parent"],
+        order_by="parent asc",
+        parent_doctype="EPM Fiscal Year",
+        limit_page_length=0,
+    )
+    return sorted({int(r.parent) for r in rows})
+
+
+def periods(year):
+    """The year's declared Regular periods in fiscal_period order. A year with
+    none returns an empty list. The label falls back to the code, as the
+    EPM Fiscal Year doctype does (``period_label or period_code``)."""
+    _signed_in()
+    return [
+        {
+            "number": int(r.fiscal_period),
+            "code": r.period_code,
+            "label": r.period_label or r.period_code,
+            "start_date": _iso(r.start_date),
+            "end_date": _iso(r.end_date),
+            "quarter": r.quarter or None,
+        }
+        for r in _regular_periods(year)
+    ]
+
+
+def hierarchies():
+    """Published Reporting Hierarchies, by name."""
+    _signed_in()
+    rows = frappe.get_all(
+        "Reporting Hierarchy",
+        filters={"status": "Published"},
+        fields=["hierarchy_name", "label", "dimension"],
+        order_by="hierarchy_name asc",
+        limit_page_length=0,
+    )
+    return [{"name": r.hierarchy_name, "label": r.label or r.hierarchy_name,
+             "dimension": r.dimension} for r in rows]
+
+
+def hierarchy_nodes(hierarchy, year):
+    """The hierarchy's nodes flattened in tree order (a parent before its
+    children), read as of the end of the year's last Regular period."""
+    _signed_in()
+    regular = _regular_periods(year)
+    if not regular:
+        frappe.throw(f"Fiscal year {year} has no Regular period to read the hierarchy at",
+                     frappe.ValidationError)
+    from konsol.api import get_reporting_hierarchy_tree  # lazy: api imports this module
+
+    tree = get_reporting_hierarchy_tree(hierarchy, as_of=_iso(regular[-1].end_date))
+    out = []
+
+    def walk(nodes, depth, parent):
+        for n in nodes:
+            out.append({"code": n["member_code"], "label": n["member_label"],
+                        "depth": depth, "is_group": bool(n["is_group"]),
+                        "parent": parent})
+            walk(n.get("children") or [], depth + 1, n["member_code"])
+
+    walk(tree["tree"], 0, None)
+    return out
+
+
+def dimension_values(dimension):
+    """Values of one declared Dimension, through the Dimension Value list,
+    which runs its own read check."""
+    _signed_in()
+    rows = frappe.get_all(
+        "Dimension Value",
+        filters={"dimension": dimension},
+        fields=["name", "value"],
+        order_by="name asc",
+        limit_page_length=0,
+    )
+    return [{"code": r.value, "label": r.value} for r in rows]
+
+
+def _published_accounts(is_group, section):
+    """Published Main Accounts of one chart, in code order.
+
+    Mirrors ``konsol.api._pnl_accounts`` (api.py:1414-1426): status Published,
+    ``order_by main_account asc``, and leaves in more than one chart refused
+    (api.py:1420-1426). The section filter is optional here (api.py:1416 fixes
+    it to Profit and Loss), and ``is_group`` selects leaves or headings.
+    """
+    filters = {"status": "Published", "is_group": is_group}
+    if section:
+        filters["statement_section"] = section
+    rows = frappe.get_all(
+        "Main Account",
+        filters=filters,
+        fields=["main_account", "account_name", "chart_of_accounts",
+                "statement_section", "account_type", "parent_account"],
+        order_by="main_account asc",
+        limit_page_length=0,
+    )
+    charts = sorted({r.chart_of_accounts for r in rows if r.chart_of_accounts})
+    if len(charts) > 1:
+        frappe.throw(
+            "Report accounts are read from one chart, and Published accounts exist in "
+            f"one chart only: found charts {', '.join(charts)}. Make one chart Inactive or Draft.",
+            frappe.ValidationError,
+        )
+    return [
+        {"code": r.main_account, "name": r.account_name or r.main_account,
+         "statement_section": r.statement_section, "account_type": r.account_type,
+         "parent": r.parent_account or None}
+        for r in rows
+    ]
+
+
+def accounts(section=None):
+    """Published leaf accounts of the chart, optionally of one statement section."""
+    _signed_in()
+    return _published_accounts(0, section)
+
+
+def account_headings(section=None):
+    """Published heading (group) accounts of the chart, optionally of one section."""
+    _signed_in()
+    return _published_accounts(1, section)
+
+
 def is_allowed(kind, code):
-    """True when ``code`` is in the list for ``kind`` ("entity" or "group")
-    and the current user may read it. An unknown kind is a caller bug, so it
-    raises rather than answering False."""
+    """True when ``code`` is in the list for ``kind`` and the current user may
+    read it. Kinds: entity, group, fiscal_year, hierarchy, account,
+    account_heading, dimension_value (code ``<dimension>:<value>``). An unknown
+    kind is a caller bug, so it raises rather than answering False."""
     if kind == "entity":
-        listed = entities()
-    elif kind == "group":
-        listed = groups()
-    else:
-        raise ValueError(f"Unknown report choice kind '{kind}'")
-    return any(item["code"] == code for item in listed)
+        return any(i["code"] == code for i in entities())
+    if kind == "group":
+        return any(i["code"] == code for i in groups())
+    if kind == "fiscal_year":
+        try:
+            return int(code) in fiscal_years()
+        except (TypeError, ValueError):
+            return False
+    if kind == "hierarchy":
+        return any(i["name"] == code for i in hierarchies())
+    if kind == "account":
+        return any(i["code"] == code for i in accounts())
+    if kind == "account_heading":
+        return any(i["code"] == code for i in account_headings())
+    if kind == "dimension_value":
+        dimension, sep, value = str(code).partition(":")
+        return bool(sep) and any(i["code"] == value for i in dimension_values(dimension))
+    raise ValueError(f"Unknown report choice kind '{kind}'")

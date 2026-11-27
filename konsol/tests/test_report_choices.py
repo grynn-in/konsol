@@ -45,7 +45,7 @@ GROUPS = [
 
 
 def P(year, num, code, label, ptype="Regular", q="Q1", sd="2025-01-01", ed="2025-01-31"):
-    return {"parent": str(year), "fiscal_period": num, "period_code": code,
+    return {"parent": str(year), "parenttype": "EPM Fiscal Year", "fiscal_period": num, "period_code": code,
             "period_label": label, "period_type": ptype, "quarter": q,
             "start_date": sd, "end_date": ed}
 
