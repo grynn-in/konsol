@@ -6,6 +6,23 @@ order: 150
 ---
 The Konsolidat add-in reads konsol's numbers into Excel (desktop and on the web) with `=K.*` formulas.
 
+## Install
+
+Each konsol site serves its own add-in manifest. [Download Excel add-in](/api/method/konsol.excel_addin.manifest) saves it as `konsolidat-<site>.xml`; Close Settings → Excel Add-in has the same link. Every address in the file is this site's, the add-in's name in Excel names the site, and its Id is derived from the site, so two sites install as two add-ins. A site that has no https `host_name` refuses the download and says so; a System Manager sets it with `bench --site <site> set-config host_name https://<public address>`.
+
+Office loads add-ins over HTTPS only, a local stack included: the site's address needs a certificate the computer trusts.
+
+- **Excel for Mac:** copy the file into `~/Library/Containers/com.microsoft.Excel/Data/Documents/wef/` (create the `wef` folder if it is missing), restart Excel, and pick the add-in under Home → Add-ins.
+- **Excel for Windows:** put the file in a shared network folder, add that folder under File → Options → Trust Center → Trust Center Settings → Trusted Add-in Catalogs with "Show in Menu" ticked, restart Excel, and pick the add-in under Home → Add-ins → Shared Folder.
+- **Excel on the web:** Home → Add-ins → More Add-ins → My Add-ins → Upload My Add-in, and choose the file.
+- **For everyone (centralized deployment):** your Microsoft 365 administrator opens the Microsoft 365 admin center, Settings → Integrated apps → Upload custom apps, and uploads the file or gives the download link above as the link to the manifest file.
+
+## Another site
+
+The pane's **Server** panel shows the site the add-in talks to. By default that is the site it was installed from. To read another site with the same install, enter that site's address, such as `https://site.example` (https, the address only, no path), and choose **Use this server**; clear the field to go back. The choice belongs to the workbook: it is saved with the file, so two open workbooks can read two sites, and changing it in one leaves the other alone. A workbook with no choice reads the site the add-in was installed from. The add-in keeps a separate sign-in for each site and never sends one site's sign-in to another.
+
+The other site must allow it: a System Manager of that site lists this add-in's site, for example `https://site.example`, in Close Settings → Excel Add-in Origins, one address per line. Listing a site trusts every page served from it with this site's add-in sign-ins, so list only sites you control. Until then the pane says "Could not reach … ask an admin of … to add … to Close Settings → Excel Add-in Origins". Only the add-in's own calls are opened to a listed site, and they carry the add-in's sign-in token, never the browser's cookies.
+
 ## Sign in
 
 Open the add-in's pane (the **Konsolidat** button on the Home ribbon) and sign in with your konsol user and password. The add-in keeps a sign-in token and sends it with every formula. The token lasts 8 hours; after that the pane asks you to sign in again. You read only what your konsol user may read.
@@ -60,13 +77,15 @@ The pane's **Reports** panel paints two templates:
 
 ## Refresh
 
-The add-in's group on the Home ribbon has **Refresh sheet** and **Refresh workbook**:
+The add-in's group on the Home ribbon has **Refresh sheet** and **Refresh workbook**, and the pane's **Refresh** panel has the same two buttons:
 
-- **Refresh sheet** takes the active sheet's snapshot again (if it is a snapshot sheet), recalculates every `=K.*` formula on it, and writes `Values as of <date time> UTC` in row 1.
+- **Refresh sheet** takes the active sheet's snapshot again (if it is a snapshot sheet), recalculates every `=K.*` formula on it, and writes `Values as of <date time> UTC from <site>` in row 1, naming the site the values came from. A snapshot taken from another site than the workbook now reads is refused, not repainted.
 - **Refresh workbook** does the same for every snapshot and every sheet with a `=K.*` formula.
 
 If you are not signed in, nothing is refreshed and the pane opens and says why.
 
 ## When the add-in changes
 
-Excel keeps the add-in's manifest, which lists its buttons and functions. When a konsol release raises the manifest version (the ribbon buttons came with 2.0.2.0, `K.EPMSAVE`'s currency and amountBasis arguments with 2.0.3.0, its asOfDate argument with 2.0.4.0, and the scenario words in `K.EPM`'s tooltip with 2.0.5.0), your Microsoft 365 administrator uploads the manifest again in the Microsoft 365 admin center, from `/assets/konsol/excel-addin/manifest.xml` on your konsol site. Until then Excel keeps the old buttons and functions. A workbook on an old add-in sends requests the server refuses; reload the add-in.
+Excel keeps the add-in's manifest, which lists its buttons and functions. When a konsol release raises the manifest version (the ribbon buttons came with 2.0.2.0, `K.EPMSAVE`'s currency and amountBasis arguments with 2.0.3.0, its asOfDate argument with 2.0.4.0, the scenario words in `K.EPM`'s tooltip with 2.0.5.0, and the server kept per workbook with 2.0.6.0), download the manifest again and install it the same way. With centralized deployment by link, Microsoft 365 reads the new file itself. Until then Excel keeps the old buttons and functions. A workbook on an old add-in sends requests the server refuses; reload the add-in.
+
+The manifest built per site (konsol#605) has a new Id. An add-in installed from the old shared file is a different add-in to Excel: remove it, then install this site's.

@@ -20,6 +20,8 @@ import os
 import sys
 import types
 
+from konsol.tests.read_path_stub import MemoryCache
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CH_PATH = os.path.join(APP_DIR, "clickhouse.py")
 
@@ -63,6 +65,8 @@ class _Logger:
 
 def _load():
     frappe = types.ModuleType("frappe")
+    cache = MemoryCache()  # the sync-failure record (konsol#177)
+    frappe.cache = lambda: cache
     frappe.flags = types.SimpleNamespace(
         in_install=False, in_import=False, in_migrate=False, in_patch=False)
     frappe._logger = _Logger()
@@ -214,7 +218,7 @@ def test_a_sync_into_the_old_key_is_refused_by_name_not_merged_silently():
         raise AssertionError("a sync into the old sorting key must be refused")
     written = [s for s in sql[before:] if s.startswith(("INSERT", "EXCHANGE", "CREATE TABLE", "DROP"))]
     assert written == [], written
-    assert m._sync_failures[TABLE]["error_type"] == "sorting_key_stale"
+    assert m.sync_failures()[TABLE]["error_type"] == "sorting_key_stale"
     assert any("SYNC REFUSED" in msg and TABLE in msg for msg in frappe._logger.messages)
 
 

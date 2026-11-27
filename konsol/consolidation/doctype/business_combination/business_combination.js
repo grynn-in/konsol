@@ -1,7 +1,9 @@
 // Business Combination — Get Balances from Trial Balance (konsol#207)
 //
 // A Draft deal takes its Acquired Balance Sheet from the acquired entity's
-// warehouse trial balance through the acquisition period, on request. The
+// warehouse trial balance through the last period before the acquisition
+// period (konsol#406, the period-end the warehouse's acquisition journal
+// measures the entity at), on request. The
 // server replaces the lines, places the Fair Value Adjustment Total and saves.
 // Only a real Draft (Pending Approval is docstatus 0 too); unsaved edits are
 // saved first so the server uses what was typed, not what was stored. Frappe

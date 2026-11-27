@@ -213,7 +213,9 @@ def test_calendar_fields():
 
 def test_calendar_permissions_follow_close_settings():
     settings = _meta(os.path.join(DT_ROOT, "close_settings"), "close_settings")
-    want = {p["role"]: p for p in settings["permissions"]}
+    # Level 0 only: Close Settings' permlevel 1 guards Excel Add-in Origins
+    # alone (konsol#618 review); the calendar has no such field.
+    want = {p["role"]: p for p in settings["permissions"] if not p.get("permlevel")}
     got = {p["role"]: p for p in _calendar()["permissions"]}
     assert set(got) == set(want)
     for role, perm in got.items():

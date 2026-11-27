@@ -9,7 +9,9 @@ import hashlib
 import os
 import re
 
-ADDIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public", "excel-addin")
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ADDIN = os.path.join(APP_DIR, "public", "excel-addin")
+TEMPLATE = os.path.join(APP_DIR, "excel_addin_manifest.template.xml")
 
 #: functions.json's sha256 prefix, and the manifest Version that ships it.
 #: 2.0.2.0 (ribbon Refresh buttons, 7 Nov 2026) left functions.json unchanged;
@@ -17,21 +19,20 @@ ADDIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: S2-X3): K.EPMSAVE takes currency and amountBasis. 2.0.4.0 (konsol#348 S3
 #: K5): K.EPMSAVE takes asOfDate, the forecast round. 2.0.5.0 (konsol#348 S6
 #: KC1): K.EPM's scenario tooltip lists the Dataset words, the S6 ones included.
-SHIPPED = ("988c0179f42299f5", "2.0.5.0")
+#: 2.0.6.0 (konsol#618 review): functions.json unchanged; the server moves into
+#: the workbook and functions.js survives a cached page without server.js, so a
+#: new Version makes Excel take the new files.
+SHIPPED = ("988c0179f42299f5", "2.0.6.0")
 
 
-def _version(name):
-    with open(os.path.join(ADDIN, name)) as f:
+def _version():
+    with open(TEMPLATE) as f:
         return re.search(r"<Version>([^<]+)</Version>", f.read()).group(1)
 
 
 def test_functions_json_change_ships_with_a_new_manifest_version():
     with open(os.path.join(ADDIN, "functions.json"), "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()[:16]
-    assert (digest, _version("manifest.xml")) == SHIPPED, (
-        "functions.json changed: raise <Version> in manifest.xml and "
-        "manifest.demo.xml, then update SHIPPED")
-
-
-def test_both_manifests_carry_the_same_version():
-    assert _version("manifest.xml") == _version("manifest.demo.xml")
+    assert (digest, _version()) == SHIPPED, (
+        "functions.json changed: raise <Version> in excel_addin_manifest.template.xml, "
+        "then update SHIPPED")
