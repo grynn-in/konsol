@@ -131,6 +131,8 @@ def _frappe(scenarios, declared, lookups, cycles=CYCLES):
             assert filters["docstatus"] == ["<", 2], filters
             wanted = set(filters["scenario_id"][1])
             return [{"scenario_id": s, "fiscal_year": y} for s, y in cycles if s in wanted]
+        if doctype == "Consolidation Group":
+            return ["ZZG", "ZZS6CF"]
         raise AssertionError(doctype)
 
     fake = types.ModuleType("frappe")

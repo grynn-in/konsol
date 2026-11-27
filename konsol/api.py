@@ -275,6 +275,16 @@ _PER_ROUND = {
 #: currencies added up (konsol#348 S6 KC1, gold_forecast_accuracy_group).
 _ENTITY_SLOT_COLUMN = {"epm_gold.gold_forecast_accuracy_group": "consolidation_group"}
 
+#: Tables whose entity slot holds a Consolidation Group code: the two
+#: consolidated facts store the group in ``data_area_id``, and the accuracy
+#: model binds it to ``consolidation_group`` (above). An entity code there
+#: matches no row and read 0.0, a missing group looking like a zero error; a
+#: read refuses it, naming the Dataset and the slot (konsol#565).
+_GROUP_SLOT_TABLES = {
+    "epm_gold.gold_consolidated_fact",
+    "epm_gold.gold_consolidated_budget_fact",
+} | set(_ENTITY_SLOT_COLUMN)
+
 #: Tables holding every budget scenario's rows and each forecast scenario's
 #: declared current round only (konsolidat S6 WC1). A read naming no
 #: scenario reads the one active budget scenario of the row's year, resolved
@@ -833,6 +843,22 @@ def _batch_query_clickhouse(requests_list):
             facts[fact_key] = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
         return facts[fact_key]
 
+    group_codes = []  # the Consolidation Group codes, looked up once when first needed
+
+    def group_slot_error(fact, req):
+        """Why the entity slot of a group-keyed read cannot take this value."""
+        if _read_table(fact, req["measure"]) not in _GROUP_SLOT_TABLES:
+            return None
+        if not group_codes:
+            group_codes.append(set(frappe.get_all(
+                "Consolidation Group", pluck="consolidation_group",
+                limit_page_length=0)))
+        if req["entity"] in group_codes[0]:
+            return None
+        return (f"Dataset '{fact.fact_name}' reads by consolidation group: the "
+                f"entity argument must be a Consolidation Group code, and "
+                f"'{req['entity']}' is not one.")
+
     # Group by (fact, measure, dim_names_frozenset, scenario_id, layer).
     # `fact` (the resolved fact_name) is the table-determining element; scenario
     # is retained per-request for backward compatibility / resolution fallback.
@@ -844,6 +870,11 @@ def _batch_query_clickhouse(requests_list):
         dims = req.get("dimensions", {})
         fact_key = req.get("fact") or req.get("scenario")
         scenario_id = req.get("scenario_id", "")
+        group_fact = resolve_fact(fact_key)
+        err = group_slot_error(group_fact, req) if group_fact else None
+        if err:
+            errors[idx] = err
+            continue
         if scenario_id:
             # The id must have a column to filter, and (outside the variance
             # dataset, checked below) name a Scenario that exists. Ignored, it
