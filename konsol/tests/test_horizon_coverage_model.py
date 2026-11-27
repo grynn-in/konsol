@@ -200,3 +200,11 @@ def test_a_round_with_only_drafts_has_no_horizon_and_is_not_covered():
     assert r["pending_horizon_periods"] == 6
     assert r["state"] == M.UNCOVERED
     assert "no approved Cycle" in r["sentence"]
+
+
+def test_a_one_period_horizon_reads_one_period_not_one_periods():
+    """konsol#559: the sentence said "(1 periods)"."""
+    [r] = M.rounds([_cycle("FC-27", 2027, date(2027, 6, 30), 1)], _calendar([2027]))
+    assert r["sentence"] == "Round ZZFC as of 2027-06-30 covers FY2027 P7 (1 period): approved for FY2027 (FC-27)."
+    [r] = M.rounds([_cycle("FC-27", 2027, date(2027, 6, 30), 6)], _calendar([2027]))
+    assert "(6 periods)" in r["sentence"]

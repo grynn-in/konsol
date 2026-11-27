@@ -322,10 +322,21 @@ def _run_hierarchy(rows, loaded, allowed=None, reply=""):
         return None, None
 
     fake_frappe = types.ModuleType("frappe")
-    # One budget Scenario and no forecast: a budget read that names no
-    # scenario reads the non-forecast ones (konsol#348 S6 review B1).
-    fake_frappe.get_all = lambda doctype, filters=None, **kw: (
-        [] if (filters or {}).get("scenario_type") == "forecast" else ["ZZ_BUD"])
+    # One budget Scenario with an approved Cycle of every year, and no
+    # forecast: a budget read that names no scenario reads ZZ_BUD
+    # (konsol#563), and the Cycle budgets every entity asked about (#568).
+    def get_all(doctype, filters=None, **kw):
+        filters = filters or {}
+        if doctype == "Budget Cycle":
+            years = (filters.get("fiscal_year") or ["in", [2024]])[1]
+            return [{"name": f"ZZ-BUD-{y}", "scenario_id": "ZZ_BUD", "fiscal_year": y}
+                    for y in years]
+        if doctype in ("Budget Entry", "Budget Annual Input"):
+            return [{"cycle": c, "data_area_id": e}
+                    for c in filters["cycle"][1] for e in filters["data_area_id"][1]]
+        return [] if filters.get("scenario_type") == "forecast" else ["ZZ_BUD"]
+
+    fake_frappe.get_all = get_all
     read_path_stub.install(fake_frappe)
     fake_frappe.log_error = lambda *a, **k: None
     fake_frappe.get_traceback = lambda: ""
