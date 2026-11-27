@@ -3095,6 +3095,63 @@ def test_r5_compute_refuses_a_rate_step_whose_rate_rows_refuse_the_coefficients(
     assert "step 1" in msg.lower() and "positive" in msg, msg
 
 
+# -- rv L3: an upper bound on the charge, rate x units ----------------------------
+#
+# In the warehouse the charge is Decimal(38,4) x Decimal(38,12) -> Decimal(38,16),
+# 22 integer digits. An extreme rate x units overflows there and stops
+# gold_cost_allocation for EVERY run, so Compute refuses a Declared Rate step
+# whose rate x sum of its driver values reaches 1e21, in the one message.
+
+CHARGE_TOO_BIG = 10 ** 21
+
+
+def _units_stats(hr, p1):
+    """Step 1 (IT, Declared Rate) has receivers HR and P1; step 2 shares."""
+    return [_stat("CAS-00001", 3, "HR", hr), _stat("CAS-00001", 3, "P1", p1),
+            _stat("CAS-00001", 3, "P2", 30)]
+
+
+def test_rv_l3_compute_refuses_a_charge_of_rate_times_units_at_or_over_1e21():
+    # the review's numbers: rate 1,000,000 x 1e15 units. Each value is also over
+    # the driver-value bound; both refusals join the one message, nothing is saved.
+    rs = _rate_rule_set(rates=[_rate_row(1, 1_000_000, date(2026, 1, 1))])
+    m = _run_module(rule_set=rs, stats=_units_stats(5 * 10 ** 14, 5 * 10 ** 14))
+    run = _Run()
+    msg = _k7_refused(lambda: m.compute_weights_on(run))
+    assert msg.startswith("Cost Allocation Run: "), msg
+    assert ("Step 1 (sender IT): rate 1000000 x 1000000000000000 units: the charge is too "
+            "large for the warehouse; use a smaller unit or rate.") in msg, msg
+    assert "too large for a driver value" in msg, msg
+    assert run.saved == 0 and [w["step"] for w in run.weights] == [99]
+    # exactly the bound, with every value under the driver-value bound
+    rs = _rate_rule_set(rates=[_rate_row(1, 1_000_000_000, date(2026, 1, 1))])
+    m = _run_module(rule_set=rs, stats=_units_stats(5 * 10 ** 11, 5 * 10 ** 11))
+    msg = _k7_refused(lambda: m.compute_weights_on(_Run()))
+    assert "Step 1 (sender IT): rate 1000000000 x 1000000000000 units" in msg, msg
+    assert "too large for the warehouse" in msg and "too large for a driver value" not in msg, msg
+    # a Share of Pool step is never checked: step 2 has no rate
+    assert "Step 2" not in msg, msg
+
+
+def test_rv_l3_compute_accepts_a_charge_just_under_the_bound():
+    # rate 1e9 x 999,999,999,999 units = 9.99999999999e20 < 1e21
+    rs = _rate_rule_set(rates=[_rate_row(1, 1_000_000_000, date(2026, 1, 1))])
+    m = _run_module(rule_set=rs, stats=_units_stats(5 * 10 ** 11, 499_999_999_999))
+    run = _Run()
+    m.compute_weights_on(run)
+    assert run.saved == 1
+    got = {(w["step"], w["receiver_member"]): w for w in run.weights}
+    assert got[(1, "HR")]["rate"] == 1_000_000_000.0 and got[(1, "HR")]["driver_value"] == 5 * 10 ** 11
+
+
+def test_rv_l3_charge_bound_is_declared_next_to_the_driver_value_bound():
+    m = _run_module()
+    assert m.CHARGE_BOUND == CHARGE_TOO_BIG
+    with open(RUN_PY) as f:
+        src = f.read()
+    assert src.index("DRIVER_VALUE_BOUND = ") < src.index("CHARGE_BOUND = ")
+
+
 # -- the stored rows rebuild the same coefficients everywhere ------------------------
 
 def _rate_stored():

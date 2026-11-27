@@ -132,6 +132,10 @@ def test_fixed_weight_child_shape():
     assert fields["member"]["description"] == "Must be a member of the driver's dimension."
     assert fields["value"]["description"] == "A share, normalised over each step's receivers."
     assert fields["value"].get("non_negative") == 1
+    # 2b-2 rv M1: without a precision the Desk rounds a Float to the site's
+    # float_precision (ControlFloat.parse, often 3) before it is saved. Driver
+    # values are stored at 9 places (Run Weight.driver_value); match it.
+    assert fields["value"]["precision"] == "9"
     assert fields["effective_to"]["description"] == "Blank = still applies."
     for name in ("member", "value", "effective_from", "effective_to"):
         assert fields[name].get("in_list_view") == 1, name

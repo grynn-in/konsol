@@ -40,6 +40,9 @@ BASIS_HELP = ("Share of Pool splits the sender's whole pool; Declared Rate charg
 RATE_HELP = "Amount per driver unit, in the entity's trial balance currency."
 DECLARED_RATE_EVAL = ("eval:(doc.rules || []).some(function (r) "
                       "{ return r.basis == 'Declared Rate'; })")
+# rv L1: the Rates section also shows while rows exist, so a rule switched back
+# to Share of Pool does not hide rows that rate_errors still refuses.
+RATES_SHOWN_EVAL = DECLARED_RATE_EVAL + " || (doc.rates || []).length > 0"
 LAYOUT_TYPES = {"Tab Break", "Section Break", "Column Break"}
 
 
@@ -79,7 +82,11 @@ def test_rule_basis_options_equal_model_constants():
 
 # -- shape: the Rates section on the Rule Set ----------------------------------
 
-def test_rule_set_rates_section_closes_the_rules_tab_and_shows_for_a_declared_rate():
+def test_rule_set_rates_section_closes_the_rules_tab_and_shows_for_a_declared_rate_or_rows():
+    """rv L1: shown for a Declared Rate rule OR while the table has rows. With
+    the rule-only condition, switching a rule back to Share of Pool hid the
+    rows that rate_errors still refuses ("a rate applies only to a Declared
+    Rate step"), and the user could not see what to delete."""
     fields = _doc(RULE_SET)["fields"]
     names = [f["fieldname"] for f in fields]
     rules_tab = names.index("rules_tab")
@@ -87,7 +94,8 @@ def test_rule_set_rates_section_closes_the_rules_tab_and_shows_for_a_declared_ra
     section = _by_name(RULE_SET)["rates_section"]
     assert section["fieldtype"] == "Section Break"
     assert section["label"] == "Rates"
-    assert section["depends_on"] == DECLARED_RATE_EVAL
+    assert section["depends_on"] == RATES_SHOWN_EVAL
+    assert _by_name(RULE_SET)["rates"]["depends_on"] == RATES_SHOWN_EVAL
     # last section of the Rules tab: after Receivers, nothing after it
     assert names.index("rates_section") > names.index("receivers") > rules_tab
     assert names[-2:] == ["rates_section", "rates"], names[-3:]
@@ -98,7 +106,7 @@ def test_rule_set_rates_table_is_mandatory_only_for_a_declared_rate():
     assert f["fieldtype"] == "Table"
     assert f["label"] == "Rates"
     assert f["options"] == "Cost Allocation Rule Rate"
-    assert f["mandatory_depends_on"] == DECLARED_RATE_EVAL
+    assert f["mandatory_depends_on"] == DECLARED_RATE_EVAL   # rows alone never make it mandatory
     assert not f.get("reqd")
     assert "step" in f["description"].lower() and "overlap" in f["description"]
 
@@ -114,7 +122,11 @@ def test_rule_set_form_script_refreshes_the_rates_dependency_on_a_basis_change()
     assert 'frappe.ui.form.on("Cost Allocation Rule"' in js
     assert re.search(r"^\tbasis\(frm\)", js, re.M), "no basis(frm) handler"
     assert re.search(r"^\trules_remove\(frm\)", js, re.M), "no rules_remove(frm) handler"
-    assert js.count('frm.refresh_field("rates")') >= 2
+    # rv L1: the section also depends on the Rates rows; deleting the last
+    # stale row must hide it at once, the same way.
+    assert 'frappe.ui.form.on("Cost Allocation Rule Set"' in js
+    assert re.search(r"^\trates_remove\(frm\)", js, re.M), "no rates_remove(frm) handler"
+    assert js.count('frm.refresh_field("rates")') >= 3
 
 
 # -- shape: the Rule Rate child ------------------------------------------------
@@ -136,6 +148,10 @@ def test_rule_rate_child_shape():
     ]
     fields = _by_name(RATE)
     assert fields["rate"]["description"] == RATE_HELP
+    # rv M1: without a precision the Desk rounds a Float to the site's
+    # float_precision (ControlFloat.parse, often 3): 12.3456 saved as 12.346
+    # and the 4-place check never saw it. Run Weight.rate has the same "4".
+    assert fields["rate"]["precision"] == "4"
     assert fields["effective_to"]["description"] == "Blank = still applies."
     for name in ("step", "rate", "effective_from", "effective_to"):
         assert fields[name].get("in_list_view") == 1, name
