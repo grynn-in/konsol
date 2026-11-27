@@ -66,3 +66,65 @@ def test_every_case_matches_its_fixture():
         if json.loads(text) != json.loads(_cap.dumps(got)) or text != _cap.dumps(got):
             bad.append(name)
     assert not bad, bad
+
+
+# ---- T6: the snapshot goes through the template interpreter ----------------
+
+def _tb_cases():
+    return {n: c for n, c in CASES.items() if n.startswith("tb_long__")}
+
+
+def _tb_template():
+    return _compiler.load_templates(_compiler._TEMPLATE_DIR)["trial_balance_long"]
+
+
+def test_tb_builder_delegates_to_compile_snapshot(monkeypatch):
+    calls = []
+    real = _compiler.compile_snapshot
+
+    def spy(template, params, rows):
+        calls.append((template["id"], params))
+        return real(template, params, rows)
+
+    monkeypatch.setattr(_compiler, "compile_snapshot", spy)
+    _compiler.build_trial_balance_long_map("ZZ1", 2024, [], 3, 5)
+    assert calls == [("trial_balance_long",
+                      {"entity": "ZZ1", "year": 2024, "period_from": 3, "period_to": 5})]
+
+
+def test_compile_snapshot_matches_every_tb_golden():
+    bad = []
+    for name, (fn, args, kwargs) in _tb_cases().items():
+        entity, year, rows = args
+        got = _compiler.compile_snapshot(
+            _tb_template(),
+            {"entity": entity, "year": year, **kwargs},
+            rows,
+        )
+        got.pop("report")
+        with open(os.path.join(GOLDEN, f"{name}.json"), encoding="utf-8") as f:
+            text = f.read()
+        if text != _cap.dumps(got):
+            bad.append(name)
+    assert not bad, bad
+
+
+def test_compile_snapshot_report_key_and_area():
+    t = _tb_template()
+    got = _compiler.compile_snapshot(t, {"entity": "ZZ1", "year": 2024}, [{}, {}])
+    assert got["report"] == {
+        "template_id": "trial_balance_long",
+        "template_version": t["version"],
+        "params": {"entity": "ZZ1", "year": 2024, "period_from": 1, "period_to": 12},
+        "area": "A1:J5",
+    }
+    empty = _compiler.compile_snapshot(t, {"entity": "ZZ1", "year": 2024}, [])
+    assert empty["report"]["area"] == "A1:J3"
+
+
+def test_tb_constants_come_from_the_template_file():
+    t = _tb_template()
+    assert _compiler.TB_LONG_TITLE == t["title"]
+    assert _compiler.TB_LONG_HEADERS == [f["h"] for f in t["fields"]]
+    assert _compiler.TB_LONG_MAX_ROWS == t["max_rows"]
+    assert _compiler.TB_LONG_LAST_COL == "J"
