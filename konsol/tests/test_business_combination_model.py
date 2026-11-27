@@ -86,7 +86,7 @@ def totals(hdr, consideration, balances, costs, policy, rate=rate_to_group, equi
 
 
 def facts(**over):
-    base = {"has_tb_at_or_before": True, "rate_to_group": rate_to_group,
+    base = {"has_tb_before": True, "rate_to_group": rate_to_group,
             "is_published_leaf": lambda account: True, "is_equity": is_equity}
     base.update(over)
     return base
@@ -401,7 +401,7 @@ EMPTY_BALANCE_SHEET = (
 
 def test_an_empty_acquired_balance_sheet_is_refused_without_an_earlier_trial_balance():
     problems = M.problems(header(), WORKED_CONSIDERATION, [], [], IFRS_PARTIAL,
-                          facts(has_tb_at_or_before=False))
+                          facts(has_tb_before=False))
     assert problems == [EMPTY_BALANCE_SHEET]
     assert M.BALANCE_SHEET_REQUIRED == EMPTY_BALANCE_SHEET
 
@@ -410,7 +410,7 @@ def test_an_empty_acquired_balance_sheet_is_refused_even_with_an_earlier_trial_b
     # konsol#206: a trial balance on file does not fill the lines; net assets would be
     # measured from nothing and goodwill would be the whole consideration
     problems = M.problems(header(), [cash(1000)], [], [], IFRS_PARTIAL,
-                          facts(has_tb_at_or_before=True))
+                          facts(has_tb_before=True))
     assert M.BALANCE_SHEET_REQUIRED in problems
     assert EMPTY_BALANCE_SHEET in problems
 
@@ -509,7 +509,7 @@ def test_problems_accept_precomputed_totals_instead_of_a_rate():
     t = totals(header(), [cash(1000)], WORKED_BALANCES, [], IFRS_PARTIAL)
     refuse = dict(IFRS_PARTIAL, bargain_purchase="Refuse")
     problems = M.problems(header(), [cash(1000)], WORKED_BALANCES, [], refuse,
-                          {"has_tb_at_or_before": True, "totals": t, "is_equity": is_equity})
+                          {"has_tb_before": True, "totals": t, "is_equity": is_equity})
     assert len(problems) == 1 and "580.00" in problems[0]
 
 

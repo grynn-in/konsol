@@ -1675,7 +1675,7 @@ def test_get_balances_throws_the_derived_problems_and_keeps_the_lines():
     deal = _deal_for_tb(site)
     message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
     assert "declares no Retained Earnings Account" in message
-    assert "FY2025 P12" in message
+    assert "FY2025 P11" in message  # the cut-off, the unclosed result to that period-end (konsol#406)
     assert not deal.get("saved")
 
 

@@ -323,7 +323,7 @@ def problems(header, consideration, balances, costs, policy, facts):
     An empty Acquired Balance Sheet is always refused (konsol#206): net assets
     are measured only from its lines, so without them goodwill would absorb the
     whole consideration. A trial balance on file does not waive it; any
-    ``has_tb_at_or_before`` in ``facts`` is ignored here.
+    ``has_tb_before`` in ``facts`` is ignored here.
     """
     found = []
     is_equity = _equity_rule(facts, balances)
