@@ -1046,6 +1046,11 @@ _REFERENCE_TABLE_DDL = {
     # konsol#269 (cost allocation phase 1, K1): the run, its accounts, weights,
     # coefficients and statistics. Identical to konsolidat's clickhouse/init-db.sql
     # (W1); keep them identical. Pinned by tests/test_cost_allocation_ddl.py.
+    # Phase 2b-1 (task C): the weights carry source and effective_from after
+    # driver_value (an existing table gets them by _POSITIONED_COLUMNS); the
+    # Account Set driver's accounts are their own table. effective_from is a
+    # plain Date: a statistic or account-set row leaves it unset, which the
+    # sync writes as DEFAULT and the column reads as 1970-01-01.
     "epm_staging.cost_allocation_runs": (
         "(name String, rule_set String, method String, allocation_dimension String, "
         "receiver_account_mode String, allocation_account String, "
@@ -1060,7 +1065,11 @@ _REFERENCE_TABLE_DDL = {
     "epm_staging.cost_allocation_run_weights": (
         "(parent String, idx UInt32, step UInt16, sender_member String, "
         "receiver_member String, driver String, statistic String, value_period UInt8, "
-        "carried_forward UInt8, driver_value Decimal(38,9)) "
+        "carried_forward UInt8, driver_value Decimal(38,9), source String, effective_from Date) "
+        "ENGINE = MergeTree ORDER BY (parent, idx)"
+    ),
+    "epm_staging.cost_allocation_run_driver_accounts": (
+        "(parent String, idx UInt32, driver String, main_account String, value_sign String) "
         "ENGINE = MergeTree ORDER BY (parent, idx)"
     ),
     "epm_staging.cost_allocation_coefficients": (
@@ -1275,6 +1284,12 @@ _POSITIONED_COLUMNS = {
     ],
     # konsol#269 RC3: the reciprocal method's own/pass hop, after driver (as in the CREATE)
     "epm_staging.cost_allocation_coefficients": [("hop_kind", "String", "driver")],
+    # konsol#269 phase 2b-1 (task C): the weight's source and window, after
+    # driver_value (as in the CREATE)
+    "epm_staging.cost_allocation_run_weights": [
+        ("source", "String", "driver_value"),
+        ("effective_from", "Date", "source"),
+    ],
 }
 
 

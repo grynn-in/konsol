@@ -29,6 +29,9 @@ from konsol.workflows import set_cancelled_state
 from konsol.epm.doctype.cost_allocation_run_account.cost_allocation_run_account import (
     CostAllocationRunAccount,
 )
+from konsol.epm.doctype.cost_allocation_run_driver_account.cost_allocation_run_driver_account import (
+    CostAllocationRunDriverAccount,
+)
 from konsol.epm.doctype.cost_allocation_run_weight.cost_allocation_run_weight import (
     CostAllocationRunWeight,
 )
@@ -306,6 +309,7 @@ class CostAllocationRun(Document):
     CHILD_CONTROLLERS = {
         "Cost Allocation Run Account": CostAllocationRunAccount,
         "Cost Allocation Run Weight": CostAllocationRunWeight,
+        "Cost Allocation Run Driver Account": CostAllocationRunDriverAccount,
     }
 
     # -- gates ---------------------------------------------------------------
@@ -318,6 +322,7 @@ class CostAllocationRun(Document):
             return
         self.set("weights", [])
         self.set("accounts", [])
+        self.set("driver_accounts", [])
         for field in ("computed_at", "computed_by", "computed_for_rule_set",
                       "computed_for_scenario", "computed_for_fiscal_year",
                       "computed_for_fiscal_period", "rule_set_modified"):

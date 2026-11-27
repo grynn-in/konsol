@@ -73,6 +73,22 @@
    "columns": 2
   },
   {
+   "fieldname": "source",
+   "fieldtype": "Data",
+   "label": "Source",
+   "read_only": 1,
+   "columns": 2,
+   "description": "Where the driver value came from: Uploaded Statistic, Fixed Weights or Account Set."
+  },
+  {
+   "fieldname": "effective_from",
+   "fieldtype": "Date",
+   "label": "Effective From",
+   "read_only": 1,
+   "columns": 1,
+   "description": "For Fixed Weights: the start of the window used."
+  },
+  {
    "fieldname": "weight",
    "fieldtype": "Float",
    "label": "Weight",
