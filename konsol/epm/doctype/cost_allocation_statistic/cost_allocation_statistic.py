@@ -18,6 +18,8 @@ from konsol.epm.doctype.cost_allocation_statistic_value.cost_allocation_statisti
 )
 
 MAX_ROWS = 20000
+#: The driver source a statistic supplies (cost_allocation_driver.UPLOADED).
+UPLOADED_STATISTIC = "Uploaded Statistic"
 _SHOWN = 10
 _PREFIX = "Cost Allocation Statistic: "
 
@@ -54,7 +56,17 @@ class CostAllocationStatistic(Document):
     # -- lifecycle -----------------------------------------------------------
 
     def validate(self):
-        self.dimension = frappe.db.get_value("Cost Allocation Driver", self.driver, "dimension")
+        driver = frappe.db.get_value(
+            "Cost Allocation Driver", self.driver, ["dimension", "source"], as_dict=True)
+        if not driver:
+            frappe.throw(f"{_PREFIX}driver {self.driver} not found.")
+        # 2b-1: a statistic is the Uploaded Statistic source; a Fixed Weights or
+        # Account Set driver carries its values itself.
+        if driver.source != UPLOADED_STATISTIC:
+            frappe.throw(
+                f"{_PREFIX}driver {self.driver} has source {driver.source}; a statistic can only "
+                f"be uploaded for a driver whose source is {UPLOADED_STATISTIC}.")
+        self.dimension = driver.dimension
         rows = list(self.get("values") or [])
         if not rows:
             frappe.throw(f"{_PREFIX}add at least one value row.")

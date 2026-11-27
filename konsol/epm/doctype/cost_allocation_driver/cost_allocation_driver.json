@@ -49,9 +49,20 @@
       "fieldtype": "Column Break"
     },
     {
+      "fieldname": "source",
+      "fieldtype": "Select",
+      "label": "Source",
+      "options": "Uploaded Statistic\nFixed Weights\nAccount Set",
+      "reqd": 1,
+      "default": "Uploaded Statistic",
+      "in_list_view": 1,
+      "description": "Where the driver's values come from."
+    },
+    {
       "fieldname": "carry_forward",
       "fieldtype": "Check",
       "label": "Carry Forward",
+      "depends_on": "eval:doc.source=='Uploaded Statistic'",
       "description": "When a period has no value for a receiver, use its latest earlier period's value in the same scenario. Every carried value is reported on the run. Off: a missing value refuses the run."
     },
     {
@@ -65,6 +76,50 @@
       "fieldname": "description",
       "fieldtype": "Small Text",
       "label": "Description"
+    },
+    {
+      "fieldname": "values_tab",
+      "fieldtype": "Tab Break",
+      "label": "Values"
+    },
+    {
+      "fieldname": "fixed_weights_section",
+      "fieldtype": "Section Break",
+      "label": "Fixed Weights",
+      "depends_on": "eval:doc.source=='Fixed Weights'"
+    },
+    {
+      "fieldname": "fixed_weights",
+      "fieldtype": "Table",
+      "label": "Fixed Weights",
+      "options": "Cost Allocation Driver Fixed Weight",
+      "depends_on": "eval:doc.source=='Fixed Weights'",
+      "mandatory_depends_on": "eval:doc.source=='Fixed Weights'",
+      "description": "One row per member and validity window. A run uses the row whose window covers its whole period; windows of one member may not overlap."
+    },
+    {
+      "fieldname": "account_set_section",
+      "fieldtype": "Section Break",
+      "label": "Account Set",
+      "depends_on": "eval:doc.source=='Account Set'"
+    },
+    {
+      "fieldname": "accounts",
+      "fieldtype": "Table",
+      "label": "Accounts",
+      "options": "Cost Allocation Driver Account",
+      "depends_on": "eval:doc.source=='Account Set'",
+      "mandatory_depends_on": "eval:doc.source=='Account Set'",
+      "description": "The scenario trial balance of these accounts, by member of the driver's dimension, is the driver value. A group account includes its descendants."
+    },
+    {
+      "fieldname": "value_sign",
+      "fieldtype": "Select",
+      "label": "Value Sign",
+      "options": "As Booked\nReversed",
+      "depends_on": "eval:doc.source=='Account Set'",
+      "mandatory_depends_on": "eval:doc.source=='Account Set'",
+      "description": "Reversed turns credit balances (e.g. revenue) positive."
     }
   ],
   "permissions": [
