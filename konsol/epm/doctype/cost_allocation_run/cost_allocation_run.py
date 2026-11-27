@@ -212,11 +212,6 @@ def parse_sums(text):
     return out
 
 
-def _expand_accounts(declared):
-    """Each declared account and its descendants, once each, in declaration order."""
-    return [r["main_account"] for r in account_rows(declared, _descendants)]
-
-
 def account_rows(declared, descendants_of):
     """Child rows for Cost Allocation Run Account: each declared account and
     its descendants, once each (the first declaration wins)."""
@@ -695,24 +690,30 @@ class CostAllocationRun(Document):
     def _stale_derived_rows(self, name, now, rows):
         """The driver's declared accounts and sign against the run's snapshot,
         then the derived query again; the differences from the stored rows.
-        The snapshot holds one row per expanded account, so the comparison
-        reads its declared_account (2b-1 DA); a snapshot written before that
-        column existed has no declared accounts and refuses: recompute it.
+        The snapshot holds one row per expanded account (2b-1 DA); approval
+        expands the driver's accounts the same way and compares (main_account,
+        declared_account, sign). A snapshot written before declared_account
+        existed has none and refuses: recompute it.
         The accounts are read FOR UPDATE like the fixed rows: under REPEATABLE
         READ a plain read may see a snapshot older than the header's (rv1 F1)."""
         accounts = frappe.db.sql(
             "SELECT main_account FROM `tabCost Allocation Driver Account` "
             "WHERE parent = %(driver)s AND parenttype = 'Cost Allocation Driver' "
             "ORDER BY idx FOR UPDATE", {"driver": name}, pluck=True)
-        snapshot = {(r.get("declared_account"), r["value_sign"])
+        # Expand exactly as Compute did and compare the expanded rows, so a
+        # group declared beside its own leaf passes and a tree change since
+        # Compute refuses (review of konsolidat#403, F1/F2).
+        expanded = account_rows(accounts, _descendants)
+        current = {(r["main_account"], r["declared_account"], now["value_sign"]) for r in expanded}
+        snapshot = {(r["main_account"], r.get("declared_account"), r["value_sign"])
                     for r in _rows(self.get("driver_accounts")) if r["driver"] == name}
-        if {(a, now["value_sign"]) for a in accounts} != snapshot:
+        if current != snapshot:
             return [f"driver {name}: its accounts or value sign changed since Compute"]
         members = sorted({w["receiver_member"] for w in rows})
         try:
             sql, params = model.derived_query(
                 self.entity, self.scenario, self.fiscal_year, self.fiscal_period,
-                now["dimension"], members, _expand_accounts(accounts))
+                now["dimension"], members, [r["main_account"] for r in expanded])
         except model.CostAllocationError as exc:
             return [f"driver {name}: " + " ".join(exc.errors)]
         try:
