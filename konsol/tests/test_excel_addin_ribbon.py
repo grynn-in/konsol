@@ -52,8 +52,14 @@ def _read(name):
 
 # -- the manifests -----------------------------------------------------------
 
+# konsol#605: one template, rendered per site; it is well-formed XML as it
+# stands (the placeholders sit in text and attribute values).
+TEMPLATE = os.path.join(APP_DIR, "excel_addin_manifest.template.xml")
+MANIFESTS = (TEMPLATE,)
+
+
 def _ribbon_groups(manifest):
-    root = ET.parse(os.path.join(ADDIN, manifest)).getroot()
+    root = ET.parse(manifest).getroot()
     groups = []
     for ep in root.iter("{%s}ExtensionPoint" % NS["v"]):
         if ep.get(XSI_TYPE) == "PrimaryCommandSurface":
@@ -71,7 +77,7 @@ def _execute_functions(group):
 
 
 def test_both_ribbon_groups_carry_both_refresh_buttons():
-    for manifest in ("manifest.xml", "manifest.demo.xml"):
+    for manifest in MANIFESTS:
         _, groups = _ribbon_groups(manifest)
         assert len(groups) == 2, (manifest, "expected a desktop and a web group")
         for group in groups:
@@ -81,14 +87,14 @@ def test_both_ribbon_groups_carry_both_refresh_buttons():
 def test_every_ribbon_function_is_associated_by_the_runtime():
     src = _read("ribbon.js")
     associated = set(re.findall(r'Office\.actions\.associate\(\s*"([^"]+)"', src))
-    for manifest in ("manifest.xml", "manifest.demo.xml"):
+    for manifest in MANIFESTS:
         _, groups = _ribbon_groups(manifest)
         named = {n for g in groups for n in _execute_functions(g)}
         assert named <= associated, (manifest, named - associated)
 
 
 def test_control_ids_are_unique_and_every_resid_resolves():
-    for manifest in ("manifest.xml", "manifest.demo.xml"):
+    for manifest in MANIFESTS:
         root, _ = _ribbon_groups(manifest)
         ids = [c.get("id") for c in root.iter("{%s}Control" % NS["v"])]
         assert len(ids) == len(set(ids)), (manifest, ids)
