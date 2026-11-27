@@ -242,9 +242,10 @@ _BUDGET_SCENARIO_COLUMN = {"variance_analysis": "budget_scenario_id"}
 #: under any name reads these tables too.
 #:
 #: The budget fact also holds every approved round of a forecast year side
-#: by side. A read refuses a forecast scenario id and, naming none, reads the
-#: non-forecast scenarios only: unfiltered, it added the rounds to the budget
-#: (konsol#348 S6-Q1 b, review B1).
+#: by side. A read refuses a forecast scenario id (konsol#348 S6-Q1 b,
+#: review B1) and, naming none, reads the year's one active budget scenario
+#: by name (konsol#563). A Dataset over it must declare has_scenario_id, or
+#: the read could not keep to one scenario and is refused.
 _BUDGET_EXCLUDES_FORECAST = {"epm_gold.gold_spread_budget"}
 
 #: The current-round views hold nothing for a forecast (scenario, year) with
@@ -811,11 +812,10 @@ def _batch_query_clickhouse(requests_list):
         _forecast_scenario_ids,
         round_in_clause,
         _scenario_ids,
-        budget_scenarios_excluding_forecasts,
+        NO_BUDGET_TO_READ,
         choose_declared_forecast,
         forecast_on_budget_read_error,
         scenario_id_error,
-        scenario_in_clause,
     )
 
     known_cache = []  # every Scenario id, looked up once when first needed
@@ -919,17 +919,25 @@ def _batch_query_clickhouse(requests_list):
             # The flat budget table reads one budget scenario too: it kept
             # every non-forecast scenario of the table and added two budgets
             # of one year together (konsol#563).
-            one_budget = by_name_only or bool(
+            spread = bool(
                 fact and _read_table(fact, req["measure"]) in _BUDGET_EXCLUDES_FORECAST)
+            if spread and not fact.has_scenario_id:
+                # The table holds every scenario; with no column to bind the
+                # one resolved below, the read would add them up (review l1).
+                errors[idx] = (
+                    f"Dataset '{fact.fact_name}' reads {_read_table(fact, req['measure'])}, "
+                    "which holds every budget and forecast scenario, but "
+                    "has_scenario_id is off, so a read cannot keep to one budget "
+                    "scenario. Turn on has_scenario_id on the Dataset.")
+                continue
+            one_budget = by_name_only or spread
             if fact and (_BUDGET_SCENARIO_COLUMN.get(fact.fact_name) or one_budget):
                 if budgets_by_year is None:
                     budgets_by_year = _active_budget_scenarios_by_year()
                 year = int(req["year"])
                 scenario_id, err = choose_budget_scenario(
                     budgets_by_year.get(year, []), fiscal_year=year,
-                    none_reason=("so there is no budget to read. Name "
-                                 "scenario_id to read a forecast.")
-                    if one_budget else None)
+                    none_reason=NO_BUDGET_TO_READ if one_budget else None)
                 if err:
                     errors[idx] = err
                     continue
@@ -1123,17 +1131,6 @@ def _batch_query_clickhouse(requests_list):
             params["param_sid"] = scenario_id
             column = budget_column or "scenario_id"
             scenario_id_clause = f" AND {column} = {{sid:String}}"
-        elif table in _BUDGET_EXCLUDES_FORECAST:
-            # No scenario named: every non-forecast scenario, never a
-            # forecast's rounds (konsol#348 S6 review B1). (The consolidated
-            # budget resolved its one budget scenario per row above.)
-            ids, err = budget_scenarios_excluding_forecasts(
-                known_scenarios, forecast_ids)
-            if err:
-                for idx, _ in group_items:
-                    errors[idx] = err
-                continue
-            scenario_id_clause = scenario_in_clause(ids, params, "bsid")
         if table in _PER_ROUND:
             # The declared round of each year read (S6 KC1). scenario_id was
             # resolved per row above, and every row's year has a declaration.
