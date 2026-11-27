@@ -1154,3 +1154,52 @@ def rate_errors(rules, rates, receiver_account_mode):
                 errs.append("Step %s: overlapping rate windows %s and %s."
                             % (step, _rate_window(earlier), _rate_window(later)))
     return list(dict.fromkeys(errs))
+
+
+# -- 2b-2 R5: the rate for a run period -----------------------------------------
+#
+# Compute picks, per Declared Rate step, the one Rates row whose window covers
+# the whole run period (Q1 A, Deepak Pai, 27 Nov 2026, konsol#269: a window
+# must cover the whole period and a change inside a period refuses; blending by
+# days was rejected). The same rule as fixed_windows, for one step's rows.
+
+
+def rate_for_period(rates, step, period_start, period_end):
+    """The Rates row of ``step`` whose window covers the WHOLE period
+    [period_start, period_end]: {step, rate, effective_from, effective_to},
+    with the dates as datetime.date (effective_to None is open-ended) and the
+    rate as given. Rows of other steps are ignored. Dates may be dates,
+    datetimes or ISO strings (_as_date).
+
+    Raises one CostAllocationError: the step has no covering window, a window
+    starts or ends inside the period (a change inside the period, which
+    refuses even when another window covers), or more than one window covers.
+    """
+    start, end = _as_date(period_start), _as_date(period_end)
+    if start > end:
+        raise CostAllocationError("Period start %s is after its end %s." % (start, end))
+    covering, inside = [], []
+    for r in rates:
+        if r["step"] != step:
+            continue
+        frm, to = _as_date(r.get("effective_from")), _as_date(r.get("effective_to"))
+        if frm is None:
+            continue   # the rule set refuses this row at its own save (rate_errors)
+        if start < frm <= end:
+            inside.append(frm)
+        if to is not None and start <= to < end:
+            inside.append(to)
+        if frm <= start and (to is None or to >= end):
+            covering.append({"step": step, "rate": r.get("rate"), "effective_from": frm, "effective_to": to})
+    if inside:
+        raise CostAllocationError(
+            "Step %s: the declared rate changes inside the period %s to %s (on %s); "
+            "a rate window must cover the whole period."
+            % (step, start, end, ", ".join(str(d) for d in sorted(inside))))
+    if not covering:
+        raise CostAllocationError("Step %s: no declared rate covers the period %s to %s." % (step, start, end))
+    if len(covering) > 1:
+        raise CostAllocationError(
+            "Step %s: more than one rate window covers the period %s to %s (from %s)."
+            % (step, start, end, ", ".join(str(r["effective_from"]) for r in covering)))
+    return covering[0]
