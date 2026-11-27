@@ -717,3 +717,166 @@ def parse_statistic_csv(text):
     if not rows:
         raise CostAllocationError("The file has a header but no data rows.")
     return rows
+
+
+# --- driver sources (2b-1) ---------------------------------------------------
+#
+# A driver's values come from one of three sources: an uploaded statistic
+# (resolve_driver_values), fixed weights with validity windows, or an account
+# set derived from the scenario trial balance. Every source ends as the same
+# {member: value} rows that weights() normalises, so the three methods and the
+# warehouse do not care which source filled them.
+
+UPLOADED = "Uploaded Statistic"
+FIXED = "Fixed Weights"
+ACCOUNT_SET = "Account Set"
+SOURCES = (UPLOADED, FIXED, ACCOUNT_SET)
+AS_BOOKED = "As Booked"
+REVERSED = "Reversed"
+VALUE_SIGNS = (AS_BOOKED, REVERSED)
+#: the scenario trial balance names its dimension columns dim_<name>; the same
+#: guard as schema_apply (\Z, not $: "$" matches before a trailing newline).
+_DIM_COLUMN = re.compile(r"^dim_[a-z0-9_]+\Z")
+DERIVED_TABLE = "epm_gold.gold_scenario_trial_balance"
+
+
+def fixed_windows(rows, receivers, period_start, period_end):
+    """{receiver: row} — the fixed-weight row whose window covers the WHOLE
+    period [period_start, period_end], per receiver.
+
+    rows: {member, value, effective_from, effective_to}; effective_to None is
+    open-ended. Dates are datetime.date. Decided Q1 A (Deepak Pai, 27 Nov
+    2026, konsol#269): a window must cover the whole period, and a window that
+    starts or ends inside the period is a change inside the period, which
+    refuses even when another window covers; blending by days was rejected.
+
+    Raises one CostAllocationError listing every receiver (sorted) with no
+    covering window, with a window changing inside the period, or with more
+    than one covering window. Rows of members that do not receive are ignored.
+    """
+    if period_start > period_end:
+        raise CostAllocationError("Period start %s is after its end %s." % (period_start, period_end))
+    by_member = {}
+    for r in rows:
+        by_member.setdefault(r["member"], []).append(r)
+    errs, out = [], {}
+    for m in sorted(set(receivers)):
+        covering, inside = [], []
+        for r in by_member.get(m, ()):
+            start, end = r["effective_from"], r.get("effective_to")
+            if period_start < start <= period_end:
+                inside.append(start)
+            if end is not None and period_start <= end < period_end:
+                inside.append(end)
+            if start <= period_start and (end is None or end >= period_end):
+                covering.append(r)
+        if inside:
+            errs.append("%s: a fixed weight window changes inside the period %s to %s (on %s); "
+                        "a window must cover the whole period."
+                        % (m, period_start, period_end, ", ".join(str(d) for d in sorted(inside))))
+        elif not covering:
+            errs.append("%s: no fixed weight covers the period %s to %s." % (m, period_start, period_end))
+        elif len(covering) > 1:
+            errs.append("%s: more than one fixed weight window covers the period %s to %s (from %s)."
+                        % (m, period_start, period_end,
+                           ", ".join(str(r["effective_from"]) for r in covering)))
+        else:
+            out[m] = covering[0]
+    if errs:
+        raise CostAllocationError(errs)
+    return out
+
+
+def fixed_values(rows, receivers, period_start, period_end):
+    """{receiver: Fraction} from the fixed-weight window covering the period;
+    see fixed_windows for the rules and refusals. Values feed weights()."""
+    return {m: _exact(r["value"]) for m, r in fixed_windows(rows, receivers, period_start, period_end).items()}
+
+
+def derived_values(sums, receivers, sign):
+    """{receiver: Fraction} from warehouse sums {member: (total, row_count)}.
+
+    A receiver absent from sums, or with no rows, is missing; a total of 0
+    over rows is a real zero. sign is As Booked or Reversed (Reversed negates,
+    so a credit balance such as revenue drives positively). Decided Q2 A
+    (Deepak Pai, 27 Nov 2026, konsol#269): a value negative after the sign
+    refuses, naming the member and the value; taking the absolute value was
+    rejected. One CostAllocationError lists every problem, receivers sorted.
+    """
+    if sign not in VALUE_SIGNS:
+        raise CostAllocationError("Value sign must be %s, not %r." % (" or ".join(VALUE_SIGNS), sign))
+    missing, negative, out = [], [], {}
+    for m in sorted(set(receivers)):
+        total, n = sums.get(m, (0, 0))
+        if not n:
+            missing.append(m)
+            continue
+        v = _exact(total)
+        if sign == REVERSED:
+            v = -v
+        if v < 0:
+            negative.append("%s is negative (%s %s)." % (m, _plain(v), sign))
+            continue
+        out[m] = v
+    errs = []
+    if missing:
+        errs.append("Missing derived values: no trial balance rows for %s." % ", ".join(missing))
+    errs.extend(negative)
+    if errs:
+        raise CostAllocationError(errs)
+    return out
+
+
+def _plain(fraction):
+    """A Fraction as a plain decimal string for messages (exact: inputs came from decimals)."""
+    d = Decimal(fraction.numerator) / Decimal(fraction.denominator)
+    s = format(d, "f")
+    return s.rstrip("0").rstrip(".") if "." in s else s
+
+
+def array_literal(values):
+    """A ClickHouse Array(String) literal for an HTTP query parameter."""
+    return "[" + ",".join("'" + str(v).replace("\\", "\\\\").replace("'", "\\'") + "'" for v in values) + "]"
+
+
+def derived_query(entity, scenario, fiscal_year, fiscal_period, dimension_column, members, accounts):
+    """(sql, params) summing the scenario trial balance per receiver member.
+
+    One row per member found: ``member, total, row_count`` (TabSeparated), to
+    feed derived_values as {member: (total, row_count)}. Reads
+    gold_scenario_trial_balance for the run's scenario, entity, year and
+    period, the same columns as the sender-pool query (scenario_id,
+    data_area_id, fiscal_year, fiscal_period, main_account, amount).
+
+    ``accounts`` must already be expanded to descendants: the caller resolves
+    each group account's tree, this function takes the flat list as given.
+    Every value travels as a ClickHouse query parameter; the one interpolated
+    identifier, dimension_column, is refused unless it matches dim_[a-z0-9_]+.
+    Empty members or accounts refuse (the query could only report everything
+    missing).
+    """
+    errs = []
+    if not isinstance(dimension_column, str) or not _DIM_COLUMN.match(dimension_column):
+        errs.append("Dimension column %r is not a dim_ identifier (dim_ followed by lower-case "
+                    "letters, digits or underscores)." % (dimension_column,))
+    if not members:
+        errs.append("No receiver members to derive values for.")
+    if not accounts:
+        errs.append("No accounts to derive values from.")
+    if errs:
+        raise CostAllocationError(errs)
+    sql = (
+        f"SELECT `{dimension_column}` AS member, sum(amount) AS total, count() AS row_count "
+        f"FROM {DERIVED_TABLE} "
+        "WHERE scenario_id = {scenario:String} AND data_area_id = {entity:String} "
+        "AND fiscal_year = {fiscal_year:UInt16} AND fiscal_period = {fiscal_period:UInt8} "
+        "AND main_account IN {accounts:Array(String)} "
+        f"AND `{dimension_column}` IN {{members:Array(String)}} "
+        f"GROUP BY `{dimension_column}` ORDER BY member FORMAT TabSeparated"
+    )
+    params = {
+        "param_scenario": scenario, "param_entity": entity,
+        "param_fiscal_year": str(fiscal_year), "param_fiscal_period": str(fiscal_period),
+        "param_members": array_literal(members), "param_accounts": array_literal(accounts),
+    }
+    return sql, params
