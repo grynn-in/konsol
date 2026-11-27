@@ -880,3 +880,111 @@ def derived_query(entity, scenario, fiscal_year, fiscal_period, dimension_column
         "param_members": array_literal(members), "param_accounts": array_literal(accounts),
     }
     return sql, params
+
+
+# --- declared rates: the basis of a step and the rates on the rule set --------
+# konsol#269 phase 2b-2 (Q5 = 5B, Deepak Pai 13 Nov 2026; Q1, Q4 and Q6 = A,
+# 27 Nov 2026). A Share of Pool step splits its sender's whole pool; a Declared
+# Rate step charges rate x driver units and reports the difference as absorption
+# variance. Rates live on the Rule Set by step, in dated windows that may not
+# overlap; a Declared Rate step is refused unless receiver accounts are a
+# Declared Allocation Account, because the charge needs an account to credit
+# the sender on. Validation only: the coefficient functions above are untouched.
+
+SHARE_OF_POOL = "Share of Pool"
+DECLARED_RATE = "Declared Rate"
+BASES = (SHARE_OF_POOL, DECLARED_RATE)
+#: a rate keeps at most this many decimal places
+RATE_PLACES = 4
+
+
+def _as_date(value):
+    """A date from what Frappe hands a Date field (a date, a datetime or an
+    ISO string); None when blank."""
+    import datetime
+
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    return datetime.date.fromisoformat(str(value)[:10])
+
+
+def _rate_window(row):
+    return "%s–%s" % (row.get("effective_from") or "?", row.get("effective_to") or "open")
+
+
+def _plain_number(value):
+    text = str(value)
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _decimal_places(value):
+    exponent = Decimal(str(value)).as_tuple().exponent
+    return -exponent if isinstance(exponent, int) and exponent < 0 else 0
+
+
+def rate_errors(rules, rates, receiver_account_mode):
+    """Every problem with the rules' bases and the rate rows, as messages
+    ([] when none). Pure: ``rules`` are {step, sender_member, basis} dicts,
+    ``rates`` are {step, rate, effective_from, effective_to} dicts.
+
+    A rule without a basis counts as Share of Pool, the field's default (rows
+    written before 2b-2 carry none until the patch stamps them).
+    """
+    errs = []
+    basis_by_step, sender_by_step = {}, {}
+    for r in rules:
+        step = r["step"]
+        basis = r.get("basis") or SHARE_OF_POOL
+        sender_by_step.setdefault(step, r.get("sender_member"))
+        basis_by_step.setdefault(step, basis)
+        who = "Step %s (%s)" % (step, r.get("sender_member"))
+        if basis not in BASES:
+            errs.append("%s: Basis must be one of %s, not %r." % (who, ", ".join(BASES), basis))
+            continue
+        if basis != DECLARED_RATE:
+            continue
+        if receiver_account_mode != DECLARED_ACCOUNT:
+            errs.append(
+                "%s is Declared Rate, but receiver accounts are %s; the charge needs an account "
+                "to credit the sender on. Set Receiver Account Mode to %s."
+                % (who, OWN_ACCOUNTS, DECLARED_ACCOUNT))
+        if not any(x["step"] == step for x in rates):
+            errs.append("%s is Declared Rate but has no rate; add at least one Rates row for the step."
+                        % who)
+
+    for x in rates:
+        step = x["step"]
+        where = "Rates row for step %s (%s)" % (step, _rate_window(x))
+        if step not in basis_by_step:
+            errs.append("%s: step %s has no rule." % (where, step))
+        elif basis_by_step[step] == SHARE_OF_POOL:
+            errs.append("%s: step %s (%s) is Share of Pool; a rate applies only to a Declared Rate step."
+                        % (where, step, sender_by_step[step]))
+        rate = x.get("rate")
+        if rate in (None, "") or float(rate) <= 0:
+            errs.append("%s: Rate must be greater than 0, not %s." % (where, _plain_number(rate or 0)))
+        elif _decimal_places(rate) > RATE_PLACES:
+            errs.append("%s: Rate %s has more than %d decimal places."
+                        % (where, _plain_number(rate), RATE_PLACES))
+        frm, to = _as_date(x.get("effective_from")), _as_date(x.get("effective_to"))
+        if frm is None:
+            errs.append("%s: Effective From is required." % where)
+        elif to is not None and to < frm:
+            errs.append("%s: Effective To is before Effective From." % where)
+
+    by_step = {}
+    for x in rates:
+        if _as_date(x.get("effective_from")) is not None:
+            by_step.setdefault(x["step"], []).append(x)
+    for step in sorted(by_step, key=str):
+        mine = sorted(by_step[step], key=lambda x: _as_date(x["effective_from"]))
+        for earlier, later in zip(mine, mine[1:]):
+            end = _as_date(earlier.get("effective_to"))
+            if end is None or end >= _as_date(later["effective_from"]):
+                errs.append("Step %s: overlapping rate windows %s and %s."
+                            % (step, _rate_window(earlier), _rate_window(later)))
+    return list(dict.fromkeys(errs))

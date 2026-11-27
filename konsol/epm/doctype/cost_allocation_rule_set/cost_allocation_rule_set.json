@@ -158,6 +158,20 @@
       "fieldtype": "Table",
       "label": "Receivers",
       "options": "Cost Allocation Rule Receiver"
+    },
+    {
+      "fieldname": "rates_section",
+      "fieldtype": "Section Break",
+      "label": "Rates",
+      "depends_on": "eval:(doc.rules || []).some(function (r) { return r.basis == 'Declared Rate'; })"
+    },
+    {
+      "fieldname": "rates",
+      "fieldtype": "Table",
+      "label": "Rates",
+      "options": "Cost Allocation Rule Rate",
+      "mandatory_depends_on": "eval:(doc.rules || []).some(function (r) { return r.basis == 'Declared Rate'; })",
+      "description": "One row per Declared Rate step and validity window. Windows of one step may not overlap; a run uses the row whose window covers its whole period."
     }
   ],
   "permissions": [

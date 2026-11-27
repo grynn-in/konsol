@@ -183,7 +183,7 @@ def test_rate_errors_missing_basis_is_share_of_pool_the_field_default():
 
 def test_rate_errors_refuses_an_unknown_basis_naming_the_step():
     (msg,) = _errors([_rule(1, "Per Head")], [_rate(1)])
-    assert "step 1" in msg and "'Per Head'" in msg and "Share of Pool, Declared Rate" in msg
+    assert msg == "Step 1 (S1): Basis must be one of Share of Pool, Declared Rate, not 'Per Head'."
 
 
 def test_rate_errors_declared_rate_step_needs_a_rate_row():
@@ -201,9 +201,9 @@ def test_rate_errors_refuses_a_rate_for_a_share_of_pool_step_or_a_step_without_a
 
 
 def test_rate_errors_rate_must_be_positive():
-    errs = _errors([_rule(1)], [_rate(1, 0), _rate(1, -3.5, "2027-01-01")])
+    errs = _errors([_rule(1)], [_rate(1, 0, to="2026-12-31"), _rate(1, -3.5, "2027-01-01")])
     assert errs == [
-        "Rates row for step 1 (2026-01-01–open): Rate must be greater than 0, not 0.",
+        "Rates row for step 1 (2026-01-01–2026-12-31): Rate must be greater than 0, not 0.",
         "Rates row for step 1 (2027-01-01–open): Rate must be greater than 0, not -3.5.",
     ]
 
@@ -214,7 +214,7 @@ def test_rate_errors_rate_keeps_at_most_four_decimal_places():
     (msg,) = _errors([_rule(1)], [_rate(1, 12.34567)])
     assert msg == "Rates row for step 1 (2026-01-01–open): Rate 12.34567 has more than 4 decimal places."
     # a float that is a whole number or a short decimal passes whatever repr it carries
-    assert _errors([_rule(1)], [_rate(1, 50), _rate(1, 0.1, "2027-01-01")]) == []
+    assert _errors([_rule(1)], [_rate(1, 50, to="2026-12-31"), _rate(1, 0.1, "2027-01-01")]) == []
 
 
 def test_rate_errors_effective_from_is_required_and_effective_to_may_not_precede_it():

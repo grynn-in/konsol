@@ -2,6 +2,12 @@
 
 validate builds the pure model's RuleSet from the document and lists every
 error in one refusal. The frappe reads are small helpers so tests can stub them.
+
+Phase 2b-2 (Q5 = 5B, Deepak Pai 13 Nov 2026; Q1, Q4 and Q6 = A, 27 Nov 2026):
+each rule has a basis. Share of Pool splits the sender's whole pool; Declared
+Rate charges a rate per driver unit, held on the Rates table by step in dated
+windows that may not overlap. A Declared Rate step needs Declared Allocation
+Account mode, because the charge is credited to the sender on that account.
 """
 from fractions import Fraction
 
@@ -59,10 +65,18 @@ class CostAllocationRuleSet(Document):
         return errors
 
     def _model_errors(self):
-        rules = [{"step": r["step"], "sender_member": r["sender_member"], "driver": r["driver"]}
+        """Structure (the model's validate), the rules' bases and rate rows
+        (rate_errors) and, when those pass, a Reciprocal closed loop, in one
+        list. A Declared Rate step under Reciprocal is allowed here: the run
+        computes it (a rate sender leaves the linear system and acts as an exit)."""
+        rules = [{"step": r["step"], "sender_member": r["sender_member"], "driver": r["driver"],
+                  "basis": r.get("basis")}
                  for r in _rows(self.rules)]
         receivers = [{"step": r["step"], "receiver_member": r["receiver_member"]}
                      for r in _rows(self.receivers)]
+        rates = [{"step": r["step"], "rate": r.get("rate"), "effective_from": r.get("effective_from"),
+                  "effective_to": r.get("effective_to")}
+                 for r in _rows(getattr(self, "rates", None))]
         from konsol.cost_allocation_members import MemberReadError
 
         try:
@@ -75,18 +89,16 @@ class CostAllocationRuleSet(Document):
             method=self.method,
             receiver_account_mode=self.receiver_account_mode,
             allocation_account=self.allocation_account or "",
-            rules=rules,
+            rules=[{k: r[k] for k in ("step", "sender_member", "driver")} for r in rules],
             receivers=receivers,
             dimension_members=members,
             driver_dimensions=_driver_dimensions(sorted({r["driver"] for r in rules})),
         )
-        try:
-            model.assert_valid(rs)
-        except model.CostAllocationError as exc:
-            return exc.errors
-        if rs.method == model.RECIPROCAL:
-            return self._closed_loop_errors(rules, receivers)
-        return []
+        errors = model.validate(rs)
+        errors += model.rate_errors(rules, rates, self.receiver_account_mode)
+        if not errors and rs.method == model.RECIPROCAL:
+            errors += self._closed_loop_errors(rs.rules, receivers)
+        return errors
 
     def _closed_loop_errors(self, rules, receivers):
         """Refuse at save a Reciprocal loop whose cost can never leave. Whether
