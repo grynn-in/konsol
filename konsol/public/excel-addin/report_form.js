@@ -59,6 +59,8 @@ var konsolReportForm = (function () {
   };
   //: scope kind -> its report_choices kind
   var KIND_OF_SCOPE = { entity: "entities", group: "groups", node: "hierarchy_nodes" };
+  //: how long a choices request may wait before it is aborted
+  var CHOICES_TIMEOUT_MS = 30000;
   var SCOPE_LABEL = { entity: "Entity", group: "Group", node: "Hierarchy node" };
   //: the request args each kind takes from the params it depends on
   var KIND_ARGS = {
@@ -391,7 +393,7 @@ var konsolReportForm = (function () {
       // later neither fills the picker nor clears the flag.
       f.loading = true;
       syncButtons();
-      return o.fetchChoices(q.kind, q.args).then(function (res) {
+      return fetchWithTimeout(q.kind, q.args).then(function (res) {
         if (seq !== f.seq || gen !== state.gen) return null;
         f.loading = false;
         var c = optionsOf(q.kind, res && res.choices);
@@ -415,6 +417,8 @@ var konsolReportForm = (function () {
         } else if (!blank(f.p.default) && has(f, f.p.default)) {
           value = f.p.default;
         }
+        if (!value && !why && f.stale) why = f.stale;
+        if (value) f.stale = undefined;
         setValue(f, value);
         show(f.why, why);
         return JSON.stringify(value) !== JSON.stringify(blank(before) ? "" : before) ? changed(name) : null;
@@ -427,6 +431,26 @@ var konsolReportForm = (function () {
         return null;
       }).then(function () {
         syncButtons();
+      });
+    }
+
+    // o.fetchChoices with a deadline: the request is aborted and the existing
+    // error branch clears the loading flag, so a hung server cannot block Apply.
+    function fetchWithTimeout(kind, args) {
+      var ctl = typeof AbortController === "function" ? new AbortController() : null;
+      return new Promise(function (resolve, reject) {
+        var timer = setTimeout(function () {
+          if (ctl) ctl.abort();
+          reject(new Error("The server did not answer in " + CHOICES_TIMEOUT_MS / 1000
+            + " s; re-select the template to retry."));
+        }, CHOICES_TIMEOUT_MS);
+        o.fetchChoices(kind, args, ctl ? { signal: ctl.signal } : undefined).then(function (res) {
+          clearTimeout(timer);
+          resolve(res);
+        }, function (err) {
+          clearTimeout(timer);
+          reject(err);
+        });
       });
     }
 
@@ -479,6 +503,14 @@ var konsolReportForm = (function () {
         var v = params[name];
         if (f.widget === "scope") {
           if (!v || typeof v !== "object") return;
+          if (f.kinds.indexOf(v.kind) < 0) {
+            // The report was built for a kind this site no longer offers.
+            f.stale = kindsWhy({ kinds: [v.kind] })
+              || (SCOPE_LABEL[v.kind] || v.kind) + " is not available for this template on this site.";
+            show(f.why, f.stale);
+            touched.push(name);
+            return;
+          }
           if (f.kindSelect) f.kindSelect.value = v.kind;
           f.pending = v.code;
           touched.push(name);

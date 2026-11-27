@@ -599,11 +599,26 @@ def build(template_id, params):
         _refuse(f"Unknown template_id for formulas: {template_id!r}")
     nodes = _node_reader()
     values = validate_params(tmpl, params, nodes)
+    why = _kind_why(tmpl, _build_kind(tmpl, values), _published_keys())
+    if why is not None:
+        _refuse(why)
     ctx = resolve_context(tmpl, values, nodes)
     try:
         return compile_formulas(tmpl, values, ctx)
     except ValueError as exc:
         _refuse(str(exc))
+
+
+def _build_kind(tmpl, values):
+    """The scope kind a formulas build reads: the scope param's, else the
+    entity or group param's type."""
+    for p in tmpl["params"]:
+        if p["type"] == "scope" and isinstance(values.get(p["name"]), dict):
+            return values[p["name"]]["kind"]
+    for p in tmpl["params"]:
+        if p["type"] in ("entity", "group"):
+            return p["type"]
+    return "entity"
 
 
 def snapshot(template_id, params):
@@ -746,6 +761,13 @@ def _kind_why(t, kind, published):
         for w, s in sorted(missing.items(), key=lambda i: str(i[0])))
 
 
+def _published_keys():
+    """The scenario keys of the site's Published Datasets."""
+    return {r.scenario_key for r in frappe.get_all(
+        "Dataset", filters={"status": "Published"}, fields=["scenario_key"],
+        order_by="scenario_key asc", limit_page_length=0) if r.scenario_key}
+
+
 def catalog():
     """Every template's spec, in ``order``, with its availability per scope kind.
 
@@ -757,9 +779,7 @@ def catalog():
     one kind is; else ``why`` joins every kind's why. A snapshot template
     reads its registered source, so every kind it declares is available.
     """
-    published = {r.scenario_key for r in frappe.get_all(
-        "Dataset", filters={"status": "Published"}, fields=["scenario_key"],
-        order_by="scenario_key asc", limit_page_length=0) if r.scenario_key}
+    published = _published_keys()
     out = []
     for t in templates().values():
         kinds = scope_kinds(t)

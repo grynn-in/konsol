@@ -704,6 +704,9 @@ TREE_ACCOUNTS = [
 ]
 
 ACTBUD = "pnl_actual_budget_monthly"
+#: Every scenario word the actual-vs-budget report reads, Published: build() refuses a kind without them.
+ALL_DATASETS = [{"fact_name": f"zz_{w}", "scenario_key": w, "status": "Published"}
+                for w in ("actuals", "budget", "consolidated", "consolidated_budget")]
 BUDGETS_2026 = {(2026, "budget"): {"options": [{"id": "ZZB1"}], "default": "ZZB1", "why": None}}
 
 
@@ -755,14 +758,14 @@ def test_an_account_tree_under_a_heading_param_starts_at_that_heading():
 
 def test_an_account_tree_over_several_charts_is_refused_with_the_templates_text():
     rows = [dict(r) for r in TREE_ACCOUNTS] + [_acct("4900", "Other chart", chart="ZZ_CHART_B")]
-    site = _site(accounts=rows, scenarios=BUDGETS_2026)
+    site = _site(accounts=rows, scenarios=BUDGETS_2026, datasets=ALL_DATASETS)
     svc = _service(site)
     msg = _refusal(lambda: svc.build(ACTBUD, dict(_actbud_params(), budget=None)))
     assert "ZZ_CHART, ZZ_CHART_B" in msg and "actual vs budget" in msg, msg
 
 
 def test_the_actual_budget_report_builds_for_a_group_with_the_rule_budget():
-    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026)
+    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026, datasets=ALL_DATASETS)
     svc = _service(site)
     out = svc.build(ACTBUD, dict(_actbud_params(), budget=None))
     assert out["budget"] == "ZZB1"
@@ -881,7 +884,7 @@ def test_a_template_with_no_available_kind_is_unavailable_with_every_kinds_why()
 def test_a_group_the_reader_may_not_read_is_refused_by_name_before_any_read():
     """Finding 1: a group is checked with K.EPM's rule (entity_read_scope on
     the group code), before any read, as an entity is."""
-    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026,
+    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026, datasets=ALL_DATASETS,
                  denied={"ZZG"})
     svc = _service(site)
     msg = _refusal(lambda: svc.build(ACTBUD, _actbud_params()), Forbidden)
@@ -898,7 +901,7 @@ def test_a_group_the_reader_may_not_read_is_refused_by_name_before_any_read():
 
 
 def test_a_readable_group_code_builds_even_when_another_code_is_denied():
-    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026,
+    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026, datasets=ALL_DATASETS,
                  denied={"ZZ1"})
     svc = _service(site)
     out = svc.build(ACTBUD, _actbud_params())
@@ -991,7 +994,7 @@ def _node_build_template(svc):
 def test_the_hierarchy_tree_is_read_once_per_build():
     """Finding 8d: the scope check, the hierarchy_nodes block and the scope
     name each read the tree; one build reads it once."""
-    site = _site(scenarios=BUDGETS_2026)
+    site = _site(scenarios=BUDGETS_2026, datasets=ALL_DATASETS)
     svc = _service(site)
     t = _node_build_template(svc)
     svc.templates()[t["id"]] = t

@@ -645,12 +645,13 @@
       }
 
       // A GET of one konsol.api method; resolves its message.
-      function getJson(path, query) {
+      function getJson(path, query, signal) {
         var q = Object.keys(query || {}).map(function (k) {
           return encodeURIComponent(k) + "=" + encodeURIComponent(query[k]);
         }).join("&");
         return api(path + (q ? "?" + q : ""), {
-          headers: { Accept: "application/json" }
+          headers: { Accept: "application/json" },
+          signal: signal
         }).then(function (res) {
           return res.json().catch(function () { return {}; }).then(function (data) {
             if (!res.ok) throw new Error(parseApiError(res, data));
@@ -663,8 +664,9 @@
         return getJson("/api/method/konsol.api.report_catalog");
       }
 
-      function fetchChoices(kind, args) {
-        return getJson("/api/method/konsol.api.report_choices", Object.assign({ kind: kind }, args || {}));
+      function fetchChoices(kind, args, opts) {
+        return getJson("/api/method/konsol.api.report_choices", Object.assign({ kind: kind }, args || {}),
+          opts && opts.signal);
       }
 
       // body: {template_id, params} (konsol#548 v1).
