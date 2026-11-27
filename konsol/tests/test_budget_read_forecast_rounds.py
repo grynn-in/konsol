@@ -89,6 +89,9 @@ FACTS = [
     # A site Dataset over the budget fact that declares no scenario column.
     _fact("zz_budget_noscn", "zz_budget_noscn", "epm_gold.gold_spread_budget",
           has_scenario_id=0),
+    # A site Dataset over the consolidated budget fact, no scenario column.
+    _fact("zz_cbudget_noscn", "zz_cbudget_noscn",
+          "epm_gold.gold_consolidated_budget_fact", has_scenario_id=0),
 ]
 
 
@@ -141,8 +144,10 @@ def _frappe(scenarios, declared, lookups, cycles=CYCLES):
                     found.append({k: record[k] for k in ("name", "scenario_id", "fiscal_year")})
             return found
         if doctype == "Budget Entry":
+            # MariaDB's IN is case-insensitive: it returns the stored code.
+            wanted = {str(x).casefold() for x in filters["data_area_id"][1]}
             return [{"cycle": c, "data_area_id": e} for c, e in ENTRIES
-                    if _matches(c, filters["cycle"]) and _matches(e, filters["data_area_id"])]
+                    if _matches(c, filters["cycle"]) and e.casefold() in wanted]
         if doctype == "Budget Annual Input":
             return []
         raise AssertionError(doctype)
@@ -378,6 +383,18 @@ def test_budget_dataset_without_a_scenario_column_is_refused():
         "on the Dataset."]
 
 
+def test_consolidated_budget_dataset_without_a_scenario_column_is_refused():
+    """A Dataset over gold_consolidated_budget_fact with has_scenario_id off
+    resolves one budget scenario but bound no filter, so it summed every
+    scenario, forecast rounds included (konsol#623)."""
+    result, queries, _ = flat([{"fact": "zz_cbudget_noscn"}])
+    assert queries == []
+    assert result["values"] == [None]
+    assert len(result["errors"]) == 1
+    assert "Dataset 'zz_cbudget_noscn'" in result["errors"][0]
+    assert "has_scenario_id" in result["errors"][0]
+
+
 # ── m2: a forecast read needs a submitted Current Forecast ─────────────────
 #
 # The forecast and latest_estimate reads go through the current-round views,
@@ -528,6 +545,15 @@ def test_hierarchy_read_of_an_entity_the_approved_cycle_does_not_budget_is_refus
             "FY2026: approved Cycle ZZ-BUD-2026 holds no Budget Entry or Annual "
             "Input for it, so there is no budget to read. Add its budget to a "
             "Budget Cycle of 'ZZ_BUD' FY2026 and approve the Cycle."], base
+
+
+def test_hierarchy_read_of_a_budgeted_entity_in_another_case_passes_coverage():
+    """MariaDB's IN found ZZ01 for 'zz01'; the Python set test was exact and
+    refused it as unbudgeted. Coverage matches the way MariaDB found it; the
+    ClickHouse read then behaves as for any entity code case (konsol#623)."""
+    result, queries, _ = hierarchy([{"scenario": "budget", "measure": "period_amount",
+                                     "entity": "zz01"}])
+    assert not any("holds no Budget Entry" in e for e in result.get("errors") or []), result
 
 
 def test_hierarchy_read_of_a_budgeted_entity_and_a_wildcard_reads():
