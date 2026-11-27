@@ -1915,18 +1915,28 @@ def test_rate_reciprocal_share_loop_with_no_exit_still_refused():
     assert "later task" not in open(_PATH).read()
 
 
-def test_rate_reciprocal_rate_only_rule_set_equals_direct():
-    # Two rate senders charging each other and a final: nothing circulates.
+def test_rate_reciprocal_rate_only_rule_set_is_own_hops_in_units():
+    # Two rate senders charging each other and a final: nothing circulates,
+    # every row is an own hop in units, and what each receives stops there.
     steps = [M.Step(1, "A", "T", ["B", "F"], basis=_RATE, rate=Fraction(3)),
              M.Step(2, "B", "T", ["A", "F"], basis=_RATE, rate=Fraction(7))]
     rows = [{"step": 1, "receiver_member": "B", "driver_value": 1}, {"step": 1, "receiver_member": "F", "driver_value": 2},
             {"step": 2, "receiver_member": "A", "driver_value": "0.5"}, {"step": 2, "receiver_member": "F", "driver_value": "1.5"}]
     w, u = M.weights(rows), M.units(rows)
-    recip = M.reciprocal_coefficients(steps, w, u)
-    assert all(r["hop_kind"] == "own" for r in recip)
-    strip = lambda rs: sorted((_key(r), r["pool_coefficient"], r["coefficient"]) for r in rs)
-    assert strip(recip) == strip(M.direct_coefficients(steps, w, u))
-    assert M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u) == M.coefficient_rows("ZZRUN", steps, w, "Direct", u)
+    recip = {_key(r): r for r in M.reciprocal_coefficients(steps, w, u)}
+    assert set(recip) == {("A", 1, "A", "B"), ("A", 1, "A", "F"), ("B", 2, "B", "A"), ("B", 2, "B", "F")}
+    assert all(r["hop_kind"] == "own" for r in recip.values())
+    assert [(r["pool_coefficient"], r["coefficient"]) for r in recip.values()] == \
+        [(3, 1), (3, 2), (2, Fraction(1, 2)), (2, Fraction(3, 2))]
+    out = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u)
+    assert [(r["pool_coefficient"], r["coefficient"]) for r in out] == \
+        [(Decimal("3.000000000000"), Decimal("1.000000000000")), (Decimal("3.000000000000"), Decimal("2.000000000000")),
+         (Decimal("2.000000000000"), Decimal("0.500000000000")), (Decimal("2.000000000000"), Decimal("1.500000000000"))]
+    # without the cross-charge the three methods agree row for row
+    steps2 = [M.Step(1, "A", "T", ["F"], basis=_RATE, rate=Fraction(3)), M.Step(2, "B", "T", ["F"], basis=_RATE, rate=Fraction(7))]
+    w2, u2 = {(1, "F"): Fraction(1), (2, "F"): Fraction(1)}, {(1, "F"): Fraction(2), (2, "F"): Fraction("1.5")}
+    assert M.coefficient_rows("ZZRUN", steps2, w2, "Reciprocal", u2) == M.coefficient_rows("ZZRUN", steps2, w2, "Direct", u2) \
+        == M.coefficient_rows("ZZRUN", steps2, w2, "Step-Down", u2)
 
 
 def test_rate_reciprocal_refusals_are_the_shared_ones():
@@ -1989,7 +1999,7 @@ def _check_reciprocal_rate(steps, w, u, exact, rows):
             for s in share:
                 outflow = sum(r["coefficient"] for r in mine if r["sender_member"] == s)
                 inflow = sum(r["coefficient"] for r in mine if r["receiver_member"] == s)
-                assert outflow == inflow + (own_pool[o] if s == o else 0), (o, s)
+                assert outflow == inflow + (1 if s == o else 0), (o, s)   # a share origin's own pool is 1
             sinks = sum(r["coefficient"] for r in mine if is_sink(r["receiver_member"]))
             assert Fraction(sinks) == own_pool[o], o
     # the pools solve the defining system over share senders exactly
@@ -2009,16 +2019,20 @@ def _random_rate_reciprocal(rng):
     finals = ["F%d" % i for i in range(rng.randint(1, 4))]
     steps, rows = [], []
     numbers = rng.sample(range(1, 200), len(senders))
+    is_rate = {snd: rng.random() < 0.4 for snd in senders}
     for snd, n in zip(senders, numbers):
         pool = [m for m in senders + finals if m != snd]
-        if rng.random() < 0.3:
+        pick = rng.random()
+        if pick < 0.15:    # no direct exit at all: only other share senders (may be a dead loop)
+            pool = [m for m in senders if m != snd and not is_rate[m]] or pool
+        elif pick < 0.3:   # no final receiver: other senders, rate ones included (exits)
             pool = [m for m in senders if m != snd] or pool
         recv = rng.sample(pool, rng.randint(1, len(pool)))
         vals = [rng.choice([0, 1, 2, 3, 7, 11, "0.1", "2.5", "0.000000001", "12345.678901234"]) for _ in recv]
         if not any(Fraction(str(v)) for v in vals):
             vals[0] = 1
         rows.extend({"step": n, "receiver_member": m, "driver_value": v} for m, v in zip(recv, vals))
-        if rng.random() < 0.4:
+        if is_rate[snd]:
             steps.append(M.Step(n, snd, "D%d" % (n % 3), recv, basis=_RATE,
                                 rate=Fraction(rng.choice(["0.0001", "50", "12.3456", "9999.99"]))))
         else:
@@ -2072,7 +2086,7 @@ def test_rate_reciprocal_property_random_mixed_graphs():
         assert strip(again) == strip(rows), seed
         assert M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u) == rows
         accepted += 1
-    assert accepted > 100 and refused > 10 and loops_via_rate > 5 and rounded > 30, \
+    assert accepted > 100 and refused > 8 and loops_via_rate > 8 and rounded > 30, \
         (accepted, refused, loops_via_rate, rounded)
 
 
