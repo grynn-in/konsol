@@ -86,7 +86,7 @@
    "label": "Horizon (periods)",
    "fetch_from": "budget_cycle.horizon_periods",
    "read_only": 1,
-   "description": "Copied from the Budget Cycle: how many periods the round covers after its as-of period."
+   "description": "Copied from the declared Budget Cycle: that Cycle's own horizon. The round is cut at the longest horizon among its approved Cycles (konsolidat#376)."
   },
   {
    "fieldname": "round_col_break",
