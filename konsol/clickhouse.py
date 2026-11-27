@@ -1055,6 +1055,10 @@ _REFERENCE_TABLE_DDL = {
     # (main_account) with the declared account it came from (declared_account,
     # after main_account; an existing table gets it by _POSITIONED_COLUMNS), so
     # the warehouse drift test sums by main_account without an account tree.
+    # Phase 2b-2 (R6): the weights carry the step's basis, the declared rate (4
+    # places, as the Rule Rate stores it) and rate_from, the rate window's start,
+    # after effective_from (an existing table gets them by _POSITIONED_COLUMNS).
+    # A Share of Pool row has rate 0 and rate_from unset (1970-01-01).
     "epm_staging.cost_allocation_runs": (
         "(name String, rule_set String, method String, allocation_dimension String, "
         "receiver_account_mode String, allocation_account String, "
@@ -1069,7 +1073,8 @@ _REFERENCE_TABLE_DDL = {
     "epm_staging.cost_allocation_run_weights": (
         "(parent String, idx UInt32, step UInt16, sender_member String, "
         "receiver_member String, driver String, statistic String, value_period UInt8, "
-        "carried_forward UInt8, driver_value Decimal(38,9), source String, effective_from Date) "
+        "carried_forward UInt8, driver_value Decimal(38,9), source String, effective_from Date, "
+        "basis String, rate Decimal(38,4), rate_from Date) "
         "ENGINE = MergeTree ORDER BY (parent, idx)"
     ),
     "epm_staging.cost_allocation_run_driver_accounts": (
@@ -1294,6 +1299,12 @@ _POSITIONED_COLUMNS = {
     "epm_staging.cost_allocation_run_weights": [
         ("source", "String", "driver_value"),
         ("effective_from", "Date", "source"),
+        # konsol#269 phase 2b-2 (R6): the step's basis, the declared rate (4
+        # places, as the Rule Rate stores it) and the rate window's start,
+        # after effective_from (as in the CREATE)
+        ("basis", "String", "effective_from"),
+        ("rate", "Decimal(38,4)", "basis"),
+        ("rate_from", "Date", "rate"),
     ],
     # konsol#269 phase 2b-1 (DA): the declared account an expanded
     # driver_accounts row came from, after main_account (as in the CREATE)

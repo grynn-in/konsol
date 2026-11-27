@@ -26,6 +26,15 @@ declared account it came from (2b-1 DA), so the warehouse drift test, which
 has no account tree, sums by main_account. Every source's values are snapshotted
 at Compute and re-checked at submit (_refuse_stale_driver_values, beside
 _refuse_stale_statistics); drift after approval is a warehouse warning.
+
+2b-2 (R5; Deepak Pai, 27 Nov 2026, Q1 A and Q4 A): a Declared Rate step takes
+the one Rates row of the rule set whose window covers the whole run period
+(model.rate_for_period) and every weight row of the step stores the basis, the
+rate and the window start. The coefficients are rebuilt from those stored rows
+(_coefficient_rows, with model.units for the rate steps) at Compute, at submit
+and in the K8 sync alike, so a stored run rebuilds identically; a row without
+a basis (computed before 2b-2) is a Share of Pool row. Submit re-reads the rule
+set's bases and rates FOR UPDATE (_refuse_stale_rates).
 """
 import datetime
 import functools
@@ -191,12 +200,16 @@ def value_maps(stat_rows):
 def weight_rows(resolved, step_weights):
     """Child rows for Cost Allocation Run Weight from resolved driver values.
     Each resolved row says where its value came from (statistic, source,
-    effective_from); the weight is the step's exact share as a float."""
+    effective_from) and, 2b-2 R5, the step's basis with the rate and rate
+    window Compute picked (a Share of Pool row: rate 0, rate_from unset); the
+    weight is the step's exact share as a float."""
     return [{
         "step": r["step"], "sender_member": r["sender_member"],
         "receiver_member": r["receiver_member"], "driver": r["driver"],
         "statistic": r.get("statistic"), "source": r.get("source") or model.UPLOADED,
         "effective_from": r.get("effective_from"),
+        "basis": r.get("basis") or model.SHARE_OF_POOL,
+        "rate": r.get("rate") or 0, "rate_from": r.get("rate_from"),
         "value_period": r["value_period"], "carried_forward": 1 if r["carried_forward"] else 0,
         "driver_value": r["driver_value"],
         "weight": float(step_weights[(r["step"], r["receiver_member"])]),
@@ -242,8 +255,11 @@ def compute_weights_on(run):
     if not rs.applies_to_all_scenarios and run.scenario not in in_scope:
         frappe.throw(f"Scenario {run.scenario} is not in the scope of rule set {run.rule_set}.")
 
+    # 2b-2 R5: a rule without a basis (saved before 2b-2) is a Share of Pool
+    # step; the rate of a Declared Rate step is picked in _resolve_sources.
     steps = model.build_steps(
-        [{"step": r["step"], "sender_member": r["sender_member"], "driver": r["driver"]}
+        [{"step": r["step"], "sender_member": r["sender_member"], "driver": r["driver"],
+          "basis": r.get("basis") or model.SHARE_OF_POOL}
          for r in _rows(rs.rules)],
         [{"step": r["step"], "receiver_member": r["receiver_member"]} for r in _rows(rs.receivers)])
     resolved, driver_accounts = _resolve_sources(run, rs, steps)
@@ -299,7 +315,13 @@ def _resolve_sources(run, rs, steps):
     the derived query receives each account once. Every refusal from
     the pure functions is collected and thrown once with the run's prefix,
     and nothing is saved. A warehouse that cannot be read refuses at once,
-    naming the driver: never a silent zero."""
+    naming the driver: never a silent zero.
+
+    2b-2 R5: every row also carries its step's basis and, for a Declared Rate
+    step, the rate and window start of the one Rates row covering the whole
+    period (rate_for_period, the fixed_windows rule, against the same declared
+    period dates); a step with no covering window or a change inside the
+    period joins the one refusal."""
     used = sorted({s.driver for s in steps})
     sources = _driver_sources(used)
     errors, source_of = [], {}
@@ -354,7 +376,15 @@ def _resolve_sources(run, rs, steps):
             frappe.throw(f"{_PREFIX}the scenario trial balance could not be read for driver "
                          f"{name}: {exc}. Nothing was saved.")
 
-    dates, rows = None, []
+    dates = []
+
+    def period():
+        # the declared period dates, read once, only when a window needs them
+        if not dates:
+            dates.extend(_date(d) for d in _period_dates(run.fiscal_year, run.fiscal_period))
+        return dates
+
+    rows = []
     for st in steps:
         source = source_of.get(st.driver)
         if source == model.UPLOADED:
@@ -367,10 +397,8 @@ def _resolve_sources(run, rs, steps):
                 "statistic": None, "source": source, "effective_from": None}
         try:
             if source == model.FIXED:
-                if dates is None:
-                    dates = tuple(_date(d) for d in _period_dates(run.fiscal_year, run.fiscal_period))
                 windows = model.fixed_windows(
-                    _fixed_rows(sources[st.driver]["fixed_weights"]), st.receivers, *dates)
+                    _fixed_rows(sources[st.driver]["fixed_weights"]), st.receivers, *period())
                 rows += [{**base, "receiver_member": m, "driver_value": windows[m]["value"],
                           "effective_from": windows[m]["effective_from"]} for m in st.receivers]
             else:
@@ -381,9 +409,33 @@ def _resolve_sources(run, rs, steps):
         except model.CostAllocationError as exc:
             errors.extend(f"Step {st.step} (driver {st.driver}): {e}" for e in exc.errors)
     errors.extend(_too_large(r) for r in rows if abs(float(r["driver_value"] or 0)) >= DRIVER_VALUE_BOUND)
+
+    # 2b-2 R5: the rate window of every Declared Rate step, then the basis,
+    # rate and window start on each row of the step.
+    rate_of = {}
+    rates = _rate_rows(getattr(rs, "rates", None))
+    for st in steps:
+        if st.basis != model.DECLARED_RATE:
+            continue
+        try:
+            rate_of[st.step] = model.rate_for_period(rates, st.step, *period())
+        except model.CostAllocationError as exc:
+            errors.extend(exc.errors)
+    basis_of = {st.step: st.basis for st in steps}
+    for r in rows:
+        picked = rate_of.get(r["step"])
+        r["basis"] = basis_of[r["step"]]
+        r["rate"] = float(picked["rate"] or 0) if picked else 0
+        r["rate_from"] = picked["effective_from"] if picked else None
     if errors:
         frappe.throw(_PREFIX + "<br>".join(errors))
     return rows, driver_accounts
+
+
+def _rate_rows(table):
+    """The rule set's Rates rows as rate_for_period reads them."""
+    return [{"step": r["step"], "rate": r.get("rate"), "effective_from": r.get("effective_from"),
+             "effective_to": r.get("effective_to")} for r in _rows(table)]
 
 
 # Run Weight.driver_value is a Float: decimal(21,9), 12 integer digits. Every
@@ -568,6 +620,7 @@ class CostAllocationRun(Document):
                              f"rule set {self.rule_set}.")
         self._refuse_stale_statistics(_rows(weights))
         self._refuse_stale_driver_values(_rows(weights))
+        self._refuse_stale_rates(_rows(weights))
         # RF11: the hourly check compares staging with this count, SQL only.
         # before_submit runs before docstatus 1 is saved: not an update-after-submit.
         self.coefficient_row_count = len(self._refuse_unbuildable_coefficients(_rows(weights)))
@@ -732,9 +785,70 @@ class CostAllocationRun(Document):
                 f"now {_text(vals[w['receiver_member']])}"
                 for w in rows if _stored(vals[w["receiver_member"]]) != _nine(w["driver_value"])]
 
+    def _refuse_stale_rates(self, weights):
+        """2b-2 R5: each step's basis and, for a Declared Rate step, the rate and
+        window Compute stored are re-read from the rule set FOR UPDATE and the
+        rate resolved again for the run's period; any difference refuses, naming
+        the step, the stored rate and window and the current ones.
+
+        The rule set ``modified`` gate above already refuses a rule set saved
+        since Compute: a Rates or Rules row edited through the form or the API
+        saves the parent, which bumps ``modified``. This is the locking re-read
+        the fixed and derived rows get too, so a row changed under REPEATABLE
+        READ's snapshot (the ``modified`` read is a plain read) or by a direct
+        write refuses as well. A row without a basis (computed before 2b-2) is a
+        Share of Pool row, as a rule without a basis is."""
+        by_step = {}
+        for w in weights:
+            by_step.setdefault(w["step"], []).append(w)
+        if not by_step:
+            return
+        rules = {r["step"]: r for r in frappe.db.sql(
+            "SELECT step, basis FROM `tabCost Allocation Rule` "
+            "WHERE parent = %(rule_set)s AND parenttype = 'Cost Allocation Rule Set' FOR UPDATE",
+            {"rule_set": self.rule_set}, as_dict=True)}
+        stale, rate_steps = [], []
+        for step in sorted(by_step):
+            stored = sorted({w.get("basis") or model.SHARE_OF_POOL for w in by_step[step]})
+            rule = rules.get(step)
+            if rule is None:
+                stale.append(f"step {step} is no longer in the rule set")
+                continue
+            now = rule.get("basis") or model.SHARE_OF_POOL
+            if stored != [now]:
+                stale.append(f"step {step}: basis changed from {', '.join(stored)} to {now}")
+            elif now == model.DECLARED_RATE:
+                rate_steps.append(step)
+        if rate_steps:
+            rates = frappe.db.sql(
+                "SELECT step, rate, effective_from, effective_to FROM `tabCost Allocation Rule Rate` "
+                "WHERE parent = %(rule_set)s AND parenttype = 'Cost Allocation Rule Set' FOR UPDATE",
+                {"rule_set": self.rule_set}, as_dict=True)
+            start, end = (_date(d) for d in _period_dates(self.fiscal_year, self.fiscal_period))
+            for step in rate_steps:
+                try:
+                    picked = model.rate_for_period(_rate_rows(rates), step, start, end)
+                except model.CostAllocationError as exc:
+                    stale.append(" ".join(exc.errors))
+                    continue
+                for w in by_step[step]:
+                    stored_from = _date(w.get("rate_from"))
+                    if (_four(picked["rate"]) != _four(w.get("rate"))
+                            or picked["effective_from"] != stored_from):
+                        stale.append(f"step {step}: stored rate {_rate_text(w.get('rate'))} from "
+                                     f"{stored_from}, now {_rate_text(picked['rate'])} from "
+                                     f"{picked['effective_from']}")
+                        break
+        if stale:
+            frappe.throw(
+                f"{_PREFIX}the rule set's bases or rates changed after the weights were computed: "
+                + "; ".join(stale) + ". Recompute the weights.")
+
     def _refuse_unbuildable_coefficients(self, weights):
         """Build the coefficient rows now, so an invalid run is refused at submit
-        and cannot stop the coefficients sync for every other run. Returns them."""
+        and cannot stop the coefficients sync for every other run. Returns them.
+        The rows carry their step's basis and rate (2b-2 R5), so a rate step is
+        built in driver units here as it is at Compute and in the sync."""
         try:
             return _coefficient_rows(self.name, self.method, weights)
         except model.CostAllocationError as exc:
@@ -867,8 +981,10 @@ def _submitted_coefficients(names=None):
         stored = frappe.get_all(
             "Cost Allocation Run Weight",
             filters={"parent": ["in", [r["name"] for r in runs]]},
+            # 2b-2 R5: basis and rate too, so a rate step rebuilds in driver
+            # units exactly as Compute built it
             fields=["parent", "idx", "step", "sender_member", "receiver_member",
-                    "driver", "driver_value"],
+                    "driver", "driver_value", "basis", "rate"],
             parent_doctype="Cost Allocation Run", order_by="parent, idx",
             limit_page_length=0)
     by_run = {}
@@ -1181,16 +1297,35 @@ def _text(value):
     return format(_nine(value), "f").rstrip("0").rstrip(".") or "0"
 
 
+def _four(value):
+    """A declared rate at the 4 places the weight row stores (model.RATE_PLACES)."""
+    return Decimal(str(value or 0)).quantize(Decimal(1).scaleb(-model.RATE_PLACES))
+
+
+def _rate_text(value):
+    """A declared rate for a message: 4 places, trailing zeros dropped."""
+    return format(_four(value), "f").rstrip("0").rstrip(".") or "0"
+
+
 def _coefficient_rows(run_name, method, stored):
-    """Coefficient rows for one run from its stored weight rows (pure)."""
+    """Coefficient rows for one run from its stored weight rows (pure).
+
+    2b-2 R5: each row carries its step's basis and rate as Compute stored them;
+    a row with no basis (written before 2b-2) is a Share of Pool row. A Declared
+    Rate step's coefficients are in driver units (model.units of the same
+    rows), so the same stored rows rebuild the same coefficients at Compute, at
+    submit and in the K8 sync."""
     rules, receivers, seen = {}, [], set()
     for w in stored:
+        basis = w.get("basis") or model.SHARE_OF_POOL
         rules.setdefault(w["step"], {"step": w["step"], "sender_member": w["sender_member"],
-                                     "driver": w["driver"]})
+                                     "driver": w["driver"], "basis": basis,
+                                     "rate": w.get("rate") if basis == model.DECLARED_RATE else None})
         if (w["step"], w["receiver_member"]) not in seen:
             seen.add((w["step"], w["receiver_member"]))
             receivers.append({"step": w["step"], "receiver_member": w["receiver_member"]})
     steps = model.build_steps(list(rules.values()), receivers)
-    exact = model.weights([{"step": w["step"], "receiver_member": w["receiver_member"],
-                            "driver_value": w["driver_value"]} for w in stored])
-    return model.coefficient_rows(run_name, steps, exact, method)
+    plain = [{"step": w["step"], "receiver_member": w["receiver_member"],
+              "driver_value": w["driver_value"]} for w in stored]
+    units = model.units(plain) if any(st.basis == model.DECLARED_RATE for st in steps) else None
+    return model.coefficient_rows(run_name, steps, model.weights(plain), method, units=units)

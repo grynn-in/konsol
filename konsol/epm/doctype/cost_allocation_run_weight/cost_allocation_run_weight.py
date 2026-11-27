@@ -22,6 +22,12 @@ class CostAllocationRunWeight(Document):
         # Date column reads as 1970-01-01 (statistic and account-set rows).
         "source": "source",
         "effective_from": "effective_from",
+        # phase 2b-2 (R5/R6): the step's basis, the declared rate (4 places)
+        # and the start of the rate window. A Share of Pool row has rate 0 and
+        # an unset rate_from, written as DEFAULT (1970-01-01) like effective_from.
+        "basis": "basis",
+        "rate": "rate",
+        "rate_from": "rate_from",
     }
     # A child row carries its parent's docstatus; resolve_sync_filters keys on
     # is_submittable, which a child table is not, so say it here.

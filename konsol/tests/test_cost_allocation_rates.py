@@ -450,3 +450,86 @@ def test_patch_adds_the_column_when_the_model_sync_has_not_run_yet():
 def test_patch_is_a_no_op_without_the_table():
     log = _run_patch(table_exists=False)
     assert log.sql == [] and log.reloads == []
+
+
+# -- R5: the rate window for a run period (pure) ----------------------------------
+#
+# Q1 A (Deepak Pai, 27 Nov 2026): a window must cover the whole period; a window
+# that starts or ends inside the period is a change inside the period and
+# refuses even when another window covers; blending by days was rejected. The
+# same rule as fixed_windows, for one step's Rates rows.
+
+MARCH = (datetime.date(2026, 3, 1), datetime.date(2026, 3, 31))
+
+
+def _pick(rates, step=1, start=MARCH[0], end=MARCH[1]):
+    from konsol import cost_allocation_model as m
+    return m.rate_for_period(rates, step, start, end)
+
+
+def _refusal_of(fn):
+    from konsol import cost_allocation_model as m
+    try:
+        fn()
+    except m.CostAllocationError as exc:
+        return exc.errors
+    raise AssertionError("expected a CostAllocationError")
+
+
+def test_rate_for_period_picks_the_one_window_covering_the_whole_period():
+    rates = [_rate(1, 40, "2025-01-01", "2025-12-31"),      # expired
+             _rate(1, 50, "2026-01-01"),                    # open-ended: covers March
+             _rate(2, 99, "2026-01-01")]                    # another step: ignored here
+    got = _pick(rates)
+    assert got["rate"] == 50
+    assert got["effective_from"] == datetime.date(2026, 1, 1)
+    assert got["effective_to"] is None
+    assert _pick(rates, step=2)["rate"] == 99
+
+
+def test_rate_for_period_a_window_ending_on_the_last_day_covers():
+    got = _pick([_rate(1, 50, "2024-06-01", "2026-03-31")])
+    assert (got["rate"], got["effective_to"]) == (50, datetime.date(2026, 3, 31))
+
+
+def test_rate_for_period_accepts_dates_as_date_datetime_or_iso_string():
+    got = _pick([_rate(1, 50, datetime.datetime(2026, 1, 1, 0, 0), "2026-12-31 00:00:00")],
+                start=datetime.datetime(2026, 3, 1, 0, 0), end="2026-03-31")
+    assert got["effective_from"] == datetime.date(2026, 1, 1)
+    assert got["effective_to"] == datetime.date(2026, 12, 31)
+
+
+def test_rate_for_period_keeps_the_rate_as_given():
+    assert _pick([_rate(1, 12.3456)])["rate"] == 12.3456
+    assert _pick([_rate(1, "0.5")])["rate"] == "0.5"
+
+
+def test_rate_for_period_refuses_a_step_with_no_covering_window():
+    errs = _refusal_of(lambda: _pick([_rate(1, 50, "2026-04-01")]))
+    assert errs == ["Step 1: no declared rate covers the period 2026-03-01 to 2026-03-31."]
+    errs = _refusal_of(lambda: _pick([_rate(2)]))
+    assert errs == ["Step 1: no declared rate covers the period 2026-03-01 to 2026-03-31."]
+
+
+def test_rate_for_period_refuses_a_window_that_starts_inside_the_period():
+    errs = _refusal_of(lambda: _pick([_rate(1, 50, "2026-01-01", "2026-03-14"), _rate(1, 60, "2026-03-15")]))
+    assert len(errs) == 1, errs
+    assert errs[0].startswith("Step 1: the declared rate changes inside the period 2026-03-01 to 2026-03-31"), errs
+    assert "2026-03-14" in errs[0] and "2026-03-15" in errs[0], errs
+    assert "cover the whole period" in errs[0], errs
+
+
+def test_rate_for_period_refuses_a_window_ending_inside_even_when_another_covers():
+    errs = _refusal_of(lambda: _pick([_rate(1, 50, "2026-01-01"), _rate(1, 60, "2025-01-01", "2026-03-10")]))
+    assert len(errs) == 1 and "inside the period" in errs[0] and "2026-03-10" in errs[0], errs
+
+
+def test_rate_for_period_refuses_two_covering_windows():
+    errs = _refusal_of(lambda: _pick([_rate(1, 50, "2026-01-01"), _rate(1, 60, "2025-06-01")]))
+    assert len(errs) == 1 and "more than one rate window covers" in errs[0], errs
+    assert "2025-06-01" in errs[0] and "2026-01-01" in errs[0], errs
+
+
+def test_rate_for_period_refuses_a_period_that_ends_before_it_starts():
+    errs = _refusal_of(lambda: _pick([_rate(1)], start=MARCH[1], end=MARCH[0]))
+    assert errs == ["Period start 2026-03-31 is after its end 2026-03-01."]
