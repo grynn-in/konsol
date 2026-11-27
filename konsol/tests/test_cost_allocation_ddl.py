@@ -14,6 +14,12 @@ driver_value (an existing table gets them by _POSITIONED_COLUMNS), and the
 Account Set driver's accounts are a seventh table,
 cost_allocation_run_driver_accounts. An unset effective_from (a statistic or
 account-set row) is written as DEFAULT, which a Date reads as 1970-01-01.
+
+Phase 2b-1 (DA): cost_allocation_run_driver_accounts holds one row per EXPANDED
+account (main_account) with the declared account it came from
+(declared_account, after main_account), so the warehouse drift test reads
+main_account without an account tree. An existing table gets the column by
+_POSITIONED_COLUMNS.
 """
 import ast
 import os
@@ -43,7 +49,8 @@ BODIES = {
         "ENGINE = MergeTree ORDER BY (parent, idx)"
     ),
     "epm_staging.cost_allocation_run_driver_accounts": (
-        "(parent String, idx UInt32, driver String, main_account String, value_sign String) "
+        "(parent String, idx UInt32, driver String, main_account String, "
+        "declared_account String, value_sign String) "
         "ENGINE = MergeTree ORDER BY (parent, idx)"
     ),
     "epm_staging.cost_allocation_coefficients": (
@@ -112,8 +119,18 @@ def test_an_existing_weights_table_gains_source_and_effective_from_after_driver_
     for column, typ, after in positioned[table]:
         assert names.index(column) == names.index(after) + 1, (column, after)
         assert f"{column} {typ}" in BODIES[table], column
-    assert "epm_staging.cost_allocation_run_driver_accounts" not in positioned, \
-        "a new table needs no positioned column: its CREATE has the shape"
+
+
+def test_an_existing_driver_accounts_table_gains_declared_account_after_main_account():
+    """Phase 2b-1 (DA): declared_account sits after main_account in the CREATE
+    and is ADDed there on an existing table."""
+    positioned = _literal("_POSITIONED_COLUMNS")
+    table = "epm_staging.cost_allocation_run_driver_accounts"
+    assert positioned[table] == [("declared_account", "String", "main_account")]
+    names = _columns(BODIES[table])
+    for column, typ, after in positioned[table]:
+        assert names.index(column) == names.index(after) + 1, (column, after)
+        assert f"{column} {typ}" in BODIES[table], column
 
 
 def test_the_seven_names_are_not_retired():

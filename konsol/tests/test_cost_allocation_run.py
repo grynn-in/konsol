@@ -70,6 +70,8 @@ ACCOUNT_FIELDS = [
 DRIVER_ACCOUNT_FIELDS = [
     ("driver", "Link"),
     ("main_account", "Link"),
+    # 2b-1 DA: one row per expanded account, with the declared account it came from
+    ("declared_account", "Link"),
     ("value_sign", "Data"),
 ]
 
@@ -221,6 +223,17 @@ def test_doctype_driver_account_child_links():
     assert fields["driver"]["options"] == "Cost Allocation Driver"
     assert fields["main_account"]["options"] == "Main Account"
     assert fields["value_sign"]["label"] == "Value Sign"
+    # 2b-1 DA: the warehouse drift test cannot expand a group account (no
+    # recursive hierarchy in ClickHouse), so the run stores the expanded leaf
+    # in main_account and keeps the declared account beside it.
+    assert fields["declared_account"]["options"] == "Main Account"
+    assert fields["declared_account"]["label"] == "Declared Account"
+    assert fields["declared_account"]["read_only"] == 1
+    assert fields["declared_account"]["description"] == (
+        "The account as listed on the driver; Main Account is it or one of its descendants.")
+    assert fields["main_account"]["description"] == (
+        "An account the Account Set driver reads, expanded: a group account on the driver "
+        "is stored as one row per descendant.")
 
 
 def test_doctype_account_child_links():
@@ -964,7 +977,9 @@ def test_lifecycle_maps_and_filters():
     da = cls.CHILD_CONTROLLERS["Cost Allocation Run Driver Account"]
     assert da.CH_TABLE == "epm_staging.cost_allocation_run_driver_accounts"
     assert da.CH_FIELD_MAP == {"parent": "parent", "idx": "idx", "driver": "driver",
-                               "main_account": "main_account", "value_sign": "value_sign"}
+                               "main_account": "main_account",
+                               "declared_account": "declared_account",
+                               "value_sign": "value_sign"}
     assert acc.CH_SYNC_FILTERS == wt.CH_SYNC_FILTERS == da.CH_SYNC_FILTERS == {"docstatus": 1}
 
 
@@ -2369,7 +2384,7 @@ def test_f7_fixed_weights_accept_iso_strings_for_the_window_dates():
 
 # -- F7: Account Set ---------------------------------------------------------------
 
-def test_f7_account_set_derives_from_the_warehouse_and_snapshots_the_declared_accounts():
+def test_f7_account_set_derives_from_the_warehouse_and_snapshots_one_row_per_expanded_account():
     m = _sources_module([_driver("ZZ Head"), _rev()], rule_set=_mixed_rule_set("ZZ Rev"),
                         derived="P1\t-20.5\t3\nP2\t-30\t2")
     run = _Run()
@@ -2389,9 +2404,38 @@ def test_f7_account_set_derives_from_the_warehouse_and_snapshots_the_declared_ac
             p1["value_period"], p1["carried_forward"]) == (ACCOUNT_SET, 20.5, None, None, 3, 0)
     assert p2["driver_value"] == 30
     assert abs(p1["weight"] - 20.5 / 50.5) < 1e-12 and abs(p2["weight"] - 30 / 50.5) < 1e-12
-    assert [(r["driver"], r["main_account"], r["value_sign"]) for r in run.driver_accounts] == [
-        ("ZZ Rev", "6000", "Reversed"), ("ZZ Rev", "7000", "Reversed")]   # declared, not expanded
+    # 2b-1 DA: one row per expanded account, each naming the declared account it
+    # came from (a leaf declared directly names itself), so the warehouse drift
+    # test can read main_account without an account tree.
+    assert [(r["driver"], r["main_account"], r["declared_account"], r["value_sign"])
+            for r in run.driver_accounts] == [
+        ("ZZ Rev", "6000", "6000", "Reversed"), ("ZZ Rev", "6010", "6000", "Reversed"),
+        ("ZZ Rev", "6020", "6000", "Reversed"), ("ZZ Rev", "7000", "7000", "Reversed")]
     assert run.saved == 1
+
+
+def test_da_overlapping_declared_accounts_snapshot_once_and_query_once():
+    # 2b-1 DA: a declared account that is a descendant of another declared
+    # account (6010 under 6000) yields one row per main_account, attributed to
+    # the first declaration in driver order, and the derived query receives
+    # each account once (no double count).
+    tree = {**_TREE, "6010": ["6010"], "6020": ["6020"]}     # the leaves are nodes too
+    m = _sources_module([_driver("ZZ Head"), _rev(accounts=("6000", "6010"))],
+                        rule_set=_mixed_rule_set("ZZ Rev"), derived="P1\t-20\t3\nP2\t-30\t2", tree=tree)
+    run = _Run()
+    m.compute_weights_on(run)
+    [(_sql, params)] = m.derived_calls
+    assert params["param_accounts"] == "['6000','6010','6020']"
+    assert [(r["main_account"], r["declared_account"]) for r in run.driver_accounts] == [
+        ("6000", "6000"), ("6010", "6000"), ("6020", "6000")]
+    # declared the other way round: 6010 is declared first and keeps its own row
+    m = _sources_module([_driver("ZZ Head"), _rev(accounts=("6010", "6000"))],
+                        rule_set=_mixed_rule_set("ZZ Rev"), derived="P1\t-20\t3\nP2\t-30\t2", tree=tree)
+    run = _Run()
+    m.compute_weights_on(run)
+    assert m.derived_calls[0][1]["param_accounts"] == "['6010','6000','6020']"
+    assert [(r["main_account"], r["declared_account"]) for r in run.driver_accounts] == [
+        ("6010", "6010"), ("6000", "6000"), ("6020", "6000")]
 
 
 def test_f7_account_set_uses_the_drivers_own_dimension_column():
@@ -2472,8 +2516,10 @@ def test_f7_account_set_runs_one_query_per_driver_over_every_step_that_uses_it()
     assert params["param_members"] == "['HR','P1','P2']"
     got = {(w["step"], w["receiver_member"]): w["weight"] for w in run.weights}
     assert got == {(1, "HR"): 10 / 30, (1, "P1"): 20 / 30, (2, "P1"): 0.4, (2, "P2"): 0.6}
-    assert [(r["main_account"], r["value_sign"]) for r in run.driver_accounts] == [
-        ("6000", "As Booked"), ("7000", "As Booked")]
+    assert [(r["main_account"], r["declared_account"], r["value_sign"])
+            for r in run.driver_accounts] == [
+        ("6000", "6000", "As Booked"), ("6010", "6000", "As Booked"),
+        ("6020", "6000", "As Booked"), ("7000", "7000", "As Booked")]
 
 
 def test_f7_account_set_zero_with_rows_is_a_real_zero():
@@ -2684,10 +2730,15 @@ def _derived_run(m, **over):
                  source=ACCOUNT_SET, effective_from=None, value_period=3, driver_value=20.5),
             _Row(step=2, sender_member="HR", receiver_member="P2", driver="ZZ Rev", statistic=None,
                  source=ACCOUNT_SET, effective_from=None, value_period=3, driver_value=30)]
-    snapshot = [_Row(driver="ZZ Rev", main_account="6000", value_sign="Reversed"),
-                _Row(driver="ZZ Rev", main_account="7000", value_sign="Reversed")]
-    over.setdefault("driver_accounts", snapshot)
+    over.setdefault("driver_accounts", _derived_snapshot())
     return _k8_run(m, weights=_k8_run(m).weights[:2] + rows, **over)
+
+
+def _derived_snapshot():
+    """The driver_accounts rows Compute writes for ZZ Rev declaring 6000 (a
+    group over 6010 and 6020) and 7000: one row per expanded account (2b-1 DA)."""
+    return [_Row(driver="ZZ Rev", main_account=a, declared_account=d, value_sign="Reversed")
+            for a, d in (("6000", "6000"), ("6010", "6000"), ("6020", "6000"), ("7000", "7000"))]
 
 
 def test_f8_unchanged_derived_values_pass_and_the_query_is_the_one_compute_ran():
@@ -2727,6 +2778,26 @@ def test_f8_a_drivers_accounts_or_sign_changed_since_compute_refuses_before_quer
     msg = _refused(_derived_run(_k8(w)).before_submit)
     assert "ZZ Rev" in msg and "sign" in msg.lower(), msg
     assert w.derived_calls == []
+
+
+def test_da_approval_compares_the_declared_accounts_not_the_expanded_ones():
+    # 2b-1 DA: the snapshot holds one row per expanded account; the driver
+    # holds declared accounts. The check compares declared_account, so an
+    # unchanged driver passes (above) and a driver that now also declares a
+    # leaf the snapshot only reached by expansion (6010) refuses: the declared
+    # set changed, though the expanded set did not.
+    w = _derived_world()
+    w.get_all_data["Cost Allocation Driver Account"].append({"parent": "ZZ Rev", "main_account": "6010"})
+    msg = _refused(_derived_run(_k8(w)).before_submit)
+    assert "ZZ Rev" in msg and "accounts" in msg.lower(), msg
+    assert w.derived_calls == []
+    # and a snapshot written before 2b-1 DA (no declared_account) does not pass
+    # as if its expanded rows were declarations: it must be recomputed
+    w = _derived_world()
+    old = [_Row(driver="ZZ Rev", main_account="6000", value_sign="Reversed"),
+           _Row(driver="ZZ Rev", main_account="7000", value_sign="Reversed")]
+    msg = _refused(_derived_run(_k8(w), driver_accounts=old).before_submit)
+    assert "ZZ Rev" in msg and "recompute" in msg.lower(), msg
 
 
 def test_f8_clickhouse_down_at_submit_refuses_rather_than_passing():
@@ -2782,8 +2853,7 @@ def test_rv1_a_large_derived_value_recomputed_unchanged_passes_approval():
                  source=ACCOUNT_SET, effective_from=None, value_period=3, driver_value=big),
             _Row(step=2, sender_member="HR", receiver_member="P2", driver="ZZ Rev", statistic=None,
                  source=ACCOUNT_SET, effective_from=None, value_period=3, driver_value=30)]
-    snapshot = [_Row(driver="ZZ Rev", main_account="6000", value_sign="Reversed"),
-                _Row(driver="ZZ Rev", main_account="7000", value_sign="Reversed")]
+    snapshot = _derived_snapshot()
     m = _k8(w)
     _k8_run(m, weights=_k8_run(m).weights[:2] + rows, driver_accounts=snapshot).before_submit()
     # and a value that did move still refuses
