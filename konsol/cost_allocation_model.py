@@ -19,7 +19,9 @@ Declared Rate (each receiver is charged rate x its driver units; the sender's
 over- or under-absorption is reported, never re-spread). Decided Q5 5B (13 Nov
 2026) and 2b-2 Q4/Q5/Q6 A (Deepak Pai, 27 Nov 2026, konsol#269): the rate lives
 on the Rule Set by step, the variance is its own model per rate sender, and a
-rate rule needs Declared Allocation Account mode.
+rate rule needs Declared Allocation Account mode. Under every method a rate
+sender is a sink for cost that reaches it; under Reciprocal the system is
+solved over share senders only (plan section 3).
 """
 import csv
 import io
@@ -49,8 +51,6 @@ DECLARED_RATE = "Declared Rate"
 BASES = (SHARE_OF_POOL, DECLARED_RATE)
 #: a declared rate has at most this many decimal places (plan 2b, Rule Rate)
 RATE_PLACES = 4
-_RECIPROCAL_RATE = ("Declared Rate with the Reciprocal method arrives in a later task "
-                    "(step %s, %s).")
 
 
 #: the warehouse column is UInt16
@@ -298,11 +298,12 @@ def units(rows):
 # origin_amount is the origin's pool amount. For a Declared Rate origin (2b-2)
 # the coefficients are in DRIVER UNITS: the own hop's pool is the step's total
 # units, each receiver's coefficient is its units, and origin_amount is the
-# rate, so x = rate x units exactly. A later share sender passes rate-origin
-# units on by its own weights, like any other cost. A rate sender's outflow is
-# fixed by its rate, so cost it receives from OTHER origins stops there: it
-# emits no `pass` rows and the amount ends in its absorption variance
-# (absorption()). hop_kind says whose cost the hop carries: `own` is the
+# rate, so x = rate x units exactly. A share sender passes rate-origin units
+# on by its own weights, like any other cost. A rate sender's outflow is fixed
+# by its rate, so cost it receives stops there, whatever its origin (under
+# Reciprocal its own units that come back included): it emits no `pass` rows
+# and the amount ends in its absorption variance (absorption()). hop_kind says
+# whose cost the hop carries: `own` is the
 # origin's own pool leaving the origin; `pass` is cost a sender received and
 # passes on. Direct and Step-Down: `own` at the origin's hop, `pass` everywhere
 # else. Reciprocal: cost can come back to the origin, so the origin's hop has
@@ -445,44 +446,53 @@ def _sender_names(names):
 def reciprocal_coefficients(steps, weights, units=None):
     """Exact Fraction rows for Reciprocal allocation.
 
-    Declared Rate steps are refused (R4 lifts this); ``units`` is accepted for
-    a uniform signature and unused.
+    The linear system is solved over the SHARE OF POOL senders only. A
+    Declared Rate sender (2b-2 R4, plan section 3) is outside it: its outflow
+    is its own hop in units (pool the step's total units, receiver
+    coefficients their units; own_pools), and it is a sink for everything
+    that reaches it, from any origin, its own returning units included. It
+    emits no `pass` rows; what it receives ends in its absorption variance.
 
-    For each origin O (every sender), x_S is the share of O's unit that sender
-    S holds and passes on, the exact solution of
+    For each origin O (every sender), x_S is the amount of O's own pool that
+    share sender S holds and passes on, the exact solution of
 
-        x_S = [S == O] + sum over senders T of w(T -> S) * x_T
+        x_S = b_S + sum over share senders T of w(T -> S) * x_T
 
-    over the sender set, by Gaussian elimination in Fraction (no iteration, no
-    tolerance). Rows have the step_down_coefficients shape plus hop_kind:
-      - at O's own step, per receiver R: `own` with pool 1 and coefficient
-        w(O -> R); and, if x_O > 1, `pass` with pool x_O - 1 and coefficient
-        (x_O - 1) * w(O -> R) (the cost that came back to O);
-      - at every other sender S with x_S > 0, per receiver R: `pass` with pool
-        x_S and coefficient x_S * w(S -> R).
+    where b_S is [S == O] for a share origin and O's own-hop coefficient to S
+    (its units) for a rate origin, by Gauss-Jordan elimination in Fraction (no
+    iteration, no tolerance). Rows have the step_down_coefficients shape plus
+    hop_kind:
+      - at O's own step, per receiver R: `own` with pool p (1, or the total
+        units) and coefficient p * w(O -> R); and, for a share origin with
+        x_O > 1, `pass` with pool x_O - 1 (the cost that came back to O);
+      - at every other share sender S with x_S > 0, per receiver R: `pass`
+        with pool x_S and coefficient x_S * w(S -> R);
+      - nothing at a rate sender other than O.
     A zero-weight receiver still gets its (zero) row, as in Step-Down.
 
     Invariants, exact, for every origin O:
-      - sum of `own` pool_coefficient == 1 (one own hop, at O);
-      - every sender S: outflow (`own` + `pass` coefficients sent by S) ==
-        inflow (coefficients S receives) + [S == O];
+      - one `own` hop, at O, pool_coefficient == O's own pool;
+      - every share sender S: outflow (`own` + `pass` coefficients sent by S)
+        == inflow (coefficients S receives) + [S == O];
       - per hop (origin, sender, hop_kind): sum(coefficient) == pool_coefficient;
-      - the coefficients reaching final receivers (non-senders) sum to 1.
+      - the coefficients reaching sinks (non-senders and rate senders) sum to
+        O's own pool.
+    With no rate step the rows are those of the share-only solve, unchanged
+    (test_rate_reciprocal_share_only_output_unchanged pins them).
 
-    Refuses a sender that receives its own allocation, and every set of
-    senders with no positive-weight path to a final receiver (their cost could
-    never leave, so the system has no solution), naming those senders.
+    Refuses a sender that receives its own allocation; every set of share
+    senders with no positive-weight path to a sink (their cost could never
+    leave, so the system has no solution), naming those senders; and, through
+    own_pools, every rate-step problem (basis, rate, units) at once.
     """
     ordered = sorted(steps, key=lambda s: s.step)
-    rate_steps = [_RECIPROCAL_RATE % (st.step, st.sender_member) for st in ordered if st.basis == DECLARED_RATE]
-    if rate_steps:
-        raise CostAllocationError(rate_steps)
-    senders = [st.sender_member for st in ordered]
-    index = {m: i for i, m in enumerate(senders)}
     bad = ["%s cannot receive its own allocation (step %s)." % (st.sender_member, st.step)
            for st in ordered if st.sender_member in st.receivers]
     if bad:
         raise CostAllocationError(bad)
+    pools = own_pools(ordered, units)
+    share = [st.sender_member for st in ordered if st.basis == SHARE_OF_POOL]
+    index = {m: i for i, m in enumerate(share)}
     w = {(st.sender_member, r): _weight(weights, st, r) for st in ordered for r in st.receivers}
 
     exits, changed = set(), True
@@ -490,28 +500,37 @@ def reciprocal_coefficients(steps, weights, units=None):
         changed = False
         for st in ordered:
             s = st.sender_member
-            if s not in exits and any(w[(s, r)] > 0 and (r not in index or r in exits)
-                                      for r in st.receivers):
+            if s in index and s not in exits and any(w[(s, r)] > 0 and (r not in index or r in exits)
+                                                     for r in st.receivers):
                 exits.add(s)
                 changed = True
-    stuck = [m for m in senders if m not in exits]
+    stuck = [m for m in share if m not in exits]
     if stuck:
         raise CostAllocationError(
             "Reciprocal cost can never reach a final receiver from: %s. "
-            "Give at least one of them a receiver that is not a sender." % _sender_names(stuck))
+            "Give at least one of them a receiver that is not a %s sender."
+            % (_sender_names(stuck), SHARE_OF_POOL))
 
-    # (I - A) X = I, A[s][t] = w(t -> s); column o of X is origin o's x.
-    n = len(senders)
-    mat = [[Fraction(int(i == j)) for j in range(n)] + [Fraction(int(i == k)) for k in range(n)]
+    # (I - A) X = B over the share senders, A[s][t] = w(t -> s); column j of B
+    # (and of X) is origin ordered[j]: e_o for a share origin, the own-hop
+    # coefficients to the share senders for a rate origin.
+    n = len(share)
+
+    def b(i, st_o):
+        if st_o.basis == SHARE_OF_POOL:
+            return Fraction(int(i == index[st_o.sender_member]))
+        return pools[st_o.sender_member] * w.get((st_o.sender_member, share[i]), Fraction(0))
+
+    mat = [[Fraction(int(i == j)) for j in range(n)] + [b(i, st_o) for st_o in ordered]
            for i in range(n)]
     for (t, s), v in w.items():
-        if s in index:
+        if s in index and t in index:
             mat[index[s]][index[t]] -= v
     for c in range(n):
         p = next((r for r in range(c, n) if mat[r][c] != 0), None)
         if p is None:
             raise CostAllocationError(
-                "The reciprocal system has no unique solution for: %s." % _sender_names(senders))
+                "The reciprocal system has no unique solution for: %s." % _sender_names(share))
         mat[c], mat[p] = mat[p], mat[c]
         piv = mat[c][c]
         mat[c] = [v / piv for v in mat[c]]
@@ -521,17 +540,18 @@ def reciprocal_coefficients(steps, weights, units=None):
                 mat[r] = [a - f * b for a, b in zip(mat[r], mat[c])]
 
     rows = []
-    for st_o in ordered:
+    for j, st_o in enumerate(ordered):
         o = st_o.sender_member
-        x = {m: mat[index[m]][n + index[o]] for m in senders}
+        x = {m: mat[index[m]][n + j] for m in share}
         for st in ordered:
-            xs = x[st.sender_member]
-            if st.sender_member == o:
-                rows.extend(_hop(o, st, Fraction(1), weights, OWN))
-                if xs > 1:
-                    rows.extend(_hop(o, st, xs - 1, weights, PASS))
-            elif xs > 0:
-                rows.extend(_hop(o, st, xs, weights, PASS))
+            s = st.sender_member
+            if s == o:
+                rows.extend(_hop(o, st, pools[o], weights, OWN))
+                if s in index and x[s] > 1:
+                    rows.extend(_hop(o, st, x[s] - 1, weights, PASS))
+            elif s in index and x[s] > 0:
+                rows.extend(_hop(o, st, x[s], weights, PASS))
+            # a rate sender other than o is a sink: no rows
     return rows
 
 
@@ -615,17 +635,22 @@ def _units(v):
     return Decimal(v).scaleb(-COEFFICIENT_PLACES).quantize(_QUANTUM)
 
 
-def round_reciprocal_coefficients(exact_rows):
+def round_reciprocal_coefficients(exact_rows, rate_senders=()):
     """Round reciprocal_coefficients rows to 12 dp, as Decimals, exactly.
 
     Cost goes round in cycles, so pools cannot be rounded in step order. The
     rows of one origin O are instead rounded together, as a flow, in integer
     units of 1e-12. Nodes: a source; O's own node (`own` rows leave it); one
-    `pass` node per sender (every coefficient a sender receives arrives there,
-    its `pass` rows leave it); one node per final receiver. Edges: source ->
-    own(O) carrying 10^12 units; one edge per row, carrying 10^12 * its exact
-    coefficient; final receiver -> source carrying what it receives. The
-    exact values balance every node, so this is a circulation.
+    `pass` node per share sender (every coefficient a share sender receives
+    arrives there, its `pass` rows leave it); one sink node per final receiver
+    and per Declared Rate sender named in ``rate_senders`` (2b-2 R4: cost
+    stops there, O's own included). Edges: source -> own(O) carrying O's own
+    pool in units (10^12 for a share origin; the total driver units x 10^12
+    for a rate origin, refused if that is not whole, which units of <= 12
+    places never are); one edge per row, carrying 10^12 * its exact
+    coefficient; sink -> source carrying what it receives. The exact values
+    balance every node, so this is a circulation. A member of ``rate_senders``
+    with a `pass` row is refused: the rows contradict the basis.
 
     Rounding: while some edge is fractional, take the smallest fractional
     edge (by node names), close a cycle of fractional edges through it (a
@@ -638,10 +663,11 @@ def round_reciprocal_coefficients(exact_rows):
     zero, so it would be whole). A push keeps every node balanced and never
     moves an edge past an integer, so each edge stops at floor or ceil of its
     exact value. Hence, exactly, per origin:
-      - the `own` hop's pool is 1 (the source edge is 10^12, never touched);
-      - every sender's `own` + `pass` outflow equals what it received from O
-        (+1 at O), so a service department nets to exactly 0;
-      - the final receivers get exactly 1;
+      - the `own` hop's pool is O's own pool (the source edge, never touched);
+        a rate origin's own coefficients are whole units, so they are exact;
+      - every share sender's `own` + `pass` outflow equals what it received
+        from O (+1 at O), so a service department nets to exactly 0;
+      - the sinks get exactly O's own pool;
       - per hop (origin, sender, hop_kind), pool_coefficient is defined as the
         sum of its coefficients;
       - no coefficient is negative, and each is strictly within 1e-12 of the
@@ -653,7 +679,13 @@ def round_reciprocal_coefficients(exact_rows):
     and exact values are used, never step numbers or declaration order.
     Rows keep their order and every column; zero-weight rows stay at zero.
     """
-    senders = {r["sender_member"] for r in exact_rows}
+    rate_senders = set(rate_senders)
+    passing = sorted({r["sender_member"] for r in exact_rows
+                      if r["hop_kind"] == PASS and r["sender_member"] in rate_senders})
+    if passing:
+        raise CostAllocationError("Declared Rate senders pass cost on in these rows, which they cannot: %s."
+                                  % ", ".join(passing))
+    senders = {r["sender_member"] for r in exact_rows} - rate_senders
     by_origin = {}
     for r in exact_rows:
         by_origin.setdefault(r["origin_member"], []).append(r)
@@ -669,10 +701,19 @@ def round_reciprocal_coefficients(exact_rows):
 
 
 def _round_circulation(origin, rows, senders):
-    """{id(row): integer units} for one origin's rows; see round_reciprocal_coefficients."""
+    """{id(row): integer units} for one origin's rows; see round_reciprocal_coefficients.
+
+    ``senders`` are the members that pass cost on (share senders); any other
+    receiver is a sink node.
+    """
     src = ("0 source", "")
     node_in = lambda m: ("2 pass", m) if m in senders else ("3 final", m)
-    flow, edge_of = {(src, ("1 own", origin)): Fraction(_SCALE)}, {}
+    own_pool = Fraction(next(r["pool_coefficient"] for r in rows if r["hop_kind"] == OWN)) * _SCALE
+    if own_pool.denominator != 1:
+        raise CostAllocationError(
+            "The own pool of origin %s (%s) has more than %d decimal places and cannot be rounded "
+            "exactly." % (origin, _plain(own_pool / _SCALE), COEFFICIENT_PLACES))
+    flow, edge_of = {(src, ("1 own", origin)): own_pool}, {}
     for r in rows:
         tail = ("1 own", origin) if r["hop_kind"] == OWN else ("2 pass", r["sender_member"])
         e = (tail, node_in(r["receiver_member"]))
@@ -786,10 +827,10 @@ def coefficient_rows(run_name, steps, weights, method, units=None):
           Declared Rate);
       pass per origin and share sender S: S's `own` + `pass` outflow == the
           coefficients S received from that origin (+ own pool at the origin);
-          a Declared Rate sender passes nothing of another origin on;
+          a Declared Rate sender passes nothing on, its own returning units
+          included (Reciprocal);
       T1  per origin: sum(coefficient) over receivers that are sinks (not
-          senders, or Declared Rate senders other than the origin) == the
-          origin's own pool.
+          senders, or Declared Rate senders) == the origin's own pool.
     All exact in Decimal, so origin_amount * coefficient conserves to the cent.
     Direct and Step-Down round hop by hop in step order (round_coefficients);
     Reciprocal rounds each origin as one flow (round_reciprocal_coefficients).
@@ -809,16 +850,20 @@ def coefficient_rows(run_name, steps, weights, method, units=None):
         exact = reciprocal_coefficients(steps, weights, units)
     else:
         raise CostAllocationError("Method must be one of %s, not %r." % (", ".join(METHODS), method))
-    rounded = round_reciprocal_coefficients(exact) if method == RECIPROCAL \
-        else round_coefficients(exact, weights)
+    if method == RECIPROCAL:
+        rounded = round_reciprocal_coefficients(
+            exact, rate_senders={st.sender_member for st in steps if st.basis == DECLARED_RATE})
+    else:
+        rounded = round_coefficients(exact, weights)
     return [{"run": run_name, **{c: r[c] for c in COEFFICIENT_COLUMNS[1:]}} for r in rounded]
 
 
 def absorption(pool_by_sender, received_by_sender, charged_by_sender):
     """{rate sender: Fraction variance}, exact: variance = pool + received - charged.
 
-    pool is the sender's own cost, received what other origins allocated to it
-    (it stops there), charged rate x units sent. Positive is under-absorbed
+    pool is the sender's own cost, received what was allocated to it (other
+    origins' cost and, under Reciprocal, its own units that came back; it all
+    stops there), charged rate x units sent. Positive is under-absorbed
     (cost left on the sender), negative over-absorbed. Keys of received and
     charged must be rate senders named in pool_by_sender; a sender absent from
     received or charged has 0 of it (nothing was allocated or charged, which
