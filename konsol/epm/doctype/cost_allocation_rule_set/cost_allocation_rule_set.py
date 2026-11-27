@@ -97,7 +97,7 @@ class CostAllocationRuleSet(Document):
         errors = model.validate(rs)
         errors += model.rate_errors(rules, rates, self.receiver_account_mode)
         if not errors and rs.method == model.RECIPROCAL:
-            errors += self._closed_loop_errors(rs.rules, receivers)
+            errors += self._closed_loop_errors(rules, receivers)
         return errors
 
     def _closed_loop_errors(self, rules, receivers):
@@ -106,11 +106,25 @@ class CostAllocationRuleSet(Document):
         equal weights decide it with no statistics: if even those cannot exit,
         no statistic can. A loop that only zero statistics close is refused at
         Compute (compute_weights_on builds the coefficient rows) and again at
-        submit."""
-        steps = model.build_steps(rules, receivers)
+        submit.
+
+        ``rules`` carry their basis: a Declared Rate sender is an exit for the
+        model (its outflow is fixed by its rate, so it is outside the linear
+        system), as at Compute. The check runs only after rate_errors has
+        validated the real rates, so each rate step gets a placeholder rate of
+        1 and one unit per receiver: enough for reachability, which does not
+        depend on their values. A rule without a basis is Share of Pool, the
+        field's default, as in rate_errors."""
+        steps = model.build_steps(
+            [dict(r, basis=r.get("basis") or model.SHARE_OF_POOL,
+                  rate=Fraction(1) if r.get("basis") == model.DECLARED_RATE else None)
+             for r in rules],
+            receivers)
         weights = {(st.step, r): Fraction(1, len(st.receivers)) for st in steps for r in st.receivers}
+        units = {(st.step, r): Fraction(1) for st in steps if st.basis == model.DECLARED_RATE
+                 for r in st.receivers}
         try:
-            model.reciprocal_coefficients(steps, weights)
+            model.reciprocal_coefficients(steps, weights, units)
         except model.CostAllocationError as exc:
             return exc.errors
         return []

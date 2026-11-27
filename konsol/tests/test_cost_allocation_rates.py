@@ -412,6 +412,19 @@ def test_rule_set_reciprocal_still_refuses_a_share_only_loop_beside_a_rate_sende
     assert "HR" in msg and "Ops" in msg and "IT" not in msg.split("from:")[1]
 
 
+def test_rule_set_reciprocal_rows_without_a_basis_pass_the_closed_loop_check_as_share_of_pool():
+    """Rows written before 2b-2 carry basis None; under Reciprocal the closed-loop
+    check must read them as Share of Pool, not refuse an unknown basis."""
+    m = _rs_module()
+    doc = _rs_doc(m, method="Reciprocal",
+                  rules=[_Row(step=1, sender_member="IT", driver="ZZ Head", basis=None),
+                         _Row(step=2, sender_member="HR", driver="ZZ Head")],
+                  receivers=[_Row(step=1, receiver_member="HR"), _Row(step=1, receiver_member="Sales"),
+                             _Row(step=2, receiver_member="IT"), _Row(step=2, receiver_member="Sales")],
+                  rates=[], receiver_account_mode=OWN, allocation_account="")
+    assert _refusal(doc) is None
+
+
 def test_rule_set_rows_without_a_basis_still_validate_as_share_of_pool():
     """Rows built before 2b-2 (and the K4 tests) carry no basis: the field default applies."""
     m = _rs_module()
