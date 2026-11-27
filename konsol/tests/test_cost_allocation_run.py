@@ -2903,3 +2903,32 @@ def test_rv1_approval_refuses_a_driver_whose_dimension_changed_since_compute():
     w.drivers["ZZ Head"]["dimension"] = "dim_other"
     msg = _refused(_k8_run(_k8(w)).before_submit)
     assert "ZZ Head" in msg and "dim_other" in msg and "dim_zz" in msg, msg
+
+
+# -- CA-2B1 live findings (tester, 27 Nov 2026) --------------------------------------
+
+class _FrappeDict(dict):
+    """Like frappe._dict: every missing attribute reads as None, so
+    hasattr(row, "as_dict") is True although as_dict is not callable."""
+    def __getattr__(self, name):
+        return self.get(name)
+
+
+def test_ca2b1_rows_accepts_frappe_dict_rows_from_get_all():
+    # BUG-2: _rows called None() on frappe._dict rows (get_all, sql as_dict),
+    # so every Fixed Weights / Account Set Compute raised TypeError live.
+    m = _run_module()
+    rows = [_FrappeDict(member="P1", value=2), _FrappeDict(member="P2", value=3)]
+    assert m._rows(rows) == [{"member": "P1", "value": 2}, {"member": "P2", "value": 3}]
+
+
+def test_ca2b1_driver_value_sign_has_a_blank_first_option():
+    # BUG-1: Frappe defaults a Select to its first option, so a new Uploaded
+    # Statistic or Fixed Weights driver got value_sign "As Booked" and its own
+    # validation refused it ("Value Sign is set but Source is ...").
+    import json
+    path = os.path.join(APP_DIR, "epm", "doctype", "cost_allocation_driver",
+                        "cost_allocation_driver.json")
+    f = {x["fieldname"]: x for x in json.load(open(path))["fields"]}["value_sign"]
+    assert f["options"].split("\n") == ["", "As Booked", "Reversed"]
+    assert not f.get("default")
