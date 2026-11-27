@@ -12,10 +12,10 @@ def _load():
     return model.load_templates(DIR)
 
 
-def test_both_files_load_and_validate():
+def test_every_file_loads_and_validates():
     templates = _load()
-    assert list(templates) == ["pnl_monthly", "trial_balance_long"]
-    for name in ("pnl_monthly", "trial_balance_long"):
+    assert list(templates) == ["pnl_monthly", "trial_balance_long", "pnl_actual_budget_monthly"]
+    for name in templates:
         with open(os.path.join(DIR, f"{name}.json"), encoding="utf-8") as f:
             assert model.validate(json.load(f), name) == []
 

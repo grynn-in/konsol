@@ -877,7 +877,8 @@ class _Checker:
 #                    list per ``accounts`` block. The block key is the block's
 #                    ``id``, else ``blocks[<index>]``. The caption is written as
 #                    given: the caller applies the code fallback
-#                    (``account_name or main_account``), as api.py does today.
+#                    (``account_name or main_account``), as
+#                    report_service.block_accounts does.
 #   ctx["charts"]    optional {block key: [chart names]}: the charts the
 #                    block's accounts came from. More than one on a
 #                    ``one_chart`` block (accounts or account_tree) is refused
@@ -892,6 +893,7 @@ class _Checker:
 #                    without a child row in the list is refused. The caller
 #                    must not cut the tree (``depth``) below a heading. Captions
 #                    are written as given: the schema has no indent option.
+#                    report_service.block_tree builds it (root, depth cut).
 #   ctx["account_lists"]  {block key: [(code, caption), ...]}, one list per
 #                    ``account_list`` block, in the user's chosen order; read
 #                    like ``accounts``.
@@ -1627,11 +1629,11 @@ def _area(cells):
 #   type); no default gives None. A key present with None stays None.
 # - ``number`` fields: float(value), and 0 for None, an absent key, or
 #   anything float() refuses.
-# - ``max_rows``: today the SQL LIMIT in api._fetch_trial_balance_rows is the
+# - ``max_rows``: today the SQL LIMIT in report_service._fetch_trial_balance_rows is the
 #   only cap and the builder never refused a longer list, so neither does this.
 #   (The template's max_rows feeds that LIMIT through TB_LONG_MAX_ROWS.)
-# - Snapshot periods stay period_from/period_to 1..12, as api.build_snapshot
-#   validates today. Follow-up (konsol#210): periods should come from the
+# - Snapshot periods stay period_from/period_to 1..12, as
+#   report_service._read_entity_trial_balance validates today. Follow-up (konsol#210): periods should come from the
 #   site's Fiscal Year, as formulas templates do.
 
 def _snapshot_number(value):

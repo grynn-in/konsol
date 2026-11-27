@@ -55,6 +55,14 @@ MAIN_ACCOUNTS = [
      "statement_section": "Balance Sheet", "chart_of_accounts": "ZZ_CHART"},
 ]
 
+#: report_choices.hierarchy_nodes("ZZH", year): tree order, parent first.
+NODES = [
+    {"code": "ZZROOT", "label": "ZZ Group", "depth": 0, "is_group": True, "parent": None},
+    {"code": "ZZEU", "label": "ZZ Europe", "depth": 1, "is_group": True, "parent": "ZZROOT"},
+    {"code": "ZZDE", "label": "ZZ Germany", "depth": 2, "is_group": False, "parent": "ZZEU"},
+    {"code": "ZZUS", "label": "ZZ America", "depth": 1, "is_group": False, "parent": "ZZROOT"},
+]
+
 DATASETS = [
     {"fact_name": "zz_actuals", "scenario_key": "actuals", "status": "Published"},
     {"fact_name": "zz_budget", "scenario_key": "budget", "status": "Draft"},
@@ -110,16 +118,20 @@ def _choices(site):
             return value(*a, **k) if callable(value) else value
         return fn
 
-    rc.entities = rec("entities", lambda: [{"code": c} for c in site["entities"]])
-    rc.groups = rec("groups", lambda: [{"code": c} for c in site["groups"]])
+    def named(code):
+        return dict({"code": code}, **({"name": site["names"][code]} if code in site["names"] else {}))
+
+    rc.entities = rec("entities", lambda: [named(c) for c in site["entities"]])
+    rc.groups = rec("groups", lambda: [named(c) for c in site["groups"]])
     rc.fiscal_years = rec("fiscal_years", lambda: sorted(site["years"]))
     rc.periods = rec("periods", lambda year: site["periods"].get(int(year), []))
     rc.hierarchies = rec("hierarchies", lambda: [{"name": "ZZH"}])
     rc.hierarchy_nodes = rec("hierarchy_nodes", lambda h, year: (
-        [{"code": "ZZROOT"}, {"code": "ZZEU"}] if h == "ZZH" else []))
+        [dict(n) for n in NODES] if h == "ZZH" else []))
     rc.dimension_values = rec("dimension_values", lambda d: (
         [{"code": "ZZDACH"}] if d == "Region" else []))
-    rc.accounts = rec("accounts", lambda section=None: [{"code": "4000"}, {"code": "5000"}])
+    rc.accounts = rec("accounts", lambda section=None: [
+        {"code": "4000", "name": "Revenue"}, {"code": "5000", "name": "Cost of sales"}])
     rc.account_headings = rec("account_headings", lambda section=None: [{"code": "4"}])
 
     def scenarios(year, scenario_type):
@@ -162,6 +174,7 @@ def _site(**over):
         "years": {2024, 2026},
         "periods": {2024: _calendar(2024), 2026: _calendar(2026)},
         "scenarios": {},
+        "names": {},
         "calls": [],
         "choice_calls": [],
         "access": [],
@@ -517,7 +530,7 @@ def test_the_catalog_carries_the_full_spec_in_order():
     svc = _service(_site())
     out = svc.catalog()
     ids = [t["id"] for t in out["templates"]]
-    assert ids == ["pnl_monthly", "trial_balance_long"]
+    assert ids == ["pnl_monthly", "trial_balance_long", "pnl_actual_budget_monthly"]
     pnl = out["templates"][0]
     for key in ("id", "title", "description", "mode", "sheet_name", "params", "version",
                 "available", "why"):
@@ -666,3 +679,174 @@ def test_the_trial_balance_fetch_moved_unchanged():
     assert 'f"LIMIT {int(TB_LONG_MAX_ROWS)}"' in src
     with open(API_PATH) as f:
         assert "gold_trial_balance" not in f.read()
+
+
+# -- T12: context for every block type ----------------------------------------
+
+def _acct(code, name, parent=None, is_group=0, section="Profit and Loss", chart="ZZ_CHART",
+          status="Published"):
+    return {"main_account": code, "account_name": name, "parent_account": parent,
+            "is_group": is_group, "statement_section": section, "chart_of_accounts": chart,
+            "status": status}
+
+
+#: A P&L tree, deliberately not in code order: 4 > (4000, 41 > 4100), 5000
+#: under no heading, 6 an empty heading, 1000 on the Balance Sheet, 4200 Draft.
+TREE_ACCOUNTS = [
+    _acct("5000", "Costs"),
+    _acct("4100", "", parent="41"),
+    _acct("41", "Other income", parent="4", is_group=1),
+    _acct("1000", "Cash", section="Balance Sheet"),
+    _acct("4000", "Sales", parent="4"),
+    _acct("4", "Revenue", is_group=1),
+    _acct("6", "Empty heading", is_group=1),
+    _acct("4200", "Draft line", parent="4", status="Draft"),
+]
+
+ACTBUD = "pnl_actual_budget_monthly"
+BUDGETS_2026 = {(2026, "budget"): {"options": [{"id": "ZZB1"}], "default": "ZZB1", "why": None}}
+
+
+def _tree_template(svc, **block):
+    t = json.loads(json.dumps(svc.template(ACTBUD)))
+    tree = next(b for b in t["rows"]["blocks"] if b["type"] == "account_tree")
+    tree.update(block)
+    return t, tree.get("id")
+
+
+def _actbud_params(**over):
+    return dict({"scope": {"kind": "group", "code": "ZZG"}, "year": 2026, "budget": "ZZB1",
+                 "through": "P03", "sign": "debit_positive"}, **over)
+
+
+def test_an_account_tree_is_the_sections_published_accounts_in_dfs_order():
+    svc = _service(_site(accounts=[dict(r) for r in TREE_ACCOUNTS]))
+    t, key = _tree_template(svc)
+    ctx = svc.resolve_context(t, _actbud_params())
+    assert ctx["trees"][key] == [
+        {"code": "4", "caption": "Revenue", "depth": 0, "is_group": True, "parent": None},
+        {"code": "4000", "caption": "Sales", "depth": 1, "is_group": False, "parent": "4"},
+        {"code": "41", "caption": "Other income", "depth": 1, "is_group": True, "parent": "4"},
+        {"code": "4100", "caption": "4100", "depth": 2, "is_group": False, "parent": "41"},
+        {"code": "5000", "caption": "Costs", "depth": 0, "is_group": False, "parent": None},
+    ]
+    assert ctx["charts"][key] == ["ZZ_CHART"]
+
+
+def test_a_depth_cut_drops_a_heading_with_its_subtree_never_leaving_it_empty():
+    svc = _service(_site(accounts=[dict(r) for r in TREE_ACCOUNTS]))
+    t, key = _tree_template(svc, depth=2)
+    codes = [n["code"] for n in svc.resolve_context(t, _actbud_params())["trees"][key]]
+    # 41 is at depth 1, its only child 4100 at depth 2 is cut: 41 goes too.
+    assert codes == ["4", "4000", "5000"]
+    t, key = _tree_template(svc, depth=1)
+    codes = [n["code"] for n in svc.resolve_context(t, _actbud_params())["trees"][key]]
+    assert codes == ["5000"]
+
+
+def test_an_account_tree_under_a_heading_param_starts_at_that_heading():
+    svc = _service(_site(accounts=[dict(r) for r in TREE_ACCOUNTS]))
+    t, key = _tree_template(svc, root="head")
+    t["params"].append({"name": "head", "type": "account_heading"})
+    ctx = svc.resolve_context(t, dict(_actbud_params(), head="41"))
+    assert [(n["code"], n["depth"], n["parent"]) for n in ctx["trees"][key]] == [
+        ("41", 0, None), ("4100", 1, "41")]
+
+
+def test_an_account_tree_over_several_charts_is_refused_with_the_templates_text():
+    rows = [dict(r) for r in TREE_ACCOUNTS] + [_acct("4900", "Other chart", chart="ZZ_CHART_B")]
+    site = _site(accounts=rows, scenarios=BUDGETS_2026)
+    svc = _service(site)
+    msg = _refusal(lambda: svc.build(ACTBUD, dict(_actbud_params(), budget=None)))
+    assert "ZZ_CHART, ZZ_CHART_B" in msg and "actual vs budget" in msg, msg
+
+
+def test_the_actual_budget_report_builds_for_a_group_with_the_rule_budget():
+    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS], scenarios=BUDGETS_2026)
+    svc = _service(site)
+    out = svc.build(ACTBUD, dict(_actbud_params(), budget=None))
+    assert out["budget"] == "ZZB1"
+    formulas = [f for c in out["cells"] for line in c.get("formulas", []) for f in line]
+    assert '=K.EPM("ZZG", 2026, 1, "4000", , "consolidated_budget", , "ZZB1")' in formulas
+    assert site["access"] == []  # a group is checked against the group list, not entity access
+
+
+def test_no_budget_rule_default_is_refused_with_the_rules_reason():
+    site = _site(accounts=[dict(r) for r in TREE_ACCOUNTS])
+    svc = _service(site)
+    msg = _refusal(lambda: svc.build(ACTBUD, dict(_actbud_params(), budget=None)))
+    assert "budget" in msg and "ZZ no budget" in msg, msg
+    assert not [c for c in site["calls"] if c["doctype"] == "Main Account"]
+
+
+def test_an_account_list_block_reads_the_param_in_the_users_order():
+    svc = _service(_site())
+    t = {"id": "zz_list", "params": [{"name": "entity", "type": "entity"},
+                                     {"name": "year", "type": "fiscal_year"},
+                                     {"name": "picks", "type": "account_list"}],
+         "rows": {"blocks": [{"id": "picked", "type": "account_list", "param": "picks",
+                              "caption": "{account.name}"}]}}
+    ctx = svc.resolve_context(t, {"entity": "ZZ1", "year": 2024, "picks": ["5000", "4000"]})
+    assert ctx["account_lists"] == {"picked": [("5000", "Cost of sales"), ("4000", "Revenue")]}
+
+
+def _node_template(node=None):
+    params = [{"name": "entity", "type": "entity"}, {"name": "year", "type": "fiscal_year"},
+              {"name": "h", "type": "hierarchy"},
+              {"name": "acct", "type": "account"}]
+    block = {"type": "hierarchy_nodes", "hierarchy": "h", "account": "acct", "caption": "x"}
+    if node:
+        params.append({"name": "n", "type": "hierarchy_node", "depends_on": ["h"]})
+        block["node"] = "n"
+    return {"id": "zz_nodes", "params": params, "rows": {"blocks": [block]}}
+
+
+def test_a_hierarchy_nodes_block_reads_the_hierarchys_nodes_for_the_year():
+    site = _site()
+    svc = _service(site)
+    ctx = svc.resolve_context(_node_template(), {"entity": "ZZ1", "year": 2024, "h": "ZZH",
+                                                 "acct": "4000"})
+    assert ctx["nodes"]["blocks[0]"] == NODES
+    assert ("hierarchy_nodes", ("ZZH", 2024)) in site["choice_calls"]
+    ctx = svc.resolve_context(_node_template(node=True), {
+        "entity": "ZZ1", "year": 2024, "h": "ZZH", "acct": "4000", "n": "ZZEU"})
+    assert [n["code"] for n in ctx["nodes"]["blocks[0]"]] == ["ZZEU", "ZZDE"]
+
+
+def test_scope_name_is_the_entitys_name_the_groups_name_or_the_nodes_label():
+    svc = _service(_site(names={"ZZ1": "ZZ One Ltd", "ZZG": "ZZ Holdings"}))
+    t = svc.template(ACTBUD)
+    base = {"year": 2026}
+    ctx = svc.resolve_context({"id": "x", "params": t["params"], "rows": {"blocks": []}},
+                              dict(base, scope={"kind": "entity", "code": "ZZ1"}))
+    assert ctx["scope_name"] == "ZZ One Ltd"
+    ctx = svc.resolve_context({"id": "x", "params": t["params"], "rows": {"blocks": []}},
+                              dict(base, scope={"kind": "group", "code": "ZZG"}))
+    assert ctx["scope_name"] == "ZZ Holdings"
+    node_t = {"id": "x", "params": [{"name": "year", "type": "fiscal_year"},
+                                    {"name": "h", "type": "hierarchy"},
+                                    {"name": "scope", "type": "scope", "kinds": ["node"]}],
+              "rows": {"blocks": []}}
+    ctx = svc.resolve_context(node_t, {"year": 2026, "h": "ZZH",
+                                       "scope": {"kind": "node", "code": "ZZEU"}})
+    assert ctx["scope_name"] == "ZZ Europe"
+    # A name the site does not declare is left out: {scope.name} is then
+    # refused by the interpreter, never filled with the code.
+    svc = _service(_site())
+    ctx = svc.resolve_context({"id": "x", "params": t["params"], "rows": {"blocks": []}},
+                              dict(base, scope={"kind": "entity", "code": "ZZ1"}))
+    assert "scope_name" not in ctx
+
+
+def test_the_actual_budget_template_is_unavailable_without_a_published_consolidated_budget():
+    published = [{"fact_name": f"zz_{w}", "scenario_key": w, "status": "Published"}
+                 for w in ("actuals", "budget", "consolidated")]
+    svc = _service(_site(datasets=published))
+    t = next(x for x in svc.catalog()["templates"] if x["id"] == ACTBUD)
+    assert t["available"] is False
+    assert "'consolidated_budget'" in t["why"] and "'bud'" in t["why"], t["why"]
+    assert "'consolidated'" not in t["why"], t["why"]
+    svc = _service(_site(datasets=published + [{"fact_name": "zz_cb", "status": "Published",
+                                                "scenario_key": "consolidated_budget"}]))
+    t = next(x for x in svc.catalog()["templates"] if x["id"] == ACTBUD)
+    assert t["available"] is True and t["why"] is None

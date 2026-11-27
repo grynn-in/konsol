@@ -1,0 +1,58 @@
+{
+  "id": "pnl_actual_budget_monthly",
+  "version": 1,
+  "order": 30,
+  "mode": "formulas",
+  "title": "P&L actual vs budget",
+  "description": "Monthly income statement of an entity or a group: actual, budget and Actual − Budget for every Regular period, year to date and the full year, over the Published Profit and Loss tree of the group chart ({sign.sentence})",
+  "sheet_name": "P&L vs Budget",
+  "sign": {
+    "param": "sign",
+    "sentences": {
+      "debit_positive": "debit positive; a negative total is a profit",
+      "credit_positive": "credit positive; a positive total is a profit"
+    }
+  },
+  "params": [
+    {"name": "scope", "type": "scope", "kinds": ["entity", "group"], "label": "Entity or group", "required": true},
+    {"name": "year", "type": "fiscal_year", "label": "Fiscal year", "required": true},
+    {"name": "budget", "type": "scenario", "scenario_type": "budget", "depends_on": ["year"], "default": "rule", "label": "Budget"},
+    {"name": "through", "type": "period", "depends_on": ["year"], "label": "Year to date through", "required": true},
+    {"name": "sign", "type": "choice", "choices": ["debit_positive", "credit_positive"], "default": "debit_positive", "label": "Sign"}
+  ],
+  "header": [
+    {"at": "A1", "text": "{title}"},
+    {"at": "B1", "text": "{scope.kind}:"},
+    {"at": "C1", "param": "scope"},
+    {"at": "E1", "text": "Year:"},
+    {"at": "F1", "param": "year"},
+    {"at": "H1", "text": "Budget: {budget}"},
+    {"at": "A3", "text": "Account"}
+  ],
+  "series": {
+    "act": {"caption": "Actual", "read": {"entity": "actuals", "group": "consolidated"}},
+    "bud": {"caption": "Budget", "read": {"entity": "budget", "group": "consolidated_budget"}, "scenario_id": "{budget}"},
+    "var": {"caption": "Actual − Budget", "formula": "act - bud"}
+  },
+  "columns": {
+    "start_col": "B",
+    "header_rows": [2, 3],
+    "groups": [
+      {"over": "regular_periods", "label": "{label}", "series": ["act", "bud", "var"]},
+      {"over": "ytd", "through": "through", "label": "YTD {label}", "series": ["act", "bud", "var"]},
+      {"over": "fy", "label": "FY{year}", "series": ["act", "bud", "var"]}
+    ]
+  },
+  "rows": {
+    "start_row": 4,
+    "blocks": [
+      {"id": "lines", "type": "account_tree", "root": "Profit and Loss", "one_chart": true, "caption": "{account.name}"},
+      {"type": "total", "of": ["lines"], "caption": "Net Profit and Loss ({sign.sentence})", "bold": true}
+    ]
+  },
+  "number_format": {"default": "#,##0;-#,##0;-"},
+  "errors": {
+    "no_rows": "The group chart has no Published Profit and Loss accounts, so the P&L actual vs budget has no lines.",
+    "several_charts": "The P&L actual vs budget reads one chart, and Published Profit and Loss accounts exist in charts {charts}. Make one chart Inactive or Draft."
+  }
+}
