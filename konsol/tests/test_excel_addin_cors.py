@@ -200,12 +200,24 @@ def test_never_a_wildcard():
             assert "*" not in json.dumps(h), h
 
 
+#: Add-in endpoints the pane does not call yet: konsol#548 v1 T14 (the report
+#: catalog and its generated form) calls them. They are listed in
+#: ADDIN_ENDPOINTS ahead of the pane so one site can serve another site's
+#: pane as soon as T14 ships. When the pane calls one, the test below fails
+#: until it is taken off this list.
+RESERVED_FOR_T14 = frozenset("/api/method/konsol.api." + m for m in (
+    "list_report_templates", "report_catalog", "report_choices"))
+
+
 def test_the_endpoints_are_exactly_the_ones_the_add_in_calls():
     called = set()
-    for name in ("functions.js", "index.html", "ribbon.js", "server.js"):
+    for name in ("functions.js", "index.html", "ribbon.js", "server.js", "report.js"):
         with open(os.path.join(ADDIN, name), encoding="utf-8") as f:
             called |= set(re.findall(r"/api/method/[A-Za-z0-9_.]+", f.read()))
-    assert called == set(_PATHS), (called ^ set(_PATHS))
+    assert RESERVED_FOR_T14 <= set(_PATHS), sorted(RESERVED_FOR_T14 - set(_PATHS))
+    assert not called & RESERVED_FOR_T14, (
+        f"the pane now calls {sorted(called & RESERVED_FOR_T14)}: take them off RESERVED_FOR_T14")
+    assert called | RESERVED_FOR_T14 == set(_PATHS), (called | RESERVED_FOR_T14) ^ set(_PATHS)
 
 
 # -- the after_request hook (frappe stubbed) ----------------------------------

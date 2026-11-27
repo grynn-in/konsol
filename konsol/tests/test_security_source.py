@@ -79,8 +79,10 @@ def test_every_clickhouse_read_endpoint_calls_the_entity_helper():
         and any("whitelist" in ast.unparse(d) for d in fn.decorator_list)
         and _calls([fn]) & _CH_READS
     }
-    # Not vacuous: the known readers are found.
-    assert {"epm_value", "epm_batch", "build_cell_map", "build_snapshot"} <= set(readers)
+    # Not vacuous: the known readers are found. build_cell_map and
+    # build_snapshot delegate to report_service (konsol#548 v1 T9); the next
+    # test checks their gate there.
+    assert {"epm_value", "epm_batch"} <= set(readers)
     stale = set(_GROUP_LEVEL_READERS) - set(readers)
     assert not stale, f"{sorted(stale)} no longer read ClickHouse; drop them from _GROUP_LEVEL_READERS"
     for name, fn in readers.items():
@@ -90,6 +92,29 @@ def test_every_clickhouse_read_endpoint_calls_the_entity_helper():
             f"{name} reads ClickHouse ({', '.join(sorted(_calls([fn]) & _CH_READS))}) without "
             "entity_read_scope / _assert_entity_access. Gate it, or name it in "
             "_GROUP_LEVEL_READERS with the reason it needs no entity scope.")
+
+
+def _first_call_index(fn, name):
+    for i, stmt in enumerate(fn.body):
+        if name in _calls([stmt]):
+            return i
+    return None
+
+
+def test_report_endpoints_check_entity_access_in_the_service_before_reading():
+    api = ast.parse(_api_src())
+    for endpoint, target in (("build_cell_map", "build"), ("build_snapshot", "snapshot")):
+        assert target in _calls([_def(api, endpoint)]), f"api.{endpoint} must delegate to report_service.{target}"
+    svc = ast.parse(_src("report_service.py"))
+    for name, reads in (("build", "resolve_context"), ("snapshot", "_read_snapshot_source")):
+        fn = _def(svc, name)
+        gate, read = _first_call_index(fn, "validate_params"), _first_call_index(fn, reads)
+        assert gate is not None and read is not None and gate < read, (
+            f"report_service.{name} must validate params (entity access) before {reads}")
+    assert "_check_entity" in _calls([_def(svc, "validate_params")])
+    assert "_assert_entity_access" in _calls([_def(svc, "_check_entity")])
+    assert "assert_entity_access" in _calls([_def(svc, "_assert_entity_access")])
+    assert "_fetch_trial_balance_rows" not in _calls([_def(svc, "build")])
 
 
 def test_both_modes_of_k_epm_call_the_entity_helper():
