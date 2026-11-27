@@ -15,6 +15,8 @@ EPM_DOCTYPES = os.path.join(APP_DIR, "epm", "doctype")
 RUN = "cost_allocation_run"
 WEIGHT = "cost_allocation_run_weight"
 ACCOUNT = "cost_allocation_run_account"
+# konsol#269 phase 2b-1 (task C): the Account Set driver's accounts, snapshotted on the run
+DRIVER_ACCOUNT = "cost_allocation_run_driver_account"
 LAYOUT_TYPES = {"Tab Break", "Section Break", "Column Break"}
 
 # (fieldname, fieldtype, reqd, read_only) for every field that holds data.
@@ -42,6 +44,7 @@ RUN_FIELDS = [
     ("computed_for_fiscal_period", "Int", 0, 1),
     ("weights", "Table", 0, 1),
     ("accounts", "Table", 0, 1),
+    ("driver_accounts", "Table", 0, 1),
 ]
 
 WEIGHT_FIELDS = [
@@ -53,12 +56,21 @@ WEIGHT_FIELDS = [
     ("value_period", "Int"),
     ("carried_forward", "Check"),
     ("driver_value", "Float"),
+    # phase 2b-1 (task C): where the value came from, and the fixed-weight window used
+    ("source", "Data"),
+    ("effective_from", "Date"),
     ("weight", "Float"),
 ]
 
 ACCOUNT_FIELDS = [
     ("main_account", "Link"),
     ("declared_account", "Link"),
+]
+
+DRIVER_ACCOUNT_FIELDS = [
+    ("driver", "Link"),
+    ("main_account", "Link"),
+    ("value_sign", "Data"),
 ]
 
 
@@ -77,7 +89,7 @@ def _workflow():
 
 
 def test_doctype_folders_are_packages_with_json_and_controller():
-    for folder in (RUN, WEIGHT, ACCOUNT):
+    for folder in (RUN, WEIGHT, ACCOUNT, DRIVER_ACCOUNT):
         base = os.path.join(EPM_DOCTYPES, folder)
         for name in ("__init__.py", folder + ".json", folder + ".py",):
             assert os.path.exists(os.path.join(base, name)), f"{folder}/{name} missing"
@@ -103,7 +115,13 @@ def test_doctype_tabs_and_sections_follow_the_plan():
     tabs = [f["label"] for f in doc["fields"] if f["fieldtype"] == "Tab Break"]
     sections = [f["label"] for f in doc["fields"] if f["fieldtype"] == "Section Break"]
     assert tabs == ["Run", "Weights", "Accounts"]
-    assert sections == ["Scope", "Computation", "Computed", "Weights", "Accounts"]
+    assert sections == ["Scope", "Computation", "Computed", "Weights", "Accounts", "Driver Accounts"]
+    # phase 2b-1 (task C): the Driver Accounts section sits on the Accounts tab,
+    # after the receiver account table
+    names = [f["fieldname"] for f in doc["fields"]]
+    assert names[names.index("accounts") + 1:names.index("accounts") + 3] == [
+        "driver_accounts_section", "driver_accounts"]
+    assert "Tab Break" not in [f["fieldtype"] for f in doc["fields"][names.index("tab_accounts") + 1:]]
 
 
 def test_doctype_run_fields_types_required_and_read_only():
@@ -127,6 +145,9 @@ def test_doctype_run_link_and_select_options():
     assert fields["amended_from"]["options"] == "Cost Allocation Run"
     assert fields["weights"]["options"] == "Cost Allocation Run Weight"
     assert fields["accounts"]["options"] == "Cost Allocation Run Account"
+    assert fields["driver_accounts"]["options"] == "Cost Allocation Run Driver Account"
+    assert fields["driver_accounts"]["label"] == "Driver Accounts"
+    assert fields["driver_accounts"].get("description")
     assert fields["status"]["options"] == "Draft\nPending Approval\nApproved\nCancelled"
     assert fields["status"]["default"] == "Draft"
     assert fields["method"]["options"] == "Direct\nStep-Down\nReciprocal"
@@ -167,8 +188,10 @@ def test_doctype_non_obvious_fields_carry_help_text():
 
 
 def test_doctype_child_tables_are_istable_and_all_read_only():
-    names = {WEIGHT: "Cost Allocation Run Weight", ACCOUNT: "Cost Allocation Run Account"}
-    for folder, expected in ((WEIGHT, WEIGHT_FIELDS), (ACCOUNT, ACCOUNT_FIELDS)):
+    names = {WEIGHT: "Cost Allocation Run Weight", ACCOUNT: "Cost Allocation Run Account",
+             DRIVER_ACCOUNT: "Cost Allocation Run Driver Account"}
+    for folder, expected in ((WEIGHT, WEIGHT_FIELDS), (ACCOUNT, ACCOUNT_FIELDS),
+                             (DRIVER_ACCOUNT, DRIVER_ACCOUNT_FIELDS)):
         doc = _doc(folder)
         assert doc["name"] == names[folder], folder
         assert doc["istable"] == 1, folder
@@ -185,6 +208,19 @@ def test_doctype_weight_child_links_and_precision():
     assert fields["statistic"]["options"] == "Cost Allocation Statistic"
     assert fields["weight"]["precision"] == "9"
     assert fields["driver_value"]["precision"] == "9"
+    # phase 2b-1 (task C): source and the window are read-only, labelled and explained
+    assert fields["source"]["label"] == "Source"
+    assert fields["source"]["description"] == (
+        "Where the driver value came from: Uploaded Statistic, Fixed Weights or Account Set.")
+    assert fields["effective_from"]["label"] == "Effective From"
+    assert fields["effective_from"]["description"] == "For Fixed Weights: the start of the window used."
+
+
+def test_doctype_driver_account_child_links():
+    fields = _by_name(DRIVER_ACCOUNT)
+    assert fields["driver"]["options"] == "Cost Allocation Driver"
+    assert fields["main_account"]["options"] == "Main Account"
+    assert fields["value_sign"]["label"] == "Value Sign"
 
 
 def test_doctype_account_child_links():
@@ -195,7 +231,8 @@ def test_doctype_account_child_links():
 
 def test_doctype_child_controllers_define_their_classes():
     for folder, cls in ((RUN, "CostAllocationRun"), (WEIGHT, "CostAllocationRunWeight"),
-                        (ACCOUNT, "CostAllocationRunAccount")):
+                        (ACCOUNT, "CostAllocationRunAccount"),
+                        (DRIVER_ACCOUNT, "CostAllocationRunDriverAccount")):
         with open(os.path.join(EPM_DOCTYPES, folder, folder + ".py")) as f:
             names = [n.name for n in ast.parse(f.read()).body if isinstance(n, ast.ClassDef)]
         assert names == [cls], (folder, names)
@@ -838,7 +875,9 @@ def test_lifecycle_sync_is_queued_after_commit_and_nothing_runs_in_the_hook():
         assert [(s[0], s[1]) for s in w.syncs] == [
             ("Cost Allocation Run", "epm_staging.cost_allocation_runs"),
             ("Cost Allocation Run Account", "epm_staging.cost_allocation_run_accounts"),
-            ("Cost Allocation Run Weight", "epm_staging.cost_allocation_run_weights")], hook
+            ("Cost Allocation Run Weight", "epm_staging.cost_allocation_run_weights"),
+            ("Cost Allocation Run Driver Account",
+             "epm_staging.cost_allocation_run_driver_accounts")], hook
         # RF10: the coefficients are one guarded after-commit callback per run
         ((key, _fn),) = w.once
         assert key == ("cost_allocation_coefficients", "CAR-00001"), hook
@@ -879,8 +918,15 @@ def test_lifecycle_maps_and_filters():
     assert wt.CH_TABLE == "epm_staging.cost_allocation_run_weights"
     assert list(wt.CH_FIELD_MAP) == [
         "parent", "idx", "step", "sender_member", "receiver_member", "driver",
-        "statistic", "value_period", "carried_forward", "driver_value"]
-    assert acc.CH_SYNC_FILTERS == wt.CH_SYNC_FILTERS == {"docstatus": 1}
+        "statistic", "value_period", "carried_forward", "driver_value",
+        "source", "effective_from"]
+    assert wt.CH_FIELD_MAP["source"] == "source"
+    assert wt.CH_FIELD_MAP["effective_from"] == "effective_from"
+    da = cls.CHILD_CONTROLLERS["Cost Allocation Run Driver Account"]
+    assert da.CH_TABLE == "epm_staging.cost_allocation_run_driver_accounts"
+    assert da.CH_FIELD_MAP == {"parent": "parent", "idx": "idx", "driver": "driver",
+                               "main_account": "main_account", "value_sign": "value_sign"}
+    assert acc.CH_SYNC_FILTERS == wt.CH_SYNC_FILTERS == da.CH_SYNC_FILTERS == {"docstatus": 1}
 
 
 def test_lifecycle_no_commit_and_no_save_in_the_hooks():
@@ -1134,8 +1180,8 @@ def test_kf1_rule_set_scope_is_read_for_the_runs_own_rule_set():
 
 def test_kf1_doctype_weights_accounts_and_computed_fields_are_no_copy():
     fields = _by_name(RUN)
-    for name in ("weights", "accounts", "computed_at", "computed_by", "rule_set_modified",
-                 "values_carried_forward", "computed_for_rule_set", "computed_for_scenario",
+    for name in ("weights", "accounts", "driver_accounts", "computed_at", "computed_by",
+                 "rule_set_modified", "values_carried_forward", "computed_for_rule_set", "computed_for_scenario",
                  "computed_for_fiscal_year", "computed_for_fiscal_period"):
         assert fields[name].get("no_copy") == 1, f"{name} is copied by Duplicate"
 
@@ -1265,11 +1311,12 @@ def test_kf3_amended_insert_clears_the_computed_snapshot():
     # Frappe v16's client copy_doc ignores no_copy when amending, so the server clears.
     m = _k8(_World())
     run = _k8_run(m, amended_from="CAR-00001", accounts=[_Row(main_account="6000")],
+                  driver_accounts=[_Row(driver="ZZ Head", main_account="4000", value_sign="Reversed")],
                   computed_at=datetime(2026, 11, 12), computed_by="zz@example.com",
                   values_carried_forward=1, coefficient_row_count=7)
     run.set = lambda field, rows: run.__dict__.__setitem__(field, list(rows))
     run.before_insert()
-    assert run.weights == [] and run.accounts == []
+    assert run.weights == [] and run.accounts == [] and run.driver_accounts == []
     for name in _COMPUTED:
         assert not run.__dict__.get(name), name
 

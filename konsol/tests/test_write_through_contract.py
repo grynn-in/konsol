@@ -258,6 +258,8 @@ def test_reference_tables_are_bootstrapped_before_reconciling():
         "epm_staging.cost_allocation_runs",
         "epm_staging.cost_allocation_run_accounts",
         "epm_staging.cost_allocation_run_weights",
+        # phase 2b-1 (task C): the Account Set driver's accounts
+        "epm_staging.cost_allocation_run_driver_accounts",
         "epm_staging.cost_allocation_coefficients",
         "epm_staging.cost_allocation_statistics",
         "epm_staging.cost_allocation_statistic_values",
