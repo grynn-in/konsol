@@ -14,11 +14,23 @@ The coefficients table is written per run after the commit (RF10, option B,
 Deepak Pai, 17 Nov 2026: _sync_run_coefficients); reconcile rebuilds it
 whole (resync_staging), and an hourly check repairs any run out of step
 (check_coefficients_staging).
+
+2b-1 (F7, F8; Deepak Pai, 27 Nov 2026, konsol#269 Phase 2b plan section 1, A
+on Q1-Q7): Compute fills the same weight rows from each driver's source.
+Uploaded Statistic rows are unchanged; Fixed Weights rows take the window
+covering the run's declared period; Account Set rows sum the scenario trial
+balance of the driver's accounts (and descendants) per receiver, through the
+same ClickHouse call as the sender-pool preview, and the run snapshots the
+declared accounts in driver_accounts. Every source's values are snapshotted
+at Compute and re-checked at submit (_refuse_stale_driver_values, beside
+_refuse_stale_statistics); drift after approval is a warehouse warning.
 """
+import datetime
 import functools
 import json
 import re
 from decimal import Decimal
+from fractions import Fraction
 
 import frappe
 from frappe.model.document import Document
@@ -72,6 +84,45 @@ def _driver_carry_forward(drivers):
     return {r["name"]: bool(r["carry_forward"]) for r in rows}
 
 
+def _driver_sources(drivers):
+    """{driver: row} for the named drivers: source, dimension, value_sign and
+    the Fixed Weights and Account Set child rows (empty lists where unused)."""
+    names = sorted(drivers)
+    if not names:
+        return {}
+    out = {}
+    for r in frappe.get_all("Cost Allocation Driver", filters={"name": ["in", names]},
+                            fields=["name", "source", "dimension", "value_sign"], order_by="name"):
+        out[r["name"]] = {**r, "fixed_weights": [], "accounts": []}
+    for r in frappe.get_all("Cost Allocation Driver Fixed Weight",
+                            filters={"parent": ["in", names]},
+                            fields=["parent", "member", "value", "effective_from", "effective_to"],
+                            parent_doctype="Cost Allocation Driver", order_by="parent, idx",
+                            limit_page_length=0):
+        if r["parent"] in out:
+            out[r["parent"]]["fixed_weights"].append(r)
+    for r in frappe.get_all("Cost Allocation Driver Account", filters={"parent": ["in", names]},
+                            fields=["parent", "main_account"],
+                            parent_doctype="Cost Allocation Driver", order_by="parent, idx",
+                            limit_page_length=0):
+        if r["parent"] in out:
+            out[r["parent"]]["accounts"].append(r)
+    return out
+
+
+def _period_dates(fiscal_year, fiscal_period):
+    """(start, end) of the run's declared period. Fixed Weights windows are
+    matched against these, never against month arithmetic; an undeclared
+    period refuses here with period_status's message."""
+    return period_status.period_dates(fiscal_year, fiscal_period)
+
+
+def _query_derived(sql, params):
+    """Run the Account Set query; its TabSeparated text. The same ClickHouse
+    call as the sender-pool preview (_query_sender_pools)."""
+    return clickhouse.execute(sql, params)
+
+
 def _descendants(account):
     """The account and every Main Account below it (nested set lft/rgt)."""
     row = frappe.db.get_value("Main Account", account, ["lft", "rgt"], as_dict=True)
@@ -108,6 +159,18 @@ def _rows(table):
     return [r.as_dict() if hasattr(r, "as_dict") else dict(r) for r in table or []]
 
 
+def _date(value):
+    """A date from what Frappe hands a Date field: a date, a datetime or an
+    ISO string; None when blank."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    return datetime.date.fromisoformat(str(value)[:10])
+
+
 # --- pure shaping ---------------------------------------------------------------
 
 def value_maps(stat_rows):
@@ -120,16 +183,36 @@ def value_maps(stat_rows):
     return values, names
 
 
-def weight_rows(resolved, step_weights, names):
-    """Child rows for Cost Allocation Run Weight from resolved driver values."""
+def weight_rows(resolved, step_weights):
+    """Child rows for Cost Allocation Run Weight from resolved driver values.
+    Each resolved row says where its value came from (statistic, source,
+    effective_from); the weight is the step's exact share as a float."""
     return [{
         "step": r["step"], "sender_member": r["sender_member"],
         "receiver_member": r["receiver_member"], "driver": r["driver"],
-        "statistic": names[(r["driver"], r["value_period"], r["receiver_member"])],
+        "statistic": r.get("statistic"), "source": r.get("source") or model.UPLOADED,
+        "effective_from": r.get("effective_from"),
         "value_period": r["value_period"], "carried_forward": 1 if r["carried_forward"] else 0,
         "driver_value": r["driver_value"],
         "weight": float(step_weights[(r["step"], r["receiver_member"])]),
     } for r in resolved]
+
+
+def parse_sums(text):
+    """{member: (Decimal total, row_count)} from the derived query's
+    TabSeparated rows (member, total, row_count)."""
+    out = {}
+    for line in (text or "").splitlines():
+        if not line.strip():
+            continue
+        member, total, count = line.split("\t")
+        out[member] = (Decimal(total), int(count))
+    return out
+
+
+def _expand_accounts(declared):
+    """Each declared account and its descendants, once each, in declaration order."""
+    return [r["main_account"] for r in account_rows(declared, _descendants)]
 
 
 def account_rows(declared, descendants_of):
@@ -163,16 +246,13 @@ def compute_weights_on(run):
         [{"step": r["step"], "sender_member": r["sender_member"], "driver": r["driver"]}
          for r in _rows(rs.rules)],
         [{"step": r["step"], "receiver_member": r["receiver_member"]} for r in _rows(rs.receivers)])
-    values, names = value_maps(
-        _statistic_values(rs.entity, run.scenario, run.fiscal_year, run.fiscal_period))
-    carry = _driver_carry_forward(sorted({s.driver for s in steps}))
+    resolved, driver_accounts = _resolve_sources(run, rs, steps)
     try:
-        resolved = model.resolve_driver_values(steps, run.fiscal_period, values, carry)
         step_weights = model.weights(resolved)
     except model.CostAllocationError as exc:
-        frappe.throw("<br>".join(exc.errors))
+        frappe.throw(_PREFIX + "<br>".join(exc.errors))
 
-    weights = weight_rows(resolved, step_weights, names)
+    weights = weight_rows(resolved, step_weights)
     # RF4: build the coefficient rows now and discard them, so a configuration
     # the model cannot solve (a loop whose exit edges all have zero statistics)
     # is refused here with the model's message, not first at submit.
@@ -199,8 +279,107 @@ def compute_weights_on(run):
     run.values_carried_forward = 1 if carried else 0
     run.set("weights", weights)
     run.set("accounts", accounts)
+    run.set("driver_accounts", driver_accounts)
     run.save()
     return {"carried_forward_count": carried, "weights": len(weights)}
+
+
+def _resolve_sources(run, rs, steps):
+    """One resolved row per step x receiver, filled per its driver's source
+    (2b-1 F7). Returns (rows in step order, the driver_accounts rows).
+
+    Uploaded Statistic steps go through resolve_driver_values together, as
+    before. A Fixed Weights step takes each receiver's window covering the
+    whole declared period (fixed_windows). An Account Set driver is read from
+    the warehouse once, over the receivers of every step that uses it, and
+    each step takes its receivers' values (derived_values); the run snapshots
+    the driver's DECLARED accounts, not the expanded list. Every refusal from
+    the pure functions is collected and thrown once with the run's prefix,
+    and nothing is saved. A warehouse that cannot be read refuses at once,
+    naming the driver: never a silent zero."""
+    used = sorted({s.driver for s in steps})
+    sources = _driver_sources(used)
+    errors, source_of = [], {}
+    for name in used:
+        info = sources.get(name)
+        if info is None:
+            errors.append(f"Driver {name} does not exist.")
+        elif info["source"] not in model.SOURCES:
+            errors.append(f"Driver {name} has source {info['source']!r}, "
+                          f"not one of {', '.join(model.SOURCES)}.")
+        else:
+            source_of[name] = info["source"]
+
+    stat_steps = [s for s in steps if source_of.get(s.driver) == model.UPLOADED]
+    stat_rows = {}
+    if stat_steps:
+        values, names = value_maps(
+            _statistic_values(rs.entity, run.scenario, run.fiscal_year, run.fiscal_period))
+        carry = _driver_carry_forward(sorted({s.driver for s in stat_steps}))
+        try:
+            for r in model.resolve_driver_values(stat_steps, run.fiscal_period, values, carry):
+                r["statistic"] = names[(r["driver"], r["value_period"], r["receiver_member"])]
+                r["source"], r["effective_from"] = model.UPLOADED, None
+                stat_rows.setdefault(r["step"], []).append(r)
+        except model.CostAllocationError as exc:
+            errors.extend(exc.errors)
+
+    sums_of, driver_accounts = {}, []
+    for name in [n for n in used if source_of.get(n) == model.ACCOUNT_SET]:
+        info = sources[name]
+        declared = [r["main_account"] for r in _rows(info["accounts"])]
+        members = sorted({m for st in steps if st.driver == name for m in st.receivers})
+        driver_accounts += [{"driver": name, "main_account": a, "value_sign": info["value_sign"]}
+                            for a in declared]
+        try:
+            sql, params = model.derived_query(
+                rs.entity, run.scenario, run.fiscal_year, run.fiscal_period,
+                info["dimension"], members, _expand_accounts(declared))
+        except model.CostAllocationError as exc:
+            errors.extend(f"Driver {name}: {e}" for e in exc.errors)
+            continue
+        try:
+            sums_of[name] = parse_sums(_query_derived(sql, params))
+        except Exception as exc:  # noqa: BLE001 — any warehouse failure refuses; never a silent zero
+            frappe.throw(f"{_PREFIX}the scenario trial balance could not be read for driver "
+                         f"{name}: {exc}. Nothing was saved.")
+
+    dates, rows = None, []
+    for st in steps:
+        source = source_of.get(st.driver)
+        if source == model.UPLOADED:
+            rows.extend(stat_rows.get(st.step, []))
+            continue
+        if source is None or (source == model.ACCOUNT_SET and st.driver not in sums_of):
+            continue   # already refused above
+        base = {"step": st.step, "sender_member": st.sender_member, "driver": st.driver,
+                "value_period": run.fiscal_period, "carried_forward": False,
+                "statistic": None, "source": source, "effective_from": None}
+        try:
+            if source == model.FIXED:
+                if dates is None:
+                    dates = tuple(_date(d) for d in _period_dates(run.fiscal_year, run.fiscal_period))
+                windows = model.fixed_windows(
+                    _fixed_rows(sources[st.driver]["fixed_weights"]), st.receivers, *dates)
+                rows += [{**base, "receiver_member": m, "driver_value": windows[m]["value"],
+                          "effective_from": windows[m]["effective_from"]} for m in st.receivers]
+            else:
+                vals = model.derived_values(sums_of[st.driver], st.receivers,
+                                            sources[st.driver]["value_sign"])
+                rows += [{**base, "receiver_member": m, "driver_value": float(vals[m])}
+                         for m in st.receivers]
+        except model.CostAllocationError as exc:
+            errors.extend(f"Step {st.step} (driver {st.driver}): {e}" for e in exc.errors)
+    if errors:
+        frappe.throw(_PREFIX + "<br>".join(errors))
+    return rows, driver_accounts
+
+
+def _fixed_rows(table):
+    """A driver's fixed-weight rows with their dates as dates, for fixed_windows."""
+    return [{"member": r["member"], "value": r["value"],
+             "effective_from": _date(r["effective_from"]), "effective_to": _date(r.get("effective_to"))}
+            for r in _rows(table)]
 
 
 @frappe.whitelist(methods=["POST"])
@@ -365,6 +544,7 @@ class CostAllocationRun(Document):
                 frappe.throw(f"{_PREFIX}scenario {self.scenario} is not in the scope of "
                              f"rule set {self.rule_set}.")
         self._refuse_stale_statistics(_rows(weights))
+        self._refuse_stale_driver_values(_rows(weights))
         # RF11: the hourly check compares staging with this count, SQL only.
         # before_submit runs before docstatus 1 is saved: not an update-after-submit.
         self.coefficient_row_count = len(self._refuse_unbuildable_coefficients(_rows(weights)))
@@ -386,8 +566,11 @@ class CostAllocationRun(Document):
 
     def _refuse_stale_statistics(self, weights):
         """Re-read every cited statistic value with FOR UPDATE: the statistic must
-        still be submitted and hold the value the weight was computed from."""
-        cited = sorted({w["statistic"] for w in weights if w.get("statistic")})
+        still be submitted and hold the value the weight was computed from.
+        Rows from another source cite no statistic; _refuse_stale_driver_values
+        checks those."""
+        weights = [w for w in weights if w.get("statistic")]
+        cited = sorted({w["statistic"] for w in weights})
         if not cited:
             return
         rows = frappe.db.sql(
@@ -410,6 +593,103 @@ class CostAllocationRun(Document):
             frappe.throw(
                 f"{_PREFIX}statistic values changed or were cancelled after the weights "
                 "were computed: " + ", ".join(sorted(set(stale))) + ". Recompute the weights.")
+
+    def _refuse_stale_driver_values(self, weights):
+        """Fixed Weights and Account Set rows hold values read at Compute (2b-1
+        F8; Q3 A: snapshotted at Compute, re-checked at approval). Every driver
+        the run uses is re-read FOR UPDATE: its source must still be the one
+        its rows were computed from (rows written before 2b-1 carry no source
+        and are Uploaded Statistic rows). A Fixed Weights driver's rows are
+        re-read FOR UPDATE and resolved again for the period; an Account Set
+        driver's accounts and sign must match the run's driver_accounts
+        snapshot, then the derived query runs again. Any difference refuses,
+        naming the member, the stored value and the current one; a warehouse
+        that cannot be read refuses too, never passes."""
+        by_driver = {}
+        for w in weights:
+            by_driver.setdefault(w["driver"], []).append(w)
+        if not by_driver:
+            return
+        names = tuple(sorted(by_driver))
+        current = {r["name"]: r for r in frappe.db.sql(
+            "SELECT name, source, dimension, value_sign FROM `tabCost Allocation Driver` "
+            "WHERE name IN %(drivers)s FOR UPDATE", {"drivers": names}, as_dict=True)}
+        stale, fixed, derived = [], [], []
+        for name in names:
+            was = sorted({w.get("source") or model.UPLOADED for w in by_driver[name]})
+            now = current.get(name)
+            if now is None:
+                stale.append(f"driver {name} no longer exists")
+            elif was != [now["source"]]:
+                stale.append(f"driver {name}: source changed from {', '.join(was)} to {now['source']}")
+            elif now["source"] == model.FIXED:
+                fixed.append(name)
+            elif now["source"] == model.ACCOUNT_SET:
+                derived.append(name)
+        if fixed:
+            stale += self._stale_fixed_rows(fixed, by_driver)
+        for name in derived:
+            stale += self._stale_derived_rows(name, current[name], by_driver[name])
+        if stale:
+            frappe.throw(
+                f"{_PREFIX}driver values changed after the weights were computed: "
+                + "; ".join(stale) + ". Recompute the weights.")
+
+    def _stale_fixed_rows(self, drivers, by_driver):
+        """Locking read of the drivers' fixed-weight rows, resolved again for the
+        run's period; the differences from the stored rows."""
+        rows = frappe.db.sql(
+            "SELECT parent, member, value, effective_from, effective_to "
+            "FROM `tabCost Allocation Driver Fixed Weight` "
+            "WHERE parent IN %(drivers)s AND parenttype = 'Cost Allocation Driver' FOR UPDATE",
+            {"drivers": tuple(drivers)}, as_dict=True)
+        start, end = (_date(d) for d in _period_dates(self.fiscal_year, self.fiscal_period))
+        stale = []
+        for name in drivers:
+            mine = _fixed_rows([r for r in rows if r["parent"] == name])
+            receivers = sorted({w["receiver_member"] for w in by_driver[name]})
+            try:
+                windows = model.fixed_windows(mine, receivers, start, end)
+            except model.CostAllocationError as exc:
+                stale.append(f"driver {name}: " + " ".join(exc.errors))
+                continue
+            for w in by_driver[name]:
+                row, stored_from = windows[w["receiver_member"]], _date(w.get("effective_from"))
+                if _nine(row["value"]) != _nine(w["driver_value"]) or row["effective_from"] != stored_from:
+                    stale.append(
+                        f"driver {name}, {w['receiver_member']}: stored {_text(w['driver_value'])} "
+                        f"from {stored_from}, now {_text(row['value'])} from {row['effective_from']}")
+        return stale
+
+    def _stale_derived_rows(self, name, now, rows):
+        """The driver's declared accounts and sign against the run's snapshot,
+        then the derived query again; the differences from the stored rows."""
+        accounts = frappe.get_all("Cost Allocation Driver Account", filters={"parent": name},
+                                  pluck="main_account", parent_doctype="Cost Allocation Driver",
+                                  order_by="idx", limit_page_length=0)
+        snapshot = {(r["main_account"], r["value_sign"])
+                    for r in _rows(self.get("driver_accounts")) if r["driver"] == name}
+        if {(a, now["value_sign"]) for a in accounts} != snapshot:
+            return [f"driver {name}: its accounts or value sign changed since Compute"]
+        members = sorted({w["receiver_member"] for w in rows})
+        try:
+            sql, params = model.derived_query(
+                self.entity, self.scenario, self.fiscal_year, self.fiscal_period,
+                now["dimension"], members, _expand_accounts(accounts))
+        except model.CostAllocationError as exc:
+            return [f"driver {name}: " + " ".join(exc.errors)]
+        try:
+            sums = parse_sums(_query_derived(sql, params))
+        except Exception as exc:  # noqa: BLE001 — a warehouse that cannot be read refuses, never passes
+            frappe.throw(f"{_PREFIX}the scenario trial balance could not be read to check driver "
+                         f"{name}: {exc}. Try again when the warehouse answers.")
+        try:
+            vals = model.derived_values(sums, members, now["value_sign"])
+        except model.CostAllocationError as exc:
+            return [f"driver {name}: " + " ".join(exc.errors)]
+        return [f"driver {name}, {w['receiver_member']}: stored {_text(w['driver_value'])}, "
+                f"now {_text(vals[w['receiver_member']])}"
+                for w in rows if _nine(vals[w["receiver_member"]]) != _nine(w["driver_value"])]
 
     def _refuse_unbuildable_coefficients(self, weights):
         """Build the coefficient rows now, so an invalid run is refused at submit
@@ -840,8 +1120,16 @@ def _rebuild_all(mismatched, not_repaired):
 
 
 def _nine(value):
-    """A driver value at the 9 places both the statistic and the weight store."""
+    """A driver value at the 9 places both the statistic and the weight store.
+    A Fraction (from the model's derived values) is taken exactly."""
+    if isinstance(value, Fraction):
+        value = Decimal(value.numerator) / Decimal(value.denominator)
     return Decimal(str(value or 0)).quantize(Decimal("0.000000001"))
+
+
+def _text(value):
+    """A driver value for a message: 9 places, trailing zeros dropped."""
+    return format(_nine(value), "f").rstrip("0").rstrip(".") or "0"
 
 
 def _coefficient_rows(run_name, method, stored):

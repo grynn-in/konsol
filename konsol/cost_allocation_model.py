@@ -727,6 +727,10 @@ def parse_statistic_csv(text):
 # {member: value} rows that weights() normalises, so the three methods and the
 # warehouse do not care which source filled them.
 
+UPLOADED = "Uploaded Statistic"
+FIXED = "Fixed Weights"
+ACCOUNT_SET = "Account Set"
+SOURCES = (UPLOADED, FIXED, ACCOUNT_SET)
 AS_BOOKED = "As Booked"
 REVERSED = "Reversed"
 VALUE_SIGNS = (AS_BOOKED, REVERSED)
