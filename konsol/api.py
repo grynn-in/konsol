@@ -815,6 +815,7 @@ def _batch_query_clickhouse(requests_list):
         NO_BUDGET_TO_READ,
         COVER_ENTITY,
         COVER_GROUP,
+        COVER_VARIANCE,
         budget_coverage_errors,
         choose_declared_forecast,
         forecast_on_budget_read_error,
@@ -993,8 +994,12 @@ def _batch_query_clickhouse(requests_list):
             # a group read, for its year (konsol#568). A scenario resolved
             # above is a budget; a named forecast reads its declared round.
             table = _read_table(fact, req["measure"])
-            if table in _BUDGET_EXCLUDES_FORECAST or _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+            if table in _BUDGET_EXCLUDES_FORECAST:
                 coverage_needs.append((idx, scenario_id, req["year"], req["entity"], COVER_ENTITY))
+            elif _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+                # Variance: the scenario and year only; unbudgeted is
+                # unfavourable (Deepak Pai, 27 Nov 2026).
+                coverage_needs.append((idx, scenario_id, req["year"], req["entity"], COVER_VARIANCE))
             elif table in _FORECAST_BY_NAME_ONLY and not (named and scenario_id in forecast_ids()):
                 coverage_needs.append((idx, scenario_id, req["year"], req["entity"], COVER_GROUP))
         key = (

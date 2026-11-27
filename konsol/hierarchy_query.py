@@ -504,6 +504,8 @@ def named_budget_scenario_error(scenario_id, active):
 #: Whom a budget read is for, as the coverage rule asks (konsol#568): one
 #: entity, a consolidation group, or a wildcard over the reader's entities.
 COVER_ENTITY, COVER_GROUP, COVER_ANY = "entity", "group", "any"
+#: A variance cell: the (scenario, year) needs an approved Cycle, no more.
+COVER_VARIANCE = "variance"
 
 
 def budget_coverage_error(scenario_id, fiscal_year, entity, kind, approved, budgeted):
@@ -521,11 +523,17 @@ def budget_coverage_error(scenario_id, fiscal_year, entity, kind, approved, budg
     wildcard read ask the (scenario, year) only: the group holds no entries
     of its own.
 
-    ``kind`` is COVER_ENTITY, COVER_GROUP or COVER_ANY. ``approved`` is
+    A variance read (COVER_VARIANCE) asks the (scenario, year) only, decided
+    by Deepak Pai, 27 Nov 2026: variance keeps the 22 Sep rule "unbudgeted is
+    unfavourable", so an entity with actuals and no entries under an approved
+    Cycle reads variance = actual. Refusing those cells was rejected.
+
+    ``kind`` is COVER_ENTITY, COVER_GROUP, COVER_ANY or COVER_VARIANCE. ``approved`` is
     {(scenario_id, fiscal_year): [approved cycle, ...]} and ``budgeted``
     {(scenario_id, fiscal_year): {entity, ...}}, from _approved_budget_coverage.
     """
     who = {COVER_ENTITY: f"entity '{entity}'",
+           COVER_VARIANCE: f"entity '{entity}'",
            COVER_GROUP: f"group '{entity}'"}.get(kind, "any entity")
     cycles = approved.get((scenario_id, fiscal_year))
     if not cycles:
@@ -710,10 +718,12 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
         wildcard = entity_is_wildcard(req.get("entity", ""))
         if ((cfg.get("excludes_forecast") or cfg.get("needs_budget_scenario"))
                 and scenario_id and _SAFE_SCENARIO_ID.match(scenario_id)):
-            # The budget and variance reads: an approved Cycle for the
-            # entity and year, or a refusal (konsol#568).
-            coverage_needs.append((idx, scenario_id, req["year"], req.get("entity", ""),
-                                   COVER_ANY if wildcard else COVER_ENTITY))
+            # The budget read: an approved Cycle for the entity and year; the
+            # variance read: for the scenario and year only (konsol#568).
+            kind = COVER_ENTITY if cfg.get("excludes_forecast") else COVER_VARIANCE
+            if wildcard:
+                kind = COVER_ANY
+            coverage_needs.append((idx, scenario_id, req["year"], req.get("entity", ""), kind))
         key = (
             sc,
             measure,
