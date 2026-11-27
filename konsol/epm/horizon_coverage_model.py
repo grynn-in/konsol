@@ -122,7 +122,7 @@ def _round(scenario_id, as_of, members, regular):
     if index is None:
         row["state"] = UNDECLARED_AS_OF
         row["sentence"] = (f"{head}: the as-of date is in no declared Regular period, so its horizon of "
-                           f"{horizon} periods cannot be counted. Declare the period in EPM Fiscal Year.")
+                           f"{_periods(horizon)} cannot be counted. Declare the period in EPM Fiscal Year.")
         return _with_notes(row, notes)
 
     row["as_of_period"] = regular[index][:2]
@@ -131,7 +131,7 @@ def _round(scenario_id, as_of, members, regular):
     row["undeclared_periods"] = horizon - len(after)
     row["uncovered"] = [(fy, fp) for fy, fp in after if fy not in approved_years]
 
-    span = f"{head} covers {period_range_text(after)} ({horizon} periods)" if after else f"{head} ({horizon} periods)"
+    span = f"{head} covers {period_range_text(after)} ({_periods(horizon)})" if after else f"{head} ({_periods(horizon)})"
     if not row["uncovered"] and not row["undeclared_periods"]:
         row["state"] = OK
         years = ", ".join(f"FY{y}" for y in approved_years)
@@ -151,12 +151,17 @@ def _round(scenario_id, as_of, members, regular):
                 parts.append(f"no Cycle of the round for FY{fy}: create one with the same as-of date")
     if row["undeclared_periods"]:
         last = regular[-1][:2]
-        parts.append(f"{row['undeclared_periods']} of its {horizon} periods are after the last declared Regular "
+        parts.append(f"{row['undeclared_periods']} of its {_periods(horizon)} are after the last declared Regular "
                      f"period (FY{last[0]} P{last[1]}): declare them in EPM Fiscal Year")
     if approved_years:
         parts.append("approved for " + ", ".join(f"FY{y}" for y in approved_years))
     row["sentence"] = f"{span}: " + "; ".join(parts) + "."
     return _with_notes(row, notes)
+
+
+def _periods(n):
+    """'1 period', '12 periods' (konsol#559: the sentence said '1 periods')."""
+    return f"{n} period" if n == 1 else f"{n} periods"
 
 
 def _with_notes(row, notes):

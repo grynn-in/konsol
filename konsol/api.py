@@ -242,9 +242,10 @@ _BUDGET_SCENARIO_COLUMN = {"variance_analysis": "budget_scenario_id"}
 #: under any name reads these tables too.
 #:
 #: The budget fact also holds every approved round of a forecast year side
-#: by side. A read refuses a forecast scenario id and, naming none, reads the
-#: non-forecast scenarios only: unfiltered, it added the rounds to the budget
-#: (konsol#348 S6-Q1 b, review B1).
+#: by side. A read refuses a forecast scenario id (konsol#348 S6-Q1 b,
+#: review B1) and, naming none, reads the year's one active budget scenario
+#: by name (konsol#563). A Dataset over it must declare has_scenario_id, or
+#: the read could not keep to one scenario and is refused.
 _BUDGET_EXCLUDES_FORECAST = {"epm_gold.gold_spread_budget"}
 
 #: The current-round views hold nothing for a forecast (scenario, year) with
@@ -258,6 +259,10 @@ _NEEDS_CURRENT_FORECAST = {
     "epm_gold.gold_forecast_accuracy",
     "epm_gold.gold_forecast_accuracy_group",
 }
+
+#: The latest-estimate view: the declared round's actual side (periods at or
+#: before its as-of period) and its forecast side (konsol#559).
+_LATEST_ESTIMATE = {"epm_gold.gold_latest_estimate_current"}
 
 #: Tables that keep every approved round side by side, keyed by ``cycle``
 #: (FC-4-2, the accuracy models). ``K.EPM`` binds scenario_id, never a
@@ -274,6 +279,16 @@ _PER_ROUND = {
 #: two groups has a row in each group's currency, and read by entity the
 #: currencies added up (konsol#348 S6 KC1, gold_forecast_accuracy_group).
 _ENTITY_SLOT_COLUMN = {"epm_gold.gold_forecast_accuracy_group": "consolidation_group"}
+
+#: Tables whose entity slot holds a Consolidation Group code: the two
+#: consolidated facts store the group in ``data_area_id``, and the accuracy
+#: model binds it to ``consolidation_group`` (above). An entity code there
+#: matches no row and read 0.0, a missing group looking like a zero error; a
+#: read refuses it, naming the Dataset and the slot (konsol#565).
+_GROUP_SLOT_TABLES = {
+    "epm_gold.gold_consolidated_fact",
+    "epm_gold.gold_consolidated_budget_fact",
+} | set(_ENTITY_SLOT_COLUMN)
 
 #: Tables holding every budget scenario's rows and each forecast scenario's
 #: declared current round only (konsolidat S6 WC1). A read naming no
@@ -791,16 +806,20 @@ def _batch_query_clickhouse(requests_list):
         _active_budget_scenarios_by_year,
         choose_budget_scenario,
         named_budget_scenario_error,
+        _declared_as_of_periods,
         _declared_cycles,
         _declared_forecasts_by_year,
         _forecast_scenario_ids,
         round_in_clause,
         _scenario_ids,
-        budget_scenarios_excluding_forecasts,
+        NO_BUDGET_TO_READ,
+        COVER_ENTITY,
+        COVER_GROUP,
+        COVER_VARIANCE,
+        budget_coverage_errors,
         choose_declared_forecast,
         forecast_on_budget_read_error,
         scenario_id_error,
-        scenario_in_clause,
     )
 
     known_cache = []  # every Scenario id, looked up once when first needed
@@ -827,11 +846,30 @@ def _batch_query_clickhouse(requests_list):
     active_budgets = None  # likewise, for named budget scenarios
     declared_by_year = None  # the Current Forecasts, likewise (S6 review m2)
     declared_cycles = None  # their Cycles, for the per-round tables (S6 KC1)
+    as_of_periods = None  # their as-of periods, for the actual side (#559)
+    coverage_needs = []  # budget reads for budget_coverage_errors (konsol#568)
+    actual_side = []  # (idx, req) latest-estimate cells wholly on the actual side
 
     def resolve_fact(fact_key):
         if fact_key not in facts:
             facts[fact_key] = _get_fact(fact=fact_key) or _get_fact_by_scenario(fact_key)
         return facts[fact_key]
+
+    group_codes = []  # the Consolidation Group codes, looked up once when first needed
+
+    def group_slot_error(fact, req):
+        """Why the entity slot of a group-keyed read cannot take this value."""
+        if _read_table(fact, req["measure"]) not in _GROUP_SLOT_TABLES:
+            return None
+        if not group_codes:
+            group_codes.append(set(frappe.get_all(
+                "Consolidation Group", pluck="consolidation_group",
+                limit_page_length=0)))
+        if req["entity"] in group_codes[0]:
+            return None
+        return (f"Dataset '{fact.fact_name}' reads by consolidation group: the "
+                f"entity argument must be a Consolidation Group code, and "
+                f"'{req['entity']}' is not one.")
 
     # Group by (fact, measure, dim_names_frozenset, scenario_id, layer).
     # `fact` (the resolved fact_name) is the table-determining element; scenario
@@ -844,6 +882,12 @@ def _batch_query_clickhouse(requests_list):
         dims = req.get("dimensions", {})
         fact_key = req.get("fact") or req.get("scenario")
         scenario_id = req.get("scenario_id", "")
+        named = bool(scenario_id)
+        group_fact = resolve_fact(fact_key)
+        err = group_slot_error(group_fact, req) if group_fact else None
+        if err:
+            errors[idx] = err
+            continue
         if scenario_id:
             # The id must have a column to filter, and (outside the variance
             # dataset, checked below) name a Scenario that exists. Ignored, it
@@ -878,15 +922,29 @@ def _batch_query_clickhouse(requests_list):
             fact = resolve_fact(fact_key)
             by_name_only = bool(
                 fact and _read_table(fact, req["measure"]) in _FORECAST_BY_NAME_ONLY)
-            if fact and (_BUDGET_SCENARIO_COLUMN.get(fact.fact_name) or by_name_only):
+            # The flat budget table reads one budget scenario too: it kept
+            # every non-forecast scenario of the table and added two budgets
+            # of one year together (konsol#563).
+            spread = bool(
+                fact and _read_table(fact, req["measure"]) in _BUDGET_EXCLUDES_FORECAST)
+            if (spread or by_name_only) and not fact.has_scenario_id:
+                # The table holds every scenario; with no column to bind the
+                # one resolved below, the read would add them up (review l1;
+                # the consolidated fact too, konsol#623).
+                errors[idx] = (
+                    f"Dataset '{fact.fact_name}' reads {_read_table(fact, req['measure'])}, "
+                    "which holds every budget and forecast scenario, but "
+                    "has_scenario_id is off, so a read cannot keep to one budget "
+                    "scenario. Turn on has_scenario_id on the Dataset.")
+                continue
+            one_budget = by_name_only or spread
+            if fact and (_BUDGET_SCENARIO_COLUMN.get(fact.fact_name) or one_budget):
                 if budgets_by_year is None:
                     budgets_by_year = _active_budget_scenarios_by_year()
                 year = int(req["year"])
                 scenario_id, err = choose_budget_scenario(
                     budgets_by_year.get(year, []), fiscal_year=year,
-                    none_reason=("so there is no budget to read. Name "
-                                 "scenario_id to read a forecast.")
-                    if by_name_only else None)
+                    none_reason=NO_BUDGET_TO_READ if one_budget else None)
                 if err:
                     errors[idx] = err
                     continue
@@ -903,6 +961,22 @@ def _batch_query_clickhouse(requests_list):
             if err:
                 errors[idx] = err
                 continue
+            if _read_table(fact, req["measure"]) in _LATEST_ESTIMATE:
+                # A latest-estimate cell wholly at or before the as-of period
+                # reads the actuals: with no trial balance it is no_data, as
+                # the actuals read says, never 0.0 (konsol#559).
+                if as_of_periods is None:
+                    as_of_periods = _declared_as_of_periods()
+                as_of = as_of_periods.get((scenario_id, year))
+                if as_of is None:
+                    errors[idx] = (
+                        f"The as-of date of the Current Forecast of '{scenario_id}' "
+                        f"for FY{year} is in no declared Regular period, so its "
+                        "actual side cannot be told. Declare the period in EPM "
+                        "Fiscal Year.")
+                    continue
+                if req["periods"] and all((year, int(p)) <= as_of for p in req["periods"]):
+                    actual_side.append((idx, req))
         if (fact and _read_table(fact, req["measure"]) in _FORECAST_BY_NAME_ONLY
                 and scenario_id and _SAFE_SCENARIO_ID.match(scenario_id)
                 and scenario_id in forecast_ids()):
@@ -916,6 +990,19 @@ def _batch_query_clickhouse(requests_list):
             if err:
                 errors[idx] = err
                 continue
+        if fact and scenario_id and _SAFE_SCENARIO_ID.match(scenario_id):
+            # A budget read needs an approved Cycle for its entity and year;
+            # a group read, for its year (konsol#568). A scenario resolved
+            # above is a budget; a named forecast reads its declared round.
+            table = _read_table(fact, req["measure"])
+            if table in _BUDGET_EXCLUDES_FORECAST:
+                coverage_needs.append((idx, scenario_id, req["year"], req["entity"], COVER_ENTITY))
+            elif _BUDGET_SCENARIO_COLUMN.get(fact.fact_name):
+                # Variance: the scenario and year only; unbudgeted is
+                # unfavourable (Deepak Pai, 27 Nov 2026).
+                coverage_needs.append((idx, scenario_id, req["year"], req["entity"], COVER_VARIANCE))
+            elif table in _FORECAST_BY_NAME_ONLY and not (named and scenario_id in forecast_ids()):
+                coverage_needs.append((idx, scenario_id, req["year"], req["entity"], COVER_GROUP))
         key = (
             fact_key,
             req["measure"],
@@ -924,6 +1011,8 @@ def _batch_query_clickhouse(requests_list):
             req.get("layer", ""),
         )
         keyed.append((key, idx, req))
+    for idx, err in budget_coverage_errors(coverage_needs).items():
+        errors[idx] = err
 
     # An actuals cell none of whose periods has a trial balance for its
     # entity is refused, not read as 0 (konsol#401). "Loaded" is asked of the
@@ -936,6 +1025,14 @@ def _batch_query_clickhouse(requests_list):
         fact = resolve_fact(key[0])
         if _is_actuals_fact(fact):
             by_table[fact.clickhouse_table or ""].append((idx, req))
+    if actual_side:
+        # Judged against the table the actuals Dataset reads, like an actuals cell.
+        actuals_fact = resolve_fact(tb_coverage.ACTUALS)
+        if not actuals_fact:
+            for idx, _ in actual_side:
+                errors[idx] = f"No Dataset for '{tb_coverage.ACTUALS}'"
+        else:
+            by_table[actuals_fact.clickhouse_table or ""].extend(actual_side)
     for table, actual_rows in by_table.items():
         if not _SAFE_TABLE_NAME.match(table):
             loaded, failure = set(), "Invalid table identifier"
@@ -1056,17 +1153,6 @@ def _batch_query_clickhouse(requests_list):
             params["param_sid"] = scenario_id
             column = budget_column or "scenario_id"
             scenario_id_clause = f" AND {column} = {{sid:String}}"
-        elif table in _BUDGET_EXCLUDES_FORECAST:
-            # No scenario named: every non-forecast scenario, never a
-            # forecast's rounds (konsol#348 S6 review B1). (The consolidated
-            # budget resolved its one budget scenario per row above.)
-            ids, err = budget_scenarios_excluding_forecasts(
-                known_scenarios, forecast_ids)
-            if err:
-                for idx, _ in group_items:
-                    errors[idx] = err
-                continue
-            scenario_id_clause = scenario_in_clause(ids, params, "bsid")
         if table in _PER_ROUND:
             # The declared round of each year read (S6 KC1). scenario_id was
             # resolved per row above, and every row's year has a declaration.
