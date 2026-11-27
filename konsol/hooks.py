@@ -54,6 +54,8 @@ after_install = ["konsol.install.create_roles", "konsol.workflows.install_workfl
 # the install commits. after_sync, because after_install runs before fixtures.
 after_sync = ["konsol.install.after_sync"]
 after_migrate = ["konsol.install.after_migrate",
+                 # an upgraded site gets ACTUAL as a fresh one does (before CONSTANT, which it ignores)
+                 "konsol.consolidation.doctype.rate_set.rate_set.ensure_actual_set",
                  # konsol#592: the system-owned set Constant rate sheets publish into
                  "konsol.consolidation.doctype.rate_set.rate_set.ensure_constant_set"]
 
