@@ -403,6 +403,26 @@ def test_a_snapshot_from_another_server_is_refused_not_repainted():
         assert out["panes"] >= 1, action
 
 
+def test_refresh_workbook_reports_a_refused_snapshot_as_refused_not_failed():
+    params = dict(TB_PARAMS, server="https://other.example")
+    out = _run(action="refreshWorkbook", active="TB", snapshots={"TB": params}, snapshotRow1=TB_ROW1,
+               sheets=[{"name": "TB", "row1": ["old"], "formulas": [["old"]]}])
+    msg = _messages(out)
+    assert "Snapshot refused (other server): TB" in msg, msg
+    assert "Snapshot failed" not in msg, msg
+
+
+def test_the_first_snapshot_and_the_first_stamp_pin_the_server():
+    out = _run(action="rememberSnapshot", params=TB_PARAMS)
+    assert out["pins"] >= 1, out
+    out = _run(action="refreshSheet", active="P&L",
+               sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS}])
+    assert out["pins"] >= 1, out
+    out = _run(action="refreshWorkbook", active="P&L",
+               sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS}])
+    assert out["pins"] >= 1, out
+
+
 def test_a_snapshot_saved_before_servers_were_recorded_is_still_refreshed():
     out = _run(action="refreshSheet", active="TB", snapshots={"TB": TB_PARAMS}, snapshotRow1=TB_ROW1,
                sheets=[{"name": "TB", "row1": ["old"], "formulas": [["old"]]}])

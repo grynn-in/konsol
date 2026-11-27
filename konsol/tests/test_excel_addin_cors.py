@@ -190,9 +190,12 @@ def test_the_hook_switches_frappes_cors_off_on_every_prefix(prefix):
     assert fr.local.allow_cors is None, prefix
 
 
+_PATHS = frozenset("/api/method/" + m for m in model._ADDIN_METHODS)
+
+
 def test_never_a_wildcard():
     for method in ("GET", "POST", "OPTIONS"):
-        for path in model.ADDIN_PATHS:
+        for path in _PATHS:
             h = model.cors_headers(path, method, "https://pane.example", LISTED)
             assert "*" not in json.dumps(h), h
 
@@ -202,7 +205,7 @@ def test_the_endpoints_are_exactly_the_ones_the_add_in_calls():
     for name in ("functions.js", "index.html", "ribbon.js", "server.js"):
         with open(os.path.join(ADDIN, name), encoding="utf-8") as f:
             called |= set(re.findall(r"/api/method/[A-Za-z0-9_.]+", f.read()))
-    assert called == set(model.ADDIN_PATHS), (called ^ set(model.ADDIN_PATHS))
+    assert called == set(_PATHS), (called ^ set(_PATHS))
 
 
 # -- the after_request hook (frappe stubbed) ----------------------------------

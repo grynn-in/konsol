@@ -122,12 +122,42 @@ def test_a_refused_address_changes_nothing():
     assert out["saves"] == 0
 
 
-def test_choosing_the_panes_own_origin_or_blank_goes_back_to_the_default():
+def test_choosing_the_panes_own_origin_or_blank_stores_the_panes_origin():
+    """Never remove the setting: a workbook with no server would follow whichever
+    pane opens it, and its K.* cells would silently switch sites (#618 re-review)."""
     for text in ("", PANE):
         out = _run(settings={SETTING: OTHER}, ops=[["choose", text], ["current"]])
         assert out["ops"][1] == PANE, out
-        assert SETTING not in out["settings"], out["settings"]
+        assert out["settings"] == {SETTING: PANE}, out["settings"]
         assert out["saves"] == 1
+
+
+def test_a_workbook_with_no_server_gets_one_after_its_first_call():
+    out = _run(fn="EPM", args=EPM_ARGS)
+    assert out["settings"] == {SETTING: PANE}, out["settings"]
+    assert out["saves"] >= 1, out
+
+
+def test_pin_stores_the_panes_origin_once_and_never_overwrites():
+    out = _run(ops=[["pin"], ["pin"]])
+    assert out["settings"] == {SETTING: PANE}, out
+    assert out["saves"] == 1, out
+    kept = _run(settings={SETTING: OTHER}, ops=[["pin"]])
+    assert kept["settings"] == {SETTING: OTHER} and kept["saves"] == 0, kept
+
+
+def test_pin_reports_a_failed_save():
+    out = _run(saveFails=True, ops=[["pin"]])
+    assert "unsaved" in out["ops"][0], out
+
+
+def test_a_workbook_stored_as_one_site_reads_it_on_another_pane():
+    """Stored as PANE, opened on a pane served from OTHER: still PANE."""
+    out = _run(origin=OTHER, settings={SETTING: PANE}, ops=[["current"], ["isCrossOrigin"]])
+    assert out["ops"] == [PANE, True], out
+    out = _run(origin=OTHER, settings={SETTING: PANE}, fn="EPM", args=EPM_ARGS)
+    (req,) = out["requests"]
+    assert req["url"] == PANE + "/api/method/konsol.api.epm_batch", req
 
 
 def test_a_failed_save_is_reported_not_hidden():
@@ -355,3 +385,14 @@ def test_a_cell_waits_for_office_before_reading_the_workbooks_server():
     body = src[src.index("function postJson("):]
     body = body[:body.index("\nfunction ", 1)]
     assert body.index("officeReady()") < body.index("server().url(path)"), body
+
+
+def test_start_re_runs_the_server_and_sign_in_check_when_office_was_not_ready():
+    """The 5 s fallback can run start() before Office is ready; the pane then
+    showed the pane origin and checked sign-in against it, and never redrew."""
+    src = _read("index.html")
+    body = src[src.index("function start() {"):]
+    body = body[:body.index("\n      if (typeof Office")]
+    m = re.search(r"Office\.onReady\(function \(\) \{(.*?)\}\);", body, re.S)
+    assert m, body
+    assert "showServer()" in m.group(1) and "whoami()" in m.group(1), m.group(1)

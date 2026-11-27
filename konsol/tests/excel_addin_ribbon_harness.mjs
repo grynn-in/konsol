@@ -35,6 +35,7 @@ const out = {
   stamps: [],         // {sheet, row, col, value}
   logs: [],           // [level, message]
   snapshots: [],      // sheet names re-snapshotted
+  pins: 0,            // konsolServer.pin() calls
   panes: 0,           // Office.addin.showAsTaskpane() calls
   settings: null,     // document settings after the command
   saves: 0,           // settings.saveAsync calls
@@ -180,7 +181,10 @@ const context = {
     if (input.whoami === "reject") return Promise.reject(new Error("HTTP 502 (stub)"));
     return Promise.resolve(input.user === undefined ? "zz@example.com" : input.user);
   },
-  konsolServer: { current: () => input.server || "https://pane.example" },
+  konsolServer: {
+    current: () => input.server || "https://pane.example",
+    pin: () => { out.pins += 1; return Promise.resolve({ origin: input.server || "https://pane.example" }); },
+  },
   konsolLog: (level, message) => { out.logs.push([level, message]); },
   konsolidatSnapshotReport(params) {
     const name = params.sheet_name;
