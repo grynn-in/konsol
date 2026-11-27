@@ -373,6 +373,45 @@ def test_rule_set_allows_a_declared_rate_step_under_reciprocal_at_save():
     assert _refusal(doc) is None
 
 
+def test_rule_set_reciprocal_saves_when_a_share_sender_exits_only_through_a_rate_sender():
+    """R4: a Declared Rate sender is an exit for the closed-loop check at save,
+    as it is at Compute (model.reciprocal_coefficients). IT (rate) charges only
+    HR; HR (share) sends everything to IT. Treating IT as a share sender would
+    call both stuck; IT's rate fixes its outflow, so HR's cost does leave."""
+    m = _rs_module()
+    doc = _rs_doc(m, method="Reciprocal",
+                  receivers=[_Row(step=1, receiver_member="HR"), _Row(step=2, receiver_member="IT")])
+    assert _refusal(doc) is None
+
+
+def test_rule_set_reciprocal_saves_two_rate_senders_charging_each_other():
+    """Two Declared Rate senders whose only receivers are each other: no share
+    sender is in the linear system, so nothing is stuck."""
+    m = _rs_module()
+    doc = _rs_doc(m, method="Reciprocal",
+                  rules=[_Row(step=1, sender_member="IT", driver="ZZ Head", basis=DECLARED),
+                         _Row(step=2, sender_member="HR", driver="ZZ Head", basis=DECLARED)],
+                  receivers=[_Row(step=1, receiver_member="HR"), _Row(step=2, receiver_member="IT")],
+                  rates=[_Row(step=1, rate=50.0, effective_from="2026-01-01", effective_to=None),
+                         _Row(step=2, rate=20.0, effective_from="2026-01-01", effective_to=None)])
+    assert _refusal(doc) is None
+
+
+def test_rule_set_reciprocal_still_refuses_a_share_only_loop_beside_a_rate_sender():
+    """HR <-> Ops (both Share of Pool) never exit; IT (rate) charges Sales and is
+    not in the loop. The refusal names the stuck senders only."""
+    m = _rs_module()
+    doc = _rs_doc(m, method="Reciprocal",
+                  rules=[_Row(step=1, sender_member="IT", driver="ZZ Head", basis=DECLARED),
+                         _Row(step=2, sender_member="HR", driver="ZZ Head", basis=SHARE),
+                         _Row(step=3, sender_member="Ops", driver="ZZ Head", basis=SHARE)],
+                  receivers=[_Row(step=1, receiver_member="Sales"),
+                             _Row(step=2, receiver_member="Ops"), _Row(step=3, receiver_member="HR")])
+    msg = _refusal(doc)
+    assert msg and "never reach a final receiver" in msg
+    assert "HR" in msg and "Ops" in msg and "IT" not in msg.split("from:")[1]
+
+
 def test_rule_set_rows_without_a_basis_still_validate_as_share_of_pool():
     """Rows built before 2b-2 (and the K4 tests) carry no basis: the field default applies."""
     m = _rs_module()
