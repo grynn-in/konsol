@@ -27,9 +27,8 @@ import datetime
 import frappe
 from frappe.model.document import Document
 
-UPLOADED, FIXED, ACCOUNT_SET = "Uploaded Statistic", "Fixed Weights", "Account Set"
-SOURCES = (UPLOADED, FIXED, ACCOUNT_SET)
-VALUE_SIGNS = ("As Booked", "Reversed")
+# One definition: the run controller dispatches Compute on the same names.
+from konsol.cost_allocation_model import ACCOUNT_SET, FIXED, SOURCES, UPLOADED, VALUE_SIGNS
 _SHOWN = 10
 _PREFIX = "Cost Allocation Driver: "
 

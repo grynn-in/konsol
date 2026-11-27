@@ -1458,6 +1458,9 @@ def test_rc4_coefficient_resync_for_reciprocal_carries_hop_kind_and_the_models_r
 
 def test_rc4_submit_accepts_a_reciprocal_run_and_refuses_a_closed_loop():
     w = _World()
+    # 2b-1 F8: submit re-reads every driver the run uses; both exist as statistics
+    w.drivers.update({d: {"name": d, "source": "Uploaded Statistic", "dimension": "dim_zz",
+                          "value_sign": None} for d in ("Headcount", "Tickets")})
     w.stat_rows = [{"statistic": r["statistic"], "docstatus": 1, "fiscal_period": 3,
                     "member": r["member"], "value": r["value"]} for r in _recip_stats()]
     stored = [_Row(step=x["step"], sender_member=x["sender_member"], receiver_member=x["receiver_member"],
@@ -1469,6 +1472,7 @@ def test_rc4_submit_accepts_a_reciprocal_run_and_refuses_a_closed_loop():
             _Row(step=2, sender_member="HR", receiver_member="IT", driver="Headcount",
                  statistic="CAS-00002", value_period=3, driver_value=4)]
     w2 = _World()
+    w2.drivers = dict(w.drivers)
     w2.stat_rows = [{"statistic": "CAS-00001", "docstatus": 1, "fiscal_period": 3,
                      "member": "HR", "value": 5},
                     {"statistic": "CAS-00002", "docstatus": 1, "fiscal_period": 3,
@@ -2226,6 +2230,17 @@ def _sources_module(drivers, derived="", **kw):
     return m
 
 
+def _raw_module():
+    """The controller with its reads intact: only frappe, clickhouse and
+    period_status are stubbed, nothing is rebound."""
+    from konsol.tests import test_cost_allocation_doctypes as dt
+    dt._install_document_stub()
+    sys.modules["frappe"].whitelist = lambda *a, **k: (lambda fn: fn)
+    m = _exec_run_module("cost_allocation_run_f7_reads")
+    m.frappe = _FakeFrappe()
+    return m
+
+
 def _k7_refused(fn):
     try:
         fn()
@@ -2443,7 +2458,7 @@ def test_f7_parse_sums_reads_member_total_and_row_count():
 
 
 def test_f7_the_reads_go_through_clickhouse_execute_and_period_status_period_dates():
-    m = _run_module()
+    m = _raw_module()
     calls = []
     m.clickhouse = types.SimpleNamespace(
         execute=lambda sql, params=None, timeout=None: calls.append((sql, params)) or "P1\t1\t1")
@@ -2454,7 +2469,7 @@ def test_f7_the_reads_go_through_clickhouse_execute_and_period_status_period_dat
 
 
 def test_f7_driver_sources_reads_the_header_and_both_child_tables():
-    m = _run_module()
+    m = _raw_module()
     data = {
         "Cost Allocation Driver": [
             {"name": "ZZ Fixed", "source": FIXED_W, "dimension": "dim_zz", "value_sign": None},
