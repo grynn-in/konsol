@@ -78,7 +78,7 @@ def _tb_template():
     return _compiler.load_templates(_compiler._TEMPLATE_DIR)["trial_balance_long"]
 
 
-def test_tb_builder_delegates_to_compile_snapshot(monkeypatch):
+def test_tb_builder_delegates_to_compile_snapshot():
     calls = []
     real = _compiler.compile_snapshot
 
@@ -86,8 +86,11 @@ def test_tb_builder_delegates_to_compile_snapshot(monkeypatch):
         calls.append((template["id"], params))
         return real(template, params, rows)
 
-    monkeypatch.setattr(_compiler, "compile_snapshot", spy)
-    _compiler.build_trial_balance_long_map("ZZ1", 2024, [], 3, 5)
+    _compiler.compile_snapshot = spy
+    try:
+        _compiler.build_trial_balance_long_map("ZZ1", 2024, [], 3, 5)
+    finally:
+        _compiler.compile_snapshot = real
     assert calls == [("trial_balance_long",
                       {"entity": "ZZ1", "year": 2024, "period_from": 3, "period_to": 5})]
 

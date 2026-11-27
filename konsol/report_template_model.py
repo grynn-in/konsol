@@ -1173,3 +1173,95 @@ def _area(cells):
             cols.append(_column_number(m.group(1)))
             rows.append(int(m.group(2)))
     return _cell_range(min(cols), min(rows), max(cols), max(rows))
+
+
+# ===========================================================================
+# SNAPSHOT-mode interpreter (konsol#548 v1, T6)
+# ===========================================================================
+#
+# compile_snapshot(template, params, rows) turns a validated snapshot
+# template, its params and the fetched rows into a values-only cell map. Pure:
+# the caller fetches ``rows`` (a list of dicts keyed by each field's ``field``).
+#
+# - Header cells in file order, then (``rows.header_row``) the fields' ``h``
+#   on ``rows.start_row``, then one row per input row.
+# - A field whose key is absent from a row takes its ``default``, a token
+#   string rendered from the params (a lone ``{param}`` keeps the param's
+#   type); no default gives None. A key present with None stays None.
+# - ``number`` fields: float(value), and 0 for None, an absent key, or
+#   anything float() refuses.
+# - ``max_rows``: today the SQL LIMIT in api._fetch_trial_balance_rows is the
+#   only cap and the builder never refused a longer list, so neither does this.
+#   (The template's max_rows feeds that LIMIT through TB_LONG_MAX_ROWS.)
+# - Snapshot periods stay period_from/period_to 1..12, as api.build_snapshot
+#   validates today. Follow-up (konsol#210): periods should come from the
+#   site's Fiscal Year, as formulas templates do.
+
+def _snapshot_number(value):
+    if value is None:
+        return 0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _snapshot_default(text, params, values):
+    m = _PARAM_REF.match(text)
+    if m and m.group(1) in params:
+        return params[m.group(1)]
+    return render(text, values)
+
+
+def compile_snapshot(template, params, rows):
+    """A snapshot template + params + rows -> the cell map (values only).
+
+    Returns {template_id, mode, <every param, in declared order>, sheet_name,
+    row_count, cells, report}; ``report`` as for compile_formulas.
+    """
+    if template.get("mode") != "snapshot":
+        raise ValueError(f"Report template {template.get('id')!r} is not a snapshot template.")
+    params = resolve_params(template, params)
+    values = _token_values(template, params)
+    fields = template["fields"]
+    last_col = column_letters(len(fields))
+    start = template["rows"]["start_row"]
+
+    cells = []
+    for cell in template.get("header", []):
+        value = params[cell["param"]] if "param" in cell else render(cell["text"], values)
+        cells.append({"range": cell["at"], "values": [[value]]})
+    first = start
+    if template["rows"].get("header_row"):
+        cells.append({"range": f"A{start}:{last_col}{start}",
+                      "values": [[f["h"] for f in fields]]})
+        first = start + 1
+
+    data = []
+    for row in rows:
+        line = []
+        for f in fields:
+            name = f["field"]
+            if name in row:
+                value = row[name]
+            elif "default" in f:
+                value = _snapshot_default(f["default"], params, values)
+            else:
+                value = None
+            line.append(_snapshot_number(value) if f.get("number") else value)
+        data.append(line)
+    if data:
+        cells.append({"range": f"A{first}:{last_col}{first + len(data) - 1}", "values": data})
+
+    out = {"template_id": template["id"], "mode": "snapshot"}
+    out.update(params)
+    out["sheet_name"] = template["sheet_name"]
+    out["row_count"] = len(data)
+    out["cells"] = cells
+    out["report"] = {
+        "template_id": template["id"],
+        "template_version": template["version"],
+        "params": dict(params),
+        "area": _area(cells),
+    }
+    return out
