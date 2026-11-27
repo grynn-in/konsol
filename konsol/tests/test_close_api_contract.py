@@ -15,6 +15,15 @@ tasks.md):
 
 `konsol/close/*.py` also never imports the doctypes the close app replaces:
 `home_api`, `control_api`, `home_model`.
+
+The second rule (a GET never writes) also covers the orchestrator and the
+legacy pipeline trigger (konsol#473): `konsol/orchestrator/api.py` and
+`konsol/pipeline/doctype/pipeline_run/pipeline_run.py`. The orchestrator
+module imports on the host without frappe, so it decorates with its own
+`whitelist` alias (`@whitelist(...)`), which the checker reads like
+`@frappe.whitelist(...)`. The other two rules stay close-only: those modules
+gate with `check_epm_admin()`, not `frappe.only_for`, and their reads declare
+no method.
 """
 import ast
 import glob
@@ -22,6 +31,14 @@ import os
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLOSE_DIR = os.path.join(APP_DIR, "close")
+
+#: Modules outside konsol/close whose writes are also held to "a GET never
+#: writes" (konsol#473): a GET request is rolled back at the end, so a write
+#: reached by GET enqueues work and loses the record.
+GET_NEVER_WRITES_FILES = (
+    os.path.join(APP_DIR, "orchestrator", "api.py"),
+    os.path.join(APP_DIR, "pipeline", "doctype", "pipeline_run", "pipeline_run.py"),
+)
 
 #: Calls that only ever belong on a POST. Checked as source substrings inside
 #: a single function's body, mirroring the plain-language grep the row asks
@@ -44,8 +61,13 @@ FORBIDDEN_IMPORTS = ("home_api", "control_api", "home_model")
 
 def _is_whitelist_decorator(dec):
     """`@frappe.whitelist(...)` or a bare `@frappe.whitelist` (A01b: the bare
-    form allows GET and declares no method, so it must not be skipped)."""
+    form allows GET and declares no method, so it must not be skipped), and
+    the orchestrator's module alias `@whitelist(...)` / `@whitelist`
+    (konsol#473: `whitelist = frappe.whitelist` so the module imports on the
+    host without frappe)."""
     target = dec.func if isinstance(dec, ast.Call) else dec
+    if isinstance(target, ast.Name):
+        return target.id == "whitelist"
     return (
         isinstance(target, ast.Attribute)
         and target.attr == "whitelist"
@@ -174,9 +196,9 @@ def _close_files():
 REPORT_PERMISSION_GATED = {("period_strip_api.py", "period_strip_info")}
 
 
-def _problems_of(code):
+def _problems_of(code, files=None):
     bad = []
-    for path in _api_files():
+    for path in files if files is not None else _api_files():
         with open(path) as f:
             source = f.read()
         rel = os.path.relpath(path, APP_DIR)
@@ -235,6 +257,33 @@ def test_get_endpoints_do_not_write():
     assert not bad, "\n".join(bad)
 
 
+def test_the_orchestrator_and_pipeline_trigger_files_exist():
+    """If either module moves, the rule below would pass over nothing."""
+    for path in GET_NEVER_WRITES_FILES:
+        assert os.path.isfile(path), f"{os.path.relpath(path, APP_DIR)} is missing"
+
+
+def test_orchestrator_and_pipeline_get_endpoints_do_not_write():
+    """konsol#473: `start_run`, `retry_step`, `resume_run`, `cancel_run` and
+    `trigger_pipeline` insert or save a Pipeline Run, commit and enqueue the
+    worker, so each must declare `methods=["POST"]`; `get_run` and
+    `launch_options` read only, so they may stay reachable by GET."""
+    bad = _problems_of("get_writes", GET_NEVER_WRITES_FILES)
+    assert not bad, "\n".join(bad)
+
+
+def test_the_orchestrator_files_declare_endpoints():
+    """The alias is read: the checker sees the orchestrator's `@whitelist`
+    functions, so the rule above is checking something."""
+    seen = {}
+    for path in GET_NEVER_WRITES_FILES:
+        with open(path) as f:
+            tree = ast.parse(f.read())
+        seen[os.path.basename(path)] = {fn.name for fn in _whitelisted_functions(tree)}
+    assert {"start_run", "retry_step", "resume_run", "cancel_run", "get_run", "launch_options"} <= seen["api.py"], seen
+    assert "trigger_pipeline" in seen["pipeline_run.py"], seen
+
+
 def test_every_endpoint_opens_with_only_for():
     bad = _problems_of("no_gate")
     assert not bad, "\n".join(bad)
@@ -283,6 +332,41 @@ def bare_endpoint():
 '''
     codes = sorted(p["code"] for p in check_source(source, "bare.py"))
     assert codes == ["bad_methods", "get_writes", "no_gate"], codes
+
+
+def test_the_checker_catches_the_whitelist_alias():
+    """Failure path (konsol#473): a module that aliases `whitelist =
+    frappe.whitelist` and decorates with `@whitelist()` must be read like
+    `@frappe.whitelist()`, so a GET-reachable write behind the alias is found,
+    not skipped — and `@whitelist(methods=["POST"])` clears it."""
+    source = '''
+import frappe
+
+whitelist = frappe.whitelist
+
+
+@whitelist()
+def aliased_endpoint():
+    frappe.get_doc("Test Doctype").insert()
+
+
+@whitelist
+def bare_aliased_endpoint():
+    frappe.db.commit()
+
+
+@whitelist(methods=["POST"])
+def posted_endpoint():
+    frappe.only_for("EPM Admin")
+    frappe.get_doc("Test Doctype").insert()
+'''
+    problems = check_source(source, "alias.py")
+    by_function = {}
+    for p in problems:
+        by_function.setdefault(p["function"], []).append(p["code"])
+    assert sorted(by_function.get("aliased_endpoint", [])) == ["bad_methods", "get_writes", "no_gate"], problems
+    assert sorted(by_function.get("bare_aliased_endpoint", [])) == ["bad_methods", "get_writes", "no_gate"], problems
+    assert "posted_endpoint" not in by_function, problems
 
 
 def test_no_endpoint_hides_outside_an_api_module():
