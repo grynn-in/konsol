@@ -312,6 +312,14 @@ class _Site:
     def _sql(self, query, values=None, as_dict=False):
         self.queries.append((" ".join(query.split()), values))
         assert "`tabEPM Fiscal Year Period`" in query and "`tabEPM Fiscal Year`" in query, query
+        if isinstance(values, dict) and "d" not in values:
+            # konsol#406: the cut-off lookup, the latest declared period strictly
+            # before (y, p) in (fiscal_year, fiscal_period) order, any type
+            assert "ORDER BY y.fiscal_year DESC, p.fiscal_period DESC" in query, query
+            before = [_Row(p) for p in self.periods
+                      if (p["fiscal_year"], p["fiscal_period"]) < (values["y"], values["p"])]
+            before.sort(key=lambda p: (p["fiscal_year"], p["fiscal_period"]), reverse=True)
+            return before[:1]
         date = _getdate(values["d"] if isinstance(values, dict) else values[0])
         rows = [_Row(p) for p in self.periods
                 if _getdate(p["start_date"]) <= date <= _getdate(p["end_date"])]
@@ -1389,9 +1397,10 @@ def test_before_cancel_passes_when_no_approved_disposal_links_the_period():
 
 # -- Get Balances from Trial Balance (konsol#207) -------------------------------
 
-#: The warehouse answer: account, cumulative net through FY2025 P12, is_pnl,
-#: latest fiscal_year*100+fiscal_period with data. The P&L line (−150) is the
-#: result not yet closed; folded into ZZ3100 it makes the equity −650.
+#: The warehouse answer: account, cumulative net through FY2025 P11 (the last
+#: period before the FY2025 P12 acquisition, konsol#406), is_pnl, latest
+#: fiscal_year*100+fiscal_period with data. The P&L line (−150) is the result
+#: not yet closed; folded into ZZ3100 it makes the equity −650.
 TB_TSV = "\n".join([
     "ZZ1100\t1000\t0\t202511",
     "ZZ2100\t-350\t0\t202510",
@@ -1410,7 +1419,8 @@ def _deal_for_tb(site, **over):
 
 
 def _tb_site(**over):
-    kw = dict(tbs=[("ZZE", 2025, 11)], retained_earnings=["ZZ3100"], tb_tsv=TB_TSV)
+    kw = dict(periods=[PERIOD_NOV_2025, PERIOD_DEC_2025], tbs=[("ZZE", 2025, 11)],
+              retained_earnings=["ZZ3100"], tb_tsv=TB_TSV)
     kw.update(over)
     return _Site(**kw)
 
@@ -1437,13 +1447,17 @@ def test_get_balances_replaces_the_lines_with_the_derived_balance_sheet():
     assert deal.net_assets_acquired == 650.0 and deal.fair_value_adjustments == 930.0
     assert deal.goodwill == 6720.0
     source = deal.balance_sheet_source
-    assert source.startswith("Derived 2026-09-15 from the warehouse trial balance of ZZE through FY2025 P12")
+    assert source.startswith("Derived 2026-09-15 from the warehouse trial balance of ZZE through FY2025 P11, "
+                             "the last period before the acquisition period FY2025 P12")
     assert "(latest period with data: FY2025 P11)" in source
     assert "The period's result is folded into ZZ3100." in source
     assert "Fair value adjustment 930.00 placed on ZZ1810." in source
 
 
-def test_get_balances_reads_the_gold_trial_balance_through_the_acquisition_period():
+def test_get_balances_reads_the_gold_trial_balance_before_the_acquisition_period():
+    # konsol#406: the warehouse's acquisition journal measures the acquired
+    # entity at the last period-end BEFORE the acquisition period (a strict
+    # tuple comparison on (fiscal_year, fiscal_period)); konsol reads the same.
     site = _tb_site()
     deal = _deal_for_tb(site)
     M.get_balances_from_trial_balance(deal.name)
@@ -1451,9 +1465,57 @@ def test_get_balances_reads_the_gold_trial_balance_through_the_acquisition_perio
     sql, params = site.ch_calls[0]
     assert "FROM epm_gold.gold_trial_balance" in sql
     assert "data_area_id = {entity:String}" in sql
-    assert "fiscal_year < {y:UInt16}" in sql and "fiscal_period <= {p:UInt16}" in sql
+    assert "fiscal_year < {y:UInt16}" in sql and "fiscal_period < {p:UInt16}" in sql
+    assert "<=" not in sql, sql
     assert "GROUP BY main_account" in sql and "FORMAT TSV" in sql
     assert params == {"param_entity": "ZZE", "param_y": "2025", "param_p": "12"}
+
+
+def _regular(year, number, start, end):
+    return {"fiscal_year": year, "fiscal_period": number, "period_code": f"P{number}",
+            "period_type": "Regular", "start_date": start, "end_date": end}
+
+
+def test_get_balances_for_a_june_acquisition_reads_through_may():
+    # konsol#406, the issue's case: a deal in FY2024 P6 takes the balances
+    # through FY2024 P5, as the warehouse's line (0) does.
+    periods = [_regular(2024, n, f"2024-{n:02d}-01", f"2024-{n:02d}-{d}")
+               for n, d in ((4, 30), (5, 31), (6, 30))]
+    site = _tb_site(periods=periods, tbs=[("ZZE", 2024, 5), ("ZZE", 2024, 6)],
+                    tb_tsv="\n".join(["ZZ1100\t1000\t0\t202405", "ZZ2100\t-350\t0\t202405",
+                                      "ZZ3100\t-500\t0\t202312", "ZZ4100\t-150\t1\t202405"]))
+    deal = _deal_for_tb(site, acquisition_date="2024-06-01", name="BC-ZZG-ZZE-2024-06-01")
+    assert M.get_balances_from_trial_balance(deal.name) == 4
+    sql, params = site.ch_calls[0]
+    assert "fiscal_year < {y:UInt16}" in sql and "fiscal_period < {p:UInt16}" in sql
+    assert params == {"param_entity": "ZZE", "param_y": "2024", "param_p": "6"}
+    assert deal.balance_sheet_source.startswith(
+        "Derived 2026-09-15 from the warehouse trial balance of ZZE through FY2024 P5, "
+        "the last period before the acquisition period FY2024 P6 (latest period with data: FY2024 P5).")
+
+
+def test_get_balances_for_a_first_period_acquisition_reads_the_previous_year_through_its_closing_period():
+    # konsol#406: a deal in P1 reads every period of the previous fiscal year,
+    # its Closing period (P13, the year-end close rows) included: in
+    # (fiscal_year, fiscal_period) order FY2023 P13 < FY2024 P1. Nothing of
+    # FY2024 is read.
+    periods = [_regular(2023, 12, "2023-12-01", "2023-12-31"),
+               {"fiscal_year": 2023, "fiscal_period": 13, "period_code": "CLS", "period_type": "Closing",
+                "start_date": "2023-12-31", "end_date": "2023-12-31"},
+               _regular(2024, 1, "2024-01-01", "2024-01-31")]
+    for tbs in ([("ZZE", 2023, 13)], [("ZZE", 2023, 12)], [("ZZE", 2023, 13), ("ZZE", 2024, 1)]):
+        site = _tb_site(periods=periods, tbs=tbs,
+                        tb_tsv="\n".join(["ZZ1100\t1000\t0\t202313", "ZZ2100\t-350\t0\t202312",
+                                          "ZZ3100\t-650\t0\t202313"]))
+        deal = _deal_for_tb(site, acquisition_date="2024-01-10", name="BC-ZZG-ZZE-2024-01-10",
+                            fair_value_adjustment_total=0)
+        assert M.get_balances_from_trial_balance(deal.name) == 3, tbs
+        sql, params = site.ch_calls[0]
+        assert "fiscal_year < {y:UInt16}" in sql and "fiscal_period < {p:UInt16}" in sql
+        assert params == {"param_entity": "ZZE", "param_y": "2024", "param_p": "1"}, tbs
+        assert deal.balance_sheet_source.startswith(
+            "Derived 2026-09-15 from the warehouse trial balance of ZZE through FY2023 P13, "
+            "the last period before the acquisition period FY2024 P1 (latest period with data: FY2023 P13)."), tbs
 
 
 def test_get_balances_without_a_fair_value_total_places_no_adjustment():
@@ -1490,13 +1552,29 @@ def test_get_balances_is_whitelisted_for_post_only():
     assert '@frappe.whitelist(methods=["POST"])\ndef get_balances_from_trial_balance(' in src
 
 
-def test_get_balances_refuses_without_a_submitted_trial_balance_at_or_before():
-    for tbs in ([], [("ZZE", 2026, 1)], [("ZZX", 2025, 11)]):
+def test_get_balances_refuses_without_a_submitted_trial_balance_before_the_acquisition_period():
+    # konsol#406: a trial balance in the acquisition period itself (2025, 12)
+    # is not at the cut-off; the sentence names the period it needs.
+    for tbs in ([], [("ZZE", 2025, 12)], [("ZZE", 2026, 1)], [("ZZX", 2025, 11)]):
         site = _tb_site(tbs=tbs)
         deal = _deal_for_tb(site)
         message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
-        assert "ZZE has no submitted trial balance at or before FY2025 P12." in message, tbs
+        assert ("ZZE has no submitted trial balance through FY2025 P11, the last period before the "
+                "acquisition period FY2025 P12; the acquired balance sheet is measured at that "
+                "period-end.") in message, tbs
         assert site.ch_calls == [], tbs
+        assert not deal.get("saved"), tbs
+
+
+def test_get_balances_refuses_when_no_declared_period_precedes_the_acquisition_period():
+    # konsol#406: the calendar starts at the acquisition period, so there is
+    # no period-end to measure at and nothing to read.
+    site = _tb_site(periods=[PERIOD_DEC_2025], tbs=[])
+    deal = _deal_for_tb(site)
+    message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
+    assert ("ZZE has no submitted trial balance before FY2025 P12: no declared fiscal period "
+            "precedes the acquisition period.") in message
+    assert site.ch_calls == [] and not deal.get("saved")
 
 
 def test_get_balances_refuses_two_retained_earnings_accounts_by_name():
@@ -1533,7 +1611,7 @@ def test_get_balances_refuses_a_trial_balance_spanning_two_charts_by_name():
     site = _tb_site(charts=TWO_CHARTS, retained_earnings=["ZZ3100"], tb_tsv=tsv)
     deal = _deal_for_tb(site)
     message = _refused(lambda: M.get_balances_from_trial_balance(deal.name))
-    assert ("the trial balance of ZZE through FY2025 P12 uses accounts of more than one "
+    assert ("the trial balance of ZZE through FY2025 P11 uses accounts of more than one "
             "Chart of Accounts (ZZCOA-A, ZZCOA-B)") in message
     assert deal.acquired_balances == [{"main_account": "ZZ9999", "book_amount": 1, "fair_value_adjustment": 0}]
     assert not deal.get("saved")
