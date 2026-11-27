@@ -1417,8 +1417,10 @@ def _apply(rows, steps, pools):
     net, sent, received = {}, {}, {}
     for r in rows:
         o = by_sender[r["origin_member"]]
-        amount = o.rate if o.basis == _RATE else pools[o.sender_member]
-        x = Decimal(amount) * r["coefficient"]
+        # the warehouse holds the rate as a 4-dp Decimal: exact for a declared rate
+        amount = (Decimal(o.rate.numerator) / Decimal(o.rate.denominator) if o.basis == _RATE
+                  else pools[o.sender_member])
+        x = amount * r["coefficient"]
         sent[r["sender_member"]] = sent.get(r["sender_member"], Decimal(0)) + x
         received[r["receiver_member"]] = received.get(r["receiver_member"], Decimal(0)) + x
     for m in set(sent) | set(received):
@@ -1504,7 +1506,7 @@ def test_rate_worked_example_end_to_end_reproduces_every_number():
     assert net["Sales"] == D("806.25") and net["Ops"] == D("543.75")
     variance = M.absorption({"IT": pools["IT"]}, {"IT": received.get("IT", 0)}, {"IT": sent["IT"]})
     assert variance == {"IT": 50}
-    assert net["Sales"] + net["Ops"] + variance["IT"] == D(1400)
+    assert Fraction(net["Sales"] + net["Ops"]) + variance["IT"] == 1400
 
 
 def test_rate_direct_step_in_units():
