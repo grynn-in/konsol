@@ -7,8 +7,10 @@ module:
    report_template_model) once per process;
 2. validates every submitted param through report_choices, the same lists the
    add-in's pickers show. A value that is not a choice is refused by name;
-   nothing falls back to another value. An entity is checked for access first,
-   as the endpoints always did (``_assert_entity_access``);
+   nothing falls back to another value. A value of the wrong type (a dict for
+   an entity code) is refused by name before any check. An entity or a group
+   is checked for access first, with the rule K.EPM applies to its entity
+   argument (``_assert_entity_access``: entity_read_scope on the code);
 3. resolves the site context the pure interpreter needs: the year's Regular
    periods (report_choices.periods); per ``accounts`` block the chart's
    Published leaves, per ``account_tree`` block the Published tree (both with
@@ -28,7 +30,8 @@ import frappe
 from konsol import report_choices
 from konsol.report_compiler import _TEMPLATE_DIR, TB_LONG_MAX_ROWS
 from konsol.report_template_model import (
-    block_key, compile_formulas, compile_snapshot, load_templates, render,
+    SCENARIO_TYPES, block_key, compile_formulas, compile_snapshot, description, load_templates,
+    render, scope_kinds,
 )
 
 #: The body keys of today's add-in requests, read as params when the body
@@ -109,6 +112,30 @@ def _check_entity(tid, name, code):
         _refuse(f"Report template {tid!r}: {name} {code!r} is not an entity you can report on.")
 
 
+def _check_group(tid, name, code):
+    """A group is read by K.EPM with the group code as its entity, and
+    epm_batch checks entity_read_scope(<group code>, allowed): the same rule
+    on the same argument, before any read (PR #626 review finding 1)."""
+    _assert_entity_access(code)
+    if not report_choices.is_allowed("group", code):
+        _not_a_choice(tid, name, code, "a consolidation group you can report on")
+
+
+def _node_reader():
+    """report_choices.hierarchy_nodes, read once per (hierarchy, year): one
+    build checks the scope, fills a hierarchy_nodes block and names the
+    scope from one read of the tree (PR #626 review finding 8d)."""
+    memo = {}
+
+    def read(hierarchy, year):
+        key = (hierarchy, int(year))
+        if key not in memo:
+            memo[key] = report_choices.hierarchy_nodes(hierarchy, year)
+        return memo[key]
+
+    return read
+
+
 def _not_a_choice(tid, name, value, what):
     _refuse(f"Report template {tid!r}: {name} {value!r} is not {what}.")
 
@@ -150,14 +177,45 @@ def _parent(tid, spec, by_name, values, ptype):
 #: Types validated in a second pass: they read another param's value.
 _DEPENDENT = ("period", "scenario", "hierarchy_node", "dimension_value", "scope")
 
+#: Param types whose value is a code or text: a str (a dict or list is refused).
+_TEXT_TYPES = ("entity", "group", "hierarchy", "hierarchy_node", "dimension_value",
+               "account", "account_heading", "scenario", "choice", "text")
+#: Param types whose value is a whole number: an int, or its text.
+_NUMBER_TYPES = ("fiscal_year", "int", "period")
 
-def validate_params(tmpl, params):
+
+def _check_type(tid, name, ptype, value):
+    """Refuse, by name, a value whose JSON type the param cannot hold, before
+    it reaches a check that would raise on it (PR #626 review finding 8a)."""
+    if ptype in _TEXT_TYPES:
+        ok = isinstance(value, str)
+        what = "text"
+    elif ptype in _NUMBER_TYPES:
+        ok = isinstance(value, (str, int)) and not isinstance(value, bool)
+        what = "a whole number"
+    elif ptype == "account_list":
+        ok = isinstance(value, list) and all(isinstance(c, str) for c in value)
+        what = "a list of account codes"
+    elif ptype == "scope":
+        ok = (isinstance(value, dict) and isinstance(value.get("kind"), str)
+              and isinstance(value.get("code"), str))
+        what = 'a scope ({"kind": ..., "code": ...})'
+    else:
+        ok, what = True, ""
+    if not ok:
+        _refuse(f"Report template {tid!r}: {name} {value!r} is not {what}.")
+
+
+def validate_params(tmpl, params, nodes=None):
     """The template's params, each checked against report_choices; refused by name.
 
     Returns ``{name: value}`` for every declared param in declared order:
     defaults applied, a fiscal_year or int as an int, a ``"rule"`` scenario
-    resolved by the site's scenario rule. An entity is access-checked first.
+    resolved by the site's scenario rule. An entity or a group is
+    access-checked first. ``nodes`` reads a hierarchy's nodes (default: one
+    read per call, :func:`_node_reader`).
     """
+    nodes = nodes or _node_reader()
     tid = tmpl["id"]
     declared = [p["name"] for p in tmpl["params"]]
     unknown = sorted(set(params or {}) - set(declared))
@@ -181,11 +239,11 @@ def validate_params(tmpl, params):
         for p in tmpl["params"]:
             if (p["type"] in _DEPENDENT) != dependent:
                 continue
-            values[p["name"]] = _check_param(tid, p, raw[p["name"]], by_name, values)
+            values[p["name"]] = _check_param(tid, p, raw[p["name"]], by_name, values, nodes)
     return {name: values[name] for name in declared}
 
 
-def _check_param(tid, p, value, by_name, values):
+def _check_param(tid, p, value, by_name, values, nodes):
     name, ptype = p["name"], p["type"]
     if ptype == "scenario" and value is None and p.get("default") == "rule":
         year = _year_for(tid, p, by_name, values)
@@ -196,11 +254,11 @@ def _check_param(tid, p, value, by_name, values):
         return rule["default"]
     if value is None:
         return None
+    _check_type(tid, name, ptype, value)
     if ptype == "entity":
         _check_entity(tid, name, value)
     elif ptype == "group":
-        if not report_choices.is_allowed("group", value):
-            _not_a_choice(tid, name, value, "a consolidation group you can report on")
+        _check_group(tid, name, value)
     elif ptype == "fiscal_year":
         year = _as_int(tid, name, value)
         if year not in report_choices.fiscal_years():
@@ -223,7 +281,7 @@ def _check_param(tid, p, value, by_name, values):
     elif ptype == "hierarchy_node":
         hierarchy = _parent(tid, p, by_name, values, "hierarchy")
         year = _year_for(tid, p, by_name, values)
-        if not any(n["code"] == value for n in report_choices.hierarchy_nodes(hierarchy, year)):
+        if not any(n["code"] == value for n in nodes(hierarchy, year)):
             _not_a_choice(tid, name, value, f"a node of hierarchy {hierarchy!r}")
     elif ptype == "dimension_value":
         deps = p.get("depends_on") or []
@@ -237,7 +295,7 @@ def _check_param(tid, p, value, by_name, values):
         if not report_choices.is_allowed("dimension_value", code):
             _not_a_choice(tid, name, value, "a declared dimension value")
     elif ptype == "scope":
-        return _check_scope(tid, p, value, by_name, values)
+        return _check_scope(tid, p, value, by_name, values, nodes)
     elif ptype in ("account", "account_heading"):
         if not report_choices.is_allowed(ptype, value):
             _not_a_choice(tid, name, value, "a Published "
@@ -264,7 +322,7 @@ def _check_param(tid, p, value, by_name, values):
     return value
 
 
-def _check_scope(tid, p, value, by_name, values):
+def _check_scope(tid, p, value, by_name, values, nodes):
     """A scope is ``{kind, code}`` with ``kind`` one of the param's kinds."""
     name = p["name"]
     if not isinstance(value, dict) or set(value) != {"kind", "code"}:
@@ -277,12 +335,11 @@ def _check_scope(tid, p, value, by_name, values):
     if kind == "entity":
         _check_entity(tid, name, code)
     elif kind == "group":
-        if not report_choices.is_allowed("group", code):
-            _not_a_choice(tid, name, code, "a consolidation group you can report on")
+        _check_group(tid, name, code)
     else:
         hierarchy = _parent(tid, p, by_name, values, "hierarchy")
         year = _year_for(tid, p, by_name, values)
-        if not any(n["code"] == code for n in report_choices.hierarchy_nodes(hierarchy, year)):
+        if not any(n["code"] == code for n in nodes(hierarchy, year)):
             _not_a_choice(tid, name, code, f"a node of hierarchy {hierarchy!r}")
         return {"kind": kind, "code": code, "hierarchy": hierarchy}
     return {"kind": kind, "code": code}
@@ -435,7 +492,7 @@ def _hierarchy_value(tmpl, params):
     return params.get(names[0]) if len(names) == 1 else None
 
 
-def block_nodes(tmpl, block, params, year):
+def block_nodes(tmpl, block, params, year, nodes=None):
     """A ``hierarchy_nodes`` block's nodes in tree order (report_choices.
     hierarchy_nodes for the year); under its ``node`` param, that node and
     its descendants only."""
@@ -444,12 +501,12 @@ def block_nodes(tmpl, block, params, year):
     if hierarchy is None or hierarchy == "" or year is None:
         _refuse(f"Report template {tid!r}: a hierarchy_nodes block needs the hierarchy in "
                 f"param {block['hierarchy']!r} and the fiscal year.")
-    nodes = report_choices.hierarchy_nodes(hierarchy, year)
+    listed = (nodes or _node_reader())(hierarchy, year)
     start = params.get(block["node"]) if block.get("node") else None
     if not start:
-        return nodes
+        return listed
     out, inside = [], None
-    for n in nodes:
+    for n in listed:
         if inside is None:
             if n["code"] == start:
                 inside = int(n["depth"])
@@ -461,7 +518,7 @@ def block_nodes(tmpl, block, params, year):
     return out
 
 
-def scope_name(tmpl, params):
+def scope_name(tmpl, params, nodes=None):
     """The display name of the template's scope: the entity's name, the
     group's root name, or the node's label; None when the site declares none."""
     found = [p for p in tmpl["params"] if p["type"] in ("entity", "group", "scope")]
@@ -486,14 +543,16 @@ def scope_name(tmpl, params):
         year = _year_value(tmpl, params)
         if not hierarchy or year is None:
             return None
-        items, key = report_choices.hierarchy_nodes(hierarchy, year), "label"
+        items, key = (nodes or _node_reader())(hierarchy, year), "label"
     return next((i.get(key) for i in items if i["code"] == code), None)
 
 
-def resolve_context(tmpl, params):
+def resolve_context(tmpl, params, nodes=None):
     """ctx for compile_formulas (its contract is in report_template_model):
     the year's Regular periods; per block, its accounts (and charts), tree,
-    account list or hierarchy nodes; and the scope's display name."""
+    account list or hierarchy nodes; and the scope's display name. ``nodes``
+    as for :func:`validate_params`."""
+    nodes = nodes or _node_reader()
     year = _year_value(tmpl, params)
     ctx = {"accounts": {}, "charts": {}, "trees": {}, "account_lists": {}, "nodes": {}}
     if year is not None:
@@ -508,8 +567,8 @@ def resolve_context(tmpl, params):
         elif btype == "account_list":
             ctx["account_lists"][key] = block_account_list(tmpl, block, params)
         elif btype == "hierarchy_nodes":
-            ctx["nodes"][key] = block_nodes(tmpl, block, params, year)
-    name = scope_name(tmpl, params)
+            ctx["nodes"][key] = block_nodes(tmpl, block, params, year, nodes)
+    name = scope_name(tmpl, params, nodes)
     if name is not None:
         ctx["scope_name"] = name
     return ctx
@@ -538,8 +597,9 @@ def build(template_id, params):
     tmpl = template(template_id)
     if tmpl is None or tmpl["mode"] != "formulas":
         _refuse(f"Unknown template_id for formulas: {template_id!r}")
-    values = validate_params(tmpl, params)
-    ctx = resolve_context(tmpl, values)
+    nodes = _node_reader()
+    values = validate_params(tmpl, params, nodes)
+    ctx = resolve_context(tmpl, values, nodes)
     try:
         return compile_formulas(tmpl, values, ctx)
     except ValueError as exc:
@@ -639,14 +699,9 @@ def _fetch_trial_balance_rows(entity, year, period_from, period_to):
 # Catalog and choices
 # ---------------------------------------------------------------------------
 
-def _description(t):
-    return t.get("description", "").replace(
-        "{sign.sentence}", t.get("sign", {}).get("sentence", ""))
-
-
 def list_templates():
     """The four-key list api.list_report_templates has always returned."""
-    return [{"id": t["id"], "title": t["title"], "description": _description(t),
+    return [{"id": t["id"], "title": t["title"], "description": description(t),
              "mode": t["mode"]} for t in templates().values()]
 
 
@@ -668,45 +723,62 @@ def _param_spec(p):
     return out
 
 
-def _dataset_words(t):
-    """{word: [series names]} for every dataset word the template's series read."""
-    words = {}
+_KIND_TEXT = {"entity": "an entity", "group": "a group", "node": "a hierarchy node"}
+
+
+def _kind_why(t, kind, published):
+    """None when every read series has a Published Dataset for ``kind``'s
+    word; else the refusal, naming each missing word and its series."""
+    missing = {}
     for name, series in (t.get("series") or {}).items():
-        for word in (series.get("read") or {}).values():
-            words.setdefault(word, []).append(name)
-    return words
+        read = series.get("read")
+        if read is None:
+            continue  # a formula series reads nothing
+        word = read.get(kind)
+        if word not in published:
+            missing.setdefault(word, []).append(name)
+    if not missing:
+        return None
+    return "; ".join(
+        f"No Published Dataset has scenario key {w!r} (read by series "
+        f"{', '.join(repr(x) for x in s)}), so {t['title']} cannot be read for "
+        f"{_KIND_TEXT.get(kind, kind)} on this site."
+        for w, s in sorted(missing.items(), key=lambda i: str(i[0])))
 
 
 def catalog():
-    """Every template's spec, in ``order``, with ``available`` / ``why``.
+    """Every template's spec, in ``order``, with its availability per scope kind.
 
-    A template is unavailable when a dataset word its series read has no
-    Published Dataset (``scenario_key``) on this site; ``why`` names the word
-    and the series. A snapshot template reads its registered source, so it
-    is always available.
+    A product rule (PR #626 review finding 4): a scope kind (entity, group,
+    node) is offered when every series the template reads has a Published
+    Dataset (``scenario_key``) for that kind's word. ``available_kinds`` lists
+    the offered kinds in declared order; ``unavailable_kinds`` maps each
+    other kind to its ``why``. The template is ``available`` when at least
+    one kind is; else ``why`` joins every kind's why. A snapshot template
+    reads its registered source, so every kind it declares is available.
     """
     published = {r.scenario_key for r in frappe.get_all(
         "Dataset", filters={"status": "Published"}, fields=["scenario_key"],
         order_by="scenario_key asc", limit_page_length=0) if r.scenario_key}
     out = []
     for t in templates().values():
-        missing = {w: s for w, s in _dataset_words(t).items() if w not in published}
-        why = None
-        if missing:
-            why = "; ".join(
-                f"No Published Dataset has scenario key {w!r} (read by series "
-                f"{', '.join(repr(x) for x in s)}), so {t['title']} cannot be read on this site."
-                for w, s in sorted(missing.items()))
+        kinds = scope_kinds(t)
+        whys = {} if t["mode"] == "snapshot" else {k: _kind_why(t, k, published) for k in kinds}
+        unavailable = {k: w for k, w in whys.items() if w is not None}
+        available = [k for k in kinds if k not in unavailable]
+        why = None if available else "; ".join(unavailable[k] for k in kinds)
         out.append({
             "id": t["id"],
             "version": t["version"],
             "title": t["title"],
-            "description": _description(t),
+            "description": description(t),
             "mode": t["mode"],
             "sheet_name": t["sheet_name"],
             "params": [_param_spec(p) for p in t["params"]],
-            "available": not missing,
+            "available": bool(available),
             "why": why,
+            "available_kinds": available,
+            "unavailable_kinds": unavailable,
         })
     return {"templates": out}
 
@@ -742,6 +814,9 @@ def choices(kind, **args):
                 call.append(None)
                 continue
             _refuse(f"Report choices {kind!r} need {arg}.")
+        if arg == "scenario_type" and value not in SCENARIO_TYPES:
+            _refuse(f"Report choices {kind!r}: scenario_type {value!r} is not one of "
+                    f"{', '.join(SCENARIO_TYPES)}.")
         if arg == "year":
             try:
                 value = int(value)

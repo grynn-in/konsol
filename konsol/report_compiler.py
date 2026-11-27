@@ -3,7 +3,7 @@
 import os
 
 from konsol.report_template_model import (
-    block_key, column_letters, compile_formulas, compile_snapshot, load_templates,
+    block_key, column_letters, compile_formulas, compile_snapshot, description, load_templates,
 )
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_templates")
@@ -29,9 +29,7 @@ def list_templates():
         {
             "id": t["id"],
             "title": t["title"],
-            "description": t.get("description", "").replace(
-                "{sign.sentence}", t.get("sign", {}).get("sentence", "")
-            ),
+            "description": description(t),
             "mode": t["mode"],
         }
         for t in templates.values()

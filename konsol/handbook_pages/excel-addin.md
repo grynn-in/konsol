@@ -81,7 +81,7 @@ The pane's **Reports** panel builds a report on a sheet from a template. Every n
 
 ### Choosing and applying
 
-- The **template list** comes from the server, in the order the product sets. A template the site cannot read is greyed out, and the panel says why. The usual reason is that the site has not published a dataset the template reads. If the server cannot send the list, the panel shows that error. It has no built-in list.
+- The **template list** comes from the server, in the order the product sets. A template the site cannot read is greyed out, and the panel says why. The usual reason is that the site has not published a dataset the template reads. A template can be read for some scope kinds and not others: a site with no consolidated budget can run P&L actual vs budget for an entity, but not for a group. The form then offers only the kinds the site can read, and says why the others are missing. If the server cannot send the list, the panel shows that error. It has no built-in list.
 - Choices are generated from the template. Each field is filled from the site: entities, years, periods, scenarios, hierarchies, accounts. A field that depends on another waits for it. Until you pick the year, the periods and scenarios say "Choose Year first."
 - A budget or forecast scenario is preselected only when the site's scenario rule finds exactly one active scenario for that year. If there are none or several, the field stays blank and shows the reason. Choose one yourself.
 - A required field left blank stops **Apply** and is named.
@@ -101,6 +101,7 @@ The add-in marks each sheet it paints. The mark is a name `konsol_report` over t
 - On any other sheet, the button reads **Apply to new sheet**. Nothing already there is touched.
 - Sheets applied before this change carry no mark. The add-in does not recognise them. Applying again gives a new sheet such as `P&L (2)`. (Decided 27 Nov 2026.) Delete the old sheet if you do not need it.
 - Update writes nothing outside the report's own area. Your notes and formulas elsewhere stay as they are.
+- If you insert rows above the report or columns to its left, Update writes the report where it now is.
 - If the new layout is bigger and would cover cells that hold something, Update refuses and changes nothing. Move or clear those cells, or apply to a new sheet.
 - A copy of a report sheet keeps the name but not the sheet's identity. Applying on the copy makes it a separate report with its own entry. It does not change the original.
 - If the report was applied from another server than the workbook reads now, Update is refused. Use **Another site** above to switch back, or apply to a new sheet.

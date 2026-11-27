@@ -14,7 +14,11 @@
 //   entity, group, fiscal_year, period, scenario, hierarchy, hierarchy_node,
 //   dimension_value, account, account_heading -> a select filled from
 //     konsol.api.report_choices (a searchable input + datalist when long)
-//   scope        -> a kind toggle (the param's kinds only) + a select
+//   scope        -> a kind toggle + a select. The toggle offers the param's
+//                   kinds that the catalog lists in the template's
+//                   available_kinds (when it lists them); each other kind's
+//                   why (unavailable_kinds) is shown under it. The kinds are
+//                   report_template_model.SCOPE_KINDS: entity, group, node.
 //   account_list -> a multi-select
 //   choice       -> a select of the param's choices
 //   int          -> a number input;  text -> a text input
@@ -23,7 +27,10 @@
 // (year -> periods, scenarios; hierarchy -> nodes). A scenario whose default
 // is "rule" is preselected only when the server names a default; otherwise
 // it stays blank and the server's why is shown under it. A required field
-// left blank blocks Apply, by name.
+// left blank blocks Apply, by name, and so does a picker whose choices are
+// still loading ("Loading choices…"), so Apply never sends a new year with
+// the old year's budget. A reply for a request that a newer one replaced is
+// dropped.
 //
 // The Apply button reads "Update this report" when konsolReport.inspect()
 // says the active sheet is the add-in's own report of the selected template,
@@ -51,8 +58,8 @@ var konsolReportForm = (function () {
     account_list: "accounts",
   };
   //: scope kind -> its report_choices kind
-  var KIND_OF_SCOPE = { entity: "entities", group: "groups", hierarchy_node: "hierarchy_nodes" };
-  var SCOPE_LABEL = { entity: "Entity", group: "Group", hierarchy_node: "Hierarchy node" };
+  var KIND_OF_SCOPE = { entity: "entities", group: "groups", node: "hierarchy_nodes" };
+  var SCOPE_LABEL = { entity: "Entity", group: "Group", node: "Hierarchy node" };
   //: the request args each kind takes from the params it depends on
   var KIND_ARGS = {
     periods: ["year"],
@@ -66,6 +73,7 @@ var konsolReportForm = (function () {
   var LONG_LIST = 25;
   var UPDATE = "Update this report";
   var APPLY_NEW = "Apply to new sheet";
+  var LOADING = "Loading choices…";
 
   function blank(v) {
     return v === undefined || v === null || v === "" || (Array.isArray(v) && !v.length);
@@ -191,7 +199,7 @@ var konsolReportForm = (function () {
 
   function mount(o) {
     var doc = o.doc || document;
-    var state = { templates: [], tpl: null, fields: {}, gen: 0, loads: 0,
+    var state = { templates: [], tpl: null, fields: {}, gen: 0,
                   inspection: null, prefilled: null, busy: false };
 
     function log(level, text) {
@@ -258,7 +266,7 @@ var konsolReportForm = (function () {
           .map(function (x) { return x.value; });
       }
       var v = String(f.input.value || "").trim();
-      if (f.widget === "scope") return { kind: f.kindSelect ? f.kindSelect.value : f.p.kinds[0], code: v };
+      if (f.widget === "scope") return { kind: scopeKind(f), code: v };
       return v;
     }
 
@@ -281,23 +289,47 @@ var konsolReportForm = (function () {
       }
     }
 
+    // The scope kinds the form offers: the param's, less those the catalog
+    // says this site cannot read (an older catalog lists none: all offered).
+    function offeredKinds(p) {
+      var t = state.tpl;
+      var kinds = (p.kinds || []).length ? p.kinds : ["entity"];
+      if (!t || !Array.isArray(t.available_kinds)) return kinds;
+      return kinds.filter(function (k) { return t.available_kinds.indexOf(k) >= 0; });
+    }
+
+    function kindsWhy(p) {
+      var t = state.tpl;
+      var why = (t && t.unavailable_kinds) || {};
+      return (p.kinds || []).filter(function (k) { return why[k]; }).map(function (k) {
+        return (SCOPE_LABEL[k] || k) + ": " + why[k];
+      }).join("\n");
+    }
+
     function renderField(p) {
-      var f = { p: p, widget: widgetFor(p), seq: 0, options: [], pending: undefined };
-      if (f.widget === "scope" && !(p.kinds || []).length) p.kinds = ["entity"];
+      var f = { p: p, widget: widgetFor(p), seq: 0, options: [], pending: undefined, loading: false };
       if (f.widget === "hidden") return f;
+      if (f.widget === "scope") f.kinds = offeredKinds(p);
       var wrap = el("div");
       var label = el("label", (p.label || p.name) + (p.required ? " *" : ""));
       label.setAttribute("data-label", p.name);
       wrap.appendChild(label);
-      if (f.widget === "scope" && (p.kinds || []).length > 1) {
+      if (f.widget === "scope" && f.kinds.length > 1) {
         f.kindSelect = el("select");
         f.kindSelect.setAttribute("data-scope-kind", p.name);
-        p.kinds.forEach(function (k) { f.kindSelect.appendChild(option(k, SCOPE_LABEL[k] || k)); });
+        f.kinds.forEach(function (k) { f.kindSelect.appendChild(option(k, SCOPE_LABEL[k] || k)); });
         f.kindSelect.addEventListener("change", function () {
           loadField(p.name);
           syncButtons();
         });
         wrap.appendChild(f.kindSelect);
+      }
+      if (f.widget === "scope") {
+        var kw = el("p");
+        kw.className = "hint";
+        kw.setAttribute("data-kinds-why", p.name);
+        show(kw, kindsWhy(p));
+        wrap.appendChild(kw);
       }
       f.slot = el("div");
       wrap.appendChild(f.slot);
@@ -324,8 +356,14 @@ var konsolReportForm = (function () {
       return f;
     }
 
+    // The scope's chosen kind; none when the site can read no declared kind
+    // (the template is then unavailable and Apply is blocked).
+    function scopeKind(f) {
+      return f.kindSelect ? f.kindSelect.value : f.kinds[0];
+    }
+
     function kindOf(f) {
-      if (f.widget === "scope") return KIND_OF_SCOPE[f.kindSelect ? f.kindSelect.value : f.p.kinds[0]];
+      if (f.widget === "scope") return KIND_OF_SCOPE[scopeKind(f)] || null;
       if (f.widget === "select" || f.widget === "multiselect") return KIND_OF_TYPE[f.p.type];
       return null;
     }
@@ -343,15 +381,19 @@ var konsolReportForm = (function () {
       if (q.missing) {
         var r = raw(f);
         var had = !blank(f.widget === "scope" ? r.code : r);
+        f.loading = false;
         fill(f, []);
         show(f.why, "Choose " + q.missing + " first.");
         syncButtons();
         return had ? changed(name) : Promise.resolve();
       }
-      state.loads += 1;
+      // loading is this field's newest request; an older reply that arrives
+      // later neither fills the picker nor clears the flag.
+      f.loading = true;
       syncButtons();
       return o.fetchChoices(q.kind, q.args).then(function (res) {
         if (seq !== f.seq || gen !== state.gen) return null;
+        f.loading = false;
         var c = optionsOf(q.kind, res && res.choices);
         var before = raw(f);
         before = f.widget === "scope" ? before.code : before;
@@ -378,12 +420,12 @@ var konsolReportForm = (function () {
         return JSON.stringify(value) !== JSON.stringify(blank(before) ? "" : before) ? changed(name) : null;
       }, function (err) {
         if (seq !== f.seq || gen !== state.gen) return null;
+        f.loading = false;
         fill(f, []);
         show(f.why, message(err));
         log("err", "Reports: could not load the choices for " + (f.p.label || name) + ": " + message(err));
         return null;
       }).then(function () {
-        if (gen === state.gen) state.loads -= 1;
         syncButtons();
       });
     }
@@ -409,7 +451,12 @@ var konsolReportForm = (function () {
       }
       var missing = missingRequired(t.params, rawValues());
       if (missing.length) return "Required: " + missing.join(", ") + ".";
+      if (loading()) return LOADING;
       return "";
+    }
+
+    function loading() {
+      return Object.keys(state.fields).some(function (n) { return state.fields[n].loading; });
     }
 
     function syncButtons() {
@@ -490,7 +537,6 @@ var konsolReportForm = (function () {
 
     function selectTemplate() {
       state.gen += 1;
-      state.loads = 0;
       state.fields = {};
       state.inspection = null;
       state.prefilled = null;
@@ -601,6 +647,9 @@ var konsolReportForm = (function () {
     normaliseRequest: normaliseRequest,
     UPDATE: UPDATE,
     APPLY_NEW: APPLY_NEW,
+    LOADING: LOADING,
+    KIND_OF_SCOPE: KIND_OF_SCOPE,
+    SCOPE_LABEL: SCOPE_LABEL,
   };
 })();
 

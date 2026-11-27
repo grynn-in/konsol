@@ -12,18 +12,24 @@
 // exist and agree:
 //   1. a sheet-scoped named item "konsol_report" over the report's area, with
 //      the comment "konsol-report:<report_id>". Excel keeps it in step when
-//      rows or columns are inserted, so its range is the area that is cleared;
+//      rows or columns are inserted, so its range is where the report is now,
+//      and the area that is cleared;
 //   2. the workbook's document setting konsolReports[report_id] =
 //      {template_id, template_version, params, area, server, worksheet_id,
-//       applied_at}. konsolSnapshots (ribbon.js) is never touched.
+//       applied_at}. ``area`` is the compiled area (the cell map's own
+//       addresses), not where the sheet holds it. konsolSnapshots
+//       (ribbon.js) is never touched.
 // A copied sheet keeps the name, but its worksheet id is not the entry's: it
 // is treated as own, and applying forks it into a new report id and entry.
 //
-// An update clears ONLY the named area, writes the cells and formats, moves
-// the name to the new area and updates the entry. It refuses, writing
-// nothing, when the report was applied from another server, or when a larger
-// area would cover non-empty cells outside the old one. A cell outside the
-// report's area is never written.
+// An update first moves the cell map to where the report now is: when the
+// user inserted rows above or columns left of it, the name's top-left is no
+// longer the entry's, and every cell, format and cell reference in a formula
+// is shifted by that offset (rows and columns). It then clears ONLY the named
+// area, writes the cells and formats, moves the name to the new area and
+// updates the entry. It refuses, writing nothing, when the report was applied
+// from another server, or when a larger area would cover non-empty cells
+// outside the old one. A cell outside the report's area is never written.
 //
 // Loaded by index.html after server.js. The pane may provide
 // window.konsolLog(level, message); without it, messages go to the console.
@@ -158,6 +164,61 @@ var konsolReport = (function () {
       cells: cells,
       formats: formats,
     };
+  }
+
+  // -- moving a plan ---------------------------------------------------------
+
+  // A1 reference in a formula: not inside a "string", not part of a name
+  // (K.EPM, LOG10( is a function), not a sheet-qualified or R1C1 form.
+  var REF = /(\$?)([A-Z]{1,3})(\$?)(\d+)/g;
+
+  function shiftRefs(text, dr, dc) {
+    return text.replace(REF, function (m, d1, col, d2, row, at, all) {
+      var before = at > 0 ? all.charAt(at - 1) : "";
+      var after = all.charAt(at + m.length);
+      if (/[A-Za-z0-9_.!]/.test(before) || after === "(" || /[A-Za-z0-9_]/.test(after)) return m;
+      return d1 + colLetter(colIndex(col) + dc) + d2 + (Number(row) + dr);
+    });
+  }
+
+  // A formula with its cell references moved by (dr, dc); text in quotes
+  // (a K.EPM entity or account code) is kept as it is.
+  function shiftFormula(formula, dr, dc) {
+    if (typeof formula !== "string" || formula.charAt(0) !== "=") return formula;
+    var parts = formula.split('"');
+    for (var i = 0; i < parts.length; i += 2) parts[i] = shiftRefs(parts[i], dr, dc);
+    return parts.join('"');
+  }
+
+  function shiftArea(g, dr, dc) {
+    return { r1: g.r1 + dr, c1: g.c1 + dc, r2: g.r2 + dr, c2: g.c2 + dc };
+  }
+
+  // The plan written at (dr, dc) from its compiled place. ``area`` stays the
+  // compiled area (it goes into the entry); ``at``/``atG`` are where it is
+  // written.
+  function movePlan(plan, dr, dc) {
+    var moved = Object.assign({}, plan);
+    moved.atG = shiftArea(plan.areaG, dr, dc);
+    moved.at = areaText(moved.atG);
+    if (!dr && !dc) return moved;
+    moved.cells = plan.cells.map(function (cell) {
+      var out = Object.assign({}, cell);
+      out.range = areaText(shiftArea(cell._g, dr, dc));
+      if (cell.formulas) {
+        out.formulas = cell.formulas.map(function (row) {
+          return row.map(function (f) { return shiftFormula(f, dr, dc); });
+        });
+      }
+      return out;
+    });
+    moved.formats = plan.formats.map(function (f) {
+      var out = Object.assign({}, f);
+      out._g = shiftArea(f._g, dr, dc);
+      out.range = areaText(out._g);
+      return out;
+    });
+    return moved;
   }
 
   // -- settings --------------------------------------------------------------
@@ -390,17 +451,22 @@ var konsolReport = (function () {
     var refused = otherServer(name, state.entry);
     if (refused) return Promise.resolve(refuse(name, plan.area, refused));
     var oldG = parseArea(state.area);
+    // Where the entry's compiled area now sits: the name's top-left minus
+    // the entry's (rows or columns inserted above / left of the report).
+    var was = parseArea(state.entry && state.entry.area) || plan.areaG;
+    var compiled = plan;
+    plan = movePlan(compiled, oldG.r1 - was.r1, oldG.c1 - was.c1);
     var check = Promise.resolve([]);
-    if (!contains(oldG, plan.areaG)) {
-      var grown = sheet.getRange(plan.area);
+    if (!contains(oldG, plan.atG)) {
+      var grown = sheet.getRange(plan.at);
       grown.load("formulas");
       check = ctx.sync().then(function () {
         var busy = [];
         var f = grown.formulas;
         for (var r = 0; r < f.length; r++) {
           for (var c = 0; c < f[r].length; c++) {
-            var row = plan.areaG.r1 + r;
-            var col = plan.areaG.c1 + c;
+            var row = plan.atG.r1 + r;
+            var col = plan.atG.c1 + c;
             if (inside(oldG, row, col)) continue;
             if (f[r][c] !== "" && f[r][c] !== null && f[r][c] !== undefined) busy.push(cellAddress(row, col));
           }
@@ -410,7 +476,7 @@ var konsolReport = (function () {
     }
     return check.then(function (busy) {
       if (busy.length) {
-        return refuse(name, plan.area, "the report on " + name + " now needs " + plan.area + ", but " +
+        return refuse(name, plan.at, "the report on " + name + " now needs " + plan.at + ", but " +
           listCells(busy) + " outside its area " + state.area + (busy.length === 1 ? " is" : " are") +
           " not empty. Clear " + (busy.length === 1 ? "that cell" : "those cells") +
           ", or apply the report to a new sheet");
@@ -420,15 +486,15 @@ var konsolReport = (function () {
       sheet.getRange(state.area).clear();
       writeCells(sheet, plan);
       p.item.delete();
-      sheet.names.add(NAME, sheet.getRange(plan.area), COMMENT_PREFIX + reportId);
+      sheet.names.add(NAME, sheet.getRange(plan.at), COMMENT_PREFIX + reportId);
       return ctx.sync().then(function () {
-        return storeEntry(reportId, entryFor(plan, p.sheet.id));
+        return storeEntry(reportId, entryFor(compiled, p.sheet.id));
       }).then(function (unsaved) {
         var msg = state.copied
-          ? "Updated " + name + " (" + plan.area + ") as a new report: the sheet was a copy of report " +
+          ? "Updated " + name + " (" + plan.at + ") as a new report: the sheet was a copy of report " +
             state.report_id + "."
-          : "Updated report " + plan.templateId + " on " + name + " (" + plan.area + ").";
-        return outcome("update", name, plan.area, withNotes(msg, [pinNote, unsaved]));
+          : "Updated report " + plan.templateId + " on " + name + " (" + plan.at + ").";
+        return outcome("update", name, plan.at, withNotes(msg, [pinNote, unsaved]));
       });
     });
   }

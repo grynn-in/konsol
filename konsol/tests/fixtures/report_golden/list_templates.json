@@ -14,7 +14,7 @@
  {
   "id": "pnl_actual_budget_monthly",
   "title": "P&L actual vs budget",
-  "description": "Monthly income statement of an entity or a group: actual, budget and Actual − Budget for every Regular period, year to date and the full year, over the Published Profit and Loss tree of the group chart ()",
+  "description": "Monthly income statement of an entity or a group: actual, budget and Actual − Budget for every Regular period, year to date and the full year, over the Published Profit and Loss tree of the group chart (debit positive; a negative total is a profit)",
   "mode": "formulas"
  }
 ]

@@ -5,9 +5,11 @@ The same lists validate the parameters a report is submitted with
 
 Both lists are filtered by ``entity_permissions.entity_read_scope``, the rule
 ``epm_batch`` applies to every read: an unrestricted reader sees everything, a
-restricted one sees the codes in ``allowed_entity_codes()``. A group is read
-through its root row's entity (``data_area_id``), so it is listed only when
-that entity is allowed. No caching: each call reads the current permissions.
+restricted one sees the codes in ``allowed_entity_codes()``. K.EPM reads a
+group with the group code as its entity, and epm_batch checks
+``entity_read_scope(<group code>, allowed)``; the group list applies that
+rule to that argument, never to the root row's entity (PR #626 review
+finding 1). No caching: each call reads the current permissions.
 """
 import frappe
 
@@ -25,7 +27,25 @@ def _allowed():
     return allowed_entity_codes()
 
 
+def _refuse(msg):
+    frappe.throw(msg, frappe.ValidationError)
+
+
+def _year(year):
+    """``year`` as an int, or a refusal naming it."""
+    try:
+        return int(year)
+    except (TypeError, ValueError):
+        _refuse(f"Report choices: year {year!r} is not a whole number.")
+
+
+#: The scenario types :func:`scenarios` answers for.
+SCENARIO_TYPES = ("budget", "forecast")
+
+
 def _readable(code, allowed):
+    """entity_read_scope, the rule epm_batch applies to the entity argument
+    of every read (an entity code, or a group code for a group read)."""
     from konsol.entity_permissions import entity_read_scope
 
     _, error = entity_read_scope(code, allowed)
@@ -57,15 +77,16 @@ def entities():
 def groups():
     """Distinct Consolidation Group codes the current user may read, sorted.
 
-    Members share their root's code, so each code appears once. The name and
-    the entity come from the root row (the one with no parent); a code with no
-    root row, which should not exist, falls back to its first row.
+    Members share their root's code, so each code appears once. The name
+    comes from the root row (the one with no parent); a code with no root
+    row, which should not exist, falls back to its first row. A code is
+    listed when the reader may read the GROUP CODE (:func:`_readable`), the
+    argument K.EPM's group read is checked with.
     """
     allowed = _allowed()
     rows = frappe.get_all(
         "Consolidation Group",
-        fields=["consolidation_group", "entity_name", "data_area_id",
-                "parent_consolidation_group"],
+        fields=["consolidation_group", "entity_name", "parent_consolidation_group"],
         order_by="consolidation_group asc, name asc",
         limit_page_length=0,
     )
@@ -77,13 +98,12 @@ def groups():
             by_code[r.consolidation_group] = {
                 "code": r.consolidation_group,
                 "name": r.entity_name,
-                "entity": r.data_area_id,
                 "_root": is_root,
             }
     return [
         {"code": g["code"], "name": g["name"]}
         for _, g in sorted(by_code.items())
-        if _readable(g["entity"], allowed)
+        if _readable(g["code"], allowed)
     ]
 
 
@@ -94,7 +114,7 @@ def _iso(value):
 def _regular_periods(year):
     return frappe.get_all(
         "EPM Fiscal Year Period",
-        filters={"parent": str(int(year)), "parenttype": "EPM Fiscal Year",
+        filters={"parent": str(_year(year)), "parenttype": "EPM Fiscal Year",
                  "period_type": "Regular"},
         fields=["fiscal_period", "period_code", "period_label", "quarter",
                 "start_date", "end_date"],
@@ -180,10 +200,13 @@ def hierarchy_nodes(hierarchy, year):
 
 
 def dimension_values(dimension):
-    """Values of one declared Dimension, through the Dimension Value list,
-    which runs its own read check."""
+    """Values of one declared Dimension, for a reader with read on Dimension
+    Value: the read is checked here, and the list is read through
+    ``frappe.get_list``, which applies permissions (``frappe.get_all`` ignores
+    them) (PR #626 review finding 8c)."""
     _signed_in()
-    rows = frappe.get_all(
+    frappe.has_permission("Dimension Value", "read", throw=True)
+    rows = frappe.get_list(
         "Dimension Value",
         filters={"dimension": dimension},
         fields=["name", "value"],
@@ -253,15 +276,16 @@ def scenarios(year, scenario_type):
     _signed_in()
     from konsol import hierarchy_query as hq  # lazy: it imports heavy modules
 
-    year = int(year)
+    if scenario_type not in SCENARIO_TYPES:
+        _refuse(f"Report choices: scenario_type {scenario_type!r} is not one of "
+                f"{', '.join(SCENARIO_TYPES)}.")
+    year = _year(year)
     if scenario_type == "budget":
         ids = list(hq._active_budget_scenarios_by_year().get(year, []))
         default, why = hq.choose_budget_scenario(ids, year)
     elif scenario_type == "forecast":
         ids = list(hq._declared_forecasts_by_year().get(year, []))
         default, why = hq.choose_declared_forecast(None, ids, year)
-    else:
-        raise ValueError(f"Unknown scenario type '{scenario_type}'")
     names = {}
     if ids:
         names = {r.scenario_id: r.scenario_name for r in frappe.get_all(
@@ -275,13 +299,14 @@ def scenarios(year, scenario_type):
 def is_allowed_scenario(year, scenario_type, scenario_id):
     """True when ``scenario_id`` is in ``scenarios(year, scenario_type)``.
     A separate function, not an ``is_allowed`` kind: ``is_allowed`` takes one
-    code, and a scenario is only valid for a (year, type) pair."""
+    code, and a scenario is only valid for a (year, type) pair. A year that is
+    not a number answers False; an unknown type is refused, as by
+    :func:`scenarios`."""
     try:
-        options = scenarios(year, scenario_type)["options"]
+        int(year)
     except (TypeError, ValueError):
-        if scenario_type not in ("budget", "forecast"):
-            raise
         return False
+    options = scenarios(year, scenario_type)["options"]
     return any(o["id"] == scenario_id for o in options)
 
 

@@ -566,16 +566,7 @@ class _Checker:
     # -- series -----------------------------------------------------------
 
     def required_kinds(self):
-        kinds = []
-        for p in self.params.values():
-            if p["type"] == "scope" and isinstance(p.get("kinds"), list):
-                found = [k for k in p["kinds"] if k in SCOPE_KINDS]
-            elif p["type"] in ("entity", "group"):
-                found = [p["type"]]
-            else:
-                found = []
-            kinds.extend(k for k in found if k not in kinds)
-        return kinds
+        return scope_kinds({"params": list(self.params.values())})
 
     def check_series(self, series):
         if not isinstance(series, dict) or not series:
@@ -956,6 +947,10 @@ class _Checker:
 #   columns with one format share a range. A total with ``bold: true`` gives
 #   {range: A<r>:<last col><r>, bold: true}. The ``formats`` key is present
 #   only when one of them is declared.
+# - Text: every ``values`` cell, in both modes, goes through text_cell: text
+#   starting with = + - or @ gets a leading apostrophe (Excel's text marker),
+#   so a caption, a header param or a TB account name is never parsed as a
+#   formula. Numbers and the ``formulas`` cells are untouched.
 
 _QUARTERS = ("Q1", "Q2", "Q3", "Q4")
 
@@ -1077,6 +1072,62 @@ def resolve_params(template, params):
             value = int(value)
         out[name] = value
     return out
+
+
+#: A text cell value starting with one of these is parsed as a formula by
+#: Excel's range.values (a leading = + - or @).
+FORMULA_STARTS = ("=", "+", "-", "@")
+
+
+def text_cell(value):
+    """A cell value for range.values: TEXT that Excel would parse as a
+    formula gets a leading apostrophe, Excel's text marker, so it is shown as
+    written (PR #626 review finding 6). Numbers, None and other text are
+    returned as they are. Formula cells never pass through here."""
+    if isinstance(value, str) and value.startswith(FORMULA_STARTS):
+        return "'" + value
+    return value
+
+
+def _value_cell(cell_range, grid):
+    """A ``values`` cell, every text value through :func:`text_cell`."""
+    return {"range": cell_range, "values": [[text_cell(v) for v in row] for row in grid]}
+
+
+def scope_kinds(template):
+    """The scope kinds a template can be run for, in declared order: its
+    scope param's ``kinds``, ``entity`` for an entity param, ``group`` for a
+    group param."""
+    kinds = []
+    for p in template.get("params") or []:
+        if p.get("type") == "scope" and isinstance(p.get("kinds"), list):
+            found = [k for k in p["kinds"] if k in SCOPE_KINDS]
+        elif p.get("type") in ("entity", "group"):
+            found = [p["type"]]
+        else:
+            found = []
+        kinds.extend(k for k in found if k not in kinds)
+    return kinds
+
+
+def description(template):
+    """The template's description with ``{sign.sentence}`` filled for a
+    catalog, before any param is chosen: the fixed sentence, or for a sign
+    param the sentence of the param's default choice. That is the sign a
+    report gets when the user leaves the choice alone; the form shows the
+    choice itself (PR #626 review finding 3). A sign param without a default
+    gives an empty sentence."""
+    text = template.get("description", "")
+    sign = template.get("sign") or {}
+    if "sentence" in sign:
+        sentence = sign["sentence"]
+    elif "sentences" in sign:
+        param = next((p for p in template.get("params") or []
+                      if p.get("name") == sign.get("param")), {})
+        sentence = sign["sentences"].get(param.get("default"), "")
+    else:
+        sentence = ""
+    return text.replace("{sign.sentence}", sentence)
 
 
 def _sign_sentence(template, params):
@@ -1385,12 +1436,12 @@ def compile_formulas(template, params, ctx):
             value = scope["code"]  # a scope value is a dict; the cell shows its code
         else:
             value = params[cell["param"]]
-        cells.append({"range": cell["at"], "values": [[value]]})
-    cells.append({"range": _cell_range(first_col, header_rows[0], last_col, header_rows[0]),
-                  "values": [[c["label"] for c in cols]]})
+        cells.append(_value_cell(cell["at"], [[value]]))
+    cells.append(_value_cell(_cell_range(first_col, header_rows[0], last_col, header_rows[0]),
+                             [[c["label"] for c in cols]]))
     if len(header_rows) == 2:
-        cells.append({"range": _cell_range(first_col, header_rows[1], last_col, header_rows[1]),
-                      "values": [[c["caption"] for c in cols]]})
+        cells.append(_value_cell(_cell_range(first_col, header_rows[1], last_col, header_rows[1]),
+                                 [[c["caption"] for c in cols]]))
 
     start_row = template["rows"]["start_row"]
     row = start_row
@@ -1403,7 +1454,7 @@ def compile_formulas(template, params, ctx):
     nodes = ctx.get("nodes") or {}
 
     def caption(r, text):
-        cells.append({"range": f"A{r}", "values": [[text]]})
+        cells.append(_value_cell(f"A{r}", [[text]]))
 
     def read_row(r, account, kind, at):
         out = []
@@ -1669,11 +1720,10 @@ def compile_snapshot(template, params, rows):
     cells = []
     for cell in template.get("header", []):
         value = params[cell["param"]] if "param" in cell else render(cell["text"], values)
-        cells.append({"range": cell["at"], "values": [[value]]})
+        cells.append(_value_cell(cell["at"], [[value]]))
     first = start
     if template["rows"].get("header_row"):
-        cells.append({"range": f"A{start}:{last_col}{start}",
-                      "values": [[f["h"] for f in fields]]})
+        cells.append(_value_cell(f"A{start}:{last_col}{start}", [[f["h"] for f in fields]]))
         first = start + 1
 
     data = []
@@ -1690,7 +1740,7 @@ def compile_snapshot(template, params, rows):
             line.append(_snapshot_number(value) if f.get("number") else value)
         data.append(line)
     if data:
-        cells.append({"range": f"A{first}:{last_col}{first + len(data) - 1}", "values": data})
+        cells.append(_value_cell(f"A{first}:{last_col}{first + len(data) - 1}", data))
 
     out = {"template_id": template["id"], "mode": "snapshot"}
     out.update(params)
