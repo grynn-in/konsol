@@ -380,3 +380,42 @@ def test_temp_table_is_rebuilt_from_the_live_table_each_sync():
     assert recorded[0] == f"DROP TABLE IF EXISTS {_TMP}", recorded
     assert recorded[1] == f"CREATE TABLE {_TMP} AS {_TABLE}", recorded
     assert not any("IF NOT EXISTS" in s.upper() for s in recorded), recorded
+
+
+def test_a_guest_sees_tables_and_error_types_never_error_text():
+    """Live test of #617: konsol.api.health admits guests, and the shared
+    record now carries the worker's ClickHouse error text (table names,
+    DB::Exception). A guest gets the status, reachability and, per failure,
+    the table and error type only; the messages stay for signed-in users."""
+    web = _load_clickhouse()
+    full = {
+        "status": "degraded", "clickhouse_reachable": True,
+        "message": "1 table(s) have sync failures",
+        "recent_sync_failures": [{
+            "table": "epm_staging.zz_t", "error_type": "http_error",
+            "message": "500 from ClickHouse: Code: 390. DB::Exception: secret",
+            "timestamp": "2026-11-27T10:00:00"}],
+    }
+    shown = web.public_health(full)
+    assert shown == {
+        "status": "degraded", "clickhouse_reachable": True,
+        "message": "degraded",
+        "recent_sync_failures": [{"table": "epm_staging.zz_t", "error_type": "http_error"}],
+    }, shown
+    assert "DB::Exception" not in repr(shown)
+    down = web.public_health({"status": "down", "clickhouse_reachable": False,
+                              "message": "ClickHouse error: host 10.0.0.5 refused",
+                              "recent_sync_failures": []})
+    assert down["message"] == "down" and "10.0.0.5" not in repr(down), down
+    assert full["recent_sync_failures"][0]["message"].startswith("500"), "input untouched"
+
+
+def test_the_health_endpoint_gives_a_guest_the_public_view():
+    """konsol.api.health passes check_health through public_health for Guest."""
+    import ast
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "api.py")).read()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "health")
+    body = ast.unparse(fn)
+    assert "public_health" in body and '"Guest"' in body, body
