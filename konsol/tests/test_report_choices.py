@@ -97,6 +97,13 @@ ACCOUNTS = [
 ]
 
 
+SCENARIOS = [
+    {"scenario_id": "BUD-A", "scenario_name": "Budget A"},
+    {"scenario_id": "BUD-B", "scenario_name": ""},
+    {"scenario_id": "FC-1", "scenario_name": "Forecast One"},
+]
+
+
 def _matches(row, filters):
     for key, cond in (filters or {}).items():
         if isinstance(cond, (list, tuple)):
@@ -155,6 +162,8 @@ def _fake_frappe(user, roles, perms, accounts=None):
             rows = [_Row({"name": f"Region:{v}", "dimension": "Region", "value": v})
                     for v in ("DACH", "NA", "APAC")
                     if _matches({"dimension": "Region"}, filters)]
+        elif doctype == "Scenario":
+            rows = [_Row(r) for r in SCENARIOS if _matches(r, filters)]
         else:
             return []
         # Frappe sorts by order_by; the stub must too, or a picker's order is untested.
@@ -191,7 +200,7 @@ def _stubbed(fake):
                 sys.modules[n] = v
 
 
-def _call(name, *args, user="Administrator", roles=(), perms=(), accounts=None, tree=None):
+def _call(name, *args, user="Administrator", roles=(), perms=(), accounts=None, tree=None, hq=None):
     fake = _fake_frappe(user, roles, perms, accounts)
     with _stubbed(fake):
         api = types.ModuleType("konsol.api")
@@ -203,6 +212,8 @@ def _call(name, *args, user="Administrator", roles=(), perms=(), accounts=None, 
 
         api.get_reporting_hierarchy_tree = get_reporting_hierarchy_tree
         sys.modules["konsol.api"] = api
+        if hq is not None:
+            sys.modules["konsol.hierarchy_query"] = hq
         _call.api = api
         spec = importlib.util.spec_from_file_location(
             "_report_choices_under_test", os.path.join(APP_DIR, "report_choices.py"))
@@ -212,6 +223,7 @@ def _call(name, *args, user="Administrator", roles=(), perms=(), accounts=None, 
             return getattr(rc, name)(*args)
         finally:
             sys.modules.pop("konsol.api", None)
+            sys.modules.pop("konsol.hierarchy_query", None)
 
 
 RESTRICTED = {"user": "viewer", "roles": [], "perms": ["DE01"]}
@@ -387,3 +399,84 @@ def test_is_allowed_covers_the_new_kinds():
     assert _call("is_allowed", "dimension_value", "Region:DACH") is True
     assert _call("is_allowed", "dimension_value", "Region:XX") is False
     assert _call("is_allowed", "dimension_value", "nocolon") is False
+
+
+# --- T8: scenarios (budget / forecast) through hierarchy_query's own choosers ---------
+
+SEVERAL = "SEVERAL: choose one"
+NONE_TXT = "NONE: nothing active"
+
+
+def _hq(budget=None, forecast=None):
+    """A stand-in hierarchy_query: the two lookups return the given maps, and
+    the choosers answer as the real ones do in shape ((id, None) or (None, why)),
+    with marker texts so a test can see the text is passed through, not rewritten."""
+    hq = types.ModuleType("konsol.hierarchy_query")
+    hq._active_budget_scenarios_by_year = lambda: dict(budget or {})
+    hq._declared_forecasts_by_year = lambda: dict(forecast or {})
+
+    def pick(active, year, **k):
+        if len(active) == 1:
+            return active[0], None
+        return None, (NONE_TXT if not active else SEVERAL)
+
+    hq.choose_budget_scenario = pick
+    hq.choose_declared_forecast = lambda sid, declared, year: pick(declared, year)
+    return hq
+
+
+def test_one_approved_budget_is_the_default():
+    r = _call("scenarios", 2025, "budget", hq=_hq(budget={2025: ["BUD-A"]}))
+    assert r == {"options": [{"id": "BUD-A", "label": "Budget A"}],
+                 "default": "BUD-A", "why": None}
+
+
+def test_label_falls_back_to_the_id_when_the_scenario_has_no_name():
+    r = _call("scenarios", 2025, "budget", hq=_hq(budget={2025: ["BUD-A", "BUD-B"]}))
+    assert [o["label"] for o in r["options"]] == ["Budget A", "BUD-B"]
+
+
+def test_two_budgets_give_no_default_and_the_helpers_text():
+    r = _call("scenarios", 2025, "budget", hq=_hq(budget={2025: ["BUD-A", "BUD-B"]}))
+    assert [o["id"] for o in r["options"]] == ["BUD-A", "BUD-B"]
+    assert r["default"] is None and r["why"] == SEVERAL
+
+
+def test_no_budget_gives_empty_options_and_the_helpers_text():
+    r = _call("scenarios", 2025, "budget", hq=_hq(budget={2024: ["BUD-A"]}))
+    assert r == {"options": [], "default": None, "why": NONE_TXT}
+
+
+def test_declared_forecast_is_the_default():
+    r = _call("scenarios", 2025, "forecast", hq=_hq(forecast={2025: ["FC-1"]}))
+    assert r == {"options": [{"id": "FC-1", "label": "Forecast One"}],
+                 "default": "FC-1", "why": None}
+
+
+def test_no_declared_forecast_gives_empty_options_and_why():
+    r = _call("scenarios", 2025, "forecast", hq=_hq())
+    assert r == {"options": [], "default": None, "why": NONE_TXT}
+
+
+def test_scenarios_refuses_an_unknown_type_and_a_guest():
+    try:
+        _call("scenarios", 2025, "actual", hq=_hq())
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown scenario_type must be refused")
+    try:
+        _call("scenarios", 2025, "budget", hq=_hq(), user="Guest")
+    except Exception as exc:
+        assert type(exc).__name__ == "PermissionError"
+    else:
+        raise AssertionError("a Guest was answered")
+
+
+def test_is_allowed_scenario_checks_the_year_and_type():
+    hq = lambda: _hq(budget={2025: ["BUD-A"]}, forecast={2025: ["FC-1"]})
+    assert _call("is_allowed_scenario", 2025, "budget", "BUD-A", hq=hq()) is True
+    assert _call("is_allowed_scenario", 2025, "budget", "FC-1", hq=hq()) is False
+    assert _call("is_allowed_scenario", 2024, "budget", "BUD-A", hq=hq()) is False
+    assert _call("is_allowed_scenario", 2025, "forecast", "FC-1", hq=hq()) is True
+    assert _call("is_allowed_scenario", "x", "forecast", "FC-1", hq=hq()) is False
