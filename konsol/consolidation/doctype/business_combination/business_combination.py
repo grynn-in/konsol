@@ -160,7 +160,7 @@ class BusinessCombination(Document):
             setattr(self, field, float(result[field]))
 
         facts = {
-            "has_tb_at_or_before": self._has_tb_at_or_before(period),
+            "has_tb_before": self._has_tb_before(period),
             "totals": result,
             "is_equity": self._is_equity,
             "is_published_leaf": self._is_published_leaf,
@@ -508,17 +508,48 @@ class BusinessCombination(Document):
                 (currency, group_currency))
         return rate
 
-    def _has_tb_at_or_before(self, period):
-        """A submitted trial balance of the entity at or before the acquisition
-        period: then Get Balances from Trial Balance has something to read."""
+    def _has_tb_before(self, period):
+        """A submitted trial balance of the entity strictly before the
+        acquisition period, in (fiscal_year, fiscal_period) order: then Get
+        Balances from Trial Balance has something to read (konsol#406: the
+        acquired balance sheet is measured at the last period-end before the
+        acquisition period, as the warehouse's acquisition journal does; a
+        trial balance of the acquisition period itself is not at that cut-off)."""
         base = {"data_area_id": self.acquired_entity, "docstatus": 1}
         return bool(
             frappe.db.exists("Trial Balance Submission",
                              {**base, "fiscal_year": ["<", period["fiscal_year"]]})
             or frappe.db.exists("Trial Balance Submission",
                                 {**base, "fiscal_year": period["fiscal_year"],
-                                 "fiscal_period": ["<=", period["fiscal_period"]]})
+                                 "fiscal_period": ["<", period["fiscal_period"]]})
         )
+
+    def _cutoff_period(self, period):
+        """The declared fiscal period the acquired balance sheet is measured at:
+        the latest one strictly before the acquisition ``period`` in
+        (fiscal_year, fiscal_period) order, any type (konsol#406). It is the
+        last tuple the warehouse's line (0) sums, so for a P1 acquisition it is
+        the previous year's Closing period when one is declared (its year-end
+        close rows are in the read), else that year's last period. None when no
+        declared period precedes the acquisition period."""
+        rows = frappe.db.sql(
+            "SELECT y.fiscal_year, p.fiscal_period, p.period_code, p.period_type "
+            "FROM `tabEPM Fiscal Year Period` p "
+            "JOIN `tabEPM Fiscal Year` y ON y.name = p.parent "
+            "WHERE p.parentfield = 'periods' "
+            "AND (y.fiscal_year < %(y)s OR (y.fiscal_year = %(y)s AND p.fiscal_period < %(p)s)) "
+            "ORDER BY y.fiscal_year DESC, p.fiscal_period DESC LIMIT 1",
+            {"y": period["fiscal_year"], "p": period["fiscal_period"]},
+            as_dict=True,
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "fiscal_year": int(row["fiscal_year"]),
+            "fiscal_period": int(row["fiscal_period"]),
+            "period_code": row["period_code"],
+        }
 
     @staticmethod
     def _is_equity(account):
@@ -755,25 +786,31 @@ class BusinessCombination(Document):
 
 # -- Get Balances from Trial Balance (konsol#207) -------------------------------
 
-#: The acquired entity's balances through the acquisition period, per account:
-#: every period at or before it (all years) summed over the dimensions. The
-#: last column is the latest period with data, for the source note.
-_TB_THROUGH_PERIOD_SQL = (
+#: The acquired entity's balances at the last period-end before the acquisition
+#: period, per account: every (fiscal_year, fiscal_period) strictly before it
+#: (all years, so a P1 acquisition reads the previous year through its Closing
+#: period) summed over the dimensions. The same strict tuple comparison as the
+#: warehouse's acquisition journal line (0), konsolidat
+#: gold_business_combination_journal (konsol#406); reading the acquisition
+#: period too eliminated equity the group P&L still carried. The last column is
+#: the latest period with data, for the source note.
+_TB_BEFORE_PERIOD_SQL = (
     "SELECT main_account, toFloat64(sum(period_net_amount)), max(is_pnl), "
     "max(fiscal_year * 100 + fiscal_period) "
     "FROM epm_gold.gold_trial_balance "
     "WHERE data_area_id = {entity:String} "
-    "AND (fiscal_year < {y:UInt16} OR (fiscal_year = {y:UInt16} AND fiscal_period <= {p:UInt16})) "
+    "AND (fiscal_year < {y:UInt16} OR (fiscal_year = {y:UInt16} AND fiscal_period < {p:UInt16})) "
     "GROUP BY main_account FORMAT TSV"
 )
 
 
-def _read_tb_through(entity, fiscal_year, fiscal_period):
-    """``(rows, latest)``: ``rows`` as ``derive_acquired_balances`` reads them
+def _read_tb_before(entity, fiscal_year, fiscal_period):
+    """``(rows, latest)`` for the periods strictly before ``(fiscal_year,
+    fiscal_period)``: ``rows`` as ``derive_acquired_balances`` reads them
     (amount kept as the warehouse's text, so no float rounding creeps in) and
     ``latest`` the highest ``fiscal_year * 100 + fiscal_period`` seen (0 when
     there are no rows)."""
-    raw = execute(_TB_THROUGH_PERIOD_SQL, params={
+    raw = execute(_TB_BEFORE_PERIOD_SQL, params={
         "param_entity": entity,
         "param_y": str(int(fiscal_year)),
         "param_p": str(int(fiscal_period)),
@@ -833,9 +870,11 @@ def _retained_earnings_of_chart(rows, entity, label):
 @frappe.whitelist(methods=["POST"])
 def get_balances_from_trial_balance(name):
     """Replace a Draft deal's Acquired Balance Sheet with the acquired
-    entity's warehouse trial balance through the acquisition period (the
-    period's unclosed result folded into the chart's Retained Earnings
-    Account) and place the declared Fair Value Adjustment Total: spread by
+    entity's warehouse trial balance through the last period before the
+    acquisition period (konsol#406: the period-end the warehouse's acquisition
+    journal measures the entity at; the unclosed result to that date folded
+    into the chart's Retained Earnings Account) and place the declared Fair
+    Value Adjustment Total: spread by
     the deal's Fair Value Allocation Profile when one is set (konsol#208),
     else on the group's Fair Value Adjustment Account; record where the lines
     came from and save. Returns the number of lines. Nothing is guessed: a
@@ -855,10 +894,17 @@ def get_balances_from_trial_balance(name):
                      f"this deal is {status}.")
     period = doc._acquisition_period()
     year, number = period["fiscal_year"], period["fiscal_period"]
-    label = f"FY{year} P{number}"
+    acquisition_label = f"FY{year} P{number}"
     entity = doc.acquired_entity
-    if not doc._has_tb_at_or_before(period):
-        frappe.throw(f"{_PREFIX}{entity} has no submitted trial balance at or before {label}.")
+    cutoff = doc._cutoff_period(period)
+    if cutoff is None:
+        frappe.throw(f"{_PREFIX}{entity} has no submitted trial balance before {acquisition_label}: "
+                     f"no declared fiscal period precedes the acquisition period.")
+    label = f"FY{cutoff['fiscal_year']} P{cutoff['fiscal_period']}"
+    if not doc._has_tb_before(period):
+        frappe.throw(f"{_PREFIX}{entity} has no submitted trial balance through {label}, the last period "
+                     f"before the acquisition period {acquisition_label}; the acquired balance sheet is "
+                     f"measured at that period-end.")
 
     fva_total = Decimal(str(doc.get("fair_value_adjustment_total") or 0)).quantize(_CENT)
     fva_lines, placement = [], ""
@@ -883,7 +929,7 @@ def get_balances_from_trial_balance(name):
         fva_lines = [(fva_account, fva_total)]
         placement = f"placed on {fva_account}"
 
-    rows, latest = _read_tb_through(entity, year, number)
+    rows, latest = _read_tb_before(entity, year, number)
     retained_account = _retained_earnings_of_chart(rows, entity, label)
     lines, found = derive_acquired_balances(rows, retained_account, fva_lines, label)
     if found:
@@ -895,7 +941,8 @@ def get_balances_from_trial_balance(name):
         for line in lines
     ])
     latest_year, latest_period = divmod(latest, 100)
-    source = (f"Derived {nowdate()} from the warehouse trial balance of {entity} through {label} "
+    source = (f"Derived {nowdate()} from the warehouse trial balance of {entity} through {label}, "
+              f"the last period before the acquisition period {acquisition_label} "
               f"(latest period with data: FY{latest_year} P{latest_period}).")
     if retained_account:
         source += f" The period's result is folded into {retained_account}."

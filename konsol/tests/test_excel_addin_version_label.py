@@ -17,7 +17,9 @@ def _read(name):
 
 
 def test_the_label_is_the_manifest_version():
-    manifest = re.search(r"<Version>([^<]+)</Version>", _read("manifest.xml")).group(1)
+    template = os.path.join(os.path.dirname(ADDIN), "..", "excel_addin_manifest.template.xml")
+    with open(template) as f:
+        manifest = re.search(r"<Version>([^<]+)</Version>", f.read()).group(1)
     label = re.search(r'<p class="version" id="addin-version">v([^<\s]+)', _read("index.html"))
     assert label, "the panel has no version label with id addin-version"
     assert label.group(1) == manifest, (label.group(1), manifest)

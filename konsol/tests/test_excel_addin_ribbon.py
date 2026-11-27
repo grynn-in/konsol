@@ -42,7 +42,9 @@ NS = {
 }
 XSI_TYPE = "{http://www.w3.org/2001/XMLSchema-instance}type"
 COMMANDS = {"refreshSheet", "refreshWorkbook"}
-STAMP = re.compile(r"^Values as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$")
+#: konsol#618 review: the stamp names the server the values came from.
+STAMP = re.compile(r"^Values as of \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC from pane\.example$")
+PANE = "https://pane.example"
 
 
 def _read(name):
@@ -52,8 +54,14 @@ def _read(name):
 
 # -- the manifests -----------------------------------------------------------
 
+# konsol#605: one template, rendered per site; it is well-formed XML as it
+# stands (the placeholders sit in text and attribute values).
+TEMPLATE = os.path.join(APP_DIR, "excel_addin_manifest.template.xml")
+MANIFESTS = (TEMPLATE,)
+
+
 def _ribbon_groups(manifest):
-    root = ET.parse(os.path.join(ADDIN, manifest)).getroot()
+    root = ET.parse(manifest).getroot()
     groups = []
     for ep in root.iter("{%s}ExtensionPoint" % NS["v"]):
         if ep.get(XSI_TYPE) == "PrimaryCommandSurface":
@@ -71,7 +79,7 @@ def _execute_functions(group):
 
 
 def test_both_ribbon_groups_carry_both_refresh_buttons():
-    for manifest in ("manifest.xml", "manifest.demo.xml"):
+    for manifest in MANIFESTS:
         _, groups = _ribbon_groups(manifest)
         assert len(groups) == 2, (manifest, "expected a desktop and a web group")
         for group in groups:
@@ -81,14 +89,14 @@ def test_both_ribbon_groups_carry_both_refresh_buttons():
 def test_every_ribbon_function_is_associated_by_the_runtime():
     src = _read("ribbon.js")
     associated = set(re.findall(r'Office\.actions\.associate\(\s*"([^"]+)"', src))
-    for manifest in ("manifest.xml", "manifest.demo.xml"):
+    for manifest in MANIFESTS:
         _, groups = _ribbon_groups(manifest)
         named = {n for g in groups for n in _execute_functions(g)}
         assert named <= associated, (manifest, named - associated)
 
 
 def test_control_ids_are_unique_and_every_resid_resolves():
-    for manifest in ("manifest.xml", "manifest.demo.xml"):
+    for manifest in MANIFESTS:
         root, _ = _ribbon_groups(manifest)
         ids = [c.get("id") for c in root.iter("{%s}Control" % NS["v"])]
         assert len(ids) == len(set(ids)), (manifest, ids)
@@ -344,8 +352,81 @@ def test_a_snapshot_whose_sheet_is_gone_is_forgotten_not_recreated():
 def test_remember_snapshot_saves_the_parameters_in_the_workbook():
     out = _run(action="rememberSnapshot", params=dict(TB_PARAMS, extra="dropped"))
     assert out["error"] is None, out
-    assert out["settings"] == {"TB": TB_PARAMS}, out["settings"]
+    assert out["settings"] == {"TB": dict(TB_PARAMS, server=PANE)}, out["settings"]
     assert out["saves"] == 1
+
+
+def test_a_snapshot_records_the_server_it_was_taken_from():
+    """konsol#618 review: the snapshot's metadata names its site, from
+    konsolServer, not from whatever the caller passed."""
+    out = _run(action="rememberSnapshot", server="https://other.example",
+               params=dict(TB_PARAMS, server="https://forged.example"))
+    assert out["settings"]["TB"]["server"] == "https://other.example", out["settings"]
+
+
+def test_the_stamp_names_the_workbooks_server():
+    out = _run(action="refreshSheet", active="P&L", server="https://other.example:8443",
+               sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS}])
+    (stamp,) = out["stamps"]
+    assert stamp["value"].endswith(" UTC from other.example:8443"), stamp
+    assert "other.example:8443" in _messages(out), out["logs"]
+
+
+def test_a_stamp_from_before_the_server_was_named_is_reused():
+    row1 = PNL_ROW1 + ["Values as of 2026-01-01 00:00 UTC"]
+    out = _run(action="refreshSheet", active="P&L",
+               sheets=[{"name": "P&L", "row1": row1, "formulas": PNL_FORMULAS}])
+    (stamp,) = out["stamps"]
+    assert stamp["col"] == 6 and STAMP.match(stamp["value"]), stamp
+
+
+def test_a_stamp_naming_another_server_is_reused():
+    row1 = PNL_ROW1 + ["Values as of 2026-01-01 00:00 UTC from other.example"]
+    out = _run(action="refreshSheet", active="P&L",
+               sheets=[{"name": "P&L", "row1": row1, "formulas": PNL_FORMULAS}])
+    (stamp,) = out["stamps"]
+    assert stamp["col"] == 6 and STAMP.match(stamp["value"]), stamp
+
+
+def test_a_snapshot_from_another_server_is_refused_not_repainted():
+    """The workbook now reads another site than the snapshot came from:
+    repainting it would silently swap one site's figures for another's."""
+    params = dict(TB_PARAMS, server="https://other.example")
+    for action in ("refreshSheet", "refreshWorkbook"):
+        out = _run(action=action, active="TB", snapshots={"TB": params}, snapshotRow1=TB_ROW1,
+                   sheets=[{"name": "TB", "row1": ["old"], "formulas": [["old"]]}])
+        assert out["completed"] == 1, (action, out)
+        assert out["snapshots"] == [], (action, out)
+        assert out["stamps"] == [], (action, out["stamps"])
+        msg = _messages(out)
+        assert "https://other.example" in msg and PANE in msg, (action, out["logs"])
+        assert out["panes"] >= 1, action
+
+
+def test_refresh_workbook_reports_a_refused_snapshot_as_refused_not_failed():
+    params = dict(TB_PARAMS, server="https://other.example")
+    out = _run(action="refreshWorkbook", active="TB", snapshots={"TB": params}, snapshotRow1=TB_ROW1,
+               sheets=[{"name": "TB", "row1": ["old"], "formulas": [["old"]]}])
+    msg = _messages(out)
+    assert "Snapshot refused (other server): TB" in msg, msg
+    assert "Snapshot failed" not in msg, msg
+
+
+def test_the_first_snapshot_and_the_first_stamp_pin_the_server():
+    out = _run(action="rememberSnapshot", params=TB_PARAMS)
+    assert out["pins"] >= 1, out
+    out = _run(action="refreshSheet", active="P&L",
+               sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS}])
+    assert out["pins"] >= 1, out
+    out = _run(action="refreshWorkbook", active="P&L",
+               sheets=[{"name": "P&L", "row1": PNL_ROW1, "formulas": PNL_FORMULAS}])
+    assert out["pins"] >= 1, out
+
+
+def test_a_snapshot_saved_before_servers_were_recorded_is_still_refreshed():
+    out = _run(action="refreshSheet", active="TB", snapshots={"TB": TB_PARAMS}, snapshotRow1=TB_ROW1,
+               sheets=[{"name": "TB", "row1": ["old"], "formulas": [["old"]]}])
+    assert out["snapshots"] == ["TB"], out
 
 
 def test_only_the_handler_completes_the_event_once():

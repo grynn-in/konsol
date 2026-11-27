@@ -16,8 +16,14 @@ import secrets
 import frappe
 import requests
 
-# Track sync failures for monitoring. Key = table name, value = last error info.
-_sync_failures = {}
+#: The Redis hash that holds the last sync failure per table, for
+#: check_health (konsol#177). ``frappe.cache()`` namespaces the key by site,
+#: so every process serving the site (web, RQ worker, migrate) writes and
+#: reads the same record, and it survives a Frappe process restart (not a
+#: Redis restart or eviction: redis-cache is a cache). It used to be a dict in
+#: the memory of the process that hit the failure: a sync that failed in the
+#: worker was invisible to the health check the web process served.
+_SYNC_FAILURES_KEY = "konsol_sync_failures"
 
 
 def get_connection():
@@ -184,9 +190,9 @@ def _stamp_watermark(table, row_count, source_max_modified=None):
     "never stale" guarantee. This restores it: every successful sync stamps a
     row here, and a dbt test fails the run when what it claims no longer holds.
 
-    ``_sync_failures`` already tracks breakage, but only in memory in the
-    Frappe process: it dies on restart and dbt cannot see it. This is the
-    durable, ClickHouse-side half.
+    The sync-failure record (``_SYNC_FAILURES_KEY``, in the site's Redis)
+    already tracks breakage, but dbt cannot see it. This is the ClickHouse-side
+    half.
 
     Inside reconcile_all() the stamp carries the run id (konsolidat#246).
     Outside one, the INSERT does not name the column at all, so a write-through
@@ -254,8 +260,7 @@ def sync_table(table, columns, rows, source_max_modified=None, force=False):
     try:
         _assert_sorting_key(table)
         _sync_table_inner(table, columns, rows)
-        # Clear any previous failure for this table
-        _sync_failures.pop(table, None)
+        _clear_sync_failure(table)
         _stamp_watermark(table, len(rows), source_max_modified)
         return len(rows)
     except SortingKeyStale as e:
@@ -401,7 +406,7 @@ def sync_rows(table, columns, rows, key_columns, key_values):
     """
     try:
         _sync_rows_inner(table, columns, rows, key_columns, key_values)
-        _sync_failures.pop(table, None)
+        _clear_sync_failure(table)
     except requests.exceptions.ConnectionError as e:
         _record_sync_failure(table, "connection_refused", str(e))
         frappe.logger().error(
@@ -550,11 +555,54 @@ def sync_doctype_after_commit(doctype, table, field_map):
 
 
 def _record_sync_failure(table, error_type, message):
-    """Track sync failure for monitoring/health check."""
-    _sync_failures[table] = {
+    """Record the last sync failure of ``table`` for check_health, in the
+    site's Redis so every process sees it (konsol#177)."""
+    frappe.cache().hset(_SYNC_FAILURES_KEY, table, {
         "error_type": error_type,
         "message": message,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+def _clear_sync_failure(table):
+    """A sync of ``table`` succeeded: its failure record goes, everywhere."""
+    frappe.cache().hdel(_SYNC_FAILURES_KEY, table)
+
+
+def sync_failures():
+    """{table: last failure} as recorded by any process of this site.
+
+    Read straight from Redis (``hgetall``), never through ``hget``'s
+    per-request memo: a health check must see what the worker recorded after
+    this request's first read. Redis hands field names back as bytes."""
+    found = frappe.cache().hgetall(_SYNC_FAILURES_KEY)
+    return {(k.decode() if isinstance(k, bytes) else k): v for k, v in found.items()}
+
+
+def _readable_sync_failures():
+    """``(failures, None)``, or ``(None, reason)`` when the cache cannot be
+    read. Frappe's ``hgetall`` lets a Redis ConnectionError through, unlike
+    ``hset``/``hdel``/``hget`` (review of #617); the health check reports it
+    rather than raising. Any error counts: the host tests have no redis."""
+    try:
+        return sync_failures(), None
+    except Exception as e:
+        return None, "sync failure record unreadable: Redis cache unreachable (%s)" % (
+            str(e) or type(e).__name__)
+
+
+def public_health(result):
+    """``check_health``'s result as a guest may see it: the status, whether
+    ClickHouse answered and, per failure, the table and error type. Error
+    text (ClickHouse exceptions, hosts) is for signed-in users only; the
+    shared record made worker errors visible here (live test of #617)."""
+    return {
+        "status": result["status"],
+        "clickhouse_reachable": result["clickhouse_reachable"],
+        "message": result["status"],
+        "recent_sync_failures": [
+            {"table": f.get("table"), "error_type": f.get("error_type")}
+            for f in result.get("recent_sync_failures") or []],
     }
 
 
@@ -589,13 +637,17 @@ def check_health():
         result["message"] = f"ClickHouse error: {str(e)}"
         return result
 
-    # Check for recent sync failures
-    if _sync_failures:
+    # Sync failures recorded by any process of this site (konsol#177)
+    failures, unreadable = _readable_sync_failures()
+    if unreadable:
+        result["status"] = "degraded"
+        result["message"] = unreadable
+    elif failures:
         result["recent_sync_failures"] = [
-            {"table": k, **v} for k, v in _sync_failures.items()
+            {"table": k, **v} for k, v in sorted(failures.items())
         ]
         result["status"] = "degraded"
-        result["message"] = f"{len(_sync_failures)} table(s) have sync failures"
+        result["message"] = f"{len(failures)} table(s) have sync failures"
     else:
         result["message"] = "All systems operational"
 

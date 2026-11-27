@@ -35,6 +35,8 @@ import os
 import sys
 import types
 
+from konsol.tests.read_path_stub import MemoryCache
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CH_PATH = os.path.join(APP_DIR, "clickhouse.py")
 CG_PATH = os.path.join(APP_DIR, "consolidation", "doctype", "consolidation_group",
@@ -117,6 +119,8 @@ class _Logger:
 
 def _load():
     frappe = types.ModuleType("frappe")
+    cache = MemoryCache()  # the sync-failure record (konsol#177)
+    frappe.cache = lambda: cache
     frappe.flags = types.SimpleNamespace(
         in_install=False, in_import=False, in_migrate=False, in_patch=False)
     frappe._logger = _Logger()

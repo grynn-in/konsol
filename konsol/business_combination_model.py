@@ -323,7 +323,7 @@ def problems(header, consideration, balances, costs, policy, facts):
     An empty Acquired Balance Sheet is always refused (konsol#206): net assets
     are measured only from its lines, so without them goodwill would absorb the
     whole consideration. A trial balance on file does not waive it; any
-    ``has_tb_at_or_before`` in ``facts`` is ignored here.
+    ``has_tb_before`` in ``facts`` is ignored here.
     """
     found = []
     is_equity = _equity_rule(facts, balances)
@@ -373,7 +373,7 @@ def derive_acquired_balances(tb_rows, retained_earnings_account, fva_lines, peri
     """The Acquired Balance Sheet from trial-balance amounts (konsol#207).
 
     ``tb_rows``: dicts ``main_account``, ``amount`` (Dr+/Cr−, entity currency,
-    cumulative through the acquisition period) and ``is_pnl`` (0/1). Amounts
+    cumulative through the last period before the acquisition period) and ``is_pnl`` (0/1). Amounts
     are summed per account; the P&L accounts' total (the result not yet closed
     into retained earnings; closed years net to zero) is folded into
     ``retained_earnings_account``'s line and the P&L lines are dropped. Lines
