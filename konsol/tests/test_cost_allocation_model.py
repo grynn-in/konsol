@@ -1658,28 +1658,22 @@ def test_rate_reciprocal_refused_for_now():
         assert "step 1" in ei.value.errors[0]
 
 
-def test_rate_validation_rules():
+def test_rate_validation_lives_in_rate_errors_not_validate():
+    # One source for the rate rules (2b-2 merge of R2 and R3): validate() keeps
+    # the structure checks; rate_errors() owns basis, Q6 A and the rates.
     rate_rules = [{"step": 1, "sender_member": "HR", "driver": "Headcount", "basis": _RATE},
                   {"step": 2, "sender_member": "IT", "driver": "Headcount"}]
-    # Q6 A: a rate rule needs Declared Allocation Account mode
-    errs = _errors(_rs(rules=rate_rules))
-    assert _has(errs, "step 1") and _has(errs, "Declared Allocation Account")
-    assert not _errors(_rs(rules=rate_rules, receiver_account_mode="Declared Allocation Account",
-                           allocation_account="6900"))
-    # Reciprocal + rate refused at validation too
-    errs = _errors(_rs(rules=rate_rules, method="Reciprocal",
-                       receiver_account_mode="Declared Allocation Account", allocation_account="6900"))
-    assert _has(errs, "Declared Rate with the Reciprocal method arrives in a later task")
-    # unknown basis
-    errs = _errors(_rs(rules=[dict(rate_rules[0], basis="Per Head"), rate_rules[1]]))
-    assert _has(errs, "Per Head") and _has(errs, "Share of Pool, Declared Rate")
-    # a rate given on the rule is checked: > 0 and at most 4 decimals
-    for bad, word in ((0, "positive"), (-1, "positive"), ("1.00001", "4 decimal")):
-        errs = _errors(_rs(rules=[dict(rate_rules[0], rate=bad), rate_rules[1]],
-                           receiver_account_mode="Declared Allocation Account", allocation_account="6900"))
-        assert _has(errs, "step 1") and _has(errs, word), (bad, errs)
+    assert not _errors(_rs(rules=rate_rules))
+    assert not _errors(_rs(rules=[dict(rate_rules[0], basis="Per Head"), rate_rules[1]]))
+    errs = M.rate_errors(rate_rules, [], "Sender's Own Accounts")
+    assert any("Step 1" in e and "Declared Allocation Account" in e for e in errs), errs
+    assert any("Step 1" in e and "no rate" in e for e in errs), errs
+    errs = M.rate_errors([dict(rate_rules[0], basis="Per Head"), rate_rules[1]], [],
+                         "Declared Allocation Account")
+    assert any("Per Head" in e for e in errs), errs
     # share rules are untouched by any of this
     assert not _errors(_rs())
+    assert M.rate_errors([rate_rules[1]], [], "Sender's Own Accounts") == []
 
 
 def test_rate_absorption_is_exact_and_names_unknown_senders():

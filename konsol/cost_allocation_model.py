@@ -145,21 +145,6 @@ def validate(rs):
         sender_step.setdefault(r["sender_member"], r["step"])
         if r["sender_member"] not in members:
             errs.append("%s is not a member of %s." % (r["sender_member"], rs.dimension))
-        basis = r.get("basis", SHARE_OF_POOL)
-        if basis not in BASES:
-            errs.append("Basis for step %s must be one of %s, not %r." % (r["step"], ", ".join(BASES), basis))
-        elif basis == DECLARED_RATE:
-            # Q6 A: the rate sender is credited on the allocation account, so a
-            # rate rule needs Declared Allocation Account mode.
-            if rs.receiver_account_mode != DECLARED_ACCOUNT:
-                errs.append("A declared rate at step %s needs receiver accounts set to %s."
-                            % (r["step"], DECLARED_ACCOUNT))
-            if rs.method == RECIPROCAL:
-                errs.append(_RECIPROCAL_RATE % (r["step"], r["sender_member"]))
-            if "rate" in r:
-                bad = _rate_error(r["step"], r["rate"])
-                if bad:
-                    errs.append(bad)
         drv = r["driver"]
         if drv not in rs.driver_dimensions:
             errs.append("Driver %s (step %s) is not a known driver." % (drv, r["step"]))
@@ -1076,11 +1061,7 @@ def derived_query(entity, scenario, fiscal_year, fiscal_period, dimension_column
 # Declared Allocation Account, because the charge needs an account to credit
 # the sender on. Validation only: the coefficient functions above are untouched.
 
-SHARE_OF_POOL = "Share of Pool"
-DECLARED_RATE = "Declared Rate"
-BASES = (SHARE_OF_POOL, DECLARED_RATE)
-#: a rate keeps at most this many decimal places
-RATE_PLACES = 4
+# SHARE_OF_POOL, DECLARED_RATE, BASES and RATE_PLACES are defined at the top.
 
 
 def _as_date(value):
