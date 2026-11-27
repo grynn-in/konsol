@@ -239,6 +239,51 @@ def account_headings(section=None):
     return _published_accounts(1, section)
 
 
+def scenarios(year, scenario_type):
+    """The scenarios a report column can read for ``year``, with the default.
+
+    ``scenario_type`` is "budget" (the year's active budget scenarios: an
+    approved Budget Cycle) or "forecast" (its declared Current Forecasts).
+    The lookups and the default rule are hierarchy_query's own, so a picker
+    offers what a read accepts and says what a read says: ``default`` is set
+    only when the helper picks exactly one; otherwise it is None and ``why``
+    is the helper's refusal text. The label is the Scenario's name, else its id.
+    """
+    _signed_in()
+    from konsol import hierarchy_query as hq  # lazy: it imports heavy modules
+
+    year = int(year)
+    if scenario_type == "budget":
+        ids = list(hq._active_budget_scenarios_by_year().get(year, []))
+        default, why = hq.choose_budget_scenario(ids, year)
+    elif scenario_type == "forecast":
+        ids = list(hq._declared_forecasts_by_year().get(year, []))
+        default, why = hq.choose_declared_forecast(None, ids, year)
+    else:
+        raise ValueError(f"Unknown scenario type '{scenario_type}'")
+    names = {}
+    if ids:
+        names = {r.scenario_id: r.scenario_name for r in frappe.get_all(
+            "Scenario", filters={"scenario_id": ["in", ids]},
+            fields=["scenario_id", "scenario_name"], order_by="scenario_id asc",
+            limit_page_length=0)}
+    return {"options": [{"id": i, "label": names.get(i) or i} for i in ids],
+            "default": default, "why": why}
+
+
+def is_allowed_scenario(year, scenario_type, scenario_id):
+    """True when ``scenario_id`` is in ``scenarios(year, scenario_type)``.
+    A separate function, not an ``is_allowed`` kind: ``is_allowed`` takes one
+    code, and a scenario is only valid for a (year, type) pair."""
+    try:
+        options = scenarios(year, scenario_type)["options"]
+    except (TypeError, ValueError):
+        if scenario_type not in ("budget", "forecast"):
+            raise
+        return False
+    return any(o["id"] == scenario_id for o in options)
+
+
 def is_allowed(kind, code):
     """True when ``code`` is in the list for ``kind`` and the current user may
     read it. Kinds: entity, group, fiscal_year, hierarchy, account,
