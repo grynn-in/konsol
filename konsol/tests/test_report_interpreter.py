@@ -411,3 +411,227 @@ def test_plain_group_param_reads_the_group_word():
     t = _tpl(SCOPE_BLOCKS, params=params, read={"group": "consolidated"})
     by = _by_range(_run(t, {"group": "ZZG", "year": 2024}, accounts={"l": [("ZZ4", "ZZ Sales")]}))
     assert by["B3:C3"]["formulas"][0][0] == '=K.EPM("ZZG", 2024, 1, "ZZ4", , "consolidated")'
+
+
+# -- T11: columns (series, scenario id, quarters, fy, ytd, formula, sign, formats)
+
+THREE = [dict(p, quarter="Q1") for p in JAN_DEC[:3]]  # columns per series: P01..P03
+COL_SERIES = {
+    "act": {"caption": "Actual", "read": {"entity": "actuals", "group": "consolidated"}},
+    "bud": {"caption": "Budget {budget}", "read": {"entity": "budget", "group": "budget"},
+            "scenario_id": "{budget}"},
+    "var": {"caption": "Variance (Actual - Budget)", "formula": "act - bud"},
+}
+COL_GROUPS = [
+    {"over": "regular_periods", "label": "{month_abbrev}", "series": ["act", "bud", "var"]},
+    {"over": "ytd", "label": "YTD {month_abbrev}", "series": ["act", "bud", "var"], "through": "period"},
+    {"over": "fy", "label": "FY {year}", "series": ["act", "bud", "var"]},
+]
+
+
+def _col_params(scope_type="entity"):
+    return [{"name": scope_type, "type": scope_type, "required": True},
+            {"name": "year", "type": "fiscal_year", "required": True},
+            {"name": "period", "type": "period", "depends_on": ["year"]},
+            {"name": "budget", "type": "scenario", "scenario_type": "budget",
+             "depends_on": ["year"], "default": "rule"}]
+
+
+def _cols_tpl(groups=None, header_rows=(2, 3), series=None, scope_type="entity", sign=None,
+              number_format=None, bold=None, validate=True, extra_params=()):
+    t = {
+        "id": "zz_cols", "version": 3, "order": 1, "title": "ZZ Cols", "mode": "formulas",
+        "sheet_name": "ZZ", "params": _col_params(scope_type) + list(extra_params),
+        "series": series or COL_SERIES,
+        "columns": {"start_col": "B", "header_rows": list(header_rows),
+                    "groups": groups or COL_GROUPS},
+        "rows": {"start_row": 4, "blocks": [
+            {"id": "l", "type": "accounts", "filter": {}, "caption": "{account.name}"},
+            {"id": "net", "type": "total", "of": ["l"], "caption": "Net {sign.sentence}"},
+        ]},
+    }
+    if sign is not None:
+        t["sign"] = sign
+    if number_format is not None:
+        t["number_format"] = number_format
+    if bold is not None:
+        t["rows"]["blocks"][1]["bold"] = bold
+    if validate:
+        assert model.validate(t, "zz_cols") == []
+    return t
+
+
+COL_LINES = [("ZZ4", "ZZ Sales"), ("ZZ5", "ZZ Costs")]
+
+
+def _cols(t, periods=THREE, scope=("entity", "ZZE"), **params):
+    p = dict({scope[0]: scope[1], "year": 2024, "period": 2, "budget": "ZZBUD"}, **params)
+    return model.compile_formulas(t, p, {"periods": periods, "accounts": {"l": list(COL_LINES)}})
+
+
+def test_several_series_lay_out_period_major_with_two_header_rows():
+    by = _by_range(_cols(_cols_tpl()))
+    # Row 2: the group label, repeated on every column of the period/group.
+    assert by["B2:P2"]["values"] == [[
+        "Jan", "Jan", "Jan", "Feb", "Feb", "Feb", "Mar", "Mar", "Mar",
+        "YTD Feb", "YTD Feb", "YTD Feb", "FY 2024", "FY 2024", "FY 2024"]]
+    # Row 3: the series caption.
+    assert by["B3:P3"]["values"] == [[
+        "Actual", "Budget ZZBUD", "Variance (Actual - Budget)"] * 5]
+
+
+def test_entity_actual_budget_variance_ytd_fy_cells():
+    by = _by_range(_cols(_cols_tpl()))
+    row = by["B4:P4"]["formulas"][0]
+    assert row[0:3] == ['=K.EPM("ZZE", 2024, 1, "ZZ4")',
+                        '=K.EPM("ZZE", 2024, 1, "ZZ4", , "budget", , "ZZBUD")',
+                        "=B4-C4"]
+    assert row[3:6] == ['=K.EPM("ZZE", 2024, 2, "ZZ4")',
+                        '=K.EPM("ZZE", 2024, 2, "ZZ4", , "budget", , "ZZBUD")',
+                        "=E4-F4"]
+    assert row[8] == "=H4-I4"
+    # YTD through P02: the same series' period cells P01..P02 of this row.
+    assert row[9:12] == ["=SUM(B4,E4)", "=SUM(C4,F4)", "=K4-L4"]
+    assert row[12:15] == ['=K.EPM("ZZE", 2024, "FY", "ZZ4")',
+                          '=K.EPM("ZZE", 2024, "FY", "ZZ4", , "budget", , "ZZBUD")',
+                          "=N4-O4"]
+    # The total sums every column, the variance and YTD columns included.
+    assert by["B6:P6"]["formulas"] == [[f"=SUM({c}4:{c}5)" for c in _letters(15)]]
+
+
+def test_group_actual_budget_variance_reads_the_group_words():
+    spec = _cols(_cols_tpl(scope_type="group"), scope=("group", "ZZG"))
+    row = _by_range(spec)["B5:P5"]["formulas"][0]
+    assert row[0] == '=K.EPM("ZZG", 2024, 1, "ZZ5", , "consolidated")'
+    assert row[1] == '=K.EPM("ZZG", 2024, 1, "ZZ5", , "budget", , "ZZBUD")'
+    assert row[2] == "=B5-C5"
+    assert row[9:12] == ["=SUM(B5,E5)", "=SUM(C5,F5)", "=K5-L5"]
+    assert row[13] == '=K.EPM("ZZG", 2024, "FY", "ZZ5", , "budget", , "ZZBUD")'
+
+
+def test_ytd_through_the_first_period_and_by_code():
+    row = _by_range(_cols(_cols_tpl(), period="P01"))["B4:P4"]["formulas"][0]
+    assert row[9:12] == ["=SUM(B4)", "=SUM(C4)", "=K4-L4"]
+    row = _by_range(_cols(_cols_tpl(), period=3))["B4:P4"]["formulas"][0]
+    assert row[9] == "=SUM(B4,E4,H4)"
+
+
+def test_ytd_without_through_or_outside_the_year_is_refused():
+    msg = _refusal(lambda: _cols(_cols_tpl(), period=None))
+    assert msg is not None and "'period'" in msg and "YTD" in msg, msg
+    msg = _refusal(lambda: _cols(_cols_tpl(), period=9))
+    assert msg is not None and "9" in msg and "Regular" in msg, msg
+
+
+def test_ytd_series_only_beside_actual_sums_contiguous_cells():
+    groups = [{"over": "regular_periods", "label": "{month_abbrev}", "series": ["act"]},
+              {"over": "ytd", "label": "YTD", "series": ["act"], "through": "period"}]
+    by = _by_range(_cols(_cols_tpl(groups=groups, header_rows=[2]), period=3))
+    assert by["B2:E2"]["values"] == [["Jan", "Feb", "Mar", "YTD"]]
+    assert by["B4:E4"]["formulas"][0][3] == "=SUM(B4:D4)"
+
+
+def test_scenario_id_missing_for_a_scenario_read_is_refused():
+    msg = _refusal(lambda: _cols(_cols_tpl(), budget=None))
+    assert msg is not None and "'bud'" in msg and "'budget'" in msg, msg
+
+
+def test_quarters_read_q_tokens_for_quarters_with_regular_periods():
+    six = [dict(p, quarter="Q1" if p["number"] <= 3 else "Q2") for p in JAN_DEC[:6]]
+    groups = [{"over": "quarters", "label": "{label}", "series": ["act"]}]
+    by = _by_range(_cols(_cols_tpl(groups=groups, header_rows=[2]), periods=six))
+    assert by["B2:C2"]["values"] == [["Q1", "Q2"]]
+    assert by["B4:C4"]["formulas"] == [['=K.EPM("ZZE", 2024, "Q1", "ZZ4")',
+                                        '=K.EPM("ZZE", 2024, "Q2", "ZZ4")']]
+
+
+def test_quarters_need_every_regular_period_to_declare_its_quarter():
+    periods = [dict(p) for p in THREE]
+    periods[2]["quarter"] = None
+    groups = [{"over": "quarters", "label": "{label}", "series": ["act"]}]
+    msg = _refusal(lambda: _cols(_cols_tpl(groups=groups, header_rows=[2]), periods=periods))
+    assert msg is not None and "P03" in msg and "quarter" in msg, msg
+
+
+def test_one_header_row_with_several_series_needs_the_series_caption_token():
+    groups = [{"over": "regular_periods", "label": "{month_abbrev} {series.caption}",
+               "series": ["act", "bud"]}]
+    by = _by_range(_cols(_cols_tpl(groups=groups, header_rows=[2])))
+    assert by["B2:G2"]["values"] == [[
+        "Jan Actual", "Jan Budget ZZBUD", "Feb Actual", "Feb Budget ZZBUD",
+        "Mar Actual", "Mar Budget ZZBUD"]]
+    groups[0]["label"] = "{month_abbrev}"
+    msg = _refusal(lambda: _cols(_cols_tpl(groups=groups, header_rows=[2], validate=False)))
+    assert msg is not None and "series.caption" in msg and "one header row" in msg, msg
+
+
+def test_formula_series_needs_its_siblings_in_the_same_group():
+    groups = [{"over": "regular_periods", "label": "{month_abbrev}", "series": ["act", "var"]}]
+    msg = _refusal(lambda: _cols(_cols_tpl(groups=groups, validate=False)))
+    assert msg is not None and "'var'" in msg and "'bud'" in msg, msg
+
+
+def test_formula_series_keeps_parentheses_and_numbers():
+    series = dict(COL_SERIES, pct={"caption": "%", "formula": "(act - bud) / bud * 100"})
+    groups = [{"over": "fy", "label": "FY", "series": ["act", "bud", "pct"]}]
+    by = _by_range(_cols(_cols_tpl(groups=groups, series=series)))
+    assert by["B4:D4"]["formulas"][0][2] == "=(B4-C4)/C4*100"
+
+
+def test_credit_positive_wraps_every_read():
+    t = _cols_tpl(sign={"convention": "credit_positive", "sentence": "credit positive"})
+    spec = _cols(t)
+    by = _by_range(spec)
+    row = by["B4:P4"]["formulas"][0]
+    assert row[0] == '=-K.EPM("ZZE", 2024, 1, "ZZ4")'
+    assert row[1] == '=-K.EPM("ZZE", 2024, 1, "ZZ4", , "budget", , "ZZBUD")'
+    assert row[2] == "=B4-C4"
+    assert row[9] == "=SUM(B4,E4)"
+    assert row[12] == '=-K.EPM("ZZE", 2024, "FY", "ZZ4")'
+    assert by["A6"]["values"] == [["Net credit positive"]]
+
+
+def test_sign_param_picks_the_convention_and_sentence():
+    choice = {"name": "sign", "type": "choice", "choices": ["debit_positive", "credit_positive"],
+              "default": "debit_positive"}
+    sign = {"param": "sign", "sentences": {"debit_positive": "debits up", "credit_positive": "credits up"}}
+    t = _cols_tpl(sign=sign, extra_params=[choice])
+    by = _by_range(_cols(t))
+    assert by["B4:P4"]["formulas"][0][0] == '=K.EPM("ZZE", 2024, 1, "ZZ4")'
+    assert by["A6"]["values"] == [["Net debits up"]]
+    by = _by_range(_cols(t, sign="credit_positive"))
+    assert by["B4:P4"]["formulas"][0][0] == '=-K.EPM("ZZE", 2024, 1, "ZZ4")'
+    assert by["A6"]["values"] == [["Net credits up"]]
+
+
+def test_formats_number_format_per_series_columns_and_bold_total():
+    nf = {"default": "#,##0", "var": "#,##0;[Red]-#,##0"}
+    spec = _cols(_cols_tpl(number_format=nf, bold=True))
+    red = "#,##0;[Red]-#,##0"
+    expected = []
+    for first, var in (("B", "D"), ("E", "G"), ("H", "J"), ("K", "M"), ("N", "P")):
+        second = chr(ord(first) + 1)
+        expected.append({"range": f"{first}4:{second}6", "number_format": "#,##0"})
+        expected.append({"range": f"{var}4:{var}6", "number_format": red})
+    expected.append({"range": "A6:P6", "bold": True})
+    assert spec["formats"] == expected
+    assert spec["report"]["area"] == "A2:P6"
+    assert spec["report"]["template_id"] == "zz_cols" and spec["report"]["template_version"] == 3
+
+
+def test_formats_only_where_declared():
+    nf = {"var": "0.0"}
+    spec = _cols(_cols_tpl(number_format=nf))
+    assert [f["range"] for f in spec["formats"]] == ["D4:D6", "G4:G6", "J4:J6", "M4:M6", "P4:P6"]
+    assert "formats" not in _cols(_cols_tpl())
+    assert "formats" not in _cols(_cols_tpl(bold=False))
+
+
+def test_tree_heading_sums_apply_to_every_column():
+    t = _cols_tpl(groups=[{"over": "fy", "label": "FY", "series": ["act", "bud", "var"]}])
+    t["rows"]["blocks"] = [{"id": "rev", "type": "account_tree", "caption": "{account.name}"}]
+    spec = model.compile_formulas(t, {"entity": "ZZE", "year": 2024, "budget": "ZZBUD"},
+                                  {"periods": THREE, "trees": {"rev": TREE}})
+    by = _by_range(spec)
+    assert by["B4:D4"]["formulas"] == [["=SUM(B5,B8)", "=SUM(C5,C8)", "=SUM(D5,D8)"]]
+    assert by["B6:D6"]["formulas"][0][2] == "=B6-C6"

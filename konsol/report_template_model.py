@@ -61,7 +61,8 @@ sign (formulas, optional)
 -------------------------
 Either ``{"convention": "debit_positive" | "credit_positive", "sentence": str}``
 or ``{"param": <choice param>, "sentences": {choice: str}}``, whose sentence
-keys equal the param's choices exactly.
+keys equal the param's choices exactly; each choice is a convention
+(``debit_positive`` / ``credit_positive``).
 
 header (optional list)
 ----------------------
@@ -88,7 +89,10 @@ columns (formulas)
 is ``{"over": regular_periods | quarters | fy | ytd, "label": token string,
 "series": [series names], "through"?: <period param>}``. ``through`` is
 allowed on a ``ytd`` group only. Every series of a ``ytd`` group must also be
-carried by a ``regular_periods`` group (YTD sums those cells).
+carried by a ``regular_periods`` group (YTD sums those cells). A formula
+series needs every series it names in the same group. With one header row, a
+group of several series carries ``{series.caption}`` in its label (the only
+place that token is allowed).
 
 rows
 ----
@@ -276,6 +280,8 @@ class _Checker:
         self.stem = stem
         self.problems = []
         self.params = {}  # name -> param dict (well-formed ones)
+        self.param_index = {}  # name -> its index in params
+        self.formula_refs = {}  # formula series name -> the series it names
 
     def add(self, path, rule):
         self.problems.append(f"{self.file}: {path}: {rule}")
@@ -316,9 +322,9 @@ class _Checker:
         elif param["type"] not in types:
             self.add(path, f"{name!r} is not {what}")
 
-    def tokens(self, text, path):
+    def tokens(self, text, path, extra=()):
         for token in _TOKEN.findall(text):
-            if not self.token_ok(token):
+            if token not in extra and not self.token_ok(token):
                 self.add(path, f"unknown token '{{{token}}}'")
 
     def token_ok(self, token):
@@ -435,6 +441,7 @@ class _Checker:
                                          f"(allowed: {', '.join(PARAM_TYPES)})")
                 continue
             self.params[name] = p
+            self.param_index[name] = i
         for i, p in enumerate(params):
             if not isinstance(p, dict) or p.get("type") not in PARAM_TYPES:
                 continue
@@ -538,6 +545,12 @@ class _Checker:
             sentences = sign.get("sentences")
             if param is None or param["type"] != "choice":
                 self.add("sign.param", f"{name!r} is not a choice param")
+            elif isinstance(param.get("choices"), list):
+                wrong = [c for c in param["choices"] if c not in SIGN_CONVENTIONS]
+                if wrong:
+                    self.add(f"params[{self.param_index[name]}].choices",
+                             f"{', '.join(repr(c) for c in wrong)}: the choices of the sign param "
+                             f"must be sign conventions ({', '.join(SIGN_CONVENTIONS)})")
             if not isinstance(sentences, dict) or not all(isinstance(v, str) for v in sentences.values()):
                 self.add("sign.sentences", "must be an object of choice: sentence")
                 return
@@ -597,6 +610,7 @@ class _Checker:
                 self.keys(s, ("caption", "formula"), path)
                 deps[name] = self.check_formula(name, s["formula"], f"{path}.formula", names)
         self.check_cycles(deps)
+        self.formula_refs = deps
         return names
 
     def check_read(self, read, path, kinds):
@@ -704,11 +718,23 @@ class _Checker:
             if over not in COLUMN_GROUPS:
                 self.add(f"{path}.over", f"unknown column group {over!r} "
                                          f"(allowed: {', '.join(COLUMN_GROUPS)})")
-            self.string(g, "label", path, tokens=True)
+            label = self.string(g, "label", path)
+            if label is not None:
+                self.tokens(label, f"{path}.label", extra=("series.caption",))
             names = g.get("series")
             if not isinstance(names, list) or not names:
                 self.add(f"{path}.series", "must be a non-empty list of series names")
                 names = []
+            if (label is not None and isinstance(rows, list) and len(rows) == 1
+                    and len(names) > 1 and "{series.caption}" not in label):
+                self.add(f"{path}.label", "one header row and several series: the label must "
+                                          "carry {series.caption}, or the columns read alike")
+            for s in names:
+                missing = sorted(set(self.formula_refs.get(s, ())) - set(names))
+                if s in self.formula_refs and missing:
+                    self.add(f"{path}.series",
+                             f"formula series {s!r} names {', '.join(repr(m) for m in missing)}, "
+                             f"which this group does not carry")
             for j, s in enumerate(names):
                 if series is None:
                     continue
@@ -893,8 +919,43 @@ class _Checker:
 # total, or (hierarchy_nodes) a node whose child rows follow it in the list.
 # ``heading`` writes its caption only; ``blank`` leaves the row empty.
 #
-# Still refused by name (T11): more than one column group or series, quarters,
-# fy, ytd, formula series, two header rows.
+# Columns (T11). Group by group, slot by slot, series by series: a
+# regular_periods group has one slot per Regular period (Jan act, Jan bud, Jan
+# var, Feb act, ...); quarters one per quarter Q1-Q4 that holds Regular
+# periods (K.EPM period "Q1".., as period_read_model.resolve_period accepts);
+# fy one slot (period "FY"); ytd one slot. With header_rows [h1, h2], row h1
+# holds the group label, REPEATED on every column of its slot (no merged
+# cells, so every column reads on its own), and row h2 the series caption.
+# With [h], one row: the label, which must carry {series.caption} when the
+# group has several series. Label tokens: {month_abbrev} {label} {code}
+# {number} of the slot (a quarter: Q1/Q1/1; fy: FY/FY; ytd: those of its
+# ``through`` period) plus every text token and {series.caption}.
+#
+# - ctx["periods"] items carry ``quarter`` (Q1-Q4) for a quarters group; a
+#   Regular period without one is refused by name, never left out.
+# - A read series writes K.EPM with its dataset word ``read[kind]``; a series
+#   with ``scenario_id`` writes the param's value (only K.EPM's own default
+#   ``actuals`` is omitted). An empty value, or the unresolved default
+#   ``rule``, is refused: the caller resolves the scenario rule first.
+# - ytd: ``=SUM`` of the same series' cells in the first regular_periods
+#   group carrying it, from the first Regular period through the period in
+#   the ``through`` param (its code or number); none, or not a Regular period
+#   of the year, is refused.
+# - A formula series is a cell formula over its sibling series' cells in the
+#   same slot and row (``act - bud`` -> ``=B4-C4``): Actual - Budget in the
+#   report's own sign (Deepak Pai, 27 Nov 2026, Q4). Division is plain: the
+#   grammar has no IFERROR construct.
+# - Sign: credit_positive (the convention, or the sign param's choice) writes
+#   every READ as ``=-K.EPM(...)``; formula, YTD and SUM cells follow from
+#   their inputs. No ``sign`` means debit_positive, K.EPM's own sign.
+# - Totals and tree heading SUMs are per column, every column included.
+# - formats: number_format gives each series column over the data rows
+#   (start_row to the last row) its own format, else ``default``; adjacent
+#   columns with one format share a range. A total with ``bold: true`` gives
+#   {range: A<r>:<last col><r>, bold: true}. The ``formats`` key is present
+#   only when one of them is declared.
+
+_QUARTERS = ("Q1", "Q2", "Q3", "Q4")
 
 MONTH_ABBREVS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -1068,8 +1129,8 @@ def _start_month(period):
     return int(m.group(1)) if m else None
 
 
-def period_labels(periods, label):
-    """The column label of each period (decided by Deepak Pai, 27 Nov 2026, Q1).
+def _period_tokens(periods):
+    """The label tokens of each period (decided by Deepak Pai, 27 Nov 2026, Q1).
 
     ``{month_abbrev}`` is the month abbreviation of the period's start only
     when every period starts in a different month of the year (Jan-Dec ->
@@ -1082,25 +1143,133 @@ def period_labels(periods, label):
     out = []
     for p, month in zip(periods, months):
         declared = p.get("label") or p.get("code") or str(p["number"])
-        out.append(render(label, {
+        out.append({
             "month_abbrev": MONTH_ABBREVS[month - 1] if by_month else declared,
             "label": declared,
             "code": p.get("code") or "",
             "number": int(p["number"]),
-        }))
+        })
     return out
+
+
+def period_labels(periods, label, values=None):
+    """The column label of each period: ``label`` rendered with its tokens."""
+    return [render(label, dict(values or {}, **tokens)) for tokens in _period_tokens(periods)]
+
+
+def find_period(periods, value):
+    """The period of ``periods`` that a period param value names (its code or number); else None."""
+    if value is None or value == "":
+        return None
+    text = str(value).strip()
+    for p in periods:
+        if p.get("code") and str(p["code"]).upper() == text.upper():
+            return p
+    try:
+        number = int(text)
+    except ValueError:
+        return None
+    for p in periods:
+        if int(p["number"]) == number:
+            return p
+    return None
+
+
+def _sign_convention(template, params):
+    """debit_positive or credit_positive; a template without ``sign`` reads K.EPM's own sign."""
+    sign = template.get("sign") or {}
+    if "convention" in sign:
+        return sign["convention"]
+    if "param" in sign:
+        value = params.get(sign["param"])
+        if value not in SIGN_CONVENTIONS:
+            raise ValueError(
+                f"Report template {template.get('id')!r}: sign param {sign['param']!r} is "
+                f"{value!r}, not a sign convention ({', '.join(SIGN_CONVENTIONS)})."
+            )
+        return value
+    return "debit_positive"
+
+
+def _formula_parts(formula):
+    """[(kind, text)] of a validated formula: kind ``series``, ``number`` or ``op``."""
+    parts = []
+    pos = 0
+    while pos < len(formula):
+        m = _FORMULA_PART.match(formula, pos)
+        if not m or m.end() == pos:
+            break
+        pos = m.end()
+        if m.group(1):
+            parts.append(("series", m.group(1)))
+        elif m.group(2):
+            parts.append(("number", m.group(2)))
+        else:
+            parts.append(("op", m.group(3)))
+    return parts
+
+
+def _row_refs(cols, row):
+    """``B4:D4`` / ``B4,E4``: the cells of columns ``cols`` in ``row``, adjacent ones as a range."""
+    runs = []
+    for c in sorted(cols):
+        if runs and c == runs[-1][1] + 1:
+            runs[-1][1] = c
+        else:
+            runs.append([c, c])
+    return ",".join(_cell_range(a, row, b, row) for a, b in runs)
+
+
+def _column_slots(template, group, periods, values, year):
+    """[(epm period | None, label tokens, through number | None)] of one column group."""
+    tid = template.get("id")
+    over = group["over"]
+    if over == "regular_periods":
+        return [(p["number"], tokens, None) for p, tokens in zip(periods, _period_tokens(periods))]
+    if over == "quarters":
+        missing = [p.get("code") or str(p["number"]) for p in periods if p.get("quarter") not in _QUARTERS]
+        if missing:
+            raise ValueError(
+                f"Report template {tid!r}: a quarters column group needs the quarter of every "
+                f"Regular period of FY{year}, and {', '.join(missing)} declare none (or not "
+                f"Q1-Q4). Declare the quarter on EPM Fiscal Year {year}."
+            )
+        found = {p["quarter"] for p in periods}
+        return [(q, {"label": q, "code": q, "number": i + 1}, None)
+                for i, q in enumerate(_QUARTERS) if q in found]
+    if over == "fy":
+        return [("FY", {"label": "FY", "code": "FY"}, None)]
+    # ytd: one slot, summing the regular_periods cells up to ``through``.
+    name = group.get("through")
+    value = values.get(name) if name else None
+    if value is None or value == "":
+        raise ValueError(
+            f"Report template {tid!r}: a YTD column group sums through the period in param "
+            f"{name!r}, and none is given."
+        )
+    through = find_period(periods, value)
+    if through is None:
+        raise ValueError(
+            f"Report template {tid!r}: YTD through period {value!r} is not a Regular period "
+            f"of FY{year} (declared: {', '.join(p.get('code') or str(p['number']) for p in periods)})."
+        )
+    tokens = _period_tokens(periods)[periods.index(through)]
+    return [(None, tokens, int(through["number"]))]
 
 
 def compile_formulas(template, params, ctx):
     """A formulas template + params + ctx -> the cell map (see the contract above).
 
     Returns {template_id, mode, <every param, in declared order>, sheet_name,
-    cells, report}; ``report`` is {template_id, template_version, params,
-    area}, ``area`` the A1 rectangle every cell lies in. Refusals raise
-    ValueError with the template's own error text where it declares one.
+    cells, formats?, report}; ``report`` is {template_id, template_version,
+    params, area}, ``area`` the A1 rectangle every cell and format lies in.
+    ``formats`` is present only when the template declares number_format or a
+    bold total. Refusals raise ValueError with the template's own error text
+    where it declares one.
     """
     if template.get("mode") != "formulas":
         raise ValueError(f"Report template {template.get('id')!r} is not a formulas template.")
+    tid = template.get("id")
     ctx = ctx or {}
     params = resolve_params(template, params)
     values = _token_values(template, params)
@@ -1114,45 +1283,97 @@ def compile_formulas(template, params, ctx):
     if len(years) != 1:
         raise _unsupported(template, "a template without exactly one fiscal_year param")
     year = params[years[0]]
+    negate = _sign_convention(template, params) == "credit_positive"
 
-    columns = template["columns"]
-    groups = columns["groups"]
-    if len(groups) != 1 or groups[0]["over"] != "regular_periods":
-        raise _unsupported(template, "a column group other than one regular_periods group")
-    if len(columns["header_rows"]) != 1:
-        raise _unsupported(template, "two header rows")
-    group = groups[0]
-    if len(group["series"]) != 1:
-        raise _unsupported(template, "more than one series in a column group")
-    series_name = group["series"][0]
-    series = template["series"][series_name]
-    if "read" not in series:
-        raise _unsupported(template, "a formula series")
+    all_series = template["series"]
 
-    def read_for(kind):
+    def read_for(name, kind):
+        series = all_series[name]
         word = series["read"].get(kind)
         if not word:
             raise ValueError(
-                f"Report template {template.get('id')!r}: series {series_name!r} has no "
+                f"Report template {tid!r}: series {name!r} has no "
                 f"read word for scope kind {kind!r}, so it cannot be read for it."
             )
-        return {
-            "scenario": word,
-            "measure": series.get("measure"),
-            "scenario_id": params[series["scenario_id"][1:-1]] if "scenario_id" in series else None,
-        }
+        scenario_id = None
+        if "scenario_id" in series:
+            pname = series["scenario_id"][1:-1]
+            scenario_id = params.get(pname)
+            if scenario_id is None or scenario_id == "":
+                raise ValueError(
+                    f"Report template {tid!r}: series {name!r} reads the scenario in param "
+                    f"{pname!r}, and none is given."
+                )
+            if scenario_id == "rule":
+                # The declared default "rule" names the site's scenario rule; the
+                # caller resolves it to a scenario id before compiling.
+                raise ValueError(
+                    f"Report template {tid!r}: series {name!r} reads the scenario in param "
+                    f"{pname!r}, which is still 'rule': resolve the site's scenario rule "
+                    f"to a scenario id before compiling."
+                )
+        return {"scenario": word, "measure": series.get("measure"), "scenario_id": scenario_id}
 
     if scope["kind"] == "node":
         target = {"entity": EPM_ENTITY_ALL, "hierarchy": scope["hierarchy"], "node": scope["code"]}
     else:
         target = {"entity": scope["code"], "hierarchy": None, "node": None}
-    read = read_for(scope["kind"])
 
     periods = regular_periods(ctx.get("periods"), year)
-    labels = period_labels(periods, group["label"])
+    for p in template["params"]:
+        if p["type"] == "period":
+            found = find_period(periods, params.get(p["name"]))
+            if found is not None:
+                values[f"{p['name']}.code"] = found.get("code") or ""
+
+    # -- columns: each group, each of its slots (period, quarter, FY, YTD),
+    # each of its series, in that order.
+    columns = template["columns"]
+    header_rows = columns["header_rows"]
     first_col = _column_number(columns["start_col"])
-    last_col = first_col + len(periods) - 1
-    letters = [column_letters(first_col + i) for i in range(len(periods))]
+    cols = []  # {col, letter, series, group, slot, period, through}
+    for gi, group in enumerate(columns["groups"]):
+        if len(header_rows) == 1 and len(group["series"]) > 1 and "{series.caption}" not in group["label"]:
+            raise ValueError(
+                f"Report template {tid!r}: columns.groups[{gi}] has several series and one header "
+                f"row, so its label must carry {{series.caption}}, or the columns read alike."
+            )
+        for si, (period, tokens, through) in enumerate(_column_slots(template, group, periods,
+                                                                       params, year)):
+            for name in group["series"]:
+                col = first_col + len(cols)
+                caption_text = render(all_series[name]["caption"], values)
+                cols.append({
+                    "col": col, "letter": column_letters(col), "series": name, "group": gi,
+                    "slot": si, "period": period, "through": through, "over": group["over"],
+                    "caption": caption_text,
+                    "label": render(group["label"], dict(values, **tokens,
+                                                         **{"series.caption": caption_text})),
+                })
+    last_col = cols[-1]["col"]
+    letters = [c["letter"] for c in cols]
+    where = {(c["group"], c["slot"], c["series"]): c["col"] for c in cols}
+
+    for c in cols:
+        series = all_series[c["series"]]
+        if "formula" in series:
+            parts = _formula_parts(series["formula"])
+            for kind, text in parts:
+                if kind == "series" and (c["group"], c["slot"], text) not in where:
+                    raise ValueError(
+                        f"Report template {tid!r}: formula series {c['series']!r} names series "
+                        f"{text!r}, which columns.groups[{c['group']}] does not carry."
+                    )
+            c["parts"] = parts
+        elif c["over"] == "ytd":
+            # The same series' cells of the first regular_periods group carrying it.
+            source = next(gi for gi, g in enumerate(columns["groups"])
+                          if g["over"] == "regular_periods" and c["series"] in g["series"])
+            c["sum_cols"] = [k["col"] for k in cols
+                             if k["group"] == source and k["series"] == c["series"]
+                             and int(k["period"]) <= c["through"]]
+        else:
+            read_for(c["series"], scope["kind"])  # refuse a missing word before any row
 
     cells = []
     for cell in template.get("header", []):
@@ -1163,12 +1384,16 @@ def compile_formulas(template, params, ctx):
         else:
             value = params[cell["param"]]
         cells.append({"range": cell["at"], "values": [[value]]})
-    header_row = columns["header_rows"][0]
-    cells.append({"range": _cell_range(first_col, header_row, last_col, header_row),
-                  "values": [labels]})
+    cells.append({"range": _cell_range(first_col, header_rows[0], last_col, header_rows[0]),
+                  "values": [[c["label"] for c in cols]]})
+    if len(header_rows) == 2:
+        cells.append({"range": _cell_range(first_col, header_rows[1], last_col, header_rows[1]),
+                      "values": [[c["caption"] for c in cols]]})
 
-    row = template["rows"]["start_row"]
+    start_row = template["rows"]["start_row"]
+    row = start_row
     block_rows = {}  # block key -> [leaf row numbers]: what a total sums
+    bold_rows = []
     accounts = ctx.get("accounts") or {}
     charts = ctx.get("charts") or {}
     trees = ctx.get("trees") or {}
@@ -1178,13 +1403,20 @@ def compile_formulas(template, params, ctx):
     def caption(r, text):
         cells.append({"range": f"A{r}", "values": [[text]]})
 
-    def read_row(r, account, rd, where):
-        cells.append({
-            "range": _cell_range(first_col, r, last_col, r),
-            "formulas": [[epm_formula(where["entity"], year, p["number"], account,
-                                      hierarchy=where["hierarchy"], node=where["node"], **rd)
-                          for p in periods]],
-        })
+    def read_row(r, account, kind, at):
+        out = []
+        for c in cols:
+            if "parts" in c:
+                out.append("=" + "".join(
+                    f"{column_letters(where[(c['group'], c['slot'], text)])}{r}" if k == "series" else text
+                    for k, text in c["parts"]))
+            elif "sum_cols" in c:
+                out.append("=SUM(" + _row_refs(c["sum_cols"], r) + ")")
+            else:
+                f = epm_formula(at["entity"], year, c["period"], account, hierarchy=at["hierarchy"],
+                                node=at["node"], **read_for(c["series"], kind))
+                out.append("=-" + f[1:] if negate else f)
+        cells.append({"range": _cell_range(first_col, r, last_col, r), "formulas": [out]})
 
     def sum_row(r, refs):
         cells.append({
@@ -1205,7 +1437,7 @@ def compile_formulas(template, params, ctx):
         for code, text in lines:
             line = dict(values, **{"account.code": code, "account.name": text})
             caption(row, render(block["caption"], line))
-            read_row(row, code, read, target)
+            read_row(row, code, scope["kind"], target)
             block_rows[key].append(row)
             row += 1
 
@@ -1226,12 +1458,12 @@ def compile_formulas(template, params, ctx):
             for offset, n in enumerate(lines):
                 code, parent = n["code"], n.get("parent")
                 if code in row_of:
-                    raise ValueError(f"Report template {template.get('id')!r}: block {key!r} "
+                    raise ValueError(f"Report template {tid!r}: block {key!r} "
                                      f"lists account {code!r} twice.")
                 if parent:
                     if parent not in row_of:
                         raise ValueError(
-                            f"Report template {template.get('id')!r}: block {key!r} lists account "
+                            f"Report template {tid!r}: block {key!r} lists account "
                             f"{code!r} before its parent {parent!r}, or without it; the tree must "
                             f"be in DFS order, every parent before its children."
                         )
@@ -1246,21 +1478,23 @@ def compile_formulas(template, params, ctx):
                 if n.get("is_group"):
                     if not children[n["code"]]:
                         raise ValueError(
-                            f"Report template {template.get('id')!r}: heading {n['code']!r} of "
+                            f"Report template {tid!r}: heading {n['code']!r} of "
                             f"block {key!r} has no child rows. A heading never carries postings, "
                             f"so its row is the sum of its children: list them."
                         )
                     sum_row(r, children[n["code"]])
                 else:
-                    read_row(r, n["code"], read, target)
+                    read_row(r, n["code"], scope["kind"], target)
                     block_rows[key].append(r)
             row += len(lines)
         elif btype == "hierarchy_nodes":
             account = params.get(block["account"])
             if not account:
-                raise ValueError(f"Report template {template.get('id')!r}: block {key!r} reads "
+                raise ValueError(f"Report template {tid!r}: block {key!r} reads "
                                  f"the account in param {block['account']!r}, and none is given.")
-            rd = read_for("node")
+            for c in cols:
+                if "parts" not in c and "sum_cols" not in c:
+                    read_for(c["series"], "node")
             hierarchy = params.get(block["hierarchy"]) or None
             lines = nodes.get(key) or []
             if not lines:
@@ -1268,7 +1502,7 @@ def compile_formulas(template, params, ctx):
             block_rows[key] = []
             for idx, n in enumerate(lines):
                 caption(row, render(block["caption"], dict(values, **{"node.label": n["label"]})))
-                read_row(row, account, rd,
+                read_row(row, account, "node",
                          {"entity": EPM_ENTITY_ALL, "hierarchy": hierarchy, "node": n["code"]})
                 after = lines[idx + 1] if idx + 1 < len(lines) else None
                 if after is None or int(after["depth"]) <= int(n["depth"]):
@@ -1295,19 +1529,39 @@ def compile_formulas(template, params, ctx):
                     for c in letters
                 ]],
             })
+            if block.get("bold"):
+                bold_rows.append(row)
             row += 1
         else:
             raise _unsupported(template, f"a {btype!r} row block")
+
+    formats = []
+    number_format = template.get("number_format")
+    if number_format and row > start_row:
+        runs = []  # [first col, last col, format]
+        for c in cols:
+            fmt = number_format.get(c["series"], number_format.get("default"))
+            if fmt is None:
+                continue
+            if runs and runs[-1][2] == fmt and runs[-1][1] == c["col"] - 1:
+                runs[-1][1] = c["col"]
+            else:
+                runs.append([c["col"], c["col"], fmt])
+        formats.extend({"range": _cell_range(a, start_row, b, row - 1), "number_format": fmt}
+                       for a, b, fmt in runs)
+    formats.extend({"range": _cell_range(1, r, last_col, r), "bold": True} for r in bold_rows)
 
     out = {"template_id": template["id"], "mode": "formulas"}
     out.update(params)
     out["sheet_name"] = template["sheet_name"]
     out["cells"] = cells
+    if formats:
+        out["formats"] = formats
     out["report"] = {
         "template_id": template["id"],
         "template_version": template["version"],
         "params": dict(params),
-        "area": _area(cells),
+        "area": _area(cells + formats),
     }
     return out
 
