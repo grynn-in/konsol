@@ -173,3 +173,11 @@ def test_the_model_imports_nothing_from_frappe():
     names = [n.names[0].name for n in ast.walk(tree) if isinstance(n, ast.Import)]
     names += [n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
     assert not [n for n in names if n and n.split(".")[0] in ("frappe", "requests")], names
+
+
+def test_a_one_period_horizon_reads_one_period_not_one_periods():
+    """konsol#559: the sentence said "(1 periods)"."""
+    [r] = M.rounds([_cycle("FC-27", 2027, date(2027, 6, 30), 1)], _calendar([2027]))
+    assert r["sentence"] == "Round ZZFC as of 2027-06-30 covers FY2027 P7 (1 period): approved for FY2027 (FC-27)."
+    [r] = M.rounds([_cycle("FC-27", 2027, date(2027, 6, 30), 6)], _calendar([2027]))
+    assert "(6 periods)" in r["sentence"]

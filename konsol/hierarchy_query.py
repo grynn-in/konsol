@@ -7,9 +7,9 @@ from collections import defaultdict
 import requests
 
 from konsol import tb_coverage
+from konsol.identifier_rule import SAFE_IDENTIFIER as _SAFE_IDENTIFIER
 from konsol.period_read_model import sql_aggregate
 
-_SAFE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 _SAFE_SCENARIO_ID = re.compile(r"^[A-Za-z0-9_]+$")
 _ENTITY_WILDCARD = {"", "*", "ALL"}
 
@@ -27,8 +27,9 @@ HIERARCHY_SCENARIO_CONFIG = {
         "has_scenario_id": True,
         "has_layer": True,
         # The rollup holds forecast scenarios too, every approved round side
-        # by side. A budget read refuses a forecast id and, naming none, reads
-        # the non-forecast scenarios only (konsol#348 S6 review B1).
+        # by side. A budget read refuses a forecast id (konsol#348 S6 review
+        # B1) and, naming none, reads the year's one active budget scenario,
+        # as the flat read does: never two budgets added together (konsol#563).
         "excludes_forecast": True,
     },
     # konsol#348 S6-Q1 (b), decided by Deepak Pai, 17 Nov 2026: a forecast
@@ -340,27 +341,9 @@ def forecast_on_budget_read_error(scenario_id, forecast_ids):
     return None
 
 
-def budget_scenarios_excluding_forecasts(known, forecast_ids):
-    """(sorted non-forecast scenario_ids, None), or (None, why) when there are
-    none. A budget read that names no scenario filters to these: unfiltered,
-    it added every forecast round to the budget (konsol#348 S6 review B1).
-    ``known`` and ``forecast_ids`` are callables returning sets of ids."""
-    ids = sorted(set(known()) - set(forecast_ids()))
-    if not ids:
-        return None, (
-            "Every Scenario is a forecast, so there is no budget to read. "
-            "Read a forecast with the 'forecast' scenario or 'latest_estimate'.")
-    return ids, None
-
-
-def scenario_in_clause(ids, params, prefix):
-    """`` AND scenario_id IN ({<prefix>0:String}, ...)`` for ``ids``, binding
-    each into ``params``."""
-    holders = []
-    for i, sid in enumerate(ids):
-        holders.append(f"{{{prefix}{i}:String}}")
-        params[f"param_{prefix}{i}"] = sid
-    return f" AND scenario_id IN ({', '.join(holders)})"
+#: The clause a budget read that names no scenario refuses with when its
+#: year has no active budget scenario (konsol#563, flat and hierarchy alike).
+NO_BUDGET_TO_READ = "so there is no budget to read. Name scenario_id to read a forecast."
 
 
 def _declared_forecasts_by_year():
@@ -375,6 +358,33 @@ def _declared_forecasts_by_year():
     ):
         by_year[int(row["fiscal_year"])].add(row["scenario_id"])
     return {year: sorted(ids) for year, ids in by_year.items()}
+
+
+def _declared_as_of_periods():
+    """{(scenario_id, fiscal_year): (fiscal_year, fiscal_period) or None} of
+    the submitted Current Forecasts: the Regular period holding the round's
+    as-of date. Periods at or before it are the round's actual side. None
+    where the date is in no declared Regular period (konsol#559)."""
+    import frappe
+
+    found = {}
+    out = {}
+    for row in frappe.get_all(
+        "Current Forecast", filters={"docstatus": 1},
+        fields=["scenario_id", "fiscal_year", "as_of_date"], limit_page_length=0,
+    ):
+        day = str(row["as_of_date"] or "")[:10]
+        if day not in found:
+            period = frappe.get_all(
+                "EPM Fiscal Year Period",
+                filters={"period_type": "Regular", "start_date": ["<=", day],
+                         "end_date": [">=", day]},
+                fields=["parent", "fiscal_period"],
+                order_by="parent asc, fiscal_period asc", limit_page_length=1,
+            ) if day else []
+            found[day] = (int(period[0]["parent"]), int(period[0]["fiscal_period"])) if period else None
+        out[(row["scenario_id"], int(row["fiscal_year"]))] = found[day]
+    return out
 
 
 def _declared_cycles():
@@ -437,8 +447,9 @@ def choose_declared_forecast(scenario_id, declared, fiscal_year):
 def _active_budget_scenarios_by_year():
     """{fiscal_year: [scenario_id, ...]} of the active budget scenarios.
 
-    A budget scenario belongs to the years of its Budget Cycles. A cancelled
-    cycle (docstatus 2) has withdrawn its sheets, so it does not count. Two
+    A budget scenario belongs to the years of its approved Budget Cycles. A
+    draft Cycle has not reached the warehouse and a cancelled one has left it
+    (budget_cycle.py), so only docstatus 1 counts (konsol#563 review m1). Two
     lookups, however many years a call reads.
     """
     import frappe
@@ -449,7 +460,7 @@ def _active_budget_scenarios_by_year():
     by_year = defaultdict(set)
     for cycle in frappe.get_all(
         "Budget Cycle",
-        filters={"scenario_id": ["in", active], "docstatus": ["<", 2]},
+        filters={"scenario_id": ["in", active], "docstatus": 1},
         fields=["scenario_id", "fiscal_year"],
     ):
         by_year[int(cycle["fiscal_year"])].add(cycle["scenario_id"])
@@ -490,6 +501,121 @@ def named_budget_scenario_error(scenario_id, active):
     return f"{scenario_id} is not an active budget scenario, so there is no variance for it."
 
 
+#: Whom a budget read is for, as the coverage rule asks (konsol#568): one
+#: entity, a consolidation group, or a wildcard over the reader's entities.
+COVER_ENTITY, COVER_GROUP, COVER_ANY = "entity", "group", "any"
+#: A variance cell: the (scenario, year) needs an approved Cycle, no more.
+COVER_VARIANCE = "variance"
+
+
+def budget_coverage_error(scenario_id, fiscal_year, entity, kind, approved, budgeted):
+    """Why a budget read has no budget to read, or None (konsol#568).
+
+    Decided by Deepak Pai, 27 Nov 2026: a budget read is refused only when the
+    scenario has no approved Budget Cycle for the entity and year; where an
+    approved Cycle exists and holds no row, the read is 0 (no budget means
+    budget zero, 22 Sep 2026). Refusing every uncovered grain was rejected.
+
+    A Cycle is per (scenario, fiscal year), not per entity, and a Budget Entry
+    or Annual Input under it names its entity. So "an approved Cycle for the
+    entity and year" is an approved Cycle of (scenario, year) holding an entry
+    or an input for that entity. A group read (the consolidated budget) and a
+    wildcard read ask the (scenario, year) only: the group holds no entries
+    of its own.
+
+    A variance read (COVER_VARIANCE) asks the (scenario, year) only, decided
+    by Deepak Pai, 27 Nov 2026: variance keeps the 22 Sep rule "unbudgeted is
+    unfavourable", so an entity with actuals and no entries under an approved
+    Cycle reads variance = actual. Refusing those cells was rejected.
+
+    ``kind`` is COVER_ENTITY, COVER_GROUP, COVER_ANY or COVER_VARIANCE. ``approved`` is
+    {(scenario_id, fiscal_year): [approved cycle, ...]} and ``budgeted``
+    {(scenario_id, fiscal_year): {entity, ...}}, from _approved_budget_coverage.
+    """
+    who = {COVER_ENTITY: f"entity '{entity}'",
+           COVER_VARIANCE: f"entity '{entity}'",
+           COVER_GROUP: f"group '{entity}'"}.get(kind, "any entity")
+    cycles = approved.get((scenario_id, fiscal_year))
+    if not cycles:
+        return (f"Scenario '{scenario_id}' has no approved Budget Cycle for "
+                f"FY{fiscal_year}, so there is no budget to read for {who}. "
+                f"Approve a Budget Cycle for '{scenario_id}' FY{fiscal_year}.")
+    held = set(budgeted.get((scenario_id, fiscal_year), ()))
+    if kind == COVER_ENTITY and entity not in held:
+        # MariaDB's IN matches any case, but ClickHouse compares codes exactly:
+        # a code in another case would read a silent 0, so it is refused by name.
+        same = sorted(e for e in held if e.casefold() == (entity or "").casefold())
+        if same:
+            return (f"Entity '{entity}' is not a code: entity codes are case-sensitive. "
+                    f"Use '{same[0]}', which has a budget under Scenario '{scenario_id}' "
+                    f"FY{fiscal_year}.")
+        named = (f"approved Cycle {cycles[0]} holds" if len(cycles) == 1
+                 else f"approved Cycles {', '.join(cycles)} hold")
+        return (f"Scenario '{scenario_id}' has no approved Budget Cycle for entity "
+                f"'{entity}' in FY{fiscal_year}: {named} no Budget Entry or Annual "
+                f"Input for it, so there is no budget to read. Add its budget to a "
+                f"Budget Cycle of '{scenario_id}' FY{fiscal_year} and approve the Cycle.")
+    return None
+
+
+def _approved_budget_coverage(needs):
+    """(approved, budgeted) for budget_coverage_error over ``needs``, an
+    iterable of (scenario_id, fiscal_year, entity or None). At most three
+    lookups however many cells: the approved Cycles of the pairs, then the
+    Budget Entries and Annual Inputs under them naming the entities."""
+    import frappe
+
+    needs = [(sid, int(year), entity) for sid, year, entity in needs]
+    pairs = {(sid, year) for sid, year, _ in needs}
+    if not pairs:
+        return {}, {}
+    approved = defaultdict(list)
+    cycle_pair = {}
+    for row in frappe.get_all(
+        "Budget Cycle",
+        filters={"docstatus": 1,
+                 "scenario_id": ["in", sorted({sid for sid, _ in pairs})],
+                 "fiscal_year": ["in", sorted({year for _, year in pairs})]},
+        fields=["name", "scenario_id", "fiscal_year"],
+        order_by="name asc", limit_page_length=0,
+    ):
+        pair = (row["scenario_id"], int(row["fiscal_year"]))
+        if pair in pairs:
+            approved[pair].append(row["name"])
+            cycle_pair[row["name"]] = pair
+    entities = sorted({entity for sid, year, entity in needs
+                       if entity and (sid, year) in approved})
+    budgeted = defaultdict(set)
+    if entities:
+        for doctype in ("Budget Entry", "Budget Annual Input"):
+            for row in frappe.get_all(
+                doctype,
+                filters={"cycle": ["in", sorted(cycle_pair)],
+                         "data_area_id": ["in", entities]},
+                fields=["cycle", "data_area_id"], distinct=True, limit_page_length=0,
+            ):
+                budgeted[cycle_pair[row["cycle"]]].add(row["data_area_id"])
+    return dict(approved), dict(budgeted)
+
+
+def budget_coverage_errors(needs):
+    """{index: why} for the budget reads in ``needs`` that have no budget to
+    read, each (index, scenario_id, fiscal_year, entity, kind) (konsol#568).
+    Both read paths call this once per batch, after resolving each row's
+    scenario."""
+    if not needs:
+        return {}
+    approved, budgeted = _approved_budget_coverage(
+        [(sid, year, entity if kind == COVER_ENTITY else None)
+         for _, sid, year, entity, kind in needs])
+    out = {}
+    for idx, sid, year, entity, kind in needs:
+        err = budget_coverage_error(sid, int(year), entity, kind, approved, budgeted)
+        if err:
+            out[idx] = err
+    return out
+
+
 def batch_query_hierarchy(requests_list, *, allowed_entities):
     """Execute hierarchy-mode batch queries. Returns {values, errors}.
 
@@ -512,6 +638,7 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
     budgets_by_year = None  # looked up once per call, when first needed
     active_budgets = None  # likewise, for named variance scenarios
     declared_by_year = None  # the Current Forecasts, likewise (S6 review m2)
+    coverage_needs = []  # budget reads for budget_coverage_errors (konsol#568)
     known_cache = []  # every Scenario id, looked up once when first needed
 
     def known_scenarios():
@@ -550,13 +677,17 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             )
             continue
         scenario_id = req.get("scenario_id", "")
-        if cfg.get("needs_budget_scenario") and not scenario_id:
+        one_budget = bool(cfg.get("excludes_forecast"))
+        if (cfg.get("needs_budget_scenario") or one_budget) and not scenario_id:
             # No scenario named: the one active budget of the request's year.
+            # The budget rollup too: it read every non-forecast scenario and
+            # added two budgets of one year together (konsol#563 review M1).
             if budgets_by_year is None:
                 budgets_by_year = _active_budget_scenarios_by_year()
             year = int(req["year"])
             scenario_id, err = choose_budget_scenario(
-                budgets_by_year.get(year, []), fiscal_year=year)
+                budgets_by_year.get(year, []), fiscal_year=year,
+                none_reason=NO_BUDGET_TO_READ if one_budget else None)
             if err:
                 errors[idx] = err
                 continue
@@ -593,6 +724,14 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
                 continue
         dims = frozenset(req.get("dimensions", {}).keys())
         wildcard = entity_is_wildcard(req.get("entity", ""))
+        if ((cfg.get("excludes_forecast") or cfg.get("needs_budget_scenario"))
+                and scenario_id and _SAFE_SCENARIO_ID.match(scenario_id)):
+            # The budget read: an approved Cycle for the entity and year; the
+            # variance read: for the scenario and year only (konsol#568).
+            kind = COVER_ENTITY if cfg.get("excludes_forecast") else COVER_VARIANCE
+            if wildcard:
+                kind = COVER_ANY
+            coverage_needs.append((idx, scenario_id, req["year"], req.get("entity", ""), kind))
         key = (
             sc,
             measure,
@@ -606,6 +745,8 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             "" if wildcard else req.get("entity", ""),
         )
         keyed.append((key, idx, req))
+    for idx, err in budget_coverage_errors(coverage_needs).items():
+        errors[idx] = err
 
     # An actuals cell with no trial balance in any of its periods is refused,
     # not read as 0 (konsol#401). A wildcard cell is refused only when no
@@ -733,16 +874,6 @@ def batch_query_hierarchy(requests_list, *, allowed_entities):
             params["param_sid"] = scenario_id
             column = cfg.get("scenario_column", "scenario_id")
             scenario_id_clause = f" AND {column} = {{sid:String}}"
-        elif cfg.get("excludes_forecast"):
-            # No scenario named: every non-forecast scenario, never a
-            # forecast's rounds (konsol#348 S6 review B1).
-            ids, err = budget_scenarios_excluding_forecasts(
-                known_scenarios, forecast_ids)
-            if err:
-                for idx, _ in group_items:
-                    errors[idx] = err
-                continue
-            scenario_id_clause = scenario_in_clause(ids, params, "bsid")
 
         # Optional budget layer filter — mirrors the flat path in api.py. Omitted
         # → sum across all layers (the final budget); supplied → restrict to one

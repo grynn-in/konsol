@@ -68,8 +68,8 @@ def test_permissions():
             assert not p.get(k), (role, k)
 
 
-def test_controller_is_empty():
+def test_controller_only_validates_the_code():
     with open(os.path.join(DIR, "budget_layer.py")) as f:
         src = f.read()
     assert "class BudgetLayer(Document)" in src
-    assert "def " not in src
+    assert src.count("def ") == 1 and "def validate(" in src   # konsol#564; see test_budget_layer_code_rule.py
