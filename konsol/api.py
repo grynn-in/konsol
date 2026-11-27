@@ -1463,138 +1463,70 @@ def excel_addin_logout():
 
 @frappe.whitelist(methods=["GET"])
 def list_report_templates():
-    """Catalog of product-owned report templates for add-in Apply."""
-    from konsol.report_compiler import list_templates
+    """Catalog of product-owned report templates for add-in Apply: {id, title, description, mode}."""
+    from konsol import report_service
 
-    return {"templates": list_templates()}
+    return {"templates": report_service.list_templates()}
+
+
+@frappe.whitelist(methods=["GET"])
+def report_catalog():
+    """Every report template's spec (params, labels, defaults, depends_on), with
+    available / why, in order (konsol#548 v1). See konsol.report_service.catalog."""
+    from konsol import report_service
+
+    return report_service.catalog()
+
+
+@frappe.whitelist(methods=["GET"])
+def report_choices(kind, year=None, hierarchy=None, dimension=None, section=None,
+                   scenario_type=None):
+    """The picker list for one param kind: konsol.report_choices.<kind>."""
+    from konsol import report_service
+
+    return report_service.choices(kind, year=year, hierarchy=hierarchy, dimension=dimension,
+                                  section=section, scenario_type=scenario_type)
 
 
 @frappe.whitelist(methods=["POST"])
 def build_cell_map():
-    """Compile a report template + params into an Excel cell map (formulas)."""
-    from konsol.report_compiler import build_cell_map as compile_cell_map
+    """Compile a report template + params into an Excel cell map (formulas).
 
-    body = _get_json_body()
-    template_id = (body.get("template_id") or "").strip()
-    entity = (body.get("entity") or "").strip()
-    year = body.get("year")
-    scenario_id = (body.get("scenario_id") or "actuals").strip()
+    Body: {template_id, entity, year, scenario_id} (legacy) or
+    {template_id, params: {...}}. konsol.report_service validates and builds.
+    """
+    from konsol import report_service
 
-    if not template_id or not entity or year is None:
-        frappe.throw("template_id, entity, and year are required", frappe.ValidationError)
-
-    _assert_entity_access(entity)
-
-    accounts = _pnl_accounts() if template_id == "pnl_monthly" else None
-    try:
-        return compile_cell_map(template_id, entity, int(year), scenario_id, accounts=accounts)
-    except ValueError as exc:
-        frappe.throw(str(exc), frappe.ValidationError)
+    template_id, params = report_service.request(_get_json_body(), report_service.LEGACY_BUILD_KEYS)
+    return report_service.build(template_id, params)
 
 
 def _pnl_accounts():
-    """The group chart's Published Profit and Loss leaves as (code, caption), in code order.
+    """Alias of konsol.report_service._pnl_accounts (moved there by konsol#548 v1 T9)."""
+    from konsol.report_service import _pnl_accounts as moved
 
-    The monthly P&L reads one chart: leaves spread over several charts are refused.
-    """
-    rows = frappe.get_all(
-        "Main Account",
-        filters={"status": "Published", "is_group": 0, "statement_section": "Profit and Loss"},
-        fields=["main_account", "account_name", "chart_of_accounts"],
-        order_by="main_account asc",
-    )
-    charts = sorted({r.chart_of_accounts for r in rows if r.chart_of_accounts})
-    if len(charts) > 1:
-        frappe.throw(
-            "The monthly P&L reads one chart, and Published Profit and Loss accounts exist in "
-            f"charts {', '.join(charts)}. Make one chart Inactive or Draft.",
-            frappe.ValidationError,
-        )
-    return [(r.main_account, r.account_name or r.main_account) for r in rows]
+    return moved()
 
 
 def _fetch_trial_balance_rows(entity, year, period_from, period_to):
-    """Load trial balance rows from gold_trial_balance for snapshot export."""
-    from konsol.report_compiler import TB_LONG_MAX_ROWS
+    """Alias of konsol.report_service._fetch_trial_balance_rows (moved by konsol#548 v1 T9)."""
+    from konsol.report_service import _fetch_trial_balance_rows as moved
 
-    ch_settings = _get_ch_connection()
-    sql = (
-        "SELECT data_area_id, fiscal_year, fiscal_period, main_account, "
-        "any(account_name) AS account_name, any(account_type_name) AS account_type_name, "
-        "any(multiIf(is_pnl = 1, 'P&L', is_balance_sheet = 1, 'BS', '')) AS bs_pnl, "
-        "sum(period_debit) AS debit, sum(period_credit) AS credit, "
-        "sum(period_debit) - sum(period_credit) AS net "
-        "FROM epm_gold.gold_trial_balance "
-        "WHERE data_area_id = {entity:String} "
-        "AND fiscal_year = {year:Int32} "
-        "AND fiscal_period >= {pfrom:Int32} AND fiscal_period <= {pto:Int32} "
-        "GROUP BY data_area_id, fiscal_year, fiscal_period, main_account "
-        "ORDER BY main_account, fiscal_period "
-        f"LIMIT {int(TB_LONG_MAX_ROWS)}"
-    )
-    params = {
-        "param_entity": entity,
-        "param_year": str(int(year)),
-        "param_pfrom": str(int(period_from)),
-        "param_pto": str(int(period_to)),
-    }
-    raw = _clickhouse_query(sql, params, ch_settings)
-    rows = []
-    for line in raw.split("\n"):
-        if not line:
-            continue
-        parts = line.split("\t")
-        if len(parts) < 10:
-            continue
-        rows.append({
-            "entity": parts[0],
-            "year": int(parts[1]),
-            "period": int(parts[2]),
-            "account": parts[3],
-            "account_name": parts[4],
-            "account_type": parts[5],
-            "bs_pnl": parts[6],
-            "debit": float(parts[7]),
-            "credit": float(parts[8]),
-            "net": float(parts[9]),
-        })
-    return rows
+    return moved(entity, year, period_from, period_to)
 
 
 @frappe.whitelist(methods=["POST"])
 def build_snapshot():
-    """Fetch data and compile a values-only Excel cell map (snapshot)."""
-    from konsol.report_compiler import build_trial_balance_long_map
+    """Fetch data and compile a values-only Excel cell map (snapshot).
 
-    body = _get_json_body()
-    template_id = (body.get("template_id") or "").strip()
-    entity = (body.get("entity") or "").strip()
-    year = body.get("year")
-    period_from = body.get("period_from", 1)
-    period_to = body.get("period_to", 12)
+    Body: {template_id, entity, year, period_from, period_to} (legacy) or
+    {template_id, params: {...}}. konsol.report_service validates and builds.
+    """
+    from konsol import report_service
 
-    if not template_id or not entity or year is None:
-        frappe.throw("template_id, entity, and year are required", frappe.ValidationError)
-
-    if template_id != "trial_balance_long":
-        frappe.throw(
-            f"Snapshot not supported for template {template_id!r}",
-            frappe.ValidationError,
-        )
-
-    try:
-        period_from = int(period_from)
-        period_to = int(period_to)
-    except (TypeError, ValueError):
-        frappe.throw("period_from and period_to must be integers", frappe.ValidationError)
-
-    if period_from < 1 or period_to > 12 or period_from > period_to:
-        frappe.throw("period_from and period_to must be between 1 and 12", frappe.ValidationError)
-
-    _assert_entity_access(entity)
-
-    rows = _fetch_trial_balance_rows(entity, int(year), period_from, period_to)
-    return build_trial_balance_long_map(entity, int(year), rows, period_from, period_to)
+    template_id, params = report_service.request(_get_json_body(),
+                                                 report_service.LEGACY_SNAPSHOT_KEYS)
+    return report_service.snapshot(template_id, params)
 
 
 @frappe.whitelist(methods=["POST"])

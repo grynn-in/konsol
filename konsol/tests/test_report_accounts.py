@@ -1,20 +1,13 @@
-"""The monthly P&L endpoint feeds the report compiler the chart's accounts (konsol#211).
+"""The monthly P&L reads the chart's accounts (konsol#211), now in report_service.
 
-`build_cell_map` (and its helper `_pnl_accounts`, when present) are lifted from
-api.py and run against a stub frappe: an in-memory Main Account table whose
-`get_all` honours equality filters and `order_by`. The real, pure
-report_compiler of THIS worktree is loaded by path and wrapped so the test sees
-exactly which accounts the endpoint passed.
+konsol#548 v1 T9 moved `_pnl_accounts` from api.py into konsol/report_service.py
+(api.py keeps the name as an alias). The service is loaded by path under the
+stub frappe of test_report_service.py: an in-memory Main Account table whose
+`get_all` honours equality filters and `order_by`. The interpreter is wrapped
+so the test sees exactly which accounts the service passed. The calendar comes
+from report_choices.periods (the stub's Jan-Dec), not from a stopgap here.
 """
-import ast
-import importlib.util
-import os
-import sys
-import types
-
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-API_PATH = os.path.join(APP_DIR, "api.py")
-COMPILER_PATH = os.path.join(APP_DIR, "report_compiler.py")
+from konsol.tests import test_report_service as harness
 
 MAIN_ACCOUNTS = [
     # deliberately out of code order
@@ -30,92 +23,32 @@ MAIN_ACCOUNTS = [
      "is_group": 0, "statement_section": "Profit and Loss", "chart_of_accounts": "ZZ_CHART_A"},
 ]
 
-JAN_DEC = [
-    {"number": m, "code": f"P{m:02d}", "label": f"P{m:02d}", "start_date": f"2026-{m:02d}-01"}
-    for m in range(1, 13)
-]
 
-
-class Refused(Exception):
-    pass
-
-
-def _compiler():
-    spec = importlib.util.spec_from_file_location("konsol_report_compiler_under_test", COMPILER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def _stub_frappe(rows, calls):
-    def get_all(doctype, filters=None, fields=None, order_by=None, **kw):
-        calls.append({"doctype": doctype, "filters": filters, "fields": fields, "order_by": order_by})
-        assert doctype == "Main Account"
-        out = [r for r in rows if all(r.get(k) == v for k, v in (filters or {}).items())]
-        if order_by:
-            key = order_by.split()[0].strip("`")
-            out.sort(key=lambda r: r[key], reverse=order_by.lower().endswith("desc"))
-        return [types.SimpleNamespace(**{f: r.get(f) for f in fields}) for r in out]
-
-    def throw(msg, exc=None, *a, **k):
-        raise Refused(msg)
-
-    fr = types.SimpleNamespace()
-    fr.whitelist = lambda *a, **k: (lambda f: f)
-    fr.get_all = get_all
-    fr.throw = throw
-    fr.ValidationError = Refused
-    fr._dict = dict
-    return fr
+Refused = harness.Refused
 
 
 def _run(body, rows=MAIN_ACCOUNTS, calls=None):
-    src = open(API_PATH).read()
-    tree = ast.parse(src)
-    wanted = {"build_cell_map", "_pnl_accounts"}
-    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
-    assert any(n.name == "build_cell_map" for n in nodes), "api.py has no build_cell_map"
-
-    real = _compiler()
+    site = harness._site(accounts=[dict(r) for r in rows], entities=["ZZE"], years={2026})
+    svc = harness._service(site)
     passed = []
+    real = svc.compile_formulas
 
-    def recording_build_cell_map(*a, **k):
-        passed.append((a, k))
-        # konsol#548 v1: the compiler refuses a year without Regular periods.
-        # api.py passes them from T9 (report_service); until then this test,
-        # which is about the accounts, supplies a Jan-Dec calendar.
-        if "periods" not in k:
-            k = dict(k, periods=JAN_DEC)
-        return real.build_cell_map(*a, **k)
+    def recording_compile(template, params, ctx):
+        passed.append(ctx)
+        return real(template, params, ctx)
 
-    stub = types.ModuleType("konsol.report_compiler")
-    stub.build_cell_map = recording_build_cell_map
-    stub.list_templates = real.list_templates
-
-    calls = [] if calls is None else calls
-    ns = {
-        "frappe": _stub_frappe(rows, calls),
-        "_get_json_body": lambda: dict(body),
-        "_assert_entity_access": lambda entity: None,
-    }
-    saved = sys.modules.get("konsol.report_compiler")
-    sys.modules["konsol.report_compiler"] = stub
+    svc.compile_formulas = recording_compile
     try:
-        exec(compile(ast.Module(body=nodes, type_ignores=[]), API_PATH, "exec"), ns)
-        result = ns["build_cell_map"]()
+        return svc.build(*svc.request(body, svc.LEGACY_BUILD_KEYS)), passed, \
+            [c for c in site["calls"] if c["doctype"] == "Main Account"]
     finally:
-        if saved is None:
-            sys.modules.pop("konsol.report_compiler", None)
-        else:
-            sys.modules["konsol.report_compiler"] = saved
-    return result, passed, calls
+        if calls is not None:
+            calls.extend(c for c in site["calls"] if c["doctype"] == "Main Account")
 
 
 def _accounts_passed(passed):
-    (args, kwargs), = passed
-    if "accounts" in kwargs:
-        return kwargs["accounts"]
-    return args[4] if len(args) > 4 else None
+    (ctx,) = passed
+    return ctx["accounts"]["lines"]
 
 
 def test_pnl_monthly_gets_only_published_pnl_leaves_in_code_order():

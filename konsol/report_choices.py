@@ -196,10 +196,11 @@ def dimension_values(dimension):
 def _published_accounts(is_group, section):
     """Published Main Accounts of one chart, in code order.
 
-    Mirrors ``konsol.api._pnl_accounts`` (api.py:1414-1426): status Published,
-    ``order_by main_account asc``, and leaves in more than one chart refused
-    (api.py:1420-1426). The section filter is optional here (api.py:1416 fixes
-    it to Profit and Loss), and ``is_group`` selects leaves or headings.
+    Mirrors ``konsol.report_service.block_accounts`` (formerly
+    api._pnl_accounts): status Published, ``order_by main_account asc``, and
+    leaves in more than one chart refused. The section filter is optional here
+    (the monthly P&L fixes it to Profit and Loss), and ``is_group`` selects
+    leaves or headings.
     """
     filters = {"status": "Published", "is_group": is_group}
     if section:

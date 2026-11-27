@@ -49,9 +49,12 @@ def test_tb_text_equals_compiler_constants():
 def test_several_charts_message_matches_api():
     t = _load()["pnl_monthly"]
     msg = t["errors"]["several_charts"]
-    with open(os.path.join(os.path.dirname(rc.__file__), "api.py"), encoding="utf-8") as f:
-        src = f.read()
-    assert "The monthly P&L reads one chart, and Published Profit and Loss accounts exist in " in src
+    # konsol#548 v1 T9: the refusal is rendered from this file
+    # (report_service), so the text lives here only; api.py and the service
+    # carry no copy of it. test_report_accounts pins the rendered message.
+    for name in ("api.py", "report_service.py"):
+        with open(os.path.join(os.path.dirname(rc.__file__), name), encoding="utf-8") as f:
+            assert "The monthly P&L reads one chart" not in f.read(), name
     assert msg == (
         "The monthly P&L reads one chart, and Published Profit and Loss accounts exist in "
         "charts {charts}. Make one chart Inactive or Draft."
