@@ -5,6 +5,8 @@ import os
 import sys
 import types
 
+from konsol.tests.read_path_stub import MemoryCache
+
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CH_PATH = os.path.join(APP_DIR, "clickhouse.py")
 
@@ -65,29 +67,10 @@ def test_clickhouse_uses_epm_settings():
 
 # --- a forced sync fails loudly (konsol#194) ---
 
-class _SharedCache:
-    """``frappe.cache()`` as every process of a site sees it: one Redis, so one
-    store. Hand the same instance to two module loads and they share it, as a
-    web worker and an RQ worker share the site's Redis (konsol#177). Hash
-    fields only, which is all the sync-failure record uses."""
-
-    def __init__(self):
-        self.hashes = {}
-
-    def hset(self, name, key, value, shared=False):
-        self.hashes.setdefault(name, {})[key] = value
-
-    def hget(self, name, key, generator=None, shared=False):
-        return self.hashes.get(name, {}).get(key)
-
-    def hdel(self, name, keys, shared=False):
-        for key in (keys if isinstance(keys, (list, tuple)) else (keys,)):
-            self.hashes.get(name, {}).pop(key, None)
-
-    def hgetall(self, name):
-        # Redis hands field names back as bytes (frappe decodes them with
-        # safe_decode); so does this stub, so a caller that forgets is caught.
-        return {k.encode(): v for k, v in self.hashes.get(name, {}).items()}
+#: ``frappe.cache()`` as every process of a site sees it: one Redis, so one
+#: store. Hand the same instance to two module loads and they share it, as a
+#: web worker and an RQ worker share the site's Redis (konsol#177).
+_SharedCache = MemoryCache
 
 
 def _load_clickhouse(cache=None):
@@ -168,12 +151,11 @@ def test_a_forced_sync_raises_instead_of_going_quiet():
     The failure is still recorded for check_health()."""
     module = _load_clickhouse()
     for error_type, error in _errors(module).items():
-        module._sync_failures.clear()
         raised, returned = _sync(module, error, force=True)
         assert raised is error, (
             f"a forced sync must re-raise the {error_type} failure, not return "
             f"{returned!r}")
-        recorded = module._sync_failures.get(_TABLE)
+        recorded = module.sync_failures().get(_TABLE)
         assert recorded and recorded["error_type"] == error_type, (
             f"the {error_type} failure must still be recorded: {recorded!r}")
 
@@ -183,11 +165,10 @@ def test_an_unforced_sync_stays_best_effort():
     path keeps logging, recording and returning None."""
     module = _load_clickhouse()
     for error_type, error in _errors(module).items():
-        module._sync_failures.clear()
         raised, returned = _sync(module, error, force=False)
         assert raised is None, f"an unforced sync must not raise: {raised!r}"
         assert returned is None, error_type
-        recorded = module._sync_failures.get(_TABLE)
+        recorded = module.sync_failures().get(_TABLE)
         assert recorded and recorded["error_type"] == error_type, repr(recorded)
 
 

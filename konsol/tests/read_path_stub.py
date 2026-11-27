@@ -39,20 +39,38 @@ DEFAULT_MEASURES = {
 
 
 class MemoryCache:
-    """``frappe.cache()`` for a host test: a dict that ignores the TTL.
+    """``frappe.cache()`` for a host test: a dict that ignores the TTL, plus
+    the hash commands the sync-failure record uses (konsol#177).
 
     Per instance, not shared: a cached registry leaking from one test into the
-    next would let a test pass on another's stub.
+    next would let a test pass on another's stub. Hand ONE instance to two
+    module loads to model two processes of one site sharing its Redis.
     """
 
     def __init__(self):
         self._store = {}
+        self.hashes = {}
 
     def get_value(self, key):
         return self._store.get(key)
 
     def set_value(self, key, value, expires_in_sec=None):
         self._store[key] = value
+
+    def hset(self, name, key, value, shared=False):
+        self.hashes.setdefault(name, {})[key] = value
+
+    def hget(self, name, key, generator=None, shared=False):
+        return self.hashes.get(name, {}).get(key)
+
+    def hdel(self, name, keys, shared=False):
+        for key in (keys if isinstance(keys, (list, tuple)) else (keys,)):
+            self.hashes.get(name, {}).pop(key, None)
+
+    def hgetall(self, name):
+        # Redis hands field names back as bytes (frappe decodes them with
+        # safe_decode); so does this stub, so a caller that forgets is caught.
+        return {k.encode(): v for k, v in self.hashes.get(name, {}).items()}
 
 
 def measure_rows(measures=None):

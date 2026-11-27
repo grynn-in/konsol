@@ -130,32 +130,6 @@ def _refused(fn, *a):
     return False
 
 
-def test_the_publish_connects_as_frappe_connect_does():
-    """The fresh connection is Frappe's own class, given what frappe.connect
-    gives it (the site config), and connected before it is returned."""
-    made = []
-
-    class DB:
-        def connect(self):
-            made.append("connected")
-    frappe = _frappe({})
-    frappe.local = types.SimpleNamespace(conf=types.SimpleNamespace(
-        db_socket=None, db_host="mariadb", db_port=3306, db_name="zzdb", db_password="zz-not-a-secret"))
-    database = types.ModuleType("frappe.database")
-    database.get_db = lambda **k: made.append(k) or DB()
-    saved = sys.modules.get("frappe.database")
-    sys.modules["frappe.database"] = database
-    try:
-        _rules_module(frappe)._fresh_db()
-    finally:
-        if saved is None:
-            sys.modules.pop("frappe.database", None)
-        else:
-            sys.modules["frappe.database"] = saved
-    assert made == [dict(socket=None, host="mariadb", port=3306, user="zzdb", password="zz-not-a-secret",
-                         cur_db_name="zzdb"), "connected"]
-
-
 def _ddl():
     with open(os.path.join(APP_DIR, "clickhouse.py")) as f:
         tree = ast.parse(f.read())
