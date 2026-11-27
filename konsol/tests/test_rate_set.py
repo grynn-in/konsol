@@ -125,7 +125,7 @@ def test_not_shipped_as_a_fixture():
 
 # -- the controller ----------------------------------------------------------------
 
-def _controller(flagged=(), count=0):
+def _controller(flagged=(), count=0, count_excluding_constant=None):
     """The real controller against a stub frappe whose Rate Set table holds
     ``flagged`` (names with Is Actuals set) and ``count`` rows in all."""
     record = {"sql": [], "inserted": []}
@@ -153,7 +153,7 @@ def _controller(flagged=(), count=0):
     frappe._ = lambda s: s
     frappe.get_doc = Doc
     frappe.db = types.SimpleNamespace(
-        sql=sql, count=lambda dt, filters=None: count,
+        sql=sql, count=lambda dt, filters=None: (count_excluding_constant if count_excluding_constant is not None and filters else count),
         exists=lambda dt, name=None: record.get("exists", False))
 
     class Document:
@@ -259,6 +259,26 @@ def test_a_fresh_site_gets_actual_flagged_and_a_site_with_sets_is_left_alone():
     assert row["label"] and row["description"], "a seeded row says what it is"
     module, record = _controller(count=1)
     assert module.ensure_actual_set() is None and record["inserted"] == []
+
+
+def test_a_site_holding_only_constant_still_gets_actual():
+    """CONSTANT is the app's own unflagged set (konsol#592), not a site's
+    choice. A site upgraded from before Rate Sets with no rate to stamp got
+    CONSTANT from the Rate Sheet migration and never ACTUAL, so its build
+    failed assert_exactly_one_actuals_rate_set (a 9 Nov example site, 27 Nov
+    2026). Only a set other than CONSTANT means the site has chosen."""
+    module, record = _controller(count=1, count_excluding_constant=0)
+    assert module.ensure_actual_set() == "ACTUAL"
+    module, record = _controller(count=2, count_excluding_constant=1)
+    assert module.ensure_actual_set() is None and record["inserted"] == []
+
+
+def test_actual_is_ensured_on_every_migrate_before_constant():
+    with open(os.path.join(APP_DIR, "hooks.py")) as f:
+        src = f.read()
+    after_migrate = src.split("after_migrate = [", 1)[1].split("]", 1)[0]
+    assert "rate_set.ensure_actual_set" in after_migrate, "an upgraded site gets ACTUAL as a fresh one does"
+    assert after_migrate.index("ensure_actual_set") < after_migrate.index("ensure_constant_set")
 
 
 def test_the_constant_set_is_created_once_unflagged():
