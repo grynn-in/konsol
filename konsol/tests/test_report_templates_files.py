@@ -20,12 +20,18 @@ def test_both_files_load_and_validate():
             assert model.validate(json.load(f), name) == []
 
 
-def test_pnl_text_equals_compiler_constants():
+def test_pnl_text_equals_the_pre_template_compiler_text():
+    # The literals report_compiler hard-coded before T5 made the file the
+    # only source; the golden fixtures pin the same text in the cell maps.
+    sign = "debit positive; a negative total is a profit"
     t = _load()["pnl_monthly"]
-    assert t["sign"]["sentence"] == rc._PNL_SIGN
-    assert t["errors"]["no_rows"] == rc._PNL_NO_ACCOUNTS
+    assert t["sign"]["sentence"] == sign
+    assert t["errors"]["no_rows"] == (
+        "The group chart has no Published Profit and Loss accounts, "
+        "so the monthly P&L has no lines."
+    )
     total = t["rows"]["blocks"][-1]["caption"]
-    assert total.replace("{sign.sentence}", rc._PNL_SIGN) == rc._PNL_TOTAL_CAPTION
+    assert total.replace("{sign.sentence}", sign) == f"Net Profit and Loss ({sign})"
     assert t["sheet_name"] == "P&L"
     assert t["title"] == "Monthly P&L"
 

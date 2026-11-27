@@ -2,26 +2,9 @@
 
 import os
 
-from konsol.report_template_model import load_templates
+from konsol.report_template_model import block_key, compile_formulas, load_templates
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_templates")
-
-_MONTH_LABELS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-]
-
-_PNL_NO_ACCOUNTS = (
-    "The group chart has no Published Profit and Loss accounts, "
-    "so the monthly P&L has no lines."
-)
-
-# Amounts are debit-positive (period_net_amount = debit - credit).
-_PNL_SIGN = "debit positive; a negative total is a profit"
-_PNL_TOTAL_CAPTION = f"Net Profit and Loss ({_PNL_SIGN})"
-
-_MONTH_COLS = 12
-_MONTH_END_COL = "M"  # B..M
 
 TB_LONG_HEADERS = [
     "Entity", "Year", "Period", "Account", "Account Name",
@@ -45,10 +28,6 @@ TB_LONG_NOTE = (
 )
 
 
-def _month_row_range(row):
-    return f"B{row}:{_MONTH_END_COL}{row}"
-
-
 def list_templates():
     """The template files, in `order`: {id, title, description, mode}."""
     templates = load_templates(_TEMPLATE_DIR)
@@ -65,11 +44,34 @@ def list_templates():
     ]
 
 
-def build_cell_map(template_id, entity, year, scenario_id="actuals", accounts=None):
-    """`accounts`: list of `(main_account, caption)` in display order."""
-    if template_id != "pnl_monthly":
+def build_cell_map(template_id, entity, year, scenario_id="actuals", accounts=None, *,
+                   periods=None, params=None, ctx=None):
+    """Compile a formulas template file into a cell map.
+
+    `accounts`: list of `(main_account, caption)` in display order, for the
+    template's one `accounts` block. `periods`: the year's Regular periods
+    ({number, code, label, start_date}); required, a year without them is
+    refused. `params` / `ctx` add to or override what the positional
+    arguments supply (report_template_model.compile_formulas has the ctx
+    contract).
+    """
+    template = load_templates(_TEMPLATE_DIR).get(template_id)
+    if template is None or template["mode"] != "formulas":
         raise ValueError(f"Unknown template_id for formulas: {template_id!r}")
-    return _build_pnl_monthly(entity, int(year), scenario_id, accounts)
+    merged = {"entity": entity, "year": year, "scenario_id": scenario_id}
+    merged.update(params or {})
+    context = {"periods": periods}
+    if accounts is not None:
+        keys = [block_key(b, i) for i, b in enumerate(template["rows"]["blocks"])
+                if b["type"] == "accounts"]
+        if len(keys) != 1:
+            raise ValueError(
+                f"Report template {template_id!r} has {len(keys)} accounts blocks: "
+                "pass ctx['accounts'] by block, not accounts."
+            )
+        context["accounts"] = {keys[0]: list(accounts)}
+    context.update(ctx or {})
+    return compile_formulas(template, merged, context)
 
 
 def build_trial_balance_long_map(entity, year, rows, period_from=1, period_to=12):
@@ -132,55 +134,3 @@ def _num(value):
         return float(value)
     except (TypeError, ValueError):
         return 0
-
-
-def _epm_formula(entity, year, period, account):
-    ent = str(entity).replace('"', '""')
-    acc = str(account).replace('"', '""')
-    return f'=K.EPM("{ent}", {int(year)}, {int(period)}, "{acc}")'
-
-
-def _build_pnl_monthly(entity, year, scenario_id, accounts):
-    if not accounts:
-        raise ValueError(_PNL_NO_ACCOUNTS)
-    cells = [
-        {"range": "A1", "values": [["Monthly P&L"]]},
-        {"range": "B1", "values": [["Entity:"]]},
-        {"range": "C1", "values": [[entity]]},
-        {"range": "E1", "values": [["Year:"]]},
-        {"range": "F1", "values": [[year]]},
-        {"range": "A2", "values": [["Account"]]},
-        {"range": _month_row_range(2), "values": [_MONTH_LABELS]},
-    ]
-
-    row = 3
-    first_data_row = row
-    for account, label in accounts:
-        cells.append({"range": f"A{row}", "values": [[label]]})
-        cells.append({
-            "range": _month_row_range(row),
-            "formulas": [[_epm_formula(entity, year, p, account) for p in range(1, _MONTH_COLS + 1)]],
-        })
-        row += 1
-
-    letters = [chr(ord("B") + i) for i in range(_MONTH_COLS)]
-    last_account_row = row - 1
-    total_row = row
-    cells.append({"range": f"A{total_row}", "values": [[_PNL_TOTAL_CAPTION]]})
-    cells.append({
-        "range": _month_row_range(total_row),
-        "formulas": [[
-            f"=SUM({col}{first_data_row}:{col}{last_account_row})"
-            for col in letters
-        ]],
-    })
-
-    return {
-        "template_id": "pnl_monthly",
-        "mode": "formulas",
-        "entity": entity,
-        "year": year,
-        "scenario_id": scenario_id,
-        "sheet_name": "P&L",
-        "cells": cells,
-    }

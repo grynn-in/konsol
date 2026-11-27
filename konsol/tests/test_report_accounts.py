@@ -30,6 +30,11 @@ MAIN_ACCOUNTS = [
      "is_group": 0, "statement_section": "Profit and Loss", "chart_of_accounts": "ZZ_CHART_A"},
 ]
 
+JAN_DEC = [
+    {"number": m, "code": f"P{m:02d}", "label": f"P{m:02d}", "start_date": f"2026-{m:02d}-01"}
+    for m in range(1, 13)
+]
+
 
 class Refused(Exception):
     pass
@@ -76,6 +81,11 @@ def _run(body, rows=MAIN_ACCOUNTS, calls=None):
 
     def recording_build_cell_map(*a, **k):
         passed.append((a, k))
+        # konsol#548 v1: the compiler refuses a year without Regular periods.
+        # api.py passes them from T9 (report_service); until then this test,
+        # which is about the accounts, supplies a Jan-Dec calendar.
+        if "periods" not in k:
+            k = dict(k, periods=JAN_DEC)
         return real.build_cell_map(*a, **k)
 
     stub = types.ModuleType("konsol.report_compiler")

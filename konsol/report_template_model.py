@@ -5,7 +5,9 @@ A report template is a JSON file ``konsol/report_templates/<id>.json``
 broken rule by name: each problem reads ``<file>: <key path>: <rule>``, and
 ``load_templates`` reports every problem in every file, not only the first.
 Pure: no frappe, stdlib only, so the host tests run it directly. The rules
-below are the schema; ``validate`` enforces all of them.
+below are the schema; ``validate`` enforces all of them. ``compile_formulas``
+(end of the module) interprets a formulas template; its ``ctx`` contract is
+written above it.
 
 Top level
 ---------
@@ -829,3 +831,345 @@ class _Checker:
                 self.add(f"{path}.field", f"{field!r} is not an identifier")
             self.boolean(fd, "number", path)
             self.string(fd, "default", path, required=False, tokens=True)
+
+
+# ===========================================================================
+# FORMULAS-mode interpreter (konsol#548 v1, T5)
+# ===========================================================================
+#
+# compile_formulas(template, params, ctx) turns a validated formulas template
+# into an Excel cell map. It is pure: the caller resolves everything that
+# needs the site and passes it in ``ctx``:
+#
+#   ctx["periods"]   the fiscal year's Regular periods, each
+#                    {number, code, label, start_date}; ``label`` already falls
+#                    back to the code (report_choices.periods). Required: a
+#                    year without Regular periods is refused, never Jan-Dec.
+#                    A period whose ``period_type`` is present and not
+#                    "Regular" is refused.
+#   ctx["accounts"]  {block key: [(code, caption), ...]} in display order, one
+#                    list per ``accounts`` block. The block key is the block's
+#                    ``id``, else ``blocks[<index>]``. The caption is written as
+#                    given: the caller applies the code fallback
+#                    (``account_name or main_account``), as api.py does today.
+#   ctx["charts"]    optional {block key: [chart names]}: the charts the
+#                    block's accounts came from. More than one on a
+#                    ``one_chart`` block is refused with errors.several_charts.
+#
+# Supported so far: header cells, ``accounts`` and ``total`` row blocks, one
+# ``regular_periods`` column group with one read series, an entity param as
+# the scope. Anything else is refused by name (T10/T11 add them).
+
+MONTH_ABBREVS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+#: K.EPM's positional arguments, in functions.js makeReq order.
+EPM_ARGS = ("entity", "year", "period", "account", "measure", "scenario",
+            "dimensions", "scenario_id", "hierarchy", "node", "layer")
+#: K.EPM's own defaults, omitted from a formula: the dataset word and the
+#: scenario id ``actuals``.
+EPM_DEFAULTS = {"scenario": "actuals", "scenario_id": "actuals"}
+
+_DEFAULT_ERRORS = {
+    "no_rows": "{title}: the report has no rows.",
+    "several_charts": "{title} reads one chart, and its accounts exist in charts {charts}.",
+}
+
+
+def _quote(value):
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _epm_arg(name, value):
+    if value is None or value == "":
+        return ""
+    if name == "year":
+        return str(int(value))
+    if name == "period":
+        try:
+            return str(int(value))
+        except (TypeError, ValueError):
+            return _quote(value)
+    return _quote(value)
+
+
+def epm_formula(entity, year, period, account, measure=None, scenario=None,
+                dimensions=None, scenario_id=None, hierarchy=None, node=None, layer=None):
+    """One ``=K.EPM(...)`` formula, positional in makeReq order.
+
+    Text is quoted with ``"`` doubled; year and a numeric period are bare.
+    ``scenario`` and ``scenario_id`` equal to ``actuals`` are K.EPM's defaults
+    and are omitted; empty middle arguments stay as ``, ,``; trailing empty
+    arguments are dropped.
+    """
+    values = dict(zip(EPM_ARGS, (entity, year, period, account, measure, scenario,
+                                 dimensions, scenario_id, hierarchy, node, layer)))
+    for name, default in EPM_DEFAULTS.items():
+        if values[name] == default:
+            values[name] = None
+    args = [_epm_arg(name, values[name]) for name in EPM_ARGS]
+    while args and args[-1] == "":
+        args.pop()
+    return "=K.EPM(" + ", ".join(args) + ")"
+
+
+def column_letters(number):
+    """1 -> A, 28 -> AB."""
+    out = ""
+    while number:
+        number, rem = divmod(number - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
+def _cell_range(col1, row1, col2, row2):
+    first = f"{column_letters(col1)}{row1}"
+    if (col1, row1) == (col2, row2):
+        return first
+    return f"{first}:{column_letters(col2)}{row2}"
+
+
+def render(text, values):
+    """Replace every ``{token}`` in ``text`` from ``values``; an unknown one is refused."""
+    def one(m):
+        token = m.group(1)
+        if token not in values:
+            raise ValueError(f"report template text {text!r}: no value for token '{{{token}}}'")
+        return str(values[token])
+    return _TOKEN.sub(one, text)
+
+
+def _unsupported(template, what):
+    return ValueError(
+        f"Report template {template.get('id')!r}: {what} is not supported by the "
+        f"formulas interpreter yet."
+    )
+
+
+def block_key(block, index):
+    """The key of a row block in ctx: its id, else ``blocks[<index>]``."""
+    return block.get("id") or f"blocks[{index}]"
+
+
+def resolve_params(template, params):
+    """The template's params from ``params`` + declared defaults, in declared order."""
+    params = dict(params or {})
+    declared = [p["name"] for p in template.get("params", [])]
+    unknown = sorted(set(params) - set(declared))
+    if unknown:
+        raise ValueError(
+            f"Report template {template.get('id')!r} has no param "
+            f"{', '.join(repr(u) for u in unknown)} (declared: {', '.join(declared) or 'none'})."
+        )
+    out = {}
+    for p in template.get("params", []):
+        name = p["name"]
+        value = params.get(name)
+        if value is None or value == "":
+            value = p.get("default")
+        if value is None or value == "":
+            if p.get("required"):
+                raise ValueError(f"Report template {template.get('id')!r}: {name} is required.")
+            value = None
+        elif p["type"] in ("fiscal_year", "int"):
+            value = int(value)
+        out[name] = value
+    return out
+
+
+def _sign_sentence(template, params):
+    sign = template.get("sign")
+    if not sign:
+        return ""
+    if "sentence" in sign:
+        return sign["sentence"]
+    return sign["sentences"].get(params.get(sign["param"]), "")
+
+
+def _token_values(template, params):
+    values = {"title": template.get("title", ""), "sign.sentence": _sign_sentence(template, params)}
+    for name, value in params.items():
+        values[name] = "" if value is None else value
+        values[f"param.{name}"] = values[name]
+    return values
+
+
+def _error(template, code, values):
+    text = (template.get("errors") or {}).get(code) or _DEFAULT_ERRORS[code]
+    return ValueError(render(text, values))
+
+
+def regular_periods(periods, year):
+    """``periods`` checked and sorted by number; none at all is refused."""
+    if not periods:
+        raise ValueError(
+            f"No Regular periods are declared for FY{year}, so the report has no "
+            f"columns. Declare the year's Regular periods on EPM Fiscal Year {year}."
+        )
+    for p in periods:
+        ptype = p.get("period_type")
+        if ptype is not None and ptype != "Regular":
+            raise ValueError(
+                f"Period {p.get('code')!r} of FY{year} is {ptype}, not Regular: "
+                f"only Regular periods are report columns."
+            )
+    numbers = [int(p["number"]) for p in periods]
+    if len(set(numbers)) != len(numbers):
+        raise ValueError(f"FY{year} declares a Regular period number twice: {sorted(numbers)}.")
+    return sorted(periods, key=lambda p: int(p["number"]))
+
+
+def _start_month(period):
+    start = period.get("start_date")
+    if not start:
+        return None
+    if hasattr(start, "month"):
+        return start.month
+    m = re.match(r"^\d{4}-(\d{2})-\d{2}", str(start))
+    return int(m.group(1)) if m else None
+
+
+def period_labels(periods, label):
+    """The column label of each period (decided by Deepak Pai, 27 Nov 2026, Q1).
+
+    ``{month_abbrev}`` is the month abbreviation of the period's start only
+    when every period starts in a different month of the year (Jan-Dec ->
+    Jan..Dec, Apr-Mar -> Apr..Mar). Otherwise, or when a start date is
+    missing, it is the period's declared ``label`` (already the code when no
+    label is declared), so no two columns read the same month.
+    """
+    months = [_start_month(p) for p in periods]
+    by_month = None not in months and len(set(months)) == len(months)
+    out = []
+    for p, month in zip(periods, months):
+        declared = p.get("label") or p.get("code") or str(p["number"])
+        out.append(render(label, {
+            "month_abbrev": MONTH_ABBREVS[month - 1] if by_month else declared,
+            "label": declared,
+            "code": p.get("code") or "",
+            "number": int(p["number"]),
+        }))
+    return out
+
+
+def compile_formulas(template, params, ctx):
+    """A formulas template + params + ctx -> the cell map (see the contract above).
+
+    Returns {template_id, mode, <every param, in declared order>, sheet_name,
+    cells, report}; ``report`` is {template_id, template_version, params,
+    area}, ``area`` the A1 rectangle every cell lies in. Refusals raise
+    ValueError with the template's own error text where it declares one.
+    """
+    if template.get("mode") != "formulas":
+        raise ValueError(f"Report template {template.get('id')!r} is not a formulas template.")
+    ctx = ctx or {}
+    params = resolve_params(template, params)
+    values = _token_values(template, params)
+
+    scope = [p for p in template["params"] if p["type"] in ("entity", "group", "scope")]
+    if len(scope) != 1 or scope[0]["type"] != "entity":
+        raise _unsupported(template, "a scope other than one entity param")
+    entity = params[scope[0]["name"]]
+    years = [p["name"] for p in template["params"] if p["type"] == "fiscal_year"]
+    if len(years) != 1:
+        raise _unsupported(template, "a template without exactly one fiscal_year param")
+    year = params[years[0]]
+
+    columns = template["columns"]
+    groups = columns["groups"]
+    if len(groups) != 1 or groups[0]["over"] != "regular_periods":
+        raise _unsupported(template, "a column group other than one regular_periods group")
+    if len(columns["header_rows"]) != 1:
+        raise _unsupported(template, "two header rows")
+    group = groups[0]
+    if len(group["series"]) != 1:
+        raise _unsupported(template, "more than one series in a column group")
+    series = template["series"][group["series"][0]]
+    if "read" not in series:
+        raise _unsupported(template, "a formula series")
+    read = {
+        "scenario": series["read"]["entity"],
+        "measure": series.get("measure"),
+        "scenario_id": params[series["scenario_id"][1:-1]] if "scenario_id" in series else None,
+    }
+
+    periods = regular_periods(ctx.get("periods"), year)
+    labels = period_labels(periods, group["label"])
+    first_col = _column_number(columns["start_col"])
+    last_col = first_col + len(periods) - 1
+    letters = [column_letters(first_col + i) for i in range(len(periods))]
+
+    cells = []
+    for cell in template.get("header", []):
+        value = params[cell["param"]] if "param" in cell else render(cell["text"], values)
+        cells.append({"range": cell["at"], "values": [[value]]})
+    header_row = columns["header_rows"][0]
+    cells.append({"range": _cell_range(first_col, header_row, last_col, header_row),
+                  "values": [labels]})
+
+    row = template["rows"]["start_row"]
+    block_rows = {}  # block key -> [row numbers]
+    accounts = ctx.get("accounts") or {}
+    charts = ctx.get("charts") or {}
+    for i, block in enumerate(template["rows"]["blocks"]):
+        key = block_key(block, i)
+        btype = block["type"]
+        if btype == "accounts":
+            found = sorted(set(charts.get(key) or ()))
+            if block.get("one_chart") and len(found) > 1:
+                raise _error(template, "several_charts", dict(values, charts=", ".join(found)))
+            lines = accounts.get(key) or []
+            if not lines:
+                raise _error(template, "no_rows", values)
+            block_rows[key] = []
+            for code, caption in lines:
+                line = dict(values, **{"account.code": code, "account.name": caption})
+                cells.append({"range": f"A{row}", "values": [[render(block["caption"], line)]]})
+                cells.append({
+                    "range": _cell_range(first_col, row, last_col, row),
+                    "formulas": [[epm_formula(entity, year, p["number"], code, **read)
+                                  for p in periods]],
+                })
+                block_rows[key].append(row)
+                row += 1
+        elif btype == "total":
+            rows = sorted(r for ref in block["of"] for r in block_rows.get(ref, ()))
+            runs = []
+            for r in rows:
+                if runs and r == runs[-1][1] + 1:
+                    runs[-1][1] = r
+                else:
+                    runs.append([r, r])
+            cells.append({"range": f"A{row}", "values": [[render(block["caption"], values)]]})
+            cells.append({
+                "range": _cell_range(first_col, row, last_col, row),
+                "formulas": [[
+                    "=SUM(" + ",".join(f"{c}{a}:{c}{b}" for a, b in runs) + ")"
+                    for c in letters
+                ]],
+            })
+            row += 1
+        else:
+            raise _unsupported(template, f"a {btype!r} row block")
+
+    out = {"template_id": template["id"], "mode": "formulas"}
+    out.update(params)
+    out["sheet_name"] = template["sheet_name"]
+    out["cells"] = cells
+    out["report"] = {
+        "template_id": template["id"],
+        "template_version": template["version"],
+        "params": dict(params),
+        "area": _area(cells),
+    }
+    return out
+
+
+def _area(cells):
+    cols, rows = [], []
+    for cell in cells:
+        for ref in cell["range"].split(":"):
+            m = _A1.match(ref)
+            cols.append(_column_number(m.group(1)))
+            rows.append(int(m.group(2)))
+    return _cell_range(min(cols), min(rows), max(cols), max(rows))
