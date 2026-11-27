@@ -2,8 +2,9 @@
 //
 // konsol/public/excel-addin/server.js and functions.js are loaded, in the
 // order index.html loads them, into a fresh vm context with a stub
-// CustomFunctions, a stub fetch, a stub localStorage and a stub location.
-// Optional konsolServer calls run first, then the function named in the
+// CustomFunctions, a stub fetch, a stub localStorage, a stub location and a
+// stub Office whose document settings stand for one workbook's settings.
+// Optional konsolServer calls run first (a promise is awaited), then the function named in the
 // input is called, and what it returned and what it sent are printed as
 // JSON. Driven by test_excel_addin_dimensions.py and
 // test_excel_addin_server.py; no Excel, no browser.
@@ -14,11 +15,16 @@
 //    "fetchFails": false,                 // fetch rejects, as a refused CORS call does
 //    "origin": "https://pane.example",    // location.origin of the pane
 //    "storage": {"key": "value"},         // localStorage before loading
+//    "settings": {"key": "value"},        // this workbook's document settings
+//    "noOffice": false,                   // no Office at all (outside Excel)
+//    "saveFails": false,                  // settings.saveAsync fails
+//    "skip": ["server.js"],               // files not loaded (an old cached page)
 //    "ops": [["choose", "https://b.example"], ["getToken"], ...]}
 // Output (stdout, JSON):
 //   {"result": <value or null>, "error": {"code", "message"} or null,
 //    "requests": [{"url", "body", "headers", "credentials"}],
-//    "ops": [<result of each op>], "storage": {...}}
+//    "ops": [<result of each op>], "storage": {...}, "settings": {...},
+//    "saves": <saveAsync calls>, "warnings": [<console.warn text>]}
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -42,6 +48,26 @@ const localStorage = {
   removeItem: (k) => { delete storage[k]; },
 };
 
+const docSettings = Object.assign({}, input.settings || {});
+let saves = 0;
+const warnings = [];
+const Office = {
+  AsyncResultStatus: { Succeeded: "succeeded", Failed: "failed" },
+  context: {
+    document: {
+      settings: {
+        get: (k) => (Object.prototype.hasOwnProperty.call(docSettings, k) ? docSettings[k] : null),
+        set: (k, v) => { docSettings[k] = v; },
+        remove: (k) => { delete docSettings[k]; },
+        saveAsync(cb) {
+          saves += 1;
+          if (cb) cb(input.saveFails ? { status: "failed", error: { message: "disk full (stub)" } } : { status: "succeeded" });
+        },
+      },
+    },
+  },
+};
+
 const requests = [];
 const registered = {};
 const context = {
@@ -51,6 +77,7 @@ const context = {
     associate: (name, fn) => { registered[name] = fn; },
   },
   localStorage,
+  console: { log() {}, warn: (...a) => { warnings.push(a.join(" ")); } },
   location: { origin: input.origin || "https://pane.example" },
   fetch: (url, opts) => {
     requests.push({ url, body: JSON.parse(opts.body), headers: opts.headers || {},
@@ -73,15 +100,17 @@ const context = {
   RegExp,
   isFinite,
 };
+if (!input.noOffice) context.Office = Office;
 vm.createContext(context);
 for (const name of ["server.js", "functions.js"]) {
+  if ((input.skip || []).includes(name)) continue;
   vm.runInContext(fs.readFileSync(path.join(addin, name), "utf8"), context, { filename: name });
 }
 
-const out = { result: null, error: null, requests, ops: [], storage };
+const out = { result: null, error: null, requests, ops: [], storage, settings: docSettings, warnings };
 try {
   for (const [method, ...args] of input.ops || []) {
-    const v = context.konsolServer[method](...args);
+    const v = await context.konsolServer[method](...args);
     out.ops.push(v === undefined ? null : v);
   }
   if (input.fn) {
@@ -92,4 +121,5 @@ try {
 } catch (err) {
   out.error = { code: err.code || null, message: String(err.message) };
 }
+out.saves = saves;
 process.stdout.write(JSON.stringify(out));

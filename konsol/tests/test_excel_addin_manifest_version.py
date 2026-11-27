@@ -19,7 +19,10 @@ TEMPLATE = os.path.join(APP_DIR, "excel_addin_manifest.template.xml")
 #: S2-X3): K.EPMSAVE takes currency and amountBasis. 2.0.4.0 (konsol#348 S3
 #: K5): K.EPMSAVE takes asOfDate, the forecast round. 2.0.5.0 (konsol#348 S6
 #: KC1): K.EPM's scenario tooltip lists the Dataset words, the S6 ones included.
-SHIPPED = ("988c0179f42299f5", "2.0.5.0")
+#: 2.0.6.0 (konsol#618 review): functions.json unchanged; the server moves into
+#: the workbook and functions.js survives a cached page without server.js, so a
+#: new Version makes Excel take the new files.
+SHIPPED = ("988c0179f42299f5", "2.0.6.0")
 
 
 def _version():

@@ -16,7 +16,8 @@
 //    "snapshotFails": {"<sheet>": "message"},
 //    "sheetCalcSupported": true,          // ExcelApi 1.6
 //    "excelRunThrows": false,
-//    "params": {...}}                     // for rememberSnapshot
+//    "params": {...},                     // for rememberSnapshot
+//    "server": "https://pane.example"}    // konsolServer.current() (server.js)
 // Output (stdout, JSON): see `out` below.
 import fs from "node:fs";
 import path from "node:path";
@@ -179,6 +180,7 @@ const context = {
     if (input.whoami === "reject") return Promise.reject(new Error("HTTP 502 (stub)"));
     return Promise.resolve(input.user === undefined ? "zz@example.com" : input.user);
   },
+  konsolServer: { current: () => input.server || "https://pane.example" },
   konsolLog: (level, message) => { out.logs.push([level, message]); },
   konsolidatSnapshotReport(params) {
     const name = params.sheet_name;

@@ -158,11 +158,36 @@ def test_no_origin_header_no_cors_headers():
     "/api/resource/User",
     "/api/method/frappe.auth.get_logged_user",
     "/api/method/konsol.api.epm_batch/extra",
-    "/api/v2/method/konsol.api.epm_batch",
+    "/api/v3/method/konsol.api.epm_batch",
+    "/api/v2/method/konsol.api/epm_batch",
+    "/api/v2/method/Close Settings/epm_batch",
+    "/xapi/method/konsol.api.epm_batch",
     "/desk",
 ])
 def test_other_paths_never_get_cors_headers(path):
     assert model.cors_headers(path, "OPTIONS", "https://pane.example", LISTED) == {}
+    assert not model.is_addin_path(path)
+
+
+#: Frappe v16 routes the same RPC under three prefixes (frappe/api/__init__.py:
+#: /api, /api/v1 and /api/v2, each with /method/<method>).
+PREFIXES = ("/api/method/", "/api/v1/method/", "/api/v2/method/")
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_every_api_prefix_of_an_add_in_method_gets_the_headers(prefix):
+    path = prefix + "konsol.api.epm_batch"
+    assert model.is_addin_path(path), path
+    h = model.cors_headers(path, "OPTIONS", "https://pane.example", LISTED)
+    assert h["Access-Control-Allow-Origin"] == "https://pane.example", (path, h)
+    assert "Access-Control-Allow-Credentials" not in h
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+def test_the_hook_switches_frappes_cors_off_on_every_prefix(prefix):
+    headers, fr, _ = _hook("https://pane.example", path=prefix + "konsol.api.excel_addin_auth")
+    assert headers["Access-Control-Allow-Origin"] == "https://pane.example"
+    assert fr.local.allow_cors is None, prefix
 
 
 def test_never_a_wildcard():
@@ -186,7 +211,27 @@ class _Headers(dict):
     pass
 
 
-def _hook(origins_text, path=EPM, method="POST", origin="https://pane.example"):
+class _Vary:
+    """werkzeug's ``Response.vary``: a header set whose ``add`` appends to the
+    Vary header and keeps what is already there (werkzeug HeaderSet)."""
+
+    def __init__(self, headers):
+        self._headers = headers
+
+    def add(self, value):
+        items = [v.strip() for v in self._headers.get("Vary", "").split(",") if v.strip()]
+        if value.lower() not in (v.lower() for v in items):
+            items.append(value)
+        self._headers["Vary"] = ", ".join(items)
+
+
+class _Response:
+    def __init__(self, headers=None):
+        self.headers = _Headers(headers or {})
+        self.vary = _Vary(self.headers)
+
+
+def _hook(origins_text, path=EPM, method="POST", origin="https://pane.example", response_headers=None):
     fr = types.ModuleType("frappe")
     fr.local = types.SimpleNamespace()
     settings = types.SimpleNamespace(excel_addin_origins=origins_text)
@@ -213,7 +258,7 @@ def _hook(origins_text, path=EPM, method="POST", origin="https://pane.example"):
     mod.frappe = fr
     request = types.SimpleNamespace(path=path, method=method,
                                     headers={"Origin": origin} if origin else {})
-    response = types.SimpleNamespace(headers=_Headers())
+    response = _Response(response_headers)
     mod.add_cors_headers(response=response, request=request)
     return response.headers, fr, errors
 
@@ -237,6 +282,21 @@ def test_the_hook_leaves_other_paths_and_frappes_cors_alone():
     assert not hasattr(fr.local, "allow_cors")
 
 
+def test_the_hook_adds_origin_to_vary_and_keeps_what_was_there():
+    """Overwriting Vary would drop e.g. Accept-Encoding set by an earlier
+    layer, and a cache could then serve a compressed body to a client that
+    cannot take it (konsol#618 review)."""
+    headers, _, _ = _hook("https://pane.example", response_headers={"Vary": "Accept-Encoding"})
+    assert [v.strip() for v in headers["Vary"].split(",")] == ["Accept-Encoding", "Origin"], headers
+    headers, _, _ = _hook("https://other.example", response_headers={"Vary": "Accept-Encoding"})
+    assert [v.strip() for v in headers["Vary"].split(",")] == ["Accept-Encoding", "Origin"], headers
+
+
+def test_the_hook_does_not_assign_the_vary_header():
+    src = open(os.path.join(APP_DIR, "excel_addin.py")).read()
+    assert 'headers["Vary"]' not in src and "vary.add(" in src
+
+
 def test_a_stored_list_that_no_longer_parses_allows_nothing_and_is_logged():
     headers, _, errors = _hook("https://pane.example/bad-path")
     assert "Access-Control-Allow-Origin" not in headers
@@ -254,6 +314,19 @@ def test_hooks_wire_the_cors_hook_after_request():
             except ValueError:
                 pass
     assert "konsol.excel_addin.add_cors_headers" in values["after_request"], values["after_request"]
+
+
+def test_the_cors_hook_runs_first_after_request():
+    """Frappe runs the after_request hooks in one try block (frappe/app.py,
+    v16): a hook that raises skips every later one. Run first, the CORS hook
+    has always set allow_cors = None before anything can raise, so Frappe's
+    credentialed CORS can never reach an add-in path."""
+    with open(os.path.join(APP_DIR, "hooks.py")) as f:
+        tree = ast.parse(f.read())
+    (after,) = [ast.literal_eval(n.value) for n in tree.body
+                if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+                and n.targets[0].id == "after_request"]
+    assert after[0] == "konsol.excel_addin.add_cors_headers", after
 
 
 # -- Close Settings -----------------------------------------------------------
@@ -278,6 +351,26 @@ def test_close_settings_has_the_origins_field_on_an_excel_add_in_tab():
     assert by_name["excel_addin_tab"]["fieldtype"] == "Tab Break"
     assert by_name["excel_addin_tab"]["label"] == "Excel Add-in"
     assert order.index("excel_addin_tab") < order.index("excel_addin_origins")
+
+
+def test_the_origins_help_says_a_listed_origin_is_trusted_with_tokens():
+    _, by_name = _fields()
+    help_text = by_name["excel_addin_origins"]["description"]
+    assert "every script" in help_text and "token" in help_text, help_text
+
+
+def test_only_a_system_manager_may_change_the_origins():
+    """Listing an origin trusts every script on it with this site's add-in
+    tokens: a System Manager decision (permlevel 1), which EPM Admin may read."""
+    doc, by_name = _fields()
+    assert by_name["excel_addin_origins"].get("permlevel") == 1
+    level1 = {p["role"]: p for p in doc["permissions"] if p.get("permlevel") == 1}
+    assert set(level1) == {"System Manager", "EPM Admin"}, level1
+    assert level1["System Manager"].get("read") and level1["System Manager"].get("write")
+    assert level1["EPM Admin"].get("read") and not level1["EPM Admin"].get("write")
+    # Every other Close Settings field stays at level 0, as before.
+    others = [f["fieldname"] for f in doc["fields"] if f.get("permlevel") and f["fieldname"] != "excel_addin_origins"]
+    assert others == [], others
 
 
 def test_the_controller_validates_and_normalises_the_origins():

@@ -5,9 +5,12 @@ buttons.
 
 B. The pane talks to one server at a time. By default that is the origin the
 pane was loaded from, exactly as before; the user may enter another https://
-site address (origin only, no path). The choice is kept in localStorage, and
-so are tokens, one per server: switching server never sends one site's token
-to another. ``server.js`` holds these rules; ``functions.js`` and the pane
+site address (origin only, no path). The choice is kept in the workbook's
+own document settings (``konsolServer``, saved with the file), so two open
+workbooks can read two sites and switching the pane in one never moves the
+other's cells. A workbook with no choice talks to the pane's origin. Tokens
+stay in localStorage, one per server: switching server never sends one
+site's token to another. ``server.js`` holds these rules; ``functions.js`` and the pane
 build every URL from it. ribbon.js makes no request of its own: it goes
 through the pane's ``konsolWhoami`` and ``konsolidatSnapshotReport``.
 
@@ -84,38 +87,77 @@ def test_anything_else_is_refused_with_a_reason(text, why):
 
 # -- choosing a server ------------------------------------------------------------
 
+SETTING = "konsolServer"
+
+
 def test_by_default_the_server_is_the_panes_own_origin_and_urls_stay_relative():
     out = _run(ops=[["current"], ["isCrossOrigin"], ["url", "/api/method/x"]])
     assert out["ops"] == [PANE, False, "/api/method/x"], out
 
 
-def test_a_chosen_server_is_kept_and_urls_go_to_it():
+def test_a_chosen_server_is_kept_in_the_workbook_not_the_browser():
     out = _run(ops=[["choose", "https://other.example/"], ["current"], ["isCrossOrigin"],
                     ["url", "/api/method/x"]])
     assert out["ops"] == [{"origin": OTHER}, OTHER, True, OTHER + "/api/method/x"], out
-    assert out["storage"]["konsol_server"] == OTHER
+    assert out["settings"] == {SETTING: OTHER}, out["settings"]
+    assert out["saves"] == 1, "the choice is saved with the workbook (settings.saveAsync)"
+    assert not any("server" in k for k in out["storage"]), (
+        "a browser-wide key would move every open workbook's cells: %s" % out["storage"])
+
+
+def test_a_workbook_reads_its_own_server_whatever_another_workbook_chose():
+    """Workbook W1 chose OTHER; workbook W2, in the same browser (same
+    localStorage, same tokens), has no choice and stays on the pane's origin."""
+    storage = {"konsol_token:" + OTHER: "tok-other"}
+    w1 = _run(storage=storage, settings={SETTING: OTHER}, ops=[["current"]])
+    w2 = _run(storage=w1["storage"], settings={}, ops=[["current"]])
+    assert w1["ops"] == [OTHER] and w2["ops"] == [PANE], (w1, w2)
 
 
 def test_a_refused_address_changes_nothing():
-    out = _run(storage={"konsol_server": OTHER},
-               ops=[["choose", "http://third.example"], ["current"]])
+    out = _run(settings={SETTING: OTHER}, ops=[["choose", "http://third.example"], ["current"]])
     assert "error" in out["ops"][0]
     assert out["ops"][1] == OTHER
-    assert out["storage"]["konsol_server"] == OTHER
+    assert out["settings"] == {SETTING: OTHER}
+    assert out["saves"] == 0
 
 
 def test_choosing_the_panes_own_origin_or_blank_goes_back_to_the_default():
     for text in ("", PANE):
-        out = _run(storage={"konsol_server": OTHER}, ops=[["choose", text], ["current"]])
+        out = _run(settings={SETTING: OTHER}, ops=[["choose", text], ["current"]])
         assert out["ops"][1] == PANE, out
-        assert "konsol_server" not in out["storage"], out["storage"]
+        assert SETTING not in out["settings"], out["settings"]
+        assert out["saves"] == 1
 
 
-def test_a_stored_server_that_is_not_an_origin_is_dropped_and_reported():
-    out = _run(storage={"konsol_server": "javascript:alert(1)"}, ops=[["current"], ["notice"]])
+def test_a_failed_save_is_reported_not_hidden():
+    out = _run(saveFails=True, ops=[["choose", OTHER], ["current"]])
+    chosen = out["ops"][0]
+    assert chosen["origin"] == OTHER, chosen
+    assert "disk full (stub)" in chosen["unsaved"], chosen
+    assert out["ops"][1] == OTHER, "the workbook uses the choice until it closes"
+
+
+def test_without_a_workbook_a_server_cannot_be_chosen():
+    out = _run(noOffice=True, ops=[["choose", OTHER], ["current"]])
+    assert "workbook" in out["ops"][0]["error"], out["ops"][0]
+    assert out["ops"][1] == PANE
+
+
+def test_a_stored_server_that_is_not_an_origin_is_not_used_and_is_reported():
+    out = _run(settings={SETTING: "javascript:alert(1)"}, ops=[["current"], ["notice"]])
     assert out["ops"][0] == PANE
     assert "javascript:alert(1)" in out["ops"][1], out
+
+
+def test_the_old_browser_wide_choice_is_dropped_and_reported_not_adopted():
+    """Before this fix the choice was one localStorage key for every workbook.
+    Adopting it into this workbook would guess which workbook it was for."""
+    out = _run(storage={"konsol_server": OTHER}, ops=[["current"], ["notice"]])
+    assert out["ops"][0] == PANE, out
+    assert OTHER in out["ops"][1] and "workbook" in out["ops"][1], out["ops"][1]
     assert "konsol_server" not in out["storage"]
+    assert out["settings"] == {}
 
 
 # -- tokens per server --------------------------------------------------------------
@@ -159,9 +201,9 @@ def test_same_origin_without_a_token_still_sends_the_cookie():
     assert req["credentials"] == "include"
 
 
-def test_formulas_go_to_the_chosen_server_with_its_own_token():
-    out = _run(storage={"konsol_server": OTHER, "konsol_token:" + PANE: "tok-pane",
-                        "konsol_token:" + OTHER: "tok-other"},
+def test_formulas_go_to_the_workbooks_server_with_its_own_token():
+    out = _run(settings={SETTING: OTHER},
+               storage={"konsol_token:" + PANE: "tok-pane", "konsol_token:" + OTHER: "tok-other"},
                fn="EPM", args=EPM_ARGS)
     (req,) = out["requests"]
     assert req["url"] == OTHER + "/api/method/konsol.api.epm_batch"
@@ -170,7 +212,7 @@ def test_formulas_go_to_the_chosen_server_with_its_own_token():
 
 
 def test_a_cross_origin_formula_never_sends_another_sites_token_or_cookies():
-    out = _run(storage={"konsol_server": OTHER, "konsol_token:" + PANE: "tok-pane"},
+    out = _run(settings={SETTING: OTHER}, storage={"konsol_token:" + PANE: "tok-pane"},
                fn="EPM", args=EPM_ARGS, status=403, reply={})
     (req,) = out["requests"]
     assert "X-Konsolidat-Token" not in req["headers"], req
@@ -178,7 +220,7 @@ def test_a_cross_origin_formula_never_sends_another_sites_token_or_cookies():
 
 
 def test_epmsave_goes_to_the_chosen_server():
-    out = _run(storage={"konsol_server": OTHER, "konsol_token:" + OTHER: "tok-other"},
+    out = _run(settings={SETTING: OTHER}, storage={"konsol_token:" + OTHER: "tok-other"},
                fn="EPMSAVE",
                args=[100, "ZZE", 2024, 1, "ZZ6100", "ZZPLAN", "base", None, None, None, "EUR", "Movement"])
     (req,) = out["requests"]
@@ -187,7 +229,7 @@ def test_epmsave_goes_to_the_chosen_server():
 
 
 def test_a_refused_cross_origin_call_names_the_fix():
-    out = _run(storage={"konsol_server": OTHER, "konsol_token:" + OTHER: "tok-other"},
+    out = _run(settings={SETTING: OTHER}, storage={"konsol_token:" + OTHER: "tok-other"},
                fn="EPM", args=EPM_ARGS, fetchFails=True)
     msg = out["error"]["message"]
     assert out["error"]["code"] == "#N/A"
@@ -196,16 +238,39 @@ def test_a_refused_cross_origin_call_names_the_fix():
 
 
 def test_the_unreachable_message_names_both_sites():
-    out = _run(storage={"konsol_server": OTHER}, ops=[["unreachableMessage"]])
+    out = _run(settings={SETTING: OTHER}, ops=[["unreachableMessage"]])
     (msg,) = out["ops"]
     assert msg.startswith("Could not reach " + OTHER), msg
     assert "ask an admin of " + OTHER + " to add " + PANE + " to Close Settings → Excel Add-in Origins" in msg
 
 
 def test_functions_js_has_no_url_or_token_key_of_its_own():
+    """Only its fallback for an old cached page (no server.js) names the
+    token key that page wrote."""
     src = _read("functions.js")
-    assert '"konsol_token"' not in src
-    assert "konsolServer.url(" in src and "konsolServer.getToken(" in src
+    start = src.index("function sameOriginServer(")
+    end = src.index("\n}\n", start)
+    assert '"konsol_token"' not in src[:start] + src[end:]
+    assert "server().url(" in src and "server().getToken(" in src
+
+
+def test_functions_js_without_server_js_reads_the_panes_own_origin_and_warns():
+    """An old cached index.html loads the new functions.js but no server.js:
+    the cells still read the pane's own site, as that page did, never throw a
+    ReferenceError, and the console says why."""
+    out = _run(skip=["server.js"], storage={"konsol_token": "old"}, fn="EPM", args=EPM_ARGS)
+    assert out["error"] is None, out
+    (req,) = out["requests"]
+    assert req["url"] == "/api/method/konsol.api.epm_batch"
+    assert req["headers"]["X-Konsolidat-Token"] == "old"
+    assert out["result"] == 42
+    assert any("server.js" in w for w in out["warnings"]), out["warnings"]
+
+
+def test_functions_js_without_server_js_names_the_reload_when_unreachable():
+    out = _run(skip=["server.js"], fn="EPM", args=EPM_ARGS, fetchFails=True)
+    assert out["error"]["code"] == "#N/A", out
+    assert "Could not reach" in out["error"]["message"], out
 
 
 # -- the pane ----------------------------------------------------------------------------
@@ -269,3 +334,15 @@ def test_pane_buttons_have_the_ribbon_labels():
     src = _read("index.html")
     assert re.search(r'id="refresh-sheet-btn"[^>]*>Refresh sheet<', src)
     assert re.search(r'id="refresh-workbook-btn"[^>]*>Refresh workbook<', src)
+
+
+def test_the_pane_keeps_the_choice_per_workbook_and_reports_a_failed_save():
+    src = _read("index.html")
+    body = src[src.index("function chooseServer("):]
+    body = body[:body.index("\n      function ", 1)]
+    assert "konsolServer.choose(serverInput.value).then(" in body, body
+    assert "unsaved" in body, "a choice Excel could not save with the workbook must be reported"
+    assert 'localStorage.getItem("konsol_server")' not in src
+    hint = src[src.index("function showServer("):]
+    hint = hint[:hint.index("\n      function ", 1)]
+    assert "workbook" in hint, "the pane must say the choice belongs to this workbook"
