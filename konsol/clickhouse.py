@@ -19,7 +19,8 @@ import requests
 #: The Redis hash that holds the last sync failure per table, for
 #: check_health (konsol#177). ``frappe.cache()`` namespaces the key by site,
 #: so every process serving the site (web, RQ worker, migrate) writes and
-#: reads the same record, and it survives a restart. It used to be a dict in
+#: reads the same record, and it survives a Frappe process restart (not a
+#: Redis restart or eviction: redis-cache is a cache). It used to be a dict in
 #: the memory of the process that hit the failure: a sync that failed in the
 #: worker was invisible to the health check the web process served.
 _SYNC_FAILURES_KEY = "konsol_sync_failures"
@@ -578,6 +579,18 @@ def sync_failures():
     return {(k.decode() if isinstance(k, bytes) else k): v for k, v in found.items()}
 
 
+def _readable_sync_failures():
+    """``(failures, None)``, or ``(None, reason)`` when the cache cannot be
+    read. Frappe's ``hgetall`` lets a Redis ConnectionError through, unlike
+    ``hset``/``hdel``/``hget`` (review of #617); the health check reports it
+    rather than raising. Any error counts: the host tests have no redis."""
+    try:
+        return sync_failures(), None
+    except Exception as e:
+        return None, "sync failure record unreadable: Redis cache unreachable (%s)" % (
+            str(e) or type(e).__name__)
+
+
 def check_health():
     """Check ClickHouse connectivity and return health status.
 
@@ -610,8 +623,11 @@ def check_health():
         return result
 
     # Sync failures recorded by any process of this site (konsol#177)
-    failures = sync_failures()
-    if failures:
+    failures, unreadable = _readable_sync_failures()
+    if unreadable:
+        result["status"] = "degraded"
+        result["message"] = unreadable
+    elif failures:
         result["recent_sync_failures"] = [
             {"table": k, **v} for k, v in sorted(failures.items())
         ]
