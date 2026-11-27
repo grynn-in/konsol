@@ -154,6 +154,9 @@ class ApprovedBudget(Document):
         if frappe.flags.in_install or frappe.flags.in_migrate:
             return
         states = {0: _("draft"), 1: _("approved")}
+        # The Link value is the document name (CG-<code>-); the message names the code (konsol#555).
+        group_code = frappe.db.get_value(
+            "Consolidation Group", self.consolidation_group, "consolidation_group") or self.consolidation_group
         rows = frappe.db.get_values(
             "Approved Budget",
             {"consolidation_group": self.consolidation_group, "fiscal_year": self.fiscal_year,
@@ -165,7 +168,7 @@ class ApprovedBudget(Document):
             frappe.throw(
                 _("Approved Budget {0} is already the {1} declaration for {2} FY{3}. A group and year hold one "
                   "live declaration: work in it, or cancel it and amend it.").format(
-                    row.name, states[int(row.docstatus)], self.consolidation_group, self.fiscal_year),
+                    row.name, states[int(row.docstatus)], group_code, self.fiscal_year),
                 frappe.ValidationError)
 
     def before_submit(self):
