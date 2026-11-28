@@ -73,6 +73,47 @@
    "columns": 2
   },
   {
+   "fieldname": "source",
+   "fieldtype": "Data",
+   "label": "Source",
+   "read_only": 1,
+   "columns": 2,
+   "description": "Where the driver value came from: Uploaded Statistic, Fixed Weights or Account Set."
+  },
+  {
+   "fieldname": "effective_from",
+   "fieldtype": "Date",
+   "label": "Effective From",
+   "read_only": 1,
+   "columns": 1,
+   "description": "For Fixed Weights: the start of the window used."
+  },
+  {
+   "fieldname": "basis",
+   "fieldtype": "Data",
+   "label": "Basis",
+   "read_only": 1,
+   "columns": 2,
+   "description": "Share of Pool or Declared Rate, as the rule declared at Compute."
+  },
+  {
+   "fieldname": "rate",
+   "fieldtype": "Float",
+   "label": "Rate",
+   "precision": "4",
+   "read_only": 1,
+   "columns": 1,
+   "description": "Amount per driver unit, from the rule set's rates at Compute."
+  },
+  {
+   "fieldname": "rate_from",
+   "fieldtype": "Date",
+   "label": "Rate From",
+   "read_only": 1,
+   "columns": 1,
+   "description": "Start of the rate window used."
+  },
+  {
    "fieldname": "weight",
    "fieldtype": "Float",
    "label": "Weight",

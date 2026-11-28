@@ -1374,3 +1374,806 @@ def test_reciprocal_rounding_performance_20_senders_200_finals():
     took = time.perf_counter() - t
     assert len(rows) == len(exact)
     assert took < 15, "rounding %d rows took %.1f s" % (len(exact), took)
+
+
+# -- 2b-2 R3: declared rates (Direct and Step-Down) ---------------------------
+#
+# A step has basis Share of Pool (the sender's pool split by weights) or
+# Declared Rate (receivers charged rate x driver units; konsol#269, Q5 5B).
+# For a rate origin, coefficients are in DRIVER UNITS: the own hop's pool is
+# the step's total units and each receiver's coefficient is its units; the
+# warehouse multiplies by origin_amount = the rate. A later share sender passes
+# rate-origin units on by its own weights. Step-Down: a rate sender's outflow
+# is fixed, so cost it receives from other origins stops there (a sink) and
+# ends in its absorption variance (plan section 3, decided 27 Nov 2026).
+
+import hashlib
+
+_SHARE = "Share of Pool"
+_RATE = "Declared Rate"
+
+
+def _rate_example():
+    """Plan section 3: IT rate sender (pool 1,000, 50 per ticket; tickets HR 5,
+    Sales 8, Ops 6), then HR share sender (pool 400) by headcount 5:3."""
+    steps = [
+        M.Step(1, "IT", "Tickets", ["HR", "Sales", "Ops"], basis=_RATE, rate=Fraction(50)),
+        M.Step(2, "HR", "Headcount", ["Sales", "Ops"]),
+    ]
+    rows = [
+        {"step": 1, "receiver_member": "HR", "driver_value": 5},
+        {"step": 1, "receiver_member": "Sales", "driver_value": 8},
+        {"step": 1, "receiver_member": "Ops", "driver_value": 6},
+        {"step": 2, "receiver_member": "Sales", "driver_value": 5},
+        {"step": 2, "receiver_member": "Ops", "driver_value": 3},
+    ]
+    return steps, M.weights(rows), M.units(rows)
+
+
+def _apply(rows, steps, pools):
+    """What dbt does: x = origin_amount * coefficient, sent -x, received +x.
+    origin_amount is the rate for a rate origin and the pool for a share origin."""
+    by_sender = {st.sender_member: st for st in steps}
+    net, sent, received = {}, {}, {}
+    for r in rows:
+        o = by_sender[r["origin_member"]]
+        # the warehouse holds the rate as a 4-dp Decimal: exact for a declared rate
+        amount = (Decimal(o.rate.numerator) / Decimal(o.rate.denominator) if o.basis == _RATE
+                  else pools[o.sender_member])
+        x = amount * r["coefficient"]
+        sent[r["sender_member"]] = sent.get(r["sender_member"], Decimal(0)) + x
+        received[r["receiver_member"]] = received.get(r["receiver_member"], Decimal(0)) + x
+    for m in set(sent) | set(received):
+        net[m] = received.get(m, Decimal(0)) - sent.get(m, Decimal(0))
+    return net, sent, received
+
+
+def test_rate_basis_constants_and_step_defaults():
+    assert M.SHARE_OF_POOL == _SHARE and M.DECLARED_RATE == _RATE
+    assert M.BASES == (_SHARE, _RATE)
+    st = M.Step(1, "IT", "H", ["P1"])
+    assert st.basis == _SHARE and st.rate is None
+
+
+def test_rate_build_steps_carries_basis_and_rate_defaulting_to_share():
+    steps = M.build_steps(
+        [{"step": 2, "sender_member": "HR", "driver": "H"},
+         {"step": 1, "sender_member": "IT", "driver": "T", "basis": _RATE, "rate": Decimal("50.25")}],
+        [{"step": 1, "receiver_member": "HR"}, {"step": 2, "receiver_member": "P1"}])
+    assert [(s.step, s.basis, s.rate) for s in steps] == [(1, _RATE, Fraction("50.25")), (2, _SHARE, None)]
+
+
+def test_rate_units_are_exact_driver_values():
+    rows = [{"step": 1, "receiver_member": "A", "driver_value": 0.1},
+            {"step": 1, "receiver_member": "B", "driver_value": "2.000000001"},
+            {"step": 1, "receiver_member": "C", "driver_value": 0}]
+    u = M.units(rows)
+    assert u == {(1, "A"): Fraction(1, 10), (1, "B"): Fraction("2.000000001"), (1, "C"): 0}
+    with raises(M.CostAllocationError) as ei:
+        M.units([{"step": 3, "receiver_member": "A", "driver_value": -1}])
+    assert "step 3" in ei.value.errors[0] and "negative" in ei.value.errors[0]
+
+
+def test_rate_worked_example_exact_coefficients():
+    steps, w, u = _rate_example()
+    rows = {_key(r): r for r in M.step_down_coefficients(steps, w, u)}
+    assert set(rows) == {
+        ("IT", 1, "IT", "HR"), ("IT", 1, "IT", "Sales"), ("IT", 1, "IT", "Ops"),
+        ("IT", 2, "HR", "Sales"), ("IT", 2, "HR", "Ops"),
+        ("HR", 2, "HR", "Sales"), ("HR", 2, "HR", "Ops"),
+    }
+    # the rate origin's own hop is in driver units: pool 19 tickets, 5/8/6 each
+    for recv, q in (("HR", 5), ("Sales", 8), ("Ops", 6)):
+        r = rows[("IT", 1, "IT", recv)]
+        assert r["hop_kind"] == "own" and r["pool_coefficient"] == 19 and r["coefficient"] == q
+    # HR passes the 5 tickets it received on by headcount 5:3
+    assert rows[("IT", 2, "HR", "Sales")]["hop_kind"] == "pass"
+    assert rows[("IT", 2, "HR", "Sales")]["pool_coefficient"] == 5
+    assert rows[("IT", 2, "HR", "Sales")]["coefficient"] == Fraction(25, 8)
+    assert rows[("IT", 2, "HR", "Ops")]["coefficient"] == Fraction(15, 8)
+    # HR's own share origin is unchanged: pool 1, split 5/8 and 3/8
+    assert rows[("HR", 2, "HR", "Sales")]["pool_coefficient"] == 1
+    assert rows[("HR", 2, "HR", "Sales")]["coefficient"] == Fraction(5, 8)
+    assert rows[("HR", 2, "HR", "Ops")]["coefficient"] == Fraction(3, 8)
+
+
+def test_rate_worked_example_end_to_end_reproduces_every_number():
+    steps, w, u = _rate_example()
+    rows = M.coefficient_rows("ZZRUN-R", steps, w, "Step-Down", u)
+    assert all(list(r) == list(M.COEFFICIENT_COLUMNS) for r in rows)
+    by = {_key(r): r for r in rows}
+    D = Decimal
+    assert by[("IT", 1, "IT", "HR")]["pool_coefficient"] == D("19.000000000000")
+    assert by[("IT", 1, "IT", "HR")]["coefficient"] == D("5.000000000000")
+    assert by[("IT", 2, "HR", "Sales")]["coefficient"] == D("3.125000000000")
+    assert by[("IT", 2, "HR", "Ops")]["coefficient"] == D("1.875000000000")
+    assert all(r["coefficient"].as_tuple().exponent == -12 for r in rows)
+    assert all(r["pool_coefficient"].as_tuple().exponent == -12 for r in rows)
+    pools = {"IT": D("1000"), "HR": D("400")}
+    net, sent, received = _apply(rows, steps, pools)
+    # IT charges HR 250, Sales 400, Ops 300 = 950
+    it_own = {r["receiver_member"]: D(50) * r["coefficient"] for r in rows
+              if r["origin_member"] == "IT" and r["hop_kind"] == "own"}
+    assert it_own == {"HR": D(250), "Sales": D(400), "Ops": D(300)}
+    assert sent["IT"] == D(950)
+    # HR holds 400 + 250 = 650 and splits 5/8, 3/8
+    assert received["HR"] == D(250)
+    assert sent["HR"] == D(650)
+    # IT-origin units through HR: Sales 3.125 x 50 = 156.25, Ops 1.875 x 50 = 93.75
+    via_hr = {r["receiver_member"]: D(50) * r["coefficient"] for r in rows
+              if r["origin_member"] == "IT" and r["sender_member"] == "HR"}
+    assert via_hr == {"Sales": D("156.25"), "Ops": D("93.75")}
+    assert net["Sales"] == D("806.25") and net["Ops"] == D("543.75")
+    variance = M.absorption({"IT": pools["IT"]}, {"IT": received.get("IT", 0)}, {"IT": sent["IT"]})
+    assert variance == {"IT": 50}
+    assert Fraction(net["Sales"] + net["Ops"]) + variance["IT"] == 1400
+
+
+def test_rate_direct_step_in_units():
+    steps = [M.Step(1, "IT", "Tickets", ["P1", "P2"], basis=_RATE, rate=Fraction("12.5")),
+             M.Step(2, "HR", "Headcount", ["P1", "P2"])]
+    rows = [{"step": 1, "receiver_member": "P1", "driver_value": "0.5"},
+            {"step": 1, "receiver_member": "P2", "driver_value": "1.25"},
+            {"step": 2, "receiver_member": "P1", "driver_value": 1},
+            {"step": 2, "receiver_member": "P2", "driver_value": 1}]
+    w, u = M.weights(rows), M.units(rows)
+    exact = {_key(r): r for r in M.direct_coefficients(steps, w, u)}
+    assert exact[("IT", 1, "IT", "P1")]["pool_coefficient"] == Fraction("1.75")
+    assert exact[("IT", 1, "IT", "P1")]["coefficient"] == Fraction("0.5")
+    assert exact[("IT", 1, "IT", "P2")]["coefficient"] == Fraction("1.25")
+    assert exact[("HR", 2, "HR", "P1")]["pool_coefficient"] == 1
+    assert all(r["hop_kind"] == "own" for r in exact.values())
+    out = {_key(r): r for r in M.coefficient_rows("ZZRUN", steps, w, "Direct", u)}
+    assert out[("IT", 1, "IT", "P1")]["pool_coefficient"] == Decimal("1.750000000000")
+    assert out[("IT", 1, "IT", "P2")]["coefficient"] == Decimal("1.250000000000")
+    assert out[("HR", 2, "HR", "P1")]["coefficient"] == Decimal("0.500000000000")
+    # charged = rate x units, exact
+    assert sum(Decimal("12.5") * r["coefficient"] for k, r in out.items() if k[0] == "IT") == Decimal("21.875")
+
+
+def test_rate_sender_is_a_sink_for_other_origins_in_step_down():
+    # HR (share) sends to IT (rate sender at step 2) and Sales; IT charges Sales and Ops.
+    steps = [M.Step(1, "HR", "Headcount", ["IT", "Sales"]),
+             M.Step(2, "IT", "Tickets", ["Sales", "Ops"], basis=_RATE, rate=Fraction(10))]
+    rows = [{"step": 1, "receiver_member": "IT", "driver_value": 1},
+            {"step": 1, "receiver_member": "Sales", "driver_value": 3},
+            {"step": 2, "receiver_member": "Sales", "driver_value": 2},
+            {"step": 2, "receiver_member": "Ops", "driver_value": 4}]
+    w, u = M.weights(rows), M.units(rows)
+    exact = M.step_down_coefficients(steps, w, u)
+    keys = {_key(r) for r in exact}
+    # HR's cost that reaches IT stops there: no pass rows for origin HR at IT
+    assert keys == {("HR", 1, "HR", "IT"), ("HR", 1, "HR", "Sales"),
+                    ("IT", 2, "IT", "Sales"), ("IT", 2, "IT", "Ops")}
+    assert all(r["hop_kind"] == "own" for r in exact)
+    out = M.coefficient_rows("ZZRUN", steps, w, "Step-Down", u)
+    net, sent, received = _apply(out, steps, {"HR": Decimal(400), "IT": Decimal(100)})
+    assert received["IT"] == Decimal(100) and sent["IT"] == Decimal(60)
+    assert net == {"HR": Decimal(-400), "IT": Decimal(40), "Sales": Decimal(320), "Ops": Decimal(40)}
+    # variance = pool + received - charged: 100 + 100 - 60 = 140 (over-absorbed cost stays at IT)
+    assert M.absorption({"IT": 100}, {"IT": received["IT"]}, {"IT": sent["IT"]}) == {"IT": 140}
+    assert net["Sales"] + net["Ops"] + 140 == Decimal(500)
+
+
+def test_rate_share_sender_passes_rate_origin_units_by_its_weights():
+    steps = [M.Step(1, "IT", "Tickets", ["HR", "P1"], basis=_RATE, rate=Fraction(7)),
+             M.Step(2, "HR", "Headcount", ["P1", "P2", "P3"])]
+    rows = [{"step": 1, "receiver_member": "HR", "driver_value": 1},
+            {"step": 1, "receiver_member": "P1", "driver_value": 2},
+            {"step": 2, "receiver_member": "P1", "driver_value": 1},
+            {"step": 2, "receiver_member": "P2", "driver_value": 1},
+            {"step": 2, "receiver_member": "P3", "driver_value": 1}]
+    w, u = M.weights(rows), M.units(rows)
+    exact = {_key(r): r for r in M.step_down_coefficients(steps, w, u)}
+    for p in ("P1", "P2", "P3"):
+        r = exact[("IT", 2, "HR", p)]
+        assert r["hop_kind"] == "pass" and r["pool_coefficient"] == 1 and r["coefficient"] == Fraction(1, 3)
+    out = {_key(r): r for r in M.coefficient_rows("ZZRUN", steps, w, "Step-Down", u)}
+    # 1 unit in thirds rounds exactly to 1 unit out; the leftover unit goes to P1 by name
+    passed = [out[("IT", 2, "HR", p)]["coefficient"] for p in ("P1", "P2", "P3")]
+    assert passed == [Decimal("0.333333333334"), Decimal("0.333333333333"), Decimal("0.333333333333")]
+    assert sum(passed) == out[("IT", 2, "HR", "P1")]["pool_coefficient"] == Decimal("1.000000000000")
+
+
+def test_rate_rounding_sums_exact_in_units_and_in_money():
+    # units with 9 decimals; the own pool is their exact sum and the receiver
+    # coefficients are exact, so rate x units carries no rounding at all
+    steps = [M.Step(1, "IT", "T", ["A", "B", "C", "HR"], basis=_RATE, rate=Fraction("0.0001")),
+             M.Step(2, "HR", "H", ["A", "B", "C"])]
+    rows = [{"step": 1, "receiver_member": "A", "driver_value": "0.333333333"},
+            {"step": 1, "receiver_member": "B", "driver_value": "0.000000001"},
+            {"step": 1, "receiver_member": "C", "driver_value": "123456.789012345"},
+            {"step": 1, "receiver_member": "HR", "driver_value": "7"},
+            {"step": 2, "receiver_member": "A", "driver_value": 1},
+            {"step": 2, "receiver_member": "B", "driver_value": 1},
+            {"step": 2, "receiver_member": "C", "driver_value": 5}]
+    w, u = M.weights(rows), M.units(rows)
+    out = M.coefficient_rows("ZZRUN", steps, w, "Step-Down", u)
+    own = [r for r in out if r["origin_member"] == "IT" and r["hop_kind"] == "own"]
+    total = Decimal("0.333333333") + Decimal("0.000000001") + Decimal("123456.789012345") + 7
+    assert {r["pool_coefficient"] for r in own} == {total.quantize(_Q)}
+    assert sum(r["coefficient"] for r in own) == total.quantize(_Q)
+    assert {r["receiver_member"]: r["coefficient"] for r in own} == {
+        "A": Decimal("0.333333333000"), "B": Decimal("0.000000001000"),
+        "C": Decimal("123456.789012345000"), "HR": Decimal("7.000000000000")}
+    # the 7 units HR received are split 1:1:5 exactly
+    via = [r for r in out if r["origin_member"] == "IT" and r["sender_member"] == "HR"]
+    assert {r["pool_coefficient"] for r in via} == {Decimal("7.000000000000")}
+    assert sum(r["coefficient"] for r in via) == Decimal("7.000000000000")
+    assert all(abs(Fraction(r["coefficient"]) - Fraction(7) * w[(2, r["receiver_member"])]) <= _UNIT for r in via)
+    # money: everything IT charged ends at the finals, to the unit
+    sinks = sum(r["coefficient"] for r in out if r["origin_member"] == "IT" and r["receiver_member"] != "HR")
+    assert sinks == total.quantize(_Q)
+
+
+def test_rate_zero_total_units_refused_naming_the_step():
+    steps = [M.Step(1, "IT", "T", ["P1", "P2"], basis=_RATE, rate=Fraction(5))]
+    w = {(1, "P1"): Fraction(1), (1, "P2"): Fraction(0)}  # weights cannot even be built from zeros
+    u = {(1, "P1"): Fraction(0), (1, "P2"): Fraction(0)}
+    for fn in (M.direct_coefficients, M.step_down_coefficients):
+        with raises(M.CostAllocationError) as ei:
+            fn(steps, w, u)
+        assert "step 1" in ei.value.errors[0] and "zero" in ei.value.errors[0].lower()
+    # and weights() itself refuses an all-zero step, as before
+    with raises(M.CostAllocationError):
+        M.weights([{"step": 1, "receiver_member": "P1", "driver_value": 0},
+                   {"step": 1, "receiver_member": "P2", "driver_value": 0}])
+
+
+def test_rate_missing_units_or_bad_rate_refused_all_at_once():
+    steps = [M.Step(1, "IT", "T", ["P1", "P2"], basis=_RATE, rate=Fraction(5)),
+             M.Step(2, "HR", "T", ["P1"], basis=_RATE, rate=Fraction(0)),
+             M.Step(3, "FM", "T", ["P1"], basis=_RATE, rate=Fraction("1.00001")),
+             M.Step(4, "QA", "T", ["P1"], basis=_RATE, rate=None),
+             M.Step(5, "XX", "T", ["P1"], basis="Per Head")]
+    w = {(s, r): Fraction(1) for s in range(1, 6) for r in ("P1",)}
+    w[(1, "P1")], w[(1, "P2")] = Fraction(1, 2), Fraction(1, 2)
+    u = {(1, "P1"): Fraction(1), (2, "P1"): Fraction(1), (3, "P1"): Fraction(1),
+         (4, "P1"): Fraction(1), (5, "P1"): Fraction(1)}
+    with raises(M.CostAllocationError) as ei:
+        M.direct_coefficients(steps, w, u)
+    text = "\n".join(ei.value.errors)
+    assert "step 1" in text and "P2" in text            # missing units
+    assert "step 2" in text and "positive" in text      # rate 0
+    assert "step 3" in text and "4 decimal" in text     # 5 dp
+    assert "step 4" in text and "rate" in text          # no rate
+    assert "step 5" in text and "Per Head" in text      # unknown basis
+    # no units at all for a rate step is one clear refusal
+    with raises(M.CostAllocationError) as ei:
+        M.direct_coefficients(steps[:1], w)
+    assert "step 1" in ei.value.errors[0] and "units" in ei.value.errors[0]
+
+
+def test_rate_validation_lives_in_rate_errors_not_validate():
+    # One source for the rate rules (2b-2 merge of R2 and R3): validate() keeps
+    # the structure checks; rate_errors() owns basis, Q6 A and the rates.
+    rate_rules = [{"step": 1, "sender_member": "HR", "driver": "Headcount", "basis": _RATE},
+                  {"step": 2, "sender_member": "IT", "driver": "Headcount"}]
+    assert not _errors(_rs(rules=rate_rules))
+    assert not _errors(_rs(rules=[dict(rate_rules[0], basis="Per Head"), rate_rules[1]]))
+    errs = M.rate_errors(rate_rules, [], "Sender's Own Accounts")
+    assert any("Step 1" in e and "Declared Allocation Account" in e for e in errs), errs
+    assert any("Step 1" in e and "no rate" in e for e in errs), errs
+    errs = M.rate_errors([dict(rate_rules[0], basis="Per Head"), rate_rules[1]], [],
+                         "Declared Allocation Account")
+    assert any("Per Head" in e for e in errs), errs
+    # share rules are untouched by any of this
+    assert not _errors(_rs())
+    assert M.rate_errors([rate_rules[1]], [], "Sender's Own Accounts") == []
+
+
+def test_rate_absorption_is_exact_and_names_unknown_senders():
+    v = M.absorption({"IT": "1000", "FM": Decimal("250.10")},
+                     {"IT": 0, "FM": "0.1"},
+                     {"IT": 950, "FM": Decimal("300.2")})
+    assert v == {"IT": Fraction(50), "FM": Fraction(-50)}
+    assert all(isinstance(x, Fraction) for x in v.values())
+    # a sender with nothing received or charged still gets its variance (= pool)
+    assert M.absorption({"IT": 10}, {}, {}) == {"IT": 10}
+    with raises(M.CostAllocationError) as ei:
+        M.absorption({"IT": 10}, {"HR": 1}, {"QA": 2})
+    assert "HR" in ei.value.errors[0] and "QA" in ei.value.errors[0]
+
+
+def _check_rate_invariants(steps, w, u, method):
+    exact = (M.step_down_coefficients if method == "Step-Down" else M.direct_coefficients)(steps, w, u)
+    rows = M.coefficient_rows("ZZRUN", steps, w, method, u)
+    assert [_key(r) for r in rows] == [_key(r) for r in exact]
+    by_sender = {s.sender_member: s for s in steps}
+    rate_senders = {m for m, s in by_sender.items() if s.basis == _RATE}
+    own_pool = {m: (sum(u[(s.step, r)] for r in s.receivers) if s.basis == _RATE else Fraction(1))
+                for m, s in by_sender.items()}
+    hops = {}
+    for r in rows:
+        assert r["coefficient"] >= 0
+        assert r["coefficient"].as_tuple().exponent == -12
+        hops.setdefault((r["origin_member"], r["step"], r["sender_member"], r["hop_kind"]), []).append(r)
+    for hop in hops.values():
+        assert len({r["pool_coefficient"] for r in hop}) == 1
+        assert sum(r["coefficient"] for r in hop) == hop[0]["pool_coefficient"]
+    for origin in {r["origin_member"] for r in rows}:
+        mine = [r for r in rows if r["origin_member"] == origin]
+        own = [r for r in mine if r["hop_kind"] == "own"]
+        assert own and all(r["sender_member"] == origin for r in own)
+        assert {Fraction(r["pool_coefficient"]) for r in own} == {own_pool[origin]}
+        # a rate sender other than the origin never passes this origin's cost on
+        assert not any(r["sender_member"] in rate_senders and r["sender_member"] != origin for r in mine)
+        # a share sender passes on exactly what it received
+        for (o, st, snd, kind), hop in hops.items():
+            if o == origin and snd != origin:
+                got = sum(r["coefficient"] for r in mine if r["receiver_member"] == snd)
+                assert got == hop[0]["pool_coefficient"]
+        # generalised T1: what reaches sinks (non-senders and other rate senders) is the own pool
+        sinks = sum(r["coefficient"] for r in mine
+                    if r["receiver_member"] not in by_sender or r["receiver_member"] in rate_senders)
+        assert Fraction(sinks) == own_pool[origin]
+    bound = len(hops) * _UNIT
+    for r, x in zip(rows, exact):
+        assert abs(Fraction(r["coefficient"]) - x["coefficient"]) <= bound
+
+
+def _random_rate_case(rng, method):
+    n_send = rng.randint(1, 5)
+    finals = ["F%d" % i for i in range(rng.randint(1, 6))]
+    senders = ["S%d" % i for i in range(n_send)]
+    steps, rows = [], []
+    for i, snd in enumerate(senders):
+        pool = list(finals) + (senders[i + 1:] if method == "Step-Down" else [])
+        recv = rng.sample(pool, rng.randint(1, len(pool)))
+        vals = [rng.choice([0, 1, 2, 3, 7, 11, 13, "0.1", "2.5", "0.000000001", "12345.678901234"])
+                for _ in recv]
+        if not any(Fraction(str(v)) for v in vals):
+            vals[0] = 3
+        rows.extend({"step": i + 1, "receiver_member": m, "driver_value": v} for m, v in zip(recv, vals))
+        if rng.random() < 0.5:
+            steps.append(M.Step(i + 1, snd, "D%d" % (i % 2), recv, basis=_RATE,
+                                rate=Fraction(rng.choice(["0.0001", "50", "12.3456", "9999.99"]))))
+        else:
+            steps.append(M.Step(i + 1, snd, "D%d" % (i % 2), recv))
+    return steps, M.weights(rows), M.units(rows)
+
+
+def test_rate_property_random_mixed_steps():
+    seen_rate = seen_sink = False
+    for seed in range(300):
+        for method, base in (("Step-Down", 20_000), ("Direct", 30_000)):
+            steps, w, u = _random_rate_case(random.Random(base + seed), method)
+            rate = {s.sender_member for s in steps if s.basis == _RATE}
+            seen_rate |= bool(rate)
+            seen_sink |= any(r in rate for s in steps for r in s.receivers)
+            _check_rate_invariants(steps, w, u, method)
+    assert seen_rate and seen_sink
+
+
+#: sha256 over every coefficient row of _random_case seeds 0..299 (Step-Down)
+#: and 10000..10299 (Direct), computed on the model BEFORE declared rates
+#: existed (commit effd913e). Share-only output is byte-identical or this fails.
+_SHARE_ONLY_DIGEST = {
+    "Step-Down": "08f93ae4990b0f9e8d7eeab5d0952e1eafc10ca2232b4acd1aae2c9a086c01ed",
+    "Direct": "146233d1a30719dc3fcfac3f8f1adc1ee66a61179223dc5d54c8f5f22c72aa21",
+}
+
+
+def test_rate_property_share_only_output_unchanged():
+    for method, base in (("Step-Down", 0), ("Direct", 10_000)):
+        h = hashlib.sha256()
+        for seed in range(300):
+            steps, w = _random_case(random.Random(base + seed), method)
+            rows = M.coefficient_rows("ZZRUN", steps, w, method)
+            for r in rows:
+                h.update(repr([str(r[c]) for c in M.COEFFICIENT_COLUMNS]).encode())
+            # explicit Share of Pool basis and unused units change nothing
+            explicit = [M.Step(s.step, s.sender_member, s.driver, s.receivers, basis=_SHARE) for s in steps]
+            u = {k: Fraction(1) for k in w}
+            assert M.coefficient_rows("ZZRUN", explicit, w, method, u) == rows
+        assert h.hexdigest() == _SHARE_ONLY_DIGEST[method], method
+
+
+# -- 2b-2 R4: declared rates under Reciprocal ----------------------------------
+#
+# Plan section 3 (konsol#269, decided 27 Nov 2026): under Reciprocal, rate
+# senders leave the linear system and act as exits. The system is solved over
+# share senders only, exactly, as before. A rate origin's own hop is in units
+# (pool sum of units, receiver coefficients their units); the units that reach
+# share senders circulate among them and leave at final receivers or at rate
+# senders. Cost of ANY origin that reaches a rate sender stops there, its own
+# returning units included: a rate sender's outflow is fixed by its rate, so
+# what it receives ends in its absorption variance. A closed loop among share
+# senders with no exit is still refused; a loop whose only exit is a rate
+# sender is valid.
+
+def _rate_recip_example():
+    """IT: rate 50 per ticket to HR 5, Sales 8, Ops 6 (19 tickets; pool 1,000).
+    HR (share, pool 400) by headcount FM 4, Sales 1. FM (share, pool 300) by
+    area HR 5, IT 1, Sales 1, Ops 1. HR <-> FM is the reciprocal pair; FM also
+    sends to IT, a rate sender, where cost stops."""
+    steps = [
+        M.Step(1, "IT", "Tickets", ["HR", "Sales", "Ops"], basis=_RATE, rate=Fraction(50)),
+        M.Step(2, "HR", "Headcount", ["FM", "Sales"]),
+        M.Step(3, "FM", "Area", ["HR", "IT", "Sales", "Ops"]),
+    ]
+    rows = [
+        {"step": 1, "receiver_member": "HR", "driver_value": 5},
+        {"step": 1, "receiver_member": "Sales", "driver_value": 8},
+        {"step": 1, "receiver_member": "Ops", "driver_value": 6},
+        {"step": 2, "receiver_member": "FM", "driver_value": 4},
+        {"step": 2, "receiver_member": "Sales", "driver_value": 1},
+        {"step": 3, "receiver_member": "HR", "driver_value": 5},
+        {"step": 3, "receiver_member": "IT", "driver_value": 1},
+        {"step": 3, "receiver_member": "Sales", "driver_value": 1},
+        {"step": 3, "receiver_member": "Ops", "driver_value": 1},
+    ]
+    return steps, M.weights(rows), M.units(rows)
+
+
+def test_rate_reciprocal_worked_example_exact():
+    steps, w, u = _rate_recip_example()
+    rows = M.reciprocal_coefficients(steps, w, u)
+    by = {_rkey(r): r for r in rows}
+    assert len(by) == len(rows)
+    pool = lambda o, s, k: {r["pool_coefficient"] for r in rows
+                            if (r["origin_member"], r["sender_member"], r["hop_kind"]) == (o, s, k)}
+    # Origin IT (rate): own hop in units, 19 tickets 5/8/6.
+    assert pool("IT", "IT", "own") == {19}
+    assert [by[("IT", "IT", "own", m)]["coefficient"] for m in ("HR", "Sales", "Ops")] == [5, 8, 6]
+    # Share system over HR, FM only: x_HR = 5 + 5/8 x_FM, x_FM = 4/5 x_HR => 10, 8.
+    assert pool("IT", "HR", "pass") == {10} and pool("IT", "FM", "pass") == {8}
+    assert by[("IT", "HR", "pass", "FM")]["coefficient"] == 8
+    assert by[("IT", "HR", "pass", "Sales")]["coefficient"] == 2
+    assert [by[("IT", "FM", "pass", m)]["coefficient"] for m in ("HR", "IT", "Sales", "Ops")] == [5, 1, 1, 1]
+    # IT is a rate sender: no pass row at IT for any origin, its own units that
+    # come back (1 ticket) stop there.
+    assert not any(r["sender_member"] == "IT" and r["hop_kind"] == "pass" for r in rows)
+    # Origin HR (share): x_HR = 1 + 5/8 x_FM, x_FM = 4/5 x_HR => 2, 8/5.
+    assert pool("HR", "HR", "own") == {1} and pool("HR", "HR", "pass") == {1}
+    assert pool("HR", "FM", "pass") == {Fraction(8, 5)}
+    assert by[("HR", "FM", "pass", "IT")]["coefficient"] == Fraction(1, 5)
+    # Origin FM (share): x_FM = 1 + 4/5 x_HR, x_HR = 5/8 x_FM => 2, 5/4.
+    assert pool("FM", "FM", "own") == {1} and pool("FM", "FM", "pass") == {1}
+    assert pool("FM", "HR", "pass") == {Fraction(5, 4)}
+    assert pool("FM", "IT", "pass") == pool("HR", "IT", "pass") == pool("IT", "IT", "pass") == set()
+    # Conservation per origin: what reaches the sinks (Sales, Ops, and IT) is the own pool.
+    sinks = lambda o: sum(r["coefficient"] for r in rows
+                          if r["origin_member"] == o and r["receiver_member"] in ("Sales", "Ops", "IT"))
+    assert sinks("IT") == 19 and sinks("HR") == 1 and sinks("FM") == 1
+    to = lambda o, m: sum(r["coefficient"] for r in rows if r["origin_member"] == o and r["receiver_member"] == m)
+    assert (to("IT", "Sales"), to("IT", "Ops"), to("IT", "IT")) == (11, 7, 1)
+    assert (to("HR", "Sales"), to("HR", "Ops"), to("HR", "IT")) == (Fraction(3, 5), Fraction(1, 5), Fraction(1, 5))
+    assert (to("FM", "Sales"), to("FM", "Ops"), to("FM", "IT")) == (Fraction(1, 2), Fraction(1, 4), Fraction(1, 4))
+    for r in rows:
+        assert r["coefficient"] == r["pool_coefficient"] * w[(r["step"], r["receiver_member"])]
+        assert isinstance(r["coefficient"], Fraction)
+    # 3 own (IT) + 2 + 4 pass for IT; HR: 2 own + 2 pass + 4 pass; FM: 4 own + 4 pass + 2 pass.
+    assert len(rows) == 9 + 8 + 10
+
+
+def test_rate_reciprocal_worked_example_end_to_end_money():
+    steps, w, u = _rate_recip_example()
+    rows = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u)
+    assert all(list(r) == list(M.COEFFICIENT_COLUMNS) for r in rows)
+    exact = {_rkey(r): r for r in M.reciprocal_coefficients(steps, w, u)}
+    # everything terminates in decimal, so rounding changes no number
+    for r in rows:
+        assert Fraction(r["coefficient"]) == exact[_rkey(r)]["coefficient"], _rkey(r)
+        assert Fraction(r["pool_coefficient"]) == exact[_rkey(r)]["pool_coefficient"]
+        assert r["coefficient"].as_tuple().exponent == -12
+    D = Decimal
+    pools = {"IT": D(1000), "HR": D(400), "FM": D(300)}
+    net, sent, received = _apply(rows, steps, pools)
+    assert sent["IT"] == D(950)                       # 50 x 19 tickets
+    assert sent["HR"] == D(1675) and sent["FM"] == D(1640)   # T_HR, T_FM
+    # IT: 50 back of its own, 80 of HR's, 75 of FM's
+    assert received["IT"] == D(205)
+    assert received["HR"] == D(1275) and received["FM"] == D(1340)
+    assert net["Sales"] == D(940) and net["Ops"] == D(505)
+    assert net["HR"] == D(-400) and net["FM"] == D(-300)
+    variance = M.absorption({"IT": pools["IT"]}, {"IT": received["IT"]}, {"IT": sent["IT"]})
+    assert variance == {"IT": 255}                    # 1000 + 205 - 950
+    assert Fraction(net["Sales"] + net["Ops"]) + variance["IT"] == 1700
+
+
+def test_rate_reciprocal_share_loop_exiting_only_through_rate_sender_accepted():
+    # A -> B only; B -> A 1/2, R 1/2; R is a rate sender charging F.
+    steps = [M.Step(1, "A", "D", ["B"]), M.Step(2, "B", "D", ["A", "R"]),
+             M.Step(3, "R", "T", ["F"], basis=_RATE, rate=Fraction("2.5"))]
+    w = {(1, "B"): Fraction(1), (2, "A"): Fraction(1, 2), (2, "R"): Fraction(1, 2), (3, "F"): Fraction(1)}
+    u = {(3, "F"): Fraction(4)}
+    rows = M.reciprocal_coefficients(steps, w, u)
+    by = {_rkey(r): r for r in rows}
+    # Origin A: x_A = 1 + x_B/2, x_B = x_A => 2, 2; all of A's unit ends at R.
+    assert by[("A", "A", "own", "B")]["coefficient"] == 1
+    assert by[("A", "A", "pass", "B")]["coefficient"] == 1
+    assert by[("A", "B", "pass", "R")]["coefficient"] == 1
+    assert by[("A", "B", "pass", "A")]["coefficient"] == 1
+    assert by[("B", "B", "pass", "R")]["coefficient"] == Fraction(1, 2)   # x_B = 2, pass pool 1
+    # R's own hop is in units and R passes nothing on
+    assert by[("R", "R", "own", "F")]["coefficient"] == 4 and by[("R", "R", "own", "F")]["pool_coefficient"] == 4
+    assert {k for k in by if k[0] == "R"} == {("R", "R", "own", "F")}
+    assert not any(k[1] == "R" and k[2] == "pass" for k in by)
+    out = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u)
+    assert {_rkey(r): r["coefficient"] for r in out}[("A", "B", "pass", "R")] == Decimal("1.000000000000")
+
+
+def test_rate_reciprocal_share_loop_with_no_exit_still_refused():
+    # A <-> B never exit; R (rate) charges F and is not in the loop.
+    steps = [M.Step(1, "A", "D", ["B"]), M.Step(2, "B", "D", ["A"]),
+             M.Step(3, "R", "T", ["F"], basis=_RATE, rate=Fraction(1))]
+    w = {(1, "B"): Fraction(1), (2, "A"): Fraction(1), (3, "F"): Fraction(1)}
+    u = {(3, "F"): Fraction(1)}
+    with raises(M.CostAllocationError) as ei:
+        M.reciprocal_coefficients(steps, w, u)
+    msg = str(ei.value)
+    assert "A, B" in msg and "R" not in msg.split(":")[-1]
+    # a zero-weight route to the rate sender is no exit either
+    steps2 = [M.Step(1, "A", "D", ["B", "R"]), M.Step(2, "B", "D", ["A"]),
+              M.Step(3, "R", "T", ["F"], basis=_RATE, rate=Fraction(1))]
+    w2 = {(1, "B"): Fraction(1), (1, "R"): Fraction(0), (2, "A"): Fraction(1), (3, "F"): Fraction(1)}
+    with raises(M.CostAllocationError) as ei:
+        M.reciprocal_coefficients(steps2, w2, u)
+    assert "A, B" in str(ei.value)
+    # the old refusal is gone: no message says the feature is for later
+    assert "later task" not in open(_PATH).read()
+
+
+def test_rate_reciprocal_rate_only_rule_set_is_own_hops_in_units():
+    # Two rate senders charging each other and a final: nothing circulates,
+    # every row is an own hop in units, and what each receives stops there.
+    steps = [M.Step(1, "A", "T", ["B", "F"], basis=_RATE, rate=Fraction(3)),
+             M.Step(2, "B", "T", ["A", "F"], basis=_RATE, rate=Fraction(7))]
+    rows = [{"step": 1, "receiver_member": "B", "driver_value": 1}, {"step": 1, "receiver_member": "F", "driver_value": 2},
+            {"step": 2, "receiver_member": "A", "driver_value": "0.5"}, {"step": 2, "receiver_member": "F", "driver_value": "1.5"}]
+    w, u = M.weights(rows), M.units(rows)
+    recip = {_key(r): r for r in M.reciprocal_coefficients(steps, w, u)}
+    assert set(recip) == {("A", 1, "A", "B"), ("A", 1, "A", "F"), ("B", 2, "B", "A"), ("B", 2, "B", "F")}
+    assert all(r["hop_kind"] == "own" for r in recip.values())
+    assert [(r["pool_coefficient"], r["coefficient"]) for r in recip.values()] == \
+        [(3, 1), (3, 2), (2, Fraction(1, 2)), (2, Fraction(3, 2))]
+    out = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u)
+    assert [(r["pool_coefficient"], r["coefficient"]) for r in out] == \
+        [(Decimal("3.000000000000"), Decimal("1.000000000000")), (Decimal("3.000000000000"), Decimal("2.000000000000")),
+         (Decimal("2.000000000000"), Decimal("0.500000000000")), (Decimal("2.000000000000"), Decimal("1.500000000000"))]
+    # without the cross-charge the three methods agree row for row
+    steps2 = [M.Step(1, "A", "T", ["F"], basis=_RATE, rate=Fraction(3)), M.Step(2, "B", "T", ["F"], basis=_RATE, rate=Fraction(7))]
+    w2, u2 = {(1, "F"): Fraction(1), (2, "F"): Fraction(1)}, {(1, "F"): Fraction(2), (2, "F"): Fraction("1.5")}
+    assert M.coefficient_rows("ZZRUN", steps2, w2, "Reciprocal", u2) == M.coefficient_rows("ZZRUN", steps2, w2, "Direct", u2) \
+        == M.coefficient_rows("ZZRUN", steps2, w2, "Step-Down", u2)
+
+
+def test_rate_reciprocal_refusals_are_the_shared_ones():
+    # self-receive, bad rate, missing units, unknown basis: own_pools' messages, all at once
+    steps = [M.Step(1, "IT", "T", ["HR", "P1"], basis=_RATE, rate=Fraction(0)),
+             M.Step(2, "HR", "H", ["IT", "P1"], basis="Per Head"),
+             M.Step(3, "QA", "T", ["P1"], basis=_RATE, rate=Fraction(1))]
+    w = {(1, "HR"): Fraction(1, 2), (1, "P1"): Fraction(1, 2), (2, "IT"): Fraction(1, 2),
+         (2, "P1"): Fraction(1, 2), (3, "P1"): Fraction(1)}
+    u = {(1, "HR"): Fraction(1), (1, "P1"): Fraction(1)}
+    with raises(M.CostAllocationError) as ei:
+        M.reciprocal_coefficients(steps, w, u)
+    text = "\n".join(ei.value.errors)
+    assert "step 1" in text and "positive" in text
+    assert "step 2" in text and "Per Head" in text
+    assert "step 3" in text and "units" in text
+    with raises(M.CostAllocationError) as ei:
+        M.reciprocal_coefficients([M.Step(1, "IT", "T", ["IT", "P1"], basis=_RATE, rate=Fraction(1))],
+                                  {(1, "IT"): Fraction(1, 2), (1, "P1"): Fraction(1, 2)},
+                                  {(1, "IT"): Fraction(1), (1, "P1"): Fraction(1)})
+    assert "IT cannot receive its own" in str(ei.value)
+
+
+def _check_reciprocal_rate(steps, w, u, exact, rows):
+    """RC1 + RC2 invariants generalised for rate senders, exact and rounded."""
+    assert [_rkey(r) for r in rows] == [_rkey(r) for r in exact]
+    by_sender = {s.sender_member: s for s in steps}
+    rate = {m for m, s in by_sender.items() if s.basis == _RATE}
+    share = set(by_sender) - rate
+    own_pool = {m: (sum(u[(s.step, r)] for r in s.receivers) if m in rate else Fraction(1))
+                for m, s in by_sender.items()}
+    is_sink = lambda m: m not in by_sender or m in rate
+    for r, x in zip(rows, exact):
+        assert list(r) == list(M.COEFFICIENT_COLUMNS) and r["run"] == "ZZRUN"
+        for c in ("origin_member", "step", "sender_member", "receiver_member", "driver", "hop_kind"):
+            assert r[c] == x[c], c
+        st = by_sender[x["sender_member"]]
+        assert (x["step"], x["driver"]) == (st.step, st.driver)
+        assert x["coefficient"] == x["pool_coefficient"] * w[(st.step, x["receiver_member"])]
+        assert x["pool_coefficient"] > 0 and x["coefficient"] >= 0
+        assert r["coefficient"] >= 0 and r["coefficient"].as_tuple().exponent == -12
+        assert abs(Fraction(r["coefficient"]) - x["coefficient"]) < _UNIT, _rkey(r)
+        if x["hop_kind"] == "own":
+            assert x["sender_member"] == x["origin_member"]
+        else:
+            assert x["sender_member"] in share   # a rate sender never passes anything on
+    for which in (exact, rows):
+        hops = {}
+        for r in which:
+            hops.setdefault((r["origin_member"], r["sender_member"], r["hop_kind"]), []).append(r)
+        for (o, s, k), hop in hops.items():
+            assert len({r["pool_coefficient"] for r in hop}) == 1
+            assert sorted(r["receiver_member"] for r in hop) == sorted(by_sender[s].receivers)
+            assert sum(r["coefficient"] for r in hop) == hop[0]["pool_coefficient"]
+        assert sorted({r["origin_member"] for r in which}) == sorted(by_sender)
+        for o in by_sender:
+            mine = [r for r in which if r["origin_member"] == o]
+            assert [k for k in hops if k[0] == o and k[2] == "own"] == [(o, o, "own")]
+            assert Fraction(hops[(o, o, "own")][0]["pool_coefficient"]) == own_pool[o]
+            for s in share:
+                outflow = sum(r["coefficient"] for r in mine if r["sender_member"] == s)
+                inflow = sum(r["coefficient"] for r in mine if r["receiver_member"] == s)
+                assert outflow == inflow + (1 if s == o else 0), (o, s)   # a share origin's own pool is 1
+            sinks = sum(r["coefficient"] for r in mine if is_sink(r["receiver_member"]))
+            assert Fraction(sinks) == own_pool[o], o
+    # the pools solve the defining system over share senders exactly
+    for o in by_sender:
+        pools = {(r["sender_member"], r["hop_kind"]): r["pool_coefficient"] for r in exact if r["origin_member"] == o}
+        x = {s: pools.get((s, "own"), 0) + pools.get((s, "pass"), 0) for s in share}
+        for s in share:
+            back = sum(x[st.sender_member] * w[(st.step, s)] for st in steps
+                       if s in st.receivers and st.sender_member in share)
+            from_own = own_pool[o] * w[(by_sender[o].step, s)] if o in rate and s in by_sender[o].receivers else 0
+            assert x[s] == (1 if s == o else 0) + from_own + back, (o, s)
+
+
+def _random_rate_reciprocal(rng):
+    """_random_reciprocal with a basis per sender and driver units."""
+    senders = ["S%d" % i for i in range(rng.randint(1, 6))]
+    finals = ["F%d" % i for i in range(rng.randint(1, 4))]
+    steps, rows = [], []
+    numbers = rng.sample(range(1, 200), len(senders))
+    is_rate = {snd: rng.random() < 0.4 for snd in senders}
+    for snd, n in zip(senders, numbers):
+        pool = [m for m in senders + finals if m != snd]
+        pick = rng.random()
+        if pick < 0.15:    # no direct exit at all: only other share senders (may be a dead loop)
+            pool = [m for m in senders if m != snd and not is_rate[m]] or pool
+        elif pick < 0.3:   # no final receiver: other senders, rate ones included (exits)
+            pool = [m for m in senders if m != snd] or pool
+        recv = rng.sample(pool, rng.randint(1, len(pool)))
+        vals = [rng.choice([0, 1, 2, 3, 7, 11, "0.1", "2.5", "0.000000001", "12345.678901234"]) for _ in recv]
+        if not any(Fraction(str(v)) for v in vals):
+            vals[0] = 1
+        rows.extend({"step": n, "receiver_member": m, "driver_value": v} for m, v in zip(recv, vals))
+        if is_rate[snd]:
+            steps.append(M.Step(n, snd, "D%d" % (n % 3), recv, basis=_RATE,
+                                rate=Fraction(rng.choice(["0.0001", "50", "12.3456", "9999.99"]))))
+        else:
+            steps.append(M.Step(n, snd, "D%d" % (n % 3), recv))
+    return steps, M.weights(rows), M.units(rows)
+
+
+def _share_exits(steps, w):
+    """Share senders with a positive-weight path to a non-share-sender (independent of the model)."""
+    share = {s.sender_member for s in steps if s.basis != _RATE}
+    ok, changed = set(), True
+    while changed:
+        changed = False
+        for st in steps:
+            if st.sender_member not in share or st.sender_member in ok:
+                continue
+            if any(w[(st.step, r)] > 0 and (r not in share or r in ok) for r in st.receivers):
+                ok.add(st.sender_member)
+                changed = True
+    return ok
+
+
+def test_rate_reciprocal_property_random_mixed_graphs():
+    accepted = refused = loops_via_rate = rounded = 0
+    for seed in range(300):
+        rng = random.Random(70_000 + seed)
+        steps, w, u = _random_rate_reciprocal(rng)
+        share = {s.sender_member for s in steps if s.basis != _RATE}
+        stuck = sorted(share - _share_exits(steps, w))
+        if stuck:
+            with raises(M.CostAllocationError) as ei:
+                M.reciprocal_coefficients(steps, w, u)
+            assert ", ".join(stuck) in str(ei.value), (seed, stuck, str(ei.value))
+            refused += 1
+            continue
+        if share and share != _exits(steps, w) & share:
+            loops_via_rate += 1   # some share sender exits only through a rate sender
+        exact = M.reciprocal_coefficients(steps, w, u)
+        rows = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u)
+        _check_reciprocal_rate(steps, w, u, exact, rows)
+        rounded += any(Fraction(r["coefficient"]) != x["coefficient"] for r, x in zip(rows, exact))
+        # deterministic, and independent of declaration order and step numbers
+        steps2, w2 = _renumber(steps, w, rng)
+        remap = {s.sender_member: s.step for s in steps2}
+        steps2 = [M.Step(s.step, s.sender_member, s.driver, s.receivers,
+                         basis=next(o.basis for o in steps if o.sender_member == s.sender_member),
+                         rate=next(o.rate for o in steps if o.sender_member == s.sender_member)) for s in steps2]
+        u2 = {(remap[next(s.sender_member for s in steps if s.step == st)], m): v for (st, m), v in u.items()}
+        again = M.coefficient_rows("ZZRUN", steps2, w2, "Reciprocal", u2)
+        strip = lambda rs: {_rkey(r): {c: v for c, v in r.items() if c != "step"} for r in rs}
+        assert strip(again) == strip(rows), seed
+        assert M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u) == rows
+        accepted += 1
+    assert accepted > 100 and refused > 8 and loops_via_rate > 8 and rounded > 30, \
+        (accepted, refused, loops_via_rate, rounded)
+
+
+def test_rate_reciprocal_property_amounts_and_absorption_conserve_to_the_cent():
+    seen_back = False
+    for seed in range(80):
+        rng = random.Random(80_000 + seed)
+        steps, w, u = _random_rate_reciprocal(rng)
+        share = {s.sender_member for s in steps if s.basis != _RATE}
+        if share != _share_exits(steps, w):
+            continue
+        rate = {s.sender_member for s in steps} - share
+        pools = {s.sender_member: Decimal(rng.randint(0, 10 ** 9)) / 100 for s in steps}
+        rows = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u)
+        net, sent, received = _apply(rows, steps, pools)
+        for s in share:
+            assert net.get(s, 0) == -pools[s], (seed, s)
+        charged = {m: sent.get(m, Decimal(0)) for m in rate}
+        for m in rate:   # charged = rate x total units, exactly
+            st = next(s for s in steps if s.sender_member == m)
+            q = sum(u[(st.step, r)] for r in st.receivers)
+            assert Fraction(charged[m]) == st.rate * q, (seed, m)
+        variance = M.absorption({m: pools[m] for m in rate}, {m: received.get(m, 0) for m in rate}, charged)
+        finals = sum(v for m, v in net.items() if m not in share and m not in rate)
+        assert Fraction(finals) + sum(variance.values(), Fraction(0)) == Fraction(sum(pools.values())), seed
+        seen_back |= any(r["origin_member"] == r["receiver_member"] for r in rows)
+    assert seen_back   # a rate origin's own units came back to it in some case
+
+
+def test_rate_reciprocal_rounding_thirds_through_rate_sink():
+    # IT (rate) charges HR 1 unit and F 2; HR (share) sends IT 1/3, FM 1/3, F 1/3;
+    # FM (share) sends HR 1/7, IT 2/7, F 4/7. Nothing terminates in decimal.
+    steps = [M.Step(1, "IT", "T", ["HR", "F"], basis=_RATE, rate=Fraction("0.3333")),
+             M.Step(2, "HR", "H", ["IT", "FM", "F"]), M.Step(3, "FM", "A", ["HR", "IT", "F"])]
+    rows = [{"step": 1, "receiver_member": "HR", "driver_value": 1}, {"step": 1, "receiver_member": "F", "driver_value": 2},
+            {"step": 2, "receiver_member": "IT", "driver_value": 1}, {"step": 2, "receiver_member": "FM", "driver_value": 1},
+            {"step": 2, "receiver_member": "F", "driver_value": 1},
+            {"step": 3, "receiver_member": "HR", "driver_value": 1}, {"step": 3, "receiver_member": "IT", "driver_value": 2},
+            {"step": 3, "receiver_member": "F", "driver_value": 4}]
+    w, u = M.weights(rows), M.units(rows)
+    exact = M.reciprocal_coefficients(steps, w, u)
+    out = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal", u)
+    _check_reciprocal_rate(steps, w, u, exact, out)
+    assert any(Fraction(r["coefficient"]) != x["coefficient"] for r, x in zip(out, exact))
+    by = {_rkey(r): r for r in out}
+    # the rate origin's own hop is exact in units; its 1 unit at HR rounds back to exactly 1 at the sinks
+    assert by[("IT", "IT", "own", "HR")]["coefficient"] == Decimal("1.000000000000")
+    assert by[("IT", "IT", "own", "F")]["pool_coefficient"] == Decimal("3.000000000000")
+    it_sinks = sum(r["coefficient"] for r in out if r["origin_member"] == "IT" and r["receiver_member"] in ("IT", "F"))
+    assert it_sinks == Decimal("3.000000000000")
+
+
+def test_rate_reciprocal_rounding_refuses_over_precise_own_pool_and_pass_at_rate_sender():
+    steps = [M.Step(1, "IT", "T", ["HR", "F"], basis=_RATE, rate=Fraction(1)), M.Step(2, "HR", "H", ["F"])]
+    w = {(1, "HR"): Fraction(1, 2), (1, "F"): Fraction(1, 2), (2, "F"): Fraction(1)}
+    u = {(1, "HR"): Fraction(1, 3), (1, "F"): Fraction(1, 3)}   # units() would never make these
+    exact = M.reciprocal_coefficients(steps, w, u)
+    with raises(M.CostAllocationError) as ei:
+        M.round_reciprocal_coefficients(exact, rate_senders={"IT"})
+    assert "IT" in ei.value.errors[0] and "12 decimal places" in ei.value.errors[0]
+    # rows that make a declared rate sender pass something on are refused, never rounded
+    steps2, w2 = _hand_steps()
+    with raises(M.CostAllocationError) as ei:
+        M.round_reciprocal_coefficients(M.reciprocal_coefficients(steps2, w2), rate_senders={"HR"})
+    assert "HR" in ei.value.errors[0]
+
+
+#: sha256 over every coefficient row of _random_reciprocal seeds 20000..20299
+#: and 40000..40299 (the accepted ones, 543 cases), computed on the model
+#: BEFORE Reciprocal accepted declared rates (commit 6d9827e3). Share-only
+#: reciprocal output is byte-identical or this fails.
+_SHARE_ONLY_RECIPROCAL_DIGEST = "324fc08f35307003d9b2464fa20589121a605b1980e467fcc94cde8ec8bcfc89"
+
+
+def test_rate_reciprocal_share_only_output_unchanged():
+    h, n = hashlib.sha256(), 0
+    for base in (20_000, 40_000):
+        for seed in range(300):
+            steps, w = _random_reciprocal(random.Random(base + seed))
+            if {s.sender_member for s in steps} != _exits(steps, w):
+                continue
+            rows = M.coefficient_rows("ZZRUN", steps, w, "Reciprocal")
+            for r in rows:
+                h.update(repr([str(r[c]) for c in M.COEFFICIENT_COLUMNS]).encode())
+            n += 1
+            if seed < 40:   # explicit Share of Pool basis and unused units change nothing
+                explicit = [M.Step(s.step, s.sender_member, s.driver, s.receivers, basis=_SHARE) for s in steps]
+                assert M.coefficient_rows("ZZRUN", explicit, w, "Reciprocal", {k: Fraction(1) for k in w}) == rows
+    assert n == 543
+    assert h.hexdigest() == _SHARE_ONLY_RECIPROCAL_DIGEST

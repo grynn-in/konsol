@@ -194,6 +194,8 @@ class _World:
         self.members = {"ZZDIM": ["ZZIT", "ZZHR", "ZZP1"]}
         self.scenario_types = {"ZZACT": "actual", "ZZBUD": "budget"}
         self.driver_dimension = {"ZZ Headcount": "ZZDIM"}
+        # 2b-1 task A: a statistic is only for a driver whose source is Uploaded Statistic
+        self.driver_source = {"ZZ Headcount": "Uploaded Statistic"}
         self.other_rows = []          # rows of other submitted statistics
         self.sql = []
         self.open_calls = []
@@ -228,6 +230,11 @@ def _load(world):
         if doctype == "Scenario":
             return world.scenario_types.get(name)
         if doctype == "Cost Allocation Driver":
+            if isinstance(field, (list, tuple)):
+                if name not in world.driver_dimension:
+                    return None
+                return _Row(dimension=world.driver_dimension.get(name),
+                            source=world.driver_source.get(name))
             return world.driver_dimension.get(name)
         raise AssertionError(doctype)
 
@@ -633,3 +640,29 @@ def test_kf3_a_failed_member_read_is_not_reported_as_unknown_members():
     msg = _refusal(_stat(w, mod, dimension="ZZDIM").validate)
     assert "could not read the members of ZZDIM" in msg and "Error Log" in msg
     assert "not members" not in msg
+
+
+# -- 2b-1 task A: the driver's source ------------------------------------------
+
+def test_validate_refuses_a_driver_whose_source_is_not_uploaded_statistic():
+    for source in ("Fixed Weights", "Account Set"):
+        w = _World()
+        w.driver_source["ZZ Headcount"] = source
+        mod = _load(w)
+        msg = _refusal(_stat(w, mod).validate)
+        assert "ZZ Headcount" in msg and source in msg and "Uploaded Statistic" in msg, msg
+
+
+def test_validate_refuses_a_driver_that_does_not_exist():
+    w = _World()
+    mod = _load(w)
+    msg = _refusal(_stat(w, mod, driver="ZZ Gone").validate)
+    assert "ZZ Gone" in msg
+
+
+def test_validate_still_accepts_an_uploaded_statistic_driver():
+    w = _World()
+    mod = _load(w)
+    doc = _stat(w, mod)
+    doc.validate()
+    assert doc.dimension == "ZZDIM"

@@ -121,6 +121,18 @@
  },
  {
   "doctype": "Build Model",
+  "name": "gold_cost_allocation_absorption",
+  "model_name": "gold_cost_allocation_absorption",
+  "build_domain": "allocation"
+ },
+ {
+  "doctype": "Build Model",
+  "name": "gold_cost_allocation_absorption_frozen",
+  "model_name": "gold_cost_allocation_absorption_frozen",
+  "build_domain": "allocation"
+ },
+ {
+  "doctype": "Build Model",
   "name": "gold_cost_allocation_frozen",
   "model_name": "gold_cost_allocation_frozen",
   "build_domain": "allocation"

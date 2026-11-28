@@ -61,9 +61,16 @@ def test_driver_layout_tab_section_then_fields():
         ("Link", "dimension"),
         ("Data", "unit"),
         ("Column Break", "col_break_1"),
+        ("Select", "source"),
         ("Check", "carry_forward"),
         ("Check", "is_active"),
         ("Small Text", "description"),
+        ("Tab Break", "values_tab"),
+        ("Section Break", "fixed_weights_section"),
+        ("Table", "fixed_weights"),
+        ("Section Break", "account_set_section"),
+        ("Table", "accounts"),
+        ("Select", "value_sign"),
     ], f"layout drifted: {order}"
 
 
@@ -172,6 +179,9 @@ def _driver(controller_cls, dimension):
     doc = controller_cls.__new__(controller_cls)
     doc.driver_name = "ZZ Headcount"
     doc.dimension = dimension
+    # 2b-1 task A: the default source, with its tables empty (test_cost_allocation_driver_sources.py)
+    doc.source = "Uploaded Statistic"
+    doc.fixed_weights, doc.accounts, doc.value_sign = [], [], None
     return doc
 
 
@@ -321,6 +331,7 @@ def test_rule_set_child_doctypes():
                                              "account_name": ("Data", None, 0)},
         "cost_allocation_rule": {"step": ("Int", None, 1), "sender_member": ("Data", None, 1),
                                  "driver": ("Link", "Cost Allocation Driver", 1),
+                                 "basis": ("Select", "Share of Pool\nDeclared Rate", 1),
                                  "description": ("Data", None, 0)},
         "cost_allocation_rule_receiver": {"step": ("Int", None, 1),
                                           "receiver_member": ("Data", None, 1)},

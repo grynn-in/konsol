@@ -258,6 +258,20 @@
    "read_only": 1,
    "description": "The cost pool accounts expanded from the rule set, groups included. Written by Compute Weights.",
    "no_copy": 1
+  },
+  {
+   "fieldname": "driver_accounts_section",
+   "fieldtype": "Section Break",
+   "label": "Driver Accounts"
+  },
+  {
+   "fieldname": "driver_accounts",
+   "fieldtype": "Table",
+   "label": "Driver Accounts",
+   "options": "Cost Allocation Run Driver Account",
+   "read_only": 1,
+   "no_copy": 1,
+   "description": "The accounts each Account Set driver read, with the declared sign. Written by Compute Weights; empty when no driver is an Account Set."
   }
  ],
  "permissions": [

@@ -1,0 +1,41 @@
+{
+  "name": "Cost Allocation Rule Rate",
+  "doctype": "DocType",
+  "module": "EPM",
+  "engine": "InnoDB",
+  "istable": 1,
+  "editable_grid": 1,
+  "issingle": 0,
+  "fields": [
+    {
+      "fieldname": "step",
+      "fieldtype": "Int",
+      "label": "Step",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "rate",
+      "fieldtype": "Float",
+      "label": "Rate",
+      "precision": "4",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Amount per driver unit, in the entity's trial balance currency."
+    },
+    {
+      "fieldname": "effective_from",
+      "fieldtype": "Date",
+      "label": "Effective From",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "effective_to",
+      "fieldtype": "Date",
+      "label": "Effective To",
+      "in_list_view": 1,
+      "description": "Blank = still applies."
+    }
+  ]
+}

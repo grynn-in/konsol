@@ -4,6 +4,20 @@ _Written 12 September 2026, refreshed that night, on 13 September, again for the
 
 ## Pick up here
 
+**Update (28 Nov 2026): cost allocation phase 2b merged: driver sources and declared rates** (konsol#269). Q1–Q7 are Deepak Pai's (27 Nov 2026, all option A). The live test on the local test site passed. Nothing is deployed to the example sites.
+- **2b-1, driver sources** (konsol#619, 93382043; konsolidat#403, f3d8bb3e).
+  - A driver is an Uploaded Statistic, Fixed Weights or an Account Set.
+  - Fixed Weights are dated windows that must cover the whole period.
+  - An Account Set reads the scenario trial balance with a declared sign; a negative value is refused.
+  - Derived weights are snapshotted at Compute and re-checked at approval. Drift is a warning.
+- **2b-2, declared rates** (konsol#627, 2ce58c55; konsolidat#405, a2a188cd).
+  - A rule's basis is Share of Pool or Declared Rate. Rates are dated rows on the Rule Set, one set per step.
+  - A rate that changes inside the period is refused. A rate rule is refused in Sender's Own Accounts mode.
+  - `gold_cost_allocation_absorption(_frozen)` gives each rate sender's pool + received − charged = variance.
+  - Existing rules migrate to Share of Pool. Existing frozen rows read `basis = 'Share of Pool'`.
+- **Deploy note:** after a 2b-2 build adds `basis` to `gold_cost_allocation_frozen`, a konsolidat checkout from before #405 fails every allocation build (`on_schema_change='fail'`). Move both repos together.
+- **Open:** konsol#628 (the domain regenerate tags Build Models the project lacks); #93 entity scoping, not decided.
+
 **Update (27 Nov 2026): old-bug sweep, five fixes merged.** Merge go by Deepak Pai, 27 Nov 2026. None is deployed yet.
 - **Config export and diff need EPM Admin** (konsol#472; konsol#613, caf34da1). `export_config_api` and `diff_config_api` call `check_epm_admin()` first.
 - **`trigger_pipeline` is POST only** (konsol#473; konsol#614, 99d5eea7). `test_close_api_contract.py` now refuses a GET-reachable method in the files that must never write.

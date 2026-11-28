@@ -1,0 +1,43 @@
+{
+  "name": "Cost Allocation Driver Fixed Weight",
+  "doctype": "DocType",
+  "module": "EPM",
+  "engine": "InnoDB",
+  "istable": 1,
+  "editable_grid": 1,
+  "issingle": 0,
+  "fields": [
+    {
+      "fieldname": "member",
+      "fieldtype": "Data",
+      "label": "Member",
+      "reqd": 1,
+      "in_list_view": 1,
+      "description": "Must be a member of the driver's dimension."
+    },
+    {
+      "fieldname": "value",
+      "fieldtype": "Float",
+      "label": "Value",
+      "precision": "9",
+      "reqd": 1,
+      "non_negative": 1,
+      "in_list_view": 1,
+      "description": "A share, normalised over each step's receivers."
+    },
+    {
+      "fieldname": "effective_from",
+      "fieldtype": "Date",
+      "label": "Effective From",
+      "reqd": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "effective_to",
+      "fieldtype": "Date",
+      "label": "Effective To",
+      "in_list_view": 1,
+      "description": "Blank = still applies."
+    }
+  ]
+}
