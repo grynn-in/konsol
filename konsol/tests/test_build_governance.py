@@ -750,6 +750,10 @@ KONSOLIDAT_ALLOCATION_LINES = [
     "      # --- Domain: allocation ---",
     "      gold_cost_allocation:",
     "        +tags: ['gold', 'domain:allocation']",
+    "      gold_cost_allocation_absorption:",
+    "        +tags: ['gold', 'domain:allocation']",
+    "      gold_cost_allocation_absorption_frozen:",
+    "        +tags: ['gold', 'domain:allocation']",
     "      gold_cost_allocation_frozen:",
     "        +tags: ['gold', 'domain:allocation']",
 ]

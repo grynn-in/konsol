@@ -30,6 +30,16 @@
       "in_list_view": 1
     },
     {
+      "fieldname": "basis",
+      "fieldtype": "Select",
+      "label": "Basis",
+      "options": "Share of Pool\nDeclared Rate",
+      "reqd": 1,
+      "default": "Share of Pool",
+      "in_list_view": 1,
+      "description": "Share of Pool splits the sender's whole pool; Declared Rate charges a rate per driver unit and reports the difference as absorption variance."
+    },
+    {
       "fieldname": "description",
       "fieldtype": "Data",
       "label": "Description",
