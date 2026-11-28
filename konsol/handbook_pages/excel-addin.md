@@ -75,6 +75,52 @@ The pane's **Reports** panel paints two templates:
 - **Monthly P&L** applies live `=K.EPM()` formulas, one per Published Profit and Loss account and month.
 - **Entity TB — local currency, account level (pre-consolidation)** snapshots frozen numbers onto a sheet named `TB`: one row per account and period, with debit, credit and net. It is the entity's own trial balance in its local currency, with dimensions summed. It is read before FX translation, ownership and eliminations, so it reconciles to a group figure at account level in local currency only. Row 2 of the sheet carries this note. It is not the trial balance the group was consolidated from; that is konsol#428's `K.CTB`.
 
+## Report templates and re-apply
+
+The pane's **Reports** panel builds a report on a sheet from a template. Every number is a live `=K.EPM()` formula, or a `SUM` or a plain formula in the sheet, so you can trace any figure. A template can also paint a snapshot of frozen values instead.
+
+### Choosing and applying
+
+- The **template list** comes from the server, in the order the product sets. A template the site cannot read is greyed out, and the panel says why. The usual reason is that the site has not published a dataset the template reads. A template can be read for some scope kinds and not others: a site with no consolidated budget can run P&L actual vs budget for an entity, but not for a group. The form then offers only the kinds the site can read, and says why the others are missing. If the server cannot send the list, the panel shows that error. It has no built-in list.
+- Choices are generated from the template. Each field is filled from the site: entities, years, periods, scenarios, hierarchies, accounts. A field that depends on another waits for it. Until you pick the year, the periods and scenarios say "Choose Year first."
+- A budget or forecast scenario is preselected only when the site's scenario rule finds exactly one active scenario for that year. If there are none or several, the field stays blank and shows the reason. Choose one yourself.
+- A required field left blank stops **Apply** and is named.
+- **Apply** writes a new sheet. Its name is the template's, for example `P&L`.
+
+### Columns and headings
+
+Columns follow the year's declared **Regular** periods. Opening, Closing and Adjustment periods are never columns. If the year declares no Regular periods, the report is refused and says to declare them.
+
+In a Monthly P&L, headings show month names (Jan, Feb, ...) when every period starts in a different calendar month. This holds for a year that runs April to March. If two periods start in the same month, or a start date is missing, the headings are the periods' own labels, so no two columns read the same. (Decided by Deepak Pai, 27 Nov 2026.)
+
+### Update this report, or apply to a new sheet
+
+The add-in marks each sheet it paints. The mark is a name `konsol_report` over the report's area, and a settings entry saved in the workbook. A sheet counts as the add-in's own only when both exist and agree.
+
+- On such a sheet, with the same template selected, the button reads **Update this report**. The form is filled from the report's last parameters. Update clears only the report's area and writes it again.
+- On any other sheet, the button reads **Apply to new sheet**. Nothing already there is touched.
+- Sheets applied before this change carry no mark. The add-in does not recognise them. Applying again gives a new sheet such as `P&L (2)`. (Decided 27 Nov 2026.) Delete the old sheet if you do not need it.
+- Update writes nothing outside the report's own area. Your notes and formulas elsewhere stay as they are.
+- If you insert rows above the report or columns to its left, Update writes the report where it now is.
+- If the new layout is bigger and would cover cells that hold something, Update refuses and changes nothing. Move or clear those cells, or apply to a new sheet.
+- A copy of a report sheet keeps the name but not the sheet's identity. Applying on the copy makes it a separate report with its own entry. It does not change the original.
+- If the report was applied from another server than the workbook reads now, Update is refused. Use **Another site** above to switch back, or apply to a new sheet.
+
+### Variance and sign
+
+A variance column is **Actual minus Budget**, in the report's own sign convention. (Decided 27 Nov 2026.) Division, where a template has it, is plain division. A zero denominator shows an Excel error.
+
+A template states its sign convention and writes it in the sheet. `debit_positive` is K.EPM's own sign. In the Monthly P&L a negative total is a profit. With `credit_positive`, every read is written as `=-K.EPM(...)`, and the totals and variances follow. Some templates offer the sign as a choice in the form. The sheet's title or total line says which sign is in use.
+
+### For implementers
+
+- Templates are product-owned JSON files in `konsol/report_templates/`, such as `pnl_monthly.json` and `trial_balance_long.json`. A site cannot edit them. They ship with the release.
+- `konsol/report_template_model.py` loads and validates them. Its module docstring is the schema: keys, param types, series, columns, row blocks, tokens. Every broken rule is reported as `<file>: <key path>: <rule>`, for every file, not just the first.
+- `konsol/report_service.py` serves the catalog and the choices. It checks each submitted value against the same choices and refuses a value that is not one.
+- The add-in side is `report_form.js` (the panel), `report.js` (painting and the marker) and the Reports panel in `index.html`.
+- To add a template: write `konsol/report_templates/<id>.json` (the `id` equals the file name), run `.venv/bin/python scripts/run-host-tests.py`, and add a test next to `test_report_template_model.py` that compiles it for a fixture year and checks the cells. The test that loads every file refuses a template that breaks a rule. Then apply it on a live site and read the formulas.
+- A template may not guess. A series reads a named dataset word. A sign comes from the template. A year with no Regular periods is refused, never filled with Jan to Dec.
+
 ## Refresh
 
 The add-in's group on the Home ribbon has **Refresh sheet** and **Refresh workbook**, and the pane's **Refresh** panel has the same two buttons:

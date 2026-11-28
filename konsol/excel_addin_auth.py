@@ -15,7 +15,13 @@ def apply_excel_token_auth():
         return
     data = frappe.cache().get_value(_TOKEN_PREFIX + token)
     if data and data.get("user"):
+        # frappe.set_user() resets frappe.local.form_dict = _dict()
+        # (frappe/__init__.py ~388, 16.55.2), but frappe/app.py builds form_dict
+        # (make_form_dict, ~:214) BEFORE before_request hooks run (~:219). Without
+        # this, every token GET loses its query args (report_choices?kind=...).
+        form_dict = frappe.local.form_dict
         frappe.set_user(data["user"])
+        frappe.local.form_dict = form_dict
 
 
 def issue_token(user):

@@ -201,11 +201,13 @@ def test_never_a_wildcard():
 
 
 def test_the_endpoints_are_exactly_the_ones_the_add_in_calls():
+    """Since konsol#548 v1 T14 the pane calls the report catalog and choices
+    too, so no endpoint is listed ahead of the pane any more."""
     called = set()
-    for name in ("functions.js", "index.html", "ribbon.js", "server.js"):
+    for name in ("functions.js", "index.html", "ribbon.js", "server.js", "report.js", "report_form.js"):
         with open(os.path.join(ADDIN, name), encoding="utf-8") as f:
             called |= set(re.findall(r"/api/method/[A-Za-z0-9_.]+", f.read()))
-    assert called == set(_PATHS), (called ^ set(_PATHS))
+    assert called == set(_PATHS), called ^ set(_PATHS)
 
 
 # -- the after_request hook (frappe stubbed) ----------------------------------

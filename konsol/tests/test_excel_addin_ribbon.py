@@ -154,10 +154,17 @@ def _row1(cells):
     return row
 
 
+# A Jan–Dec calendar's Regular periods (P01..P12, each starting the 1st).
+JAN_DEC = [
+    {"number": m, "code": f"P{m:02d}", "label": f"P{m:02d}", "start_date": f"2024-{m:02d}-01"}
+    for m in range(1, 13)
+]
+
 # Row 1 as the shipped templates paint it, so the G1 / J1 the docs promise
 # follows report_compiler, not a copy of it.
 PNL_ROW1 = _row1(report_compiler.build_cell_map("pnl_monthly", "ZZE", 2024,
-                                                accounts=[("ZZ4000", "ZZ Sales")])["cells"])
+                                                accounts=[("ZZ4000", "ZZ Sales")],
+                                                periods=JAN_DEC)["cells"])
 TB_ROW1 = _row1(report_compiler.build_trial_balance_long_map("ZZE", 2024, [], 1, 12)["cells"])
 PNL_FORMULAS = [["Monthly P&L"], ["Account", "Jan"],
                 ["ZZ Sales", '=K.EPM("ZZE", 2024, 1, "ZZ4000")', '=K.EPM("ZZE", 2024, 2, "ZZ4000")'],

@@ -1,0 +1,40 @@
+{
+  "id": "trial_balance_long",
+  "version": 1,
+  "order": 20,
+  "mode": "snapshot",
+  "title": "Entity TB — local currency, account level (pre-consolidation)",
+  "description": "One row per account × period, local currency, before FX translation, ownership and eliminations — snapshot values for Excel models",
+  "sheet_name": "TB",
+  "source": "entity_trial_balance",
+  "max_rows": 10000,
+  "params": [
+    {"name": "entity", "type": "entity", "required": true},
+    {"name": "year", "type": "fiscal_year", "required": true},
+    {"name": "period_from", "type": "int", "default": 1},
+    {"name": "period_to", "type": "int", "default": 12}
+  ],
+  "header": [
+    {"at": "A1", "text": "Entity TB — local currency, account level (pre-consolidation)"},
+    {"at": "A2", "text": "Note: the entity's own trial balance in its local currency, one row per account and period, dimensions summed. Before FX translation, ownership and eliminations: it reconciles to group figures at account level in local currency only."},
+    {"at": "B1", "text": "Entity:"},
+    {"at": "C1", "param": "entity"},
+    {"at": "E1", "text": "Year:"},
+    {"at": "F1", "param": "year"},
+    {"at": "H1", "text": "Periods:"},
+    {"at": "I1", "text": "{period_from}–{period_to}"}
+  ],
+  "rows": {"start_row": 3, "header_row": true},
+  "fields": [
+    {"h": "Entity", "field": "entity", "default": "{entity}"},
+    {"h": "Year", "field": "year", "default": "{year}"},
+    {"h": "Period", "field": "period"},
+    {"h": "Account", "field": "account", "default": ""},
+    {"h": "Account Name", "field": "account_name", "default": ""},
+    {"h": "Acct Type", "field": "account_type", "default": ""},
+    {"h": "BS/P&L", "field": "bs_pnl", "default": ""},
+    {"h": "Debit", "field": "debit", "number": true},
+    {"h": "Credit", "field": "credit", "number": true},
+    {"h": "Net", "field": "net", "number": true}
+  ]
+}

@@ -28,6 +28,11 @@ ADDIN_ENDPOINTS = (
     "excel_addin_logout",
     "build_cell_map",
     "build_snapshot",
+    # konsol#548 v1 T14: the report catalog and the pickers of its form.
+    # (list_report_templates stays a whitelisted method; the pane does not
+    # call it, so it gets no CORS.)
+    "report_catalog",
+    "report_choices",
 )
 #: Frappe v16 routes one RPC under three prefixes (frappe/api/__init__.py:
 #: Submount "/api", "/api/v1" and "/api/v2", each with "/method/<method>").

@@ -160,7 +160,8 @@ def test_no_silent_exception_swallowing():
 
 def test_trial_balance_net_uses_debit_minus_credit():
     """Trial balance snapshot net must be debit minus credit, not summed net amounts."""
-    with open(API_PATH) as f:
+    # konsol#548 v1 T9: the fetch moved to report_service.py unchanged.
+    with open(os.path.join(os.path.dirname(API_PATH), "report_service.py")) as f:
         content = f.read()
     assert "_fetch_trial_balance_rows" in content
     assert "sum(period_debit) - sum(period_credit) AS net" in content

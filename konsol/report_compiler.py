@@ -1,188 +1,76 @@
 """Product-owned report templates → Excel cell maps for add-in Apply / Snapshot."""
 
-_MONTH_LABELS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-]
+import os
 
-_PNL_NO_ACCOUNTS = (
-    "The group chart has no Published Profit and Loss accounts, "
-    "so the monthly P&L has no lines."
+from konsol.report_template_model import (
+    block_key, column_letters, compile_formulas, compile_snapshot, description, load_templates,
 )
 
-# Amounts are debit-positive (period_net_amount = debit - credit).
-_PNL_SIGN = "debit positive; a negative total is a profit"
-_PNL_TOTAL_CAPTION = f"Net Profit and Loss ({_PNL_SIGN})"
+_TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "report_templates")
 
-_MONTH_COLS = 12
-_MONTH_END_COL = "M"  # B..M
-
-TB_LONG_HEADERS = [
-    "Entity", "Year", "Period", "Account", "Account Name",
-    "Acct Type", "BS/P&L", "Debit", "Credit", "Net",
-]
-TB_LONG_LAST_COL = "J"
-TB_LONG_MAX_ROWS = 10000
+_TB_LONG = load_templates(_TEMPLATE_DIR)["trial_balance_long"]
 
 # konsol#107 decision 1 (Deepak Pai, 7 Nov 2026): the snapshot is the entity's
-# own trial balance at account level in its local currency, read from the same
-# table consolidation starts from, before FX translation, ownership and
-# eliminations, with dimensions summed away. It reconciles to a group figure
-# at account level in local currency only. The title and the note row say so,
-# so nobody reads it as the TB the group was consolidated from.
-TB_LONG_TITLE = "Entity TB — local currency, account level (pre-consolidation)"
-TB_LONG_NOTE = (
-    "Note: the entity's own trial balance in its local currency, one row per "
-    "account and period, dimensions summed. Before FX translation, ownership "
-    "and eliminations: it reconciles to group figures at account level in "
-    "local currency only."
-)
-
-
-def _month_row_range(row):
-    return f"B{row}:{_MONTH_END_COL}{row}"
+# own trial balance at account level in its local currency, before FX
+# translation, ownership and eliminations, dimensions summed. The title and
+# the note row (in the template file) say so. These names are derived from
+# the file; other modules import them.
+TB_LONG_HEADERS = [f["h"] for f in _TB_LONG["fields"]]
+TB_LONG_LAST_COL = column_letters(len(_TB_LONG["fields"]))
+TB_LONG_MAX_ROWS = _TB_LONG["max_rows"]
+TB_LONG_TITLE = _TB_LONG["title"]
+TB_LONG_NOTE = next(c["text"] for c in _TB_LONG["header"] if c["at"] == "A2")
 
 
 def list_templates():
+    """The template files, in `order`: {id, title, description, mode}."""
+    templates = load_templates(_TEMPLATE_DIR)
     return [
         {
-            "id": "pnl_monthly",
-            "title": "Monthly P&L",
-            "description": (
-                "12-month income statement: every Published Profit and Loss "
-                f"account of the group chart ({_PNL_SIGN})"
-            ),
-            "mode": "formulas",
-        },
-        {
-            "id": "trial_balance_long",
-            "title": TB_LONG_TITLE,
-            "description": (
-                "One row per account × period, local currency, before FX "
-                "translation, ownership and eliminations — snapshot values "
-                "for Excel models"
-            ),
-            "mode": "snapshot",
-        },
+            "id": t["id"],
+            "title": t["title"],
+            "description": description(t),
+            "mode": t["mode"],
+        }
+        for t in templates.values()
     ]
 
 
-def build_cell_map(template_id, entity, year, scenario_id="actuals", accounts=None):
-    """`accounts`: list of `(main_account, caption)` in display order."""
-    if template_id != "pnl_monthly":
+def build_cell_map(template_id, entity, year, scenario_id="actuals", accounts=None, *,
+                   periods=None, params=None, ctx=None):
+    """Compile a formulas template file into a cell map.
+
+    `accounts`: list of `(main_account, caption)` in display order, for the
+    template's one `accounts` block. `periods`: the year's Regular periods
+    ({number, code, label, start_date}); required, a year without them is
+    refused. `params` / `ctx` add to or override what the positional
+    arguments supply (report_template_model.compile_formulas has the ctx
+    contract).
+    """
+    template = load_templates(_TEMPLATE_DIR).get(template_id)
+    if template is None or template["mode"] != "formulas":
         raise ValueError(f"Unknown template_id for formulas: {template_id!r}")
-    return _build_pnl_monthly(entity, int(year), scenario_id, accounts)
+    merged = {"entity": entity, "year": year, "scenario_id": scenario_id}
+    merged.update(params or {})
+    context = {"periods": periods}
+    if accounts is not None:
+        keys = [block_key(b, i) for i, b in enumerate(template["rows"]["blocks"])
+                if b["type"] == "accounts"]
+        if len(keys) != 1:
+            raise ValueError(
+                f"Report template {template_id!r} has {len(keys)} accounts blocks: "
+                "pass ctx['accounts'] by block, not accounts."
+            )
+        context["accounts"] = {keys[0]: list(accounts)}
+    context.update(ctx or {})
+    return compile_formulas(template, merged, context)
 
 
 def build_trial_balance_long_map(entity, year, rows, period_from=1, period_to=12):
     """Build a snapshot cell map (values only) from pre-fetched TB rows."""
-    year = int(year)
-    period_from = int(period_from)
-    period_to = int(period_to)
-
-    cells = [
-        {"range": "A1", "values": [[TB_LONG_TITLE]]},
-        {"range": "A2", "values": [[TB_LONG_NOTE]]},
-        {"range": "B1", "values": [["Entity:"]]},
-        {"range": "C1", "values": [[entity]]},
-        {"range": "E1", "values": [["Year:"]]},
-        {"range": "F1", "values": [[year]]},
-        {"range": "H1", "values": [["Periods:"]]},
-        {"range": "I1", "values": [[f"{period_from}–{period_to}"]]},
-        {"range": f"A3:{TB_LONG_LAST_COL}3", "values": [TB_LONG_HEADERS]},
-    ]
-
-    data_rows = []
-    for row in rows:
-        data_rows.append([
-            row.get("entity", entity),
-            row.get("year", year),
-            row.get("period"),
-            row.get("account", ""),
-            row.get("account_name", ""),
-            row.get("account_type", ""),
-            row.get("bs_pnl", ""),
-            _num(row.get("debit")),
-            _num(row.get("credit")),
-            _num(row.get("net")),
-        ])
-
-    if data_rows:
-        last_row = 3 + len(data_rows)
-        cells.append({
-            "range": f"A4:{TB_LONG_LAST_COL}{last_row}",
-            "values": data_rows,
-        })
-
-    return {
-        "template_id": "trial_balance_long",
-        "mode": "snapshot",
-        "entity": entity,
-        "year": year,
-        "period_from": period_from,
-        "period_to": period_to,
-        "sheet_name": "TB",
-        "row_count": len(data_rows),
-        "cells": cells,
-    }
-
-
-def _num(value):
-    if value is None:
-        return 0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _epm_formula(entity, year, period, account):
-    ent = str(entity).replace('"', '""')
-    acc = str(account).replace('"', '""')
-    return f'=K.EPM("{ent}", {int(year)}, {int(period)}, "{acc}")'
-
-
-def _build_pnl_monthly(entity, year, scenario_id, accounts):
-    if not accounts:
-        raise ValueError(_PNL_NO_ACCOUNTS)
-    cells = [
-        {"range": "A1", "values": [["Monthly P&L"]]},
-        {"range": "B1", "values": [["Entity:"]]},
-        {"range": "C1", "values": [[entity]]},
-        {"range": "E1", "values": [["Year:"]]},
-        {"range": "F1", "values": [[year]]},
-        {"range": "A2", "values": [["Account"]]},
-        {"range": _month_row_range(2), "values": [_MONTH_LABELS]},
-    ]
-
-    row = 3
-    first_data_row = row
-    for account, label in accounts:
-        cells.append({"range": f"A{row}", "values": [[label]]})
-        cells.append({
-            "range": _month_row_range(row),
-            "formulas": [[_epm_formula(entity, year, p, account) for p in range(1, _MONTH_COLS + 1)]],
-        })
-        row += 1
-
-    letters = [chr(ord("B") + i) for i in range(_MONTH_COLS)]
-    last_account_row = row - 1
-    total_row = row
-    cells.append({"range": f"A{total_row}", "values": [[_PNL_TOTAL_CAPTION]]})
-    cells.append({
-        "range": _month_row_range(total_row),
-        "formulas": [[
-            f"=SUM({col}{first_data_row}:{col}{last_account_row})"
-            for col in letters
-        ]],
-    })
-
-    return {
-        "template_id": "pnl_monthly",
-        "mode": "formulas",
-        "entity": entity,
-        "year": year,
-        "scenario_id": scenario_id,
-        "sheet_name": "P&L",
-        "cells": cells,
-    }
+    return compile_snapshot(
+        _TB_LONG,
+        {"entity": entity, "year": int(year),
+         "period_from": int(period_from), "period_to": int(period_to)},
+        rows,
+    )

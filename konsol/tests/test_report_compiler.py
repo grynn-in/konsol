@@ -19,6 +19,13 @@ ZZ_ACCOUNTS = [
     ("ZZ6000", "ZZ Other"),
 ]
 
+# A Jan–Dec calendar: OPN, P01..P12 (each starting the 1st of its month), CLS.
+# Only P01..P12 are Regular, so only they are report columns.
+JAN_DEC = [
+    {"number": m, "code": f"P{m:02d}", "label": f"P{m:02d}", "start_date": f"2024-{m:02d}-01"}
+    for m in range(1, 13)
+]
+
 SIGN_SENTENCE = "debit positive; a negative total is a profit"
 TOTAL_CAPTION = f"Net Profit and Loss ({SIGN_SENTENCE})"
 
@@ -38,7 +45,7 @@ def test_pnl_monthly_description_names_the_role_not_codes():
 
 
 def test_build_pnl_monthly_shape():
-    spec = build_cell_map("pnl_monthly", "ZZE", 2024, accounts=ZZ_ACCOUNTS[:2])
+    spec = build_cell_map("pnl_monthly", "ZZE", 2024, accounts=ZZ_ACCOUNTS[:2], periods=JAN_DEC)
 
     assert spec["template_id"] == "pnl_monthly"
     assert spec["entity"] == "ZZE"
@@ -58,7 +65,7 @@ def test_build_pnl_monthly_shape():
 
 
 def test_build_pnl_monthly_one_row_per_caller_account():
-    spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS)
+    spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS, periods=JAN_DEC)
     by_range = {c["range"]: c for c in spec["cells"]}
 
     for offset, (account, caption) in enumerate(ZZ_ACCOUNTS):
@@ -74,7 +81,7 @@ _LETTERS = [chr(ord("B") + i) for i in range(12)]
 
 
 def test_build_pnl_monthly_total_row_sums_every_account():
-    spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS)
+    spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS, periods=JAN_DEC)
     by_range = {c["range"]: c for c in spec["cells"]}
 
     assert by_range["A6"]["values"] == [[TOTAL_CAPTION]]
@@ -84,7 +91,7 @@ def test_build_pnl_monthly_total_row_sums_every_account():
 
 
 def test_build_pnl_monthly_total_row_with_one_account_is_not_circular():
-    spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS[:1])
+    spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=ZZ_ACCOUNTS[:1], periods=JAN_DEC)
     by_range = {c["range"]: c for c in spec["cells"]}
 
     assert by_range["A4"]["values"] == [[TOTAL_CAPTION]]
@@ -95,7 +102,7 @@ def test_build_pnl_monthly_total_row_with_one_account_is_not_circular():
 
 def test_build_pnl_monthly_has_no_gross_profit_caption():
     for accounts in (ZZ_ACCOUNTS[:1], ZZ_ACCOUNTS[:2], ZZ_ACCOUNTS):
-        spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=accounts)
+        spec = build_cell_map("pnl_monthly", "ZZE", 2026, accounts=accounts, periods=JAN_DEC)
         captions = [
             v
             for c in spec["cells"]
@@ -112,7 +119,7 @@ def test_build_pnl_monthly_without_accounts_raises():
     )
     for kwargs in ({}, {"accounts": None}, {"accounts": []}):
         try:
-            build_cell_map("pnl_monthly", "ZZE", 2026, **kwargs)
+            build_cell_map("pnl_monthly", "ZZE", 2026, **kwargs, periods=JAN_DEC)
             raised = None
         except ValueError as exc:
             raised = str(exc)

@@ -105,7 +105,9 @@ _ALLOWED_PATHS = (
 #: ``limit`` fails the sweep instead of silently riding along with the
 #: allowed ones (konsol#189 finding 6, re-review of PR #191).
 _ALLOWED_FUNCS = {
-    ("api.py", "build_snapshot"): (1, "budget: period_from/period_to are wide monthly columns (plan 1.3)"),
+    # konsol#548 v1 T9: build_snapshot's 1..12 check moved into the service's
+    # entity TB reader unchanged; konsol#210 follow-up reads the declared calendar.
+    ("report_service.py", "_read_entity_trial_balance"): (1, "budget: period_from/period_to are wide monthly columns (plan 1.3)"),
     # TODO konsol#189: fiscal_calendar.period_status_rows() is the migration
     # planner shared by the create_fiscal_years patch and declare_years_in_use
     # (plan 3.1/3.4: "nothing reads [Period Status] any more except the

@@ -160,7 +160,10 @@
       font-size: 11px;
       color: var(--k-soft);
       margin-bottom: 4px;
+      white-space: pre-line;
     }
+    #report-fields .hint { margin-top: 4px; }
+    #report-fields select[multiple] { min-height: 90px; }
     .panel-body ul, .panel-body ol { margin: 8px 0 8px 18px; }
     .panel-body li { margin: 4px 0; }
     .panel-body code {
@@ -241,6 +244,8 @@
   <script src="server.js"></script>
   <script src="functions.js"></script>
   <script src="ribbon.js"></script>
+  <script src="report.js"></script>
+  <script src="report_form.js"></script>
 </head>
 <body>
   <header>
@@ -283,27 +288,14 @@
     <details class="panel" id="report-panel" open hidden>
       <summary>Reports</summary>
       <div class="panel-body">
-        <p class="hint" id="report-hint">Apply live =K.EPM() formulas, or snapshot entity TB values to build on.</p>
+        <p class="hint" id="report-hint"></p>
         <label for="template-id">Template</label>
-        <select id="template-id">
-          <option value="pnl_monthly">Monthly P&L (live formulas)</option>
-          <option value="trial_balance_long">Entity TB — local currency, account level (pre-consolidation)</option>
-        </select>
-        <label for="report-entity">Entity</label>
-        <input id="report-entity" type="text" placeholder="entity code" />
-        <label for="report-year">Year</label>
-        <input id="report-year" type="number" value="2024" min="2000" max="2100" />
-        <div id="period-range-fields" class="field-row" hidden>
-          <div>
-            <label for="period-from">Period from</label>
-            <input id="period-from" type="number" value="1" min="1" max="12" />
-          </div>
-          <div>
-            <label for="period-to">Period to</label>
-            <input id="period-to" type="number" value="12" min="1" max="12" />
-          </div>
-        </div>
-        <button id="apply-report-btn" type="button">Apply report</button>
+        <select id="template-id"></select>
+        <p class="hint" id="template-why" hidden></p>
+        <p id="report-error" class="error-inline" hidden></p>
+        <div id="report-fields"></div>
+        <p class="hint" id="report-blocked" hidden></p>
+        <button id="apply-report-btn" type="button">Apply to new sheet</button>
         <button id="snapshot-btn" type="button" class="secondary" hidden>Snapshot values</button>
       </div>
     </details>
@@ -329,7 +321,8 @@
       <ol>
         <li>Open a blank workbook (or clear a sheet).</li>
         <li>Sign in above.</li>
-        <li><strong>Monthly P&L</strong> → Apply report (live <code>=K.EPM()</code>).</li>
+        <li>Pick a template and fill in its fields; the list and the fields come from the server.</li>
+        <li>A live-formula report (<code>=K.EPM()</code>): <strong>Apply to new sheet</strong> adds a sheet. On a sheet the add-in applied, the button reads <strong>Update this report</strong>, the fields show that report's choices, and only the report's own area is rewritten.</li>
         <li><strong>Entity TB</strong> → Snapshot values (frozen numbers on sheet <code>TB</code>): the entity's own trial balance in local currency at account level, before FX translation, ownership and eliminations.</li>
         <li>Build mgmt reports on other sheets with normal Excel formulas referencing <code>TB</code>.</li>
       </ol>
@@ -366,6 +359,7 @@
       var serverInput = document.getElementById("server-url");
       var serverError = document.getElementById("server-error");
       var started = false;
+      var reportForm = null;
       var officeReady = false;
       var PROBE_CELL = "ZZ999";
       var logCount = 0;
@@ -566,6 +560,8 @@
         document.getElementById("login-summary").textContent = "Signed in as " + user;
         document.getElementById("report-panel").hidden = false;
         document.getElementById("report-panel").open = true;
+        // The catalog is per server and per user: read it again on sign-in.
+        if (reportForm) reportForm.load();
       }
 
       // The label is the manifest Version (test_excel_addin_version_label.py);
@@ -648,16 +644,37 @@
         });
       }
 
-      function buildCellMap(templateId, entity, year) {
+      // A GET of one konsol.api method; resolves its message.
+      function getJson(path, query, signal) {
+        var q = Object.keys(query || {}).map(function (k) {
+          return encodeURIComponent(k) + "=" + encodeURIComponent(query[k]);
+        }).join("&");
+        return api(path + (q ? "?" + q : ""), {
+          headers: { Accept: "application/json" },
+          signal: signal
+        }).then(function (res) {
+          return res.json().catch(function () { return {}; }).then(function (data) {
+            if (!res.ok) throw new Error(parseApiError(res, data));
+            return data.message;
+          });
+        });
+      }
+
+      function fetchCatalog() {
+        return getJson("/api/method/konsol.api.report_catalog");
+      }
+
+      function fetchChoices(kind, args, opts) {
+        return getJson("/api/method/konsol.api.report_choices", Object.assign({ kind: kind }, args || {}),
+          opts && opts.signal);
+      }
+
+      // body: {template_id, params} (konsol#548 v1).
+      function buildCellMap(body) {
         return api("/api/method/konsol.api.build_cell_map", {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            template_id: templateId,
-            entity: entity,
-            year: year,
-            scenario_id: "actuals"
-          })
+          body: JSON.stringify({ template_id: body.template_id, params: body.params || {} })
         }).then(function (res) {
           return res.json().then(function (data) {
             if (!res.ok) throw new Error(parseApiError(res, data));
@@ -716,16 +733,6 @@
         });
       }
 
-      function syncReportTemplateUi() {
-        var isTb = document.getElementById("template-id").value === "trial_balance_long";
-        document.getElementById("period-range-fields").hidden = !isTb;
-        document.getElementById("apply-report-btn").hidden = isTb;
-        document.getElementById("snapshot-btn").hidden = !isTb;
-        document.getElementById("report-hint").textContent = isTb
-          ? "Snapshot loads the entity TB once (local currency, account level, before consolidation) — build other sheets with normal Excel formulas."
-          : "Apply paints live =K.EPM() formulas that recalc when data changes.";
-      }
-
       function applyCellMap(spec) {
         if (typeof Excel === "undefined") {
           return Promise.reject(new Error("Excel API unavailable"));
@@ -759,56 +766,59 @@
       }
 
       function applyReport() {
-        var templateId = document.getElementById("template-id").value;
-        var entity = document.getElementById("report-entity").value.trim();
-        var year = parseInt(document.getElementById("report-year").value, 10);
-        var btn = document.getElementById("apply-report-btn");
-
-        if (!entity || !year) {
-          appendLog("err", "Apply report: entity and year are required.");
+        var tpl = reportForm && reportForm.template();
+        var blocked = reportForm ? reportForm.missing() : "the report form is not ready";
+        if (!tpl || blocked) {
+          appendLog("err", "Apply report: " + (blocked || "choose a report template."));
           return;
         }
-        if (templateId !== "pnl_monthly") {
-          appendLog("err", "Apply report supports Monthly P&L only — use Snapshot for the entity TB.");
+        if (tpl.mode !== "formulas") {
+          appendLog("err", "Apply report: " + tpl.title + " is a snapshot; use Snapshot values.");
           return;
         }
-
-        btn.disabled = true;
-        appendLog("info", "Apply report: building " + templateId + " for " + entity + " " + year + "…");
-
-        var sheetName = "P&L";
-        buildCellMap(templateId, entity, year)
-          .then(function (spec) {
-            sheetName = spec.sheet_name || "P&L";
-            appendLog("info", "Painting " + (spec.cells || []).length + " ranges on sheet \"" +
-              sheetName + "\"…");
-            return applyCellMap(spec);
+        var request = { template_id: tpl.id, params: reportForm.values() };
+        reportForm.busy(true);
+        appendLog("info", "Apply report: building " + tpl.title + "…");
+        buildCellMap(request)
+          .then(function (map) {
+            // report.js updates an own report of this template on the active
+            // sheet in place, and adds a new sheet for anything else.
+            if (!window.konsolReport) throw new Error("report.js is not loaded, so the report cannot be applied. Reload the add-in.");
+            return window.konsolReport.apply(map, { target: "active" });
           })
-          .then(function () {
-            appendLog("ok", "Apply report done — =K.EPM() formulas on sheet \"" + sheetName + "\".");
+          .then(function (outcome) {
+            appendLog(outcome && outcome.action === "refused" ? "err" : "ok",
+              (outcome && outcome.message) || "Apply report done.");
           })
           .catch(function (err) {
             appendLog("err", err.message || "Apply report failed");
           })
           .finally(function () {
-            btn.disabled = false;
+            reportForm.busy(false);
+            reportForm.checkSheet();
           });
       }
 
       function snapshotReport() {
-        var templateId = document.getElementById("template-id").value;
-        var entity = document.getElementById("report-entity").value.trim();
-        var year = parseInt(document.getElementById("report-year").value, 10);
-        var periodFrom = parseInt(document.getElementById("period-from").value, 10);
-        var periodTo = parseInt(document.getElementById("period-to").value, 10);
-        var btn = document.getElementById("snapshot-btn");
+        var tpl = reportForm && reportForm.template();
+        var blocked = reportForm ? reportForm.missing() : "the report form is not ready";
+        if (!tpl || blocked) {
+          appendLog("err", "Snapshot: " + (blocked || "choose a report template."));
+          return;
+        }
+        if (tpl.mode !== "snapshot") {
+          appendLog("err", "Snapshot: " + tpl.title + " is a live-formula report; use Apply.");
+          return;
+        }
+        var values = reportForm.values();
+        var templateId = tpl.id;
+        var entity = values.entity;
+        var year = values.year;
+        var periodFrom = values.period_from || 1;
+        var periodTo = values.period_to || 12;
 
         if (!entity || !year) {
           appendLog("err", "Snapshot: entity and year are required.");
-          return;
-        }
-        if (templateId !== "trial_balance_long") {
-          appendLog("err", "Snapshot supports the entity TB template only.");
           return;
         }
         if (!periodFrom || !periodTo || periodFrom > periodTo) {
@@ -822,7 +832,7 @@
           return;
         }
 
-        btn.disabled = true;
+        reportForm.busy(true);
         window.konsolSnapshotBusy = true;
         appendLog("info", "Snapshot: loading TB for " + entity + " " + year +
           " P" + periodFrom + "–" + periodTo + "…");
@@ -843,14 +853,18 @@
             appendLog("err", err.message || "Snapshot failed");
           })
           .finally(function () {
-            btn.disabled = false;
             window.konsolSnapshotBusy = false;
+            reportForm.busy(false);
           });
       }
 
+      // {template_id, params} or the legacy {template_id, entity, year}.
       window.konsolidatApplyReport = function (params) {
-        return buildCellMap(params.template_id, params.entity, params.year)
-          .then(applyCellMap);
+        var request = konsolReportForm.normaliseRequest(params);
+        return buildCellMap(request).then(function (map) {
+          if (!window.konsolReport) throw new Error("report.js is not loaded. Reload the add-in.");
+          return window.konsolReport.apply(map, { target: "active" });
+        });
       };
 
       window.konsolidatSnapshotReport = function (params) {
@@ -970,6 +984,22 @@
           Office.addin.setStartupBehavior(Office.StartupBehavior.load);
         }
         setDiag("pending", "…");
+        reportForm = konsolReportForm.mount({
+          doc: document,
+          select: document.getElementById("template-id"),
+          fields: document.getElementById("report-fields"),
+          hint: document.getElementById("report-hint"),
+          templateWhy: document.getElementById("template-why"),
+          error: document.getElementById("report-error"),
+          blocked: document.getElementById("report-blocked"),
+          applyButton: document.getElementById("apply-report-btn"),
+          snapshotButton: document.getElementById("snapshot-btn"),
+          fetchCatalog: fetchCatalog,
+          fetchChoices: fetchChoices,
+          inspect: function () { return window.konsolReport.inspect(); },
+          log: appendLog
+        });
+        reportForm.watchActivation();
         if (!officeReady && typeof Office !== "undefined" && Office.onReady) {
           // Started by the 5 s fallback before Office was ready: the workbook's
           // server is not readable yet. Draw again when it is.
@@ -1000,8 +1030,6 @@
         });
         document.getElementById("apply-report-btn").addEventListener("click", applyReport);
         document.getElementById("snapshot-btn").addEventListener("click", snapshotReport);
-        document.getElementById("template-id").addEventListener("change", syncReportTemplateUi);
-        syncReportTemplateUi();
         document.getElementById("clear-log-btn").addEventListener("click", clearLog);
         passwordInput.addEventListener("keydown", function (e) {
           if (e.key === "Enter") login();

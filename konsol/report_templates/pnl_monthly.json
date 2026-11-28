@@ -1,0 +1,40 @@
+{
+  "id": "pnl_monthly",
+  "version": 1,
+  "order": 10,
+  "mode": "formulas",
+  "title": "Monthly P&L",
+  "description": "12-month income statement: every Published Profit and Loss account of the group chart ({sign.sentence})",
+  "sheet_name": "P&L",
+  "sign": {"convention": "debit_positive", "sentence": "debit positive; a negative total is a profit"},
+  "params": [
+    {"name": "entity", "type": "entity", "required": true},
+    {"name": "year", "type": "fiscal_year", "required": true},
+    {"name": "scenario_id", "type": "text", "default": "actuals", "echo_only": true}
+  ],
+  "header": [
+    {"at": "A1", "text": "Monthly P&L"},
+    {"at": "B1", "text": "Entity:"},
+    {"at": "C1", "param": "entity"},
+    {"at": "E1", "text": "Year:"},
+    {"at": "F1", "param": "year"},
+    {"at": "A2", "text": "Account"}
+  ],
+  "series": {"act": {"caption": "Actual", "read": {"entity": "actuals"}}},
+  "columns": {
+    "start_col": "B",
+    "header_rows": [2],
+    "groups": [{"over": "regular_periods", "label": "{month_abbrev}", "series": ["act"]}]
+  },
+  "rows": {
+    "start_row": 3,
+    "blocks": [
+      {"id": "lines", "type": "accounts", "filter": {"statement_section": "Profit and Loss"}, "one_chart": true, "caption": "{account.name}"},
+      {"type": "total", "of": ["lines"], "caption": "Net Profit and Loss ({sign.sentence})"}
+    ]
+  },
+  "errors": {
+    "no_rows": "The group chart has no Published Profit and Loss accounts, so the monthly P&L has no lines.",
+    "several_charts": "The monthly P&L reads one chart, and Published Profit and Loss accounts exist in charts {charts}. Make one chart Inactive or Draft."
+  }
+}
